@@ -15,11 +15,12 @@ function buildRouteContext(req: Request, env: Record<string, unknown>) {
   };
 }
 
-function makeWorkspaceStub(members: Array<{ user_id: string; access_level: string }>, rateAllowed = true) {
+function makeWorkspaceStub(
+  allMembers: Array<{ user_id: string; access_level: string }>,
+  rateAllowed = true
+) {
   return {
-    listMembers: vi.fn(async () =>
-      members.map((m) => ({ ...m, granted_by: 'system', granted_at: Date.now() }))
-    ),
+    listMembers: vi.fn(async () => allMembers),
     checkAndRecordResendRateLimit: vi.fn(() => rateAllowed
       ? { allowed: true }
       : { allowed: false, reason: 'Hourly email limit exceeded (50/hour)' }
@@ -64,11 +65,15 @@ const MEMBERS = [
   { user_id: 'u2', email: 'bob@example.com' },
 ];
 
-function buildEnv(overrides: Record<string, unknown> = {}) {
-  const workspaceStub = makeWorkspaceStub(
-    MEMBERS.map((m) => ({ user_id: m.user_id, access_level: 'full' })),
-    overrides.rateAllowed !== false
-  );
+function buildEnv(overrides: {
+  rateAllowed?: boolean;
+  workspaceMembers?: Array<{ user_id: string; access_level: string }>;
+  [key: string]: unknown;
+} = {}) {
+  const { rateAllowed, workspaceMembers, ...rest } = overrides;
+  // Default: all MEMBERS have full access
+  const allMembers = workspaceMembers ?? MEMBERS.map((m) => ({ user_id: m.user_id, access_level: 'full' }));
+  const workspaceStub = makeWorkspaceStub(allMembers, rateAllowed !== false);
 
   const userStubs = new Map<string, ReturnType<typeof makeUserStub>>();
   for (const m of MEMBERS) {
@@ -86,7 +91,7 @@ function buildEnv(overrides: Record<string, unknown> = {}) {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn((id: string) => userStubs.get(id) ?? makeUserStub('unknown@example.com')),
     },
-    ...overrides,
+    ...rest,
     _workspaceStub: workspaceStub,
   };
 }
@@ -229,7 +234,7 @@ describe('resend-proxy route', () => {
     expect(url).toBe('https://api.resend.com/emails');
     expect(init.headers.Authorization).toBe('Bearer test-resend-key');
     const sentBody = JSON.parse(init.body);
-    expect(sentBody.to).toBe('alice@example.com');
+    expect(sentBody.to).toEqual(['alice@example.com']);
     expect(sentBody.subject).toBe('Hello Alice');
   });
 
@@ -264,14 +269,59 @@ describe('resend-proxy route', () => {
     expect(res.status).toBe(200);
   });
 
-  it('excludes members with access_level=none from whitelist', async () => {
-    const env = buildEnv();
-    // Override workspace stub to have one member with access=none
-    const workspaceStub = makeWorkspaceStub([
-      { user_id: 'u1', access_level: 'full' },
-      { user_id: 'u2', access_level: 'none' },
-    ]);
-    (env.WORKSPACE as any).get = vi.fn(() => workspaceStub);
+  it('extracts email from "Name <email>" formatted recipients', async () => {
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: 'Alice Smith <alice@example.com>',
+          subject: 'Hi',
+          from: 'app@example.com',
+        }),
+        buildEnv()
+      )
+    );
+
+    expect(res.status).toBe(200);
+  });
+
+  it('extracts email from formatted recipients in arrays', async () => {
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: ['Alice <alice@example.com>', 'Bob <bob@example.com>'],
+          subject: 'Hi',
+          from: 'app@example.com',
+        }),
+        buildEnv()
+      )
+    );
+
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects formatted recipient with non-member email', async () => {
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: 'Outsider <outsider@evil.com>',
+          subject: 'Hi',
+          from: 'app@example.com',
+        }),
+        buildEnv()
+      )
+    );
+
+    expect(res.status).toBe(403);
+  });
+
+  it('excludes members with workspace access_level=none from whitelist', async () => {
+    // bob (u2) is blocked at the workspace level
+    const env = buildEnv({
+      workspaceMembers: [
+        { user_id: 'u1', access_level: 'full' },
+        { user_id: 'u2', access_level: 'none' },
+      ],
+    });
 
     const res = await handleResendProxy(
       buildRouteContext(
@@ -280,7 +330,78 @@ describe('resend-proxy route', () => {
       )
     );
 
-    // bob (u2) has access=none, so should be rejected
+    // bob (u2) has access=none in workspace, so should be rejected
     expect(res.status).toBe(403);
+  });
+
+  it('rejects comma-separated address smuggling in a single string', async () => {
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: 'Alice <alice@example.com>, outsider@evil.com',
+          subject: 'Hi',
+          from: 'app@example.com',
+        }),
+        buildEnv()
+      )
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toContain('Invalid recipient field');
+  });
+
+  it('rejects multiple angle-bracket address smuggling', async () => {
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: '<alice@example.com> <outsider@evil.com>',
+          subject: 'Hi',
+          from: 'app@example.com',
+        }),
+        buildEnv()
+      )
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  it('forwards sanitized emails to Resend (not raw payload)', async () => {
+    const env = buildEnv();
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: 'Alice Smith <Alice@Example.com>',
+          subject: 'Hello',
+          from: 'MyApp <noreply@example.com>',
+          text: 'Hello!',
+        }),
+        env
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const [, init] = fetchSpy.mock.calls[0];
+    const sentBody = JSON.parse(init.body);
+    // Should be sanitized bare email, not the raw "Alice Smith <Alice@Example.com>"
+    expect(sentBody.to).toEqual(['alice@example.com']);
+  });
+
+  it('allows org members with default (implicit full) workspace access', async () => {
+    // No workspace restrictions — both org members should be allowed
+    const env = buildEnv();
+
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: ['alice@example.com', 'bob@example.com'],
+          subject: 'Hi',
+          from: 'app@example.com',
+        }),
+        env
+      )
+    );
+
+    expect(res.status).toBe(200);
   });
 });

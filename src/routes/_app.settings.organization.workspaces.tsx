@@ -65,31 +65,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
 
-  // Fetch org members count and app counts in parallel
-  const [orgMembers, scripts] = await Promise.all([
-    orgStub.getMembers(),
-    orgStub.listWorkerScripts(),
-  ]);
-  const orgMemberCount = orgMembers.length;
-
+  const scripts = await orgStub.listWorkerScripts();
   // Aggregate app counts by workspace
   const appCountMap = new Map<string, number>();
   for (const script of scripts) {
     appCountMap.set(script.workspace_id, (appCountMap.get(script.workspace_id) ?? 0) + 1);
   }
 
-  // For each workspace, get members with explicit 'none' access to subtract from org total.
-  // Only count 'none' entries for users still in the org (stale entries may exist from removed users).
-  const orgMemberIds = new Set(orgMembers.map((m: { user_id: string }) => m.user_id));
   const workspaces = authContext.workspaces ?? [];
   const memberCounts = await Promise.all(
     workspaces.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      const explicitMembers = await wsStub.listMembers();
-      const noneCount = explicitMembers.filter(
-        (m: { user_id: string; access_level: string }) => m.access_level === 'none' && orgMemberIds.has(m.user_id)
-      ).length;
-      return { id: ws.id, memberCount: orgMemberCount - noneCount };
+      const members = await wsStub.listMembers();
+      return { id: ws.id, memberCount: members.filter((m) => m.access_level !== 'none').length };
     })
   );
   const memberCountMap = new Map(memberCounts.map((m) => [m.id, m.memberCount]));
@@ -102,7 +90,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     description: ws.description,
     created_at: ws.created_at,
     avatar: ws.avatar,
-    member_count: memberCountMap.get(ws.id) ?? orgMemberCount,
+    member_count: memberCountMap.get(ws.id) ?? 0,
     published_apps: appCountMap.get(ws.id) ?? 0,
     compute_tier: ws.compute_tier ?? 'standard',
   }));

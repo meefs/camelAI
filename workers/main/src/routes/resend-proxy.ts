@@ -43,14 +43,37 @@ interface ResendProxyRequest {
   html?: string;
 }
 
+/**
+ * Extract a bare email address from a potentially formatted recipient string
+ * like `"Name <email@example.com>"` or just `"email@example.com"`.
+ *
+ * Returns null if the string contains commas or multiple angle-bracket groups,
+ * which could be an attempt to smuggle extra addresses past whitelist validation.
+ */
+function extractEmail(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.includes(',')) return null;
+
+  const angleBrackets = trimmed.match(/<[^>]+>/g);
+  if (angleBrackets && angleBrackets.length > 1) return null;
+
+  const match = trimmed.match(/<([^>]+)>/);
+  return (match ? match[1] : trimmed).trim().toLowerCase();
+}
+
 function normalizeRecipients(value: unknown): string[] | null {
   if (value === undefined || value === null) return [];
-  if (typeof value === 'string') return [value.toLowerCase()];
+  if (typeof value === 'string') {
+    const email = extractEmail(value);
+    return email ? [email] : null;
+  }
   if (
     Array.isArray(value) &&
     value.every((e): e is string => typeof e === 'string')
   ) {
-    return value.map((e) => e.toLowerCase());
+    const emails = value.map((e) => extractEmail(e));
+    if (emails.some((e) => e === null)) return null;
+    return emails as string[];
   }
   return null; // invalid type
 }
@@ -67,19 +90,28 @@ async function getWorkspaceMemberEmails(
   const members = await workspaceStub.listMembers();
   const activeMembers = members.filter((m) => m.access_level !== 'none');
 
+  console.log(`[ResendProxy] workspace=${workspaceId} members=${members.length} active=${activeMembers.length}`);
+
   const emails = await Promise.all(
     activeMembers.map(async (member) => {
       try {
         const userStub = getUserStub(env, member.user_id);
         const profile = await userStub.getProfile();
-        return profile?.email?.toLowerCase() ?? null;
-      } catch {
+        const email = profile?.email?.toLowerCase() ?? null;
+        if (!email) {
+          console.warn(`[ResendProxy] user=${member.user_id} profile has no email (profile=${profile ? 'exists' : 'null'})`);
+        }
+        return email;
+      } catch (err) {
+        console.error(`[ResendProxy] failed to resolve email for user=${member.user_id}:`, err);
         return null;
       }
     })
   );
 
-  return new Set(emails.filter((e): e is string => e !== null));
+  const emailSet = new Set(emails.filter((e): e is string => e !== null));
+  console.log(`[ResendProxy] allowed emails: [${[...emailSet].join(', ')}]`);
+  return emailSet;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +165,11 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
   }
 
   // 5. Validate recipients against workspace member whitelist
+  console.log(`[ResendProxy] validating recipients: [${allRecipients.join(', ')}] workspace=${workspaceId}`);
   const allowedEmails = await getWorkspaceMemberEmails(env, workspaceId);
   const disallowed = allRecipients.filter((email) => !allowedEmails.has(email));
   if (disallowed.length > 0) {
+    console.warn(`[ResendProxy] rejected recipients: [${disallowed.join(', ')}] allowed: [${[...allowedEmails].join(', ')}]`);
     return errorResponse(
       `Recipients not in workspace: ${disallowed.join(', ')}. Only workspace members can be emailed.`,
       403
@@ -163,9 +197,9 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
       },
       body: JSON.stringify({
         from: payload.from,
-        to: payload.to,
-        ...(payload.cc ? { cc: payload.cc } : {}),
-        ...(payload.bcc ? { bcc: payload.bcc } : {}),
+        to: toEmails,
+        ...(ccEmails.length > 0 ? { cc: ccEmails } : {}),
+        ...(bccEmails.length > 0 ? { bcc: bccEmails } : {}),
         ...(payload.reply_to ? { reply_to: payload.reply_to } : {}),
         subject: payload.subject,
         ...(payload.text ? { text: payload.text } : {}),

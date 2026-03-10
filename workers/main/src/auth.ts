@@ -1394,6 +1394,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         createdBy,
         null
       );
+      await workspaceStub.setMemberAccess(createdBy, 'full', createdBy);
 
       try {
         await this.indexOrg(id);

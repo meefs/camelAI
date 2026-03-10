@@ -486,22 +486,19 @@ export async function getOrgMembersWithWorkspaceAccess(
     listOrgWorkspaces(env, orgId),
   ]);
 
-  // Fetch all workspace member access in parallel
   const workspaceMembers = await Promise.all(
     workspaces.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      const memberAccess = await wsStub.listMembers();
-      return { workspaceId: ws.id, memberAccess };
+      const allMembers = await wsStub.listMembers();
+      const accessMap = new Map(allMembers.map((m) => [m.user_id, m.access_level]));
+      return { workspaceId: ws.id, accessMap };
     })
   );
 
-  // Build access map per user
   return members.map((member) => {
     const workspaceAccess: Record<string, WorkspaceAccessLevel> = {};
     for (const ws of workspaceMembers) {
-      const access = ws.memberAccess.find((ma) => ma.user_id === member.user.id);
-      // Default to 'full' if no explicit record (org members get full access by default)
-      workspaceAccess[ws.workspaceId] = access?.access_level ?? 'full';
+      workspaceAccess[ws.workspaceId] = ws.accessMap.get(member.user.id) ?? 'full';
     }
     return {
       ...member,
@@ -528,12 +525,12 @@ export async function isOrgAdmin(env: AuthEnv, userId: string, orgId: string): P
 export async function removeOrgMember(env: AuthEnv, orgId: string, userId: string, actorId: string): Promise<void> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
 
-  // Revoke workspace access for all workspaces in the org
+  // Remove from all workspaces in the org
   const workspaces = await stub.getWorkspaces();
   await Promise.all(
     workspaces.filter((ws) => !ws.archived).map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      await wsStub.setMemberAccess(userId, 'none', actorId);
+      await wsStub.removeMember(userId, actorId);
     })
   );
 

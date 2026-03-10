@@ -424,6 +424,5 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const actions = audit.map((entry) => entry.action);
     expect(actions).toContain('access_granted');
     expect(actions).toContain('access_changed');
-    expect(actions).toContain('access_revoked');
   });
 });

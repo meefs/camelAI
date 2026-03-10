@@ -164,11 +164,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     this.sql = ctx.storage.sql;
 
     ctx.blockConcurrencyWhile(async () => {
-      this.migrate();
+      await this.migrate();
     });
   }
 
-  private migrate() {
+  private async migrate() {
     // Read version from sync KV, falling back to legacy SQL table for existing DOs.
     let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
     if (version === null) {
@@ -248,7 +248,29 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       this.sql.exec('CREATE INDEX IF NOT EXISTS idx_integrations_token_expires ON integrations(token_expires_at) WHERE token_expires_at IS NOT NULL AND deleted_at IS NULL');
     }
 
-    const CURRENT_SCHEMA_VERSION = 3;
+    if (version < 4) {
+      // V4: Backfill workspace members from org membership.
+      // Previously setMemberAccess('full') deleted the row, so full-access
+      // members were implicit. Now all members are stored explicitly.
+      const rows = this.sql.exec('SELECT value FROM workspace_info WHERE key = ?', 'data').toArray();
+      if (rows.length > 0) {
+        const info = JSON.parse((rows[0] as { value: string }).value) as { org_id: string };
+        const orgStub = this.env.ORG.get(this.env.ORG.idFromName(info.org_id)) as unknown as OrgDO;
+        const orgMembers = await orgStub.getMembers();
+        const now = Date.now();
+        for (const m of orgMembers) {
+          this.sql.exec(
+            'INSERT OR IGNORE INTO members (user_id, access_level, granted_by, granted_at) VALUES (?, ?, ?, ?)',
+            m.user_id,
+            'full',
+            'system-migration',
+            now
+          );
+        }
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 4;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -510,10 +532,24 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return { info, memberAccess };
   }
 
-  async listMembers(): Promise<WorkspaceMember[]> {
+  /**
+   * Returns only members with explicit workspace-level access overrides
+   * (e.g. access_level = 'none'). Members with default 'full' access are
+   * NOT stored in this table and won't appear here.
+   */
+  async listRestrictedMembers(): Promise<WorkspaceMember[]> {
     return this.sql.exec(
-      'SELECT user_id, access_level, granted_by, granted_at FROM members ORDER BY granted_at ASC'
+      "SELECT user_id, access_level, granted_by, granted_at FROM members WHERE access_level != 'full' ORDER BY granted_at ASC"
     ).toArray() as unknown as WorkspaceMember[];
+  }
+
+  /**
+   * Returns all workspace members with their effective access level.
+   */
+  async listMembers(): Promise<Array<{ user_id: string; access_level: WorkspaceAccessLevel }>> {
+    return this.sql.exec(
+      'SELECT user_id, access_level FROM members ORDER BY granted_at ASC'
+    ).toArray() as unknown as Array<{ user_id: string; access_level: WorkspaceAccessLevel }>;
   }
 
   // Rate limit for resend email proxy (atomic check + record in single DO call)
@@ -602,19 +638,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     actorId: string
   ): Promise<void> {
     const existing = await this.getMemberAccess(userId);
-
-    if (accessLevel === 'full') {
-      if (existing) {
-        this.sql.exec('DELETE FROM members WHERE user_id = ?', userId);
-        this.log('access_revoked', actorId, userId, { previous_level: existing.access_level });
-      }
-      return;
-    }
-
     const now = Date.now();
+
     if (!existing) {
       this.sql.exec(
-        'INSERT OR REPLACE INTO members (user_id, access_level, granted_by, granted_at) VALUES (?, ?, ?, ?)',
+        'INSERT INTO members (user_id, access_level, granted_by, granted_at) VALUES (?, ?, ?, ?)',
         userId,
         accessLevel,
         actorId,
@@ -636,6 +664,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         old_level: existing.access_level,
         new_level: accessLevel,
       });
+    }
+  }
+
+  async removeMember(userId: string, actorId: string): Promise<void> {
+    const existing = await this.getMemberAccess(userId);
+    if (existing) {
+      this.sql.exec('DELETE FROM members WHERE user_id = ?', userId);
+      this.log('member_removed', actorId, userId, { previous_level: existing.access_level });
     }
   }
 

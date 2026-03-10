@@ -671,7 +671,7 @@ export async function adminGetWorkspaceDetail(
     authDO.getOrg(authEnv, workspace.org_id),
     authEnv.ORG.get(authEnv.ORG.idFromName(workspace.org_id)).getThreads(),
     authDO.listWorkspaceIntegrations(authEnv, workspaceId),
-    authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId)).listMembers(),
+    authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId)).listRestrictedMembers(),
   ]);
 
   if (!org) return null;
@@ -1293,8 +1293,7 @@ export async function hardDeleteAdminUser(
     warnings.push(`Failed to clean user-bound ${SCREENSHOT_SESSION_PREFIX}* sessions: ${toErrorMessage(error)}`);
   }
 
-  // 9. Best-effort cleanup of explicit workspace ACL rows for this user.
-  // Setting access to "full" deletes the override row in WorkspaceDO.
+  // 9. Best-effort cleanup of workspace member rows for this user.
   const workspaceAclOrgIds = new Set<string>(orgMemberships.map((org) => org.org_id));
   for (const orgId of screenshotSessionOrgIds) {
     workspaceAclOrgIds.add(orgId);
@@ -1310,12 +1309,12 @@ export async function hardDeleteAdminUser(
       await Promise.all(
         workspaces.map(async (workspace) => {
           const workspaceStub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspace.id));
-          await workspaceStub.setMemberAccess(userId, 'full', actorId);
+          await workspaceStub.removeMember(userId, actorId);
         })
       );
     } catch (error) {
       warnings.push(
-        `Failed to clean workspace ACL rows in org ${orgId.slice(0, 8)}: ${toErrorMessage(error)}`
+        `Failed to clean workspace member rows in org ${orgId.slice(0, 8)}: ${toErrorMessage(error)}`
       );
     }
   }
