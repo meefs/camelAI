@@ -112,6 +112,7 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 6. Claude SDK stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
 7. `Chat.tsx` discloses compaction progress in-flight: `CompactingIndicator` turns on for manual `/compact` and auto-compaction (`system/status` with `status: "compacting"`, plus `stream_event/content_block_start(type=compaction)` fallback) and clears on summary capture, `status: null`, turn `result`/`error`, reconnect reset, or reconnect-exhausted close.
 8. `ChatThreadDO` computes context usage from `stream_event.message_start` usage and now broadcasts live `context_usage_state` updates during a turn when a model-scoped `contextWindow` cache is available (`chatContextWindowByModel`, persisted in DO KV). On `result`, it computes and persists the canonical value (`chatContextUsedPercent`) and replays `transientContextUsedPercent ?? contextUsedPercent` on chat init so reconnects can resume from the freshest value. The composer `ContextIndicator` (left toolbar, after Mic) appears when usage is `>= 50%`, shows `"XX% used"`, and can trigger `/compact` without mutating unsent draft text.
+9. Pending `AskUserQuestion` widgets are keyboard-first: the card auto-focuses on arrival, supports `1`-`9`/`0` option shortcuts, `↑`/`↓` focus movement, `Space` toggle, `Enter` next/submit, `Escape` blur-or-collapse, and returns focus to the composer after submission.
 
 ### Agent Teams Polling
 
