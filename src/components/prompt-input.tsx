@@ -40,7 +40,7 @@ interface PromptInputProps {
   contextUsedPercent?: number | null;
   onCompact?: () => void;
   // Ref for programmatic focus
-  textareaRef?: React.RefObject<HTMLTextAreaElement>;
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
 interface SendButtonProps {

@@ -1126,6 +1126,7 @@ export default function Chat({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const historyFetchAbortRef = useRef<AbortController | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const firstUserMessageBackfillAttemptedRef = useRef<Set<string>>(new Set());
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
@@ -3161,6 +3162,8 @@ export default function Chat({
 
     // Optimistically clear the question
     setPendingQuestion(null);
+
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }, [pendingQuestion]);
 
   // Handle connection setup response - send via chat WebSocket
@@ -3919,6 +3922,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   onAttachmentRemove={handleAttachmentRemove}
                   contextUsedPercent={contextUsedPercent}
                   onCompact={handleCompactFromIndicator}
+                  textareaRef={composerTextareaRef}
                 />
               </div>
             </div>
