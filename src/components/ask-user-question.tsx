@@ -87,6 +87,31 @@ function ShortcutBadge({ label }: { label: string | null }) {
   );
 }
 
+function isEditableTarget(element: HTMLElement | null): boolean {
+  if (!element) {
+    return false;
+  }
+
+  return (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement ||
+    element.isContentEditable ||
+    Boolean(
+      element.closest(
+        '[contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
+      ),
+    )
+  );
+}
+
+function isQuestionOtherInputTarget(element: HTMLElement | null): boolean {
+  return (
+    element instanceof HTMLInputElement &&
+    element.dataset.askUserQuestionOtherInput === "true"
+  );
+}
+
 export function AskUserQuestion({
   data,
   onSubmit,
@@ -115,8 +140,22 @@ export function AskUserQuestion({
   }, [data.questionId, currentQuestionIndex]);
 
   useEffect(() => {
-    containerRef.current?.focus();
-    const timer = window.setTimeout(() => containerRef.current?.focus(), 100);
+    const focusWidgetIfNeeded = () => {
+      const container = containerRef.current;
+      if (!container) {
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      if (activeElement instanceof Element && container.contains(activeElement)) {
+        return;
+      }
+
+      container.focus();
+    };
+
+    focusWidgetIfNeeded();
+    const timer = window.setTimeout(focusWidgetIfNeeded, 100);
     return () => window.clearTimeout(timer);
   }, [data.questionId]);
 
@@ -317,13 +356,23 @@ export function AskUserQuestion({
     (event: React.KeyboardEvent<HTMLDivElement> | KeyboardEvent) => {
       const target = event.target;
       const targetElement = target instanceof HTMLElement ? target : null;
-      const isInOtherInput = target instanceof HTMLInputElement;
+      const isInOtherInput = isQuestionOtherInputTarget(targetElement);
+      const isInOtherEditableTarget =
+        isEditableTarget(targetElement) && !isInOtherInput;
 
       if (event.key === "Escape") {
-        event.preventDefault();
         if (isInOtherInput) {
+          event.preventDefault();
           focusContainer();
-        } else if (isExpanded) {
+          return;
+        }
+
+        if (isInOtherEditableTarget) {
+          return;
+        }
+
+        event.preventDefault();
+        if (isExpanded) {
           collapseWidget();
         }
         return;
@@ -334,6 +383,10 @@ export function AskUserQuestion({
       }
 
       if (!isExpanded || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      if (isInOtherEditableTarget) {
         return;
       }
 

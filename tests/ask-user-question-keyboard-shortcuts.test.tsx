@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   AskUserQuestion,
@@ -71,11 +77,11 @@ describe("AskUserQuestion keyboard shortcuts", () => {
     });
   });
 
-  it("still handles number keys and Enter when focus has moved outside the widget", async () => {
+  it("still handles number keys and Enter when focus has moved to a non-editable control", async () => {
     const onSubmit = vi.fn();
     const { container } = render(
       <>
-        <input aria-label="Outside input" />
+        <button type="button">Outside button</button>
         <AskUserQuestion
           data={makeData([
             {
@@ -99,18 +105,115 @@ describe("AskUserQuestion keyboard shortcuts", () => {
       expect(widget).toHaveFocus();
     });
 
-    const outsideInput = screen.getByLabelText("Outside input");
-    outsideInput.focus();
-    expect(outsideInput).toHaveFocus();
+    const outsideButton = screen.getByRole("button", { name: "Outside button" });
+    outsideButton.focus();
+    expect(outsideButton).toHaveFocus();
 
-    fireEvent.keyDown(window, { key: "2" });
-    fireEvent.keyDown(window, { key: "Enter" });
+    fireEvent.keyDown(outsideButton, { key: "2" });
+    fireEvent.keyDown(outsideButton, { key: "Enter" });
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith({
         "Which framework do you want?": "Remix",
       });
     });
+  });
+
+  it("ignores shortcuts while focus is in an outside textarea", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <>
+        <textarea aria-label="Outside textarea" />
+        <AskUserQuestion
+          data={makeData([
+            {
+              header: "Framework",
+              question: "Which framework do you want?",
+              multiSelect: false,
+              options: [
+                { label: "Next.js", description: "" },
+                { label: "Remix", description: "" },
+                { label: "Astro", description: "" },
+              ],
+            },
+          ])}
+          onSubmit={onSubmit}
+        />
+      </>,
+    );
+
+    const widget = getWidget(container);
+    await waitFor(() => {
+      expect(widget).toHaveFocus();
+    });
+
+    const outsideTextarea = screen.getByLabelText("Outside textarea");
+    outsideTextarea.focus();
+    expect(outsideTextarea).toHaveFocus();
+
+    const submitButton = screen.getByRole("button", { name: "Submit" });
+    expect(submitButton).toBeDisabled();
+
+    const digitEvent = createEvent.keyDown(outsideTextarea, { key: "2" });
+    fireEvent(outsideTextarea, digitEvent);
+    expect(digitEvent.defaultPrevented).toBe(false);
+
+    const enterEvent = createEvent.keyDown(outsideTextarea, { key: "Enter" });
+    fireEvent(outsideTextarea, enterEvent);
+    expect(enterEvent.defaultPrevented).toBe(false);
+
+    expect(submitButton).toBeDisabled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("ignores shortcuts while focus is in an outside contenteditable region", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <>
+        <div
+          contentEditable
+          suppressContentEditableWarning
+          tabIndex={0}
+          data-testid="outside-editor"
+        >
+          Draft message
+        </div>
+        <AskUserQuestion
+          data={makeData([
+            {
+              header: "Framework",
+              question: "Which framework do you want?",
+              multiSelect: false,
+              options: [
+                { label: "Next.js", description: "" },
+                { label: "Remix", description: "" },
+              ],
+            },
+          ])}
+          onSubmit={onSubmit}
+        />
+      </>,
+    );
+
+    const widget = getWidget(container);
+    await waitFor(() => {
+      expect(widget).toHaveFocus();
+    });
+
+    const outsideEditor = screen.getByTestId("outside-editor");
+    outsideEditor.focus();
+    expect(outsideEditor).toHaveFocus();
+
+    const zeroEvent = createEvent.keyDown(outsideEditor, { key: "0" });
+    fireEvent(outsideEditor, zeroEvent);
+    expect(zeroEvent.defaultPrevented).toBe(false);
+
+    const enterEvent = createEvent.keyDown(outsideEditor, { key: "Enter" });
+    fireEvent(outsideEditor, enterEvent);
+    expect(enterEvent.defaultPrevented).toBe(false);
+
+    expect(screen.queryByPlaceholderText("Type your answer...")).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("advances multi-question flows with Enter and submits the full answer set", async () => {
@@ -233,6 +336,9 @@ describe("AskUserQuestion keyboard shortcuts", () => {
     await waitFor(() => {
       expect(otherInput).toHaveFocus();
     });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+    expect(otherInput).toHaveFocus();
 
     await user.type(otherInput, "SvelteKit");
     await user.keyboard("{Enter}");
