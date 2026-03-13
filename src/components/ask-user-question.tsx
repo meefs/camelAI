@@ -57,8 +57,8 @@ const EMPTY_QUESTION: Question = {
 };
 
 const SHORTCUT_BADGE_CLASS_NAME = cn(
-  "inline-flex h-4 w-4 shrink-0 self-center items-center justify-center rounded border border-border/30",
-  "text-[10px] font-mono leading-none text-muted-foreground/60",
+  "inline-flex h-5 w-5 shrink-0 self-center items-center justify-center rounded border border-border",
+  "text-xs font-mono leading-none text-muted-foreground",
 );
 
 function createEmptyQuestionState(): QuestionState {
@@ -77,7 +77,7 @@ function createInitialQuestionStates(
 
 function ShortcutBadge({ label }: { label: string | null }) {
   if (!label) {
-    return <span aria-hidden="true" className="inline-flex h-4 w-4 shrink-0" />;
+    return <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0" />;
   }
 
   return (
@@ -497,7 +497,7 @@ export function AskUserQuestion({
           <div className="px-4 pb-3 space-y-3">
             {/* Question header and text */}
             <div className="space-y-1">
-              <span className="text-xs text-muted-foreground/60">
+              <span className="text-xs text-muted-foreground">
                 {currentQuestion.header}
               </span>
               <p className="text-sm text-foreground">
@@ -518,7 +518,7 @@ export function AskUserQuestion({
                     id={`ask-user-question-option-${data.questionId}-${safeIndex}-${optIndex}`}
                     onClick={() => setFocusedIndex(optIndex)}
                     className={cn(
-                      "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                      "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
                       "transition-colors hover:bg-muted/20",
                       focusedIndex === optIndex &&
                         "ring-1 ring-ring/50 bg-muted/10",
@@ -537,14 +537,13 @@ export function AskUserQuestion({
                         )
                       }
                       onFocus={() => setFocusedIndex(optIndex)}
-                      className="mt-0.5"
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-muted-foreground">
+                      <p className="text-sm text-foreground">
                         {opt.label}
                       </p>
                       {opt.description && (
-                        <p className="text-xs text-muted-foreground/60">
+                        <p className="text-xs text-muted-foreground">
                           {opt.description}
                         </p>
                       )}
@@ -557,7 +556,7 @@ export function AskUserQuestion({
                   id={`ask-user-question-option-${data.questionId}-${safeIndex}-${otherOptionIndex}`}
                   onClick={() => setFocusedIndex(otherOptionIndex)}
                   className={cn(
-                    "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                    "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
                     "transition-colors hover:bg-muted/20",
                     focusedIndex === otherOptionIndex &&
                       "ring-1 ring-ring/50 bg-muted/10",
@@ -574,10 +573,9 @@ export function AskUserQuestion({
                       )
                     }
                     onFocus={() => setFocusedIndex(otherOptionIndex)}
-                    className="mt-0.5"
                   />
                   <div className="flex-1 min-w-0 space-y-2">
-                    <p className="text-sm text-muted-foreground">Other</p>
+                    <p className="text-sm text-foreground">Other</p>
                     {currentState.isOther && (
                       <Input
                         ref={otherInputRef}
@@ -618,7 +616,7 @@ export function AskUserQuestion({
                     id={`ask-user-question-option-${data.questionId}-${safeIndex}-${optIndex}`}
                     onClick={() => setFocusedIndex(optIndex)}
                     className={cn(
-                      "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                      "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
                       "transition-colors hover:bg-muted/20",
                       focusedIndex === optIndex &&
                         "ring-1 ring-ring/50 bg-muted/10",
@@ -630,14 +628,13 @@ export function AskUserQuestion({
                     <RadioGroupItem
                       value={opt.label}
                       onFocus={() => setFocusedIndex(optIndex)}
-                      className="mt-0.5"
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-muted-foreground">
+                      <p className="text-sm text-foreground">
                         {opt.label}
                       </p>
                       {opt.description && (
-                        <p className="text-xs text-muted-foreground/60">
+                        <p className="text-xs text-muted-foreground">
                           {opt.description}
                         </p>
                       )}
@@ -650,7 +647,7 @@ export function AskUserQuestion({
                   id={`ask-user-question-option-${data.questionId}-${safeIndex}-${otherOptionIndex}`}
                   onClick={() => setFocusedIndex(otherOptionIndex)}
                   className={cn(
-                    "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                    "flex items-center gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
                     "transition-colors hover:bg-muted/20",
                     focusedIndex === otherOptionIndex &&
                       "ring-1 ring-ring/50 bg-muted/10",
@@ -660,10 +657,9 @@ export function AskUserQuestion({
                   <RadioGroupItem
                     value="__other__"
                     onFocus={() => setFocusedIndex(otherOptionIndex)}
-                    className="mt-0.5"
                   />
                   <div className="flex-1 min-w-0 space-y-2">
-                    <p className="text-sm text-muted-foreground">Other</p>
+                    <p className="text-sm text-foreground">Other</p>
                     {currentState.isOther && (
                       <Input
                         ref={otherInputRef}
