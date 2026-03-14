@@ -832,10 +832,9 @@ export async function createCustomHostname(
     Authorization: `Bearer ${apiToken}`,
     'Content-Type': 'application/json',
   };
-  const isWildcard = hostname.startsWith('*.');
   const body: Record<string, unknown> = {
     hostname,
-    ssl: { method: 'http', type: 'dv', wildcard: isWildcard },
+    ssl: { method: 'http', type: 'dv', wildcard: false },
   };
   if (customOriginServer) {
     body.custom_origin_server = customOriginServer;
@@ -888,6 +887,29 @@ export async function deleteCustomHostname(
     console.error('[cf-api] delete custom hostname error', err);
     return false;
   }
+}
+
+export async function listCustomHostnames(
+  zoneId: string,
+  apiToken: string,
+  hostnameContains: string
+): Promise<CfCustomHostname[]> {
+  const results: CfCustomHostname[] = [];
+  let page = 1;
+  const perPage = 50;
+  while (true) {
+    const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames?hostname_contains=${encodeURIComponent(hostnameContains)}&per_page=${perPage}&page=${page}`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiToken}` },
+    });
+    if (!resp.ok) break;
+    const data = await resp.json() as { result?: CfCustomHostname[]; result_info?: { total_pages: number } };
+    if (!data.result?.length) break;
+    results.push(...data.result);
+    if (page >= (data.result_info?.total_pages ?? 1)) break;
+    page++;
+  }
+  return results;
 }
 
 /**

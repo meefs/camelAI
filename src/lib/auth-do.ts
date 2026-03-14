@@ -1090,7 +1090,6 @@ export async function setOrgCustomDomain(
   orgId: string,
   domain: string,
   actorId: string,
-  cfHostnameId?: string
 ): Promise<CustomDomain> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
 
@@ -1098,7 +1097,7 @@ export async function setOrgCustomDomain(
   const existing = await stub.getCustomDomain();
   const oldDomain = existing?.domain;
 
-  const customDomain = await stub.setCustomDomain(domain, actorId, cfHostnameId);
+  const customDomain = await stub.setCustomDomain(domain, actorId);
 
   // Write new KV index, then clean up old one
   const orgInfo = await stub.getInfo();
@@ -1139,28 +1138,3 @@ export async function getOrgCustomDomain(
   return stub.getCustomDomain();
 }
 
-export async function updateOrgCustomDomainStatus(
-  env: AuthEnv,
-  orgId: string,
-  domain: string,
-  status: CustomDomainStatus,
-  sslStatus?: string | null,
-  cfHostnameId?: string
-): Promise<CustomDomain | null> {
-  const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  const updated = await stub.updateCustomDomainStatus(domain, status, sslStatus, cfHostnameId);
-
-  // If domain became active, ensure KV is written
-  if (updated && status === 'active') {
-    const orgInfo = await stub.getInfo();
-    const orgSlug = orgInfo?.slug;
-    if (orgSlug) {
-      await env.APP_KV.put(
-        `${CUSTOM_DOMAIN_ZONE_PREFIX}${domain}`,
-        JSON.stringify({ org_id: orgId, org_slug: orgSlug })
-      );
-    }
-  }
-
-  return updated;
-}

@@ -5,7 +5,7 @@
 import { type Env } from '../types.js';
 import type { DeploySideEffectsInfo } from '../cf-api-proxy.js';
 import type { AppScreenshotJob } from '../screenshot-queue.js';
-import { resolveEnvPrefix } from '../cf-api-proxy.js';
+import { resolveEnvPrefix, createCustomHostname } from '../cf-api-proxy.js';
 import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
@@ -37,6 +37,26 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     `${SCRIPT_PREFIX}${dispatchScriptName}`,
     JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public })
   );
+
+  // Create per-app CF custom hostname if org has a custom domain configured
+  try {
+    const customDomain = orgStub.getCustomDomain();
+    if (customDomain) {
+      const domain = (await customDomain)?.domain;
+      if (domain && env.CF_ZONE_ID && env.CF_API_TOKEN) {
+        const appHostname = `${scriptName}.${domain}`;
+        const fallbackOrigin = env.CF_CUSTOM_HOSTNAME_FALLBACK;
+        const result = await createCustomHostname(env.CF_ZONE_ID, env.CF_API_TOKEN.trim(), appHostname, fallbackOrigin);
+        if (result) {
+          console.log(`[deploy] created custom hostname ${appHostname} (id: ${result.id})`);
+        } else {
+          console.warn(`[deploy] failed to create custom hostname ${appHostname}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[deploy] error creating custom hostname:', err);
+  }
 
   // Also write legacy format for legacy URL redirect support.
   // When someone uses a legacy URL (script.camelai.app), the dispatcher can

@@ -1991,21 +1991,20 @@ export class OrgDO extends DurableObject<DOEnv> {
   async setCustomDomain(
     domain: string,
     actorId: string,
-    cfHostnameId?: string
   ): Promise<CustomDomain> {
     const now = Date.now();
     // Org can have at most one custom domain — upsert
     this.sql.exec('DELETE FROM custom_domains');
     this.sql.exec(
       `INSERT INTO custom_domains (domain, cf_hostname_id, status, ssl_status, created_at, updated_at)
-       VALUES (?, ?, 'pending', NULL, ?, ?)`,
-      domain, cfHostnameId ?? null, now, now
+       VALUES (?, NULL, 'active', NULL, ?, ?)`,
+      domain, now, now
     );
     this.log('custom_domain_set', actorId, domain);
     return {
       domain,
-      cf_hostname_id: cfHostnameId ?? null,
-      status: 'pending',
+      cf_hostname_id: null,
+      status: 'active',
       ssl_status: null,
       created_at: now,
       updated_at: now,
