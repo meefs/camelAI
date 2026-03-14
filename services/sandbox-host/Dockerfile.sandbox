@@ -67,7 +67,7 @@ RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/creat
 # Claude Agent SDK + Playwright
 RUN cd /opt/chiridion && \
     echo '{"name":"chiridion-sandbox-runner","private":true,"type":"module"}' > package.json && \
-    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.71 playwright zod
+    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.76 playwright zod
 
 # Playwright: install Chromium system deps + browser binary.
 # PLAYWRIGHT_BROWSERS_PATH keeps the browser outside /home/claude (bind-mounted at runtime).
