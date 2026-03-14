@@ -234,3 +234,186 @@ func TestGetUsageLog(t *testing.T) {
 		t.Error("expected newest first ordering")
 	}
 }
+
+func TestGetUsageLogPaginated(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert 5 entries.
+	for i := 0; i < 5; i++ {
+		_ = store.RecordUsage(UsageRecord{
+			OrgID: "org-1", Model: "claude-sonnet-4-5-20250929",
+			InputTokens: 100, OutputTokens: 50, CostUSD: 0.001,
+		})
+	}
+
+	// First page of 2.
+	page1, err := store.GetUsageLogPaginated("org-1", UsageLogQuery{Limit: 2})
+	if err != nil {
+		t.Fatalf("get paginated log page 1: %v", err)
+	}
+	if page1.Count != 2 {
+		t.Fatalf("expected 2 entries, got %d", page1.Count)
+	}
+	if !page1.HasMore {
+		t.Fatal("expected has_more=true")
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("expected non-empty next_cursor")
+	}
+
+	// Second page using cursor.
+	var cursor int64
+	for _, e := range page1.Entries {
+		cursor = e.ID
+	}
+	page2, err := store.GetUsageLogPaginated("org-1", UsageLogQuery{Limit: 2, Cursor: cursor})
+	if err != nil {
+		t.Fatalf("get paginated log page 2: %v", err)
+	}
+	if page2.Count != 2 {
+		t.Fatalf("expected 2 entries on page 2, got %d", page2.Count)
+	}
+	if !page2.HasMore {
+		t.Fatal("expected has_more=true on page 2")
+	}
+
+	// Entries on page 2 should have lower IDs than page 1's last entry.
+	if page2.Entries[0].ID >= cursor {
+		t.Errorf("page 2 first entry id %d should be < cursor %d", page2.Entries[0].ID, cursor)
+	}
+
+	// Third page — only 1 left.
+	var cursor2 int64
+	for _, e := range page2.Entries {
+		cursor2 = e.ID
+	}
+	page3, err := store.GetUsageLogPaginated("org-1", UsageLogQuery{Limit: 2, Cursor: cursor2})
+	if err != nil {
+		t.Fatalf("get paginated log page 3: %v", err)
+	}
+	if page3.Count != 1 {
+		t.Fatalf("expected 1 entry on page 3, got %d", page3.Count)
+	}
+	if page3.HasMore {
+		t.Fatal("expected has_more=false on last page")
+	}
+	if page3.NextCursor != "" {
+		t.Fatalf("expected empty next_cursor on last page, got %s", page3.NextCursor)
+	}
+}
+
+func TestGetUsageLogPaginatedDateFilter(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert entries — they all get now() timestamps, so we use a wide range.
+	for i := 0; i < 3; i++ {
+		_ = store.RecordUsage(UsageRecord{
+			OrgID: "org-1", Model: "claude-sonnet-4-5-20250929",
+			InputTokens: 100, OutputTokens: 50, CostUSD: 0.01,
+		})
+	}
+
+	now := time.Now().UTC().UnixMilli()
+
+	// from=0 to=now+1000 should include all entries.
+	page, err := store.GetUsageLogPaginated("org-1", UsageLogQuery{
+		Limit:  100,
+		FromMs: 0,
+		ToMs:   now + 1000,
+	})
+	if err != nil {
+		t.Fatalf("get filtered log: %v", err)
+	}
+	if page.Count != 3 {
+		t.Fatalf("expected 3 entries in wide range, got %d", page.Count)
+	}
+
+	// from=now+1000 to=now+2000 should be empty (future range).
+	page, err = store.GetUsageLogPaginated("org-1", UsageLogQuery{
+		Limit:  100,
+		FromMs: now + 1000,
+		ToMs:   now + 2000,
+	})
+	if err != nil {
+		t.Fatalf("get filtered log (future): %v", err)
+	}
+	if page.Count != 0 {
+		t.Fatalf("expected 0 entries in future range, got %d", page.Count)
+	}
+}
+
+func TestGetUsageLogSum(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.RecordUsage(UsageRecord{
+		OrgID: "org-1", Model: "claude-sonnet-4-5-20250929",
+		InputTokens: 1000, OutputTokens: 500,
+		CacheCreationInputTokens: 200, CacheReadInputTokens: 100,
+		CostUSD: 0.012,
+	})
+	_ = store.RecordUsage(UsageRecord{
+		OrgID: "org-1", Model: "claude-opus-4-6",
+		InputTokens: 2000, OutputTokens: 1000,
+		CacheCreationInputTokens: 300, CacheReadInputTokens: 150,
+		CostUSD: 0.025,
+	})
+
+	now := time.Now().UTC().UnixMilli()
+
+	// Wide range — both entries.
+	sum, err := store.GetUsageLogSum("org-1", 0, now+1000)
+	if err != nil {
+		t.Fatalf("get usage sum: %v", err)
+	}
+	if sum.TotalRequests != 2 {
+		t.Fatalf("expected 2 requests, got %d", sum.TotalRequests)
+	}
+	expectedCost := 0.037
+	if diff := sum.TotalCostUSD - expectedCost; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("expected ~%.3f cost, got %f", expectedCost, sum.TotalCostUSD)
+	}
+	if sum.TotalInputTokens != 3000 {
+		t.Fatalf("expected 3000 input tokens, got %d", sum.TotalInputTokens)
+	}
+	if sum.TotalOutputTokens != 1500 {
+		t.Fatalf("expected 1500 output tokens, got %d", sum.TotalOutputTokens)
+	}
+	if sum.TotalCacheCreationInputTokens != 500 {
+		t.Fatalf("expected 500 cache creation tokens, got %d", sum.TotalCacheCreationInputTokens)
+	}
+	if sum.TotalCacheReadInputTokens != 250 {
+		t.Fatalf("expected 250 cache read tokens, got %d", sum.TotalCacheReadInputTokens)
+	}
+
+	// Future range — empty.
+	sum, err = store.GetUsageLogSum("org-1", now+1000, now+2000)
+	if err != nil {
+		t.Fatalf("get usage sum (future): %v", err)
+	}
+	if sum.TotalRequests != 0 || sum.TotalCostUSD != 0 {
+		t.Fatalf("expected zero sum in future range, got %+v", sum)
+	}
+}
+
+func TestGetUsageLogSumNilStore(t *testing.T) {
+	var store *UsageStore
+	sum, err := store.GetUsageLogSum("org-1", 0, 9999999999999)
+	if err != nil {
+		t.Fatalf("nil store should not error: %v", err)
+	}
+	if sum.TotalRequests != 0 {
+		t.Fatalf("expected zero sum from nil store")
+	}
+}

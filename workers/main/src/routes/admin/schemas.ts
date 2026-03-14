@@ -286,6 +286,20 @@ export const OrgUsageLogSchema = z.object({
   org_id: z.string(),
   entries: z.array(UsageLogEntrySchema),
   count: z.number().int(),
+  has_more: z.boolean().optional(),
+  next_cursor: z.string().nullable().optional(),
+});
+
+export const OrgUsageLogSumSchema = z.object({
+  org_id: z.string(),
+  total_cost_usd: z.number(),
+  total_requests: z.number().int(),
+  total_input_tokens: z.number().int(),
+  total_output_tokens: z.number().int(),
+  total_cache_creation_input_tokens: z.number().int(),
+  total_cache_read_input_tokens: z.number().int(),
+  from_ms: z.number().int(),
+  to_ms: z.number().int(),
 });
 
 // ---------------------------------------------------------------------------

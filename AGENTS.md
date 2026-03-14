@@ -432,6 +432,11 @@ curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<hos
 | GET    | `/kv/:key`          | Get KV value                                               |
 | GET    | `/r2`               | List R2 objects (`?prefix=` supported)                     |
 | GET    | `/r2/:key+`         | R2 object head metadata                                    |
+| GET    | `/orgs/:id/usage/spend` | Org spend totals and rolling window status              |
+| GET    | `/orgs/:id/usage/limits` | Org effective spend limits                             |
+| PUT    | `/orgs/:id/usage/limits` | Set org spend limit overrides                          |
+| GET    | `/orgs/:id/usage/log` | Paginated usage log (`?limit=&cursor=&from=&to=`)        |
+| GET    | `/orgs/:id/usage/log/sum` | Sum spend between dates (`?from=&to=`, ms timestamps) |
 
 ### Sandbox Host Deployment
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -432,4 +433,145 @@ func (u *UsageStore) GetUsageLog(orgID string, limit int) ([]UsageLogEntry, erro
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// UsageLogQuery defines filters for paginated usage log queries.
+type UsageLogQuery struct {
+	Limit  int
+	Cursor int64 // cursor is the id to paginate from (exclusive, descending)
+	FromMs int64 // inclusive lower bound on created_at_ms (0 = no filter)
+	ToMs   int64 // exclusive upper bound on created_at_ms (0 = no filter)
+}
+
+// UsageLogPage holds a page of usage log entries plus pagination metadata.
+type UsageLogPage struct {
+	Entries    []UsageLogEntry `json:"entries"`
+	Count      int             `json:"count"`
+	HasMore    bool            `json:"has_more"`
+	NextCursor string          `json:"next_cursor"`
+}
+
+// GetUsageLogPaginated returns a paginated, optionally date-filtered page of usage log entries.
+func (u *UsageStore) GetUsageLogPaginated(orgID string, q UsageLogQuery) (UsageLogPage, error) {
+	if u == nil {
+		return UsageLogPage{Entries: []UsageLogEntry{}}, nil
+	}
+	db, err := u.getDB(orgID)
+	if err != nil {
+		return UsageLogPage{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Build query dynamically based on filters.
+	query := `SELECT id, workspace_id, user_id, thread_id, model, provider,
+	       input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+	       cost_usd, duration_ms, created_at_ms
+		FROM usage_log WHERE 1=1`
+	var args []any
+
+	if q.Cursor > 0 {
+		query += ` AND id < ?`
+		args = append(args, q.Cursor)
+	}
+	if q.FromMs > 0 {
+		query += ` AND created_at_ms >= ?`
+		args = append(args, q.FromMs)
+	}
+	if q.ToMs > 0 {
+		query += ` AND created_at_ms < ?`
+		args = append(args, q.ToMs)
+	}
+
+	// Fetch limit+1 to detect has_more.
+	fetchLimit := q.Limit + 1
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, fetchLimit)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return UsageLogPage{}, fmt.Errorf("query usage_log paginated: %w", err)
+	}
+	defer rows.Close()
+
+	entries := make([]UsageLogEntry, 0, q.Limit)
+	for rows.Next() {
+		var e UsageLogEntry
+		if err := rows.Scan(
+			&e.ID, &e.WorkspaceID, &e.UserID, &e.ThreadID,
+			&e.Model, &e.Provider,
+			&e.InputTokens, &e.OutputTokens,
+			&e.CacheCreationInputTokens, &e.CacheReadInputTokens,
+			&e.CostUSD, &e.DurationMs, &e.CreatedAtMs,
+		); err != nil {
+			return UsageLogPage{}, fmt.Errorf("scan usage_log row: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return UsageLogPage{}, err
+	}
+
+	hasMore := len(entries) > q.Limit
+	if hasMore {
+		entries = entries[:q.Limit]
+	}
+
+	var nextCursor string
+	if hasMore && len(entries) > 0 {
+		nextCursor = strconv.FormatInt(entries[len(entries)-1].ID, 10)
+	}
+
+	return UsageLogPage{
+		Entries:    entries,
+		Count:      len(entries),
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	}, nil
+}
+
+// UsageLogSum holds aggregated usage totals for a date range.
+type UsageLogSum struct {
+	TotalCostUSD                 float64 `json:"total_cost_usd"`
+	TotalRequests                int64   `json:"total_requests"`
+	TotalInputTokens             int64   `json:"total_input_tokens"`
+	TotalOutputTokens            int64   `json:"total_output_tokens"`
+	TotalCacheCreationInputTokens int64  `json:"total_cache_creation_input_tokens"`
+	TotalCacheReadInputTokens    int64   `json:"total_cache_read_input_tokens"`
+}
+
+// GetUsageLogSum returns aggregated totals for usage log entries in a date range.
+func (u *UsageStore) GetUsageLogSum(orgID string, fromMs, toMs int64) (UsageLogSum, error) {
+	if u == nil {
+		return UsageLogSum{}, nil
+	}
+	db, err := u.getDB(orgID)
+	if err != nil {
+		return UsageLogSum{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var s UsageLogSum
+	err = db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(cost_usd), 0),
+		       COUNT(*),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(cache_creation_input_tokens), 0),
+		       COALESCE(SUM(cache_read_input_tokens), 0)
+		FROM usage_log
+		WHERE created_at_ms >= ? AND created_at_ms < ?`,
+		fromMs, toMs,
+	).Scan(
+		&s.TotalCostUSD, &s.TotalRequests,
+		&s.TotalInputTokens, &s.TotalOutputTokens,
+		&s.TotalCacheCreationInputTokens, &s.TotalCacheReadInputTokens,
+	)
+	if err != nil {
+		return UsageLogSum{}, fmt.Errorf("query usage_log sum: %w", err)
+	}
+	return s, nil
 }

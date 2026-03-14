@@ -42,6 +42,7 @@ import {
   OrgUsageSpendSchema,
   OrgUsageLimitsSchema,
   OrgUsageLogSchema,
+  OrgUsageLogSumSchema,
   SetOrgLimitsBodySchema,
   paginatedList,
   dataList,
@@ -588,9 +589,14 @@ routes.put(
 routes.get(
   '/orgs/:id/usage/log',
   openApi({
-    summary: 'Org recent usage log entries',
+    summary: 'Org recent usage log entries (paginated)',
     request: {
-      query: z.object({ limit: z.coerce.number().int().min(1).max(500).optional() }),
+      query: z.object({
+        limit: z.coerce.number().int().min(1).max(1000).optional(),
+        cursor: z.string().optional(),
+        from: z.coerce.number().int().min(0).optional().describe('Start timestamp (ms since epoch, inclusive)'),
+        to: z.coerce.number().int().min(0).optional().describe('End timestamp (ms since epoch, exclusive)'),
+      }),
     },
     responses: {
       200: OrgUsageLogSchema,
@@ -599,9 +605,45 @@ routes.get(
   }),
   async (c) => {
     const orgId = c.req.param('id');
-    const { limit } = c.req.valid('query');
-    const qs = limit ? `?limit=${limit}` : '';
+    const { limit, cursor, from, to } = c.req.valid('query');
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', String(limit));
+    if (cursor) params.set('cursor', cursor);
+    if (from) params.set('from', String(from));
+    if (to) params.set('to', String(to));
+    const qs = params.toString() ? `?${params}` : '';
     const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/log${qs}`);
+    if (!resp.ok) {
+      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
+    }
+    return c.json(await resp.json());
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /orgs/:id/usage/log/sum — sum spend between dates
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/orgs/:id/usage/log/sum',
+  openApi({
+    summary: 'Sum of usage costs between dates',
+    request: {
+      query: z.object({
+        from: z.coerce.number().int().min(0).describe('Start timestamp (ms since epoch, inclusive)'),
+        to: z.coerce.number().int().min(0).describe('End timestamp (ms since epoch, exclusive)'),
+      }),
+    },
+    responses: {
+      200: OrgUsageLogSumSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param('id');
+    const { from, to } = c.req.valid('query');
+    const params = new URLSearchParams({ from: String(from), to: String(to) });
+    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/log/sum?${params}`);
     if (!resp.ok) {
       return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
     }

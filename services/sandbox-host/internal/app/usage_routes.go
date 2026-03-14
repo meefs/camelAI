@@ -16,9 +16,10 @@ import (
 //   GET  /v1/usage/orgs/{orgId}/spend   — lifetime totals + rolling window status
 //   GET  /v1/usage/orgs/{orgId}/limits  — effective spend limits
 //   PUT  /v1/usage/orgs/{orgId}/limits  — set per-org limit overrides (or clear)
-//   GET  /v1/usage/orgs/{orgId}/log     — recent usage log entries
+//   GET  /v1/usage/orgs/{orgId}/log         — recent usage log entries (paginated)
+//   GET  /v1/usage/orgs/{orgId}/log/sum     — aggregated spend between dates
 
-var usageOrgRouteRegex = regexp.MustCompile(`^/v1/usage/orgs/([^/]+)(/[^/]*)?$`)
+var usageOrgRouteRegex = regexp.MustCompile(`^/v1/usage/orgs/([^/]+)(/[^/]*(?:/[^/]*)?)$`)
 
 func (s *Server) handleUsageRoute(w http.ResponseWriter, req *http.Request) {
 	match := usageOrgRouteRegex.FindStringSubmatch(req.URL.Path)
@@ -39,6 +40,8 @@ func (s *Server) handleUsageRoute(w http.ResponseWriter, req *http.Request) {
 		s.handleSetOrgLimits(w, req, orgID)
 	case action == "log" && req.Method == http.MethodGet:
 		s.handleGetOrgUsageLog(w, req, orgID)
+	case action == "log/sum" && req.Method == http.MethodGet:
+		s.handleGetOrgUsageLogSum(w, req, orgID)
 	default:
 		errorJSON(w, "Not found", http.StatusNotFound)
 	}
@@ -128,25 +131,86 @@ func (s *Server) handleSetOrgLimits(w http.ResponseWriter, req *http.Request, or
 }
 
 func (s *Server) handleGetOrgUsageLog(w http.ResponseWriter, req *http.Request, orgID string) {
-	limit := 50
-	if l := req.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
-			limit = parsed
+	q := state.UsageLogQuery{Limit: 50}
+
+	query := req.URL.Query()
+	if l := query.Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 1000 {
+			q.Limit = parsed
+		}
+	}
+	if c := query.Get("cursor"); c != "" {
+		if parsed, err := strconv.ParseInt(c, 10, 64); err == nil && parsed > 0 {
+			q.Cursor = parsed
+		}
+	}
+	if f := query.Get("from"); f != "" {
+		if parsed, err := strconv.ParseInt(f, 10, 64); err == nil && parsed > 0 {
+			q.FromMs = parsed
+		}
+	}
+	if t := query.Get("to"); t != "" {
+		if parsed, err := strconv.ParseInt(t, 10, 64); err == nil && parsed > 0 {
+			q.ToMs = parsed
 		}
 	}
 
-	entries, err := s.usage.GetUsageLog(orgID, limit)
+	page, err := s.usage.GetUsageLogPaginated(orgID, q)
 	if err != nil {
 		errorJSON(w, "Failed to read usage log", http.StatusInternalServerError)
 		return
 	}
-	if entries == nil {
-		entries = []state.UsageLogEntry{}
+
+	resp := map[string]any{
+		"org_id":      orgID,
+		"entries":     page.Entries,
+		"count":       page.Count,
+		"has_more":    page.HasMore,
+		"next_cursor": page.NextCursor,
 	}
+	if page.NextCursor == "" {
+		resp["next_cursor"] = nil
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleGetOrgUsageLogSum(w http.ResponseWriter, req *http.Request, orgID string) {
+	query := req.URL.Query()
+	fromStr := query.Get("from")
+	toStr := query.Get("to")
+
+	if fromStr == "" || toStr == "" {
+		errorJSON(w, "Both 'from' and 'to' query params are required (ms timestamps)", http.StatusBadRequest)
+		return
+	}
+
+	fromMs, err := strconv.ParseInt(fromStr, 10, 64)
+	if err != nil || fromMs < 0 {
+		errorJSON(w, "Invalid 'from' timestamp", http.StatusBadRequest)
+		return
+	}
+	toMs, err := strconv.ParseInt(toStr, 10, 64)
+	if err != nil || toMs < 0 {
+		errorJSON(w, "Invalid 'to' timestamp", http.StatusBadRequest)
+		return
+	}
+
+	sum, err := s.usage.GetUsageLogSum(orgID, fromMs, toMs)
+	if err != nil {
+		errorJSON(w, "Failed to compute usage sum", http.StatusInternalServerError)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"org_id":  orgID,
-		"entries": entries,
-		"count":   len(entries),
+		"org_id":                           orgID,
+		"total_cost_usd":                   sum.TotalCostUSD,
+		"total_requests":                   sum.TotalRequests,
+		"total_input_tokens":               sum.TotalInputTokens,
+		"total_output_tokens":              sum.TotalOutputTokens,
+		"total_cache_creation_input_tokens": sum.TotalCacheCreationInputTokens,
+		"total_cache_read_input_tokens":    sum.TotalCacheReadInputTokens,
+		"from_ms":                          fromMs,
+		"to_ms":                            toMs,
 	})
 }
 
