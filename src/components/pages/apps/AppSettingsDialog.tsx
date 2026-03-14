@@ -18,7 +18,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AlertCircle, ExternalLink, Trash2 } from 'lucide-react';
-import { getAppUrl } from '@/lib/app-url';
+import { getAppUrl, getCustomDomainAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 
@@ -30,6 +30,7 @@ interface AppSettingsDialogProps {
   orgSlug: string;
   isAdmin: boolean;
   hostname?: string;
+  orgCustomDomain?: string | null;
   onSuccess: () => void;
 }
 
@@ -67,6 +68,7 @@ export function AppSettingsDialog({
   orgSlug,
   isAdmin,
   hostname,
+  orgCustomDomain,
   onSuccess,
 }: AppSettingsDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
@@ -74,11 +76,11 @@ export function AppSettingsDialog({
   const [error, setError] = useState<string | null>(null);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<'save' | 'delete' | null>(null);
-
   const submitting = fetcher.state !== 'idle' && pendingAction === 'save';
   const deleting = fetcher.state !== 'idle' && pendingAction === 'delete';
 
-  const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
+  const defaultAppUrl = getAppUrl(app.script_name, hostname, orgSlug);
+  const appUrl = orgCustomDomain ? getCustomDomainAppUrl(app.script_name, orgCustomDomain) : defaultAppUrl;
   const creator = app.creator;
   const creatorLabel = getCreatorLabel(creator, app.created_by);
   const creatorAvatar = creator?.avatar ?? null;

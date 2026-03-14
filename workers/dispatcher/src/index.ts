@@ -292,10 +292,17 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 }
 
 // Create Set-Cookie header for session
-function createSessionCookie(sessionId: string, hostname: string): string {
+function createSessionCookie(sessionId: string, hostname: string, cookieDomain?: string): string {
   // Get domain for cookie (e.g., .camelai.app to cover all subdomains)
-  const parts = hostname.split('.');
-  const domain = parts.length >= 2 ? `.${parts.slice(-2).join('.')}` : hostname;
+  // For custom domains, the caller provides the base domain directly so
+  // the cookie covers all app subdomains (avoids public suffix issues).
+  let domain: string;
+  if (cookieDomain) {
+    domain = `.${cookieDomain}`;
+  } else {
+    const parts = hostname.split('.');
+    domain = parts.length >= 2 ? `.${parts.slice(-2).join('.')}` : hostname;
+  }
 
   return [
     `${DISPATCHER_SESSION_COOKIE}=${sessionId}`,
@@ -329,6 +336,44 @@ function isSameSiteRequest(hostname: string): boolean {
 // Auth callback route
 const AUTH_CALLBACK_PATH = '/__chiridion_auth/callback';
 
+/**
+ * Resolve a custom domain hostname to a worker route.
+ * For "my-app.apps.example.com", extracts scriptName="my-app" and looks up
+ * "apps.example.com" in KV as custom_domain_zone:apps.example.com.
+ * Tries progressively longer base domains (2-label, 3-label, etc.).
+ */
+async function resolveCustomDomainRoute(
+  env: Env,
+  hostname: string
+): Promise<{ scriptName: string; orgSlug: string; dispatchScriptName: string; baseDomain: string } | null> {
+  const labels = hostname.split('.');
+  // Need at least 3 labels: script.base.tld
+  if (labels.length < 3) return null;
+
+  const scriptName = labels[0]!;
+
+  // Try base domains from longest to shortest (most-specific wins)
+  for (let suffixLen = labels.length - 1; suffixLen >= 2; suffixLen--) {
+    const baseDomain = labels.slice(labels.length - suffixLen).join('.');
+    // Skip if baseDomain would consume the entire hostname (no subdomain left)
+    if (suffixLen >= labels.length) break;
+
+    const kvData = await env.APP_KV.get(`custom_domain_zone:${baseDomain}`);
+    if (kvData) {
+      try {
+        const { org_slug } = JSON.parse(kvData) as { org_id: string; org_slug: string };
+        const dispatchScriptName = `${scriptName}--${org_slug}`;
+        console.log(`[dispatcher] Custom domain route: ${hostname} -> ${dispatchScriptName} (zone: ${baseDomain})`);
+        return { scriptName, orgSlug: org_slug, dispatchScriptName, baseDomain };
+      } catch (e) {
+        console.error(`[dispatcher] Error parsing custom domain zone data for ${baseDomain}:`, e);
+      }
+    }
+  }
+
+  return null;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -348,7 +393,18 @@ export default {
       return handleWorkerRequest(request, env, scriptName, orgSlug, dispatchScriptName, legacyFallback);
     }
 
-    // Default response for apex domain
+    // Not a known *.camelai.app or *.apps.camelai.dev hostname — try custom domain zone lookup
+    // Parse subdomain as script name, look up base domain in KV
+    const customDomainRoute = await resolveCustomDomainRoute(env, hostname);
+    if (customDomainRoute) {
+      const { scriptName, orgSlug, dispatchScriptName, baseDomain } = customDomainRoute;
+      if (url.pathname === AUTH_CALLBACK_PATH) {
+        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName, undefined, baseDomain);
+      }
+      return handleWorkerRequest(request, env, scriptName, orgSlug, dispatchScriptName);
+    }
+
+    // Default response for apex domain or unknown hostname
     return new Response(
       JSON.stringify(
         {
@@ -378,7 +434,8 @@ async function handleAuthCallback(
   scriptName: string,
   _orgSlug: string | null,
   _dispatchScriptName: string,
-  legacyFallback?: { scriptName: string; dispatchScriptName: string }
+  legacyFallback?: { scriptName: string; dispatchScriptName: string },
+  cookieDomain?: string
 ): Promise<Response> {
   const url = new URL(request.url);
   const token = url.searchParams.get('token');
@@ -424,7 +481,7 @@ async function handleAuthCallback(
     status: 302,
     headers: {
       'Location': redirectUrl.toString(),
-      'Set-Cookie': createSessionCookie(sessionId, url.hostname),
+      'Set-Cookie': createSessionCookie(sessionId, url.hostname, cookieDomain),
     },
   });
 }

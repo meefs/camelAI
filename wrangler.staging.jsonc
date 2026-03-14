@@ -30,7 +30,10 @@
 			"EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
 			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
 			"CF_WORKER_NAME": "chiridion-app-staging",
-			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-staging"
+			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-staging",
+			"CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",
+			"CF_CUSTOM_HOSTNAME_FALLBACK": "custom-domains.staging.camelai.app",
+		"CF_DCV_DELEGATION_UUID": "1b7fee6764db9b60"
 		},
 	"assets": {
 		"binding": "ASSETS",

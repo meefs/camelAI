@@ -9,7 +9,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
-import { getAppUrl } from '@/lib/app-url';
+import { getAppUrl, getCustomDomainAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import {
   Check,
@@ -31,6 +31,7 @@ interface AppCardProps {
   isAdmin: boolean;
   hostname?: string;
   orgSlug?: string;
+  orgCustomDomain?: string | null;
   now?: number;
   onOpenSettings: (app: WorkerScriptWithCreator) => void;
   onStartChat: (app: WorkerScriptWithCreator) => void;
@@ -80,6 +81,7 @@ export function AppCard({
   isAdmin,
   hostname,
   orgSlug,
+  orgCustomDomain,
   now,
   onOpenSettings,
   onStartChat,
@@ -90,7 +92,8 @@ export function AppCard({
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewLoaded, setPreviewLoaded] = useState(false);
   const previewRef = useRef<HTMLImageElement | null>(null);
-  const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
+  const defaultAppUrl = getAppUrl(app.script_name, hostname, orgSlug);
+  const appUrl = orgCustomDomain ? getCustomDomainAppUrl(app.script_name, orgCustomDomain) : defaultAppUrl;
   const displayUrl = appUrl.replace(/^https?:\/\//, '');
   const creator = creatorOverride ?? app.creator;
   const creatorLabel = getCreatorLabel(creator, app.created_by);

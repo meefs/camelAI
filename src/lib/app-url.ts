@@ -105,6 +105,14 @@ export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: strin
 }
 
 /**
+ * Get the custom domain URL for a deployed app when the org has a wildcard domain configured.
+ * e.g., getCustomDomainAppUrl("my-app", "apps.example.com") -> "https://my-app.apps.example.com"
+ */
+export function getCustomDomainAppUrl(scriptName: string, orgCustomDomain: string): string {
+  return `https://${scriptName}.${orgCustomDomain}`;
+}
+
+/**
  * Get the full iframe URL for a deployed app (used for same-site embedding).
  * New-style slugs use single hyphen, old-style use double hyphen.
  */

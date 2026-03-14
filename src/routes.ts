@@ -159,6 +159,7 @@ export default [
 
   // Apps API routes
   route('api/apps/:scriptName/preview', 'routes/api/apps.$scriptName.preview.ts'),
+  route('api/orgs/:id/custom-domain', 'routes/api/orgs.$id.custom-domain.ts'),
 
   // Speech API routes
   route('api/speech/transcribe', 'routes/api/speech.transcribe.ts'),

@@ -185,6 +185,8 @@ export interface CfApiProxyEnv {
   CHAT_THREAD: DurableObjectNamespace;
   WORKER_BASE_URL?: string;
   SANDBOX_PROXY_SECRET?: string;
+  CF_ZONE_ID?: string;
+  CF_CUSTOM_HOSTNAME_FALLBACK?: string;
 }
 
 export interface DeploySideEffectsInfo {
@@ -803,6 +805,89 @@ export async function deleteDispatchScript(
     scriptName,
   });
   return true;
+}
+
+// ── Custom Hostnames (Cloudflare for SaaS) ─────────────────────────
+
+export interface CfCustomHostname {
+  id: string;
+  hostname: string;
+  ssl: {
+    status: string;
+    method: string;
+    type: string;
+  };
+  status: string;
+  created_at: string;
+}
+
+export async function createCustomHostname(
+  zoneId: string,
+  apiToken: string,
+  hostname: string,
+  customOriginServer?: string
+): Promise<CfCustomHostname | null> {
+  const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames`;
+  const headers = {
+    Authorization: `Bearer ${apiToken}`,
+    'Content-Type': 'application/json',
+  };
+  const isWildcard = hostname.startsWith('*.');
+  const body: Record<string, unknown> = {
+    hostname,
+    ssl: { method: 'http', type: 'dv', wildcard: isWildcard },
+  };
+  if (customOriginServer) {
+    body.custom_origin_server = customOriginServer;
+  }
+  return callCloudflareApi<CfCustomHostname>(
+    url,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    },
+    `create custom hostname ${hostname}`
+  );
+}
+
+export async function getCustomHostnameStatus(
+  zoneId: string,
+  apiToken: string,
+  hostnameId: string
+): Promise<CfCustomHostname | null> {
+  const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames/${encodeURIComponent(hostnameId)}`;
+  const headers = { Authorization: `Bearer ${apiToken}` };
+  return callCloudflareApi<CfCustomHostname>(
+    url,
+    { method: 'GET', headers },
+    `get custom hostname status ${hostnameId}`
+  );
+}
+
+export async function deleteCustomHostname(
+  zoneId: string,
+  apiToken: string,
+  hostnameId: string
+): Promise<boolean> {
+  const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames/${encodeURIComponent(hostnameId)}`;
+  try {
+    const resp = await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${apiToken}` },
+    });
+    if (resp.ok || resp.status === 404) return true;
+    const body = await resp.text();
+    console.warn('[cf-api] delete custom hostname failed', {
+      hostnameId,
+      status: resp.status,
+      bodyPreview: body.slice(0, 512),
+    });
+    return false;
+  } catch (err) {
+    console.error('[cf-api] delete custom hostname error', err);
+    return false;
+  }
 }
 
 /**

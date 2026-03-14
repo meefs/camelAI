@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
 import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
-import { getAppUrl } from '@/lib/app-url';
+import { getAppUrl, getCustomDomainAppUrl } from '@/lib/app-url';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
@@ -22,6 +22,7 @@ interface AppsClientProps {
   orgSlug: string;
   hostname?: string;
   initialNow: number;
+  orgCustomDomain?: string | null;
 }
 
 export default function AppsClient({
@@ -30,6 +31,7 @@ export default function AppsClient({
   orgSlug,
   hostname,
   initialNow,
+  orgCustomDomain,
 }: AppsClientProps) {
   const {
     currentOrg,
@@ -81,7 +83,7 @@ export default function AppsClient({
     if (chatFetcher.data.thread && pendingChatAppRef.current) {
       // Build the camelai system message
       const app = pendingChatAppRef.current;
-      const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
+      const appUrl = orgCustomDomain ? getCustomDomainAppUrl(app.script_name, orgCustomDomain) : getAppUrl(app.script_name, hostname, orgSlug);
       const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
       const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
 
@@ -288,6 +290,7 @@ export default function AppsClient({
                       isAdmin={isAdmin}
                       hostname={hostname}
                       orgSlug={orgSlug}
+                      orgCustomDomain={orgCustomDomain}
                       now={referenceTime}
                       onOpenSettings={handleOpenSettings}
                       onStartChat={handleStartChat}
@@ -310,6 +313,7 @@ export default function AppsClient({
           orgSlug={orgSlug}
           isAdmin={isAdmin}
           hostname={hostname}
+          orgCustomDomain={orgCustomDomain}
           onSuccess={handleSettingsSuccess}
         />
       )}

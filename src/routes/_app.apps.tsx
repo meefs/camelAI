@@ -7,6 +7,7 @@ import {
   setWorkerScriptPublic,
   deleteWorkerScript,
   getWorkerScript,
+  getOrgCustomDomain,
 } from '@/lib/auth-do';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import * as chatDO from '@/lib/chat-do.server';
@@ -23,6 +24,7 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,
+    TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
   };
 }
 
@@ -160,7 +162,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const workspaceId = authContext.currentWorkspace?.id;
   let apps: WorkerScriptWithCreator[] = [];
 
-  const scripts = await authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id)).listWorkerScripts();
+  const [scripts, orgCustomDomainRecord] = await Promise.all([
+    authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id)).listWorkerScripts(),
+    getOrgCustomDomain(authEnv, authContext.currentOrg.id),
+  ]);
+  const orgCustomDomain = orgCustomDomainRecord?.status === 'active' ? orgCustomDomainRecord.domain : null;
 
   // Filter based on filter param
   const filteredScripts = filter === 'all-workspaces'
@@ -213,11 +219,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     hostname,
     renderedAt,
     hasWorkspace: Boolean(workspaceId),
+    orgCustomDomain,
   };
 }
 
 export default function AppsPage() {
-  const { apps, orgId, orgSlug, hostname, renderedAt, hasWorkspace } = useLoaderData<typeof loader>();
+  const { apps, orgId, orgSlug, hostname, renderedAt, hasWorkspace, orgCustomDomain } = useLoaderData<typeof loader>();
 
   if (!hasWorkspace) {
     return <NoWorkspacesError />;
@@ -230,6 +237,7 @@ export default function AppsPage() {
       orgSlug={orgSlug}
       hostname={hostname}
       initialNow={renderedAt}
+      orgCustomDomain={orgCustomDomain}
     />
   );
 }
