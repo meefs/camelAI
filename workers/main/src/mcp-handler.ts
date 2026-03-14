@@ -17,7 +17,7 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
-import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
+import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, listCustomHostnames, type CfApiProxyEnv } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
 
 export interface McpEnv extends WorkspaceContainerEnv {
@@ -27,6 +27,9 @@ export interface McpEnv extends WorkspaceContainerEnv {
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   APP_KV: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
+  CF_ZONE_ID?: string;
+  CF_API_TOKEN?: string;
+  CF_CUSTOM_HOSTNAME_FALLBACK?: string;
 }
 
 // Headers used to pass auth context to the MCP DO
@@ -1480,6 +1483,164 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               : undefined,
           });
         }
+      }
+    );
+
+    // ── Custom Domain Tools ──────────────────────────────────────────
+
+    // Get org custom domain
+    this.server.tool(
+      'get_custom_domain',
+      'Get the custom domain configured for this organization, if any. When a custom domain is set, all deployed apps are accessible at {app-name}.{domain}.',
+      {},
+      async () => {
+        this.requireAuth();
+        const orgStub = this.getOrgStub();
+        const domain = await orgStub.getCustomDomain();
+        if (!domain) {
+          return this.textResponse({ configured: false, message: 'No custom domain configured for this organization.' });
+        }
+        return this.textResponse({
+          configured: true,
+          domain: domain.domain,
+          status: domain.status,
+          message: `Custom domain: *.${domain.domain} — apps are accessible at {app-name}.${domain.domain}`,
+        });
+      }
+    );
+
+    // Set org custom domain
+    this.server.tool(
+      'set_custom_domain',
+      'Set a custom domain for the organization (admin only). All deployed apps will be accessible at {app-name}.{domain}. The domain owner must add a wildcard CNAME record: *.{domain} CNAME custom-domains.camelai.app. Per-app SSL certificates are created automatically on deploy.',
+      {
+        domain: z.string().min(3).describe('The base domain (e.g., "apps.example.com"). All apps will be subdomains of this.'),
+      },
+      async ({ domain: rawDomain }) => {
+        const { orgId, userId } = this.requireAuth();
+        const orgStub = this.getOrgStub();
+
+        // Require admin
+        const member = await orgStub.getMember(userId);
+        if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
+          return this.textResponse({ success: false, error: 'Only org admins can manage custom domains' });
+        }
+
+        const domain = rawDomain.trim().toLowerCase();
+
+        // Validate
+        if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
+          return this.textResponse({ success: false, error: 'Invalid domain format' });
+        }
+        if (domain.endsWith('.camelai.app') || domain.endsWith('.camelai.dev')) {
+          return this.textResponse({ success: false, error: 'Cannot use camelAI domains as custom domains' });
+        }
+
+        // Remove old KV entry if switching domains
+        const existing = await orgStub.getCustomDomain();
+        const oldDomain = existing?.domain;
+
+        await orgStub.setCustomDomain(domain, userId);
+
+        const zoneId = this.env.CF_ZONE_ID;
+        const apiToken = this.env.CF_API_TOKEN?.trim();
+        const fallbackOrigin = this.env.CF_CUSTOM_HOSTNAME_FALLBACK;
+
+        // Write KV index for dispatcher
+        const orgInfo = await orgStub.getInfo();
+        const orgSlug = orgInfo?.slug;
+        if (orgSlug) {
+          await this.env.APP_KV.put(
+            `custom_domain_zone:${domain}`,
+            JSON.stringify({ org_id: orgId, org_slug: orgSlug })
+          );
+        }
+        if (oldDomain && oldDomain !== domain) {
+          await this.env.APP_KV.delete(`custom_domain_zone:${oldDomain}`);
+
+          // Clean up old CF hostnames
+          if (zoneId && apiToken) {
+            const oldHostnames = await listCustomHostnames(zoneId, apiToken, oldDomain);
+            for (const h of oldHostnames) {
+              await deleteCustomHostname(zoneId, apiToken, h.id).catch(() => {});
+            }
+          }
+        }
+
+        // Backfill CF hostnames for existing apps
+        if (zoneId && apiToken) {
+          const scripts = await orgStub.listWorkerScripts();
+          let created = 0;
+          for (const script of scripts) {
+            const appHostname = `${script.script_name}.${domain}`;
+            try {
+              await createCustomHostname(zoneId, apiToken, appHostname, fallbackOrigin);
+              created++;
+            } catch {}
+          }
+          return this.textResponse({
+            success: true,
+            domain,
+            hostnames_created: created,
+            total_apps: scripts.length,
+            message: `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. DNS setup required: *.${domain} CNAME custom-domains.camelai.app`,
+          });
+        }
+
+        return this.textResponse({
+          success: true,
+          domain,
+          message: `Custom domain set to ${domain}. DNS setup required: *.${domain} CNAME custom-domains.camelai.app`,
+        });
+      }
+    );
+
+    // Remove org custom domain
+    this.server.tool(
+      'remove_custom_domain',
+      'Remove the custom domain from this organization (admin only). Apps will revert to their default *.camelai.app URLs.',
+      {},
+      async () => {
+        const { userId } = this.requireAuth();
+        const orgStub = this.getOrgStub();
+
+        // Require admin
+        const member = await orgStub.getMember(userId);
+        if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
+          return this.textResponse({ success: false, error: 'Only org admins can manage custom domains' });
+        }
+
+        const existing = await orgStub.getCustomDomain();
+        if (!existing) {
+          return this.textResponse({ success: false, error: 'No custom domain configured' });
+        }
+
+        const removedDomain = existing.domain;
+        await orgStub.removeCustomDomain(userId);
+        await this.env.APP_KV.delete(`custom_domain_zone:${removedDomain}`);
+
+        // Clean up CF hostnames in the background
+        const zoneId = this.env.CF_ZONE_ID;
+        const apiToken = this.env.CF_API_TOKEN?.trim();
+        if (zoneId && apiToken) {
+          const hostnames = await listCustomHostnames(zoneId, apiToken, removedDomain);
+          let deleted = 0;
+          for (const h of hostnames) {
+            if (await deleteCustomHostname(zoneId, apiToken, h.id)) deleted++;
+          }
+          return this.textResponse({
+            success: true,
+            removed_domain: removedDomain,
+            hostnames_deleted: deleted,
+            message: `Custom domain ${removedDomain} removed. Deleted ${deleted} SSL certificates. Apps are now only accessible at their *.camelai.app URLs.`,
+          });
+        }
+
+        return this.textResponse({
+          success: true,
+          removed_domain: removedDomain,
+          message: `Custom domain ${removedDomain} removed. Apps are now only accessible at their *.camelai.app URLs.`,
+        });
       }
     );
 
