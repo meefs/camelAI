@@ -44,7 +44,7 @@ function createScreenshotMcpServer(sessionToken) {
         async ({ url, width, height, wait_for_timeout }) => {
           const viewportWidth = width ?? 1280;
           const viewportHeight = height ?? 720;
-          const extraWait = wait_for_timeout ?? 1000;
+          const extraWait = wait_for_timeout ?? 500;
 
           let browser;
           try {
@@ -72,8 +72,8 @@ function createScreenshotMcpServer(sessionToken) {
             }
 
             const page = await context.newPage();
-            await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 }).catch(() =>
-              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+            await page.goto(url, { waitUntil: 'load', timeout: 10_000 }).catch(() =>
+              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10_000 })
             );
 
             if (extraWait > 0) await page.waitForTimeout(extraWait);
