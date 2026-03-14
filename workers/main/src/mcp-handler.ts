@@ -295,6 +295,15 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
    * New-style slugs (6+ alphanumeric) use single hyphen, old-style use double.
    */
   private async getAppUrl(scriptName: string): Promise<string> {
+    // Prefer custom domain when configured
+    try {
+      const orgStub = this.getOrgStub();
+      const customDomain = await orgStub.getCustomDomain();
+      if (customDomain?.domain) {
+        return `https://${scriptName}.${customDomain.domain}`;
+      }
+    } catch {}
+
     const orgSlug = await this.getOrgSlug();
     if (orgSlug) {
       const separator = /^[a-z0-9]{6,}$/.test(orgSlug) ? '-' : '--';
