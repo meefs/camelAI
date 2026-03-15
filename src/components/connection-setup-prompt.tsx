@@ -230,8 +230,11 @@ export function ConnectionSetupPrompt({
 
   // Get display info - use dynamic schema for dynamic mode, or typeDef for static mode
   const displayName = isDynamic && dynamicSchema ? dynamicSchema.displayName : typeDef?.displayName ?? 'Integration';
-  const description = data.message || (isDynamic && dynamicSchema ? dynamicSchema.description : typeDef?.description) || '';
-  const instructions = isDynamic && dynamicSchema ? dynamicSchema.instructions : undefined;
+  const rawDescription = data.message || (isDynamic && dynamicSchema ? dynamicSchema.description : typeDef?.description) || '';
+  // Normalize literal \n sequences (backslash + n) that LLMs sometimes emit in tool call args
+  const description = rawDescription.replace(/\\n/g, '\n');
+  const rawInstructions = isDynamic && dynamicSchema ? dynamicSchema.instructions : undefined;
+  const instructions = rawInstructions?.replace(/\\n/g, '\n');
 
   return (
     <Dialog open onOpenChange={() => {}}>
@@ -246,7 +249,7 @@ export function ConnectionSetupPrompt({
             <Plug className="size-5" />
             Add {displayName}
           </DialogTitle>
-          <DialogDescription className="break-words">
+          <DialogDescription className="break-words whitespace-pre-line">
             {description}
           </DialogDescription>
         </DialogHeader>
@@ -306,7 +309,7 @@ export function ConnectionSetupPrompt({
                         placeholder={field.placeholder}
                       />
                       {field.description && (
-                        <p className="text-xs text-muted-foreground break-words">{field.description}</p>
+                        <p className="text-xs text-muted-foreground break-words whitespace-pre-line">{field.description.replace(/\\n/g, '\n')}</p>
                       )}
                     </div>
                   ))}
