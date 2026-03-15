@@ -82,6 +82,7 @@ import {
   removeDraft,
   useDraftPersistence,
   writeDraft,
+  type DraftData,
 } from '@/hooks/use-draft-persistence';
 
 interface ChatProps {
@@ -864,13 +865,20 @@ export default function Chat({
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
   const resolvedWorkspaceId = readOnly ? workspaceId : (currentWorkspace?.id ?? workspaceId);
-  const shouldRestoreThreadDraft = !readOnly && shouldHydrateThreadDraft(threadId);
-  const initialThreadDraft = shouldRestoreThreadDraft
-    ? loadDraft(resolvedWorkspaceId, threadId ?? null)
-    : null;
-  const initialWelcomeDraft = !readOnly && !threadId && !initialWelcomeInput
-    ? loadDraft(resolvedWorkspaceId, null)
-    : null;
+  // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
+  // synchronous localStorage reads on every streaming re-render.
+  const initialDraftsRef = useRef<{ thread: DraftData | null; welcome: DraftData | null } | undefined>();
+  if (initialDraftsRef.current === undefined) {
+    const shouldRestore = !readOnly && shouldHydrateThreadDraft(threadId);
+    initialDraftsRef.current = {
+      thread: shouldRestore ? loadDraft(resolvedWorkspaceId, threadId ?? null) : null,
+      welcome: !readOnly && !threadId && !initialWelcomeInput
+        ? loadDraft(resolvedWorkspaceId, null)
+        : null,
+    };
+  }
+  const initialThreadDraft = initialDraftsRef.current.thread;
+  const initialWelcomeDraft = initialDraftsRef.current.welcome;
   // Anchor to last message for existing threads with messages (not new threads)
   const shouldAnchorToLastMessage = !isNewThread && initialMessages && initialMessages.length > 0;
 
@@ -1159,6 +1167,7 @@ export default function Chat({
   const attachmentsRef = useRef(attachments);
   const skipNextEmptyDraftSaveRef = useRef(false);
   const pendingDeliveryDraftRef = useRef<{ workspaceId: string; threadId: string | null } | null>(null);
+  const pendingDraftCountRef = useRef(0);
   const { saveDraft, flushDraft } = useDraftPersistence(resolvedWorkspaceId, threadId ?? null);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -1428,6 +1437,7 @@ export default function Chat({
       writeDraft(resolvedWorkspaceId, draftThreadId, text, nextAttachments);
     }
 
+    pendingDraftCountRef.current++;
     pendingDeliveryDraftRef.current = {
       workspaceId: resolvedWorkspaceId,
       threadId: draftThreadId,
@@ -1437,11 +1447,20 @@ export default function Chat({
 
   const clearPendingDeliveryDraft = useCallback(() => {
     const pendingDraft = pendingDeliveryDraftRef.current;
-    pendingDeliveryDraftRef.current = null;
 
     if (!pendingDraft) {
       return;
     }
+
+    // If multiple sends are in flight (sentDuringStreaming), only clear the
+    // draft backup once the last turn completes — otherwise an earlier result
+    // would delete the backup that a later, still-in-flight turn needs.
+    pendingDraftCountRef.current = Math.max(0, pendingDraftCountRef.current - 1);
+    if (pendingDraftCountRef.current > 0) {
+      return;
+    }
+
+    pendingDeliveryDraftRef.current = null;
 
     if (!isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current)) {
       return;
@@ -1453,6 +1472,7 @@ export default function Chat({
   const restorePendingDeliveryDraft = useCallback(() => {
     const pendingDraft = pendingDeliveryDraftRef.current;
     pendingDeliveryDraftRef.current = null;
+    pendingDraftCountRef.current = 0;
 
     if (!pendingDraft) {
       return;
@@ -3231,8 +3251,10 @@ export default function Chat({
         const messageWithContext = finalContent;
 
         pendingDeliveryDraftRef.current = null;
+        pendingDraftCountRef.current = 0;
         if (resolvedWorkspaceId && draftText !== undefined && draftAttachments) {
           writeDraft(resolvedWorkspaceId, data.thread.id, draftText, draftAttachments);
+          pendingDraftCountRef.current = 1;
           pendingDeliveryDraftRef.current = {
             workspaceId: resolvedWorkspaceId,
             threadId: data.thread.id,
@@ -3264,6 +3286,7 @@ export default function Chat({
         setError('Failed to start a new chat');
         const pendingDraft = pendingDeliveryDraftRef.current;
         pendingDeliveryDraftRef.current = null;
+        pendingDraftCountRef.current = 0;
         if (
           pendingDraft &&
           isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
