@@ -276,6 +276,8 @@ beforeAll(() => {
 beforeEach(() => {
   MockWebSocket.instances = [];
   vi.clearAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 });
 

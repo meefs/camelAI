@@ -77,6 +77,13 @@ import { getAppUrl, getVanityDomain, getIframeDomain, buildAppLabel } from '@/li
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';
 import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
+import {
+  loadDraft,
+  removeDraft,
+  useDraftPersistence,
+  writeDraft,
+  type DraftData,
+} from '@/hooks/use-draft-persistence';
 
 interface ChatProps {
   threadId?: string;
@@ -106,6 +113,13 @@ interface ChatProps {
   };
 }
 
+interface PendingNewThreadMessagePayload {
+  message?: string;
+  threadId?: string;
+  workspaceId?: string;
+  orgSlug?: string;
+}
+
 function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
   if (typeof window === 'undefined' || !isNewThread) return false;
 
@@ -114,6 +128,36 @@ function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
   } catch {
     return false;
   }
+}
+
+function readPendingNewThreadMessage(): PendingNewThreadMessagePayload | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const stored = sessionStorage.getItem('pendingMessage:newThread');
+    if (!stored) {
+      return null;
+    }
+
+    const parsed = JSON.parse(stored) as PendingNewThreadMessagePayload;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldHydrateThreadDraft(threadId?: string): boolean {
+  if (!threadId) {
+    return true;
+  }
+
+  return readPendingNewThreadMessage()?.threadId !== threadId;
+}
+
+function isComposerVisiblyEmpty(text: string, attachments: Attachment[]): boolean {
+  return text.trim().length === 0 && attachments.length === 0;
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -820,6 +864,21 @@ export default function Chat({
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
+  const resolvedWorkspaceId = readOnly ? workspaceId : (currentWorkspace?.id ?? workspaceId);
+  // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
+  // synchronous localStorage reads on every streaming re-render.
+  const initialDraftsRef = useRef<{ thread: DraftData | null; welcome: DraftData | null } | undefined>();
+  if (initialDraftsRef.current === undefined) {
+    const shouldRestore = !readOnly && shouldHydrateThreadDraft(threadId);
+    initialDraftsRef.current = {
+      thread: shouldRestore ? loadDraft(resolvedWorkspaceId, threadId ?? null) : null,
+      welcome: !readOnly && !threadId && !initialWelcomeInput
+        ? loadDraft(resolvedWorkspaceId, null)
+        : null,
+    };
+  }
+  const initialThreadDraft = initialDraftsRef.current.thread;
+  const initialWelcomeDraft = initialDraftsRef.current.welcome;
   // Anchor to last message for existing threads with messages (not new threads)
   const shouldAnchorToLastMessage = !isNewThread && initialMessages && initialMessages.length > 0;
 
@@ -894,6 +953,28 @@ export default function Chat({
     url.searchParams.delete('prompt_key');
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
   }, [location.search, threadId]);
+
+  const previousWelcomeWorkspaceIdRef = useRef<string | null>(resolvedWorkspaceId ?? null);
+
+  useEffect(() => {
+    if (threadId || readOnly) {
+      previousWelcomeWorkspaceIdRef.current = resolvedWorkspaceId ?? null;
+      return;
+    }
+
+    const nextWorkspaceId = resolvedWorkspaceId ?? null;
+    if (previousWelcomeWorkspaceIdRef.current === nextWorkspaceId) {
+      return;
+    }
+
+    previousWelcomeWorkspaceIdRef.current = nextWorkspaceId;
+    pendingDeliveryDraftRef.current = null;
+    skipNextEmptyDraftSaveRef.current = false;
+
+    const nextDraft = initialWelcomeInput ? null : loadDraft(nextWorkspaceId, null);
+    setWelcomeInput(initialWelcomeInput ?? nextDraft?.text ?? '');
+    setAttachments(nextDraft?.attachments ?? []);
+  }, [initialWelcomeInput, readOnly, resolvedWorkspaceId, threadId]);
 
   // Compaction in-progress indicator
   const [isCompacting, setIsCompactingState] = useState(false);
@@ -1066,18 +1147,42 @@ export default function Chat({
     return map;
   }, [messages]);
 
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(() => initialThreadDraft?.text ?? '');
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [welcomeInput, setWelcomeInput] = useState(() => initialWelcomeInput ?? '');
+  const [welcomeInput, setWelcomeInput] = useState(() => (
+    initialWelcomeInput ?? initialWelcomeDraft?.text ?? ''
+  ));
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? '');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>(() => (
+    initialThreadDraft?.attachments ?? initialWelcomeDraft?.attachments ?? []
+  ));
   const [contextUsedPercent, setContextUsedPercent] = useState<number | null>(null);
   const attachmentPreviewUrlsRef = useRef<Set<string>>(new Set());
+  const inputRef = useRef(input);
+  const welcomeInputRef = useRef(welcomeInput);
+  const attachmentsRef = useRef(attachments);
+  const skipNextEmptyDraftSaveRef = useRef(false);
+  const pendingDeliveryDraftRef = useRef<{ workspaceId: string; threadId: string | null } | null>(null);
+  const pendingDraftCountRef = useRef(0);
+  const { saveDraft, flushDraft } = useDraftPersistence(resolvedWorkspaceId, threadId ?? null);
   const [isDragOver, setIsDragOver] = useState(false);
+
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
+
+  useEffect(() => {
+    welcomeInputRef.current = welcomeInput;
+  }, [welcomeInput]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(() => initialPreviewSession.tabs);
   const [activeTabId, setActiveTabId] = useState<string | null>(() => initialPreviewSession.activeTabId);
   const previewTabsRef = useRef<PreviewTab[]>(previewTabs);
@@ -1301,7 +1406,6 @@ export default function Chat({
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
-  const resolvedWorkspaceId = readOnly ? workspaceId : (currentWorkspace?.id ?? workspaceId);
   const resolvedWelcomeData = welcomeData ?? {
     userId: user?.id ?? null,
     userName: user?.name ?? null,
@@ -1317,6 +1421,75 @@ export default function Chat({
     const workspaceKey = resolvedWorkspaceId ?? 'unknown';
     return `ws_session_${workspaceKey}_${id}`;
   }, [resolvedWorkspaceId]);
+
+  const preserveDraftBeforeOptimisticClear = useCallback((
+    draftThreadId: string | null,
+    text: string,
+    nextAttachments: Attachment[]
+  ) => {
+    if (!resolvedWorkspaceId) {
+      return;
+    }
+
+    if (draftThreadId === (threadId ?? null)) {
+      flushDraft(text, nextAttachments);
+    } else {
+      writeDraft(resolvedWorkspaceId, draftThreadId, text, nextAttachments);
+    }
+
+    pendingDraftCountRef.current++;
+    pendingDeliveryDraftRef.current = {
+      workspaceId: resolvedWorkspaceId,
+      threadId: draftThreadId,
+    };
+    skipNextEmptyDraftSaveRef.current = true;
+  }, [flushDraft, resolvedWorkspaceId, threadId]);
+
+  const clearPendingDeliveryDraft = useCallback(() => {
+    const pendingDraft = pendingDeliveryDraftRef.current;
+
+    if (!pendingDraft) {
+      return;
+    }
+
+    // If multiple sends are in flight (sentDuringStreaming), only clear the
+    // draft backup once the last turn completes — otherwise an earlier result
+    // would delete the backup that a later, still-in-flight turn needs.
+    pendingDraftCountRef.current = Math.max(0, pendingDraftCountRef.current - 1);
+    if (pendingDraftCountRef.current > 0) {
+      return;
+    }
+
+    pendingDeliveryDraftRef.current = null;
+
+    if (!isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current)) {
+      return;
+    }
+
+    removeDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+  }, []);
+
+  const restorePendingDeliveryDraft = useCallback(() => {
+    const pendingDraft = pendingDeliveryDraftRef.current;
+    pendingDeliveryDraftRef.current = null;
+    pendingDraftCountRef.current = 0;
+
+    if (!pendingDraft) {
+      return;
+    }
+
+    if (!isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current)) {
+      return;
+    }
+
+    const savedDraft = loadDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+    if (!savedDraft) {
+      return;
+    }
+
+    setInput(savedDraft.text);
+    setAttachments(savedDraft.attachments);
+  }, []);
 
   const loadSessionState = useCallback((id: string) => {
     try {
@@ -1362,6 +1535,38 @@ export default function Chat({
     url.searchParams.delete('newThread');
     window.history.replaceState(null, '', url.toString());
   }, [isNewThread, threadId]);
+
+  useEffect(() => {
+    if (!threadId || readOnly) {
+      return;
+    }
+
+    if (skipNextEmptyDraftSaveRef.current) {
+      const shouldSkip = isComposerVisiblyEmpty(input, attachments);
+      skipNextEmptyDraftSaveRef.current = false;
+      if (shouldSkip) {
+        return;
+      }
+    }
+
+    saveDraft(input, attachments);
+  }, [attachments, input, readOnly, saveDraft, threadId]);
+
+  useEffect(() => {
+    if (threadId || readOnly) {
+      return;
+    }
+
+    if (skipNextEmptyDraftSaveRef.current) {
+      const shouldSkip = isComposerVisiblyEmpty(welcomeInput, attachments);
+      skipNextEmptyDraftSaveRef.current = false;
+      if (shouldSkip) {
+        return;
+      }
+    }
+
+    saveDraft(welcomeInput, attachments);
+  }, [attachments, readOnly, saveDraft, threadId, welcomeInput]);
 
   // Fetch message history as a single JSON payload.
   // The worker route streams response bytes through from sandbox-host so the
@@ -1872,33 +2077,28 @@ export default function Chat({
     let shouldFetchMessages = !isNewThread && !isLoadingMessages;
 
     // Check sessionStorage for welcome screen pending message (survives navigation)
-    const pendingPayload = sessionStorage.getItem(pendingMessageKey);
-    if (pendingPayload) {
-      try {
-        const parsed = JSON.parse(pendingPayload) as {
-          message?: string;
-          threadId?: string;
+    const pendingPayload = readPendingNewThreadMessage();
+    if (pendingPayload?.threadId === id && typeof pendingPayload.message === 'string') {
+      shouldFetchMessages = false;
+      sessionStorage.removeItem(pendingMessageKey);
+      if (resolvedWorkspaceId) {
+        pendingDeliveryDraftRef.current = {
+          workspaceId: resolvedWorkspaceId,
+          threadId: id,
         };
-        // Only verify threadId - workspace may have changed between welcome screen and chat page
-        // The thread was created in the correct workspace by the server action
-        if (parsed.threadId === id && typeof parsed.message === 'string') {
-          shouldFetchMessages = false;
-          sessionStorage.removeItem(pendingMessageKey);
-          // Add to state (both messages and pending queue)
-          const optimisticUserMsg: Message = {
-            id: `local_${Date.now()}`,
-            thread_id: id,
-            role: 'user',
-            content: parsed.message,
-            created_at: Date.now(),
-          };
-          setMessages([optimisticUserMsg]);
-          setPendingMessages(prev => [...prev, optimisticUserMsg]);
-          setLoading(true);
-        }
-      } catch {
-        // Ignore malformed pending payload and continue to fetch
       }
+
+      // Add to state (both messages and pending queue)
+      const optimisticUserMsg: Message = {
+        id: `local_${Date.now()}`,
+        thread_id: id,
+        role: 'user',
+        content: pendingPayload.message,
+        created_at: Date.now(),
+      };
+      setMessages([optimisticUserMsg]);
+      setPendingMessages(prev => [...prev, optimisticUserMsg]);
+      setLoading(true);
     }
 
     // Skip fetch if we have pending messages (use ref to avoid stale closure)
@@ -2347,6 +2547,7 @@ export default function Chat({
           }
           setStreamingMessageId(null);
           setLoading(false);
+          clearPendingDeliveryDraft();
           isAutoCompactingRef.current = false;
           syncCompactionIndicator();
           compactingPriorMessageIdRef.current = null;
@@ -2400,6 +2601,7 @@ export default function Chat({
         }
         setStreamingMessageId(null);
         setLoading(false);
+        restorePendingDeliveryDraft();
         isAutoCompactingRef.current = false;
         compactingPriorMessageIdRef.current = null;
         setCompactingPriorMessageId(null);
@@ -2444,6 +2646,7 @@ export default function Chat({
         }, delay);
       } else {
         // Reconnect exhausted — clear stale compaction indicator.
+        restorePendingDeliveryDraft();
         isAutoCompactingRef.current = false;
         compactingPriorMessageIdRef.current = null;
         setCompactingPriorMessageId(null);
@@ -2460,10 +2663,12 @@ export default function Chat({
     };
 
   }, [
+    clearPendingDeliveryDraft,
     fetchMessages,
     isNewThread,
     persistSessionState,
     resolvedWorkspaceId,
+    restorePendingDeliveryDraft,
     setMessages,
     setPendingMessages,
     setStreamingMessageId,
@@ -3030,7 +3235,11 @@ export default function Chat({
   }, [resolvedWorkspaceId, handleFilesSelected]);
 
   // Track pending message for new thread creation (used by effect that handles fetcher response)
-  const pendingNewChatRef = useRef<{ finalContent: string } | null>(null);
+  const pendingNewChatRef = useRef<{
+    finalContent: string;
+    draftText?: string;
+    draftAttachments?: Attachment[];
+  } | null>(null);
 
   // Handle fetcher response for thread creation
   useEffect(() => {
@@ -3038,8 +3247,22 @@ export default function Chat({
       const data = createThreadFetcher.data;
       if (data.thread && pendingNewChatRef.current) {
         // Thread created successfully - store message and navigate
-        const { finalContent } = pendingNewChatRef.current;
+        const { finalContent, draftText, draftAttachments } = pendingNewChatRef.current;
         const messageWithContext = finalContent;
+
+        pendingDeliveryDraftRef.current = null;
+        pendingDraftCountRef.current = 0;
+        if (resolvedWorkspaceId && draftText !== undefined && draftAttachments) {
+          writeDraft(resolvedWorkspaceId, data.thread.id, draftText, draftAttachments);
+          pendingDraftCountRef.current = 1;
+          pendingDeliveryDraftRef.current = {
+            workspaceId: resolvedWorkspaceId,
+            threadId: data.thread.id,
+          };
+          if (isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)) {
+            removeDraft(resolvedWorkspaceId, null);
+          }
+        }
 
         if (messageWithContext.trim().length > 0) {
           sessionStorage.setItem(
@@ -3061,6 +3284,19 @@ export default function Chat({
         sessionStorage.removeItem(pendingMessageKey);
         setIsCreatingThread(false);
         setError('Failed to start a new chat');
+        const pendingDraft = pendingDeliveryDraftRef.current;
+        pendingDeliveryDraftRef.current = null;
+        pendingDraftCountRef.current = 0;
+        if (
+          pendingDraft &&
+          isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
+        ) {
+          const savedDraft = loadDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+          if (savedDraft) {
+            setWelcomeInput(savedDraft.text);
+            setAttachments(savedDraft.attachments);
+          }
+        }
         console.error('Failed to create thread:', data.error);
         pendingNewChatRef.current = null;
       }
@@ -3104,18 +3340,27 @@ export default function Chat({
   }, [hostname, orgSlug, resolvedWorkspaceId, createThreadFetcher, isCreatingThread]);
 
   function startNewChat() {
-    if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId || createThreadFetcher.state !== 'idle') return;
+    const currentWelcomeInput = welcomeInputRef.current;
+    const currentAttachments = attachmentsRef.current;
+
+    if (
+      !currentWelcomeInput.trim() ||
+      isCreatingThread ||
+      !resolvedWorkspaceId ||
+      createThreadFetcher.state !== 'idle'
+    ) return;
 
     // Don't allow sending while uploads are in progress
-    const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
+    const hasUploadingAttachments = currentAttachments.some(a => a.status === 'uploading');
     if (hasUploadingAttachments) return;
 
+    preserveDraftBeforeOptimisticClear(null, currentWelcomeInput, currentAttachments);
     setIsCreatingThread(true);
-    const userMessage = welcomeInput.trim();
+    const userMessage = currentWelcomeInput.trim();
     setWelcomeInput('');
 
     // Build message content with file references appended
-    const completedAttachments = attachments.filter(a => a.status === 'complete');
+    const completedAttachments = currentAttachments.filter(a => a.status === 'complete');
     let finalContent = userMessage;
     if (completedAttachments.length > 0) {
       const fileRefs = completedAttachments
@@ -3133,7 +3378,11 @@ export default function Chat({
     });
 
     // Store pending message info for the effect to use after thread creation
-    pendingNewChatRef.current = { finalContent };
+    pendingNewChatRef.current = {
+      finalContent,
+      draftText: currentWelcomeInput,
+      draftAttachments: currentAttachments,
+    };
 
     // Submit to route action to create thread
     createThreadFetcher.submit(
@@ -3511,7 +3760,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     if (readOnly) {
       return;
     }
-    const rawContent = (opts?.contentOverride ?? input).trim();
+    const currentInput = inputRef.current;
+    const currentAttachments = attachmentsRef.current;
+    const rawContent = (opts?.contentOverride ?? currentInput).trim();
     if (
       isLoadingMessages ||
       !rawContent ||
@@ -3528,13 +3779,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     hasHadUserInteraction.current = true;
 
     if (!opts?.preserveDraft && !opts?.contentOverride) {
+      preserveDraftBeforeOptimisticClear(threadId, currentInput, currentAttachments);
       setInput('');
     }
 
     const shouldIncludeAttachmentRefs = !opts?.skipAttachmentRefs && !opts?.contentOverride;
     let finalContent = rawContent;
     if (shouldIncludeAttachmentRefs) {
-      const completedAttachments = attachments.filter(a => a.status === 'complete');
+      const completedAttachments = currentAttachments.filter(a => a.status === 'complete');
       if (completedAttachments.length > 0) {
         const fileRefs = completedAttachments
           .map(a => `(user uploaded file to ${a.path})`)
