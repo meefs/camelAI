@@ -39,12 +39,30 @@ function createScreenshotMcpServer(sessionToken) {
           url: z.string().url().describe('The full URL to screenshot (e.g. https://my-app--my-org.camelai.app)'),
           width: z.number().int().min(320).max(3840).optional().describe('Viewport width in pixels (default 1280)'),
           height: z.number().int().min(240).max(2160).optional().describe('Viewport height in pixels (default 720)'),
-          wait_for_timeout: z.number().int().min(0).max(30000).optional().describe('Extra milliseconds to wait after load before capturing (default 1000)'),
         },
-        async ({ url, width, height, wait_for_timeout }) => {
+        async ({ url, width, height }) => {
           const viewportWidth = width ?? 1280;
           const viewportHeight = height ?? 720;
-          const extraWait = wait_for_timeout ?? 500;
+
+          // Poll until the URL returns a 2xx response before launching the browser.
+          // Newly deployed workers may not be reachable immediately.
+          // Authenticate the probe for private apps so the dispatcher doesn't
+          // redirect to auth (which would return 2xx from the login page, not the app).
+          const hostname = new URL(url).hostname;
+          const isTrusted = sessionToken &&
+            (hostname.endsWith('.camelai.app') || hostname.endsWith('.camelai.dev'));
+          const pollHeaders = {};
+          if (isTrusted) {
+            pollHeaders['Cookie'] = `chiridion_run_session=${sessionToken}`;
+          }
+          const pollStart = Date.now();
+          while (Date.now() - pollStart < 5_000) {
+            try {
+              const res = await fetch(url, { method: 'HEAD', redirect: 'manual', headers: pollHeaders });
+              if (res.ok) break;
+            } catch {}
+            await new Promise(r => setTimeout(r, 500));
+          }
 
           let browser;
           try {
@@ -57,26 +75,20 @@ function createScreenshotMcpServer(sessionToken) {
 
             // Authenticate with private deployments using the session cookie.
             // Scope to the exact hostname to avoid leaking the token to sibling subdomains.
-            if (sessionToken) {
-              const hostname = new URL(url).hostname;
-              const isTrusted = hostname.endsWith('.camelai.app') || hostname.endsWith('.camelai.dev');
-              if (isTrusted) {
-                await context.addCookies([{
-                  name: 'chiridion_run_session',
-                  value: sessionToken,
-                  domain: hostname,
-                  path: '/',
-                  httpOnly: true,
-                }]);
-              }
+            if (isTrusted) {
+              await context.addCookies([{
+                name: 'chiridion_run_session',
+                value: sessionToken,
+                domain: hostname,
+                path: '/',
+                httpOnly: true,
+              }]);
             }
 
             const page = await context.newPage();
-            await page.goto(url, { waitUntil: 'load', timeout: 10_000 }).catch(() =>
-              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10_000 })
+            await page.goto(url, { waitUntil: 'load', timeout: 5_000 }).catch(() =>
+              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 5_000 })
             );
-
-            if (extraWait > 0) await page.waitForTimeout(extraWait);
 
             const buffer = await page.screenshot({
               type: 'jpeg',
