@@ -41,33 +41,57 @@ function createScreenshotMcpServer(sessionToken) {
           height: z.number().int().min(240).max(2160).optional().describe('Viewport height in pixels (default 720)'),
         },
         async ({ url, width, height }) => {
+          const HARD_TIMEOUT_MS = 10_000;
           const viewportWidth = width ?? 1280;
           const viewportHeight = height ?? 720;
 
-          // Poll until the URL returns a 2xx response before launching the browser.
-          // Newly deployed workers may not be reachable immediately.
-          // Authenticate the probe for private apps so the dispatcher doesn't
-          // redirect to auth (which would return 2xx from the login page, not the app).
-          const hostname = new URL(url).hostname;
-          const isTrusted = sessionToken &&
-            (hostname.endsWith('.camelai.app') || hostname.endsWith('.camelai.dev'));
-          const pollHeaders = {};
-          if (isTrusted) {
-            pollHeaders['Cookie'] = `chiridion_run_session=${sessionToken}`;
-          }
-          const pollStart = Date.now();
-          while (Date.now() - pollStart < 5_000) {
-            try {
-              const res = await fetch(url, { method: 'HEAD', redirect: 'manual', headers: pollHeaders });
-              if (res.ok) break;
-            } catch {}
-            await new Promise(r => setTimeout(r, 500));
-          }
-
           let browser;
-          try {
+          let timedOut = false;
+          let hardTimer;
+          const abortController = new AbortController();
+
+          const cleanup = async () => {
+            abortController.abort();
+            if (browser) {
+              await browser.close().catch(() => {});
+              browser = null;
+            }
+          };
+
+          const doScreenshot = async () => {
+            // Poll until the URL returns a 2xx response before launching the browser.
+            // Newly deployed workers may not be reachable immediately.
+            // Authenticate the probe for private apps so the dispatcher doesn't
+            // redirect to auth (which would return 2xx from the login page, not the app).
+            const hostname = new URL(url).hostname;
+            const isTrusted = sessionToken &&
+              (hostname.endsWith('.camelai.app') || hostname.endsWith('.camelai.dev'));
+            const pollHeaders = {};
+            if (isTrusted) {
+              pollHeaders['Cookie'] = `chiridion_run_session=${sessionToken}`;
+            }
+            const pollStart = Date.now();
+            while (Date.now() - pollStart < 3_000) {
+              if (timedOut) throw new Error('Screenshot timed out (10s limit)');
+              try {
+                const res = await fetch(url, {
+                  method: 'HEAD',
+                  redirect: 'manual',
+                  headers: pollHeaders,
+                  signal: abortController.signal,
+                });
+                if (res.ok) break;
+              } catch (e) {
+                if (e.name === 'AbortError') throw new Error('Screenshot timed out (10s limit)');
+              }
+              await new Promise(r => setTimeout(r, 500));
+            }
+
+            if (timedOut) throw new Error('Screenshot timed out (10s limit)');
             const { chromium } = await import('playwright');
             browser = await chromium.launch({ args: ['--no-sandbox', '--disable-gpu'] });
+            if (timedOut) { await cleanup(); throw new Error('Screenshot timed out (10s limit)'); }
+
             const context = await browser.newContext({
               viewport: { width: viewportWidth, height: viewportHeight },
               deviceScaleFactor: 1.5,
@@ -99,13 +123,27 @@ function createScreenshotMcpServer(sessionToken) {
             return {
               content: [{ type: 'image', data: buffer.toString('base64'), mimeType: 'image/jpeg' }],
             };
+          };
+
+          try {
+            return await Promise.race([
+              doScreenshot(),
+              new Promise((_, reject) => {
+                hardTimer = setTimeout(() => {
+                  timedOut = true;
+                  cleanup();
+                  reject(new Error('Screenshot timed out (10s limit)'));
+                }, HARD_TIMEOUT_MS);
+              }),
+            ]);
           } catch (err) {
             return {
               content: [{ type: 'text', text: `Screenshot failed: ${err.message}` }],
               isError: true,
             };
           } finally {
-            if (browser) await browser.close().catch(() => {});
+            clearTimeout(hardTimer);
+            await cleanup();
           }
         }
       ),
