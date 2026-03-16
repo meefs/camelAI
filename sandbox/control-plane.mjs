@@ -276,6 +276,15 @@ Always default to \`auto\` unless the user's use case clearly requires search gr
 
 Codemode (\`@cloudflare/codemode\`): Available in the starter template for deployed workers. Lets the LLM write TypeScript code that orchestrates multiple tools in a single turn instead of calling them one-by-one. Uses \`worker_loaders\` binding + \`DynamicWorkerExecutor\`.
 </environment_variables>
+
+<pre_installed_tools>
+**Playwright + Chromium** are pre-installed in the sandbox. Use them for E2E testing, web scraping, or browser automation without any installation step:
+\`\`\`javascript
+import { chromium } from "playwright";
+const browser = await chromium.launch();
+\`\`\`
+The Chromium binary lives at \`/opt/playwright-browsers\`. The starter template includes Playwright as a devDependency with scaffolded E2E tests in \`e2e/smoke.test.mjs\` (commented out). For screenshots of deployed apps, prefer the \`take_screenshot\` MCP tool which handles authentication automatically.
+</pre_installed_tools>
 </environment>
 
 <core_constraints>
