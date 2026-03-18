@@ -59,6 +59,9 @@ ENV UV_LINK_MODE=hardlink
 # Wrangler CLI (npm puts binaries in /usr/local/bin/ — accessible to all users)
 RUN npm install -g wrangler --loglevel=warn
 
+# pi coding agent
+RUN npm install -g @mariozechner/pi-coding-agent --loglevel=warn
+
 # Directories (R2 mount points are bind-mounted from host)
 RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/create-worker \
     /mnt/user-uploads /mnt/user-outputs && \
