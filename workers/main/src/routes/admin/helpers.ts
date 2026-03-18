@@ -5,6 +5,7 @@
 import type { Env } from '../../types.js';
 import type { OrgDO, UserDO } from '../../auth.js';
 import type { AdminIndexDO } from '../../admin-index-do.js';
+import { ensureAdminIndexReady } from '../../../../../src/lib/auth-do.server';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -17,10 +18,6 @@ import {
 type AdminIndexEnv = Pick<Env, 'ADMIN_INDEX'>;
 type OrgEnv = Pick<Env, 'ORG'>;
 type UserEnv = Pick<Env, 'USER'>;
-type AdminThreadMessagesEnv =
-  AdminIndexEnv &
-  OrgEnv &
-  WorkspaceContainerEnv;
 type AdminThreadContextLookup = {
   getThreadContextById(threadId: string): Promise<{
     org_id: string;
@@ -50,13 +47,15 @@ export function getUserStub(env: UserEnv, userId: string) {
 // ---------------------------------------------------------------------------
 
 export async function loadAdminThreadMessagesResponse(
-  env: AdminThreadMessagesEnv,
+  env: Env,
   threadId: string,
 ): Promise<Response> {
   const trimmedThreadId = threadId.trim();
   if (!trimmedThreadId) {
     return Response.json({ error: 'Thread ID required' }, { status: 400 });
   }
+
+  await ensureAdminIndexReady(env as never);
 
   const adminIndex = getAdminIndexStub(env) as unknown as AdminThreadContextLookup;
   const threadContext = await adminIndex.getThreadContextById(trimmedThreadId);
