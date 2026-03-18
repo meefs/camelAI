@@ -33,6 +33,7 @@ import {
   KvValueSchema,
   R2ObjectSummarySchema,
   R2ObjectDetailSchema,
+  ThreadMessagesResponseSchema,
   UsersQuerySchema,
   ThreadsQuerySchema,
   OrgsQuerySchema,
@@ -51,6 +52,7 @@ import {
   getAdminIndexStub,
   getOrgStub,
   getUserStub,
+  loadAdminThreadMessagesResponse,
 } from './helpers.js';
 
 type HonoEnv = { Bindings: Env };
@@ -79,7 +81,7 @@ export const routes = new Hono<HonoEnv>();
 
 routes.use('*', async (c, next) => {
   await next();
-  if (c.req.method === 'GET' && c.res.status === 200) {
+  if (c.req.method === 'GET' && c.res.status === 200 && !c.res.headers.has('Cache-Control')) {
     c.res.headers.set('Cache-Control', 'private, max-age=30');
   }
 });
@@ -289,6 +291,26 @@ routes.get(
 
     const result = await adminIndex.getThreadsPaginated(offset, limit, search, filters);
     return c.json(result);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /threads/:id/messages
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/threads/:id/messages',
+  openApi({
+    summary: 'Get parsed thread messages',
+    responses: {
+      200: ThreadMessagesResponseSchema,
+      400: ErrorSchema,
+      404: ErrorSchema,
+      500: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    return loadAdminThreadMessagesResponse(c.env, c.req.param('id'));
   },
 );
 

@@ -33,7 +33,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const container = new WorkspaceContainer(
       env as unknown as WorkspaceContainerEnv,
       threadContext.workspace_id,
-      threadContext.org_id
+      threadContext.org_id,
     );
 
     const streamResult = await container.readThreadMessagesStream(threadId);
@@ -43,7 +43,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         : 500;
       return Response.json(
         { error: streamResult.error || 'Failed to load messages' },
-        { status }
+        { status },
       );
     }
 
