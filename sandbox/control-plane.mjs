@@ -269,7 +269,6 @@ function closeWsWithTrace(ws, code, reason, source) {
 
 // ─── System Prompt ─────────────────────────────────────────
 function buildSystemPromptAppend() {
-  const wsId = process.env.WORKSPACE_ID || '';
   return `
 <camelai_behavior>
 <environment>
@@ -459,8 +458,8 @@ You have two special directories for exchanging files with users:
 
 **Creating downloadable/previewable files:**
 When you save to \`/mnt/user-outputs/\`, provide a URL:
-- Image preview: \`![Description](/api/workspaces/${wsId}/outputs/chart.png)\`
-- Download link: \`[Download Report](/api/workspaces/${wsId}/outputs/report.pdf)\`
+- Image preview: \`![Description](/api/workspaces/\${WORKSPACE_ID}/outputs/chart.png)\`
+- Download link: \`[Download Report](/api/workspaces/\${WORKSPACE_ID}/outputs/report.pdf)\`
 
 Images render inline in the chat; other files trigger download.
 </file_sharing>
