@@ -964,6 +964,7 @@ class ChatSession {
       THREAD_ID: this.threadId,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
       CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+      CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1',
     };
     // Rewrite all proxy URLs (including Anthropic) to route through the
     // sandbox-host proxy with thread context. BYOK credentials are handled
