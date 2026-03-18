@@ -3,7 +3,7 @@
  *
  * All endpoints require Bearer token auth via ADMIN_API_KEY secret.
  * If no Bearer token is present, returns null to fall through to
- * React Router (for session-auth admin routes like /api/admin/threads/:id/messages).
+ * React Router (for session-auth admin routes like /api/admin/threads/:id/jsonl).
  *
  * The OpenAPI 3.1 spec is auto-generated from the openApi() middleware
  * on each route via createOpenApiDocument(). No separate spec file needed.
@@ -15,6 +15,7 @@
  *   GET   /api/admin/users/:id/orgs        — User's orgs
  *   GET   /api/admin/orgs                  — All orgs (enriched)
  *   GET   /api/admin/threads               — All threads
+ *   GET   /api/admin/threads/:id/messages  — Parsed thread messages
  *   POST  /api/admin/orgs/:id/members      — Add member to org
  *   PATCH /api/admin/threads/:id           — Update thread
  *   GET   /api/admin/kv                    — List KV keys

@@ -129,7 +129,7 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 
 Superusers can open `/chat/:threadId?adminReadonly=1` from qaml-backdoor thread list/detail via **View as User** (opens in a new tab). Read-only mode:
 
-- loads messages from `GET /api/admin/threads/:id/messages` (which proxies sandbox-host parsed JSONL response)
+- loads messages from `GET /api/admin/threads/:id/messages` (which proxies sandbox-host parsed JSONL response and now supports either Bearer `ADMIN_API_KEY` auth or superuser session auth)
 - disables composer/send and chat websocket connection
 - keeps preview panel enabled for QC inspection of generated files/apps
 
@@ -278,8 +278,8 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Onboarding                   | `/api/onboarding/complete`                                                                                                                                               |
 | Support                      | `/api/help`                                                                                                                                                              |
 | Dev tooling                  | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id`                                                                                                                       |
-| Admin troubleshooting        | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages`                                                                                                        |
-| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}` (Bearer `ADMIN_API_KEY` auth)                                                                                              |
+| Admin troubleshooting        | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` (`messages` also supports Bearer `ADMIN_API_KEY`; `jsonl` remains session-auth only)                 |
+| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, plus `GET /api/admin/threads/:id/messages` (Bearer `ADMIN_API_KEY` auth)                                                 |
 | Invitations                  | `/api/invitations/:orgId/:invitationId` (GET/POST)                                                                                                                       |
 | Workspace FS                 | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}`                                                                                     |
 | Workspace chat               | `/api/workspaces/:id/chat/:threadId/messages/stream`                                                                                                                     |
@@ -407,13 +407,14 @@ bun run deploy:tail:prod            # Deploy tail worker (user worker logs)
 
 ### Admin REST API
 
-Admin endpoints are served by the main worker at `/api/admin/*` and require `ADMIN_API_KEY` Bearer auth (set via `wrangler secret put ADMIN_API_KEY`). Requests without a Bearer token fall through to React Router for session-auth admin routes (e.g. `/api/admin/threads/:id/messages`).
+Admin endpoints are served by the main worker at `/api/admin/*` and require `ADMIN_API_KEY` Bearer auth (set via `wrangler secret put ADMIN_API_KEY`). `GET /api/admin/threads/:id/messages` now supports both Bearer auth and superuser session auth. Requests without a Bearer token still fall through to React Router for remaining session-auth admin routes such as `/api/admin/threads/:id/jsonl`.
 
 ```bash
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/stats
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/users
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/orgs
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/threads
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/threads/:id/messages
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/kv?prefix=email:
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/r2?prefix=abc
 curl -X POST -d '{"user_id":"..."}' -H "Authorization: Bearer <key>" https://<host>/api/admin/orgs/:id/members

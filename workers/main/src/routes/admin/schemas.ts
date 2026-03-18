@@ -21,6 +21,17 @@ const AvatarSchema = z.object({
   content: z.string(),
 });
 
+export const ParsedChatMessageSchema = z.object({
+  id: z.string(),
+  thread_id: z.string(),
+  role: z.enum(['user', 'assistant']),
+  content: z.any(),
+  created_at: z.number().int(),
+  isMeta: z.boolean().optional(),
+  sourceToolUseID: z.string().optional(),
+  isCompactSummary: z.boolean().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Pagination & query schemas
 // ---------------------------------------------------------------------------
@@ -226,6 +237,11 @@ export const R2ObjectDetailSchema = z.object({
   etag: z.string(),
   httpMetadata: z.record(z.string(), z.unknown()).optional(),
   customMetadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const ThreadMessagesResponseSchema = z.object({
+  success: z.literal(true),
+  messages: z.array(ParsedChatMessageSchema),
 });
 
 // ---------------------------------------------------------------------------
