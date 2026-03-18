@@ -385,7 +385,7 @@ async function performInitialAdminSync(env: CloudflareEnv) {
   }
 }
 
-async function ensureAdminIndexReady(env: CloudflareEnv): Promise<void> {
+export async function ensureAdminIndexReady(env: CloudflareEnv): Promise<void> {
   const authEnv = getAuthEnv(env);
   const syncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
   if (syncState === ADMIN_INDEX_SYNC_READY) {
