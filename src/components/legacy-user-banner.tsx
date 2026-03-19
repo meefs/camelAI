@@ -13,6 +13,7 @@ import {
 
 interface LegacyUserBannerProps {
   show: boolean;
+  userId: string;
 }
 
 interface DismissFetcherData {
@@ -20,19 +21,23 @@ interface DismissFetcherData {
   error?: string;
 }
 
-const SNOOZE_KEY = 'legacy_banner_snoozed_until';
+const SNOOZE_KEY_PREFIX = 'legacy_banner_snoozed_until:';
 const SNOOZE_DURATION_MS = 60 * 60 * 1000;
 
-function readSnoozedUntil(): number | null {
+function snoozeKey(userId: string) {
+  return `${SNOOZE_KEY_PREFIX}${userId}`;
+}
+
+function readSnoozedUntil(userId: string): number | null {
   if (typeof window === 'undefined') return null;
 
   try {
-    const storedValue = window.localStorage.getItem(SNOOZE_KEY);
+    const storedValue = window.localStorage.getItem(snoozeKey(userId));
     if (!storedValue) return null;
 
     const snoozedUntil = Number(storedValue);
     if (!Number.isFinite(snoozedUntil) || snoozedUntil <= Date.now()) {
-      window.localStorage.removeItem(SNOOZE_KEY);
+      window.localStorage.removeItem(snoozeKey(userId));
       return null;
     }
 
@@ -42,21 +47,21 @@ function readSnoozedUntil(): number | null {
   }
 }
 
-function writeSnoozedUntil(value: number | null) {
+function writeSnoozedUntil(userId: string, value: number | null) {
   if (typeof window === 'undefined') return;
 
   try {
     if (value === null) {
-      window.localStorage.removeItem(SNOOZE_KEY);
+      window.localStorage.removeItem(snoozeKey(userId));
       return;
     }
-    window.localStorage.setItem(SNOOZE_KEY, String(value));
+    window.localStorage.setItem(snoozeKey(userId), String(value));
   } catch {
     // Ignore storage errors and keep the in-memory hide state.
   }
 }
 
-export function LegacyUserBanner({ show }: LegacyUserBannerProps) {
+export function LegacyUserBanner({ show, userId }: LegacyUserBannerProps) {
   const fetcher = useFetcher<DismissFetcherData>();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isDismissed, setIsDismissed] = useState(false);
@@ -67,22 +72,22 @@ export function LegacyUserBanner({ show }: LegacyUserBannerProps) {
   const isDismissing = fetcher.state !== 'idle';
 
   useEffect(() => {
-    setSnoozedUntil(readSnoozedUntil());
+    setSnoozedUntil(readSnoozedUntil(userId));
     setIsReady(true);
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     if (!snoozedUntil) return;
 
     const remainingMs = snoozedUntil - Date.now();
     if (remainingMs <= 0) {
-      writeSnoozedUntil(null);
+      writeSnoozedUntil(userId, null);
       setSnoozedUntil(null);
       return;
     }
 
     const timeoutId = window.setTimeout(() => {
-      writeSnoozedUntil(null);
+      writeSnoozedUntil(userId, null);
       setSnoozedUntil(null);
     }, remainingMs);
 
@@ -101,7 +106,7 @@ export function LegacyUserBanner({ show }: LegacyUserBannerProps) {
 
   function handleClose() {
     const nextSnoozedUntil = Date.now() + SNOOZE_DURATION_MS;
-    writeSnoozedUntil(nextSnoozedUntil);
+    writeSnoozedUntil(userId, nextSnoozedUntil);
     setSnoozedUntil(nextSnoozedUntil);
     setIsExpanded(false);
   }
@@ -109,7 +114,7 @@ export function LegacyUserBanner({ show }: LegacyUserBannerProps) {
   function handleDismiss() {
     if (isDismissing || isDismissed) return;
 
-    writeSnoozedUntil(null);
+    writeSnoozedUntil(userId, null);
     setSnoozedUntil(null);
     dismissPendingRef.current = true;
     setIsDismissed(true);

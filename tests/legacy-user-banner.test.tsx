@@ -42,7 +42,7 @@ describe('LegacyUserBanner', () => {
   });
 
   it('renders nothing when show is false', () => {
-    render(<LegacyUserBanner show={false} />);
+    render(<LegacyUserBanner show={false} userId="test-user-1" />);
 
     expect(
       screen.queryByText("Things look different? Here's why")
@@ -52,7 +52,7 @@ describe('LegacyUserBanner', () => {
   it('starts collapsed and expands in place', async () => {
     const user = userEvent.setup();
 
-    render(<LegacyUserBanner show={true} />);
+    render(<LegacyUserBanner show={true} userId="test-user-1" />);
 
     expect(screen.getByText('👋')).toBeInTheDocument();
 
@@ -75,14 +75,14 @@ describe('LegacyUserBanner', () => {
   it('temporarily hides the banner with the x button without posting to the API', async () => {
     const user = userEvent.setup();
 
-    render(<LegacyUserBanner show={true} />);
+    render(<LegacyUserBanner show={true} userId="test-user-1" />);
 
     await user.click(
       screen.getByRole('button', { name: /hide legacy user notice for now/i })
     );
 
     expect(submitMock).not.toHaveBeenCalled();
-    expect(Number(window.localStorage.getItem('legacy_banner_snoozed_until'))).toBeGreaterThan(Date.now());
+    expect(Number(window.localStorage.getItem('legacy_banner_snoozed_until:test-user-1'))).toBeGreaterThan(Date.now());
     expect(
       screen.queryByText("Things look different? Here's why")
     ).not.toBeInTheDocument();
@@ -90,11 +90,11 @@ describe('LegacyUserBanner', () => {
 
   it('stays hidden when a future snooze timestamp exists', () => {
     window.localStorage.setItem(
-      'legacy_banner_snoozed_until',
+      'legacy_banner_snoozed_until:test-user-1',
       String(Date.now() + 60 * 60 * 1000)
     );
 
-    render(<LegacyUserBanner show={true} />);
+    render(<LegacyUserBanner show={true} userId="test-user-1" />);
 
     expect(
       screen.queryByText("Things look different? Here's why")
@@ -104,12 +104,12 @@ describe('LegacyUserBanner', () => {
   it('permanently dismisses from the expanded CTA and clears any snooze', async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
-      'legacy_banner_snoozed_until',
+      'legacy_banner_snoozed_until:test-user-1',
       String(Date.now() + 60 * 60 * 1000)
     );
-    window.localStorage.removeItem('legacy_banner_snoozed_until');
+    window.localStorage.removeItem('legacy_banner_snoozed_until:test-user-1');
 
-    render(<LegacyUserBanner show={true} />);
+    render(<LegacyUserBanner show={true} userId="test-user-1" />);
 
     await user.click(
       screen.getByRole('button', { name: /things look different\? here's why/i })
@@ -122,12 +122,12 @@ describe('LegacyUserBanner', () => {
       {},
       { method: 'post', action: '/api/legacy-banner/dismiss' }
     );
-    expect(window.localStorage.getItem('legacy_banner_snoozed_until')).toBeNull();
+    expect(window.localStorage.getItem('legacy_banner_snoozed_until:test-user-1')).toBeNull();
   });
 
   it('restores the banner and shows an error toast when permanent dismissal fails', async () => {
     const user = userEvent.setup();
-    const { rerender } = render(<LegacyUserBanner show={true} />);
+    const { rerender } = render(<LegacyUserBanner show={true} userId="test-user-1" />);
 
     await user.click(
       screen.getByRole('button', { name: /things look different\? here's why/i })
@@ -138,7 +138,7 @@ describe('LegacyUserBanner', () => {
 
     fetcherState = 'idle';
     fetcherData = { error: 'Dismiss failed' };
-    rerender(<LegacyUserBanner show={true} />);
+    rerender(<LegacyUserBanner show={true} userId="test-user-1" />);
 
     expect(
       await screen.findByText("Things look different? Here's why")

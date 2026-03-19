@@ -61,20 +61,25 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     error: null,
   };
 
-  const normalizedEmail = authContext.user.email.trim().toLowerCase();
-  const isDevelopment = env.NEXTJS_ENV === 'development';
-  const [legacyUserValue, dismissedValue] = await Promise.all([
-    isDevelopment || !normalizedEmail
-      ? Promise.resolve(isDevelopment ? '1' : null)
-      : env.APP_KV.get(`legacy_user:${normalizedEmail}`),
-    env.APP_KV.get(`legacy_banner_dismissed:${authContext.user.id}`),
-  ]);
-  const isLegacyUser = isDevelopment || Boolean(legacyUserValue);
-  const hasDismissedLegacyBanner = Boolean(dismissedValue);
+  let showLegacyBanner = false;
+  try {
+    const normalizedEmail = authContext.user.email.trim().toLowerCase();
+    const isDevelopment = env.NEXTJS_ENV === 'development';
+    const [legacyUserValue, dismissedValue] = await Promise.all([
+      isDevelopment || !normalizedEmail
+        ? Promise.resolve(isDevelopment ? '1' : null)
+        : env.APP_KV.get(`legacy_user:${normalizedEmail}`),
+      env.APP_KV.get(`legacy_banner_dismissed:${authContext.user.id}`),
+    ]);
+    const isLegacyUser = isDevelopment || Boolean(legacyUserValue);
+    showLegacyBanner = isLegacyUser && !Boolean(dismissedValue);
+  } catch {
+    // KV failure should never take down the app — degrade to hiding the banner
+  }
   const responseData = {
     authState,
     defaultSidebarOpen,
-    showLegacyBanner: isLegacyUser && !hasDismissedLegacyBanner,
+    showLegacyBanner,
   };
 
   // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
@@ -88,7 +93,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function AppLayout() {
-  const { defaultSidebarOpen, showLegacyBanner } = useLoaderData<typeof loader>();
+  const { authState, defaultSidebarOpen, showLegacyBanner } = useLoaderData<typeof loader>();
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
@@ -96,7 +101,7 @@ export default function AppLayout() {
       <SidebarInset className="h-svh overflow-hidden flex flex-col">
         <Outlet />
       </SidebarInset>
-      <LegacyUserBanner show={showLegacyBanner} />
+      <LegacyUserBanner show={showLegacyBanner} userId={authState.user.id} />
     </SidebarProvider>
   );
 }

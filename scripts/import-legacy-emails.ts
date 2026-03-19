@@ -47,7 +47,11 @@ function extractEmailsFromCsv(csv: string): string[] {
 }
 
 function normalizeWranglerEnv(value: string | undefined): string | undefined {
-  if (!value || value === 'local' || value === 'development') {
+  if (!value || value === 'development') {
+    return undefined;
+  }
+  if (value === 'local') {
+    console.warn('Warning: --env local is not supported (local KV is managed by Miniflare). Use --env dev-illiana or --env dev-miguel instead.');
     return undefined;
   }
   if (value === 'production') {
