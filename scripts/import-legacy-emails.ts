@@ -138,6 +138,7 @@ async function main() {
       'APP_KV',
       '--config',
       'wrangler.jsonc',
+      '--remote',
     ];
     if (env) {
       wranglerArgs.push('--env', env);
