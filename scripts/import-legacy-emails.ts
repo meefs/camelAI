@@ -51,8 +51,8 @@ function normalizeWranglerEnv(value: string | undefined): string | undefined {
     return undefined;
   }
   if (value === 'local') {
-    console.warn('Warning: --env local is not supported (local KV is managed by Miniflare). Use --env dev-illiana or --env dev-miguel instead.');
-    return undefined;
+    console.error('Error: --env local is not supported. Local KV is managed by Miniflare and cannot be seeded with this script. Use --env dev-illiana or --env dev-miguel instead.');
+    process.exit(1);
   }
   if (value === 'production') {
     return 'prod';
