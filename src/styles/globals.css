@@ -342,3 +342,18 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
+
+@keyframes wave {
+  0%, 100% { transform: rotate(0deg); }
+  10% { transform: rotate(14deg); }
+  20% { transform: rotate(-8deg); }
+  30% { transform: rotate(14deg); }
+  40% { transform: rotate(-4deg); }
+  50% { transform: rotate(10deg); }
+  60% { transform: rotate(0deg); }
+}
+
+.legacy-banner-wave {
+  animation: wave 1.5s ease-in-out 1;
+  transform-origin: 70% 70%;
+}

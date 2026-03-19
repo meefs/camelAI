@@ -1,7 +1,9 @@
 import { Outlet, redirect, data, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app';
 import { requireAuthContext } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import { parseCookies, createSessionCookieHeader } from '@/lib/cookies.server';
+import { LegacyUserBanner } from '@/components/legacy-user-banner';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 import type { AuthState } from '@/types';
@@ -28,6 +30,7 @@ export function shouldRevalidate({
 export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
 
   if (!authContext.onboarding?.completed_at) {
     throw redirect('/onboarding');
@@ -58,7 +61,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     error: null,
   };
 
-  const responseData = { authState, defaultSidebarOpen };
+  const normalizedEmail = authContext.user.email.trim().toLowerCase();
+  const isDevelopment = env.NEXTJS_ENV === 'development';
+  const [legacyUserValue, dismissedValue] = await Promise.all([
+    isDevelopment || !normalizedEmail
+      ? Promise.resolve(isDevelopment ? '1' : null)
+      : env.APP_KV.get(`legacy_user:${normalizedEmail}`),
+    env.APP_KV.get(`legacy_banner_dismissed:${authContext.user.id}`),
+  ]);
+  const isLegacyUser = isDevelopment || Boolean(legacyUserValue);
+  const hasDismissedLegacyBanner = Boolean(dismissedValue);
+  const responseData = {
+    authState,
+    defaultSidebarOpen,
+    showLegacyBanner: isLegacyUser && !hasDismissedLegacyBanner,
+  };
 
   // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
   if (authContext.resignedSessionCookie) {
@@ -71,7 +88,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function AppLayout() {
-  const { defaultSidebarOpen } = useLoaderData<typeof loader>();
+  const { defaultSidebarOpen, showLegacyBanner } = useLoaderData<typeof loader>();
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
@@ -79,6 +96,7 @@ export default function AppLayout() {
       <SidebarInset className="h-svh overflow-hidden flex flex-col">
         <Outlet />
       </SidebarInset>
+      <LegacyUserBanner show={showLegacyBanner} />
     </SidebarProvider>
   );
 }
