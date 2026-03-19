@@ -130,6 +130,7 @@ export default [
   route('api/auth/switch-org', 'routes/api/auth.switch-org.ts'),
   route('api/auth/switch-workspace', 'routes/api/auth.switch-workspace.ts'),
   route('api/onboarding/complete', 'routes/api/onboarding.complete.ts'),
+  route('api/legacy-banner/dismiss', 'routes/api/legacy-banner.dismiss.ts'),
   route('api/help', 'routes/api/help.ts'),
   route('api/dev/sent-emails', 'routes/api/dev.sent-emails.ts'),
   route('api/dev/sent-emails/:id', 'routes/api/dev.sent-emails.$id.ts'),
