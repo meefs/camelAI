@@ -30,7 +30,6 @@ export function shouldRevalidate({
 export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);
-  const env = getEnv(context);
 
   if (!authContext.onboarding?.completed_at) {
     throw redirect('/onboarding');
@@ -38,6 +37,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (authContext.emailVerification.required && !authContext.emailVerification.verified) {
     throw redirect('/onboarding');
   }
+
+  const env = getEnv(context);
 
   // Get sidebar state from cookies
   const cookies = parseCookies(request);
