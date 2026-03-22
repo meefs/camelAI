@@ -91,8 +91,8 @@ const routes: Route[] = [
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },
 
   // External MCP (OAuth-authenticated, for external clients)
-  { method: 'GET', path: /^\/\.well-known\/oauth-authorization-server\/api\/mcp\/external$/, handler: handleOAuthMetadata },
-  { method: 'GET', path: /^\/\.well-known\/oauth-protected-resource\/api\/mcp\/external$/, handler: handleResourceMetadata },
+  { method: 'GET', path: /^\/\.well-known\/oauth-authorization-server(\/api\/mcp\/external)?$/, handler: handleOAuthMetadata },
+  { method: 'GET', path: /^\/\.well-known\/oauth-protected-resource(\/api\/mcp\/external)?$/, handler: handleResourceMetadata },
   { method: 'ALL', path: /^\/api\/mcp\/external(\/|$)/, handler: handleExternalMcp },
 
   // Thread Preview API
