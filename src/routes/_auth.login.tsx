@@ -33,10 +33,13 @@ export default function LoginPage() {
 
 function getSafeRedirect(redirect: string | null): string {
   if (!redirect) return '/';
+  // Extract just the path portion (before any query string) for safety checks.
+  // Query params may contain colons (e.g. redirect_uri=https://...) which are safe.
+  const pathPart = redirect.split('?')[0];
   if (
-    redirect.startsWith('/') &&
-    !redirect.startsWith('//') &&
-    !redirect.includes(':')
+    pathPart.startsWith('/') &&
+    !pathPart.startsWith('//') &&
+    !pathPart.includes(':')
   ) {
     return redirect;
   }

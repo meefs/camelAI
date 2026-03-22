@@ -36,6 +36,7 @@ import {
 } from './routes/integrations.js';
 import { handleChatWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
+import { handleExternalMcp, handleOAuthMetadata, handleResourceMetadata } from './routes/external-mcp.js';
 import {
   handleMssqlQuery,
   handleMysqlQuery,
@@ -47,6 +48,7 @@ import { handleAdminApi } from './routes/admin/index.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
+export { ExternalMcpDO } from './external-mcp-handler.js';
 export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
@@ -85,8 +87,13 @@ const routes: Route[] = [
   // Resend email proxy (for sandbox containers)
   { method: 'POST', path: /^\/api\/resend\/emails$/, handler: handleResendProxy },
 
-  // MCP
+  // MCP (internal - sandbox agent)
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },
+
+  // External MCP (OAuth-authenticated, for external clients)
+  { method: 'GET', path: /^\/\.well-known\/oauth-authorization-server\/api\/mcp\/external$/, handler: handleOAuthMetadata },
+  { method: 'GET', path: /^\/\.well-known\/oauth-protected-resource\/api\/mcp\/external$/, handler: handleResourceMetadata },
+  { method: 'ALL', path: /^\/api\/mcp\/external(\/|$)/, handler: handleExternalMcp },
 
   // Thread Preview API
   { method: 'POST', path: /^\/api\/threads\/([^/]+)\/preview$/, handler: handleThreadPreview },

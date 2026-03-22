@@ -242,6 +242,24 @@ MCP-driven prompts (connection setup, bug reports) are persisted in `ChatThreadD
 
 The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured runtime logs for a deployed app in the current workspace. It validates script ownership, resolves the dispatch script key (`{script}--{org-slug}`), and reads from `WorkerLogsDO` (with legacy key fallback).
 
+### External MCP Server
+
+An OAuth 2.1-authenticated MCP server for external clients (Claude.ai, ChatGPT, etc.) at `/api/mcp/external`. Exposes workspace tools: `bash`, `list_apps`, `list_files`, `read_file`, `write_file`.
+
+**OAuth Flow:**
+1. Client discovers metadata via `GET /.well-known/oauth-authorization-server/api/mcp/external`
+2. Client registers dynamically via `POST /api/mcp/external/register` (RFC 7591)
+3. Authorization code flow with PKCE (`GET/POST /api/mcp/external/authorize`) — user selects workspace via consent page
+4. Token exchange via `POST /api/mcp/external/token` (1h access, 30d refresh)
+5. MCP protocol traffic uses `Bearer` token auth
+
+**Key files:**
+- `workers/main/src/external-mcp-handler.ts` — `ExternalMcpDO` (tools)
+- `workers/main/src/external-mcp-oauth.ts` — OAuth provider (KV-backed)
+- `workers/main/src/routes/external-mcp.ts` — Route handler + consent page
+
+**OAuth state in KV (APP_KV):** `mcp_client:*`, `mcp_authcode:*` (5m TTL), `mcp_token:*` (1h TTL), `mcp_refresh:*` (30d TTL).
+
 ### Integration Token Refresh
 
 OAuth integrations with expiring tokens are refreshed by `WorkspaceDO` alarms. Updated credentials are pushed to both sandbox runtimes and deployed workers.
@@ -293,7 +311,8 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Apps                         | `/api/apps/:scriptName/preview`                                                                                                                                          |
 | WebSocket                    | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs)                                                                                                     |
 | Email                        | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{orgSlug}.{workspaceSlug}@...`)                                                 |
-| MCP                          | `/mcp` (streamable HTTP), `/mcp/health`                                                                                                                                  |
+| MCP (internal)               | `/mcp` (streamable HTTP), `/mcp/health`                                                                                                                                  |
+| MCP (external)               | `/api/mcp/external` (OAuth, streamable HTTP), `/api/mcp/external/{authorize,token,register,revoke,health}`                                                               |
 
 ## Durable Objects
 
@@ -306,6 +325,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | `WorkspaceCronDO` | per workspace | Scheduled prompt definitions, next-run calculation, alarm-based prompt dispatch to chat threads |
 | `ChatThreadDO`    | per thread    | WebSocket state, preview target, todo/prompt persistence                                        |
 | `WorkerLogsDO`    | per script    | Deployed worker logs (up to 10k entries), real-time WebSocket streaming                         |
+| `ExternalMcpDO`   | per connection| External MCP server for OAuth-authenticated clients (bash, files, apps)                         |
 
 Thread records are treated uniformly across web, Slack, and email ingress. History and admin queries do not filter by thread source.
 

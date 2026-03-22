@@ -42,11 +42,13 @@ export default function AuthLayout() {
  */
 function getSafeRedirect(redirect: string | null): string {
   if (!redirect) return '/';
-  // Must start with single slash and not be a protocol-relative URL
+  // Check only the path portion — query params may contain colons
+  // (e.g. redirect_uri=https://...) which are safe.
+  const pathPart = redirect.split('?')[0];
   if (
-    redirect.startsWith('/') &&
-    !redirect.startsWith('//') &&
-    !redirect.includes(':')
+    pathPart.startsWith('/') &&
+    !pathPart.startsWith('//') &&
+    !pathPart.includes(':')
   ) {
     return redirect;
   }

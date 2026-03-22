@@ -22,10 +22,11 @@ export default function SignupPage() {
 
 function getSafeRedirect(redirect: string | null): string {
   if (!redirect) return '/';
+  const pathPart = redirect.split('?')[0];
   if (
-    redirect.startsWith('/') &&
-    !redirect.startsWith('//') &&
-    !redirect.includes(':')
+    pathPart.startsWith('/') &&
+    !pathPart.startsWith('//') &&
+    !pathPart.includes(':')
   ) {
     return redirect;
   }
