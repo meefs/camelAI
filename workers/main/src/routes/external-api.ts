@@ -1,24 +1,30 @@
 /**
- * External API route handler using Cap'n Web RPC.
+ * External REST API route handler.
  *
- * OAuth endpoints:
+ * OAuth:
  *   GET  /.well-known/oauth-authorization-server  → OAuth metadata
  *   GET  /.well-known/oauth-protected-resource     → Resource metadata
  *   POST /api/ext/oauth/register                   → Dynamic client registration
- *   GET  /api/ext/oauth/authorize                  → OAuth authorize (show consent)
- *   POST /api/ext/oauth/authorize                  → OAuth authorize (submit consent)
+ *   GET  /api/ext/oauth/authorize                  → OAuth authorize (consent page)
+ *   POST /api/ext/oauth/authorize                  → OAuth authorize (submit)
  *   POST /api/ext/oauth/token                      → Token exchange
  *   POST /api/ext/oauth/revoke                     → Token revocation
  *
- * RPC endpoint:
- *   POST /api/ext/rpc                              → Cap'n Web RPC (Bearer auth)
+ * API (Bearer auth):
+ *   GET  /api/ext/health                           → Health check
+ *   POST /api/ext/bash                             → Execute bash command
+ *   GET  /api/ext/apps                             → List deployed apps
+ *   GET  /api/ext/files                            → List files
+ *   GET  /api/ext/files/read                       → Read file
+ *   PUT  /api/ext/files/write                      → Write file
+ *   POST /api/ext/files/upload                     → Upload binary file (base64)
+ *   GET  /api/ext/files/download                   → Download file (raw stream)
  */
 
 import type { Env, RouteContext } from '../types.js';
-import { ExternalMcpOAuthProvider, OAuthError } from '../external-api-oauth.js';
-import { getSignedSessionFromRequest } from '../cookies.js';
-import { RpcTarget, newWorkersRpcResponse } from 'capnweb';
+import { ExternalMcpOAuthProvider, OAuthError, type TokenGrantRecord } from '../external-api-oauth.js';
 import { WorkspaceContainer } from '../workspace-container.js';
+import { getSignedSessionFromRequest } from '../cookies.js';
 import type { OrgDO, WorkerScript } from '../auth.js';
 import { getEnvPrefix } from '../cf-api-proxy.js';
 
@@ -29,95 +35,25 @@ function getBaseUrl(req: Request): string {
   return `${url.protocol}//${url.host}`;
 }
 
-// ── Cap'n Web RPC Targets ───────────────────────────────────────────
-
-/**
- * Public API entry point. Validates an OAuth Bearer token and returns
- * an authenticated WorkspaceSession.
- */
-class ExternalApi extends RpcTarget {
-  constructor(private env: Env, private oauth: ExternalMcpOAuthProvider) {
-    super();
-  }
-
-  async authenticate(token: string): Promise<WorkspaceSession> {
-    const grant = await this.oauth.verifyAccessToken(token);
-    if (!grant) {
-      throw new Error('Invalid or expired token');
-    }
-    return new WorkspaceSession(this.env, grant.org_id, grant.workspace_id);
-  }
+function json(data: unknown, status = 200): Response {
+  return Response.json(data, { status });
 }
 
-/**
- * Authenticated workspace session. All methods operate on the workspace
- * the user authorized during OAuth.
- */
-class WorkspaceSession extends RpcTarget {
-  private container: WorkspaceContainer;
-
-  constructor(private env: Env, private orgId: string, private workspaceId: string) {
-    super();
-    this.container = new WorkspaceContainer(env, workspaceId, orgId);
-  }
-
-  async bash(command: string, cwd?: string) {
-    return this.container.exec(command, { cwd });
-  }
-
-  async listApps() {
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId)) as DurableObjectStub<OrgDO>;
-    const scripts: WorkerScript[] = await orgStub.listWorkerScriptsByWorkspace(this.workspaceId);
-    const vanityDomain = getVanityDomain(this.env);
-
-    return Promise.all(scripts.map(async (s: WorkerScript) => {
-      let url: string;
-      try {
-        const customDomain = await orgStub.getCustomDomain();
-        if (customDomain?.domain) {
-          url = `https://${s.script_name}.${customDomain.domain}`;
-        } else {
-          const orgSlug = await orgStub.getSlug();
-          const sep = orgSlug && /^[a-z0-9]{6,}$/.test(orgSlug) ? '-' : '--';
-          url = orgSlug
-            ? `https://${s.script_name}${sep}${orgSlug}.${vanityDomain}`
-            : `https://${s.script_name}.${vanityDomain}`;
-        }
-      } catch {
-        url = `https://${s.script_name}.${vanityDomain}`;
-      }
-      return {
-        name: s.script_name,
-        url,
-        is_public: s.is_public,
-        created_at: new Date(s.created_at).toISOString(),
-        updated_at: new Date(s.updated_at).toISOString(),
-      };
-    }));
-  }
-
-  async listFiles(path = '/home/claude', recursive = false) {
-    return this.container.listFiles(path, { recursive });
-  }
-
-  async readFile(path: string) {
-    return this.container.readFile(path);
-  }
-
-  async writeFile(path: string, content: string) {
-    return this.container.writeFile(path, content);
-  }
-
-  async uploadFile(path: string, contentBase64: string) {
-    return this.container.writeBinaryFile(path, contentBase64);
-  }
-
-  async downloadFile(path: string) {
-    return this.container.readFile(path);
-  }
+function err(error: string, status = 400, details?: string): Response {
+  return Response.json({ error, ...(details && { details }) }, { status });
 }
 
-// ── OAuth Metadata ───────────────────────────────────────────────────
+// ── Bearer Auth ─────────────────────────────────────────────────────
+
+async function requireAuth(req: Request, oauth: ExternalMcpOAuthProvider): Promise<TokenGrantRecord | Response> {
+  const h = req.headers.get('authorization');
+  if (!h?.startsWith('Bearer ')) return err('Unauthorized', 401);
+  const grant = await oauth.verifyAccessToken(h.slice(7));
+  if (!grant) return err('Invalid or expired token', 401);
+  return grant;
+}
+
+// ── OAuth Metadata ──────────────────────────────────────────────────
 
 function buildOAuthMetadata(baseUrl: string) {
   return {
@@ -162,10 +98,11 @@ export async function handleResourceMetadata({ req }: RouteContext): Promise<Res
 
 export async function handleExternalApi({ req, env, ctx, url }: RouteContext): Promise<Response | null> {
   const oauth = new ExternalMcpOAuthProvider(env.APP_KV);
-  const pathname = url.pathname;
+  const p = url.pathname;
 
-  // OAuth endpoints
-  if (pathname === '/api/ext/oauth/register') {
+  // ── OAuth ─────────────────────────────────────────────────────
+
+  if (p === '/api/ext/oauth/register') {
     if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
     try {
       const body = await req.json() as Record<string, unknown>;
@@ -179,68 +116,132 @@ export async function handleExternalApi({ req, env, ctx, url }: RouteContext): P
         token_endpoint_auth_method: body.token_endpoint_auth_method as string | undefined,
       });
       return Response.json(client, { status: 201 });
-    } catch (err) {
-      if (err instanceof OAuthError) return err.toResponse();
-      return Response.json({ error: 'Registration failed' }, { status: 500 });
+    } catch (e) {
+      if (e instanceof OAuthError) return e.toResponse();
+      return err('Registration failed', 500);
     }
   }
 
-  if (pathname === '/api/ext/oauth/authorize') {
-    return handleAuthorize(req, env, oauth);
-  }
+  if (p === '/api/ext/oauth/authorize') return handleAuthorize(req, env, oauth);
 
-  if (pathname === '/api/ext/oauth/token') {
+  if (p === '/api/ext/oauth/token') {
     if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
     return handleTokenExchange(req, oauth);
   }
 
-  if (pathname === '/api/ext/oauth/revoke') {
+  if (p === '/api/ext/oauth/revoke') {
     if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
     return handleTokenRevocation(req, oauth);
   }
 
-  // Health check
-  if (pathname === '/api/ext/health') {
-    return Response.json({ ok: true });
+  // ── Health ────────────────────────────────────────────────────
+
+  if (p === '/api/ext/health') return json({ ok: true });
+
+  // ── API (auth required) ───────────────────────────────────────
+
+  const authResult = await requireAuth(req, oauth);
+  if (authResult instanceof Response) return authResult;
+  const grant = authResult;
+  const container = new WorkspaceContainer(env, grant.workspace_id, grant.org_id);
+
+  // POST /api/ext/bash
+  if (p === '/api/ext/bash' && req.method === 'POST') {
+    const body = await req.json() as { command: string; cwd?: string };
+    if (!body.command) return err('command is required');
+    return json(await container.exec(body.command, { cwd: body.cwd }));
   }
 
-  // Cap'n Web RPC endpoint
-  if (pathname === '/api/ext/rpc') {
-    const api = new ExternalApi(env, oauth);
-    return newWorkersRpcResponse(req, api);
+  // GET /api/ext/apps
+  if (p === '/api/ext/apps' && req.method === 'GET') {
+    const orgStub = env.ORG.get(env.ORG.idFromName(grant.org_id)) as DurableObjectStub<OrgDO>;
+    const scripts: WorkerScript[] = await orgStub.listWorkerScriptsByWorkspace(grant.workspace_id);
+    const vd = getVanityDomain(env);
+    const apps = await Promise.all(scripts.map(async (s: WorkerScript) => {
+      let appUrl: string;
+      try {
+        const cd = await orgStub.getCustomDomain();
+        if (cd?.domain) { appUrl = `https://${s.script_name}.${cd.domain}`; }
+        else {
+          const slug = await orgStub.getSlug();
+          const sep = slug && /^[a-z0-9]{6,}$/.test(slug) ? '-' : '--';
+          appUrl = slug ? `https://${s.script_name}${sep}${slug}.${vd}` : `https://${s.script_name}.${vd}`;
+        }
+      } catch { appUrl = `https://${s.script_name}.${vd}`; }
+      return { name: s.script_name, url: appUrl, is_public: s.is_public, created_at: new Date(s.created_at).toISOString(), updated_at: new Date(s.updated_at).toISOString() };
+    }));
+    return json({ count: apps.length, apps });
   }
 
-  return Response.json({ error: 'Not found' }, { status: 404 });
+  // GET /api/ext/files?path=&recursive=0|1
+  if (p === '/api/ext/files' && req.method === 'GET') {
+    const path = url.searchParams.get('path') ?? '/home/claude';
+    const recursive = url.searchParams.get('recursive') === '1';
+    return json(await container.listFiles(path, { recursive }));
+  }
+
+  // GET /api/ext/files/read?path=
+  if (p === '/api/ext/files/read' && req.method === 'GET') {
+    const path = url.searchParams.get('path');
+    if (!path) return err('path query parameter is required');
+    return json(await container.readFile(path));
+  }
+
+  // PUT /api/ext/files/write
+  if (p === '/api/ext/files/write' && req.method === 'PUT') {
+    const body = await req.json() as { path: string; content: string };
+    if (!body.path || body.content === undefined) return err('path and content are required');
+    return json(await container.writeFile(body.path, body.content));
+  }
+
+  // POST /api/ext/files/upload
+  if (p === '/api/ext/files/upload' && req.method === 'POST') {
+    const body = await req.json() as { path: string; content_base64: string };
+    if (!body.path || !body.content_base64) return err('path and content_base64 are required');
+    return json(await container.writeBinaryFile(body.path, body.content_base64));
+  }
+
+  // GET /api/ext/files/download?path=
+  if (p === '/api/ext/files/download' && req.method === 'GET') {
+    const path = url.searchParams.get('path');
+    if (!path) return err('path query parameter is required');
+    const resp = await container.readFileStream(path);
+    if (!resp) return err('File not found', 404);
+    const filename = path.split('/').pop() ?? 'file';
+    return new Response(resp.body, {
+      headers: {
+        'content-type': resp.headers.get('content-type') ?? 'application/octet-stream',
+        'content-disposition': `attachment; filename="${filename}"`,
+      },
+    });
+  }
+
+  return err('Not found', 404);
 }
 
-// ── Vanity Domain Helper ────────────────────────────────────────────
+// ── Vanity Domain ───────────────────────────────────────────────────
 
 function getVanityDomain(env: Env): string {
-  const baseUrl = env.WORKER_BASE_URL;
-  if (baseUrl) {
+  const u = env.WORKER_BASE_URL;
+  if (u) {
     try {
-      const hostname = new URL(baseUrl).hostname;
-      const envPrefix = getEnvPrefix(hostname);
-      if (envPrefix) return `${envPrefix}.camelai.app`;
-      if (hostname !== 'camelai.dev' && !hostname.endsWith('.camelai.dev')) return 'local.camelai.app';
-      return 'camelai.app';
-    } catch { return 'camelai.app'; }
+      const h = new URL(u).hostname;
+      const p = getEnvPrefix(h);
+      if (p) return `${p}.camelai.app`;
+      if (h !== 'camelai.dev' && !h.endsWith('.camelai.dev')) return 'local.camelai.app';
+    } catch {}
   }
   return 'camelai.app';
 }
 
-// ── Authorization Handler ───────────────────────────────────────────
+// ── Authorization ───────────────────────────────────────────────────
 
 async function handleAuthorize(req: Request, env: Env, oauth: ExternalMcpOAuthProvider): Promise<Response> {
   const url = new URL(req.url);
-
   let params: URLSearchParams;
   if (req.method === 'POST') {
-    const formData = await req.text();
-    params = new URLSearchParams(formData);
-    for (const [key, value] of url.searchParams) {
-      if (!params.has(key)) params.set(key, value);
-    }
+    params = new URLSearchParams(await req.text());
+    for (const [k, v] of url.searchParams) { if (!params.has(k)) params.set(k, v); }
   } else if (req.method === 'GET') {
     params = url.searchParams;
   } else {
@@ -255,45 +256,38 @@ async function handleAuthorize(req: Request, env: Env, oauth: ExternalMcpOAuthPr
   const state = params.get('state') ?? undefined;
   const scope = params.get('scope');
 
-  if (!clientId || !redirectUri || responseType !== 'code') {
+  if (!clientId || !redirectUri || responseType !== 'code')
     return new OAuthError('invalid_request', 'Missing required parameters').toResponse();
-  }
-  if (!codeChallenge) {
-    return new OAuthError('invalid_request', 'code_challenge is required (PKCE is mandatory)').toResponse();
-  }
-  if (codeChallengeMethod !== 'S256') {
-    return new OAuthError('invalid_request', 'Only S256 code challenge method is supported').toResponse();
-  }
+  if (!codeChallenge)
+    return new OAuthError('invalid_request', 'code_challenge is required (PKCE mandatory)').toResponse();
+  if (codeChallengeMethod !== 'S256')
+    return new OAuthError('invalid_request', 'Only S256 supported').toResponse();
 
   const client = await oauth.getClient(clientId);
   if (!client) return new OAuthError('invalid_client', 'Unknown client_id').toResponse();
-  if (!client.redirect_uris.includes(redirectUri)) {
+  if (!client.redirect_uris.includes(redirectUri))
     return new OAuthError('invalid_request', 'redirect_uri not registered').toResponse();
-  }
 
   const session = await getSignedSessionFromRequest(req, env.TOKEN_SIGNING_SECRET);
   if (!session) {
-    const returnUrl = encodeURIComponent(url.pathname + url.search);
-    return Response.redirect(`${url.origin}/login?redirect=${returnUrl}`, 302);
+    return Response.redirect(`${url.origin}/login?redirect=${encodeURIComponent(url.pathname + url.search)}`, 302);
   }
 
   if (req.method === 'POST') {
     const workspaceId = params.get('workspace_id');
     if (!workspaceId) return new OAuthError('invalid_request', 'No workspace selected').toResponse();
-
-    const hasAccess = await verifyWorkspaceAccess(env, session.user_id, session.org_id, workspaceId);
-    if (!hasAccess) return new OAuthError('access_denied', 'No access to this workspace').toResponse();
+    const ok = await verifyWorkspaceAccess(env, session.user_id, session.org_id, workspaceId);
+    if (!ok) return new OAuthError('access_denied', 'No access to this workspace').toResponse();
 
     const code = await oauth.createAuthorizationCode({
       client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge,
       scopes: scope ? scope.split(' ') : ['workspace'],
       user_id: session.user_id, org_id: session.org_id, workspace_id: workspaceId, state,
     });
-
-    const callbackUrl = new URL(redirectUri);
-    callbackUrl.searchParams.set('code', code);
-    if (state) callbackUrl.searchParams.set('state', state);
-    return Response.redirect(callbackUrl.toString(), 302);
+    const cb = new URL(redirectUri);
+    cb.searchParams.set('code', code);
+    if (state) cb.searchParams.set('state', state);
+    return Response.redirect(cb.toString(), 302);
   }
 
   const workspaces = await listUserWorkspaces(env, session.user_id, session.org_id);
@@ -334,8 +328,8 @@ async function handleTokenExchange(req: Request, oauth: ExternalMcpOAuthProvider
       return Response.json(await oauth.exchangeRefreshToken(clientId, rt), { headers: { 'cache-control': 'no-store' } });
     }
     return new OAuthError('unsupported_grant_type', `Unsupported: ${gt}`).toResponse();
-  } catch (err) {
-    if (err instanceof OAuthError) return err.toResponse();
+  } catch (e) {
+    if (e instanceof OAuthError) return e.toResponse();
     return Response.json({ error: 'Token exchange failed' }, { status: 500 });
   }
 }
@@ -356,31 +350,30 @@ interface WorkspaceInfo { id: string; name: string; }
 
 async function verifyWorkspaceAccess(env: Env, userId: string, orgId: string, workspaceId: string): Promise<boolean> {
   try {
-    const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-    const member = await (orgStub as any).getMember(userId);
-    if (!member) return false;
-    const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-    const wsMeta = await (wsStub as any).getMetadata();
-    if (!wsMeta || wsMeta.org_id !== orgId) return false;
-    const access = await (wsStub as any).getMemberAccess(userId);
+    const org = env.ORG.get(env.ORG.idFromName(orgId));
+    if (!await (org as any).getMember(userId)) return false;
+    const ws = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+    const meta = await (ws as any).getMetadata();
+    if (!meta || meta.org_id !== orgId) return false;
+    const access = await (ws as any).getMemberAccess(userId);
     return access && access !== 'none';
   } catch { return false; }
 }
 
 async function listUserWorkspaces(env: Env, userId: string, orgId: string): Promise<WorkspaceInfo[]> {
   try {
-    const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-    const workspaceIds: string[] = await (orgStub as any).listWorkspaceIds();
-    const results: WorkspaceInfo[] = [];
-    for (const wsId of workspaceIds) {
+    const org = env.ORG.get(env.ORG.idFromName(orgId));
+    const ids: string[] = await (org as any).listWorkspaceIds();
+    const out: WorkspaceInfo[] = [];
+    for (const id of ids) {
       try {
-        const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(wsId));
-        const meta = await (wsStub as any).getMetadata();
-        const access = await (wsStub as any).getMemberAccess(userId);
-        if (meta && access && access !== 'none') results.push({ id: wsId, name: meta.name ?? wsId });
+        const ws = env.WORKSPACE.get(env.WORKSPACE.idFromName(id));
+        const meta = await (ws as any).getMetadata();
+        const access = await (ws as any).getMemberAccess(userId);
+        if (meta && access && access !== 'none') out.push({ id, name: meta.name ?? id });
       } catch {}
     }
-    return results;
+    return out;
   } catch { return []; }
 }
 
