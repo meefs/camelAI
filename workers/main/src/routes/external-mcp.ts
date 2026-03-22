@@ -126,13 +126,15 @@ export async function handleExternalMcp({ req, env, ctx, url }: RouteContext): P
   }
 
   // Verify Bearer token
+  const baseUrl = getBaseUrl(req);
+  const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/api/mcp/external`;
   const authHeader = req.headers.get('authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
       headers: {
         'content-type': 'application/json',
-        'www-authenticate': 'Bearer',
+        'www-authenticate': `Bearer resource_metadata="${resourceMetadataUrl}"`,
       },
     });
   }
@@ -144,7 +146,7 @@ export async function handleExternalMcp({ req, env, ctx, url }: RouteContext): P
       status: 401,
       headers: {
         'content-type': 'application/json',
-        'www-authenticate': 'Bearer error="invalid_token"',
+        'www-authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
       },
     });
   }
