@@ -8,14 +8,13 @@ import type { WorkspaceContainerEnv } from './workspace-container.js';
 import type { DataProxyEnv } from './data-proxy.js';
 import type { CfApiProxyEnv } from './cf-api-proxy.js';
 import type { McpEnv } from './mcp-handler.js';
-import type { ExternalMcpEnv } from './external-mcp-handler.js';
 import type { WorkspaceDO } from './workspace.js';
 import type { WorkerLogsDO } from './worker-logs-do.js';
 import type { EmailHandleDO } from './email-handle-registry.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
 
-export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv, CfApiProxyEnv, McpEnv, ExternalMcpEnv {
+export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv, CfApiProxyEnv, McpEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
