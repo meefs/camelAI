@@ -309,14 +309,39 @@ if command -v ip6tables >/dev/null 2>&1; then
 fi
 
 echo "[firewall] applied docker0 policy: allow :${PROXY_PORT}, drop :${CONTROL_PORT}"
+
+# --- China outbound block via ipset ---
+if command -v ipset >/dev/null 2>&1; then
+  ipset create china-block hash:net -exist
+  if curl -sf --connect-timeout 10 https://www.ipdeny.com/ipblocks/data/aggregated/cn-aggregated.zone -o /tmp/cn-zones.txt; then
+    ipset flush china-block
+    while read -r cidr; do
+      ipset add china-block "$cidr" -exist
+    done < /tmp/cn-zones.txt
+    rm -f /tmp/cn-zones.txt
+
+    ensure_rule \
+      "iptables -C OUTPUT -m set --match-set china-block dst -j DROP" \
+      "iptables -A OUTPUT -m set --match-set china-block dst -j DROP"
+    ensure_rule \
+      "iptables -C FORWARD -m set --match-set china-block dst -j DROP" \
+      "iptables -I FORWARD -m set --match-set china-block dst -j DROP"
+
+    echo "[firewall] china outbound block: $(ipset list china-block | grep -c '^[0-9]') CIDR ranges loaded"
+  else
+    echo "[firewall] WARNING: failed to download CN IP ranges; china block not applied"
+  fi
+else
+  echo "[firewall] WARNING: ipset not available; china block not applied"
+fi
 __FIREWALL_SCRIPT__
   chmod +x /usr/local/bin/chiridion-apply-firewall.sh
 
   cat > /etc/systemd/system/chiridion-sandbox-firewall.service <<'__FIREWALL_SERVICE__'
 [Unit]
 Description=Apply Chiridion sandbox-host firewall policy
-After=docker.service
-Wants=docker.service
+After=docker.service network-online.target
+Wants=docker.service network-online.target
 Before=chiridion-sandbox-host.service
 
 [Service]
@@ -415,7 +440,7 @@ apply_default_quotas() {
 
 main() {
   apt-get update -qq
-  apt-get install -y -qq xfsprogs curl ca-certificates gnupg lsb-release fuse3 s3fs
+  apt-get install -y -qq xfsprogs curl ca-certificates gnupg lsb-release fuse3 s3fs ipset
 
   wait_for_data_device
   setup_xfs_data_disk
