@@ -4,7 +4,6 @@
  * OAuth:
  *   GET  /.well-known/oauth-authorization-server  → OAuth metadata
  *   GET  /.well-known/oauth-protected-resource     → Resource metadata
- *   POST /api/ext/oauth/register                   → Dynamic client registration
  *   GET  /api/ext/oauth/authorize                  → OAuth authorize (consent page)
  *   POST /api/ext/oauth/authorize                  → OAuth authorize (submit)
  *   POST /api/ext/oauth/token                      → Token exchange
@@ -19,10 +18,13 @@
  *   PUT  /api/ext/files/write                      → Write file
  *   POST /api/ext/files/upload                     → Upload binary file (base64)
  *   GET  /api/ext/files/download                   → Download file (raw stream)
+ *
+ * Client ID is a hardcoded env var (EXT_API_CLIENT_ID). No dynamic
+ * registration — the CLI ships with the client ID baked in.
  */
 
 import type { Env, RouteContext } from '../types.js';
-import { ExternalMcpOAuthProvider, OAuthError, type TokenGrantRecord } from '../external-api-oauth.js';
+import { ExtApiOAuthProvider, OAuthError, CLI_REDIRECT_URI, type TokenGrantRecord } from '../external-api-oauth.js';
 import { WorkspaceContainer } from '../workspace-container.js';
 import { getSignedSessionFromRequest } from '../cookies.js';
 import type { OrgDO, WorkerScript } from '../auth.js';
@@ -43,9 +45,15 @@ function err(error: string, status = 400, details?: string): Response {
   return Response.json({ error, ...(details && { details }) }, { status });
 }
 
+function getOAuth(env: Env): ExtApiOAuthProvider {
+  const clientId = (env as any).EXT_API_CLIENT_ID;
+  if (!clientId) throw new Error('EXT_API_CLIENT_ID is not configured');
+  return new ExtApiOAuthProvider(env.APP_KV, clientId);
+}
+
 // ── Bearer Auth ─────────────────────────────────────────────────────
 
-async function requireAuth(req: Request, oauth: ExternalMcpOAuthProvider): Promise<TokenGrantRecord | Response> {
+async function requireAuth(req: Request, oauth: ExtApiOAuthProvider): Promise<TokenGrantRecord | Response> {
   const h = req.headers.get('authorization');
   if (!h?.startsWith('Bearer ')) return err('Unauthorized', 401);
   const grant = await oauth.verifyAccessToken(h.slice(7));
@@ -60,11 +68,10 @@ function buildOAuthMetadata(baseUrl: string) {
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/api/ext/oauth/authorize`,
     token_endpoint: `${baseUrl}/api/ext/oauth/token`,
-    registration_endpoint: `${baseUrl}/api/ext/oauth/register`,
     revocation_endpoint: `${baseUrl}/api/ext/oauth/revoke`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
-    token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+    token_endpoint_auth_methods_supported: ['none'],
     code_challenge_methods_supported: ['S256'],
     scopes_supported: ['workspace'],
   };
@@ -97,41 +104,20 @@ export async function handleResourceMetadata({ req }: RouteContext): Promise<Res
 // ── Main Route Handler ──────────────────────────────────────────────
 
 export async function handleExternalApi({ req, env, ctx, url }: RouteContext): Promise<Response | null> {
-  const oauth = new ExternalMcpOAuthProvider(env.APP_KV);
   const p = url.pathname;
 
   // ── OAuth ─────────────────────────────────────────────────────
 
-  if (p === '/api/ext/oauth/register') {
-    if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
-    try {
-      const body = await req.json() as Record<string, unknown>;
-      const client = await oauth.registerClient({
-        redirect_uris: body.redirect_uris as string[],
-        client_name: body.client_name as string | undefined,
-        client_uri: body.client_uri as string | undefined,
-        scope: body.scope as string | undefined,
-        grant_types: body.grant_types as string[] | undefined,
-        response_types: body.response_types as string[] | undefined,
-        token_endpoint_auth_method: body.token_endpoint_auth_method as string | undefined,
-      });
-      return Response.json(client, { status: 201 });
-    } catch (e) {
-      if (e instanceof OAuthError) return e.toResponse();
-      return err('Registration failed', 500);
-    }
-  }
-
-  if (p === '/api/ext/oauth/authorize') return handleAuthorize(req, env, oauth);
+  if (p === '/api/ext/oauth/authorize') return handleAuthorize(req, env);
 
   if (p === '/api/ext/oauth/token') {
     if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
-    return handleTokenExchange(req, oauth);
+    return handleTokenExchange(req, env);
   }
 
   if (p === '/api/ext/oauth/revoke') {
     if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
-    return handleTokenRevocation(req, oauth);
+    return handleTokenRevocation(req, env);
   }
 
   // ── Health ────────────────────────────────────────────────────
@@ -140,19 +126,18 @@ export async function handleExternalApi({ req, env, ctx, url }: RouteContext): P
 
   // ── API (auth required) ───────────────────────────────────────
 
+  const oauth = getOAuth(env);
   const authResult = await requireAuth(req, oauth);
   if (authResult instanceof Response) return authResult;
   const grant = authResult;
   const container = new WorkspaceContainer(env, grant.workspace_id, grant.org_id);
 
-  // POST /api/ext/bash
   if (p === '/api/ext/bash' && req.method === 'POST') {
     const body = await req.json() as { command: string; cwd?: string };
     if (!body.command) return err('command is required');
     return json(await container.exec(body.command, { cwd: body.cwd }));
   }
 
-  // GET /api/ext/apps
   if (p === '/api/ext/apps' && req.method === 'GET') {
     const orgStub = env.ORG.get(env.ORG.idFromName(grant.org_id)) as DurableObjectStub<OrgDO>;
     const scripts: WorkerScript[] = await orgStub.listWorkerScriptsByWorkspace(grant.workspace_id);
@@ -173,35 +158,30 @@ export async function handleExternalApi({ req, env, ctx, url }: RouteContext): P
     return json({ count: apps.length, apps });
   }
 
-  // GET /api/ext/files?path=&recursive=0|1
   if (p === '/api/ext/files' && req.method === 'GET') {
     const path = url.searchParams.get('path') ?? '/home/claude';
     const recursive = url.searchParams.get('recursive') === '1';
     return json(await container.listFiles(path, { recursive }));
   }
 
-  // GET /api/ext/files/read?path=
   if (p === '/api/ext/files/read' && req.method === 'GET') {
     const path = url.searchParams.get('path');
     if (!path) return err('path query parameter is required');
     return json(await container.readFile(path));
   }
 
-  // PUT /api/ext/files/write
   if (p === '/api/ext/files/write' && req.method === 'PUT') {
     const body = await req.json() as { path: string; content: string };
     if (!body.path || body.content === undefined) return err('path and content are required');
     return json(await container.writeFile(body.path, body.content));
   }
 
-  // POST /api/ext/files/upload
   if (p === '/api/ext/files/upload' && req.method === 'POST') {
     const body = await req.json() as { path: string; content_base64: string };
     if (!body.path || !body.content_base64) return err('path and content_base64 are required');
     return json(await container.writeBinaryFile(body.path, body.content_base64));
   }
 
-  // GET /api/ext/files/download?path=
   if (p === '/api/ext/files/download' && req.method === 'GET') {
     const path = url.searchParams.get('path');
     if (!path) return err('path query parameter is required');
@@ -236,8 +216,10 @@ function getVanityDomain(env: Env): string {
 
 // ── Authorization ───────────────────────────────────────────────────
 
-async function handleAuthorize(req: Request, env: Env, oauth: ExternalMcpOAuthProvider): Promise<Response> {
+async function handleAuthorize(req: Request, env: Env): Promise<Response> {
+  const oauth = getOAuth(env);
   const url = new URL(req.url);
+
   let params: URLSearchParams;
   if (req.method === 'POST') {
     params = new URLSearchParams(await req.text());
@@ -262,11 +244,10 @@ async function handleAuthorize(req: Request, env: Env, oauth: ExternalMcpOAuthPr
     return new OAuthError('invalid_request', 'code_challenge is required (PKCE mandatory)').toResponse();
   if (codeChallengeMethod !== 'S256')
     return new OAuthError('invalid_request', 'Only S256 supported').toResponse();
-
-  const client = await oauth.getClient(clientId);
-  if (!client) return new OAuthError('invalid_client', 'Unknown client_id').toResponse();
-  if (!client.redirect_uris.includes(redirectUri))
-    return new OAuthError('invalid_request', 'redirect_uri not registered').toResponse();
+  if (!oauth.validateClient(clientId))
+    return new OAuthError('invalid_client', 'Unknown client_id').toResponse();
+  if (redirectUri !== CLI_REDIRECT_URI)
+    return new OAuthError('invalid_request', 'Invalid redirect_uri').toResponse();
 
   const session = await getSignedSessionFromRequest(req, env.TOKEN_SIGNING_SECRET);
   if (!session) {
@@ -292,7 +273,7 @@ async function handleAuthorize(req: Request, env: Env, oauth: ExternalMcpOAuthPr
 
   const workspaces = await listUserWorkspaces(env, session.user_id, session.org_id);
   return new Response(renderConsentPage({
-    clientName: client.client_name ?? clientId,
+    clientName: 'camelAI CLI',
     userName: session.user_name ?? session.user_email ?? session.user_id,
     workspaces, authorizeUrl: url.pathname + url.search, clientId, redirectUri,
     responseType: responseType!, codeChallenge, codeChallengeMethod: codeChallengeMethod ?? '',
@@ -302,18 +283,12 @@ async function handleAuthorize(req: Request, env: Env, oauth: ExternalMcpOAuthPr
 
 // ── Token Exchange ──────────────────────────────────────────────────
 
-async function handleTokenExchange(req: Request, oauth: ExternalMcpOAuthProvider): Promise<Response> {
+async function handleTokenExchange(req: Request, env: Env): Promise<Response> {
+  const oauth = getOAuth(env);
   const params = new URLSearchParams(await req.text());
   const clientId = params.get('client_id');
   if (!clientId) return new OAuthError('invalid_request', 'client_id is required').toResponse();
-
-  const client = await oauth.getClient(clientId);
-  if (!client) return new OAuthError('invalid_client', 'Unknown client_id').toResponse(401);
-  if (client.client_secret) {
-    const cs = params.get('client_secret');
-    if (!cs) return new OAuthError('invalid_client', 'client_secret required').toResponse(401);
-    if (cs !== client.client_secret) return new OAuthError('invalid_client', 'Invalid client_secret').toResponse(401);
-  }
+  if (!oauth.validateClient(clientId)) return new OAuthError('invalid_client', 'Unknown client_id').toResponse(401);
 
   try {
     const gt = params.get('grant_type');
@@ -336,7 +311,8 @@ async function handleTokenExchange(req: Request, oauth: ExternalMcpOAuthProvider
 
 // ── Token Revocation ────────────────────────────────────────────────
 
-async function handleTokenRevocation(req: Request, oauth: ExternalMcpOAuthProvider): Promise<Response> {
+async function handleTokenRevocation(req: Request, env: Env): Promise<Response> {
+  const oauth = getOAuth(env);
   const params = new URLSearchParams(await req.text());
   const token = params.get('token');
   if (!token) return new OAuthError('invalid_request', 'token is required').toResponse();

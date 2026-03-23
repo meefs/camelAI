@@ -1,33 +1,17 @@
 /**
- * OAuth 2.1 server provider for the external MCP server.
+ * OAuth 2.1 provider for the external API.
  *
- * Implements dynamic client registration (RFC 7591), authorization code
- * flow with PKCE, access/refresh tokens, and token verification.
+ * The CLI client ID is a hardcoded env var (EXT_API_CLIENT_ID) — no
+ * dynamic registration or client KV storage needed. Auth codes,
+ * access tokens, and refresh tokens are stored in APP_KV with TTL.
  *
- * All state is stored in APP_KV with prefixes:
- *   mcp_client:{clientId}        – registered client metadata
- *   mcp_authcode:{code}          – pending authorization code (5 min TTL)
- *   mcp_token:{accessToken}      – access token → grant info (1 hour TTL)
- *   mcp_refresh:{refreshToken}   – refresh token → grant info (30 day TTL)
+ * KV prefixes:
+ *   ext_authcode:{code}          – pending authorization code (5 min TTL)
+ *   ext_token:{accessToken}      – access token → grant info (1 hour TTL)
+ *   ext_refresh:{refreshToken}   – refresh token → grant info (30 day TTL)
  */
 
-import type { KVNamespace } from '@cloudflare/workers-types';
-
 // ── Types ────────────────────────────────────────────────────────────
-
-export interface OAuthClientRecord {
-  client_id: string;
-  client_secret?: string;
-  client_id_issued_at: number;
-  client_secret_expires_at?: number;
-  redirect_uris: string[];
-  client_name?: string;
-  client_uri?: string;
-  scope?: string;
-  grant_types?: string[];
-  response_types?: string[];
-  token_endpoint_auth_method?: string;
-}
 
 export interface AuthCodeRecord {
   client_id: string;
@@ -51,7 +35,7 @@ export interface TokenGrantRecord {
   expires_at: number;
 }
 
-export interface RefreshGrantRecord extends TokenGrantRecord {
+interface RefreshGrantRecord extends TokenGrantRecord {
   access_token: string;
 }
 
@@ -61,10 +45,13 @@ const AUTH_CODE_TTL = 5 * 60; // 5 minutes
 const ACCESS_TOKEN_TTL = 60 * 60; // 1 hour
 const REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60; // 30 days
 
-const KV_PREFIX_CLIENT = 'mcp_client:';
-const KV_PREFIX_AUTHCODE = 'mcp_authcode:';
-const KV_PREFIX_TOKEN = 'mcp_token:';
-const KV_PREFIX_REFRESH = 'mcp_refresh:';
+const KV_PREFIX_AUTHCODE = 'ext_authcode:';
+const KV_PREFIX_TOKEN = 'ext_token:';
+const KV_PREFIX_REFRESH = 'ext_refresh:';
+
+// CLI callback port
+export const CLI_CALLBACK_PORT = 19284;
+export const CLI_REDIRECT_URI = `http://localhost:${CLI_CALLBACK_PORT}/callback`;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -89,51 +76,15 @@ function base64url(bytes: Uint8Array): string {
 
 // ── OAuth Provider ───────────────────────────────────────────────────
 
-export class ExternalMcpOAuthProvider {
-  constructor(private kv: KVNamespace) {}
+export class ExtApiOAuthProvider {
+  constructor(
+    private kv: KVNamespace,
+    private clientId: string,
+  ) {}
 
-  // ─── Dynamic Client Registration (RFC 7591) ─────────────────────
-
-  async registerClient(metadata: {
-    redirect_uris: string[];
-    client_name?: string;
-    client_uri?: string;
-    scope?: string;
-    grant_types?: string[];
-    response_types?: string[];
-    token_endpoint_auth_method?: string;
-  }): Promise<OAuthClientRecord> {
-    if (!metadata.redirect_uris?.length) {
-      throw new OAuthError('invalid_client_metadata', 'redirect_uris is required');
-    }
-
-    const client_id = generateId(16);
-    const authMethod = metadata.token_endpoint_auth_method ?? 'client_secret_post';
-    const isPublicClient = authMethod === 'none';
-    const now = Math.floor(Date.now() / 1000);
-
-    const record: OAuthClientRecord = {
-      client_id,
-      // Only issue a secret for confidential clients
-      ...(!isPublicClient && { client_secret: generateId(32) }),
-      client_id_issued_at: now,
-      redirect_uris: metadata.redirect_uris,
-      client_name: metadata.client_name,
-      client_uri: metadata.client_uri,
-      scope: metadata.scope,
-      grant_types: metadata.grant_types ?? ['authorization_code', 'refresh_token'],
-      response_types: metadata.response_types ?? ['code'],
-      token_endpoint_auth_method: authMethod,
-    };
-
-    await this.kv.put(`${KV_PREFIX_CLIENT}${client_id}`, JSON.stringify(record));
-    return record;
-  }
-
-  async getClient(clientId: string): Promise<OAuthClientRecord | null> {
-    const raw = await this.kv.get(`${KV_PREFIX_CLIENT}${clientId}`);
-    if (!raw) return null;
-    return JSON.parse(raw) as OAuthClientRecord;
+  /** Validate that a client_id matches the configured CLI client. */
+  validateClient(clientId: string): boolean {
+    return clientId === this.clientId;
   }
 
   // ─── Authorization Code ─────────────────────────────────────────
@@ -164,113 +115,65 @@ export class ExternalMcpOAuthProvider {
     code: string,
     codeVerifier?: string,
     redirectUri?: string,
-  ): Promise<{ access_token: string; refresh_token: string; token_type: string; expires_in: number; scope?: string }> {
+  ): Promise<{ access_token: string; refresh_token: string; token_type: string; expires_in: number }> {
     const raw = await this.kv.get(`${KV_PREFIX_AUTHCODE}${code}`);
-    if (!raw) {
-      throw new OAuthError('invalid_grant', 'Authorization code is invalid or expired');
-    }
+    if (!raw) throw new OAuthError('invalid_grant', 'Authorization code is invalid or expired');
 
     const record = JSON.parse(raw) as AuthCodeRecord;
-
-    // Delete immediately (single-use)
     await this.kv.delete(`${KV_PREFIX_AUTHCODE}${code}`);
 
-    // Validate client
-    if (record.client_id !== clientId) {
-      throw new OAuthError('invalid_grant', 'Authorization code was issued to a different client');
-    }
+    if (record.client_id !== clientId) throw new OAuthError('invalid_grant', 'Code issued to a different client');
+    if (redirectUri && record.redirect_uri !== redirectUri) throw new OAuthError('invalid_grant', 'redirect_uri mismatch');
 
-    // Validate redirect_uri
-    if (redirectUri && record.redirect_uri !== redirectUri) {
-      throw new OAuthError('invalid_grant', 'redirect_uri mismatch');
-    }
-
-    // Validate PKCE
+    // PKCE validation
     if (record.code_challenge) {
-      if (!codeVerifier) {
-        throw new OAuthError('invalid_grant', 'code_verifier is required');
-      }
+      if (!codeVerifier) throw new OAuthError('invalid_grant', 'code_verifier is required');
       const challenge = await sha256(codeVerifier);
-      if (challenge !== record.code_challenge) {
-        throw new OAuthError('invalid_grant', 'code_verifier does not match code_challenge');
-      }
+      if (challenge !== record.code_challenge) throw new OAuthError('invalid_grant', 'code_verifier mismatch');
     }
 
-    // Issue tokens
     return this.issueTokens(clientId, record.user_id, record.org_id, record.workspace_id, record.scopes);
   }
 
   // ─── Token Issuance ─────────────────────────────────────────────
 
   private async issueTokens(
-    clientId: string,
-    userId: string,
-    orgId: string,
-    workspaceId: string,
-    scopes: string[],
-  ): Promise<{ access_token: string; refresh_token: string; token_type: string; expires_in: number; scope?: string }> {
+    clientId: string, userId: string, orgId: string, workspaceId: string, scopes: string[],
+  ): Promise<{ access_token: string; refresh_token: string; token_type: string; expires_in: number }> {
     const now = Math.floor(Date.now() / 1000);
     const access_token = generateId(32);
     const refresh_token = generateId(32);
 
     const grant: TokenGrantRecord = {
-      client_id: clientId,
-      user_id: userId,
-      org_id: orgId,
-      workspace_id: workspaceId,
-      scopes,
-      created_at: now,
-      expires_at: now + ACCESS_TOKEN_TTL,
+      client_id: clientId, user_id: userId, org_id: orgId,
+      workspace_id: workspaceId, scopes, created_at: now, expires_at: now + ACCESS_TOKEN_TTL,
     };
-
-    const refreshGrant: RefreshGrantRecord = {
-      ...grant,
-      access_token,
-      expires_at: now + REFRESH_TOKEN_TTL,
-    };
+    const refreshGrant: RefreshGrantRecord = { ...grant, access_token, expires_at: now + REFRESH_TOKEN_TTL };
 
     await Promise.all([
-      this.kv.put(`${KV_PREFIX_TOKEN}${access_token}`, JSON.stringify(grant), {
-        expirationTtl: ACCESS_TOKEN_TTL,
-      }),
-      this.kv.put(`${KV_PREFIX_REFRESH}${refresh_token}`, JSON.stringify(refreshGrant), {
-        expirationTtl: REFRESH_TOKEN_TTL,
-      }),
+      this.kv.put(`${KV_PREFIX_TOKEN}${access_token}`, JSON.stringify(grant), { expirationTtl: ACCESS_TOKEN_TTL }),
+      this.kv.put(`${KV_PREFIX_REFRESH}${refresh_token}`, JSON.stringify(refreshGrant), { expirationTtl: REFRESH_TOKEN_TTL }),
     ]);
 
-    return {
-      access_token,
-      refresh_token,
-      token_type: 'Bearer',
-      expires_in: ACCESS_TOKEN_TTL,
-      scope: scopes.length ? scopes.join(' ') : undefined,
-    };
+    return { access_token, refresh_token, token_type: 'Bearer', expires_in: ACCESS_TOKEN_TTL };
   }
 
   // ─── Refresh Token ──────────────────────────────────────────────
 
   async exchangeRefreshToken(
-    clientId: string,
-    refreshToken: string,
-  ): Promise<{ access_token: string; refresh_token: string; token_type: string; expires_in: number; scope?: string }> {
+    clientId: string, refreshToken: string,
+  ): Promise<{ access_token: string; refresh_token: string; token_type: string; expires_in: number }> {
     const raw = await this.kv.get(`${KV_PREFIX_REFRESH}${refreshToken}`);
-    if (!raw) {
-      throw new OAuthError('invalid_grant', 'Refresh token is invalid or expired');
-    }
+    if (!raw) throw new OAuthError('invalid_grant', 'Refresh token is invalid or expired');
 
     const record = JSON.parse(raw) as RefreshGrantRecord;
+    if (record.client_id !== clientId) throw new OAuthError('invalid_grant', 'Refresh token issued to a different client');
 
-    if (record.client_id !== clientId) {
-      throw new OAuthError('invalid_grant', 'Refresh token was issued to a different client');
-    }
-
-    // Revoke old access token and refresh token
     await Promise.all([
       this.kv.delete(`${KV_PREFIX_TOKEN}${record.access_token}`),
       this.kv.delete(`${KV_PREFIX_REFRESH}${refreshToken}`),
     ]);
 
-    // Issue new token pair
     return this.issueTokens(clientId, record.user_id, record.org_id, record.workspace_id, record.scopes);
   }
 
@@ -279,11 +182,8 @@ export class ExternalMcpOAuthProvider {
   async verifyAccessToken(token: string): Promise<TokenGrantRecord | null> {
     const raw = await this.kv.get(`${KV_PREFIX_TOKEN}${token}`);
     if (!raw) return null;
-
     const grant = JSON.parse(raw) as TokenGrantRecord;
-    const now = Math.floor(Date.now() / 1000);
-    if (grant.expires_at <= now) return null;
-
+    if (grant.expires_at <= Math.floor(Date.now() / 1000)) return null;
     return grant;
   }
 
@@ -295,7 +195,6 @@ export class ExternalMcpOAuthProvider {
     } else if (tokenTypeHint === 'access_token') {
       await this.kv.delete(`${KV_PREFIX_TOKEN}${token}`);
     } else {
-      // Try both
       await Promise.all([
         this.kv.delete(`${KV_PREFIX_TOKEN}${token}`),
         this.kv.delete(`${KV_PREFIX_REFRESH}${token}`),
@@ -307,19 +206,13 @@ export class ExternalMcpOAuthProvider {
 // ── OAuth Error ──────────────────────────────────────────────────────
 
 export class OAuthError extends Error {
-  constructor(
-    public readonly error: string,
-    public readonly error_description?: string,
-  ) {
+  constructor(public readonly error: string, public readonly error_description?: string) {
     super(error_description ?? error);
     this.name = 'OAuthError';
   }
 
   toJSON() {
-    return {
-      error: this.error,
-      ...(this.error_description && { error_description: this.error_description }),
-    };
+    return { error: this.error, ...(this.error_description && { error_description: this.error_description }) };
   }
 
   toResponse(status = 400): Response {
