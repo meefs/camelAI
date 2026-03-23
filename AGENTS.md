@@ -469,7 +469,7 @@ curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<hos
 
 The sandbox host runs on an Azure VM (`ssh chiridion-vm`, user `chiridion`, IP `20.46.233.68`). Deploy via rsync + SSH build + systemctl restart. Rebuild Docker image on VM and push to ACR (`crchiridionprod`).
 
-Sandbox names: `chiridion-{workspaceId}`. Host dir: `/srv/sandboxes/{sandboxName}` → container `/home/claude`. Image: Ubuntu 24.04 with bun, node 22, git, rclone, uv. Containers use gVisor (`--runtime=runsc`).
+Sandbox names: `chiridion-{workspaceId}`. Host dir: `/srv/sandboxes/{sandboxName}` → container `/home/claude`. Image: Ubuntu 24.04 with bun, node 22, git, rclone, uv. Containers use gVisor (`--runtime=runsc`) and start under `tini` as PID 1 so subprocess-heavy tools like Chromium/Playwright are reaped correctly.
 
 **Network:** Two listeners — `PORT` (80, worker control traffic) and `SANDBOX_PROXY_PORT` (8081, container egress only). VM firewall blocks containers from reaching control port.
 

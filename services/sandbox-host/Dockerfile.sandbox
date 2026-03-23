@@ -2,7 +2,7 @@ FROM ubuntu:24.04
 
 # Core tools
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick poppler-utils >/dev/null 2>&1 && \
+    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick poppler-utils tini >/dev/null 2>&1 && \
     if ! command -v magick >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then \
       printf '#!/bin/sh\nexec convert "$@"\n' > /usr/local/bin/magick && \
       chmod +x /usr/local/bin/magick; \
@@ -109,5 +109,7 @@ RUN chown -R claude:claude /opt/ipython
 WORKDIR /home/claude
 
 EXPOSE 8080
-# Entrypoint runs as root to drop privileges to claude user
+# Run under tini so Chromium/Playwright child processes are reaped correctly.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# Entrypoint script still runs as root to drop privileges to claude user.
 CMD ["/opt/chiridion/entrypoint.sh"]
