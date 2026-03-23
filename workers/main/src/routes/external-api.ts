@@ -45,9 +45,9 @@ function err(error: string, status = 400, details?: string): Response {
   return Response.json({ error, ...(details && { details }) }, { status });
 }
 
-function getOAuth(env: Env): ExtApiOAuthProvider {
+function getOAuth(env: Env): ExtApiOAuthProvider | null {
   const clientId = (env as any).EXT_API_CLIENT_ID;
-  if (!clientId) throw new Error('EXT_API_CLIENT_ID is not configured');
+  if (!clientId) return null;
   return new ExtApiOAuthProvider(env.APP_KV, clientId);
 }
 
@@ -127,6 +127,7 @@ export async function handleExternalApi({ req, env, ctx, url }: RouteContext): P
   // ── API (auth required) ───────────────────────────────────────
 
   const oauth = getOAuth(env);
+  if (!oauth) return err('External API not configured', 503);
   const authResult = await requireAuth(req, oauth);
   if (authResult instanceof Response) return authResult;
   const grant = authResult;
@@ -218,6 +219,7 @@ function getVanityDomain(env: Env): string {
 
 async function handleAuthorize(req: Request, env: Env): Promise<Response> {
   const oauth = getOAuth(env);
+  if (!oauth) return err('External API not configured', 503);
   const url = new URL(req.url);
 
   let params: URLSearchParams;
@@ -285,6 +287,7 @@ async function handleAuthorize(req: Request, env: Env): Promise<Response> {
 
 async function handleTokenExchange(req: Request, env: Env): Promise<Response> {
   const oauth = getOAuth(env);
+  if (!oauth) return err('External API not configured', 503);
   const params = new URLSearchParams(await req.text());
   const clientId = params.get('client_id');
   if (!clientId) return new OAuthError('invalid_request', 'client_id is required').toResponse();
@@ -313,6 +316,7 @@ async function handleTokenExchange(req: Request, env: Env): Promise<Response> {
 
 async function handleTokenRevocation(req: Request, env: Env): Promise<Response> {
   const oauth = getOAuth(env);
+  if (!oauth) return err('External API not configured', 503);
   const params = new URLSearchParams(await req.text());
   const token = params.get('token');
   if (!token) return new OAuthError('invalid_request', 'token is required').toResponse();
