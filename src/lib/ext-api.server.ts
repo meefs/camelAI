@@ -65,15 +65,17 @@ export async function verifyWorkspaceAccess(env: CloudflareEnv, userId: string, 
 
 export async function listUserWorkspaces(env: CloudflareEnv, userId: string, orgId: string): Promise<WorkspaceInfo[]> {
   try {
-    const org = (env as any).ORG.get((env as any).ORG.idFromName(orgId));
-    const ids: string[] = await org.listWorkspaceIds();
+    const orgStub = (env as any).ORG.get((env as any).ORG.idFromName(orgId));
+    const workspaceRows: { id: string }[] = await orgStub.getWorkspaces();
     const out: WorkspaceInfo[] = [];
-    for (const id of ids) {
+    for (const row of workspaceRows) {
       try {
-        const ws = (env as any).WORKSPACE.get((env as any).WORKSPACE.idFromName(id));
-        const meta = await ws.getMetadata();
-        const access = await ws.getMemberAccess(userId);
-        if (meta && access && access !== 'none') out.push({ id, name: meta.name ?? id });
+        const wsStub = (env as any).WORKSPACE.get((env as any).WORKSPACE.idFromName(row.id));
+        const info = await wsStub.getInfo();
+        const memberAccess = await wsStub.getMemberAccess(userId);
+        if (info && (!memberAccess || (memberAccess.access_level ?? 'full') !== 'none')) {
+          out.push({ id: row.id, name: info.name ?? row.id });
+        }
       } catch {}
     }
     return out;
