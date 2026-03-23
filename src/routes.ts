@@ -170,6 +170,19 @@ export default [
   route('api/orgs/:id/llm-provider', 'routes/api/orgs.$id.llm-provider.ts'),
   route('api/invitations/:orgId/:invitationId', 'routes/api/invitations.$orgId.$invitationId.ts'),
 
+  // External API routes (CLI + OAuth)
+  route('api/ext/health', 'routes/api/ext.health.ts'),
+  route('api/ext/bash', 'routes/api/ext.bash.ts'),
+  route('api/ext/apps', 'routes/api/ext.apps.ts'),
+  route('api/ext/files', 'routes/api/ext.files.ts'),
+  route('api/ext/files/read', 'routes/api/ext.files.read.ts'),
+  route('api/ext/files/write', 'routes/api/ext.files.write.ts'),
+  route('api/ext/files/upload', 'routes/api/ext.files.upload.ts'),
+  route('api/ext/files/download', 'routes/api/ext.files.download.ts'),
+  route('api/ext/oauth/authorize', 'routes/api/ext.oauth.authorize.tsx'),
+  route('api/ext/oauth/token', 'routes/api/ext.oauth.token.ts'),
+  route('api/ext/oauth/revoke', 'routes/api/ext.oauth.revoke.ts'),
+
   // API resource routes (to be created)
   // route('api/orgs/:id', 'routes/api/orgs.$id.ts'),
   // route('api/orgs/:id/members', 'routes/api/orgs.$id.members.ts'),

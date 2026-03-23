@@ -36,7 +36,7 @@ import {
 } from './routes/integrations.js';
 import { handleChatWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
-import { handleExternalApi, handleOAuthMetadata, handleResourceMetadata } from './routes/external-api.js';
+import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known.js';
 import {
   handleMssqlQuery,
   handleMysqlQuery,
@@ -89,10 +89,9 @@ const routes: Route[] = [
   // MCP (internal - sandbox agent)
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },
 
-  // External API (OAuth-authenticated, Cap'n Web RPC)
+  // OAuth discovery (well-known paths can't be React Router routes)
   { method: 'GET', path: /^\/\.well-known\/oauth-authorization-server(\/.*)?$/, handler: handleOAuthMetadata },
   { method: 'GET', path: /^\/\.well-known\/oauth-protected-resource(\/.*)?$/, handler: handleResourceMetadata },
-  { method: 'ALL', path: /^\/api\/ext(\/|$)/, handler: handleExternalApi },
 
   // Thread Preview API
   { method: 'POST', path: /^\/api\/threads\/([^/]+)\/preview$/, handler: handleThreadPreview },
