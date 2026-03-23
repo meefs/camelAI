@@ -42,19 +42,43 @@ function createScreenshotMcpServer(sessionToken) {
         },
         async ({ url, width, height }) => {
           const HARD_TIMEOUT_MS = 10_000;
+          const CLEANUP_TIMEOUT_MS = 1_500;
           const viewportWidth = width ?? 1280;
           const viewportHeight = height ?? 720;
 
           let browser;
           let timedOut = false;
           let hardTimer;
+          let cleanupPromise = null;
           const abortController = new AbortController();
 
           const cleanup = async () => {
             abortController.abort();
-            if (browser) {
-              await browser.close().catch(() => {});
+            if (cleanupPromise) return cleanupPromise;
+
+            cleanupPromise = (async () => {
+              if (!browser) return;
+
+              const browserToClose = browser;
               browser = null;
+
+              try {
+                const closeResult = await Promise.race([
+                  browserToClose.close().then(() => 'closed'),
+                  new Promise((resolve) => setTimeout(() => resolve('timed_out'), CLEANUP_TIMEOUT_MS)),
+                ]);
+                if (closeResult === 'timed_out') {
+                  console.warn('[screenshot-mcp] browser.close() timed out during cleanup');
+                }
+              } catch (closeError) {
+                console.warn('[screenshot-mcp] browser.close() failed during cleanup', closeError);
+              }
+            })();
+
+            try {
+              await cleanupPromise;
+            } finally {
+              cleanupPromise = null;
             }
           };
 
@@ -131,7 +155,7 @@ function createScreenshotMcpServer(sessionToken) {
               new Promise((_, reject) => {
                 hardTimer = setTimeout(() => {
                   timedOut = true;
-                  cleanup();
+                  void cleanup().catch(() => {});
                   reject(new Error('Screenshot timed out (10s limit)'));
                 }, HARD_TIMEOUT_MS);
               }),
