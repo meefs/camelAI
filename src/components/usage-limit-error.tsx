@@ -1,5 +1,3 @@
-'use client';
-
 import { Link } from 'react-router';
 import { ArrowRight, CirclePause, Lightbulb, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -82,7 +80,7 @@ export function UsageLimitError({
             <div className="min-w-0">
               <p className="text-sm font-medium">Bypass limits by adding your own API key</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Connect an Anthropic or AWS Bedrock key in Organization Settings - AI Provider
+                {'Connect an Anthropic or AWS Bedrock key in Organization Settings \u2192 AI Provider'}
               </p>
             </div>
           </div>

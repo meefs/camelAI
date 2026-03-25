@@ -1195,6 +1195,7 @@ export default function Chat({
   const inputRef = useRef(input);
   const welcomeInputRef = useRef(welcomeInput);
   const attachmentsRef = useRef(attachments);
+  const prevErrorRef = useRef<string | null>(null);
   const skipNextEmptyDraftSaveRef = useRef(false);
   const pendingDeliveryDraftRef = useRef<{ workspaceId: string; threadId: string | null } | null>(null);
   const pendingDraftCountRef = useRef(0);
@@ -2620,14 +2621,6 @@ export default function Chat({
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
-        requestAnimationFrame(() => {
-          const container = scrollContainerRef.current;
-          if (container) {
-            container.scrollTop = container.scrollHeight;
-            return;
-          }
-          messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-        });
         // Finish streaming on error
         splitStreamingMessageOnNextPartRef.current = false;
         const msgId = streamingMessageIdRef.current;
@@ -2962,6 +2955,19 @@ export default function Chat({
     }
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, []);
+
+  useEffect(() => {
+    if (error && !prevErrorRef.current) {
+      const container = scrollContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }
+    }
+
+    prevErrorRef.current = error;
+  }, [error]);
 
   useLayoutEffect(() => {
     if (!shouldShowChat || !threadId) return;
