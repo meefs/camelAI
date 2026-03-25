@@ -7,6 +7,7 @@ import { useAuthData } from '@/hooks/use-auth-data';
 import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
 import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
 import { getAppUrl, getCustomDomainAppUrl } from '@/lib/app-url';
+import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
@@ -45,7 +46,7 @@ export default function AppsClient({
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
   const chatFetcher = useFetcher<{
-    thread?: { id: string };
+    thread?: { id: string; title?: string };
     error?: string;
   }>();
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
@@ -86,11 +87,12 @@ export default function AppsClient({
       const appUrl = orgCustomDomain ? getCustomDomainAppUrl(app.script_name, orgCustomDomain) : getAppUrl(app.script_name, hostname, orgSlug);
       const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
       const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
+      const threadTitle = buildAppThreadFallbackTitle(app.script_name);
 
       // Store message in sessionStorage for the chat page to pick up
       sessionStorage.setItem(
         'pendingMessage:newThread',
-        JSON.stringify({ message: systemMessage, threadId: chatFetcher.data.thread.id })
+        JSON.stringify({ message: systemMessage, threadId: chatFetcher.data.thread.id, threadTitle })
       );
 
       pendingChatAppRef.current = null;
@@ -144,11 +146,12 @@ export default function AppsClient({
     if (chatFetcher.state !== 'idle') return;
     if (pendingChatAppRef.current?.script_name === app.script_name) return;
     pendingChatAppRef.current = app;
+    const threadTitle = buildAppThreadFallbackTitle(app.script_name);
 
     chatFetcher.submit(
       {
         intent: 'createThread',
-        firstMessage: `Chat about ${app.script_name}`,
+        initialTitle: threadTitle,
         previewApps: app.script_name,
       },
       { method: 'post', action: '/chat' }
@@ -204,10 +207,11 @@ export default function AppsClient({
       if (targetAction === 'chat') {
         // Re-trigger chat start - workspace is now correct
         pendingChatAppRef.current = targetApp;
+        const threadTitle = buildAppThreadFallbackTitle(targetApp.script_name);
         chatFetcher.submit(
           {
             intent: 'createThread',
-            firstMessage: `Chat about ${targetApp.script_name}`,
+            initialTitle: threadTitle,
             previewApps: targetApp.script_name,
           },
           { method: 'post', action: '/chat' }

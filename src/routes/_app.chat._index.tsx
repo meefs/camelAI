@@ -161,13 +161,14 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   if (intent === 'createThread') {
     try {
+      const initialTitle = formData.get('initialTitle') as string | null;
       const firstMessage = formData.get('firstMessage') as string | null;
       const previewAppsRaw = formData.get('previewApps') as string | null;
 
       const thread = await chatDO.createThread(
         context,
         workspaceId,
-        undefined, // title will be generated asynchronously
+        initialTitle || undefined,
         userId,
         firstMessage || undefined
       );

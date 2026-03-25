@@ -9,6 +9,12 @@ import {
   formatAttributedUserMessage,
   type ChatAuthorIdentity,
 } from './chat-author-attribution';
+import {
+  getThreadTitleSourceMessage,
+  isPlaceholderThreadTitle,
+  sanitizeGeneratedThreadTitle,
+  THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
+} from '../../../src/lib/thread-title';
 
 export type PreviewTarget =
   | {
@@ -498,6 +504,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private chatIsStreaming: boolean = false;
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
   private pendingExternalTurn: PendingExternalTurn | null = null;
+  private titleGenerationInFlight: boolean = false;
 
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
@@ -1271,8 +1278,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.setChatIsStreaming(true);
 
     this.ctx.waitUntil(
-      this.touchThreadForUserMessage().catch((err) => {
-        console.error('[ChatThreadDO] failed to touch thread after user message', err);
+      this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
+        console.error('[ChatThreadDO] failed to update thread metadata after user message', err);
       })
     );
   }
@@ -1580,8 +1587,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } else {
       this.setChatIsStreaming(true);
       this.ctx.waitUntil(
-        this.touchThreadForUserMessage().catch((err) => {
-          console.error('[ChatThreadDO] failed to touch thread after external user message', err);
+        this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
+          console.error('[ChatThreadDO] failed to update thread metadata after external user message', err);
         })
       );
     }
@@ -1753,12 +1760,66 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return textBlocks.join('\n').trim();
   }
 
-  private async touchThreadForUserMessage(): Promise<void> {
+  private async updateThreadMetadataForUserMessage(messageContent: string): Promise<void> {
     const context = this.chatContext;
-    if (!context?.orgId || !context?.threadId) return;
+    if (!context?.orgId || !context?.threadId || !context.workspaceId) return;
 
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+    const thread = await orgStub.getThread(context.threadId);
+    if (!thread) return;
+
     await orgStub.touchThread(context.threadId);
+
+    const titleSourceMessage = getThreadTitleSourceMessage(messageContent);
+    if (!titleSourceMessage) {
+      return;
+    }
+
+    const hasFirstUserMessage = typeof thread.first_user_message === 'string'
+      && thread.first_user_message.trim().length > 0;
+    if (hasFirstUserMessage) {
+      return;
+    }
+
+    await orgStub.setThreadFirstUserMessage(context.threadId, titleSourceMessage);
+
+    if (!isPlaceholderThreadTitle(thread.title) || this.titleGenerationInFlight) {
+      return;
+    }
+
+    this.titleGenerationInFlight = true;
+    await this.generateThreadTitleFromMessage(context.threadId, titleSourceMessage);
+  }
+
+  private async generateThreadTitleFromMessage(threadId: string, message: string): Promise<void> {
+    try {
+      const response = await this.env.AI.run('@cf/google/gemma-3-12b-it', {
+        messages: [
+          { role: 'system', content: THREAD_TITLE_GENERATION_SYSTEM_PROMPT },
+          { role: 'user', content: message },
+        ],
+        temperature: 1,
+        max_tokens: 50,
+      }) as { response?: string };
+
+      const title = sanitizeGeneratedThreadTitle(response?.response);
+      if (!title) {
+        return;
+      }
+
+      const context = this.chatContext;
+      if (!context?.orgId) {
+        return;
+      }
+
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+      await orgStub.updateThread(threadId, title);
+      await this.setTitle(title);
+    } catch (err) {
+      console.error('[ChatThreadDO] failed to generate thread title', err);
+    } finally {
+      this.titleGenerationInFlight = false;
+    }
   }
 
   private async ensureRunnerConnected(): Promise<void> {

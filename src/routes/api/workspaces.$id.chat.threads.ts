@@ -27,6 +27,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   }
 
   const body = await request.json() as {
+    initialTitle?: string;
     firstMessage?: string;
     previewApps?: string;
   };
@@ -34,7 +35,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const thread = await chatDO.createThread(
     context,
     workspaceId,
-    undefined,
+    body.initialTitle || undefined,
     userId,
     body.firstMessage || undefined
   );

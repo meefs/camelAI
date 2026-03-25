@@ -2,6 +2,10 @@ import type { AppLoadContext } from 'react-router';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { Thread, Message, PaginatedResult, PaginationParams } from '@/types';
 import type { PreviewTarget } from '@/types';
+import {
+  sanitizeGeneratedThreadTitle,
+  THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
+} from './thread-title';
 import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
@@ -218,14 +222,14 @@ export async function generateThreadTitle(
 
     const response = await ai.run('@cf/google/gemma-3-12b-it', {
       messages: [
-        { role: 'system', content: 'Summarize the message into a simple chat thread topic title. Respond with only the title, no quotes or extra punctuation.' },
+        { role: 'system', content: THREAD_TITLE_GENERATION_SYSTEM_PROMPT },
         { role: 'user', content: message },
       ],
       temperature: 1,
       max_tokens: 50,
     });
 
-    const title = response?.response?.trim()?.slice(0, 100);
+    const title = sanitizeGeneratedThreadTitle(response?.response);
     if (!title) return;
 
     // Update title in OrgDO
