@@ -88,10 +88,15 @@ Replace the current generic error banner with a **context-aware** display. When 
   - Heading: `"Bypass limits by adding your own API key"` — `text-sm font-medium`
   - Description: `"Connect an Anthropic or AWS Bedrock key in Organization Settings → AI Provider"` — `text-xs text-muted-foreground`
   - Link button: `<Link to="/settings/organization/ai-provider">` styled as `Button variant="outline" size="sm"` with text `"Add key"` + `ArrowRight` icon
+  - **Note:** The AI provider settings page is admin-only (`requireOrgAdmin()`), but free-tier accounts are typically single-user orgs where the user is the admin. Always show the direct link. Add a code comment noting the admin-only route for future reference if team accounts need differentiated messaging.
 
-### Placement
+### Placement & Spacer Suppression
 
-Same location as the current error banner — inside `ChatMessagesView`, after messages and before the compacting indicator (Chat.tsx ~line 644). This keeps the error visible at the bottom of the chat scroll, right where the user is looking.
+Same location as the current error banner — inside `ChatMessagesView`, after messages and before the compacting indicator (Chat.tsx ~line 644).
+
+**Important:** The chat scroll area has a bottom spacer (~line 2760) that stays visible when the last message is assistant-like. The error handler finalizes the streaming assistant message, so the spacer can push the error card above the fold, and a naive `scrollToBottom()` may scroll past it.
+
+**Requirement:** When `error` is set, **suppress the bottom spacer** so the error card sits flush at the end of the message list. The simplest fix is to add `&& !error` to the spacer's render condition. This ensures the limit card (or any error banner) is the last visible element and scrolling to bottom lands on it.
 
 ### Generic Error Banner (unchanged)
 
@@ -110,46 +115,24 @@ No changes needed here.
 
 ## Immediate Error Display (No Reload Required)
 
-The main UX issue is that the error doesn't appear until a page reload. This needs investigation in the WebSocket handler. The error event IS being received (it flows through the WebSocket), but it may be getting swallowed or the UI may not scroll to it. Two potential fixes:
+The main UX issue is that the error doesn't appear until a page reload. The backend pipeline is already wired correctly:
 
-### Fix 1: Ensure error event triggers UI update immediately
+- `control-plane.mjs` broadcasts `type: 'error'` from both the event-loop catch (line 1212) and the `handleMessage` catch (line 1491)
+- `ChatThreadDO` receives runner error events (durable-objects.ts ~line 1987) and pushes them into the chat event buffer (~line 2141)
+- The client error handler in Chat.tsx (line 2590) calls `setError()`, `setLoading(false)`, and `setStreamingMessageId(null)` — all correct
 
-In Chat.tsx at the `data.type === 'error'` handler (~line 2590), verify:
-- `setError()` is called (it is)
-- `setLoading(false)` is called (it is — line 2603)
-- The streaming state is fully cleared so the composer re-enables
+**The backend path should not need code changes.** The DO and control-plane already forward errors. Do NOT add synthesized "runner closed" errors — that would conflict with the existing reconnect-grace path (durable-objects.ts ~line 2211).
 
-**Check if `setStreamingMessageId(null)` is missing from the error handler.** Looking at the code, the error handler finalizes the streaming message but may not be calling `setStreamingMessageId(null)` — this could leave the UI in a "still streaming" state where the error banner is hidden or the composer stays disabled.
+### Client-side fix: scroll to error + suppress spacer
 
-The error handler (lines 2590-2609) does this:
-```typescript
-setError(data.error || 'An unknown error occurred');
-splitStreamingMessageOnNextPartRef.current = false;
-const msgId = streamingMessageIdRef.current;
-lastCompletedAssistantMessageIdRef.current = msgId;
-if (msgId) {
-  setMessages(prev => prev.map(msg =>
-    msg.id === msgId ? finalizeStreamingMessage(msg) : msg
-  ));
-}
-setStreamingMessageId(null);  // ← This IS called, good
-setLoading(false);
-restorePendingDeliveryDraft();
-```
+In Chat.tsx at the `data.type === 'error'` handler (~line 2590):
 
-This looks correct. The issue may be upstream — the error might not be reaching the client WebSocket at all in some cases.
+1. After `setError()`, scroll the error element into view using `requestAnimationFrame` → `scrollToBottom()` (or `scrollIntoView` on an error ref) so the banner is visible without manual scroll
+2. Suppress the bottom spacer when `error` is set (see Placement section above) so `scrollToBottom()` doesn't overshoot past the error card
 
-### Fix 2: Investigate ChatThreadDO error forwarding
+### Backend verification (no code changes expected)
 
-In `workers/main/src/durable-objects.ts`, check how the runner WebSocket `error` event is forwarded to browser clients. The runner (sandbox control-plane) sends `{ type: 'error', error: '...' }` but ChatThreadDO may not be forwarding all error events to the realtime broadcast channel, or may be dropping the connection before the error can be sent.
-
-**Action items for the coding agent:**
-
-1. **In `durable-objects.ts`** — Search for where runner WebSocket messages of `type: 'error'` are handled. Ensure the error is broadcast to all connected browser clients via `this.realtime.broadcast()` or equivalent. Check if there's a code path where the runner WS closes (e.g., on HTTP 429) before the error event is sent.
-
-2. **In `control-plane.mjs`** — Check if the SDK error from a 429 response is actually caught by the event loop `try/catch` at line 1212-1214, or if it causes an unhandled rejection / process crash that closes the WebSocket without sending the error event. Add logging if needed.
-
-3. **In `Chat.tsx`** — After `setError()`, auto-scroll to the bottom so the error banner is visible: call the existing `scrollToBottom()` function (or equivalent) after setting the error state.
+As a **verification-only** step, confirm the error event arrives on the client by checking browser DevTools console for `"WebSocket error:"` logs when a 429 is triggered. If client logs show the error event never arrives, only then investigate the DO/control-plane forwarding path.
 
 ---
 
@@ -186,27 +169,27 @@ interface UsageLimitErrorProps {
 ### 3. Fix immediate error display
 **File:** `src/components/Chat.tsx` (~line 2590)
 
-- In the `data.type === 'error'` handler, add a `scrollToBottom()` call after `setError()` (use `requestAnimationFrame` or `setTimeout(fn, 0)` to ensure the DOM has updated)
+- In the `data.type === 'error'` handler, after `setError()`, scroll to bottom via `requestAnimationFrame(() => scrollToBottom())` so the error card is visible
+- Add `&& !error` to the bottom spacer render condition (~line 2760) so the spacer doesn't push the error card out of view
 - Verify the error banner is not conditionally hidden by any streaming/loading state
 
-**File:** `workers/main/src/durable-objects.ts`
-
-- Trace the runner WebSocket message handler to confirm `type: 'error'` events from the sandbox are forwarded to browser clients
-- If there's a gap (e.g., runner WS close before error send), add error synthesis on unexpected runner WS close
-
-**File:** `sandbox/control-plane.mjs` (~line 1212)
-
-- Confirm the 429 SDK error is caught by the existing try/catch and broadcast as an error event
-- If the SDK throws before entering the event loop (e.g., during initial request), ensure that path also broadcasts an error
+**Backend files (verification only, no code changes expected):**
+- `workers/main/src/durable-objects.ts` and `sandbox/control-plane.mjs` already forward error events correctly. Do NOT add runner-close error synthesis (conflicts with reconnect-grace). Only make changes if client-side testing proves the error event never arrives.
 
 ### 4. Humanize the window label
-The sandbox-host sends labels like `"5h"` and `"7d"`. Expand for display:
-- `"5h"` → `"5 hours"`
-- `"7d"` → `"7 days"`
-- `"1h"` → `"1 hour"`
-- `"1d"` → `"1 day"`
+The sandbox-host sends labels like `"5h"` and `"7d"`. Parse the numeric value and unit generically — don't hardcode only known values, since limits can be overridden per-org to arbitrary windows.
 
-Simple mapping function in the component — no backend changes needed.
+Pattern: extract `(\d+(?:\.\d+)?)(h|d|m|s)` → expand unit to full word, pluralize when value !== 1.
+
+Examples:
+- `"5h"` → `"5 hours"`
+- `"1h"` → `"1 hour"`
+- `"7d"` → `"7 days"`
+- `"1d"` → `"1 day"`
+- `"30d"` → `"30 days"`
+- `"2.5h"` → `"2.5 hours"`
+
+Simple pure function in the component file — no backend changes needed.
 
 ---
 
@@ -215,9 +198,7 @@ Simple mapping function in the component — no backend changes needed.
 | File | Change |
 |------|--------|
 | `src/components/usage-limit-error.tsx` | **New** — Styled limit error card component |
-| `src/components/Chat.tsx` | Parse error string, render limit component or generic banner, scroll-to-bottom on error |
-| `workers/main/src/durable-objects.ts` | Verify/fix error event forwarding from runner to browser clients |
-| `sandbox/control-plane.mjs` | Verify 429 errors are caught and broadcast (may need no changes) |
+| `src/components/Chat.tsx` | Parse error string, render limit component or generic banner, scroll-to-bottom on error, suppress bottom spacer when error is set |
 
 ## Out of Scope
 
