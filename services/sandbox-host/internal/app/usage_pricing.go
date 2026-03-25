@@ -1,15 +1,13 @@
 package app
 
-// Model pricing for Anthropic Claude models (USD per token).
-// Prices sourced from Anthropic's published pricing.
-// For Bedrock, we use the same rates — AI Gateway routes to either provider
-// transparently and Bedrock pricing matches Anthropic direct for these models.
+// Model pricing for Claude models (USD per token).
+// Prices are kept identical across Anthropic direct and Bedrock by contract.
 
 type ModelPricing struct {
-	InputPerToken             float64
-	OutputPerToken            float64
-	CacheCreationPerToken     float64 // cache_creation_input_tokens
-	CacheReadPerToken         float64 // cache_read_input_tokens
+	InputPerToken         float64
+	OutputPerToken        float64
+	CacheCreationPerToken float64 // cache_creation_input_tokens
+	CacheReadPerToken     float64 // cache_read_input_tokens
 }
 
 // modelPricingTable maps canonical Anthropic model IDs to per-token costs.
@@ -17,10 +15,10 @@ type ModelPricing struct {
 var modelPricingTable = map[string]ModelPricing{
 	// Claude 4.6
 	"claude-opus-4-6": {
-		InputPerToken:         0.000015,
-		OutputPerToken:        0.000075,
-		CacheCreationPerToken: 0.00001875,
-		CacheReadPerToken:     0.0000015,
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
 	},
 	"claude-sonnet-4-6": {
 		InputPerToken:         0.000003,
@@ -30,10 +28,10 @@ var modelPricingTable = map[string]ModelPricing{
 	},
 	// Claude 4.5
 	"claude-opus-4-5-20251101": {
-		InputPerToken:         0.000015,
-		OutputPerToken:        0.000075,
-		CacheCreationPerToken: 0.00001875,
-		CacheReadPerToken:     0.0000015,
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
 	},
 	"claude-sonnet-4-5-20250929": {
 		InputPerToken:         0.000003,
@@ -42,10 +40,10 @@ var modelPricingTable = map[string]ModelPricing{
 		CacheReadPerToken:     0.0000003,
 	},
 	"claude-haiku-4-5-20251001": {
-		InputPerToken:         0.0000008,
-		OutputPerToken:        0.000004,
-		CacheCreationPerToken: 0.000001,
-		CacheReadPerToken:     0.00000008,
+		InputPerToken:         0.000001,
+		OutputPerToken:        0.000005,
+		CacheCreationPerToken: 0.00000125,
+		CacheReadPerToken:     0.0000001,
 	},
 	// Claude 4
 	"claude-sonnet-4-20250514": {
@@ -55,10 +53,10 @@ var modelPricingTable = map[string]ModelPricing{
 		CacheReadPerToken:     0.0000003,
 	},
 	"claude-opus-4-20250514": {
-		InputPerToken:         0.000015,
-		OutputPerToken:        0.000075,
-		CacheCreationPerToken: 0.00001875,
-		CacheReadPerToken:     0.0000015,
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
 	},
 	// Claude 3.5
 	"claude-3-5-sonnet-20241022": {
@@ -68,10 +66,10 @@ var modelPricingTable = map[string]ModelPricing{
 		CacheReadPerToken:     0.0000003,
 	},
 	"claude-3-5-haiku-20241022": {
-		InputPerToken:         0.0000008,
-		OutputPerToken:        0.000004,
-		CacheCreationPerToken: 0.000001,
-		CacheReadPerToken:     0.00000008,
+		InputPerToken:         0.000001,
+		OutputPerToken:        0.000005,
+		CacheCreationPerToken: 0.00000125,
+		CacheReadPerToken:     0.0000001,
 	},
 }
 
