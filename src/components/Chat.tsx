@@ -4145,22 +4145,27 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           {/* Composer container */}
           <div className="bg-background">
             <div className="pt-2 pb-4 px-4">
-              <div className="max-w-3xl mx-auto w-full">
-                {pendingQuestion && (
-                  <AskUserQuestion
-                    data={pendingQuestion}
-                    onSubmit={handleQuestionResponse}
-                    className="mb-3"
-                  />
-                )}
-                {currentTodos.length > 0 && (
-                  <FloatingTodoList
-                    todos={currentTodos}
-                    isStreaming={isStreaming}
-                    className="mb-3"
-                  />
+              <div className="max-w-3xl mx-auto w-full flex flex-col max-h-[calc(100dvh-2rem)]">
+                {(pendingQuestion || currentTodos.length > 0) && (
+                  <div className="min-h-0 shrink overflow-y-auto">
+                    {pendingQuestion && (
+                      <AskUserQuestion
+                        data={pendingQuestion}
+                        onSubmit={handleQuestionResponse}
+                        className="mb-3"
+                      />
+                    )}
+                    {currentTodos.length > 0 && (
+                      <FloatingTodoList
+                        todos={currentTodos}
+                        isStreaming={isStreaming}
+                        className="mb-3"
+                      />
+                    )}
+                  </div>
                 )}
                 <PromptInput
+                  className="shrink-0"
                   value={input}
                   onChange={setInput}
                   onSubmit={sendMessage}
