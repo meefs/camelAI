@@ -77,6 +77,7 @@ import { getAppUrl, getVanityDomain, getIframeDomain, buildAppLabel } from '@/li
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';
 import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
+import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
 import {
   loadDraft,
   removeDraft,
@@ -116,6 +117,7 @@ interface ChatProps {
 interface PendingNewThreadMessagePayload {
   message?: string;
   threadId?: string;
+  threadTitle?: string;
   workspaceId?: string;
   orgSlug?: string;
 }
@@ -859,7 +861,7 @@ export default function Chat({
   const location = useLocation();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{
-    thread?: { id: string };
+    thread?: { id: string; title?: string };
     error?: string;
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
@@ -867,7 +869,7 @@ export default function Chat({
   const resolvedWorkspaceId = readOnly ? workspaceId : (currentWorkspace?.id ?? workspaceId);
   // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
   // synchronous localStorage reads on every streaming re-render.
-  const initialDraftsRef = useRef<{ thread: DraftData | null; welcome: DraftData | null } | undefined>();
+  const initialDraftsRef = useRef<{ thread: DraftData | null; welcome: DraftData | null } | undefined>(undefined);
   if (initialDraftsRef.current === undefined) {
     const shouldRestore = !readOnly && shouldHydrateThreadDraft(threadId);
     initialDraftsRef.current = {
@@ -2081,6 +2083,9 @@ export default function Chat({
     if (pendingPayload?.threadId === id && typeof pendingPayload.message === 'string') {
       shouldFetchMessages = false;
       sessionStorage.removeItem(pendingMessageKey);
+      if (pendingPayload.threadTitle) {
+        setCurrentTitle(pendingPayload.threadTitle);
+      }
       if (resolvedWorkspaceId) {
         pendingDeliveryDraftRef.current = {
           workspaceId: resolvedWorkspaceId,
@@ -3237,6 +3242,7 @@ export default function Chat({
   // Track pending message for new thread creation (used by effect that handles fetcher response)
   const pendingNewChatRef = useRef<{
     finalContent: string;
+    threadTitle?: string;
     draftText?: string;
     draftAttachments?: Attachment[];
   } | null>(null);
@@ -3247,7 +3253,7 @@ export default function Chat({
       const data = createThreadFetcher.data;
       if (data.thread && pendingNewChatRef.current) {
         // Thread created successfully - store message and navigate
-        const { finalContent, draftText, draftAttachments } = pendingNewChatRef.current;
+        const { finalContent, threadTitle, draftText, draftAttachments } = pendingNewChatRef.current;
         const messageWithContext = finalContent;
 
         pendingDeliveryDraftRef.current = null;
@@ -3270,6 +3276,7 @@ export default function Chat({
             JSON.stringify({
               message: messageWithContext,
               threadId: data.thread.id,
+              threadTitle,
               workspaceId: resolvedWorkspaceId,
               orgSlug: currentOrg?.slug,
             })
@@ -3324,15 +3331,19 @@ export default function Chat({
       ? ` The app's wrangler config is at "${app.config_path}".`
       : ` The project location is unknown - search for it in the home folder. The project may have a different name than the app, and look for either wrangler.toml or wrangler.jsonc files.`;
     const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
+    const threadTitle = buildAppThreadFallbackTitle(app.script_name);
 
     // Store pending message for the createThreadFetcher effect
-    pendingNewChatRef.current = { finalContent: systemMessage };
+    pendingNewChatRef.current = {
+      finalContent: systemMessage,
+      threadTitle,
+    };
 
     // Create thread with preview settings
     createThreadFetcher.submit(
       {
         intent: 'createThread',
-        firstMessage: `Chat about ${app.script_name}`,
+        initialTitle: threadTitle,
         previewApps: app.script_name,
       },
       { method: 'post', action: '/chat' }

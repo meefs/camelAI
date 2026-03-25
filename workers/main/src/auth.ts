@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hashPassword, verifyPassword } from './password';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
+import { DEFAULT_THREAD_TITLE } from '../../../src/lib/thread-title';
 import { slugifyWorkspaceName } from '../../../src/lib/workspace-email';
 import type {
   OrgRole,
@@ -2388,7 +2389,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   ): OrgThread {
     const id = crypto.randomUUID();
     const now = Date.now();
-    const t = title || 'New Chat';
+    const t = title || DEFAULT_THREAD_TITLE;
     const creator = createdBy?.trim() || 'system';
     const msg = firstUserMessage?.slice(0, 500) || null;
     this.sql.exec(

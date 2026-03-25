@@ -208,6 +208,23 @@ describe('Auth flow (full-stack with DOs)', () => {
     });
   });
 
+  describe('Thread creation', () => {
+    it('stores explicit fallback titles without setting first_user_message', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Working on my-todo-app', userId);
+      const stored = await orgStub.getThread(thread.id);
+
+      expect(thread.title).toBe('Working on my-todo-app');
+      expect(thread.first_user_message).toBeNull();
+      expect(stored?.title).toBe('Working on my-todo-app');
+      expect(stored?.first_user_message).toBeNull();
+    });
+  });
+
   describe('Invitations', () => {
     it('should create an invitation', async () => {
       const email = testEmail();
