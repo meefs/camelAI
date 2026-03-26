@@ -410,11 +410,21 @@ describe('useSignup', () => {
     const { result } = renderHook(() => useSignup());
 
     act(() => {
-      result.current.signup('test@example.com', 'password123', 'Test User');
+      result.current.signup('test@example.com', 'password123', {
+        name: 'Test User',
+        redirectTo: '/chat',
+        turnstileToken: 'turnstile-token',
+      });
     });
 
     expect(mockSubmit).toHaveBeenCalledWith(
-      JSON.stringify({ email: 'test@example.com', password: 'password123', name: 'Test User' }),
+      JSON.stringify({
+        email: 'test@example.com',
+        password: 'password123',
+        name: 'Test User',
+        redirectTo: '/chat',
+        turnstileToken: 'turnstile-token',
+      }),
       {
         method: 'post',
         action: '/api/auth/signup',
@@ -434,7 +444,13 @@ describe('useSignup', () => {
     });
 
     expect(mockSubmit).toHaveBeenCalledWith(
-      JSON.stringify({ email: 'test@example.com', password: 'password123', name: undefined }),
+      JSON.stringify({
+        email: 'test@example.com',
+        password: 'password123',
+        name: undefined,
+        redirectTo: undefined,
+        turnstileToken: undefined,
+      }),
       {
         method: 'post',
         action: '/api/auth/signup',

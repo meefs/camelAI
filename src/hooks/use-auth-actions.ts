@@ -169,12 +169,29 @@ export function useSignup() {
   }, [fetcher.state, fetcher.data, navigate]);
 
   return {
-    signup: (email: string, password: string, name?: string) => {
-      fetcher.submit(JSON.stringify({ email, password, name }), {
-        method: 'post',
-        action: '/api/auth/signup',
-        encType: 'application/json',
-      });
+    signup: (
+      email: string,
+      password: string,
+      options?: {
+        name?: string;
+        redirectTo?: string;
+        turnstileToken?: string;
+      }
+    ) => {
+      fetcher.submit(
+        JSON.stringify({
+          email,
+          password,
+          name: options?.name,
+          redirectTo: options?.redirectTo,
+          turnstileToken: options?.turnstileToken,
+        }),
+        {
+          method: 'post',
+          action: '/api/auth/signup',
+          encType: 'application/json',
+        }
+      );
     },
     isSigningUp: fetcher.state !== 'idle',
     error: fetcher.data?.error as string | undefined,

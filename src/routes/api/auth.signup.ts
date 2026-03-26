@@ -13,6 +13,7 @@ import {
   consumeSalesPrompt,
   getPromptKeyFromUrl,
 } from "@/lib/sales-prompt.server";
+import { validateTurnstileToken } from "@/lib/turnstile.server";
 import { waitUntil } from "@/lib/wait-until";
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -38,8 +39,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       password?: string;
       name?: string;
       redirectTo?: string;
+      turnstileToken?: string;
     };
-    const { email, password, name, redirectTo } = body;
+    const { email, password, name, redirectTo, turnstileToken } = body;
 
     if (!email || !password) {
       return Response.json(
@@ -50,6 +52,29 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
+    const turnstileResult = await validateTurnstileToken({
+      env,
+      request,
+      token: turnstileToken,
+    });
+
+    if (!turnstileResult.success) {
+      const status =
+        turnstileResult.errorCode === "not_configured" ? 503 : 400;
+      const error =
+        turnstileResult.errorCode === "not_configured"
+          ? "Email signup is temporarily unavailable"
+          : "Security check failed. Please try again.";
+
+      if (turnstileResult.errorCode !== "missing_token") {
+        console.warn("Turnstile signup verification failed", {
+          errorCode: turnstileResult.errorCode,
+          errorCodes: turnstileResult.errorCodes,
+        });
+      }
+
+      return Response.json({ error }, { status });
+    }
 
     const existingUser = await getUserByEmail(authEnv, email);
     if (existingUser) {

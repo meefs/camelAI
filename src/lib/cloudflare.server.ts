@@ -55,6 +55,8 @@ export interface CloudflareEnv {
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   RESEND_API_KEY?: string;
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
 }

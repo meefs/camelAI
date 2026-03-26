@@ -38,6 +38,8 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   RESEND_API_KEY?: string;
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;

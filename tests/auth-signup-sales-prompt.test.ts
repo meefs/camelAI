@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const waitUntilMock = vi.fn();
 const getEnvMock = vi.fn();
@@ -8,6 +8,8 @@ const createUserMock = vi.fn();
 const createOrgMock = vi.fn();
 const createSessionMock = vi.fn();
 const sendUserVerificationEmailMock = vi.fn();
+const fetchMock = vi.fn();
+const originalFetch = globalThis.fetch;
 
 vi.mock("@/lib/wait-until", () => ({
   waitUntil: waitUntilMock,
@@ -50,17 +52,47 @@ class MemoryKvNamespace {
   }
 }
 
+function buildSignupBody(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    email: "test@example.com",
+    password: "supersecret",
+    name: "Test User",
+    redirectTo: "/chat?prompt_key=sales-key-123",
+    turnstileToken: "turnstile-token",
+    turnstileResponse: "turnstile-token",
+    "cf-turnstile-response": "turnstile-token",
+    ...overrides,
+  });
+}
+
 describe("auth signup sales prompt flow", () => {
   let setPendingSalesPromptMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     setPendingSalesPromptMock = vi.fn();
+    globalThis.fetch = fetchMock as typeof fetch;
 
     // waitUntil runs callbacks synchronously in tests so we can assert side effects
     waitUntilMock.mockImplementation((p: Promise<unknown>) => {
       p.catch(() => {});
     });
+
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: true,
+          action: "email_signup",
+          hostname: "camelai.dev",
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      ),
+    );
 
     getEnvMock.mockReturnValue({
       USER: {
@@ -74,7 +106,10 @@ describe("auth signup sales prompt flow", () => {
       SESSIONS: {},
       EMAIL_TO_USER: {},
       APP_KV: new MemoryKvNamespace(),
+      NEXTJS_ENV: "production",
       TOKEN_SIGNING_SECRET: "secret",
+      TURNSTILE_SECRET_KEY: "turnstile-secret",
+      TURNSTILE_SITE_KEY: "turnstile-site-key",
     });
     createSessionCookieHeaderMock.mockReturnValue("session-cookie");
     getUserByEmailMock.mockResolvedValue(null);
@@ -88,6 +123,10 @@ describe("auth signup sales prompt flow", () => {
     });
     createSessionMock.mockResolvedValue({ signedToken: "signed-token" });
     sendUserVerificationEmailMock.mockResolvedValue({ status: "sent" });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it("consumes KV prompt during signup and stores it on the UserDO", async () => {
@@ -108,12 +147,7 @@ describe("auth signup sales prompt flow", () => {
       request: new Request("https://camelai.dev/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: "test@example.com",
-          password: "supersecret",
-          name: "Test User",
-          redirectTo: "/chat?prompt_key=sales-key-123",
-        }),
+        body: buildSignupBody(),
       }),
       context: {},
     } as never);
@@ -128,9 +162,114 @@ describe("auth signup sales prompt flow", () => {
 
     // Prompt should be stored on UserDO
     expect(setPendingSalesPromptMock).toHaveBeenCalledWith("Build me a CRM");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("challenges.cloudflare.com/turnstile/v0/siteverify"),
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+
+    const turnstileBody = (
+      fetchMock.mock.calls[0]?.[1] as { body?: FormData } | undefined
+    )?.body;
+    expect(turnstileBody).toBeInstanceOf(FormData);
+    expect(turnstileBody?.get("secret")).toBe("turnstile-secret");
+    expect(turnstileBody?.get("response")).toBe("turnstile-token");
   });
 
   it("sends verification email without prompt_key", async () => {
+    const response = await action({
+      request: new Request("https://camelai.dev/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: buildSignupBody(),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(sendUserVerificationEmailMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ promptKey: expect.anything() }),
+    );
+  });
+
+  it("rejects signup when turnstile verification fails before creating a user", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          success: false,
+          "error-codes": ["invalid-input-response"],
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      ),
+    );
+
+    const response = await action({
+      request: new Request("https://camelai.dev/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: buildSignupBody(),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual(
+      expect.objectContaining({
+        error: expect.stringMatching(/security check failed/i),
+      }),
+    );
+    expect(getUserByEmailMock).not.toHaveBeenCalled();
+    expect(createUserMock).not.toHaveBeenCalled();
+    expect(createOrgMock).not.toHaveBeenCalled();
+    expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects signup when turnstile hostname does not match the request host", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          success: true,
+          action: "email_signup",
+          hostname: "staging.camelai.dev",
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      ),
+    );
+
+    const response = await action({
+      request: new Request("https://camelai.dev/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: buildSignupBody(),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual(
+      expect.objectContaining({
+        error: expect.stringMatching(/security check failed/i),
+      }),
+    );
+    expect(getUserByEmailMock).not.toHaveBeenCalled();
+    expect(createUserMock).not.toHaveBeenCalled();
+    expect(createOrgMock).not.toHaveBeenCalled();
+    expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects signup before any account work when no turnstile token is provided", async () => {
     const response = await action({
       request: new Request("https://camelai.dev/api/auth/signup", {
         method: "POST",
@@ -145,9 +284,11 @@ describe("auth signup sales prompt flow", () => {
       context: {},
     } as never);
 
-    expect(response.status).toBe(200);
-    expect(sendUserVerificationEmailMock).toHaveBeenCalledWith(
-      expect.not.objectContaining({ promptKey: expect.anything() }),
-    );
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getUserByEmailMock).not.toHaveBeenCalled();
+    expect(createUserMock).not.toHaveBeenCalled();
+    expect(createOrgMock).not.toHaveBeenCalled();
+    expect(createSessionMock).not.toHaveBeenCalled();
   });
 });

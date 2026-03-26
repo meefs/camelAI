@@ -11,6 +11,7 @@ import { SlotMachinePrompt } from "@/components/ui/slot-machine-prompt";
 import { AlertCircle } from "lucide-react";
 import { FullLogo } from "@/components/ui/logo";
 import { OAuthButtons, OAuthDivider } from "@/components/auth/oauth-buttons";
+import { TurnstileWidget } from "@/components/auth/turnstile-widget";
 
 const inspirationalPrompts = [
   "Alert me in Slack whenever someone signs up with a .edu email address",
@@ -23,20 +24,31 @@ const inspirationalPrompts = [
 
 type SignupFormProps = {
   redirectTo: string;
+  turnstileSiteKey: string | null;
+  turnstileAction: string;
+  emailSignupEnabled: boolean;
 };
 
-export function SignupForm({ redirectTo }: SignupFormProps) {
+export function SignupForm({
+  redirectTo,
+  turnstileSiteKey,
+  turnstileAction,
+  emailSignupEnabled,
+}: SignupFormProps) {
   const navigate = useNavigate();
   const fetcher = useFetcher();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [validationError, setValidationError] = useState("");
 
   const submitting = fetcher.state !== "idle";
   const serverError = fetcher.data?.error as string | undefined;
   const error = validationError || serverError;
+  const requiresTurnstile = Boolean(turnstileSiteKey);
 
   const loginHref =
     redirectTo === "/"
@@ -49,6 +61,19 @@ export function SignupForm({ redirectTo }: SignupFormProps) {
       navigate(redirectTo);
     }
   }, [fetcher.state, fetcher.data, navigate, redirectTo]);
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.error && requiresTurnstile) {
+      setTurnstileToken(null);
+      setTurnstileResetKey((current) => current + 1);
+    }
+  }, [fetcher.state, fetcher.data, requiresTurnstile]);
+
+  useEffect(() => {
+    if (turnstileToken && validationError === "Complete the security check") {
+      setValidationError("");
+    }
+  }, [turnstileToken, validationError]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,8 +89,24 @@ export function SignupForm({ redirectTo }: SignupFormProps) {
       return;
     }
 
+    if (!emailSignupEnabled) {
+      setValidationError("Email signup is temporarily unavailable");
+      return;
+    }
+
+    if (requiresTurnstile && !turnstileToken) {
+      setValidationError("Complete the security check");
+      return;
+    }
+
     fetcher.submit(
-      JSON.stringify({ email, password, name: name || undefined, redirectTo }),
+      JSON.stringify({
+        email,
+        password,
+        name: name || undefined,
+        redirectTo,
+        turnstileToken: turnstileToken || undefined,
+      }),
       {
         method: "post",
         action: "/api/auth/signup",
@@ -149,9 +190,23 @@ export function SignupForm({ redirectTo }: SignupFormProps) {
                     placeholder="Confirm your password"
                   />
                 </div>
+                {turnstileSiteKey ? (
+                  <TurnstileWidget
+                    siteKey={turnstileSiteKey}
+                    action={turnstileAction}
+                    resetKey={turnstileResetKey}
+                    onTokenChange={setTurnstileToken}
+                  />
+                ) : null}
+                {!emailSignupEnabled ? (
+                  <p className="text-muted-foreground text-xs">
+                    Email signup is temporarily unavailable while the security
+                    check is being configured.
+                  </p>
+                ) : null}
                 <Button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || !emailSignupEnabled}
                   className="w-full"
                   size="lg"
                 >
