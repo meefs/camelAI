@@ -29,6 +29,8 @@ import {
   AppSchema,
   AddMemberBodySchema,
   AddMemberResponseSchema,
+  BlockSignupIpBodySchema,
+  BlockedSignupIpSchema,
   KvEntrySchema,
   KvValueSchema,
   R2ObjectSummarySchema,
@@ -263,6 +265,80 @@ routes.post(
     await userStub.addOrg(orgId, body.role, null);
 
     return c.json({ org_id: orgId, user_id: body.user_id, role: body.role }, 201);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PUT /signup-blocked-ips/:ip
+// ---------------------------------------------------------------------------
+
+routes.put(
+  '/signup-blocked-ips/:ip',
+  openApi({
+    summary: 'Block signup attempts from an IP address',
+    request: {
+      json: BlockSignupIpBodySchema,
+    },
+    responses: {
+      200: BlockedSignupIpSchema,
+      400: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const rawIp = decodeURIComponent(c.req.param('ip'));
+    const normalizedIp = rawIp.trim().toLowerCase();
+    if (!normalizedIp) {
+      return c.json({ error: 'IP required' }, 400);
+    }
+
+    const body = c.req.valid('json');
+    const blockedBy = body.blocked_by?.trim() || null;
+    const reason = body.reason?.trim() || null;
+    const blockedAt = Date.now();
+    const adminIndex = getAdminIndexStub(c.env);
+
+    await adminIndex.blockSignupIp(normalizedIp, blockedBy, reason);
+
+    return c.json({
+      ip: normalizedIp,
+      blocked: true,
+      blocked_at: blockedAt,
+      blocked_by: blockedBy,
+      reason,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// DELETE /signup-blocked-ips/:ip
+// ---------------------------------------------------------------------------
+
+routes.delete(
+  '/signup-blocked-ips/:ip',
+  openApi({
+    summary: 'Remove an IP address from the signup blocklist',
+    responses: {
+      200: BlockedSignupIpSchema,
+      400: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const rawIp = decodeURIComponent(c.req.param('ip'));
+    const normalizedIp = rawIp.trim().toLowerCase();
+    if (!normalizedIp) {
+      return c.json({ error: 'IP required' }, 400);
+    }
+
+    const adminIndex = getAdminIndexStub(c.env);
+    await adminIndex.unblockSignupIp(normalizedIp);
+
+    return c.json({
+      ip: normalizedIp,
+      blocked: false,
+      blocked_at: null,
+      blocked_by: null,
+      reason: null,
+    });
   },
 );
 

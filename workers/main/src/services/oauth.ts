@@ -7,14 +7,21 @@ import type { OAuthProvider } from '../../../../src/lib/oauth-config.js';
 import { assertEmailDomainAllowed } from '../../../../src/lib/email-domain-blocklist.js';
 import { getUserStub, getOrgStub, getWorkspaceStub } from '../helpers/stubs.js';
 
+function normalizeSignupIp(ip: string | null | undefined): string | null {
+  const normalized = ip?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
 export async function getOrCreateUserFromOAuth(
   env: Env,
   provider: OAuthProvider,
-  userInfo: { email: string; name?: string; providerId: string }
+  userInfo: { email: string; name?: string; providerId: string },
+  signupIp: string | null = null
 ): Promise<string> {
   const email = userInfo.email.toLowerCase();
   const emailKey = `email:${email}`;
   const oauthKey = `oauth:${provider}:${userInfo.providerId}`;
+  const normalizedSignupIp = normalizeSignupIp(signupIp);
 
   // Check by email first
   let userId = await env.EMAIL_TO_USER.get(emailKey);
@@ -69,7 +76,20 @@ export async function getOrCreateUserFromOAuth(
   }
 
   // Create new user
+  if (normalizedSignupIp && env.ADMIN_INDEX) {
+    const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+    if (await adminIndex.isSignupIpBlocked(normalizedSignupIp)) {
+      throw new Error('signup_ip_blocked');
+    }
+  }
   assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
+
+  if (normalizedSignupIp && env.ADMIN_INDEX) {
+    const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+    if (await adminIndex.isSignupIpBlocked(normalizedSignupIp)) {
+      throw new Error('signup_ip_blocked');
+    }
+  }
 
   userId = crypto.randomUUID();
   await Promise.all([
@@ -93,7 +113,8 @@ export async function getOrCreateUserFromOAuth(
       email,
       userInfo.name || email.split('@')[0],
       provider,
-      userInfo.providerId
+      userInfo.providerId,
+      normalizedSignupIp
     );
   } catch (error) {
     // Clean up KV entries if DO profile creation fails to prevent zombie users

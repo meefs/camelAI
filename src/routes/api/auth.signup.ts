@@ -1,12 +1,13 @@
 import type { Route } from "./+types/auth.signup";
-import { getEnv, type CloudflareEnv } from "@/lib/cloudflare.server";
+import { getEnv } from "@/lib/cloudflare.server";
 import { createSessionCookieHeader } from "@/lib/cookies.server";
-import { type AuthEnv } from "@/lib/auth-helpers";
+import { getAuthEnv } from "@/lib/auth-helpers";
 import {
   getUserByEmail,
   createUser,
   createOrg,
   createSession,
+  isSignupIpBlocked,
 } from "@/lib/auth-do";
 import {
   isEmailDomainBlocked,
@@ -19,20 +20,6 @@ import {
 } from "@/lib/sales-prompt.server";
 import { validateTurnstileToken } from "@/lib/turnstile.server";
 import { waitUntil } from "@/lib/wait-until";
-
-function getAuthEnv(env: CloudflareEnv): AuthEnv {
-  return {
-    USER: env.USER as AuthEnv["USER"],
-    ORG: env.ORG as AuthEnv["ORG"],
-    WORKSPACE: env.WORKSPACE as AuthEnv["WORKSPACE"],
-    SESSIONS: env.SESSIONS,
-    EMAIL_TO_USER: env.EMAIL_TO_USER,
-    APP_KV: env.APP_KV,
-    TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
-    EMAIL_DOMAIN_BLOCKLIST: env.EMAIL_DOMAIN_BLOCKLIST,
-  };
-}
-
 export async function action({ request, context }: Route.ActionArgs) {
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -57,6 +44,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
+    const signupIp = getSignupIpFromRequest(request);
     const turnstileResult = await validateTurnstileToken({
       env,
       request,
@@ -81,6 +69,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json({ error }, { status });
     }
 
+    if (await isSignupIpBlocked(authEnv, signupIp)) {
+      return Response.json(
+        { error: "Signups from this IP address are blocked" },
+        { status: 403 },
+      );
+    }
+
     if (isEmailDomainBlocked(email, env.EMAIL_DOMAIN_BLOCKLIST)) {
       return Response.json(
         { error: "Email signups from this domain are not allowed" },
@@ -98,6 +93,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       email,
       password,
       name ?? null,
+      signupIp,
     );
     const orgName = name || email.split("@")[0];
     const { org, defaultWorkspaceId } = await createOrg(
@@ -178,6 +174,21 @@ export async function action({ request, context }: Route.ActionArgs) {
     console.error("Signup error:", error);
     return Response.json({ error: "Signup failed" }, { status: 500 });
   }
+}
+
+function getSignupIpFromRequest(request: Request): string | null {
+  const cfConnectingIp = request.headers.get("cf-connecting-ip")?.trim();
+  if (cfConnectingIp) {
+    return cfConnectingIp;
+  }
+
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (!forwardedFor) {
+    return null;
+  }
+
+  const firstIp = forwardedFor.split(",")[0]?.trim();
+  return firstIp || null;
 }
 
 function getPromptKeyFromRedirectPath(

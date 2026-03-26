@@ -5,6 +5,7 @@ const getUserByEmailMock = vi.fn();
 const createUserMock = vi.fn();
 const createOrgMock = vi.fn();
 const createSessionMock = vi.fn();
+const isSignupIpBlockedMock = vi.fn();
 const createSessionCookieHeaderMock = vi.fn();
 const sendUserVerificationEmailMock = vi.fn();
 const waitUntilMock = vi.fn();
@@ -19,6 +20,7 @@ vi.mock('@/lib/auth-do', () => ({
   createUser: createUserMock,
   createOrg: createOrgMock,
   createSession: createSessionMock,
+  isSignupIpBlocked: isSignupIpBlockedMock,
 }));
 
 vi.mock('@/lib/cookies.server', () => ({
@@ -63,6 +65,7 @@ describe('auth signup domain blocklist', () => {
       defaultWorkspaceId: 'ws_123',
     });
     createSessionMock.mockResolvedValue({ signedToken: 'signed-token' });
+    isSignupIpBlockedMock.mockResolvedValue(false);
     createSessionCookieHeaderMock.mockReturnValue('session-cookie');
     sendUserVerificationEmailMock.mockResolvedValue({ status: 'sent' });
     validateTurnstileTokenMock.mockResolvedValue({ success: true });

@@ -72,8 +72,9 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 3. New account creation rejects emails whose domain matches `EMAIL_DOMAIN_BLOCKLIST` (comma/space/semicolon-separated; exact domains and subdomains). The policy applies to password signups and new OAuth signups, but does not lock out existing accounts if a domain is later added.
 4. Password-based signups receive an email verification link (`/api/auth/verify-email`), and onboarding completion is blocked until verified (`/api/auth/verify-email/send` for resend)
 5. Email signups are gated by Cloudflare Turnstile before account creation. The public signup page loader passes the site key into the form, the client submits the widget token with the JSON signup payload, and `POST /api/auth/signup` verifies that token against Cloudflare before any user/org/session writes run. The relevant bindings are `TURNSTILE_SITE_KEY` for the widget and `TURNSTILE_SECRET_KEY` for server-side verification.
-6. Session stored in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
-7. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
+6. Password and OAuth signup flows extract the client IP from `CF-Connecting-IP` (falling back to `X-Forwarded-For`), reject new account creation when that IP exists in `AdminIndexDO.blocked_signup_ips`, and store the normalized signup IP on newly created `UserDO` records under the sqlite-backed `profile` key `signup_ip`
+7. Session stored in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
+8. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
 ### OAuth State Storage
 
@@ -305,7 +306,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Support                      | `/api/help`                                                                                                                                                              |
 | Dev tooling                  | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id`                                                                                                                       |
 | Admin troubleshooting        | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` (`messages` also supports Bearer `ADMIN_API_KEY`; `jsonl` remains session-auth only)                 |
-| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, plus `GET /api/admin/threads/:id/messages` (Bearer `ADMIN_API_KEY` auth)                                                 |
+| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, `GET /api/admin/threads/:id/messages`, and `PUT/DELETE /api/admin/signup-blocked-ips/:ip` (Bearer `ADMIN_API_KEY` auth) |
 | Invitations                  | `/api/invitations/:orgId/:invitationId` (GET/POST)                                                                                                                       |
 | Workspace FS                 | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}`                                                                                     |
 | Workspace chat               | `/api/workspaces/:id/chat/:threadId/messages/stream`                                                                                                                     |

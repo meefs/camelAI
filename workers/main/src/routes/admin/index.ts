@@ -17,6 +17,8 @@
  *   GET   /api/admin/threads               — All threads
  *   GET   /api/admin/threads/:id/messages  — Parsed thread messages
  *   POST  /api/admin/orgs/:id/members      — Add member to org
+ *   PUT   /api/admin/signup-blocked-ips/:ip — Block signup attempts from an IP
+ *   DELETE /api/admin/signup-blocked-ips/:ip — Remove an IP from the signup blocklist
  *   PATCH /api/admin/threads/:id           — Update thread
  *   GET   /api/admin/kv                    — List KV keys
  *   GET   /api/admin/kv/:key              — Get KV value

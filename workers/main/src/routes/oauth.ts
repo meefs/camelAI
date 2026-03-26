@@ -84,6 +84,7 @@ export async function handleOAuthCallback({ env, url, match, req }: RouteContext
   const error = url.searchParams.get('error');
   const secure = url.protocol === 'https:';
   const hostname = url.hostname;
+  const signupIp = getSignupIpFromRequest(req);
 
   if (error) return redirectTo(`${url.origin}/login?error=oauth_denied`);
   if (!code || !state) return redirectTo(`${url.origin}/login?error=oauth_invalid`);
@@ -130,7 +131,7 @@ export async function handleOAuthCallback({ env, url, match, req }: RouteContext
     const userInfo = await fetchUserInfo(provider, tokens.access_token, OAUTH_PROVIDER_TIMEOUT_MS);
 
     stage = 'user_lookup';
-    const userId = await getOrCreateUserFromOAuth(env, provider, userInfo);
+    const userId = await getOrCreateUserFromOAuth(env, provider, userInfo, signupIp);
     const displayName = userInfo.name || userInfo.email.split('@')[0];
 
     stage = 'org_workspace';
@@ -182,6 +183,10 @@ export async function handleOAuthCallback({ env, url, match, req }: RouteContext
     headers.append('Set-Cookie', createDeleteOAuthStateCookie(req));
     return new Response(null, { status: 302, headers });
   } catch (err) {
+    if (err instanceof Error && err.message === 'signup_ip_blocked') {
+      return redirectTo(`${url.origin}/login?error=signup_blocked`);
+    }
+
     if (isEmailDomainBlockedError(err)) {
       return redirectTo(`${url.origin}/login?error=oauth_email_domain_blocked`);
     }
@@ -196,6 +201,21 @@ export async function handleOAuthCallback({ env, url, match, req }: RouteContext
     });
     return redirectTo(`${url.origin}/login?error=oauth_failed`);
   }
+}
+
+function getSignupIpFromRequest(request: Request): string | null {
+  const cfConnectingIp = request.headers.get('cf-connecting-ip')?.trim();
+  if (cfConnectingIp) {
+    return cfConnectingIp;
+  }
+
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  if (!forwardedFor) {
+    return null;
+  }
+
+  const firstIp = forwardedFor.split(',')[0]?.trim();
+  return firstIp || null;
 }
 
 function redirectTo(url: string): Response {

@@ -12,6 +12,7 @@
 
 import type { UserDO, OrgDO, OrgRole, User } from '../src/auth';
 import type { WorkspaceDO, Workspace, WorkspaceAccessLevel as WorkspaceAccessLevelDO } from '../src/workspace';
+import type { AdminIndexDO } from '../src/admin-index-do';
 import type { AuthEnv } from '../../../src/lib/auth-helpers';
 import { hashPassword, verifyPassword } from '../src/password';
 import { getSession, updateSession, destroySession, type SessionData } from '../src/session-kv';
@@ -34,6 +35,7 @@ export interface TestEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  ADMIN_INDEX?: DurableObjectNamespace<AdminIndexDO>;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS: KVNamespace;
   APP_KV: KVNamespace;
@@ -51,12 +53,13 @@ export async function createUser(
   env: TestEnv,
   email: string,
   password: string,
-  name: string
+  name: string,
+  signupIp: string | null = null
 ): Promise<{ userId: string; user: User }> {
   const userId = generateId();
   const userStub = env.USER.get(env.USER.idFromName(userId));
 
-  const user = await userStub.createUser(userId, email, password, name);
+  const user = await userStub.createUser(userId, email, password, name, signupIp);
 
   // Store email -> userId mapping
   await env.EMAIL_TO_USER.put(email.toLowerCase(), userId);

@@ -96,6 +96,11 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     return rows.length > 0;
   }
 
+  private normalizeSignupIp(ip: string): string | null {
+    const normalized = ip.trim().toLowerCase();
+    return normalized.length > 0 ? normalized : null;
+  }
+
   private migrate() {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -171,6 +176,12 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         id TEXT PRIMARY KEY,
         deleted_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS blocked_signup_ips (
+        ip TEXT PRIMARY KEY,
+        blocked_at INTEGER NOT NULL,
+        blocked_by TEXT,
+        reason TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_threads_org_updated_at ON threads(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_apps_org_updated_at ON apps(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_workspaces_org_created_at ON workspaces(org_id, created_at DESC);
@@ -236,6 +247,49 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     if (!workspaceColumns.has('compute_tier')) {
       this.sql.exec("ALTER TABLE workspaces ADD COLUMN compute_tier TEXT DEFAULT 'standard'");
     }
+  }
+
+  async isSignupIpBlocked(ip: string): Promise<boolean> {
+    const normalizedIp = this.normalizeSignupIp(ip);
+    if (!normalizedIp) {
+      return false;
+    }
+
+    const rows = this.sql
+      .exec('SELECT 1 FROM blocked_signup_ips WHERE ip = ? LIMIT 1', normalizedIp)
+      .toArray();
+    return rows.length > 0;
+  }
+
+  async blockSignupIp(ip: string, blockedBy: string | null = null, reason: string | null = null): Promise<void> {
+    const normalizedIp = this.normalizeSignupIp(ip);
+    if (!normalizedIp) {
+      throw new Error('Invalid signup IP');
+    }
+
+    this.sql.exec(
+      `
+        INSERT INTO blocked_signup_ips (ip, blocked_at, blocked_by, reason)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(ip) DO UPDATE SET
+          blocked_at = excluded.blocked_at,
+          blocked_by = excluded.blocked_by,
+          reason = excluded.reason
+      `,
+      normalizedIp,
+      Date.now(),
+      blockedBy,
+      reason
+    );
+  }
+
+  async unblockSignupIp(ip: string): Promise<void> {
+    const normalizedIp = this.normalizeSignupIp(ip);
+    if (!normalizedIp) {
+      return;
+    }
+
+    this.sql.exec('DELETE FROM blocked_signup_ips WHERE ip = ?', normalizedIp);
   }
 
   async handleEvent(event: AdminEventType) {

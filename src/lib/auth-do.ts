@@ -184,7 +184,8 @@ export async function createUser(
   env: AuthEnv,
   email: string,
   password: string,
-  name: string | null
+  name: string | null,
+  signupIp: string | null = null
 ): Promise<{ userId: string; user: User }> {
   assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
 
@@ -210,13 +211,49 @@ export async function createUser(
 
   try {
     const stub = env.USER.get(env.USER.idFromName(userId));
-    const user = await stub.createUser(userId, normalizedEmail, password, name);
+    const user = await stub.createUser(userId, normalizedEmail, password, name, signupIp);
     return { userId, user };
   } catch (error) {
     // Clean up on failure
     await env.EMAIL_TO_USER.delete(emailKvKey);
     throw error;
   }
+}
+
+export async function isSignupIpBlocked(
+  env: AuthEnv,
+  ip: string | null | undefined
+): Promise<boolean> {
+  const normalizedIp = ip?.trim();
+  if (!normalizedIp || !env.ADMIN_INDEX) {
+    return false;
+  }
+
+  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+  return adminIndex.isSignupIpBlocked(normalizedIp);
+}
+
+export async function blockSignupIp(
+  env: AuthEnv,
+  ip: string,
+  blockedBy: string | null = null,
+  reason: string | null = null
+): Promise<void> {
+  if (!env.ADMIN_INDEX) {
+    throw new Error('ADMIN_INDEX binding is not configured');
+  }
+
+  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+  await adminIndex.blockSignupIp(ip, blockedBy, reason);
+}
+
+export async function unblockSignupIp(env: AuthEnv, ip: string): Promise<void> {
+  if (!env.ADMIN_INDEX) {
+    throw new Error('ADMIN_INDEX binding is not configured');
+  }
+
+  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+  await adminIndex.unblockSignupIp(ip);
 }
 
 // OAuth functions

@@ -7,6 +7,7 @@ const getUserByEmailMock = vi.fn();
 const createUserMock = vi.fn();
 const createOrgMock = vi.fn();
 const createSessionMock = vi.fn();
+const isSignupIpBlockedMock = vi.fn();
 const sendUserVerificationEmailMock = vi.fn();
 const fetchMock = vi.fn();
 const originalFetch = globalThis.fetch;
@@ -28,6 +29,7 @@ vi.mock("@/lib/auth-do", () => ({
   createUser: createUserMock,
   createOrg: createOrgMock,
   createSession: createSessionMock,
+  isSignupIpBlocked: isSignupIpBlockedMock,
 }));
 
 vi.mock("@/lib/email-verification.server", () => ({
@@ -122,6 +124,7 @@ describe("auth signup sales prompt flow", () => {
       defaultWorkspaceId: "ws_123",
     });
     createSessionMock.mockResolvedValue({ signedToken: "signed-token" });
+    isSignupIpBlockedMock.mockResolvedValue(false);
     sendUserVerificationEmailMock.mockResolvedValue({ status: "sent" });
   });
 

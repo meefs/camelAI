@@ -98,6 +98,11 @@ export const AddMemberBodySchema = z.object({
   role: z.enum(['admin', 'member']).optional().default('member'),
 });
 
+export const BlockSignupIpBodySchema = z.object({
+  blocked_by: z.string().optional(),
+  reason: z.string().optional(),
+});
+
 export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
@@ -210,6 +215,14 @@ export const AddMemberResponseSchema = z.object({
   org_id: z.string(),
   user_id: z.string(),
   role: z.string(),
+});
+
+export const BlockedSignupIpSchema = z.object({
+  ip: z.string(),
+  blocked: z.boolean(),
+  blocked_at: z.number().int().nullable().optional(),
+  blocked_by: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
 });
 
 export const KvEntrySchema = z.object({

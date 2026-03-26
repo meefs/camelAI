@@ -31,6 +31,7 @@ const SUPERUSER_EMAILS = new Set([
   '1033072+Vercantez@users.noreply.github.com',
 ]);
 const USER_ONBOARDING_KEY = 'onboarding';
+const USER_SIGNUP_IP_KEY = 'signup_ip';
 
 function isSuperuserEmail(email: string | null): boolean {
   if (!email) return false;
@@ -538,11 +539,28 @@ export class UserDO extends DurableObject<DOEnv> {
     return verifyPassword(password, hash);
   }
 
+  getSignupIp(): string | null {
+    const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', USER_SIGNUP_IP_KEY).toArray();
+    if (rows.length === 0) return null;
+    return (rows[0] as { value: string }).value;
+  }
+
+  setSignupIp(ip: string): void {
+    const normalizedIp = ip.trim().toLowerCase();
+    if (!normalizedIp) return;
+    this.sql.exec(
+      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+      USER_SIGNUP_IP_KEY,
+      normalizedIp
+    );
+  }
+
   async createUser(
     id: string,
     email: string,
     password: string,
-    name: string | null
+    name: string | null,
+    signupIp: string | null = null
   ): Promise<User> {
     const now = Date.now();
     const avatar = generateDefaultAvatar(name || email);
@@ -561,6 +579,9 @@ export class UserDO extends DurableObject<DOEnv> {
 
     await this.setProfile(profile);
     await this.setPasswordHash(passwordHash);
+    if (signupIp) {
+      this.setSignupIp(signupIp);
+    }
 
     return profile;
   }
@@ -766,7 +787,8 @@ export class UserDO extends DurableObject<DOEnv> {
     email: string,
     name: string | null,
     provider: OAuthProvider,
-    providerId: string
+    providerId: string,
+    signupIp: string | null = null
   ): Promise<User> {
     const now = Date.now();
     const avatar = generateDefaultAvatar(name || email);
@@ -784,6 +806,9 @@ export class UserDO extends DurableObject<DOEnv> {
 
     await this.setProfile(profile);
     await this.linkOAuthProvider(provider, providerId);
+    if (signupIp) {
+      this.setSignupIp(signupIp);
+    }
 
     return profile;
   }
