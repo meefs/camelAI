@@ -35,6 +35,7 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   SALESFORCE_CLIENT_ID?: string;
   SALESFORCE_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
+  EMAIL_DOMAIN_BLOCKLIST?: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   RESEND_API_KEY?: string;

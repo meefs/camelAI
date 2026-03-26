@@ -69,10 +69,11 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 
 1. User signs up/logs in via `/api/auth/login` or `/api/auth/signup`
 2. Passwords are hashed/verified with PBKDF2 (100k iterations, SHA-256)
-3. Password-based signups receive an email verification link (`/api/auth/verify-email`), and onboarding completion is blocked until verified (`/api/auth/verify-email/send` for resend)
-4. Email signups are gated by Cloudflare Turnstile before account creation. The public signup page loader passes the site key into the form, the client submits the widget token with the JSON signup payload, and `POST /api/auth/signup` verifies that token against Cloudflare before any user/org/session writes run. The relevant bindings are `TURNSTILE_SITE_KEY` for the widget and `TURNSTILE_SECRET_KEY` for server-side verification.
-5. Session stored in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
-6. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
+3. New account creation rejects emails whose domain matches `EMAIL_DOMAIN_BLOCKLIST` (comma/space/semicolon-separated; exact domains and subdomains). The policy applies to password signups and new OAuth signups, but does not lock out existing accounts if a domain is later added.
+4. Password-based signups receive an email verification link (`/api/auth/verify-email`), and onboarding completion is blocked until verified (`/api/auth/verify-email/send` for resend)
+5. Email signups are gated by Cloudflare Turnstile before account creation. The public signup page loader passes the site key into the form, the client submits the widget token with the JSON signup payload, and `POST /api/auth/signup` verifies that token against Cloudflare before any user/org/session writes run. The relevant bindings are `TURNSTILE_SITE_KEY` for the widget and `TURNSTILE_SECRET_KEY` for server-side verification.
+6. Session stored in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
+7. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
 ### OAuth State Storage
 

@@ -6,6 +6,7 @@
  */
 
 import type { RouteContext, Env } from '../types.js';
+import { isEmailDomainBlockedError } from '../../../../src/lib/email-domain-blocklist.js';
 import {
   isValidOAuthProvider,
   buildAuthorizationUrl,
@@ -181,6 +182,9 @@ export async function handleOAuthCallback({ env, url, match, req }: RouteContext
     headers.append('Set-Cookie', createDeleteOAuthStateCookie(req));
     return new Response(null, { status: 302, headers });
   } catch (err) {
+    if (isEmailDomainBlockedError(err)) {
+      return redirectTo(`${url.origin}/login?error=oauth_email_domain_blocked`);
+    }
     if (err instanceof Error && err.message === 'oauth_race_condition') {
       return redirectTo(`${url.origin}/login?error=oauth_race_condition`);
     }

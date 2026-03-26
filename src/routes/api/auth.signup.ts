@@ -8,6 +8,10 @@ import {
   createOrg,
   createSession,
 } from "@/lib/auth-do";
+import {
+  isEmailDomainBlocked,
+  isEmailDomainBlockedError,
+} from "@/lib/email-domain-blocklist";
 import { sendUserVerificationEmail } from "@/lib/email-verification.server";
 import {
   consumeSalesPrompt,
@@ -25,6 +29,7 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,
     TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
+    EMAIL_DOMAIN_BLOCKLIST: env.EMAIL_DOMAIN_BLOCKLIST,
   };
 }
 
@@ -74,6 +79,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
 
       return Response.json({ error }, { status });
+    }
+
+    if (isEmailDomainBlocked(email, env.EMAIL_DOMAIN_BLOCKLIST)) {
+      return Response.json(
+        { error: "Email signups from this domain are not allowed" },
+        { status: 400 },
+      );
     }
 
     const existingUser = await getUserByEmail(authEnv, email);
@@ -156,6 +168,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       },
     );
   } catch (error) {
+    if (isEmailDomainBlockedError(error)) {
+      return Response.json(
+        { error: "Email signups from this domain are not allowed" },
+        { status: 400 },
+      );
+    }
+
     console.error("Signup error:", error);
     return Response.json({ error: "Signup failed" }, { status: 500 });
   }

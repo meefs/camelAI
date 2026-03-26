@@ -15,6 +15,7 @@ import {
   createSignedSession,
   type SignedSessionData,
 } from '../../workers/main/src/signed-session';
+import { assertEmailDomainAllowed } from './email-domain-blocklist';
 
 import {
   type AuthEnv,
@@ -185,6 +186,8 @@ export async function createUser(
   password: string,
   name: string | null
 ): Promise<{ userId: string; user: User }> {
+  assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
+
   const normalizedEmail = email.toLowerCase();
   const emailKvKey = `email:${normalizedEmail}`;
 
@@ -224,6 +227,8 @@ export async function createUserFromOAuth(
   provider: 'google' | 'github',
   providerId: string
 ): Promise<{ userId: string; user: User }> {
+  assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
+
   const normalizedEmail = email.toLowerCase();
   const emailKvKey = `email:${normalizedEmail}`;
   const oauthKvKey = `oauth:${provider}:${providerId}`;
@@ -1137,4 +1142,3 @@ export async function getOrgCustomDomain(
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   return stub.getCustomDomain();
 }
-

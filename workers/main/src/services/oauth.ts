@@ -4,6 +4,7 @@
 
 import type { Env } from '../types.js';
 import type { OAuthProvider } from '../../../../src/lib/oauth-config.js';
+import { assertEmailDomainAllowed } from '../../../../src/lib/email-domain-blocklist.js';
 import { getUserStub, getOrgStub, getWorkspaceStub } from '../helpers/stubs.js';
 
 export async function getOrCreateUserFromOAuth(
@@ -68,6 +69,8 @@ export async function getOrCreateUserFromOAuth(
   }
 
   // Create new user
+  assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
+
   userId = crypto.randomUUID();
   await Promise.all([
     env.EMAIL_TO_USER.put(emailKey, userId),

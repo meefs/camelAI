@@ -13,6 +13,7 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
   oauth_denied: 'You cancelled the sign-in.',
   oauth_state_invalid: 'Sign-in expired. Please try again.',
   oauth_race_condition: 'Sign-in conflict. Please try again.',
+  oauth_email_domain_blocked: 'Sign-up from this email domain is not allowed.',
   oauth_failed: 'Sign-in failed. Please try again.',
   oauth_invalid: 'Invalid sign-in response. Please try again.',
   oauth_config: 'OAuth is not configured. Please contact support.',

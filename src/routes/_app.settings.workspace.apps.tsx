@@ -44,6 +44,8 @@ function getAuthEnvFromCloudflare(env: CloudflareEnv): AuthEnv {
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,
+    TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
+    EMAIL_DOMAIN_BLOCKLIST: env.EMAIL_DOMAIN_BLOCKLIST,
   };
 }
 
