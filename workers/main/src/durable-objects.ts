@@ -9,6 +9,7 @@ import {
   formatAttributedUserMessage,
   type ChatAuthorIdentity,
 } from './chat-author-attribution';
+import { injectFileSafetyMessage } from './file-safety';
 import {
   getThreadTitleSourceMessage,
   isPlaceholderThreadTitle,
@@ -1259,8 +1260,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const rawContent = typeof data.content === 'string' ? data.content : '';
+    const safeRawContent = injectFileSafetyMessage(rawContent);
     const attributedContent = formatAttributedUserMessage(
-      rawContent,
+      safeRawContent,
       this.getSocketAuthorIdentity(ws)
     );
     if (!attributedContent) return;
@@ -1566,7 +1568,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.markRunnerActivity('external_message');
     await this.ensureRunnerConnected();
 
-    const attributedContent = formatAttributedUserMessage(rawMessage, {
+    const safeRawMessage = injectFileSafetyMessage(rawMessage);
+    const attributedContent = formatAttributedUserMessage(safeRawMessage, {
       userName: typeof body.userName === 'string' && body.userName.trim()
         ? body.userName.trim()
         : null,

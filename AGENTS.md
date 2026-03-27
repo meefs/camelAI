@@ -122,6 +122,9 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 9. Pending `AskUserQuestion` widgets are keyboard-first: the card auto-focuses on arrival, supports `1`-`9`/`0` option shortcuts, `↑`/`↓` focus movement, `Space` toggle, `Enter` next/submit, `Escape` blur-or-collapse, and returns focus to the composer after submission.
 10. Chat composer drafts are stored client-side in `localStorage` under `draft:{workspaceId}:{threadId|new}`. Thread chats and the welcome screen keep separate text + completed-attachment drafts, flush pending debounced saves on unmount/navigation, preserve a backup across optimistic clears while delivery is in flight, and clear that backup only after a confirmed success path (`result` for thread sends, thread creation handoff plus first-turn result for new chats).
 11. Threads created from hidden system-seeded handoff flows can start with a fallback title (for example app chats use `Working on <app>`). `ChatThreadDO` upgrades both the thread title and `first_user_message` when the first non-system, non-slash user message arrives.
+12. `ChatThreadDO` scans any `(user uploaded file to /mnt/user-uploads/...)` references on browser and external turns with an allowlist heuristic and prepends a hidden file-safety `<camelai system message>` before author attribution when any file looks unsafe.
+13. Stored-name overrides treat `Dockerfile*`, `docker-compose*`, `compose*`, `Makefile*`, and `.env*` as unsafe even when the extension itself is in the safe allowlist. This currently affects web chat and email ingress; Slack is unchanged until it starts appending upload refs.
+14. `sandbox/control-plane.mjs` appends a standing `<prohibited_activities>` section to the agent system prompt requiring hard refusals for reverse proxies/tunnels, relay or forwarding use, non-Cloudflare-Worker deployments, crypto mining, and malware or exploit work.
 
 ### Agent Teams Polling
 
