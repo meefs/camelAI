@@ -52,7 +52,6 @@ export interface CloudflareEnv {
   WORKER_BASE_URL: string;
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
-  EMAIL_DOMAIN_BLOCKLIST?: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   RESEND_API_KEY?: string;

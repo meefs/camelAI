@@ -53,7 +53,6 @@ describe('auth signup domain blocklist', () => {
       EMAIL_TO_USER: {},
       APP_KV: {},
       TOKEN_SIGNING_SECRET: 'secret',
-      EMAIL_DOMAIN_BLOCKLIST: 'mailinator.com',
     });
     getUserByEmailMock.mockResolvedValue(null);
     createUserMock.mockResolvedValue({

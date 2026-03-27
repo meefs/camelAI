@@ -4,7 +4,7 @@
 
 import type { Env } from '../types.js';
 import type { OAuthProvider } from '../../../../src/lib/oauth-config.js';
-import { assertEmailDomainAllowed } from '../../../../src/lib/email-domain-blocklist.js';
+import { assertEmailDomainAllowed, getBlocklistFromKV } from '../../../../src/lib/email-domain-blocklist.js';
 import { getUserStub, getOrgStub, getWorkspaceStub } from '../helpers/stubs.js';
 
 function normalizeSignupIp(ip: string | null | undefined): string | null {
@@ -82,7 +82,8 @@ export async function getOrCreateUserFromOAuth(
       throw new Error('signup_ip_blocked');
     }
   }
-  assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
+  const blocklist = await getBlocklistFromKV(env.APP_KV);
+  assertEmailDomainAllowed(email, blocklist);
 
   if (normalizedSignupIp && env.ADMIN_INDEX) {
     const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));

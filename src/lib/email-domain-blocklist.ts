@@ -77,3 +77,41 @@ export function isEmailDomainBlockedError(error: unknown): boolean {
     error instanceof Error && error.message === EMAIL_DOMAIN_BLOCKED_ERROR
   );
 }
+
+// ---------------------------------------------------------------------------
+// KV-backed blocklist helpers
+// ---------------------------------------------------------------------------
+
+const EMAIL_DOMAIN_BLOCKLIST_KV_KEY = 'email_domain_blocklist';
+
+export async function getBlocklistFromKV(
+  kv: KVNamespace,
+): Promise<string> {
+  try {
+    const raw = await kv.get(EMAIL_DOMAIN_BLOCKLIST_KV_KEY);
+    if (raw) return (JSON.parse(raw) as string[]).join(',');
+  } catch {}
+  return '';
+}
+
+export async function setBlocklistInKV(
+  kv: KVNamespace,
+  domains: string[],
+): Promise<string[]> {
+  const normalized = domains
+    .map((d) => d.trim().toLowerCase().replace(/^@+/, '').replace(/\.+$/, ''))
+    .filter(Boolean);
+  const unique = [...new Set(normalized)];
+  await kv.put(EMAIL_DOMAIN_BLOCKLIST_KV_KEY, JSON.stringify(unique));
+  return unique;
+}
+
+export async function getBlocklistDomainsFromKV(
+  kv: KVNamespace,
+): Promise<string[]> {
+  try {
+    const raw = await kv.get(EMAIL_DOMAIN_BLOCKLIST_KV_KEY);
+    if (raw) return JSON.parse(raw) as string[];
+  } catch {}
+  return [];
+}

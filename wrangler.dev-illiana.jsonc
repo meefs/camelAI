@@ -29,7 +29,7 @@
 			"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-				"EMAIL_DOMAIN_BLOCKLIST": "",
+	
 				"EXT_API_CLIENT_ID": "set-me",
 				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana"

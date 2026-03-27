@@ -12,6 +12,7 @@ import {
 import {
   isEmailDomainBlocked,
   isEmailDomainBlockedError,
+  getBlocklistFromKV,
 } from "@/lib/email-domain-blocklist";
 import { sendUserVerificationEmail } from "@/lib/email-verification.server";
 import {
@@ -76,7 +77,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
     }
 
-    if (isEmailDomainBlocked(email, env.EMAIL_DOMAIN_BLOCKLIST)) {
+    const blocklist = await getBlocklistFromKV(env.APP_KV);
+    if (isEmailDomainBlocked(email, blocklist)) {
       return Response.json(
         { error: "Email signups from this domain are not allowed" },
         { status: 400 },

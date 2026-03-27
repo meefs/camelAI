@@ -19,7 +19,6 @@ describe('oauth email domain blocklist', () => {
       put: ReturnType<typeof vi.fn>;
       delete: ReturnType<typeof vi.fn>;
     };
-    EMAIL_DOMAIN_BLOCKLIST?: string;
   };
 
   beforeEach(() => {
@@ -31,7 +30,6 @@ describe('oauth email domain blocklist', () => {
         put: vi.fn(),
         delete: vi.fn(),
       },
-      EMAIL_DOMAIN_BLOCKLIST: 'mailinator.com',
     };
   });
 

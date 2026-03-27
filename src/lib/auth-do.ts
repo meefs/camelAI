@@ -15,7 +15,7 @@ import {
   createSignedSession,
   type SignedSessionData,
 } from '../../workers/main/src/signed-session';
-import { assertEmailDomainAllowed } from './email-domain-blocklist';
+import { assertEmailDomainAllowed, getBlocklistFromKV } from './email-domain-blocklist';
 
 import {
   type AuthEnv,
@@ -187,7 +187,8 @@ export async function createUser(
   name: string | null,
   signupIp: string | null = null
 ): Promise<{ userId: string; user: User }> {
-  assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
+  const blocklist = await getBlocklistFromKV(env.APP_KV);
+  assertEmailDomainAllowed(email, blocklist);
 
   const normalizedEmail = email.toLowerCase();
   const emailKvKey = `email:${normalizedEmail}`;
@@ -264,7 +265,8 @@ export async function createUserFromOAuth(
   provider: 'google' | 'github',
   providerId: string
 ): Promise<{ userId: string; user: User }> {
-  assertEmailDomainAllowed(email, env.EMAIL_DOMAIN_BLOCKLIST);
+  const blocklist = await getBlocklistFromKV(env.APP_KV);
+  assertEmailDomainAllowed(email, blocklist);
 
   const normalizedEmail = email.toLowerCase();
   const emailKvKey = `email:${normalizedEmail}`;

@@ -47,9 +47,15 @@ import {
   OrgUsageLogSchema,
   OrgUsageLogSumSchema,
   SetOrgLimitsBodySchema,
+  EmailDomainBlocklistSchema,
+  AddEmailDomainBodySchema,
   paginatedList,
   dataList,
 } from './schemas.js';
+import {
+  getBlocklistDomainsFromKV,
+  setBlocklistInKV,
+} from '../../../../src/lib/email-domain-blocklist.js';
 import {
   getAdminIndexStub,
   getOrgStub,
@@ -746,6 +752,90 @@ routes.get(
       return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
     }
     return c.json(await resp.json());
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /email-domain-blocklist
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/email-domain-blocklist',
+  openApi({
+    summary: 'Get email domain blocklist from KV',
+    responses: {
+      200: EmailDomainBlocklistSchema,
+    },
+  }),
+  async (c) => {
+    const domains = await getBlocklistDomainsFromKV(c.env.APP_KV);
+    return c.json({ domains });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PUT /email-domain-blocklist
+// ---------------------------------------------------------------------------
+
+routes.put(
+  '/email-domain-blocklist',
+  openApi({
+    summary: 'Replace email domain blocklist in KV',
+    request: { json: EmailDomainBlocklistSchema },
+    responses: {
+      200: EmailDomainBlocklistSchema,
+    },
+  }),
+  async (c) => {
+    const body = c.req.valid('json');
+    const domains = await setBlocklistInKV(c.env.APP_KV, body.domains);
+    return c.json({ domains });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /email-domain-blocklist
+// ---------------------------------------------------------------------------
+
+routes.post(
+  '/email-domain-blocklist',
+  openApi({
+    summary: 'Add a domain to the email domain blocklist in KV',
+    request: { json: AddEmailDomainBodySchema },
+    responses: {
+      200: EmailDomainBlocklistSchema,
+    },
+  }),
+  async (c) => {
+    const body = c.req.valid('json');
+    const existing = await getBlocklistDomainsFromKV(c.env.APP_KV);
+    const domains = await setBlocklistInKV(c.env.APP_KV, [...existing, body.domain]);
+    return c.json({ domains });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// DELETE /email-domain-blocklist/:domain
+// ---------------------------------------------------------------------------
+
+routes.delete(
+  '/email-domain-blocklist/:domain',
+  openApi({
+    summary: 'Remove a domain from the email domain blocklist in KV',
+    responses: {
+      200: EmailDomainBlocklistSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const domainToRemove = decodeURIComponent(c.req.param('domain')).trim().toLowerCase().replace(/^@+/, '').replace(/\.+$/, '');
+    const existing = await getBlocklistDomainsFromKV(c.env.APP_KV);
+    if (!existing.includes(domainToRemove)) {
+      return c.json({ error: 'Domain not found in blocklist' }, 404);
+    }
+    const filtered = existing.filter((d) => d !== domainToRemove);
+    const domains = await setBlocklistInKV(c.env.APP_KV, filtered);
+    return c.json({ domains });
   },
 );
 

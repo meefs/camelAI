@@ -23,7 +23,7 @@
 		"BEDROCK_REGION": "us-west-2",
 			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-			"EMAIL_DOMAIN_BLOCKLIST": "",
+
 				"EXT_API_CLIENT_ID": "set-me"
 			// CF_GATEWAY_TOKEN is set via .dev.vars
 		},
@@ -169,7 +169,7 @@
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-					"EMAIL_DOMAIN_BLOCKLIST": "",
+		
 				"EXT_API_CLIENT_ID": "set-me"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
@@ -277,7 +277,7 @@
 				"BEDROCK_REGION": "us-west-2",
 				"EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
 				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-				"EMAIL_DOMAIN_BLOCKLIST": "",
+	
 				"EXT_API_CLIENT_ID": "set-me"
 				// CF_GATEWAY_TOKEN is set via secrets
 			},
@@ -388,7 +388,7 @@
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-					"EMAIL_DOMAIN_BLOCKLIST": "",
+		
 				"EXT_API_CLIENT_ID": "set-me"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
@@ -500,7 +500,7 @@
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-					"EMAIL_DOMAIN_BLOCKLIST": "",
+		
 				"EXT_API_CLIENT_ID": "set-me"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},

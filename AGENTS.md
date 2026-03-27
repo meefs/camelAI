@@ -69,7 +69,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 
 1. User signs up/logs in via `/api/auth/login` or `/api/auth/signup`
 2. Passwords are hashed/verified with PBKDF2 (100k iterations, SHA-256)
-3. New account creation rejects emails whose domain matches `EMAIL_DOMAIN_BLOCKLIST` (comma/space/semicolon-separated; exact domains and subdomains). The policy applies to password signups and new OAuth signups, but does not lock out existing accounts if a domain is later added.
+3. New account creation rejects emails whose domain matches the KV-backed email domain blocklist (managed via admin API). The policy applies to password signups and new OAuth signups, but does not lock out existing accounts if a domain is later added.
 4. Password-based signups receive an email verification link (`/api/auth/verify-email`), and onboarding completion is blocked until verified (`/api/auth/verify-email/send` for resend)
 5. Email signups are gated by Cloudflare Turnstile before account creation. The public signup page loader passes the site key into the form, the client submits the widget token with the JSON signup payload, and `POST /api/auth/signup` verifies that token against Cloudflare before any user/org/session writes run. The relevant bindings are `TURNSTILE_SITE_KEY` for the widget and `TURNSTILE_SECRET_KEY` for server-side verification.
 6. Password and OAuth signup flows extract the client IP from `CF-Connecting-IP` (falling back to `X-Forwarded-For`), reject new account creation when that IP exists in `AdminIndexDO.blocked_signup_ips`, and store the normalized signup IP on newly created `UserDO` records under the sqlite-backed `profile` key `signup_ip`
@@ -464,6 +464,10 @@ curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<hos
 | PATCH  | `/threads/:id`      | Update thread (`{ title?, created_by? }`)                  |
 | GET    | `/kv`               | List KV keys (`?prefix=` supported)                        |
 | GET    | `/kv/:key`          | Get KV value                                               |
+| GET    | `/email-domain-blocklist` | Get KV-backed email domain blocklist                  |
+| PUT    | `/email-domain-blocklist` | Replace full email domain blocklist (`{ domains[] }`) |
+| POST   | `/email-domain-blocklist` | Add domain to blocklist (`{ domain }`)                |
+| DELETE | `/email-domain-blocklist/:domain` | Remove domain from blocklist                  |
 | GET    | `/r2`               | List R2 objects (`?prefix=` supported)                     |
 | GET    | `/r2/:key+`         | R2 object head metadata                                    |
 | GET    | `/orgs/:id/usage/spend` | Org spend totals and rolling window status              |

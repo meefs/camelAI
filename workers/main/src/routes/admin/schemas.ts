@@ -349,3 +349,15 @@ export function paginatedList<T extends z.ZodType>(schema: T) {
 export function dataList<T extends z.ZodType>(schema: T) {
   return z.object({ data: z.array(schema) });
 }
+
+// ---------------------------------------------------------------------------
+// Email domain blocklist schemas
+// ---------------------------------------------------------------------------
+
+export const EmailDomainBlocklistSchema = z.object({
+  domains: z.array(z.string()),
+});
+
+export const AddEmailDomainBodySchema = z.object({
+  domain: z.string().min(1),
+});
