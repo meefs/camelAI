@@ -55,7 +55,7 @@ import {
 import {
   getBlocklistDomainsFromKV,
   setBlocklistInKV,
-} from '../../../../src/lib/email-domain-blocklist.js';
+} from '../../../../../src/lib/email-domain-blocklist.js';
 import {
   getAdminIndexStub,
   getOrgStub,

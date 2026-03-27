@@ -355,6 +355,7 @@ WantedBy=multi-user.target
 __FIREWALL_SERVICE__
 }
 
+
 install_s3fs_r2_service() {
   log "Installing s3fs R2 FUSE mount service..."
 
@@ -447,6 +448,7 @@ main() {
   install_docker_and_runtime "$DOCKER_DATA_ROOT"
   install_go_and_host_service
   install_firewall_service
+
   install_s3fs_r2_service
   install_cloudflared_and_acr
   apply_default_quotas
@@ -454,6 +456,7 @@ main() {
   systemctl daemon-reload
   systemctl enable --now chiridion-data-proxy 2>/dev/null || true
   systemctl enable --now chiridion-sandbox-firewall 2>/dev/null || true
+
   systemctl enable --now chiridion-s3fs-r2 2>/dev/null || true
   systemctl enable --now chiridion-sandbox-host 2>/dev/null || true
 
