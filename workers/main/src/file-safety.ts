@@ -44,7 +44,7 @@ export const SAFE_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
 export const UNSAFE_FILENAME_PATTERNS: RegExp[] = [
   /^dockerfile(?:[._-].*)?$/i,
   /^docker-compose(?:[._-].*)?$/i,
-  /^compose$/i,
+  /^compose(?:[._-].*)?$/i,
   /^makefile(?:[._-].*)?$/i,
   /^_?env(?:[._-].*)?$/i,
 ];
@@ -78,10 +78,7 @@ function splitFilename(filename: string): { stem: string; extension: string } {
   }
 
   if (lastDot === 0) {
-    const nextDot = filename.indexOf('.', 1);
-    if (nextDot === -1) {
-      return { stem: '', extension: filename.toLowerCase() };
-    }
+    return { stem: '', extension: filename.toLowerCase() };
   }
 
   return {
@@ -93,6 +90,8 @@ function splitFilename(filename: string): { stem: string; extension: string } {
 function normalizeUnsafePatternStem(stem: string): string {
   const withoutStoredSuffix = stem.replace(STORED_UPLOAD_SUFFIX_REGEX, '').trim().toLowerCase();
   if (!withoutStoredSuffix) return '';
+  // The upload API sanitizes leading dots into underscores, so ".env.json"
+  // becomes a stored stem like "_env-<timestamp>-<random>".
   return withoutStoredSuffix.startsWith('.')
     ? `_${withoutStoredSuffix.slice(1)}`
     : withoutStoredSuffix;
@@ -121,6 +120,9 @@ export function isUnsafeUploadPath(filePath: string): boolean {
     return true;
   }
 
+  // Plain ".env" uploads can end up with an empty stem after the stored
+  // "-<timestamp>-<random>" suffix is stripped, so they rely on this
+  // extension allowlist check rather than the filename override above.
   return !SAFE_FILE_EXTENSIONS.has(extension);
 }
 

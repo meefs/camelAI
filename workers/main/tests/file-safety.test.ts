@@ -9,6 +9,8 @@ function withUploadRef(path: string, prefix = 'Please review this file.') {
   return `${prefix}\n\n(user uploaded file to ${path})`;
 }
 
+// Browser chat and external/email ingress both pass through
+// injectFileSafetyMessage() before author attribution.
 describe('injectFileSafetyMessage', () => {
   it('leaves messages without upload refs unchanged', () => {
     const content = 'Please help me summarize this note.';
@@ -72,6 +74,11 @@ describe('injectFileSafetyMessage', () => {
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
+  it('treats compose override variants as unsafe despite safe yaml extensions', () => {
+    const content = withUploadRef('/mnt/user-uploads/compose.override-1710000000-abc123.yml');
+    expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
+  });
+
   it('treats Dockerfile uploads as unsafe after stored suffixing', () => {
     const content = withUploadRef('/mnt/user-uploads/Dockerfile-1710000000-abc123');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
@@ -92,5 +99,9 @@ describe('isUnsafeUploadPath', () => {
   it('is case-insensitive for extensions', () => {
     expect(isUnsafeUploadPath('/mnt/user-uploads/photo-1710000000-abc123.JpG')).toBe(false);
     expect(isUnsafeUploadPath('/mnt/user-uploads/archive-1710000000-abc123.ZIP')).toBe(true);
+  });
+
+  it('treats stored plain .env uploads as unsafe even when the stem is empty', () => {
+    expect(isUnsafeUploadPath('/mnt/user-uploads/-1710000000-abc123.env')).toBe(true);
   });
 });
