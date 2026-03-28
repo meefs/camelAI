@@ -26,6 +26,20 @@ export interface OrgFilters {
   sort_dir?: 'asc' | 'desc';
 }
 
+export interface AdminOrgDirectoryRow {
+  id: string;
+  name: string;
+  slug: string | null;
+  created_at: number;
+  archived: boolean;
+  billing_status: string | null;
+  created_by: string;
+  member_count: number;
+  workspace_count: number;
+  creator_email: string | null;
+  creator_name: string | null;
+}
+
 export interface WorkspaceFilters {
   org_id?: string;
   archived?: boolean;
@@ -574,8 +588,9 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const params: any[] = [];
 
     if (search) {
-      conditions.push('name LIKE ?');
-      params.push(`%${search}%`);
+      conditions.push('(name LIKE ? OR slug LIKE ?)');
+      const like = `%${search}%`;
+      params.push(like, like);
     }
     if (filters?.archived !== undefined) {
       conditions.push('archived = ?');
@@ -596,6 +611,34 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const total = this.sql.exec(`SELECT COUNT(*) as count FROM orgs${where}`, ...params).next().value?.count || 0;
 
     return { items, total, offset, limit };
+  }
+
+  async getOrgDirectoryRows(): Promise<AdminOrgDirectoryRow[]> {
+    return Array.from(
+      this.sql.exec(`
+        SELECT
+          o.id,
+          o.name,
+          o.slug,
+          o.created_at,
+          o.archived,
+          o.billing_status,
+          o.created_by,
+          o.member_count,
+          o.workspace_count,
+          u.email AS creator_email,
+          u.name AS creator_name
+        FROM orgs o
+        LEFT JOIN users u ON o.created_by = u.id
+      `)
+    ).map((row: any) => ({
+      ...row,
+      archived: row.archived === 1,
+      slug: row.slug ?? null,
+      billing_status: row.billing_status ?? null,
+      creator_email: row.creator_email ?? null,
+      creator_name: row.creator_name ?? null,
+    }));
   }
 
   async getWorkspacesPaginated(offset: number, limit: number, search?: string, filters?: WorkspaceFilters) {

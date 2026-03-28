@@ -309,7 +309,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Support                      | `/api/help`                                                                                                                                                              |
 | Dev tooling                  | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id`                                                                                                                       |
 | Admin troubleshooting        | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` (`messages` also supports Bearer `ADMIN_API_KEY`; `jsonl` remains session-auth only)                 |
-| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, `GET /api/admin/threads/:id/messages`, and `PUT/DELETE /api/admin/signup-blocked-ips/:ip` (Bearer `ADMIN_API_KEY` auth) |
+| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, `GET /api/admin/{spam/org-ids,dashboard/top-orgs}`, `GET /api/admin/threads/:id/messages`, and `PUT/DELETE /api/admin/signup-blocked-ips/:ip` (Bearer `ADMIN_API_KEY` auth) |
 | Invitations                  | `/api/invitations/:orgId/:invitationId` (GET/POST)                                                                                                                       |
 | Workspace FS                 | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}`                                                                                     |
 | Workspace chat               | `/api/workspaces/:id/chat/:threadId/messages/stream`                                                                                                                     |
@@ -441,10 +441,19 @@ bun run deploy:tail:prod            # Deploy tail worker (user worker logs)
 
 Admin endpoints are served by the main worker at `/api/admin/*` and require `ADMIN_API_KEY` Bearer auth (set via `wrangler secret put ADMIN_API_KEY`). `GET /api/admin/threads/:id/messages` now supports both Bearer auth and superuser session auth. Requests without a Bearer token still fall through to React Router for remaining session-auth admin routes such as `/api/admin/threads/:id/jsonl`.
 
+Metrics-specific admin behavior:
+
+- `GET /api/admin/spam/org-ids` returns the current spam-org set derived from effective spend limits.
+- `GET /api/admin/orgs` now supports additive query params `exclude_spam`, `exclude_internal_domains`, `include_usage`, and `include_spend_30d`; slug search is supported alongside name search.
+- `GET /api/admin/dashboard/top-orgs` returns server-ranked org rows with usage rollups and effective spend windows.
+- `GET /api/admin/dashboard/{summary,retention,spam-summary}` currently return `501` until the missing dashboard formulas and remaining analytics joins are attached.
+
 ```bash
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/stats
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/users
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/orgs
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/spam/org-ids
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/dashboard/top-orgs
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/threads
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/threads/:id/messages
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/kv?prefix=email:
@@ -458,7 +467,12 @@ curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<hos
 | GET    | `/stats`            | Aggregate counts (user_count, org_count, membership_count) |
 | GET    | `/users`            | All users                                                  |
 | GET    | `/users/:id/orgs`   | User's org memberships                                     |
-| GET    | `/orgs`             | All orgs (enriched with members + workspaces)              |
+| GET    | `/spam/org-ids`     | Spam org IDs derived from effective spend limits           |
+| GET    | `/orgs`             | All orgs (filters + optional usage enrichment)             |
+| GET    | `/dashboard/top-orgs` | Top orgs by spend or member count                        |
+| GET    | `/dashboard/summary` | Returns `501` until dashboard formulas are attached       |
+| GET    | `/dashboard/retention` | Returns `501` until dashboard formulas are attached     |
+| GET    | `/dashboard/spam-summary` | Returns `501` until spam-tab analytics joins land   |
 | GET    | `/threads`          | All threads across orgs                                    |
 | POST   | `/orgs/:id/members` | Add member to org (`{ user_id, role? }`)                   |
 | PATCH  | `/threads/:id`      | Update thread (`{ title?, created_by? }`)                  |

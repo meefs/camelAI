@@ -1,6 +1,6 @@
 # camelAI Admin API Reference
 
-Audited from code on 2026-03-18.
+Audited from code on 2026-03-28.
 
 This document covers the internal admin API surface in `camelAI`, with emphasis on the endpoints an external agent can call safely and the response shapes that actually come back from the current implementation.
 
@@ -84,6 +84,7 @@ For an agent client:
 | `GET` | `/api/admin/stats` | Bearer | Aggregate counts |
 | `GET` | `/api/admin/users` | Bearer | Paginated users |
 | `GET` | `/api/admin/users/:id/orgs` | Bearer | User org memberships |
+| `GET` | `/api/admin/spam/org-ids` | Bearer | Spam org IDs from effective spend limits |
 | `GET` | `/api/admin/orgs` | Bearer | Paginated orgs |
 | `GET` | `/api/admin/orgs/:id` | Bearer | Org detail plus recent activity |
 | `POST` | `/api/admin/orgs/:id/members` | Bearer | Add or upsert an org member |
@@ -96,6 +97,10 @@ For an agent client:
 | `PATCH` | `/api/admin/threads/:id` | Bearer | Update thread title and/or creator |
 | `GET` | `/api/admin/workspaces` | Bearer | Paginated workspaces |
 | `GET` | `/api/admin/apps` | Bearer | Paginated apps |
+| `GET` | `/api/admin/dashboard/top-orgs` | Bearer | Top orgs ranked by spend or member count |
+| `GET` | `/api/admin/dashboard/summary` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
+| `GET` | `/api/admin/dashboard/retention` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
+| `GET` | `/api/admin/dashboard/spam-summary` | Bearer | Currently returns `501` until the spam-tab analytics joins are implemented |
 | `GET` | `/api/admin/kv` | Bearer | List keys in `EMAIL_TO_USER` KV |
 | `GET` | `/api/admin/kv/:key` | Bearer | Read a single `EMAIL_TO_USER` KV value |
 | `GET` | `/api/admin/r2` | Bearer | List objects in `R2_BUCKET` |
@@ -194,6 +199,19 @@ Notes:
 - The actual runtime also includes `joined_at` and `last_workspace_id`.
 - Results are ordered by `joined_at ASC`.
 
+### `GET /api/admin/spam/org-ids`
+
+Returns the set of org IDs whose effective spend windows are all at or below `$0.01`.
+
+Response shape:
+
+```json
+{
+  "org_ids": ["org_123"],
+  "count": 1
+}
+```
+
 ### `GET /api/admin/orgs`
 
 Paginated org list.
@@ -204,12 +222,17 @@ Query params:
 - `offset`
 - `search`
 - `archived`
+- `exclude_spam`
+- `exclude_internal_domains`
+- `include_usage`
+- `include_spend_30d`
 - `sort_by`: `created_at | name`
 - `sort_dir`: `asc | desc`
 
 Search matches:
 
 - `name`
+- `slug`
 
 Stable item fields:
 
@@ -222,6 +245,18 @@ Stable item fields:
 - `billing_status`
 - `member_count`
 - `workspace_count`
+
+Additive fields:
+
+- `total_requests` when `include_usage=true`
+- `total_cost_usd` when `include_usage=true`
+- `windows` when `include_usage=true`
+- `spend_30d` when `include_spend_30d=true`
+
+Filtering notes:
+
+- `exclude_internal_domains` matches against the org creator email domain.
+- `exclude_spam=true` removes org IDs returned by `GET /api/admin/spam/org-ids`.
 
 ### `GET /api/admin/orgs/:id`
 
@@ -626,6 +661,48 @@ Item fields:
 - `is_public`
 - `preview_status`
 - `preview_error`
+
+### `GET /api/admin/dashboard/top-orgs`
+
+Returns a capped list of orgs enriched with usage rollups and effective spend windows.
+
+Query params:
+
+- `limit` default `25`, max `100`
+- `exclude_spam` default `true`
+- `exclude_internal_domains` default `camelai.com`
+- `sort_by`: `spend_7d | spend_30d | member_count`
+
+Item fields:
+
+- `org_id`
+- `name`
+- `slug`
+- `created_at`
+- `created_by`
+- `creator_name`
+- `creator_email`
+- `member_count`
+- `workspace_count`
+- `billing_status`
+  - normalized to `free | active`
+- `total_requests`
+- `total_cost_usd`
+- `spend_7d`
+- `spend_30d`
+- `windows`
+
+### `GET /api/admin/dashboard/summary`
+
+Currently returns `501` with a JSON error explaining that the dashboard formulas or fixtures are not present in this repo.
+
+### `GET /api/admin/dashboard/retention`
+
+Currently returns `501` with a JSON error explaining that the dashboard formulas or fixtures are not present in this repo.
+
+### `GET /api/admin/dashboard/spam-summary`
+
+Currently returns `501` with a JSON error explaining that the remaining spam-tab analytics joins are not implemented yet.
 
 ### `GET /api/admin/kv`
 
