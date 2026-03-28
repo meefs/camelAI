@@ -100,7 +100,7 @@ For an agent client:
 | `GET` | `/api/admin/dashboard/top-orgs` | Bearer | Top orgs ranked by spend or member count |
 | `GET` | `/api/admin/dashboard/summary` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
 | `GET` | `/api/admin/dashboard/retention` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
-| `GET` | `/api/admin/dashboard/spam-summary` | Bearer | Currently returns `501` until the spam-tab analytics joins are implemented |
+| `GET` | `/api/admin/dashboard/spam-summary` | Bearer | Spam-tab entity + usage snapshot for the resolved spam-org set |
 | `GET` | `/api/admin/kv` | Bearer | List keys in `EMAIL_TO_USER` KV |
 | `GET` | `/api/admin/kv/:key` | Bearer | Read a single `EMAIL_TO_USER` KV value |
 | `GET` | `/api/admin/r2` | Bearer | List objects in `R2_BUCKET` |
@@ -702,7 +702,101 @@ Currently returns `501` with a JSON error explaining that the dashboard formulas
 
 ### `GET /api/admin/dashboard/spam-summary`
 
-Currently returns `501` with a JSON error explaining that the remaining spam-tab analytics joins are not implemented yet.
+Returns a parameterless spam-tab snapshot assembled from the centralized admin index plus the sandbox-host analytics read model.
+
+Response shape:
+
+```json
+{
+  "users": [
+    {
+      "id": "user_123",
+      "email": "user@example.com",
+      "name": "User Example",
+      "avatar": {
+        "color": "#666",
+        "content": "U"
+      },
+      "created_at": 1710000000000,
+      "org_count": 2,
+      "is_superuser": false,
+      "is_orphaned": false
+    }
+  ],
+  "threads": [
+    {
+      "id": "thread_123",
+      "title": "Spam Thread",
+      "workspace_id": "ws_123",
+      "created_at": 1710000000000,
+      "updated_at": 1710000000000,
+      "created_by": "user_123",
+      "org_id": "org_123",
+      "org_name": "Spam Org",
+      "workspace_name": "Default Workspace"
+    }
+  ],
+  "apps": [
+    {
+      "app_id": "org_123:spam-app",
+      "script_name": "spam-app",
+      "org_id": "org_123",
+      "workspace_id": "ws_123",
+      "org_name": "Spam Org",
+      "org_slug": "spam01",
+      "workspace_name": "Default Workspace",
+      "created_by": "user_123",
+      "created_by_name": "User Example",
+      "created_by_email": "user@example.com",
+      "created_at": 1710000000000,
+      "updated_at": 1710000000000,
+      "is_public": true,
+      "preview_status": "pending",
+      "preview_error": null
+    }
+  ],
+  "orgs": [
+    {
+      "id": "org_123",
+      "name": "Spam Org",
+      "slug": "spam01",
+      "created_by": "user_123",
+      "created_at": 1710000000000,
+      "archived": false,
+      "billing_status": "active",
+      "member_count": 2,
+      "workspace_count": 1
+    }
+  ],
+  "org_usage": [
+    {
+      "org_id": "org_123",
+      "name": "Spam Org",
+      "slug": "spam01",
+      "created_at": 1710000000000,
+      "created_by": "user_123",
+      "creator_name": "User Example",
+      "creator_email": "user@example.com",
+      "member_count": 2,
+      "workspace_count": 1,
+      "billing_status": "active",
+      "total_requests": 9,
+      "total_cost_usd": 18.5,
+      "spend_7d": 7.5,
+      "spend_30d": 15.25,
+      "windows": []
+    }
+  ]
+}
+```
+
+Notes:
+
+- `users`, `threads`, `apps`, and `orgs` are scoped to the resolved spam-org ID set.
+- `users` are membership-based, so a user who belongs to both spam and non-spam orgs is still included here. This is intentional for spam-tab investigation and differs from the main dashboard's spam-exclusion filter semantics.
+- `org_usage` reuses the same object shape as `/api/admin/dashboard/top-orgs`.
+- `billing_status` is normalized at the metrics boundary (`paying -> active`).
+- The first version is parameterless and keeps the section arrays unbounded; add optional per-section limits in a follow-up if the spam payload grows too large.
 
 ### `GET /api/admin/kv`
 

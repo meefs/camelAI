@@ -176,8 +176,8 @@ export const ThreadSchema = z.object({
   updated_at: z.number(),
   created_by: z.string().nullable().optional(),
   org_id: z.string(),
-  org_name: z.string(),
-  workspace_name: z.string(),
+  org_name: z.string().nullable().optional(),
+  workspace_name: z.string().nullable().optional(),
 });
 
 export const WorkspaceSchema = z.object({
@@ -202,9 +202,9 @@ export const AppSchema = z.object({
   script_name: z.string(),
   org_id: z.string(),
   workspace_id: z.string(),
-  org_name: z.string(),
+  org_name: z.string().nullable().optional(),
   org_slug: z.string().nullable().optional(),
-  workspace_name: z.string(),
+  workspace_name: z.string().nullable().optional(),
   created_by: z.string(),
   created_by_name: z.string().nullable().optional(),
   created_by_email: z.string().nullable().optional(),
@@ -313,6 +313,8 @@ export const DashboardTopOrgsQuerySchema = z.object({
   sort_by: z.enum(['spend_7d', 'spend_30d', 'member_count']).optional().default('spend_7d'),
 });
 
+const NormalizedBillingStatusSchema = z.enum(['active', 'free']);
+
 export const DashboardTopOrgSchema = z.object({
   org_id: z.string(),
   name: z.string(),
@@ -323,7 +325,7 @@ export const DashboardTopOrgSchema = z.object({
   creator_email: z.string().nullable().optional(),
   member_count: z.number().int(),
   workspace_count: z.number().int(),
-  billing_status: z.enum(['active', 'free']),
+  billing_status: NormalizedBillingStatusSchema,
   total_requests: z.number().int(),
   total_cost_usd: z.number(),
   spend_7d: z.number(),
@@ -336,6 +338,26 @@ export const DashboardTopOrgsResponseSchema = z.object({
   count: z.number().int(),
   limit: z.number().int(),
   sort_by: z.enum(['spend_7d', 'spend_30d', 'member_count']),
+});
+
+export const DashboardSpamOrgSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string().nullable().optional(),
+  created_by: z.string(),
+  created_at: z.number(),
+  archived: z.boolean(),
+  billing_status: NormalizedBillingStatusSchema,
+  member_count: z.number().int(),
+  workspace_count: z.number().int(),
+});
+
+export const DashboardSpamSummaryResponseSchema = z.object({
+  users: z.array(UserSummarySchema),
+  threads: z.array(ThreadSchema),
+  apps: z.array(AppSchema),
+  orgs: z.array(DashboardSpamOrgSchema),
+  org_usage: z.array(DashboardTopOrgSchema),
 });
 
 const SpendLimitSchema = z.object({

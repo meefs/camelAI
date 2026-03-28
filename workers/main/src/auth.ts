@@ -1505,6 +1505,34 @@ export class OrgDO extends DurableObject<DOEnv> {
     return rows[0] || null;
   }
 
+  private dispatchOrgMembershipUpsert(userId: string, role: OrgRole, joinedAt: number): void {
+    this.getInfo().then((info) => {
+      if (!info) return;
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: 'org_membership_upsert',
+        payload: {
+          org_id: info.id,
+          user_id: userId,
+          role,
+          joined_at: joinedAt,
+        },
+      });
+    });
+  }
+
+  private dispatchOrgMembershipDelete(userId: string): void {
+    this.getInfo().then((info) => {
+      if (!info) return;
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: 'org_membership_delete',
+        payload: {
+          org_id: info.id,
+          user_id: userId,
+        },
+      });
+    });
+  }
+
   async addMember(userId: string, role: OrgRole, actorId: string): Promise<void> {
     const existing = await this.getMember(userId);
     const now = Date.now();
@@ -1517,7 +1545,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) {
       this.log('member_added', actorId, userId, { role });
       const info = await this.getInfo();
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: 1 } });
+      if (info) {
+        dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: 1 } });
+      }
+      this.dispatchOrgMembershipUpsert(userId, role, now);
     }
   }
 
@@ -1530,7 +1561,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (existing) {
       this.log('member_removed', actorId, userId, { role: existing.role });
       const info = await this.getInfo();
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: -1 } });
+      if (info) {
+        dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: -1 } });
+      }
+      this.dispatchOrgMembershipDelete(userId);
     }
     this.ensureOwnerExists(actorId);
   }
@@ -1549,6 +1583,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         old_role: existing.role,
         new_role: role,
       });
+      this.dispatchOrgMembershipUpsert(userId, role, existing.joined_at);
     }
     this.ensureOwnerExists(actorId);
   }
@@ -2172,9 +2207,9 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async transferOwnership(actorId: string, newOwnerId: string): Promise<void> {
     const currentOwnerRows = this.sql.exec(
-      'SELECT user_id FROM members WHERE role = ? LIMIT 1',
+      'SELECT user_id, joined_at FROM members WHERE role = ? LIMIT 1',
       'owner'
-    ).toArray() as Array<{ user_id: string }>;
+    ).toArray() as Array<{ user_id: string; joined_at: number }>;
     const currentOwner = currentOwnerRows[0]?.user_id;
     if (!currentOwner) {
       throw new Error('No owner found');
@@ -2184,9 +2219,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     const newOwnerRows = this.sql.exec(
-      'SELECT 1 FROM members WHERE user_id = ?',
+      'SELECT joined_at FROM members WHERE user_id = ?',
       newOwnerId
-    ).toArray();
+    ).toArray() as Array<{ joined_at: number }>;
     if (newOwnerRows.length === 0) {
       throw new Error('New owner is not a member');
     }
@@ -2194,22 +2229,24 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', newOwnerId);
     this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'admin', currentOwner);
     this.log('ownership_transferred', actorId, newOwnerId, { from_user_id: currentOwner });
+    this.dispatchOrgMembershipUpsert(newOwnerId, 'owner', newOwnerRows[0]!.joined_at);
+    this.dispatchOrgMembershipUpsert(currentOwner, 'admin', currentOwnerRows[0]!.joined_at);
   }
 
   async adminTransferOwnership(actorId: string, newOwnerId: string): Promise<void> {
     const currentOwnerRows = this.sql.exec(
-      'SELECT user_id FROM members WHERE role = ? LIMIT 1',
+      'SELECT user_id, joined_at FROM members WHERE role = ? LIMIT 1',
       'owner'
-    ).toArray() as Array<{ user_id: string }>;
+    ).toArray() as Array<{ user_id: string; joined_at: number }>;
     const currentOwner = currentOwnerRows[0]?.user_id;
     if (!currentOwner) {
       throw new Error('No owner found');
     }
 
     const newOwnerRows = this.sql.exec(
-      'SELECT 1 FROM members WHERE user_id = ?',
+      'SELECT joined_at FROM members WHERE user_id = ?',
       newOwnerId
-    ).toArray();
+    ).toArray() as Array<{ joined_at: number }>;
     if (newOwnerRows.length === 0) {
       throw new Error('New owner is not a member');
     }
@@ -2221,6 +2258,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', newOwnerId);
     this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'admin', currentOwner);
     this.log('ownership_transferred', actorId, newOwnerId, { from_user_id: currentOwner });
+    this.dispatchOrgMembershipUpsert(newOwnerId, 'owner', newOwnerRows[0]!.joined_at);
+    this.dispatchOrgMembershipUpsert(currentOwner, 'admin', currentOwnerRows[0]!.joined_at);
   }
 
   async archiveOrg(actorId: string): Promise<void> {

@@ -22,6 +22,9 @@ import type {
   WorkspaceFilters,
   AppFilters,
   AdminOrgDirectoryRow,
+  AdminUserSummaryRow,
+  AdminThreadListRow,
+  AdminAppListRow,
 } from '../../admin-index-do.js';
 import {
   ErrorSchema,
@@ -54,6 +57,7 @@ import {
   AdminOrgListItemSchema,
   DashboardTopOrgsQuerySchema,
   DashboardTopOrgsResponseSchema,
+  DashboardSpamSummaryResponseSchema,
   SetOrgLimitsBodySchema,
   EmailDomainBlocklistSchema,
   AddEmailDomainBodySchema,
@@ -99,6 +103,7 @@ async function fetchSandboxHostUsage(
 
 type AdminOrgDirectoryLookup = {
   getOrgDirectoryRows(): Promise<AdminOrgDirectoryRow[]>;
+  getOrgDirectoryByIds(orgIds: string[]): Promise<AdminOrgDirectoryRow[]>;
   getOrgDirectoryPaginated(
     offset: number,
     limit: number,
@@ -116,6 +121,9 @@ type AdminOrgDirectoryLookup = {
     offset: number;
     limit: number;
   }>;
+  getUsersByOrgIds(orgIds: string[]): Promise<AdminUserSummaryRow[]>;
+  getThreadsByOrgIds(orgIds: string[]): Promise<AdminThreadListRow[]>;
+  getAppsByOrgIds(orgIds: string[]): Promise<AdminAppListRow[]>;
 };
 
 function enrichOrgListItems(
@@ -155,6 +163,29 @@ function enrichOrgListItems(
         : {}),
     };
   });
+}
+
+function toDashboardTopOrgItem(
+  org: AdminOrgDirectoryRow,
+  usage: OrgUsageAnalyticsItem | undefined,
+) {
+  return {
+    org_id: org.id,
+    name: org.name,
+    slug: org.slug ?? null,
+    created_at: org.created_at,
+    created_by: org.created_by,
+    creator_name: org.creator_name ?? null,
+    creator_email: org.creator_email ?? null,
+    member_count: org.member_count,
+    workspace_count: org.workspace_count,
+    billing_status: normalizeBillingStatus(org.billing_status),
+    total_requests: usage?.total_requests ?? 0,
+    total_cost_usd: usage?.total_cost_usd ?? 0,
+    spend_7d: usage?.spend_7d ?? 0,
+    spend_30d: usage?.spend_30d ?? 0,
+    windows: usage?.windows ?? [],
+  };
 }
 
 export const routes = new Hono<HonoEnv>();
@@ -686,26 +717,7 @@ routes.get(
       );
 
       const items = orgs
-        .map((org) => {
-          const usage = usageByOrgId.get(org.id);
-          return {
-            org_id: org.id,
-            name: org.name,
-            slug: org.slug ?? null,
-            created_at: org.created_at,
-            created_by: org.created_by,
-            creator_name: org.creator_name ?? null,
-            creator_email: org.creator_email ?? null,
-            member_count: org.member_count,
-            workspace_count: org.workspace_count,
-            billing_status: normalizeBillingStatus(org.billing_status),
-            total_requests: usage?.total_requests ?? 0,
-            total_cost_usd: usage?.total_cost_usd ?? 0,
-            spend_7d: usage?.spend_7d ?? 0,
-            spend_30d: usage?.spend_30d ?? 0,
-            windows: usage?.windows ?? [],
-          };
-        })
+        .map((org) => toDashboardTopOrgItem(org, usageByOrgId.get(org.id)))
         .sort((left, right) => {
           if (sort_by === 'member_count') {
             if (right.member_count !== left.member_count) {
@@ -788,16 +800,59 @@ routes.get(
 routes.get(
   '/dashboard/spam-summary',
   openApi({
-    summary: 'Dashboard spam summary (blocked until a fuller analytics read model is available)',
+    summary: 'Dashboard spam summary for spam-flagged orgs',
     responses: {
-      501: ErrorSchema,
+      200: DashboardSpamSummaryResponseSchema,
+      502: ErrorSchema,
     },
   }),
   async (c) => {
-    return c.json(
-      { error: 'Dashboard spam summary is blocked until the metrics read model covers the remaining spam-tab entity joins.' },
-      501,
-    );
+    try {
+      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const spamOrgIds = await fetchSpamOrgIds(c.env);
+
+      const [users, threads, apps, orgs, usageByOrgId] = await Promise.all([
+        adminIndex.getUsersByOrgIds(spamOrgIds),
+        adminIndex.getThreadsByOrgIds(spamOrgIds),
+        adminIndex.getAppsByOrgIds(spamOrgIds),
+        adminIndex.getOrgDirectoryByIds(spamOrgIds),
+        fetchOrgUsageAnalytics(c.env, spamOrgIds, { includeWindows: true }),
+      ]);
+
+      const org_usage = orgs
+        .map((org) => toDashboardTopOrgItem(org, usageByOrgId.get(org.id)))
+        .sort((left, right) => {
+          if (right.spend_30d !== left.spend_30d) {
+            return right.spend_30d - left.spend_30d;
+          }
+          if (right.created_at !== left.created_at) {
+            return right.created_at - left.created_at;
+          }
+          return left.org_id.localeCompare(right.org_id);
+        });
+
+      return c.json({
+        // The spam tab is investigative: include any user attached to a spam
+        // org, even if that user also belongs to non-spam orgs elsewhere.
+        users,
+        threads,
+        apps,
+        orgs: orgs.map((org) => ({
+          id: org.id,
+          name: org.name,
+          slug: org.slug ?? null,
+          created_by: org.created_by,
+          created_at: org.created_at,
+          archived: org.archived,
+          billing_status: normalizeBillingStatus(org.billing_status),
+          member_count: org.member_count,
+          workspace_count: org.workspace_count,
+        })),
+        org_usage,
+      });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Failed to load spam summary' }, 502);
+    }
   },
 );
 
