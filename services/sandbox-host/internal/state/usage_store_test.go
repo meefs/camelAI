@@ -512,6 +512,59 @@ func TestListSpamOrgIDs(t *testing.T) {
 	}
 }
 
+func TestCustomOverrideLimitsNotClobberedByDefaultSeeding(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Set custom override limits with non-default labels.
+	customLimits := []SpendLimit{
+		{Window: time.Hour, LimitUSD: 0.01, Label: "1h"},
+		{Window: 24 * time.Hour, LimitUSD: 0.01, Label: "24h"},
+	}
+	if err := store.SetSpendLimits("org-custom", customLimits); err != nil {
+		t.Fatalf("set custom limits: %v", err)
+	}
+
+	// Record usage — this calls ensureAnalyticsDefaultLimitsTx internally.
+	if err := store.RecordUsage(UsageRecord{
+		OrgID: "org-custom", Model: "claude-sonnet-4-5-20250929",
+		InputTokens: 100, OutputTokens: 50, CostUSD: 1,
+	}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	// The org should still be classified as spam (all limits <= 0.01).
+	// Before the fix, default 5h/$50 and 7d/$200 rows would be added,
+	// making MAX(limit_usd) = 200 and misclassifying the org as non-spam.
+	orgIDs, err := store.ListSpamOrgIDs()
+	if err != nil {
+		t.Fatalf("list spam org ids: %v", err)
+	}
+	if len(orgIDs) != 1 || orgIDs[0] != "org-custom" {
+		t.Fatalf("expected org-custom to remain spam after usage recording, got %v", orgIDs)
+	}
+
+	// Verify the analytics only has the 2 custom rows, not 4.
+	rows, err := store.GetOrgUsageAnalytics([]string{"org-custom"}, true)
+	if err != nil {
+		t.Fatalf("get org usage analytics: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 analytics row, got %d", len(rows))
+	}
+	if len(rows[0].Windows) != 2 {
+		t.Fatalf("expected 2 custom windows, got %d: %+v", len(rows[0].Windows), rows[0].Windows)
+	}
+	for _, w := range rows[0].Windows {
+		if w.LimitUSD != 0.01 {
+			t.Fatalf("expected all window limits to be 0.01, got %+v", w)
+		}
+	}
+}
+
 func TestRecordUsageIgnoresAnalyticsWriteFailure(t *testing.T) {
 	store, err := NewUsageStore(t.TempDir())
 	if err != nil {

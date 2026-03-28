@@ -264,16 +264,31 @@ func logAnalyticsWarning(operation string, err error) {
 	log.Printf("[UsageStore] analytics sync warning during %s: %v", operation, err)
 }
 
+// ensureAnalyticsDefaultLimitsTx seeds default spend-limit rows for an org
+// only when no rows exist yet. This avoids clobbering custom override labels
+// (e.g. "1h"/"24h") with the default "5h"/"7d" rows.
 func ensureAnalyticsDefaultLimitsTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	orgID string,
 	updatedAtMs int64,
 ) error {
+	var existingCount int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM org_effective_limits WHERE org_id = ?`,
+		orgID,
+	).Scan(&existingCount); err != nil {
+		return fmt.Errorf("check existing analytics limits: %w", err)
+	}
+	if existingCount > 0 {
+		return nil
+	}
+
 	for _, limit := range DefaultSpendLimits {
 		if _, err := tx.ExecContext(
 			ctx,
-			`INSERT OR IGNORE INTO org_effective_limits (org_id, window_ms, limit_usd, label, updated_at_ms)
+			`INSERT INTO org_effective_limits (org_id, window_ms, limit_usd, label, updated_at_ms)
 			 VALUES (?, ?, ?, ?, ?)`,
 			orgID,
 			limit.Window.Milliseconds(),
