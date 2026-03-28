@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,10 +46,11 @@ type UsageStore struct {
 	mu          sync.Mutex
 	conns       map[string]*sql.DB // orgId -> *sql.DB
 	analytics   *sql.DB
-	analyticsMu sync.Mutex
+	analyticsMu sync.RWMutex
 }
 
 const analyticsDirName = "_analytics"
+const analyticsSchemaVersion = "1"
 
 // NewUsageStore creates a new per-org usage store rooted at baseDir.
 func NewUsageStore(baseDir string) (*UsageStore, error) {
@@ -66,7 +68,7 @@ func NewUsageStore(baseDir string) (*UsageStore, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	if err := store.rebuildAnalyticsIndex(); err != nil {
+	if err := store.ensureAnalyticsIndexCurrent(); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
@@ -154,6 +156,10 @@ func (u *UsageStore) openAnalyticsDB() error {
 			PRIMARY KEY (org_id, label)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_org_effective_limits_org_id ON org_effective_limits(org_id)`,
+		`CREATE TABLE IF NOT EXISTS analytics_meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
 	}
 
 	for _, stmt := range statements {
@@ -164,6 +170,120 @@ func (u *UsageStore) openAnalyticsDB() error {
 	}
 
 	u.analytics = db
+	return nil
+}
+
+func (u *UsageStore) ensureAnalyticsIndexCurrent() error {
+	if u == nil || u.analytics == nil {
+		return nil
+	}
+
+	needsRebuild, err := u.analyticsNeedsRebuild()
+	if err != nil {
+		return err
+	}
+	if !needsRebuild {
+		return nil
+	}
+	return u.rebuildAnalyticsIndex()
+}
+
+func (u *UsageStore) analyticsNeedsRebuild() (bool, error) {
+	if u == nil || u.analytics == nil {
+		return false, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var schemaVersion string
+	u.analyticsMu.RLock()
+	err := u.analytics.QueryRowContext(
+		ctx,
+		`SELECT value FROM analytics_meta WHERE key = 'schema_version'`,
+	).Scan(&schemaVersion)
+	u.analyticsMu.RUnlock()
+	if err == nil {
+		return schemaVersion != analyticsSchemaVersion, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read analytics schema version: %w", err)
+	}
+
+	orgIDs, err := u.listOrgIDsOnDisk()
+	if err != nil {
+		return false, err
+	}
+	if len(orgIDs) == 0 {
+		if err := u.markAnalyticsSchemaCurrent(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func (u *UsageStore) markAnalyticsSchemaCurrent() error {
+	if u == nil || u.analytics == nil {
+		return nil
+	}
+
+	u.analyticsMu.Lock()
+	defer u.analyticsMu.Unlock()
+
+	return u.markAnalyticsSchemaCurrentLocked()
+}
+
+func (u *UsageStore) markAnalyticsSchemaCurrentLocked() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	return markAnalyticsSchemaCurrentTx(ctx, u.analytics, analyticsSchemaVersion)
+}
+
+func markAnalyticsSchemaCurrentTx(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, version string) error {
+	_, err := exec.ExecContext(
+		ctx,
+		`INSERT INTO analytics_meta (key, value)
+		 VALUES ('schema_version', ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		version,
+	)
+	if err != nil {
+		return fmt.Errorf("write analytics schema version: %w", err)
+	}
+	return nil
+}
+
+func logAnalyticsWarning(operation string, err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("[UsageStore] analytics sync warning during %s: %v", operation, err)
+}
+
+func ensureAnalyticsDefaultLimitsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	orgID string,
+	updatedAtMs int64,
+) error {
+	for _, limit := range DefaultSpendLimits {
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT OR IGNORE INTO org_effective_limits (org_id, window_ms, limit_usd, label, updated_at_ms)
+			 VALUES (?, ?, ?, ?, ?)`,
+			orgID,
+			limit.Window.Milliseconds(),
+			limit.LimitUSD,
+			limit.Label,
+			updatedAtMs,
+		); err != nil {
+			return fmt.Errorf("ensure default analytics limit: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -327,7 +447,7 @@ func (u *UsageStore) RecordUsage(record UsageRecord) error {
 		return err
 	}
 	if err := u.recordAnalyticsUsage(record, now); err != nil {
-		return fmt.Errorf("update usage analytics: %w", err)
+		logAnalyticsWarning("record usage", err)
 	}
 	return nil
 }
@@ -427,7 +547,7 @@ func (u *UsageStore) SetSpendLimits(orgID string, limits []SpendLimit) error {
 		effective = limits
 	}
 	if err := u.replaceAnalyticsEffectiveLimits(orgID, effective, now); err != nil {
-		return fmt.Errorf("update effective limits analytics: %w", err)
+		logAnalyticsWarning("set spend limits", err)
 	}
 	return nil
 }
@@ -737,6 +857,10 @@ func (u *UsageStore) recordAnalyticsUsage(record UsageRecord, createdAtMs int64)
 		return fmt.Errorf("upsert analytics rollup: %w", err)
 	}
 
+	if err := ensureAnalyticsDefaultLimitsTx(ctx, tx, record.OrgID, createdAtMs); err != nil {
+		return err
+	}
+
 	return tx.Commit()
 }
 
@@ -887,6 +1011,10 @@ func (u *UsageStore) rebuildAnalyticsIndex() error {
 		}
 	}
 
+	if err := markAnalyticsSchemaCurrentTx(ctx, tx, analyticsSchemaVersion); err != nil {
+		return err
+	}
+
 	return tx.Commit()
 }
 
@@ -919,8 +1047,8 @@ func (u *UsageStore) ListSpamOrgIDs() ([]string, error) {
 		return nil, nil
 	}
 
-	u.analyticsMu.Lock()
-	defer u.analyticsMu.Unlock()
+	u.analyticsMu.RLock()
+	defer u.analyticsMu.RUnlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -955,8 +1083,8 @@ func (u *UsageStore) GetOrgUsageAnalytics(orgIDs []string, includeWindows bool) 
 	orderedOrgIDs := append([]string(nil), orgIDs...)
 	slices.Sort(orderedOrgIDs)
 
-	u.analyticsMu.Lock()
-	defer u.analyticsMu.Unlock()
+	u.analyticsMu.RLock()
+	defer u.analyticsMu.RUnlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

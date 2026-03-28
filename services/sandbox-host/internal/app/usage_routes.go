@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -110,7 +109,6 @@ func (s *Server) handlePostUsageAnalyticsOrgsQuery(w http.ResponseWriter, req *h
 		seen[orgID] = struct{}{}
 		orgIDs = append(orgIDs, orgID)
 	}
-	slices.Sort(orgIDs)
 
 	items, err := s.usage.GetOrgUsageAnalytics(orgIDs, body.IncludeWindows)
 	if err != nil {

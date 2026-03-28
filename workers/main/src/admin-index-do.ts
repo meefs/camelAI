@@ -26,6 +26,11 @@ export interface OrgFilters {
   sort_dir?: 'asc' | 'desc';
 }
 
+export interface OrgDirectoryFilters extends OrgFilters {
+  exclude_org_ids?: string[];
+  exclude_creator_domains?: string[];
+}
+
 export interface AdminOrgDirectoryRow {
   id: string;
   name: string;
@@ -59,6 +64,7 @@ export interface AppFilters {
 const USER_SORT_COLS: Record<string, string> = { created_at: 'created_at', email: 'email', name: 'name' };
 const THREAD_SORT_COLS: Record<string, string> = { created_at: 't.created_at', updated_at: 't.updated_at' };
 const ORG_SORT_COLS: Record<string, string> = { created_at: 'created_at', name: 'name' };
+const ORG_DIRECTORY_SORT_COLS: Record<string, string> = { created_at: 'o.created_at', name: 'o.name' };
 const WORKSPACE_SORT_COLS: Record<string, string> = { created_at: 'w.created_at', name: 'w.name' };
 const APP_SORT_COLS: Record<string, string> = { created_at: 'a.created_at', updated_at: 'a.updated_at' };
 
@@ -639,6 +645,88 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       creator_email: row.creator_email ?? null,
       creator_name: row.creator_name ?? null,
     }));
+  }
+
+  async getOrgDirectoryPaginated(
+    offset: number,
+    limit: number,
+    search?: string,
+    filters?: OrgDirectoryFilters,
+  ) {
+    const base = `
+      FROM orgs o
+      LEFT JOIN users u ON o.created_by = u.id
+    `;
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (search) {
+      conditions.push('(o.name LIKE ? OR o.slug LIKE ?)');
+      const like = `%${search}%`;
+      params.push(like, like);
+    }
+    if (filters?.archived !== undefined) {
+      conditions.push('o.archived = ?');
+      params.push(filters.archived ? 1 : 0);
+    }
+    if (filters?.exclude_org_ids && filters.exclude_org_ids.length > 0) {
+      conditions.push(`o.id NOT IN (${filters.exclude_org_ids.map(() => '?').join(', ')})`);
+      params.push(...filters.exclude_org_ids);
+    }
+    if (filters?.exclude_creator_domains && filters.exclude_creator_domains.length > 0) {
+      conditions.push(`
+        (
+          u.email IS NULL
+          OR INSTR(u.email, '@') <= 0
+          OR LOWER(SUBSTR(u.email, INSTR(u.email, '@') + 1)) NOT IN (${filters.exclude_creator_domains.map(() => '?').join(', ')})
+        )
+      `);
+      params.push(...filters.exclude_creator_domains);
+    }
+
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = ORG_DIRECTORY_SORT_COLS[filters?.sort_by ?? 'created_at'] ?? 'o.created_at';
+    const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+    const items = Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            o.id,
+            o.name,
+            o.slug,
+            o.created_at,
+            o.archived,
+            o.billing_status,
+            o.created_by,
+            o.member_count,
+            o.workspace_count,
+            u.email AS creator_email,
+            u.name AS creator_name
+          ${base}
+          ${where}
+          ORDER BY ${sortCol} ${sortDir}
+          LIMIT ? OFFSET ?
+        `,
+        ...params,
+        limit,
+        offset,
+      ),
+    ).map((row: any) => ({
+      ...row,
+      archived: row.archived === 1,
+      slug: row.slug ?? null,
+      billing_status: row.billing_status ?? null,
+      creator_email: row.creator_email ?? null,
+      creator_name: row.creator_name ?? null,
+    }));
+
+    const total = this.sql.exec(
+      `SELECT COUNT(*) as count ${base} ${where}`,
+      ...params,
+    ).next().value?.count || 0;
+
+    return { items, total, offset, limit };
   }
 
   async getWorkspacesPaginated(offset: number, limit: number, search?: string, filters?: WorkspaceFilters) {

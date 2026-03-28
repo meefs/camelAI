@@ -61,7 +61,6 @@ import {
   dataList,
 } from './schemas.js';
 import {
-  compareOrgRows,
   fetchOrgUsageAnalytics,
   fetchSpamOrgIds,
   isOrgExcludedByInternalDomains,
@@ -100,6 +99,23 @@ async function fetchSandboxHostUsage(
 
 type AdminOrgDirectoryLookup = {
   getOrgDirectoryRows(): Promise<AdminOrgDirectoryRow[]>;
+  getOrgDirectoryPaginated(
+    offset: number,
+    limit: number,
+    search?: string,
+    filters?: {
+      archived?: boolean;
+      sort_by?: 'created_at' | 'name';
+      sort_dir?: 'asc' | 'desc';
+      exclude_org_ids?: string[];
+      exclude_creator_domains?: string[];
+    },
+  ): Promise<{
+    items: AdminOrgDirectoryRow[];
+    total: number;
+    offset: number;
+    limit: number;
+  }>;
 };
 
 function enrichOrgListItems(
@@ -119,6 +135,9 @@ function enrichOrgListItems(
       created_by: org.created_by,
       created_at: org.created_at,
       archived: org.archived,
+      // Keep the raw billing enum here for backwards compatibility on the
+      // long-standing /orgs admin route. Metrics-specific endpoints normalize
+      // "paying" -> "active" at their own boundary.
       billing_status: org.billing_status ?? null,
       member_count: org.member_count,
       workspace_count: org.workspace_count,
@@ -278,36 +297,20 @@ routes.get(
         sort_dir,
       } = c.req.valid('query');
       const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
-      let orgs = await adminIndex.getOrgDirectoryRows();
-
-      if (archived !== undefined) {
-        orgs = orgs.filter((org) => org.archived === archived);
-      }
-
-      if (search) {
-        const normalizedSearch = search.trim().toLowerCase();
-        if (normalizedSearch) {
-          orgs = orgs.filter((org) =>
-            org.name.toLowerCase().includes(normalizedSearch)
-            || (org.slug ?? '').toLowerCase().includes(normalizedSearch),
-          );
-        }
-      }
-
-      if (exclude_internal_domains) {
-        const internalDomains = normalizeInternalDomains(exclude_internal_domains);
-        orgs = orgs.filter((org) => !isOrgExcludedByInternalDomains(org, internalDomains));
-      }
-
-      if (exclude_spam) {
-        const spamOrgIds = new Set(await fetchSpamOrgIds(c.env));
-        orgs = orgs.filter((org) => !spamOrgIds.has(org.id));
-      }
-
-      orgs.sort((left, right) => compareOrgRows(left, right, sort_by, sort_dir));
-
-      const total = orgs.length;
-      const pagedOrgs = orgs.slice(offset, offset + limit);
+      const internalDomains = exclude_internal_domains
+        ? Array.from(normalizeInternalDomains(exclude_internal_domains))
+        : [];
+      // /orgs is an additive admin list endpoint, so internal-domain filtering
+      // stays opt-in here instead of defaulting to camelai.com.
+      const spamOrgIds = exclude_spam ? await fetchSpamOrgIds(c.env) : [];
+      const result = await adminIndex.getOrgDirectoryPaginated(offset, limit, search, {
+        archived,
+        sort_by,
+        sort_dir,
+        exclude_creator_domains: internalDomains,
+        exclude_org_ids: spamOrgIds,
+      });
+      const pagedOrgs = result.items;
       const needsUsage = include_usage === true || include_spend_30d === true;
       const usageByOrgId = needsUsage
         ? await fetchOrgUsageAnalytics(
@@ -322,9 +325,9 @@ routes.get(
           includeUsage: include_usage === true,
           includeSpend30d: include_spend_30d === true,
         }),
-        total,
-        offset,
-        limit,
+        total: result.total,
+        offset: result.offset,
+        limit: result.limit,
       });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Failed to load organizations' }, 502);

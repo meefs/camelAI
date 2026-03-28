@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -508,5 +509,97 @@ func TestListSpamOrgIDs(t *testing.T) {
 	}
 	if len(orgIDs) != 1 || orgIDs[0] != "org-spam" {
 		t.Fatalf("expected only org-spam, got %v", orgIDs)
+	}
+}
+
+func TestRecordUsageIgnoresAnalyticsWriteFailure(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.analytics.Close(); err != nil {
+		t.Fatalf("close analytics db: %v", err)
+	}
+
+	if err := store.RecordUsage(UsageRecord{
+		OrgID: "org-primary", Model: "claude-sonnet-4-5-20250929",
+		InputTokens: 100, OutputTokens: 50, CostUSD: 1.25,
+	}); err != nil {
+		t.Fatalf("record usage should ignore analytics failure, got: %v", err)
+	}
+
+	spend, err := store.GetOrgSpend("org-primary")
+	if err != nil {
+		t.Fatalf("get org spend: %v", err)
+	}
+	if spend.TotalRequests != 1 || spend.TotalCostUSD != 1.25 {
+		t.Fatalf("expected primary spend write to succeed, got %+v", spend)
+	}
+}
+
+func TestSetSpendLimitsIgnoresAnalyticsWriteFailure(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.analytics.Close(); err != nil {
+		t.Fatalf("close analytics db: %v", err)
+	}
+
+	custom := []SpendLimit{{Window: time.Hour, LimitUSD: 10, Label: "1h"}}
+	if err := store.SetSpendLimits("org-primary", custom); err != nil {
+		t.Fatalf("set spend limits should ignore analytics failure, got: %v", err)
+	}
+
+	limits, err := store.GetSpendLimits("org-primary")
+	if err != nil {
+		t.Fatalf("get spend limits: %v", err)
+	}
+	if len(limits) != 1 || limits[0].Label != "1h" || limits[0].LimitUSD != 10 {
+		t.Fatalf("expected primary limit write to succeed, got %+v", limits)
+	}
+}
+
+func TestNewUsageStoreSkipsAnalyticsRebuildWhenSchemaIsCurrent(t *testing.T) {
+	baseDir := t.TempDir()
+	store, err := NewUsageStore(baseDir)
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := store.analytics.ExecContext(
+		ctx,
+		`INSERT INTO org_usage_rollups (org_id, total_cost_usd, total_requests, updated_at_ms)
+		 VALUES ('sentinel-org', 99, 7, ?)`,
+		time.Now().UTC().UnixMilli(),
+	); err != nil {
+		t.Fatalf("insert sentinel analytics row: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close usage store: %v", err)
+	}
+
+	reopened, err := NewUsageStore(baseDir)
+	if err != nil {
+		t.Fatalf("reopen usage store: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+
+	rows, err := reopened.GetOrgUsageAnalytics([]string{"sentinel-org"}, false)
+	if err != nil {
+		t.Fatalf("get org usage analytics after reopen: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one sentinel analytics row, got %d", len(rows))
+	}
+	if rows[0].OrgID != "sentinel-org" || rows[0].TotalCostUSD != 99 || rows[0].TotalRequests != 7 {
+		t.Fatalf("expected sentinel analytics row to persist without rebuild, got %+v", rows[0])
 	}
 }

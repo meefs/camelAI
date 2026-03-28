@@ -115,22 +115,3 @@ export function isOrgExcludedByInternalDomains(
 export function normalizeBillingStatus(status: string | null | undefined): 'active' | 'free' {
   return status === 'paying' ? 'active' : 'free';
 }
-
-export function compareOrgRows(
-  left: Pick<AdminOrgDirectoryRow, 'created_at' | 'name' | 'id'>,
-  right: Pick<AdminOrgDirectoryRow, 'created_at' | 'name' | 'id'>,
-  sortBy: 'created_at' | 'name',
-  sortDir: 'asc' | 'desc',
-): number {
-  const direction = sortDir === 'asc' ? 1 : -1;
-  if (sortBy === 'name') {
-    const nameComparison = left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
-    if (nameComparison !== 0) return nameComparison * direction;
-    return left.id.localeCompare(right.id) * direction;
-  }
-
-  if (left.created_at !== right.created_at) {
-    return (left.created_at - right.created_at) * direction;
-  }
-  return left.id.localeCompare(right.id) * direction;
-}
