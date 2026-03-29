@@ -18,12 +18,12 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
 import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, listCustomHostnames, type CfApiProxyEnv } from './cf-api-proxy';
-import type { WorkerLogsDO } from './worker-logs-do';
+import type { EphemeralWorkerLogsDO } from './worker-logs-do';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
-  WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
+  WORKER_LOGS: DurableObjectNamespace<EphemeralWorkerLogsDO>;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   APP_KV: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;

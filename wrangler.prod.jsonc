@@ -77,7 +77,7 @@
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
+			{ "name": "WORKER_LOGS", "class_name": "EphemeralWorkerLogsDO" },
 			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" }
 		]
 	},
@@ -101,6 +101,7 @@
 		{ "tag": "v17", "new_sqlite_classes": ["OAuthStateDO"] },
 		{ "tag": "v18", "new_sqlite_classes": ["WorkspaceCronDO"] },
 		{ "tag": "v19", "deleted_classes": ["OAuthStateDO"] },
-		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] }
+		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
+		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"], "deleted_classes": ["WorkerLogsDO"] }
 	]
 }

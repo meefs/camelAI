@@ -247,7 +247,7 @@ MCP-driven prompts (connection setup, bug reports) are persisted in `ChatThreadD
 
 ### MCP App Logs Tool
 
-The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured runtime logs for a deployed app in the current workspace. It validates script ownership, resolves the dispatch script key (`{script}--{org-slug}`), and reads from `WorkerLogsDO` (with legacy key fallback).
+The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured runtime logs for a deployed app in the current workspace. It validates script ownership, resolves the dispatch script key (`{script}--{org-slug}`), and reads from `EphemeralWorkerLogsDO`, an in-memory per-script ring buffer. Logs are intentionally ephemeral now: they survive normal hot traffic and live WebSocket sessions, but are discarded when the Durable Object instance is evicted or restarted.
 
 ### External MCP Server
 
@@ -331,7 +331,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | `WorkspaceDO`     | per workspace | Metadata, members, integrations, audit logs, token refresh alarms                               |
 | `WorkspaceCronDO` | per workspace | Scheduled prompt definitions, next-run calculation, alarm-based prompt dispatch to chat threads |
 | `ChatThreadDO`    | per thread    | WebSocket state, preview target, todo/prompt persistence                                        |
-| `WorkerLogsDO`    | per script    | Deployed worker logs (up to 10k entries), real-time WebSocket streaming                         |
+| `EphemeralWorkerLogsDO` | per script    | Ephemeral deployed worker logs (up to 10k in-memory entries), real-time WebSocket streaming    |
 | `ExternalMcpDO`   | per connection| External MCP server for OAuth-authenticated clients (bash, files, apps)                         |
 
 Thread records are treated uniformly across web, Slack, and email ingress. History and admin queries do not filter by thread source.

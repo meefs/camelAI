@@ -2,13 +2,13 @@
  * User Logs Tail Worker
  *
  * Captures tail events from user-deployed workers and forwards them to
- * WorkerLogsDO for storage and retrieval.
+ * the ephemeral logs DO for storage and retrieval.
  */
 
-import type { WorkerLogsDO } from '../../main/src/worker-logs-do.js';
+import type { EphemeralWorkerLogsDO } from '../../main/src/worker-logs-do.js';
 
 export interface Env {
-  WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
+  WORKER_LOGS: DurableObjectNamespace<EphemeralWorkerLogsDO>;
 }
 
 export interface LogEvent {
@@ -108,7 +108,7 @@ export default {
       eventsByScript.set(scriptName, existing);
     }
 
-    // Forward to WorkerLogsDO for each script
+    // Forward to the ephemeral logs DO for each script.
     await Promise.all(
       Array.from(eventsByScript.entries()).map(async ([scriptName, scriptEvents]) => {
         try {

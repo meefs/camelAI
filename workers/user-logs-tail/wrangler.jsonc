@@ -10,7 +10,7 @@
   // Local dev defaults - binds to local chiridion-app
   "durable_objects": {
     "bindings": [
-      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO", "script_name": "chiridion-app" }
+      { "name": "WORKER_LOGS", "class_name": "EphemeralWorkerLogsDO", "script_name": "chiridion-app" }
     ]
   },
   "env": {
@@ -18,7 +18,7 @@
       "name": "chiridion-user-logs-tail",
       "durable_objects": {
         "bindings": [
-          { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO", "script_name": "chiridion-app" }
+          { "name": "WORKER_LOGS", "class_name": "EphemeralWorkerLogsDO", "script_name": "chiridion-app" }
         ]
       }
     },
@@ -26,7 +26,7 @@
       "name": "chiridion-user-logs-tail-staging",
       "durable_objects": {
         "bindings": [
-          { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO", "script_name": "chiridion-app-staging" }
+          { "name": "WORKER_LOGS", "class_name": "EphemeralWorkerLogsDO", "script_name": "chiridion-app-staging" }
         ]
       }
     },
@@ -34,7 +34,7 @@
       "name": "chiridion-user-logs-tail-dev-miguel",
       "durable_objects": {
         "bindings": [
-          { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO", "script_name": "chiridion-app-dev-miguel" }
+          { "name": "WORKER_LOGS", "class_name": "EphemeralWorkerLogsDO", "script_name": "chiridion-app-dev-miguel" }
         ]
       }
     },
@@ -42,7 +42,7 @@
       "name": "chiridion-user-logs-tail-dev-illiana",
       "durable_objects": {
         "bindings": [
-          { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO", "script_name": "chiridion-app-dev-illiana" }
+          { "name": "WORKER_LOGS", "class_name": "EphemeralWorkerLogsDO", "script_name": "chiridion-app-dev-illiana" }
         ]
       }
     }
