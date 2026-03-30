@@ -826,8 +826,12 @@ function computeRetentionPoint(
 ) {
   const eligibleUsers = users.filter((user) => now - user.created_at >= milestoneDay * DAY_MS);
   const retainedCount = eligibleUsers.reduce((count, user) => {
+    // Day-0: active on the signup calendar day only. Use UTC day boundaries
+    // instead of a 24h window from the raw timestamp, so late-day signups
+    // don't spill into the next calendar day.
+    const signupDayStart = startOfUtcDay(user.created_at);
     const isRetained = milestoneDay === 0
-      ? wasActiveInRange(activityByDate, user.id, user.created_at, user.created_at + DAY_MS - 1)
+      ? wasActiveInRange(activityByDate, user.id, signupDayStart, signupDayStart + DAY_MS - 1)
       : wasActiveInRange(activityByDate, user.id, user.created_at + DAY_MS, user.created_at + milestoneDay * DAY_MS);
     return count + (isRetained ? 1 : 0);
   }, 0);
