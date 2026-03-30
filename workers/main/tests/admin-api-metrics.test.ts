@@ -247,7 +247,7 @@ describe('admin API metrics routes', () => {
           include_windows: boolean;
         };
         expect(body.org_ids).toEqual([externalOrgA.id]);
-        expect(body.include_windows).toBe(true);
+        // Two-pass: first call ranks without windows, second fetches windows for top-N.
         return Response.json({
           items: [
             {
@@ -256,15 +256,19 @@ describe('admin API metrics routes', () => {
               total_requests: 12,
               spend_7d: 20,
               spend_30d: 25,
-              windows: [
-                {
-                  label: '7d',
-                  window_ms: 604_800_000,
-                  limit_usd: 200,
-                  spent_usd: 20,
-                  exceeded: false,
-                },
-              ],
+              ...(body.include_windows
+                ? {
+                    windows: [
+                      {
+                        label: '7d',
+                        window_ms: 604_800_000,
+                        limit_usd: 200,
+                        spent_usd: 20,
+                        exceeded: false,
+                      },
+                    ],
+                  }
+                : {}),
             },
           ],
           count: 1,

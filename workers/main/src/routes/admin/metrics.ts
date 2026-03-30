@@ -82,7 +82,7 @@ export function normalizeInternalDomains(
   rawValue: string | undefined,
   defaultDomains: string[] = [],
 ): Set<string> {
-  const source = rawValue ?? defaultDomains.join(',');
+  const source = rawValue && rawValue.trim().length > 0 ? rawValue : defaultDomains.join(',');
   return new Set(
     source
       .split(',')

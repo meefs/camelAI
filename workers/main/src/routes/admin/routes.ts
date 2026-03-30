@@ -710,36 +710,52 @@ routes.get(
         orgs = orgs.filter((org) => !spamOrgIds.has(org.id));
       }
 
-      const usageByOrgId = await fetchOrgUsageAnalytics(
+      // Two-pass: rank without windows first, then fetch windows for top-N only.
+      const rankingUsage = await fetchOrgUsageAnalytics(
         c.env,
         orgs.map((org) => org.id),
-        { includeWindows: true },
+        { includeWindows: false },
       );
 
-      const items = orgs
-        .map((org) => toDashboardTopOrgItem(org, usageByOrgId.get(org.id)))
+      const ranked = orgs
+        .map((org) => ({ org, usage: rankingUsage.get(org.id) }))
         .sort((left, right) => {
           if (sort_by === 'member_count') {
-            if (right.member_count !== left.member_count) {
-              return right.member_count - left.member_count;
+            if (right.org.member_count !== left.org.member_count) {
+              return right.org.member_count - left.org.member_count;
             }
-            if (right.spend_30d !== left.spend_30d) {
-              return right.spend_30d - left.spend_30d;
+            const leftSpend = left.usage?.spend_30d ?? 0;
+            const rightSpend = right.usage?.spend_30d ?? 0;
+            if (rightSpend !== leftSpend) {
+              return rightSpend - leftSpend;
             }
-            return left.org_id.localeCompare(right.org_id);
+            return left.org.id.localeCompare(right.org.id);
           }
 
-          const leftSpend = sort_by === 'spend_30d' ? left.spend_30d : left.spend_7d;
-          const rightSpend = sort_by === 'spend_30d' ? right.spend_30d : right.spend_7d;
+          const leftSpend = sort_by === 'spend_30d'
+            ? (left.usage?.spend_30d ?? 0)
+            : (left.usage?.spend_7d ?? 0);
+          const rightSpend = sort_by === 'spend_30d'
+            ? (right.usage?.spend_30d ?? 0)
+            : (right.usage?.spend_7d ?? 0);
           if (rightSpend !== leftSpend) {
             return rightSpend - leftSpend;
           }
-          if (right.member_count !== left.member_count) {
-            return right.member_count - left.member_count;
+          if (right.org.member_count !== left.org.member_count) {
+            return right.org.member_count - left.org.member_count;
           }
-          return left.org_id.localeCompare(right.org_id);
+          return left.org.id.localeCompare(right.org.id);
         })
         .slice(0, limit);
+
+      const topOrgIds = ranked.map(({ org }) => org.id);
+      const windowUsage = topOrgIds.length > 0
+        ? await fetchOrgUsageAnalytics(c.env, topOrgIds, { includeWindows: true })
+        : new Map<string, OrgUsageAnalyticsItem>();
+
+      const items = ranked.map(({ org }) =>
+        toDashboardTopOrgItem(org, windowUsage.get(org.id)),
+      );
 
       return c.json({
         items,
