@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
-import { useLoaderData, useFetcher } from 'react-router';
+import { useEffect, useState } from 'react';
+import { useFetcher, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.domains';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import type { AuthEnv } from '@/lib/auth-helpers';
 import { getOrgCustomDomain, isOrgAdmin } from '@/lib/auth-do';
 import { getCustomHostnameDnsTarget } from '@/lib/custom-domain-dns';
+import { getDcvDelegationUuid } from '../../workers/main/src/cf-api-proxy';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { Button } from '@/components/ui/button';
@@ -13,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Globe2, Loader2, Trash2, AlertCircle, CheckCircle2, ArrowRight, Info } from 'lucide-react';
+import { AlertCircle, ArrowRight, CheckCircle2, Globe2, Info, Loader2, Trash2 } from 'lucide-react';
 
 export function meta() {
   return [
@@ -35,9 +36,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
   };
 
-  const [domain, admin] = await Promise.all([
+  const [domain, admin, dcvUuid] = await Promise.all([
     getOrgCustomDomain(authEnv, authContext.currentOrg.id),
     isOrgAdmin(authEnv, authContext.user.id, authContext.currentOrg.id),
+    env.CF_ZONE_ID && env.CF_API_TOKEN
+      ? getDcvDelegationUuid(env.CF_ZONE_ID, env.CF_API_TOKEN)
+      : Promise.resolve(null),
   ]);
 
   return {
@@ -48,6 +52,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       cnameTarget: env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
       fallbackOrigin: env.CF_CUSTOM_HOSTNAME_FALLBACK,
     }),
+    dcvUuid,
   };
 }
 
@@ -63,7 +68,7 @@ function getDomainStatusLabel(status: string | null | undefined): string {
 }
 
 export default function DomainsPage() {
-  const { org, domain: initialDomain, isAdmin, dnsTarget } = useLoaderData<typeof loader>();
+  const { org, domain: initialDomain, isAdmin, dnsTarget, dcvUuid } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ domain?: unknown; success?: boolean; error?: string }>();
   const [domainInput, setDomainInput] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -79,19 +84,21 @@ export default function DomainsPage() {
     if (fetcher.state !== 'idle' || !fetcher.data) return;
     if (fetcher.data.error) {
       setError(fetcher.data.error);
-    } else {
-      setError(null);
-      if (fetcher.data.domain) {
-        setDomain(fetcher.data.domain as typeof domain);
-      } else if (fetcher.data.success) {
-        setDomain(null);
-      }
+      return;
     }
-  }, [fetcher.state, fetcher.data]);
+
+    setError(null);
+    if (fetcher.data.domain) {
+      setDomain(fetcher.data.domain as typeof domain);
+    } else if (fetcher.data.success) {
+      setDomain(null);
+    }
+  }, [domain, fetcher.data, fetcher.state]);
 
   const handleSetDomain = () => {
     const value = domainInput.trim().toLowerCase();
     if (!value) return;
+
     setError(null);
     fetcher.submit(
       { intent: 'set', domain: value },
@@ -153,30 +160,59 @@ export default function DomainsPage() {
             </CardHeader>
           </Card>
 
-          <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+          <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base font-medium">1. Add DNS at your provider</CardTitle>
                 <CardDescription>
-                  Recommended for full org-wide setup. This lets any deployed app use your domain without adding a new
-                  record every time.
+                  Add both records below. The first handles routing, and the second delegates SSL certificate validation to Cloudflare.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="rounded-md border bg-muted/40 p-4">
-                  <div className="grid gap-3 font-mono text-sm sm:grid-cols-3">
-                    <div>
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Host</p>
-                      <p className="mt-1 select-all">*</p>
+                <div className="space-y-3">
+                  <div className="rounded-md border bg-muted/40 p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Record 1: Routing</p>
+                    <div className="mt-3 grid gap-3 font-mono text-sm sm:grid-cols-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Host</p>
+                        <p className="mt-1 select-all">*</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Type</p>
+                        <p className="mt-1">CNAME</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Target</p>
+                        <p className="mt-1 break-all select-all">{dnsTarget}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Type</p>
-                      <p className="mt-1">CNAME</p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Target</p>
-                      <p className="mt-1 break-all select-all">{dnsTarget}</p>
-                    </div>
+                  </div>
+
+                  <div className="rounded-md border bg-muted/40 p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Record 2: SSL Validation</p>
+                    {dcvUuid ? (
+                      <div className="mt-3 grid gap-3 font-mono text-sm sm:grid-cols-3">
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Host</p>
+                          <p className="mt-1 break-all select-all">_acme-challenge.{domain.domain}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Type</p>
+                          <p className="mt-1">CNAME</p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Target</p>
+                          <p className="mt-1 break-all select-all">{dcvUuid}.dcv.cloudflare.com</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <Alert className="mt-3">
+                        <Info className="size-4" />
+                        <AlertDescription>
+                          Could not load the DCV delegation target right now. Reload this page before asking the customer to finish DNS setup.
+                        </AlertDescription>
+                      </Alert>
+                    )}
                   </div>
                 </div>
 
@@ -194,9 +230,7 @@ export default function DomainsPage() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base font-medium">2. What happens next</CardTitle>
-                <CardDescription>
-                  Cloudflare provisions each app hostname separately.
-                </CardDescription>
+                <CardDescription>Cloudflare provisions each app hostname separately.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-muted-foreground">
                 <div className="flex gap-3">
@@ -209,7 +243,7 @@ export default function DomainsPage() {
                 </div>
                 <div className="flex gap-3">
                   <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-foreground" />
-                  <p>If you test the custom domain too early, Cloudflare may show DNS or CNAME errors while provisioning catches up.</p>
+                  <p>If either DNS record is missing or you test too early, Cloudflare may show DNS, SSL, or cross-account CNAME errors while provisioning catches up.</p>
                 </div>
               </CardContent>
             </Card>
@@ -232,7 +266,7 @@ export default function DomainsPage() {
               </div>
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="font-medium text-foreground">2. Point DNS to camelAI</p>
-                <p className="mt-1">We’ll show the exact CNAME target after you save the domain.</p>
+                <p className="mt-1">We’ll show the exact routing and SSL validation records after you save the domain.</p>
               </div>
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="font-medium text-foreground">3. Wait for activation</p>
@@ -240,7 +274,7 @@ export default function DomainsPage() {
               </div>
             </div>
 
-            <div className="flex gap-2 max-w-xl">
+            <div className="flex max-w-xl gap-2">
               <Input
                 value={domainInput}
                 onChange={(e) => setDomainInput(e.target.value)}
@@ -265,9 +299,7 @@ export default function DomainsPage() {
             </div>
 
             {!isAdmin && (
-              <p className="text-xs text-muted-foreground">
-                Only organization admins can manage custom domains.
-              </p>
+              <p className="text-xs text-muted-foreground">Only organization admins can manage custom domains.</p>
             )}
           </CardContent>
         </Card>

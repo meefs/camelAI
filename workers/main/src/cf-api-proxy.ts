@@ -835,7 +835,7 @@ export async function createCustomHostname(
   };
   const body: Record<string, unknown> = {
     hostname,
-    ssl: { method: 'http', type: 'dv', wildcard: false },
+    ssl: { method: 'txt', type: 'dv', wildcard: false },
   };
   if (customOriginServer) {
     body.custom_origin_server = customOriginServer;
@@ -887,6 +887,24 @@ export async function deleteCustomHostname(
   } catch (err) {
     console.error('[cf-api] delete custom hostname error', err);
     return false;
+  }
+}
+
+export async function getDcvDelegationUuid(
+  zoneId: string,
+  apiToken: string
+): Promise<string | null> {
+  const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/dcv_delegation/uuid`;
+  try {
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiToken}` },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json() as { result?: { uuid: string } };
+    return data.result?.uuid ?? null;
+  } catch (err) {
+    console.error('[cf-api] get DCV delegation UUID error', err);
+    return null;
   }
 }
 

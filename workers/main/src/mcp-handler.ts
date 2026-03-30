@@ -17,7 +17,7 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
-import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, findCustomHostnameByHostname, getCustomHostnameStatus, listCustomHostnamesByBaseDomain, type CfApiProxyEnv } from './cf-api-proxy';
+import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, findCustomHostnameByHostname, getCustomHostnameStatus, getDcvDelegationUuid, listCustomHostnamesByBaseDomain, type CfApiProxyEnv } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
 import { getExpectedCustomDomainHostname, getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
 import { getCustomHostnameDnsTarget } from '../../../src/lib/custom-domain-dns';
@@ -1560,7 +1560,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     // Set org custom domain
     this.server.tool(
       'set_custom_domain',
-      'Set a custom domain for the organization (admin only). All deployed apps will be accessible at {app-name}.{domain}. Recommend a wildcard DNS record for all apps, though exact per-app CNAME records also work. Per-app SSL certificates are created automatically on deploy.',
+      'Set a custom domain for the organization (admin only). All deployed apps will be accessible at {app-name}.{domain}. Recommend a wildcard routing CNAME for all apps, though exact per-app CNAME records also work. SSL validation also requires an _acme-challenge CNAME, and the exact target is returned in the response.',
       {
         domain: z.string().min(3).describe('The base domain (e.g., "apps.example.com"). All apps will be subdomains of this.'),
       },
@@ -1618,6 +1618,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           }
         }
 
+        // Fetch DCV delegation UUID for SSL validation instructions
+        const dcvUuid = zoneId && apiToken ? await getDcvDelegationUuid(zoneId, apiToken) : null;
+        const dcvRecord = dcvUuid
+          ? `_acme-challenge.${domain} CNAME ${dcvUuid}.dcv.cloudflare.com`
+          : `_acme-challenge.${domain} CNAME {uuid}.dcv.cloudflare.com (check Settings > Domains for the exact value)`;
+
         // Backfill CF hostnames for existing apps
         await orgStub.clearWorkerScriptCustomDomains();
         if (zoneId && apiToken) {
@@ -1658,7 +1664,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             hostnames_created: created,
             total_apps: scripts.length,
             dns_target: dnsTarget,
-            message: `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Recommended DNS: *.${domain} CNAME ${dnsTarget}`,
+            dcv_record: dcvRecord,
+            message: `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Add both DNS records: (1) *.${domain} CNAME ${dnsTarget} and (2) ${dcvRecord}`,
           });
         }
 
@@ -1666,7 +1673,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           success: true,
           domain,
           dns_target: dnsTarget,
-          message: `Custom domain set to ${domain}. Recommended DNS: *.${domain} CNAME ${dnsTarget}`,
+          dcv_record: dcvRecord,
+          message: `Custom domain set to ${domain}. Add both DNS records: (1) *.${domain} CNAME ${dnsTarget} and (2) ${dcvRecord}`,
         });
       }
     );
