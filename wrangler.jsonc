@@ -140,7 +140,7 @@
 		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
 		{ "tag": "v21", "new_sqlite_classes": ["ExternalMcpDO"] },
 		{ "tag": "v22", "deleted_classes": ["ExternalMcpDO"] },
-		{ "tag": "v23", "new_classes": ["EphemeralWorkerLogsDO"], "deleted_classes": ["WorkerLogsDO"] }
+		{ "tag": "v23", "new_classes": ["EphemeralWorkerLogsDO"] }
 	],
 	"env": {
 		"prod": {

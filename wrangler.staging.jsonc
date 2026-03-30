@@ -103,6 +103,6 @@
 		{ "tag": "v18", "new_sqlite_classes": ["WorkspaceCronDO"] },
 		{ "tag": "v19", "deleted_classes": ["OAuthStateDO"] },
 		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
-		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"], "deleted_classes": ["WorkerLogsDO"] }
+		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] }
 	]
 }

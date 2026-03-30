@@ -164,3 +164,8 @@ export class EphemeralWorkerLogsDO extends DurableObject<Env> {
     this.logs.splice(0, overflow);
   }
 }
+
+// Temporary compatibility export while the tail worker rolls from WorkerLogsDO → EphemeralWorkerLogsDO.
+// Keep this until the old cross-worker binding has been removed everywhere, then a follow-up migration
+// can safely delete WorkerLogsDO.
+export { EphemeralWorkerLogsDO as WorkerLogsDO };
