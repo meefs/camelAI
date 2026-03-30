@@ -101,8 +101,8 @@ For an agent client:
 | `GET` | `/api/admin/workspaces` | Bearer | Paginated workspaces |
 | `GET` | `/api/admin/apps` | Bearer | Paginated apps |
 | `GET` | `/api/admin/dashboard/top-orgs` | Bearer | Top orgs ranked by spend or member count |
-| `GET` | `/api/admin/dashboard/summary` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
-| `GET` | `/api/admin/dashboard/retention` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
+| `GET` | `/api/admin/dashboard/summary` | Bearer | Dashboard summary KPIs, daily/weekly series, drill-downs, and retention snapshot |
+| `GET` | `/api/admin/dashboard/retention` | Bearer | Retention cohorts, curve, WAU series, stickiness, and retention KPIs |
 | `GET` | `/api/admin/dashboard/spam-summary` | Bearer | Spam-tab entity + usage snapshot for the resolved spam-org set |
 | `GET` | `/api/admin/email-domain-blocklist` | Bearer | Get blocked email domains |
 | `PUT` | `/api/admin/email-domain-blocklist` | Bearer | Replace full email domain blocklist |
@@ -769,11 +769,42 @@ Item fields:
 
 ### `GET /api/admin/dashboard/summary`
 
-Currently returns `501` with a JSON error explaining that the dashboard formulas or fixtures are not present in this repo.
+Returns the backend-computed dashboard summary that used to be assembled client-side.
+
+Query params:
+
+- `date` optional, `YYYY-MM-DD`, defaults to the current UTC day
+- `exclude_spam` optional, defaults to `true`
+- `exclude_internal_domains` optional, defaults to `camelai.com`
+
+Top-level response fields:
+
+- `kpis`
+- `daily_series`
+- `weekly_series`
+- `growth_thresholds`
+- `selected_day`
+- `billing_breakdown`
+- `app_visibility`
+- `retention_snapshot`
 
 ### `GET /api/admin/dashboard/retention`
 
-Currently returns `501` with a JSON error explaining that the dashboard formulas or fixtures are not present in this repo.
+Returns the backend-computed retention view that used to be assembled client-side.
+
+Query params:
+
+- `exclude_spam` optional, defaults to `true`
+- `exclude_internal_domains` optional, defaults to `camelai.com`
+
+Top-level response fields:
+
+- `cohort_table`
+- `max_week_columns`
+- `retention_curve`
+- `wau_time_series`
+- `stickiness_series`
+- `kpis`
 
 ### `GET /api/admin/dashboard/spam-summary`
 

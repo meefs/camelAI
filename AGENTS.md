@@ -309,7 +309,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Support                      | `/api/help`                                                                                                                                                              |
 | Dev tooling                  | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id`                                                                                                                       |
 | Admin troubleshooting        | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` (`messages` also supports Bearer `ADMIN_API_KEY`; `jsonl` remains session-auth only)                 |
-| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, `GET /api/admin/{spam/org-ids,dashboard/top-orgs}`, `GET /api/admin/threads/:id/messages`, and `PUT/DELETE /api/admin/signup-blocked-ips/:ip` (Bearer `ADMIN_API_KEY` auth) |
+| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, `GET /api/admin/{spam/org-ids,dashboard/top-orgs,dashboard/summary,dashboard/retention,dashboard/spam-summary}`, `GET /api/admin/threads/:id/messages`, and `PUT/DELETE /api/admin/signup-blocked-ips/:ip` (Bearer `ADMIN_API_KEY` auth) |
 | Invitations                  | `/api/invitations/:orgId/:invitationId` (GET/POST)                                                                                                                       |
 | Workspace FS                 | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}`                                                                                     |
 | Workspace chat               | `/api/workspaces/:id/chat/:threadId/messages/stream`                                                                                                                     |
@@ -446,7 +446,9 @@ Metrics-specific admin behavior:
 - `GET /api/admin/spam/org-ids` returns the current spam-org set derived from effective spend limits.
 - `GET /api/admin/orgs` now supports additive query params `exclude_spam`, `exclude_internal_domains`, `include_usage`, and `include_spend_30d`; slug search is supported alongside name search.
 - `GET /api/admin/dashboard/top-orgs` returns server-ranked org rows with usage rollups and effective spend windows.
-- `GET /api/admin/dashboard/{summary,retention,spam-summary}` currently return `501` until the missing dashboard formulas and remaining analytics joins are attached.
+- `GET /api/admin/dashboard/summary` now computes the home-tab payload inside `AdminIndexDO`, including filtered KPIs, 30-day daily/weekly series, growth thresholds, selected-day drill-downs, billing/app visibility breakdowns, and a 7-day retention snapshot.
+- `GET /api/admin/dashboard/retention` now computes the retention-tab payload inside `AdminIndexDO`, including Monday-start signup cohorts, retention milestones, WAU series, stickiness, and retention KPIs.
+- `GET /api/admin/dashboard/spam-summary` returns the spam-tab entity snapshot plus usage analytics for the resolved spam-org set.
 
 ```bash
 curl -H "Authorization: Bearer <key>" https://<host>/api/admin/stats
@@ -470,9 +472,9 @@ curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<hos
 | GET    | `/spam/org-ids`     | Spam org IDs derived from effective spend limits           |
 | GET    | `/orgs`             | All orgs (filters + optional usage enrichment)             |
 | GET    | `/dashboard/top-orgs` | Top orgs by spend or member count                        |
-| GET    | `/dashboard/summary` | Returns `501` until dashboard formulas are attached       |
-| GET    | `/dashboard/retention` | Returns `501` until dashboard formulas are attached     |
-| GET    | `/dashboard/spam-summary` | Returns `501` until spam-tab analytics joins land   |
+| GET    | `/dashboard/summary` | Summary KPIs, series, drill-downs, and retention snapshot |
+| GET    | `/dashboard/retention` | Cohorts, retention curve, WAU, stickiness, and KPIs    |
+| GET    | `/dashboard/spam-summary` | Spam-tab entity snapshot plus usage analytics      |
 | GET    | `/threads`          | All threads across orgs                                    |
 | POST   | `/orgs/:id/members` | Add member to org (`{ user_id, role? }`)                   |
 | PATCH  | `/threads/:id`      | Update thread (`{ title?, created_by? }`)                  |
