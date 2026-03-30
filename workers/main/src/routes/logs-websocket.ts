@@ -66,7 +66,7 @@ export async function handleLogsWebSocket({ req, env, url }: RouteContext): Prom
     dispatchScriptName = `${scriptName}--${orgSlug}`;
   }
 
-  // Forward WebSocket to the per-script ephemeral logs DO.
+  // Forward WebSocket to the per-script persistent logs DO.
   const logsStub = env.WORKER_LOGS.get(env.WORKER_LOGS.idFromName(dispatchScriptName));
   return logsStub.fetch(req);
 }

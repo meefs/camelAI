@@ -2,7 +2,7 @@ import type { AppLoadContext } from 'react-router';
 import type { UserDO, OrgDO } from '../../workers/main/src/auth';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import type { ChatThreadDO } from '../../workers/main/src/durable-objects';
-import type { EphemeralWorkerLogsDO } from '../../workers/main/src/worker-logs-do';
+import type { WorkerLogsDO } from '../../workers/main/src/worker-logs-do';
 import type { AdminIndexDO } from '../../workers/main/src/admin-index-do';
 
 /**
@@ -17,7 +17,7 @@ export interface CloudflareEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ADMIN_INDEX: DurableObjectNamespace<AdminIndexDO>;
   MCP_OBJECT: DurableObjectNamespace;
-  WORKER_LOGS: DurableObjectNamespace<EphemeralWorkerLogsDO>;
+  WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
 
   // KV Namespaces
   EMAIL_TO_USER: KVNamespace;

@@ -78,7 +78,7 @@
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-			{ "name": "WORKER_LOGS", "class_name": "EphemeralWorkerLogsDO" },
+			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" }
 		]
 	},
