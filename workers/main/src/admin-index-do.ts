@@ -1,5 +1,17 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { DOEnv } from './auth';
+import {
+  computeDashboardSummary as computeDashboardSummaryFromSnapshot,
+  computeRetentionData as computeRetentionDataFromSnapshot,
+  filterDashboardEntitySnapshot,
+  type DashboardEntitySnapshot,
+  type DashboardMetricsFilterOptions,
+  type DashboardRetentionOptions,
+  type DashboardRetentionResponse,
+  type DashboardSummaryOptions,
+  type DashboardSummaryResponse,
+  type DashboardWorkspaceMetricsRow,
+} from './admin-dashboard-metrics.js';
 
 // ---------------------------------------------------------------------------
 // Filter types for paginated queries
@@ -667,6 +679,137 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     }
   }
 
+  private loadAllUsersForDashboardMetrics(): AdminUserSummaryRow[] {
+    return Array.from(this.sql.exec('SELECT * FROM users')).map((row: any) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name ?? null,
+      avatar: {
+        color: row.avatar_color || '#666',
+        content: row.avatar_content || 'U',
+      },
+      created_at: row.created_at,
+      org_count: row.org_count ?? 0,
+      is_superuser: row.is_superuser === 1,
+      is_orphaned: row.is_orphaned === 1,
+    }));
+  }
+
+  private loadAllThreadsForDashboardMetrics(): AdminThreadListRow[] {
+    return Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            t.id,
+            t.title,
+            t.workspace_id,
+            t.created_at,
+            t.updated_at,
+            t.created_by,
+            t.org_id,
+            o.name AS org_name,
+            w.name AS workspace_name
+          FROM threads t
+          LEFT JOIN orgs o ON t.org_id = o.id
+          LEFT JOIN workspaces w ON t.workspace_id = w.id
+          ORDER BY t.created_at DESC, t.id ASC
+        `,
+      ),
+    ).map((row: any) => ({
+      id: row.id,
+      title: row.title ?? null,
+      workspace_id: row.workspace_id,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      created_by: row.created_by ?? null,
+      org_id: row.org_id,
+      org_name: row.org_name ?? null,
+      workspace_name: row.workspace_name ?? null,
+    }));
+  }
+
+  private loadAllAppsForDashboardMetrics(): AdminAppListRow[] {
+    const orgSlugExpr = this.getOrgSlugSelectExpression();
+    return Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            a.app_id,
+            a.script_name,
+            a.org_id,
+            a.workspace_id,
+            o.name AS org_name,
+            ${orgSlugExpr} AS org_slug,
+            w.name AS workspace_name,
+            a.created_by,
+            u.name AS created_by_name,
+            u.email AS created_by_email,
+            a.created_at,
+            a.updated_at,
+            a.is_public,
+            a.preview_status,
+            a.preview_error
+          FROM apps a
+          LEFT JOIN orgs o ON a.org_id = o.id
+          LEFT JOIN workspaces w ON a.workspace_id = w.id
+          LEFT JOIN users u ON a.created_by = u.id
+          ORDER BY a.created_at DESC, a.app_id ASC
+        `,
+      ),
+    ).map((row: any) => ({
+      app_id: row.app_id,
+      script_name: row.script_name,
+      org_id: row.org_id,
+      workspace_id: row.workspace_id,
+      org_name: row.org_name ?? null,
+      org_slug: row.org_slug ?? null,
+      workspace_name: row.workspace_name ?? null,
+      created_by: row.created_by,
+      created_by_name: row.created_by_name ?? null,
+      created_by_email: row.created_by_email ?? null,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      is_public: row.is_public === 1,
+      preview_status: row.preview_status ?? null,
+      preview_error: row.preview_error ?? null,
+    }));
+  }
+
+  private loadAllWorkspacesForDashboardMetrics(): DashboardWorkspaceMetricsRow[] {
+    return Array.from(
+      this.sql.exec(
+        `
+          SELECT id, org_id
+          FROM workspaces
+        `,
+      ),
+    ).map((row: any) => ({
+      id: row.id,
+      org_id: row.org_id,
+    }));
+  }
+
+  private async loadFilteredEntitySnapshot(
+    options: DashboardMetricsFilterOptions = {},
+  ): Promise<DashboardEntitySnapshot> {
+    const users = this.loadAllUsersForDashboardMetrics();
+    const threads = this.loadAllThreadsForDashboardMetrics();
+    const apps = this.loadAllAppsForDashboardMetrics();
+    const workspaces = this.loadAllWorkspacesForDashboardMetrics();
+    const orgs = await this.getOrgDirectoryRows();
+
+    return filterDashboardEntitySnapshot(
+      {
+        users,
+        threads,
+        apps,
+        orgs,
+        workspaces,
+      },
+      options,
+    );
+  }
+
   async getOverview() {
     const total_users = this.sql.exec('SELECT COUNT(*) as count FROM users').next().value?.count || 0;
     const total_orgs = this.sql.exec('SELECT COUNT(*) as count FROM orgs').next().value?.count || 0;
@@ -691,6 +834,16 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       total_integrations,
       orphaned_users
     };
+  }
+
+  async computeDashboardSummary(options: DashboardSummaryOptions): Promise<DashboardSummaryResponse> {
+    const snapshot = await this.loadFilteredEntitySnapshot(options);
+    return computeDashboardSummaryFromSnapshot(snapshot, options);
+  }
+
+  async computeRetentionData(options: DashboardRetentionOptions = {}): Promise<DashboardRetentionResponse> {
+    const snapshot = await this.loadFilteredEntitySnapshot(options);
+    return computeRetentionDataFromSnapshot(snapshot, options);
   }
 
   async getUsersPaginated(offset: number, limit: number, search?: string, filters?: UserFilters) {

@@ -313,6 +313,19 @@ export const DashboardTopOrgsQuerySchema = z.object({
   sort_by: z.enum(['spend_7d', 'spend_30d', 'member_count']).optional().default('spend_7d'),
 });
 
+const DateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+export const DashboardSummaryQuerySchema = z.object({
+  date: DateOnlySchema.optional(),
+  exclude_spam: booleanQueryParam,
+  exclude_internal_domains: z.string().optional(),
+});
+
+export const DashboardRetentionQuerySchema = z.object({
+  exclude_spam: booleanQueryParam,
+  exclude_internal_domains: z.string().optional(),
+});
+
 const NormalizedBillingStatusSchema = z.enum(['active', 'free']);
 
 export const DashboardTopOrgSchema = z.object({
@@ -358,6 +371,148 @@ export const DashboardSpamSummaryResponseSchema = z.object({
   apps: z.array(AppSchema),
   orgs: z.array(DashboardSpamOrgSchema),
   org_usage: z.array(DashboardTopOrgSchema),
+});
+
+const DashboardGrowthThresholdSchema = z.object({
+  flat: z.number(),
+  linear: z.number(),
+  exponential: z.number(),
+  show_exponential: z.boolean(),
+});
+
+const DashboardSummaryKpisSchema = z.object({
+  total_users: z.number().int(),
+  total_orgs: z.number().int(),
+  total_threads: z.number().int(),
+  total_apps: z.number().int(),
+  total_workspaces: z.number().int(),
+});
+
+const DashboardDailySeriesItemSchema = z.object({
+  date: DateOnlySchema,
+  new_users: z.number().int(),
+  new_threads: z.number().int(),
+  new_apps: z.number().int(),
+  returning_users: z.number().int(),
+  new_active_users: z.number().int(),
+  rolling_avg_signups: z.number(),
+});
+
+const DashboardWeeklySeriesItemSchema = z.object({
+  week_start: DateOnlySchema,
+  label: z.string(),
+  new_users: z.number().int(),
+  returning_users: z.number().int(),
+  projected_new_users: z.number().int(),
+  projected_returning_users: z.number().int(),
+});
+
+const DashboardTopUserByThreadsSchema = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  email: z.string(),
+  avatar: AvatarSchema,
+  thread_count: z.number().int(),
+});
+
+const DashboardTopOrgByActivitySchema = z.object({
+  name: z.string(),
+  thread_count: z.number().int(),
+});
+
+const DashboardBillingBreakdownItemSchema = z.object({
+  status: NormalizedBillingStatusSchema,
+  count: z.number().int(),
+});
+
+const DashboardRetentionSnapshotSchema = z.object({
+  rate_pct: z.number().int(),
+  cohort_size: z.number().int(),
+  retained_count: z.number().int(),
+});
+
+export const DashboardSummaryResponseSchema = z.object({
+  kpis: DashboardSummaryKpisSchema,
+  daily_series: z.array(DashboardDailySeriesItemSchema),
+  weekly_series: z.array(DashboardWeeklySeriesItemSchema),
+  growth_thresholds: z.object({
+    signups: DashboardGrowthThresholdSchema,
+    returning: DashboardGrowthThresholdSchema,
+    total_active: DashboardGrowthThresholdSchema,
+  }),
+  selected_day: z.object({
+    date: DateOnlySchema,
+    new_users: z.number().int(),
+    new_threads: z.number().int(),
+    new_apps: z.number().int(),
+    new_orgs: z.number().int(),
+    top_users_by_threads: z.array(DashboardTopUserByThreadsSchema),
+    top_orgs_by_activity: z.array(DashboardTopOrgByActivitySchema),
+    latest_threads: z.array(ThreadSchema),
+    latest_apps: z.array(AppSchema),
+    latest_orgs: z.array(OrgSchema),
+    recent_users: z.array(UserSummarySchema),
+  }),
+  billing_breakdown: z.array(DashboardBillingBreakdownItemSchema),
+  app_visibility: z.object({
+    public: z.number().int(),
+    private: z.number().int(),
+  }),
+  retention_snapshot: DashboardRetentionSnapshotSchema,
+});
+
+const DashboardCohortWeekSchema = z.object({
+  pct: z.number().int(),
+  count: z.number().int(),
+});
+
+const DashboardCohortRowSchema = z.object({
+  cohort_label: z.string(),
+  cohort_start_date: DateOnlySchema,
+  cohort_size: z.number().int(),
+  weeks: z.array(DashboardCohortWeekSchema.nullable()),
+});
+
+const DashboardRetentionCurvePointSchema = z.object({
+  day: z.number().int(),
+  retention_pct: z.number().int(),
+  users_eligible: z.number().int(),
+});
+
+const DashboardWauTimeSeriesItemSchema = z.object({
+  week_label: z.string(),
+  week_start: DateOnlySchema,
+  wau: z.number().int(),
+  new_users: z.number().int(),
+  returning_users: z.number().int(),
+});
+
+const DashboardStickinessSeriesItemSchema = z.object({
+  date: DateOnlySchema,
+  label: z.string(),
+  dau_wau_ratio: z.number(),
+  dau: z.number().int(),
+  wau: z.number().int(),
+});
+
+const DashboardRetentionKpisSchema = z.object({
+  day1_retention: z.number().int(),
+  day7_retention: z.number().int(),
+  day14_retention: z.number().int(),
+  day30_retention: z.number().int(),
+  current_wau: z.number().int(),
+  previous_wau: z.number().int(),
+  wau_growth_pct: z.number().int(),
+  avg_stickiness: z.number(),
+});
+
+export const DashboardRetentionResponseSchema = z.object({
+  cohort_table: z.array(DashboardCohortRowSchema),
+  max_week_columns: z.number().int(),
+  retention_curve: z.array(DashboardRetentionCurvePointSchema),
+  wau_time_series: z.array(DashboardWauTimeSeriesItemSchema),
+  stickiness_series: z.array(DashboardStickinessSeriesItemSchema),
+  kpis: DashboardRetentionKpisSchema,
 });
 
 const SpendLimitSchema = z.object({

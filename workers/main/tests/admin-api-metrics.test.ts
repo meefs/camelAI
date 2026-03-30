@@ -3,6 +3,7 @@ import { env } from 'cloudflare:test';
 import { handleAdminApi } from '../src/routes/admin/index';
 import type { Env as WorkerEnv } from '../src/types';
 import { createOrg, createUser, type TestEnv } from './test-helpers';
+import { DAY_MS } from '../src/admin-dashboard-metrics';
 
 type AdminIndexTestEnv = TestEnv & {
   ADMIN_INDEX: DurableObjectNamespace<any>;
@@ -12,6 +13,365 @@ const testEnv = env as unknown as AdminIndexTestEnv;
 
 function uniqueEmail(domain = 'example.com') {
   return `admin-metrics-${Date.now()}-${Math.random().toString(36).slice(2)}@${domain}`;
+}
+
+function startOfUtcDay(timestampMs: number): number {
+  const date = new Date(timestampMs);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function uniqueDomain(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.test`;
+}
+
+async function buildExcludedDomains(allowedDomain: string): Promise<string> {
+  const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+  const overview = await adminIndex.getOverview();
+  const domains = new Set<string>(['camelai.com']);
+
+  for (const user of overview.users as Array<{ email?: string | null }>) {
+    const email = user.email ?? null;
+    const atIndex = email?.lastIndexOf('@') ?? -1;
+    if (atIndex >= 0 && atIndex < (email?.length ?? 0) - 1) {
+      domains.add(email!.slice(atIndex + 1).toLowerCase());
+    }
+  }
+
+  domains.delete(allowedDomain);
+  return Array.from(domains).sort().join(',');
+}
+
+async function seedDashboardMetricFixture(allowedDomain: string) {
+  const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+  const now = Date.now();
+  const todayStart = startOfUtcDay(now);
+  const tenDaysAgo = todayStart - 10 * DAY_MS + 1_000;
+  const twoDaysAfterSignup = tenDaysAgo + 2 * DAY_MS + 1_000;
+
+  const userAId = crypto.randomUUID();
+  const userBId = crypto.randomUUID();
+  const orgAId = crypto.randomUUID();
+  const orgBId = crypto.randomUUID();
+  const wsAId = crypto.randomUUID();
+  const wsBId = crypto.randomUUID();
+  const threadRetentionId = crypto.randomUUID();
+  const threadTodayAId = crypto.randomUUID();
+  const threadTodayBId = crypto.randomUUID();
+  const appTodayAId = `${orgAId}:summary-public-${crypto.randomUUID().slice(0, 8)}`;
+  const appTodayBId = `${orgBId}:summary-private-${crypto.randomUUID().slice(0, 8)}`;
+
+  await adminIndex.handleEvent({
+    type: 'user_upsert',
+    payload: {
+      id: userAId,
+      email: `summary-a@${allowedDomain}`,
+      name: 'Summary User A',
+      avatar: { color: '#111111', content: 'A' },
+      created_at: tenDaysAgo,
+      is_superuser: false,
+      is_orphaned: false,
+      org_count: 1,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'user_upsert',
+    payload: {
+      id: userBId,
+      email: `summary-b@${allowedDomain}`,
+      name: 'Summary User B',
+      avatar: { color: '#222222', content: 'B' },
+      created_at: todayStart + 2_000,
+      is_superuser: false,
+      is_orphaned: false,
+      org_count: 1,
+    },
+  });
+
+  await adminIndex.handleEvent({
+    type: 'org_upsert',
+    payload: {
+      id: orgAId,
+      name: 'Summary Org A',
+      slug: `summary-org-a-${crypto.randomUUID().slice(0, 6)}`,
+      created_at: tenDaysAgo + 100,
+      archived: false,
+      billing_status: 'paying',
+      created_by: userAId,
+      member_count: 1,
+      workspace_count: 1,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'org_upsert',
+    payload: {
+      id: orgBId,
+      name: 'Summary Org B',
+      slug: `summary-org-b-${crypto.randomUUID().slice(0, 6)}`,
+      created_at: todayStart + 2_100,
+      archived: false,
+      billing_status: null,
+      created_by: userBId,
+      member_count: 1,
+      workspace_count: 1,
+    },
+  });
+
+  await adminIndex.handleEvent({
+    type: 'workspace_upsert',
+    payload: {
+      id: wsAId,
+      name: 'Summary Workspace A',
+      org_id: orgAId,
+      description: null,
+      avatar: { color: '#aaaaaa', content: 'A' },
+      created_at: tenDaysAgo + 200,
+      created_by: userAId,
+      archived: false,
+      archived_at: null,
+      archived_by: null,
+      compute_tier: 'standard',
+      integration_count: 0,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'workspace_upsert',
+    payload: {
+      id: wsBId,
+      name: 'Summary Workspace B',
+      org_id: orgBId,
+      description: null,
+      avatar: { color: '#bbbbbb', content: 'B' },
+      created_at: todayStart + 2_200,
+      created_by: userBId,
+      archived: false,
+      archived_at: null,
+      archived_by: null,
+      compute_tier: 'standard',
+      integration_count: 0,
+    },
+  });
+
+  await adminIndex.handleEvent({
+    type: 'thread_upsert',
+    payload: {
+      id: threadRetentionId,
+      title: 'Retention Thread',
+      org_id: orgAId,
+      workspace_id: wsAId,
+      created_at: twoDaysAfterSignup,
+      updated_at: twoDaysAfterSignup,
+      created_by: userAId,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'thread_upsert',
+    payload: {
+      id: threadTodayAId,
+      title: 'Today Thread A',
+      org_id: orgAId,
+      workspace_id: wsAId,
+      created_at: todayStart + 4_000,
+      updated_at: todayStart + 4_000,
+      created_by: userAId,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'thread_upsert',
+    payload: {
+      id: threadTodayBId,
+      title: 'Today Thread B',
+      org_id: orgBId,
+      workspace_id: wsBId,
+      created_at: todayStart + 5_000,
+      updated_at: todayStart + 5_000,
+      created_by: userBId,
+    },
+  });
+
+  await adminIndex.handleEvent({
+    type: 'app_upsert',
+    payload: {
+      app_id: appTodayAId,
+      script_name: appTodayAId.split(':')[1],
+      org_id: orgAId,
+      workspace_id: wsAId,
+      created_by: userAId,
+      created_at: todayStart + 6_000,
+      updated_at: todayStart + 6_000,
+      is_public: true,
+      preview_status: null,
+      preview_error: null,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'app_upsert',
+    payload: {
+      app_id: appTodayBId,
+      script_name: appTodayBId.split(':')[1],
+      org_id: orgBId,
+      workspace_id: wsBId,
+      created_by: userBId,
+      created_at: todayStart + 7_000,
+      updated_at: todayStart + 7_000,
+      is_public: false,
+      preview_status: null,
+      preview_error: null,
+    },
+  });
+
+  return {
+    today: new Date(now).toISOString().slice(0, 10),
+    userAId,
+    userBId,
+    orgAId,
+    orgBId,
+    threadTodayAId,
+    threadTodayBId,
+    appTodayAId,
+    appTodayBId,
+  };
+}
+
+async function seedRetentionMetricFixture(allowedDomain: string) {
+  const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+  const now = Date.now();
+  const todayStart = startOfUtcDay(now);
+  const eightDaysAgo = todayStart - 8 * DAY_MS + 1_000;
+
+  const user1Id = crypto.randomUUID();
+  const user2Id = crypto.randomUUID();
+  const user3Id = crypto.randomUUID();
+  const records = [
+    {
+      userId: user1Id,
+      orgId: crypto.randomUUID(),
+      workspaceId: crypto.randomUUID(),
+      email: `retention-one@${allowedDomain}`,
+      name: 'Retention One',
+      createdAt: eightDaysAgo,
+      slug: `retention-one-${crypto.randomUUID().slice(0, 6)}`,
+      billingStatus: null,
+    },
+    {
+      userId: user2Id,
+      orgId: crypto.randomUUID(),
+      workspaceId: crypto.randomUUID(),
+      email: `retention-two@${allowedDomain}`,
+      name: 'Retention Two',
+      createdAt: eightDaysAgo + 1_000,
+      slug: `retention-two-${crypto.randomUUID().slice(0, 6)}`,
+      billingStatus: null,
+    },
+    {
+      userId: user3Id,
+      orgId: crypto.randomUUID(),
+      workspaceId: crypto.randomUUID(),
+      email: `retention-three@${allowedDomain}`,
+      name: 'Retention Three',
+      createdAt: todayStart + 1_000,
+      slug: `retention-three-${crypto.randomUUID().slice(0, 6)}`,
+      billingStatus: null,
+    },
+  ];
+
+  for (const [index, record] of records.entries()) {
+    await adminIndex.handleEvent({
+      type: 'user_upsert',
+      payload: {
+        id: record.userId,
+        email: record.email,
+        name: record.name,
+        avatar: { color: `#${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}`, content: record.name[0] },
+        created_at: record.createdAt,
+        is_superuser: false,
+        is_orphaned: false,
+        org_count: 1,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'org_upsert',
+      payload: {
+        id: record.orgId,
+        name: `${record.name} Org`,
+        slug: record.slug,
+        created_at: record.createdAt + 10,
+        archived: false,
+        billing_status: record.billingStatus,
+        created_by: record.userId,
+        member_count: 1,
+        workspace_count: 1,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'workspace_upsert',
+      payload: {
+        id: record.workspaceId,
+        name: `${record.name} Workspace`,
+        org_id: record.orgId,
+        description: null,
+        avatar: { color: '#999999', content: record.name[0] },
+        created_at: record.createdAt + 20,
+        created_by: record.userId,
+        archived: false,
+        archived_at: null,
+        archived_by: null,
+        compute_tier: 'standard',
+        integration_count: 0,
+      },
+    });
+  }
+
+  await adminIndex.handleEvent({
+    type: 'thread_upsert',
+    payload: {
+      id: crypto.randomUUID(),
+      title: 'Retention One Signup',
+      org_id: records[0].orgId,
+      workspace_id: records[0].workspaceId,
+      created_at: records[0].createdAt + 30,
+      updated_at: records[0].createdAt + 30,
+      created_by: records[0].userId,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'thread_upsert',
+    payload: {
+      id: crypto.randomUUID(),
+      title: 'Retention One Day One',
+      org_id: records[0].orgId,
+      workspace_id: records[0].workspaceId,
+      created_at: records[0].createdAt + DAY_MS + 30,
+      updated_at: records[0].createdAt + DAY_MS + 30,
+      created_by: records[0].userId,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'app_upsert',
+    payload: {
+      app_id: `${records[1].orgId}:retention-signup`,
+      script_name: 'retention-signup',
+      org_id: records[1].orgId,
+      workspace_id: records[1].workspaceId,
+      created_by: records[1].userId,
+      created_at: records[1].createdAt + 30,
+      updated_at: records[1].createdAt + 30,
+      is_public: true,
+      preview_status: null,
+      preview_error: null,
+    },
+  });
+  await adminIndex.handleEvent({
+    type: 'thread_upsert',
+    payload: {
+      id: crypto.randomUUID(),
+      title: 'Retention Three Signup',
+      org_id: records[2].orgId,
+      workspace_id: records[2].workspaceId,
+      created_at: records[2].createdAt + 30,
+      updated_at: records[2].createdAt + 30,
+      created_by: records[2].userId,
+    },
+  });
 }
 
 async function waitForAdminIndexOrgCount(minCount: number): Promise<void> {
@@ -319,20 +679,174 @@ describe('admin API metrics routes', () => {
     });
   });
 
-  it('returns 501 for formula-sensitive dashboard endpoints', async () => {
+  it('serves dashboard summary with filtered metrics and selected-day drilldown', async () => {
+    const allowedDomain = uniqueDomain('summary-metrics');
+    const fixture = await seedDashboardMetricFixture(allowedDomain);
+    const excludedDomains = await buildExcludedDomains(allowedDomain);
+
+    const sandboxFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(input.toString());
+      expect(url.pathname).toBe('/v1/usage/analytics/spam-org-ids');
+      return Response.json({ org_ids: [], count: 0 });
+    });
+
+    const request = new Request(
+      `http://example/api/admin/dashboard/summary?date=${fixture.today}&exclude_internal_domains=${encodeURIComponent(excludedDomains)}`,
+      {
+        headers: { Authorization: 'Bearer test-admin-api-key' },
+      },
+    );
+    const response = await callAdminApi(request, sandboxFetch);
+
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    const payload = await response!.json() as {
+      kpis: {
+        total_users: number;
+        total_orgs: number;
+        total_threads: number;
+        total_apps: number;
+        total_workspaces: number;
+      };
+      daily_series: Array<{
+        date: string;
+        new_users: number;
+        new_threads: number;
+        new_apps: number;
+        returning_users: number;
+        new_active_users: number;
+        rolling_avg_signups: number;
+      }>;
+      selected_day: {
+        date: string;
+        new_users: number;
+        new_threads: number;
+        new_apps: number;
+        new_orgs: number;
+        top_users_by_threads: Array<{ id: string; thread_count: number }>;
+        top_orgs_by_activity: Array<{ name: string; thread_count: number }>;
+        latest_threads: Array<{ id: string }>;
+        latest_apps: Array<{ app_id: string }>;
+        latest_orgs: Array<{ id: string; billing_status: string }>;
+        recent_users: Array<{ id: string }>;
+      };
+      billing_breakdown: Array<{ status: string; count: number }>;
+      app_visibility: { public: number; private: number };
+      retention_snapshot: { rate_pct: number; cohort_size: number; retained_count: number };
+    };
+
+    expect(payload.kpis).toEqual({
+      total_users: 2,
+      total_orgs: 2,
+      total_threads: 3,
+      total_apps: 2,
+      total_workspaces: 2,
+    });
+    expect(payload.daily_series).toHaveLength(30);
+    expect(payload.daily_series.at(-1)).toEqual({
+      date: fixture.today,
+      new_users: 1,
+      new_threads: 2,
+      new_apps: 2,
+      returning_users: 1,
+      new_active_users: 1,
+      rolling_avg_signups: 0.1,
+    });
+    expect(payload.selected_day.date).toBe(fixture.today);
+    expect(payload.selected_day.new_users).toBe(1);
+    expect(payload.selected_day.new_threads).toBe(2);
+    expect(payload.selected_day.new_apps).toBe(2);
+    expect(payload.selected_day.new_orgs).toBe(1);
+    expect(payload.selected_day.top_users_by_threads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: fixture.userAId, thread_count: 1 }),
+        expect.objectContaining({ id: fixture.userBId, thread_count: 1 }),
+      ]),
+    );
+    expect(payload.selected_day.top_orgs_by_activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'Summary Org A', thread_count: 1 }),
+        expect.objectContaining({ name: 'Summary Org B', thread_count: 1 }),
+      ]),
+    );
+    expect(payload.selected_day.latest_threads.map((thread) => thread.id)).toEqual([
+      fixture.threadTodayBId,
+      fixture.threadTodayAId,
+    ]);
+    expect(payload.selected_day.latest_apps.map((app) => app.app_id)).toEqual([
+      fixture.appTodayBId,
+      fixture.appTodayAId,
+    ]);
+    expect(payload.selected_day.latest_orgs).toEqual([
+      expect.objectContaining({ id: fixture.orgBId, billing_status: 'free' }),
+    ]);
+    expect(payload.selected_day.recent_users).toEqual([
+      expect.objectContaining({ id: fixture.userBId }),
+    ]);
+    expect(payload.billing_breakdown).toEqual([
+      { status: 'active', count: 1 },
+      { status: 'free', count: 1 },
+    ]);
+    expect(payload.app_visibility).toEqual({ public: 1, private: 1 });
+    expect(payload.retention_snapshot).toEqual({
+      rate_pct: 100,
+      cohort_size: 1,
+      retained_count: 1,
+    });
+    expect(sandboxFetch).toHaveBeenCalledOnce();
+  });
+
+  it('serves dashboard retention without sandbox spam lookups when disabled', async () => {
+    const allowedDomain = uniqueDomain('retention-metrics');
+    await seedRetentionMetricFixture(allowedDomain);
+    const excludedDomains = await buildExcludedDomains(allowedDomain);
+
     const sandboxFetch = vi.fn(async () => {
       throw new Error('sandbox fetch should not be called');
     });
 
-    const request = new Request('http://example/api/admin/dashboard/summary', {
-      headers: { Authorization: 'Bearer test-admin-api-key' },
-    });
+    const request = new Request(
+      `http://example/api/admin/dashboard/retention?exclude_spam=false&exclude_internal_domains=${encodeURIComponent(excludedDomains)}`,
+      {
+        headers: { Authorization: 'Bearer test-admin-api-key' },
+      },
+    );
     const response = await callAdminApi(request, sandboxFetch);
+
     expect(response).not.toBeNull();
-    expect(response!.status).toBe(501);
-    await expect(response!.json()).resolves.toEqual({
-      error: 'Dashboard summary is blocked until the authoritative dashboard formulas or fixtures are available in this repo.',
-    });
+    expect(response!.status).toBe(200);
+    const payload = await response!.json() as {
+      retention_curve: Array<{ day: number; retention_pct: number; users_eligible: number }>;
+      kpis: {
+        day1_retention: number;
+        day7_retention: number;
+        day14_retention: number;
+        day30_retention: number;
+      };
+      cohort_table: Array<{ cohort_size: number }>;
+      wau_time_series: Array<{ wau: number }>;
+      stickiness_series: Array<{ dau_wau_ratio: number }>;
+    };
+
+    expect(payload.retention_curve).toEqual(
+      expect.arrayContaining([
+        { day: 0, retention_pct: 100, users_eligible: 3 },
+        { day: 1, retention_pct: 50, users_eligible: 2 },
+        { day: 7, retention_pct: 50, users_eligible: 2 },
+        { day: 14, retention_pct: 0, users_eligible: 0 },
+        { day: 28, retention_pct: 0, users_eligible: 0 },
+      ]),
+    );
+    expect(payload.kpis).toEqual(expect.objectContaining({
+      day1_retention: 50,
+      day7_retention: 50,
+      day14_retention: 0,
+      day30_retention: 0,
+    }));
+    expect(payload.cohort_table.length).toBeGreaterThan(0);
+    expect(payload.wau_time_series.length).toBeGreaterThan(0);
+    expect(payload.stickiness_series).toHaveLength(30);
+    expect(sandboxFetch).not.toHaveBeenCalled();
   });
 
   it('serves spam summary from spam-org set lookups and keeps mixed-membership users', async () => {

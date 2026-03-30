@@ -26,6 +26,12 @@ import type {
   AdminThreadListRow,
   AdminAppListRow,
 } from '../../admin-index-do.js';
+import type {
+  DashboardRetentionOptions,
+  DashboardRetentionResponse,
+  DashboardSummaryOptions,
+  DashboardSummaryResponse,
+} from '../../admin-dashboard-metrics.js';
 import {
   ErrorSchema,
   StatsResponseSchema,
@@ -58,6 +64,10 @@ import {
   DashboardTopOrgsQuerySchema,
   DashboardTopOrgsResponseSchema,
   DashboardSpamSummaryResponseSchema,
+  DashboardSummaryQuerySchema,
+  DashboardSummaryResponseSchema,
+  DashboardRetentionQuerySchema,
+  DashboardRetentionResponseSchema,
   SetOrgLimitsBodySchema,
   EmailDomainBlocklistSchema,
   AddEmailDomainBodySchema,
@@ -72,6 +82,7 @@ import {
   normalizeInternalDomains,
   type OrgUsageAnalyticsItem,
 } from './metrics.js';
+import { parseDateOnlyUtc } from '../../admin-dashboard-metrics.js';
 import {
   getBlocklistDomainsFromKV,
   setBlocklistInKV,
@@ -124,6 +135,11 @@ type AdminOrgDirectoryLookup = {
   getUsersByOrgIds(orgIds: string[]): Promise<AdminUserSummaryRow[]>;
   getThreadsByOrgIds(orgIds: string[]): Promise<AdminThreadListRow[]>;
   getAppsByOrgIds(orgIds: string[]): Promise<AdminAppListRow[]>;
+};
+
+type DashboardMetricsLookup = {
+  computeDashboardSummary(options: DashboardSummaryOptions): Promise<DashboardSummaryResponse>;
+  computeRetentionData(options?: DashboardRetentionOptions): Promise<DashboardRetentionResponse>;
 };
 
 function enrichOrgListItems(
@@ -776,16 +792,42 @@ routes.get(
 routes.get(
   '/dashboard/summary',
   openApi({
-    summary: 'Dashboard summary (blocked until dashboard formulas are attached)',
+    summary: 'Dashboard summary',
+    request: {
+      query: DashboardSummaryQuerySchema,
+    },
     responses: {
-      501: ErrorSchema,
+      200: DashboardSummaryResponseSchema,
+      400: ErrorSchema,
+      502: ErrorSchema,
     },
   }),
   async (c) => {
-    return c.json(
-      { error: 'Dashboard summary is blocked until the authoritative dashboard formulas or fixtures are available in this repo.' },
-      501,
-    );
+    const { date, exclude_spam, exclude_internal_domains } = c.req.valid('query');
+    const selectedDate = date ?? new Date().toISOString().slice(0, 10);
+    if (parseDateOnlyUtc(selectedDate) === null) {
+      return c.json({ error: 'Invalid date. Expected YYYY-MM-DD.' }, 400);
+    }
+
+    try {
+      const adminIndex = getAdminIndexStub(c.env) as unknown as DashboardMetricsLookup;
+      const spamOrgIds = exclude_spam !== false ? await fetchSpamOrgIds(c.env) : [];
+      const internalDomains = Array.from(
+        normalizeInternalDomains(exclude_internal_domains, ['camelai.com']),
+      );
+
+      const summary = await adminIndex.computeDashboardSummary({
+        selectedDate,
+        spamOrgIds,
+        internalDomains,
+      });
+      return c.json(summary);
+    } catch (error) {
+      return c.json(
+        { error: error instanceof Error ? error.message : 'Failed to load dashboard summary' },
+        502,
+      );
+    }
   },
 );
 
@@ -796,16 +838,36 @@ routes.get(
 routes.get(
   '/dashboard/retention',
   openApi({
-    summary: 'Dashboard retention (blocked until dashboard formulas are attached)',
+    summary: 'Dashboard retention',
+    request: {
+      query: DashboardRetentionQuerySchema,
+    },
     responses: {
-      501: ErrorSchema,
+      200: DashboardRetentionResponseSchema,
+      502: ErrorSchema,
     },
   }),
   async (c) => {
-    return c.json(
-      { error: 'Dashboard retention is blocked until the authoritative dashboard formulas or fixtures are available in this repo.' },
-      501,
-    );
+    const { exclude_spam, exclude_internal_domains } = c.req.valid('query');
+
+    try {
+      const adminIndex = getAdminIndexStub(c.env) as unknown as DashboardMetricsLookup;
+      const spamOrgIds = exclude_spam !== false ? await fetchSpamOrgIds(c.env) : [];
+      const internalDomains = Array.from(
+        normalizeInternalDomains(exclude_internal_domains, ['camelai.com']),
+      );
+
+      const retention = await adminIndex.computeRetentionData({
+        spamOrgIds,
+        internalDomains,
+      });
+      return c.json(retention);
+    } catch (error) {
+      return c.json(
+        { error: error instanceof Error ? error.message : 'Failed to load dashboard retention' },
+        502,
+      );
+    }
   },
 );
 
