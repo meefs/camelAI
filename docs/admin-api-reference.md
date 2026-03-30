@@ -1,6 +1,6 @@
 # camelAI Admin API Reference
 
-Audited from code on 2026-03-28.
+Audited from code on 2026-03-30.
 
 This document covers the internal admin API surface in `camelAI`, with emphasis on the endpoints an external agent can call safely and the response shapes that actually come back from the current implementation.
 
@@ -92,6 +92,9 @@ For an agent client:
 | `GET` | `/api/admin/orgs/:id/usage/limits` | Bearer | Effective spend limits |
 | `PUT` | `/api/admin/orgs/:id/usage/limits` | Bearer | Set or clear spend limit overrides |
 | `GET` | `/api/admin/orgs/:id/usage/log` | Bearer | Recent usage log entries |
+| `GET` | `/api/admin/orgs/:id/usage/log/sum` | Bearer | Sum of usage costs between dates |
+| `PUT` | `/api/admin/signup-blocked-ips/:ip` | Bearer | Block an IP from signup |
+| `DELETE` | `/api/admin/signup-blocked-ips/:ip` | Bearer | Remove an IP from signup blocklist |
 | `GET` | `/api/admin/threads` | Bearer | Paginated threads |
 | `GET` | `/api/admin/threads/:id/messages` | Bearer or superuser session | Parsed thread messages |
 | `PATCH` | `/api/admin/threads/:id` | Bearer | Update thread title and/or creator |
@@ -101,6 +104,10 @@ For an agent client:
 | `GET` | `/api/admin/dashboard/summary` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
 | `GET` | `/api/admin/dashboard/retention` | Bearer | Currently returns `501` until dashboard formulas/fixtures are attached |
 | `GET` | `/api/admin/dashboard/spam-summary` | Bearer | Spam-tab entity + usage snapshot for the resolved spam-org set |
+| `GET` | `/api/admin/email-domain-blocklist` | Bearer | Get blocked email domains |
+| `PUT` | `/api/admin/email-domain-blocklist` | Bearer | Replace full email domain blocklist |
+| `POST` | `/api/admin/email-domain-blocklist` | Bearer | Add a domain to blocklist |
+| `DELETE` | `/api/admin/email-domain-blocklist/:domain` | Bearer | Remove a domain from blocklist |
 | `GET` | `/api/admin/kv` | Bearer | List keys in `EMAIL_TO_USER` KV |
 | `GET` | `/api/admin/kv/:key` | Bearer | Read a single `EMAIL_TO_USER` KV value |
 | `GET` | `/api/admin/r2` | Bearer | List objects in `R2_BUCKET` |
@@ -470,6 +477,74 @@ Notes:
 - Entries are ordered by `created_at_ms DESC`.
 - The Worker proxies sandbox-host and again turns upstream non-2xx into `502`.
 
+### `GET /api/admin/orgs/:id/usage/log/sum`
+
+Returns aggregated usage totals for a date range.
+
+Required query params:
+
+- `from`: start timestamp (ms since epoch, inclusive)
+- `to`: end timestamp (ms since epoch, exclusive)
+
+Response shape:
+
+```json
+{
+  "org_id": "org_123",
+  "total_cost_usd": 12.34,
+  "total_requests": 456,
+  "total_input_tokens": 10000,
+  "total_output_tokens": 5000,
+  "total_cache_creation_input_tokens": 0,
+  "total_cache_read_input_tokens": 0,
+  "from_ms": 1730000000000,
+  "to_ms": 1730100000000
+}
+```
+
+### `PUT /api/admin/signup-blocked-ips/:ip`
+
+Blocks an IP address from creating new accounts.
+
+Request body:
+
+```json
+{
+  "blocked_by": "admin@example.com",
+  "reason": "spam signups"
+}
+```
+
+Both fields are optional.
+
+Response:
+
+```json
+{
+  "ip": "1.2.3.4",
+  "blocked": true,
+  "blocked_at": 1730000000000,
+  "blocked_by": "admin@example.com",
+  "reason": "spam signups"
+}
+```
+
+### `DELETE /api/admin/signup-blocked-ips/:ip`
+
+Removes an IP from the signup blocklist.
+
+Response:
+
+```json
+{
+  "ip": "1.2.3.4",
+  "blocked": false,
+  "blocked_at": null,
+  "blocked_by": null,
+  "reason": null
+}
+```
+
 ### `GET /api/admin/threads`
 
 Paginated thread list.
@@ -797,6 +872,54 @@ Notes:
 - `org_usage` reuses the same object shape as `/api/admin/dashboard/top-orgs`.
 - `billing_status` is normalized at the metrics boundary (`paying -> active`).
 - The first version is parameterless and keeps the section arrays unbounded; add optional per-section limits in a follow-up if the spam payload grows too large.
+
+### `GET /api/admin/email-domain-blocklist`
+
+Returns the current email domain blocklist stored in KV.
+
+Response:
+
+```json
+{
+  "domains": ["spam.com", "throwaway.net"]
+}
+```
+
+### `PUT /api/admin/email-domain-blocklist`
+
+Replaces the full email domain blocklist.
+
+Request body:
+
+```json
+{
+  "domains": ["spam.com", "throwaway.net"]
+}
+```
+
+Response: same shape as `GET`.
+
+### `POST /api/admin/email-domain-blocklist`
+
+Adds a single domain to the blocklist.
+
+Request body:
+
+```json
+{
+  "domain": "newspam.com"
+}
+```
+
+Response: full updated blocklist (same shape as `GET`).
+
+### `DELETE /api/admin/email-domain-blocklist/:domain`
+
+Removes a domain from the blocklist.
+
+Returns `404` if the domain is not currently in the blocklist.
+
+Response on success: full updated blocklist (same shape as `GET`).
 
 ### `GET /api/admin/kv`
 
