@@ -1,3 +1,5 @@
+import type { WorkerScript } from '../types';
+
 /**
  * Environment-aware app URL generation utilities.
  *
@@ -110,6 +112,46 @@ export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: strin
  */
 export function getCustomDomainAppUrl(scriptName: string, orgCustomDomain: string): string {
   return `https://${scriptName}.${orgCustomDomain}`;
+}
+
+type AppCustomDomainState = Pick<
+  WorkerScript,
+  | 'script_name'
+  | 'custom_domain_hostname'
+  | 'custom_domain_status'
+  | 'custom_domain_ssl_status'
+>;
+
+export function getExpectedCustomDomainHostname(scriptName: string, orgCustomDomain: string): string {
+  return `${scriptName}.${orgCustomDomain}`;
+}
+
+export function isAppCustomDomainReady(
+  app: AppCustomDomainState,
+  orgCustomDomain: string | null | undefined
+): boolean {
+  if (!orgCustomDomain) return false;
+
+  return (
+    app.custom_domain_hostname === getExpectedCustomDomainHostname(app.script_name, orgCustomDomain) &&
+    app.custom_domain_status === 'active' &&
+    app.custom_domain_ssl_status === 'active'
+  );
+}
+
+export function getPreferredAppUrl(
+  app: AppCustomDomainState,
+  options: {
+    hostname?: string;
+    orgSlug?: string;
+    orgCustomDomain?: string | null;
+  }
+): string {
+  const { hostname, orgSlug, orgCustomDomain } = options;
+  if (isAppCustomDomainReady(app, orgCustomDomain)) {
+    return getCustomDomainAppUrl(app.script_name, orgCustomDomain!);
+  }
+  return getAppUrl(app.script_name, hostname, orgSlug);
 }
 
 /**

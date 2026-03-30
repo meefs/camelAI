@@ -5,7 +5,7 @@
 import { type Env } from '../types.js';
 import type { DeploySideEffectsInfo } from '../cf-api-proxy.js';
 import type { AppScreenshotJob } from '../screenshot-queue.js';
-import { resolveEnvPrefix, createCustomHostname } from '../cf-api-proxy.js';
+import { resolveEnvPrefix, createCustomHostname, findCustomHostnameByHostname } from '../cf-api-proxy.js';
 import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
@@ -13,6 +13,56 @@ import { getOrgStub } from '../helpers/stubs.js';
 const SCRIPT_PREFIX = 'script:';
 // Legacy KV key prefix (for backwards compatibility and legacy URL redirect)
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
+
+async function syncScriptCustomHostname(
+  env: Env,
+  orgStub: ReturnType<typeof getOrgStub>,
+  scriptName: string,
+  hostname: string,
+  deployTs: number
+): Promise<void> {
+  const zoneId = env.CF_ZONE_ID?.trim();
+  const apiToken = env.CF_API_TOKEN?.trim();
+  if (!zoneId || !apiToken) return;
+
+  try {
+    // Normal app hostnames should use Cloudflare's default fallback origin.
+    let result = await createCustomHostname(zoneId, apiToken, hostname);
+    if (!result) {
+      result = await findCustomHostnameByHostname(zoneId, apiToken, hostname);
+    }
+
+    if (!result) {
+      await orgStub.updateWorkerScriptCustomDomain(scriptName, {
+        hostname,
+        error: 'Failed to create or locate Cloudflare custom hostname',
+        updated_at: Date.now(),
+        deploy_ts: deployTs,
+      });
+      console.warn(`[deploy] failed to create custom hostname ${hostname}`);
+      return;
+    }
+
+    await orgStub.updateWorkerScriptCustomDomain(scriptName, {
+      hostname,
+      cf_hostname_id: result.id,
+      status: result.status,
+      ssl_status: result.ssl.status,
+      error: null,
+      updated_at: Date.now(),
+      deploy_ts: deployTs,
+    });
+    console.log(`[deploy] custom hostname ${hostname} status=${result.status} ssl=${result.ssl.status}`);
+  } catch (err) {
+    await orgStub.updateWorkerScriptCustomDomain(scriptName, {
+      hostname,
+      error: err instanceof Error ? err.message : String(err),
+      updated_at: Date.now(),
+      deploy_ts: deployTs,
+    });
+    console.error('[deploy] error creating custom hostname:', err);
+  }
+}
 
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
   const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, configPath } = info;
@@ -43,19 +93,13 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     const customDomain = orgStub.getCustomDomain();
     if (customDomain) {
       const domain = (await customDomain)?.domain;
-      if (domain && env.CF_ZONE_ID && env.CF_API_TOKEN) {
+      if (domain) {
         const appHostname = `${scriptName}.${domain}`;
-        const fallbackOrigin = env.CF_CUSTOM_HOSTNAME_FALLBACK;
-        const result = await createCustomHostname(env.CF_ZONE_ID, env.CF_API_TOKEN.trim(), appHostname, fallbackOrigin);
-        if (result) {
-          console.log(`[deploy] created custom hostname ${appHostname} (id: ${result.id})`);
-        } else {
-          console.warn(`[deploy] failed to create custom hostname ${appHostname}`);
-        }
+        await syncScriptCustomHostname(env, orgStub, scriptName, appHostname, script.updated_at);
       }
     }
   } catch (err) {
-    console.error('[deploy] error creating custom hostname:', err);
+    console.error('[deploy] error syncing custom hostname state:', err);
   }
 
   // Also write legacy format for legacy URL redirect support.

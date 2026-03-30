@@ -17,8 +17,10 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
-import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, listCustomHostnames, type CfApiProxyEnv } from './cf-api-proxy';
+import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, findCustomHostnameByHostname, getCustomHostnameStatus, listCustomHostnamesByBaseDomain, type CfApiProxyEnv } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
+import { getExpectedCustomDomainHostname, getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
+import { getCustomHostnameDnsTarget } from '../../../src/lib/custom-domain-dns';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -30,6 +32,7 @@ export interface McpEnv extends WorkspaceContainerEnv {
   CF_ZONE_ID?: string;
   CF_API_TOKEN?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
+  CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
 }
 
 // Headers used to pass auth context to the MCP DO
@@ -293,27 +296,72 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     }
   }
 
+  private async refreshScriptCustomDomainState(
+    script: WorkerScript,
+    orgCustomDomain: string | null | undefined
+  ): Promise<WorkerScript> {
+    const zoneId = this.env.CF_ZONE_ID?.trim();
+    const apiToken = this.env.CF_API_TOKEN?.trim();
+    if (!orgCustomDomain || !zoneId || !apiToken || isAppCustomDomainReady(script, orgCustomDomain)) {
+      return script;
+    }
+
+    const expectedHostname = getExpectedCustomDomainHostname(script.script_name, orgCustomDomain);
+    let record = null;
+
+    if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
+      record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
+    }
+
+    if (!record) {
+      record = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+    }
+
+    if (!record) {
+      return script;
+    }
+
+    const orgStub = this.getOrgStub();
+    return (
+      await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+        hostname: expectedHostname,
+        cf_hostname_id: record.id,
+        status: record.status,
+        ssl_status: record.ssl.status,
+        error: null,
+      })
+    ) ?? script;
+  }
+
   /**
    * Get the full URL for a deployed app.
    * New-style slugs (6+ alphanumeric) use single hyphen, old-style use double.
    */
-  private async getAppUrl(scriptName: string): Promise<string> {
-    // Prefer custom domain when configured
+  private async getAppUrl(script: WorkerScript): Promise<string> {
+    let refreshedScript = script;
+    let orgCustomDomain: string | null = null;
+    let appHostname = 'camelai.dev';
     try {
       const orgStub = this.getOrgStub();
       const customDomain = await orgStub.getCustomDomain();
-      if (customDomain?.domain) {
-        return `https://${scriptName}.${customDomain.domain}`;
+      orgCustomDomain = customDomain?.domain ?? null;
+      if (orgCustomDomain) {
+        refreshedScript = await this.refreshScriptCustomDomainState(script, orgCustomDomain);
       }
     } catch {}
 
-    const orgSlug = await this.getOrgSlug();
-    if (orgSlug) {
-      const separator = /^[a-z0-9]{6,}$/.test(orgSlug) ? '-' : '--';
-      return `https://${scriptName}${separator}${orgSlug}.${this.getVanityDomain()}`;
+    if (this.env.WORKER_BASE_URL) {
+      try {
+        appHostname = new URL(this.env.WORKER_BASE_URL).hostname;
+      } catch {}
     }
-    // Fallback to legacy format if no org slug
-    return `https://${scriptName}.${this.getVanityDomain()}`;
+
+    const orgSlug = await this.getOrgSlug();
+    return getPreferredAppUrl(refreshedScript, {
+      hostname: appHostname,
+      orgSlug: orgSlug ?? undefined,
+      orgCustomDomain,
+    });
   }
 
   private sanitizePathInput(path: string): string {
@@ -410,7 +458,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
         const apps = await Promise.all(scripts.map(async (s: WorkerScript) => ({
           name: s.script_name,
-          url: await this.getAppUrl(s.script_name),
+          url: await this.getAppUrl(s),
           is_public: s.is_public,
           created_by: s.created_by,
           created_at: new Date(s.created_at).toISOString(),
@@ -456,7 +504,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           success: true,
           app: {
             name: result.script_name,
-            url: await this.getAppUrl(result.script_name),
+            url: await this.getAppUrl(result),
             is_public: result.is_public,
             updated_at: new Date(result.updated_at).toISOString(),
           },
@@ -574,7 +622,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           target,
           app: {
             name: script.script_name,
-            url: await this.getAppUrl(script.script_name),
+            url: await this.getAppUrl(script),
             is_public: script.is_public,
           },
           message: `Preview set to app '${script.script_name}'`,
@@ -1512,7 +1560,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     // Set org custom domain
     this.server.tool(
       'set_custom_domain',
-      'Set a custom domain for the organization (admin only). All deployed apps will be accessible at {app-name}.{domain}. The domain owner must add a wildcard CNAME record: *.{domain} CNAME custom-domains.camelai.app. Per-app SSL certificates are created automatically on deploy.',
+      'Set a custom domain for the organization (admin only). All deployed apps will be accessible at {app-name}.{domain}. Recommend a wildcard DNS record for all apps, though exact per-app CNAME records also work. Per-app SSL certificates are created automatically on deploy.',
       {
         domain: z.string().min(3).describe('The base domain (e.g., "apps.example.com"). All apps will be subdomains of this.'),
       },
@@ -1544,7 +1592,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
         const zoneId = this.env.CF_ZONE_ID;
         const apiToken = this.env.CF_API_TOKEN?.trim();
-        const fallbackOrigin = this.env.CF_CUSTOM_HOSTNAME_FALLBACK;
+        const dnsTarget = getCustomHostnameDnsTarget({
+          cnameTarget: this.env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
+          fallbackOrigin: this.env.CF_CUSTOM_HOSTNAME_FALLBACK,
+        });
 
         // Write KV index for dispatcher
         const orgInfo = await orgStub.getInfo();
@@ -1560,7 +1611,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
           // Clean up old CF hostnames
           if (zoneId && apiToken) {
-            const oldHostnames = await listCustomHostnames(zoneId, apiToken, oldDomain);
+            const oldHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, oldDomain);
             for (const h of oldHostnames) {
               await deleteCustomHostname(zoneId, apiToken, h.id).catch(() => {});
             }
@@ -1568,29 +1619,54 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         }
 
         // Backfill CF hostnames for existing apps
+        await orgStub.clearWorkerScriptCustomDomains();
         if (zoneId && apiToken) {
           const scripts = await orgStub.listWorkerScripts();
           let created = 0;
           for (const script of scripts) {
             const appHostname = `${script.script_name}.${domain}`;
             try {
-              await createCustomHostname(zoneId, apiToken, appHostname, fallbackOrigin);
-              created++;
-            } catch {}
+              let result = await createCustomHostname(zoneId, apiToken, appHostname);
+              if (!result) {
+                result = await findCustomHostnameByHostname(zoneId, apiToken, appHostname);
+              }
+              if (result) {
+                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                  hostname: appHostname,
+                  cf_hostname_id: result.id,
+                  status: result.status,
+                  ssl_status: result.ssl.status,
+                  error: null,
+                });
+                created++;
+              } else {
+                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                  hostname: appHostname,
+                  error: 'Failed to create or locate Cloudflare custom hostname',
+                });
+              }
+            } catch (err) {
+              await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                hostname: appHostname,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
           }
           return this.textResponse({
             success: true,
             domain,
             hostnames_created: created,
             total_apps: scripts.length,
-            message: `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. DNS setup required: *.${domain} CNAME custom-domains.camelai.app`,
+            dns_target: dnsTarget,
+            message: `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Recommended DNS: *.${domain} CNAME ${dnsTarget}`,
           });
         }
 
         return this.textResponse({
           success: true,
           domain,
-          message: `Custom domain set to ${domain}. DNS setup required: *.${domain} CNAME custom-domains.camelai.app`,
+          dns_target: dnsTarget,
+          message: `Custom domain set to ${domain}. Recommended DNS: *.${domain} CNAME ${dnsTarget}`,
         });
       }
     );
@@ -1617,13 +1693,14 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
         const removedDomain = existing.domain;
         await orgStub.removeCustomDomain(userId);
+        await orgStub.clearWorkerScriptCustomDomains();
         await this.env.APP_KV.delete(`custom_domain_zone:${removedDomain}`);
 
         // Clean up CF hostnames in the background
         const zoneId = this.env.CF_ZONE_ID;
         const apiToken = this.env.CF_API_TOKEN?.trim();
         if (zoneId && apiToken) {
-          const hostnames = await listCustomHostnames(zoneId, apiToken, removedDomain);
+          const hostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, removedDomain);
           let deleted = 0;
           for (const h of hostnames) {
             if (await deleteCustomHostname(zoneId, apiToken, h.id)) deleted++;

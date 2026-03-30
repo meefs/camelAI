@@ -192,6 +192,12 @@ export interface WorkerScript {
   preview_status: WorkerScriptPreviewStatus | null;
   preview_error: string | null;
   config_path: string | null;
+  custom_domain_hostname: string | null;
+  custom_domain_cf_hostname_id: string | null;
+  custom_domain_status: string | null;
+  custom_domain_ssl_status: string | null;
+  custom_domain_error: string | null;
+  custom_domain_updated_at: number | null;
 }
 
 export interface WorkerScriptPreviewUpdateInput {
@@ -208,6 +214,16 @@ export interface WorkerScriptPreviewUpdateResult {
   stale: boolean;
 }
 
+export interface WorkerScriptCustomDomainUpdateInput {
+  hostname: string | null;
+  cf_hostname_id?: string | null;
+  status?: string | null;
+  ssl_status?: string | null;
+  error?: string | null;
+  updated_at?: number;
+  deploy_ts?: number;
+}
+
 interface WorkerScriptRow {
   [key: string]: SqlStorageValue;
   script_name: string;
@@ -221,6 +237,12 @@ interface WorkerScriptRow {
   preview_status: WorkerScriptPreviewStatus | null;
   preview_error: string | null;
   config_path: string | null;
+  custom_domain_hostname: string | null;
+  custom_domain_cf_hostname_id: string | null;
+  custom_domain_status: string | null;
+  custom_domain_ssl_status: string | null;
+  custom_domain_error: string | null;
+  custom_domain_updated_at: number | null;
 }
 
 export interface WorkerScriptAccess {
@@ -1189,6 +1211,36 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {
         // Column already exists
       }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_hostname TEXT');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_cf_hostname_id TEXT');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_status TEXT');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_ssl_status TEXT');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_error TEXT');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_updated_at INTEGER');
+      } catch {
+        // Column already exists
+      }
     }
 
     if (version < 11) {
@@ -1308,7 +1360,29 @@ export class OrgDO extends DurableObject<DOEnv> {
       `);
     }
 
-    const CURRENT_SCHEMA_VERSION = 19;
+    if (version < 20) {
+      // V20: Per-app Cloudflare custom hostname state
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_hostname TEXT');
+      } catch {}
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_cf_hostname_id TEXT');
+      } catch {}
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_status TEXT');
+      } catch {}
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_ssl_status TEXT');
+      } catch {}
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_error TEXT');
+      } catch {}
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_updated_at INTEGER');
+      } catch {}
+    }
+
+    const CURRENT_SCHEMA_VERSION = 20;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -1327,7 +1401,13 @@ export class OrgDO extends DurableObject<DOEnv> {
         names.has('preview_key') &&
         names.has('preview_updated_at') &&
         names.has('preview_status') &&
-        names.has('preview_error')
+        names.has('preview_error') &&
+        names.has('custom_domain_hostname') &&
+        names.has('custom_domain_cf_hostname_id') &&
+        names.has('custom_domain_status') &&
+        names.has('custom_domain_ssl_status') &&
+        names.has('custom_domain_error') &&
+        names.has('custom_domain_updated_at')
       );
     } catch {
       return false;
@@ -1362,6 +1442,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       preview_status: row.preview_status ?? null,
       preview_error: row.preview_error ?? null,
       config_path: row.config_path ?? null,
+      custom_domain_hostname: row.custom_domain_hostname ?? null,
+      custom_domain_cf_hostname_id: row.custom_domain_cf_hostname_id ?? null,
+      custom_domain_status: row.custom_domain_status ?? null,
+      custom_domain_ssl_status: row.custom_domain_ssl_status ?? null,
+      custom_domain_error: row.custom_domain_error ?? null,
+      custom_domain_updated_at: row.custom_domain_updated_at ?? null,
     };
   }
 
@@ -1895,6 +1981,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       preview_status: 'pending' as WorkerScriptPreviewStatus,
       preview_error: null,
       config_path: configPath ?? null,
+      custom_domain_hostname: null,
+      custom_domain_cf_hostname_id: null,
+      custom_domain_status: null,
+      custom_domain_ssl_status: null,
+      custom_domain_error: null,
+      custom_domain_updated_at: null,
     };
     const info = await this.getInfo();
     if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...newScript, org_id: info.id } });
@@ -1903,10 +1995,14 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async getWorkerScript(scriptName: string): Promise<WorkerScript | null> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path,
+                                     custom_domain_hostname, custom_domain_cf_hostname_id, custom_domain_status,
+                                     custom_domain_ssl_status, custom_domain_error, custom_domain_updated_at
                               FROM worker_scripts WHERE script_name = ?`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path,
+                              NULL AS custom_domain_hostname, NULL AS custom_domain_cf_hostname_id, NULL AS custom_domain_status,
+                              NULL AS custom_domain_ssl_status, NULL AS custom_domain_error, NULL AS custom_domain_updated_at
                        FROM worker_scripts WHERE script_name = ?`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [scriptName]);
     if (rows.length === 0) return null;
@@ -1915,10 +2011,14 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async listWorkerScripts(): Promise<WorkerScript[]> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path,
+                                     custom_domain_hostname, custom_domain_cf_hostname_id, custom_domain_status,
+                                     custom_domain_ssl_status, custom_domain_error, custom_domain_updated_at
                               FROM worker_scripts ORDER BY updated_at DESC`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path,
+                              NULL AS custom_domain_hostname, NULL AS custom_domain_cf_hostname_id, NULL AS custom_domain_status,
+                              NULL AS custom_domain_ssl_status, NULL AS custom_domain_error, NULL AS custom_domain_updated_at
                        FROM worker_scripts ORDER BY updated_at DESC`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, []);
     return rows.map((row) => this.toWorkerScript(row));
@@ -1943,10 +2043,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     const total = countRows[0]?.count ?? 0;
 
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path,
+                                     custom_domain_hostname, custom_domain_cf_hostname_id, custom_domain_status,
+                                     custom_domain_ssl_status, custom_domain_error, custom_domain_updated_at
                               FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path,
+                              NULL AS custom_domain_hostname, NULL AS custom_domain_cf_hostname_id, NULL AS custom_domain_status,
+                              NULL AS custom_domain_ssl_status, NULL AS custom_domain_error, NULL AS custom_domain_updated_at
                        FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
     const items = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [...params, limit, offset]);
     return {
@@ -1957,10 +2061,14 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path,
+                                     custom_domain_hostname, custom_domain_cf_hostname_id, custom_domain_status,
+                                     custom_domain_ssl_status, custom_domain_error, custom_domain_updated_at
                               FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path,
+                              NULL AS custom_domain_hostname, NULL AS custom_domain_cf_hostname_id, NULL AS custom_domain_status,
+                              NULL AS custom_domain_ssl_status, NULL AS custom_domain_error, NULL AS custom_domain_updated_at
                        FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [workspaceId]);
     return rows.map((row) => this.toWorkerScript(row));
@@ -2034,6 +2142,55 @@ export class OrgDO extends DurableObject<DOEnv> {
     return { script, updated: true, stale: false };
   }
 
+  async updateWorkerScriptCustomDomain(
+    scriptName: string,
+    input: WorkerScriptCustomDomainUpdateInput
+  ): Promise<WorkerScript | null> {
+    const existing = await this.getWorkerScript(scriptName);
+    if (!existing) return null;
+
+    if (!this.workerScriptsHasPreviewColumns) {
+      return existing;
+    }
+
+    if (input.deploy_ts && existing.updated_at > input.deploy_ts) {
+      return existing;
+    }
+
+    this.sql.exec(
+      `UPDATE worker_scripts
+       SET custom_domain_hostname = ?, custom_domain_cf_hostname_id = ?, custom_domain_status = ?,
+           custom_domain_ssl_status = ?, custom_domain_error = ?, custom_domain_updated_at = ?
+       WHERE script_name = ?`,
+      input.hostname,
+      input.cf_hostname_id ?? null,
+      input.status ?? null,
+      input.ssl_status ?? null,
+      input.error ?? null,
+      input.updated_at ?? Date.now(),
+      scriptName
+    );
+
+    const script = await this.getWorkerScript(scriptName);
+    const info = await this.getInfo();
+    if (info && script) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
+    return script;
+  }
+
+  async clearWorkerScriptCustomDomains(): Promise<void> {
+    if (!this.workerScriptsHasPreviewColumns) return;
+
+    this.sql.exec(
+      `UPDATE worker_scripts
+       SET custom_domain_hostname = NULL,
+           custom_domain_cf_hostname_id = NULL,
+           custom_domain_status = NULL,
+           custom_domain_ssl_status = NULL,
+           custom_domain_error = NULL,
+           custom_domain_updated_at = NULL`
+    );
+  }
+
   async deleteWorkerScript(scriptName: string, actorId: string): Promise<boolean> {
     const existing = await this.getWorkerScript(scriptName);
     if (!existing) return false;
@@ -2058,14 +2215,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec('DELETE FROM custom_domains');
     this.sql.exec(
       `INSERT INTO custom_domains (domain, cf_hostname_id, status, ssl_status, created_at, updated_at)
-       VALUES (?, NULL, 'active', NULL, ?, ?)`,
+       VALUES (?, NULL, 'pending', NULL, ?, ?)`,
       domain, now, now
     );
     this.log('custom_domain_set', actorId, domain);
     return {
       domain,
       cf_hostname_id: null,
-      status: 'active',
+      status: 'pending',
       ssl_status: null,
       created_at: now,
       updated_at: now,

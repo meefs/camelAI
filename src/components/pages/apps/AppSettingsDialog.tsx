@@ -18,7 +18,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AlertCircle, ExternalLink, Trash2 } from 'lucide-react';
-import { getAppUrl, getCustomDomainAppUrl } from '@/lib/app-url';
+import { getPreferredAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 
@@ -79,8 +79,7 @@ export function AppSettingsDialog({
   const submitting = fetcher.state !== 'idle' && pendingAction === 'save';
   const deleting = fetcher.state !== 'idle' && pendingAction === 'delete';
 
-  const defaultAppUrl = getAppUrl(app.script_name, hostname, orgSlug);
-  const appUrl = orgCustomDomain ? getCustomDomainAppUrl(app.script_name, orgCustomDomain) : defaultAppUrl;
+  const appUrl = getPreferredAppUrl(app, { hostname, orgSlug, orgCustomDomain });
   const creator = app.creator;
   const creatorLabel = getCreatorLabel(creator, app.created_by);
   const creatorAvatar = creator?.avatar ?? null;

@@ -39,7 +39,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
 
 2. **Workers** (`workers/`)
    - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP, admin CLI API)
-   - `dispatcher/` - Routes `*.camelai.app` to user workers (Workers for Platforms)
+   - `dispatcher/` - Routes `*.camelai.app` to user workers (Workers for Platforms); auth/error redirects use environment-specific `MAIN_APP_URL`
    - `bedrock-provider/` - Standalone custom-provider worker for AI Gateway that translates Anthropic-style `/v1/messages` requests to Bedrock and converts Bedrock streaming event frames into Anthropic SSE
 
 3. **Sandbox Host** (`services/sandbox-host/`)
@@ -279,6 +279,15 @@ Each workspace has a `WorkspaceCronDO` scheduler that stores cron-style prompt j
 
 Deploy enqueues screenshot job → Browser Rendering → JPEG stored in R2 at `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg` → served via `/api/apps/:scriptName/preview`.
 
+### Custom Domains
+
+- Org custom domains are wildcard-style base domains stored at the org level (for example `apps.example.com`). New org-level records start at `status: pending`, while each deployed app tracks its own Cloudflare custom hostname lifecycle in `worker_scripts` (`custom_domain_hostname`, Cloudflare hostname id, hostname status, SSL status, error, updated timestamp).
+- Cloudflare for SaaS uses a Worker-backed fallback origin in the camelAI zone. Customer-facing DNS should point at the configured SaaS DNS target (when present) and otherwise fall back to the Worker-backed fallback hostname. Normal app hostname creation relies on the zone fallback origin; `custom_origin_server` should only be used for true per-host origin overrides.
+- Deployed apps only switch to `https://{script}.{orgCustomDomain}` after the per-app hostname matches the current org domain and both Cloudflare hostname status and SSL status are `active`; until then, UI, MCP, and external API responses keep returning the standard `*.camelai.app` / `*.apps.camelai.dev` URLs.
+- Setting or changing `/api/orgs/:id/custom-domain` clears stored per-app hostname state, backfills Cloudflare custom hostnames for existing apps, and cleans up old-domain hostnames by exact base-domain match rather than broad substring search.
+- App lists lazily refresh stale non-active hostname state from Cloudflare so domains can become ready without a dedicated polling worker.
+- The dispatcher uses `MAIN_APP_URL` to choose the correct environment-specific app origin for auth redirects on custom domains; this avoids non-prod custom domains falling back to production `https://camelai.dev`.
+
 ### Notebook File Previews
 
 Notebook previews render in the chat preview panel with two modes: **Report** (editorial rendering with TOC, hidden code, styled outputs) and **Notebook** (full cell-by-cell with execution gutters). Supports Vega/Vega-Lite, Plotly, DataFrame tables (inline rendering capped at 100 rows with CSV download), and generic HTML in sandboxed iframes. Chart outputs support fullscreen expansion with viewport-height layout; Plotly fullscreen enables the mode bar for zoom/pan/select/autoscale tools while preserving SVG/PNG/CSV export actions. The chat preview toolbar includes a notebook-only download menu with raw `.ipynb` download plus **Download report as PDF**, which exports the light-themed Report mode presentation through a client-side React PDF pipeline. Standalone published notebook pages do not expose the PDF export control yet.
@@ -303,7 +312,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Auth                         | `/api/auth/login`, `/api/auth/signup`, `/api/auth/verify-email`, `/api/auth/verify-email/send`, `/api/auth/logout`, `/api/auth/switch-org`, `/api/auth/switch-workspace` |
 | OAuth                        | `/api/auth/google[/callback]`, `/api/auth/github[/callback]`                                                                                                             |
 | Slack                        | `/api/integrations/slack/oauth`, `/api/integrations/slack/callback`, `/api/integrations/slack/events`                                                                    |
-| Orgs                         | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug`                                                                                          |
+| Orgs                         | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug`, `/api/orgs/:id/custom-domain`                                                         |
 | Onboarding                   | `/api/onboarding/complete`                                                                                                                                               |
 | Legacy transition            | `/api/legacy-banner/dismiss`                                                                                                                                            |
 | Support                      | `/api/help`                                                                                                                                                              |

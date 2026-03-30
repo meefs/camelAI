@@ -9,7 +9,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
-import { getAppUrl, getCustomDomainAppUrl } from '@/lib/app-url';
+import { getPreferredAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import {
   Check,
@@ -92,8 +92,7 @@ export function AppCard({
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewLoaded, setPreviewLoaded] = useState(false);
   const previewRef = useRef<HTMLImageElement | null>(null);
-  const defaultAppUrl = getAppUrl(app.script_name, hostname, orgSlug);
-  const appUrl = orgCustomDomain ? getCustomDomainAppUrl(app.script_name, orgCustomDomain) : defaultAppUrl;
+  const appUrl = getPreferredAppUrl(app, { hostname, orgSlug, orgCustomDomain });
   const displayUrl = appUrl.replace(/^https?:\/\//, '');
   const creator = creatorOverride ?? app.creator;
   const creatorLabel = getCreatorLabel(creator, app.created_by);

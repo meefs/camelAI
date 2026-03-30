@@ -173,6 +173,19 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(org.slug).toMatch(/^[a-z0-9]{6,}$/);
       expect(org.slug.length).toBeGreaterThanOrEqual(6);
     });
+
+    it('stores new org custom domains with pending status', async () => {
+      const ownerEmail = testEmail();
+      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
+      const { org } = await createOrg(testEnv, 'Custom Domain Org', ownerId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const created = await orgStub.setCustomDomain('apps.example.com', ownerId);
+      const stored = await orgStub.getCustomDomain();
+
+      expect(created.status).toBe('pending');
+      expect(stored?.status).toBe('pending');
+    });
   });
 
   describe('Organization ownership invariants', () => {

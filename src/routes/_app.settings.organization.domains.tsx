@@ -5,12 +5,15 @@ import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import type { AuthEnv } from '@/lib/auth-helpers';
 import { getOrgCustomDomain, isOrgAdmin } from '@/lib/auth-do';
+import { getCustomHostnameDnsTarget } from '@/lib/custom-domain-dns';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Globe2, Loader2, Trash2, AlertCircle } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Globe2, Loader2, Trash2, AlertCircle, CheckCircle2, ArrowRight, Info } from 'lucide-react';
 
 export function meta() {
   return [
@@ -41,12 +44,26 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     org: authContext.currentOrg,
     domain,
     isAdmin: admin,
-    cnameFallback: env.CF_CUSTOM_HOSTNAME_FALLBACK ?? 'custom-domains.camelai.app',
+    dnsTarget: getCustomHostnameDnsTarget({
+      cnameTarget: env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
+      fallbackOrigin: env.CF_CUSTOM_HOSTNAME_FALLBACK,
+    }),
   };
 }
 
+function getDomainStatusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case 'active':
+      return 'Active';
+    case 'failed':
+      return 'Needs attention';
+    default:
+      return 'Pending activation';
+  }
+}
+
 export default function DomainsPage() {
-  const { org, domain: initialDomain, isAdmin, cnameFallback } = useLoaderData<typeof loader>();
+  const { org, domain: initialDomain, isAdmin, dnsTarget } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ domain?: unknown; success?: boolean; error?: string }>();
   const [domainInput, setDomainInput] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +112,7 @@ export default function DomainsPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="Domains"
-        description="Set a custom domain so all your apps are available at {app-name}.your-domain."
+        description="Point your own domain at camelAI so every app can live at {app-name}.your-domain."
       />
       <Separator />
 
@@ -108,78 +125,152 @@ export default function DomainsPage() {
 
       {domain ? (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 rounded-lg border p-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <Globe2 className="size-4 shrink-0 text-muted-foreground" />
-              <div className="min-w-0">
-                <p className="font-mono text-sm truncate">*.{domain.domain}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  All apps available as <span className="font-mono">{'{app-name}'}.{domain.domain}</span>
-                </p>
+          <Card>
+            <CardHeader className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Globe2 className="size-4 text-muted-foreground" />
+                  <CardTitle className="text-base font-medium">Custom domain configured</CardTitle>
+                  <Badge variant="secondary">{getDomainStatusLabel(domain.status)}</Badge>
+                </div>
+                <CardDescription className="max-w-2xl">
+                  Your base domain is <span className="font-mono text-foreground">{domain.domain}</span>. Each app will
+                  eventually use <span className="font-mono text-foreground">{'{app-name}'}.{domain.domain}</span>.
+                  camelAI keeps serving the default app URL until Cloudflare reports that specific hostname and certificate
+                  as active, so customers do not get sent to a half-provisioned domain.
+                </CardDescription>
               </div>
-            </div>
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              disabled={loading || !isAdmin}
-              onClick={handleRemoveDomain}
-            >
-              <Trash2 className="size-3.5" />
-              Remove
-            </Button>
-          </div>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                disabled={loading || !isAdmin}
+                onClick={handleRemoveDomain}
+              >
+                <Trash2 className="size-3.5" />
+                Remove
+              </Button>
+            </CardHeader>
+          </Card>
 
-          <div className="rounded-lg border bg-muted/50 p-4 space-y-3">
-            <p className="text-sm font-medium">DNS Setup</p>
-            <p className="text-sm text-muted-foreground">
-              Add a wildcard CNAME record to your DNS provider:
-            </p>
-            <div className="rounded-md bg-background p-3 font-mono text-sm">
-              <span className="text-muted-foreground">*.{domain.domain}</span>
-              {' CNAME '}
-              <span className="select-all">{cnameFallback}</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              SSL certificates are provisioned automatically for each app when it's deployed.
-            </p>
+          <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-medium">1. Add DNS at your provider</CardTitle>
+                <CardDescription>
+                  Recommended for full org-wide setup. This lets any deployed app use your domain without adding a new
+                  record every time.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-md border bg-muted/40 p-4">
+                  <div className="grid gap-3 font-mono text-sm sm:grid-cols-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Host</p>
+                      <p className="mt-1 select-all">*</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Type</p>
+                      <p className="mt-1">CNAME</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Target</p>
+                      <p className="mt-1 break-all select-all">{dnsTarget}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <Alert>
+                  <Info className="size-4" />
+                  <AlertDescription>
+                    If your DNS provider does not support wildcard records, you can add exact host records per app instead.
+                    Example: <span className="font-mono">signup</span> <ArrowRight className="mx-1 inline size-3" />
+                    <span className="font-mono">CNAME {dnsTarget}</span>.
+                  </AlertDescription>
+                </Alert>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-medium">2. What happens next</CardTitle>
+                <CardDescription>
+                  Cloudflare provisions each app hostname separately.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm text-muted-foreground">
+                <div className="flex gap-3">
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-foreground" />
+                  <p>camelAI creates a Cloudflare custom hostname for each deployed app under this base domain.</p>
+                </div>
+                <div className="flex gap-3">
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-foreground" />
+                  <p>Links stay on the normal <span className="font-mono text-foreground">*.camelai.app</span> URL until that app hostname and SSL certificate are active.</p>
+                </div>
+                <div className="flex gap-3">
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-foreground" />
+                  <p>If you test the custom domain too early, Cloudflare may show DNS or CNAME errors while provisioning catches up.</p>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
       ) : (
-        <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            Enter a base domain and we'll set up a wildcard (<span className="font-mono">*.your-domain</span>) so every
-            app is automatically available at <span className="font-mono">{'{app-name}'}.your-domain</span>.
-          </p>
-          <div className="flex gap-2 max-w-md">
-            <Input
-              value={domainInput}
-              onChange={(e) => setDomainInput(e.target.value)}
-              placeholder="apps.example.com"
-              className="text-sm"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleSetDomain();
-                }
-              }}
-              disabled={!isAdmin}
-            />
-            <Button
-              type="button"
-              disabled={!domainInput.trim() || loading || !isAdmin}
-              onClick={handleSetDomain}
-            >
-              {loading ? <Loader2 className="size-4 animate-spin" /> : null}
-              Add Domain
-            </Button>
-          </div>
-          {!isAdmin && (
-            <p className="text-xs text-muted-foreground">
-              Only organization admins can manage custom domains.
-            </p>
-          )}
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base font-medium">Connect your domain</CardTitle>
+            <CardDescription>
+              Pick the base domain that should sit after each app name. Example:
+              <span className="ml-1 font-mono text-foreground">signup.your-domain.com</span>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 text-sm text-muted-foreground md:grid-cols-3">
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="font-medium text-foreground">1. Add your base domain</p>
+                <p className="mt-1">Use something like <span className="font-mono text-foreground">apps.example.com</span> or <span className="font-mono text-foreground">example.com</span>.</p>
+              </div>
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="font-medium text-foreground">2. Point DNS to camelAI</p>
+                <p className="mt-1">We’ll show the exact CNAME target after you save the domain.</p>
+              </div>
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="font-medium text-foreground">3. Wait for activation</p>
+                <p className="mt-1">Each app hostname and certificate becomes active independently.</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 max-w-xl">
+              <Input
+                value={domainInput}
+                onChange={(e) => setDomainInput(e.target.value)}
+                placeholder="apps.example.com"
+                className="text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSetDomain();
+                  }
+                }}
+                disabled={!isAdmin}
+              />
+              <Button
+                type="button"
+                disabled={!domainInput.trim() || loading || !isAdmin}
+                onClick={handleSetDomain}
+              >
+                {loading ? <Loader2 className="size-4 animate-spin" /> : null}
+                Add Domain
+              </Button>
+            </div>
+
+            {!isAdmin && (
+              <p className="text-xs text-muted-foreground">
+                Only organization admins can manage custom domains.
+              </p>
+            )}
+          </CardContent>
+        </Card>
       )}
     </div>
   );

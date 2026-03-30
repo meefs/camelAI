@@ -10,40 +10,37 @@ const createSessionCookieHeaderMock = vi.fn();
 const sendUserVerificationEmailMock = vi.fn();
 const waitUntilMock = vi.fn();
 const validateTurnstileTokenMock = vi.fn();
+const appKvGetMock = vi.fn();
 
-vi.mock('@/lib/cloudflare.server', () => ({
-  getEnv: getEnvMock,
-}));
-
-vi.mock('@/lib/auth-do', () => ({
-  getUserByEmail: getUserByEmailMock,
-  createUser: createUserMock,
-  createOrg: createOrgMock,
-  createSession: createSessionMock,
-  isSignupIpBlocked: isSignupIpBlockedMock,
-}));
-
-vi.mock('@/lib/cookies.server', () => ({
-  createSessionCookieHeader: createSessionCookieHeaderMock,
-}));
-
-vi.mock('@/lib/email-verification.server', () => ({
-  sendUserVerificationEmail: sendUserVerificationEmailMock,
-}));
-
-vi.mock('@/lib/turnstile.server', () => ({
-  validateTurnstileToken: validateTurnstileTokenMock,
-}));
-
-vi.mock('@/lib/wait-until', () => ({
-  waitUntil: waitUntilMock,
-}));
-
-const { action } = await import('@/routes/api/auth.signup');
+let action: typeof import('@/routes/api/auth.signup').action;
 
 describe('auth signup domain blocklist', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    vi.resetModules();
+
+    vi.doMock('@/lib/cloudflare.server', () => ({
+      getEnv: getEnvMock,
+    }));
+    vi.doMock('@/lib/auth-do', () => ({
+      getUserByEmail: getUserByEmailMock,
+      createUser: createUserMock,
+      createOrg: createOrgMock,
+      createSession: createSessionMock,
+      isSignupIpBlocked: isSignupIpBlockedMock,
+    }));
+    vi.doMock('@/lib/cookies.server', () => ({
+      createSessionCookieHeader: createSessionCookieHeaderMock,
+    }));
+    vi.doMock('@/lib/email-verification.server', () => ({
+      sendUserVerificationEmail: sendUserVerificationEmailMock,
+    }));
+    vi.doMock('@/lib/turnstile.server', () => ({
+      validateTurnstileToken: validateTurnstileTokenMock,
+    }));
+    vi.doMock('@/lib/wait-until', () => ({
+      waitUntil: waitUntilMock,
+    }));
 
     getEnvMock.mockReturnValue({
       USER: {},
@@ -52,10 +49,11 @@ describe('auth signup domain blocklist', () => {
       SESSIONS: {},
       EMAIL_TO_USER: {},
       APP_KV: {
-        get: vi.fn().mockResolvedValue(JSON.stringify(['mailinator.com'])),
+        get: appKvGetMock,
       },
       TOKEN_SIGNING_SECRET: 'secret',
     });
+    appKvGetMock.mockResolvedValue(JSON.stringify(['mailinator.com']));
     getUserByEmailMock.mockResolvedValue(null);
     createUserMock.mockResolvedValue({
       userId: 'user_123',
@@ -70,6 +68,8 @@ describe('auth signup domain blocklist', () => {
     createSessionCookieHeaderMock.mockReturnValue('session-cookie');
     sendUserVerificationEmailMock.mockResolvedValue({ status: 'sent' });
     validateTurnstileTokenMock.mockResolvedValue({ success: true });
+
+    ({ action } = await import('@/routes/api/auth.signup'));
   });
 
   it('rejects blocked signup domains with a 400 response', async () => {

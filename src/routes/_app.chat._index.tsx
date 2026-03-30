@@ -95,6 +95,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
             preview_status: script.preview_status,
             preview_error: script.preview_error,
             config_path: script.config_path,
+            custom_domain_hostname: script.custom_domain_hostname,
+            custom_domain_cf_hostname_id: script.custom_domain_cf_hostname_id,
+            custom_domain_status: script.custom_domain_status,
+            custom_domain_ssl_status: script.custom_domain_ssl_status,
+            custom_domain_error: script.custom_domain_error,
+            custom_domain_updated_at: script.custom_domain_updated_at,
             creator: creator
               ? {
                   id: creator.id,

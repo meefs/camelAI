@@ -12,7 +12,8 @@ import {
 import {
   createCustomHostname,
   deleteCustomHostname,
-  listCustomHostnames,
+  findCustomHostnameByHostname,
+  listCustomHostnamesByBaseDomain,
 } from '../../../workers/main/src/cf-api-proxy';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -79,28 +80,65 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     }
 
     try {
+      const existing = await getOrgCustomDomain(authEnv, orgId);
+      const oldDomain = existing?.domain;
       const customDomain = await setOrgCustomDomain(
         authEnv, orgId, domain, authContext.user.id
       );
 
       // Backfill: create CF hostnames for all existing deployed apps
       const zoneId = env.CF_ZONE_ID;
-      const apiToken = env.CF_API_TOKEN;
-      const fallbackOrigin = env.CF_CUSTOM_HOSTNAME_FALLBACK;
+      const apiToken = env.CF_API_TOKEN?.trim();
       if (zoneId && apiToken) {
         const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
         waitUntil(
-          orgStub.listWorkerScripts().then(async (scripts) => {
+          (async () => {
+            await orgStub.clearWorkerScriptCustomDomains();
+
+            if (oldDomain && oldDomain !== domain) {
+              await cleanupCustomHostnames(zoneId, apiToken, oldDomain);
+            }
+
+            const scripts = await orgStub.listWorkerScripts();
             for (const script of scripts) {
               const appHostname = `${script.script_name}.${domain}`;
               try {
-                await createCustomHostname(zoneId, apiToken, appHostname, fallbackOrigin);
-                console.log(`[custom-domains] backfill: created hostname ${appHostname}`);
+                // Use the zone's configured fallback origin for normal app hostnames.
+                let result = await createCustomHostname(zoneId, apiToken, appHostname);
+                if (!result) {
+                  result = await findCustomHostnameByHostname(zoneId, apiToken, appHostname);
+                }
+                if (result) {
+                  await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                    hostname: appHostname,
+                    cf_hostname_id: result.id,
+                    status: result.status,
+                    ssl_status: result.ssl.status,
+                    error: null,
+                  });
+                  console.log(`[custom-domains] backfill: synced hostname ${appHostname} status=${result.status}`);
+                } else {
+                  await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                    hostname: appHostname,
+                    error: 'Failed to create or locate Cloudflare custom hostname',
+                  });
+                  console.error(`[custom-domains] backfill: missing hostname after create ${appHostname}`);
+                }
               } catch (err) {
+                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                  hostname: appHostname,
+                  error: err instanceof Error ? err.message : String(err),
+                });
                 console.error(`[custom-domains] backfill: failed for ${appHostname}:`, err);
               }
             }
-          }).catch(err => console.error('[custom-domains] backfill failed:', err))
+          })().catch(err => console.error('[custom-domains] backfill failed:', err))
+        );
+      } else {
+        waitUntil(
+          authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
+            .clearWorkerScriptCustomDomains()
+            .catch(err => console.error('[custom-domains] clear state failed:', err))
         );
       }
 
@@ -120,10 +158,15 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     }
 
     await removeOrgCustomDomain(authEnv, orgId, authContext.user.id);
+    waitUntil(
+      authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
+        .clearWorkerScriptCustomDomains()
+        .catch(err => console.error('[custom-domains] clear state failed:', err))
+    );
 
     // Clean up all per-app CF hostnames for this domain in the background
     const zoneId = env.CF_ZONE_ID;
-    const apiToken = env.CF_API_TOKEN;
+    const apiToken = env.CF_API_TOKEN?.trim();
     if (zoneId && apiToken) {
       waitUntil(
         cleanupCustomHostnames(zoneId, apiToken, existing.domain)
@@ -146,7 +189,7 @@ async function cleanupCustomHostnames(
   apiToken: string,
   baseDomain: string
 ): Promise<void> {
-  const hostnames = await listCustomHostnames(zoneId, apiToken, baseDomain);
+  const hostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, baseDomain);
   for (const hostname of hostnames) {
     await deleteCustomHostname(zoneId, apiToken, hostname.id).catch(err =>
       console.error(`[custom-domains] cleanup: failed to delete ${hostname.hostname}:`, err)

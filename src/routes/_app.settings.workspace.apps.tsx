@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useLoaderData, useSearchParams, useFetcher } from 'react-router';
 import type { Route } from './+types/_app.settings.workspace.apps';
-import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, requireOrgAdmin } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getWorkerScript,
   deleteWorkerScript,
+  getOrgCustomDomain,
 } from '@/lib/auth-do';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import { Separator } from '@/components/ui/separator';
@@ -25,7 +26,8 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ExternalLink, Trash2 } from 'lucide-react';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import { getAppUrl } from '@/lib/app-url';
+import { getPreferredAppUrl } from '@/lib/app-url';
+import { refreshWorkerScriptCustomDomainStates } from '@/lib/custom-domain.server';
 import type { WorkerScriptWithCreator } from '@/types';
 
 interface AppRow extends WorkerScriptWithCreator {
@@ -133,7 +135,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const orgSlug = authContext.currentOrg.slug;
 
   if (!workspaceId) {
-    return { apps: [] as AppRow[], hasWorkspace: false, filter, orgSlug };
+    return { apps: [] as AppRow[], hasWorkspace: false, filter, orgSlug, orgCustomDomain: null };
   }
 
   const workspaces = authContext.workspaces ?? [];
@@ -141,12 +143,22 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   // Fetch all scripts from OrgDO
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
-  const scripts = await orgStub.listWorkerScripts();
+  const [scripts, customDomain] = await Promise.all([
+    orgStub.listWorkerScripts(),
+    getOrgCustomDomain(authEnv, authContext.currentOrg.id),
+  ]);
+  const orgCustomDomain = customDomain?.domain ?? null;
+  const refreshedScripts = await refreshWorkerScriptCustomDomainStates(
+    env,
+    authContext.currentOrg.id,
+    scripts,
+    orgCustomDomain
+  );
 
   // Filter based on scope
   const filteredScripts = filter === 'all-workspaces'
-    ? scripts
-    : scripts.filter((s) => s.workspace_id === workspaceId);
+    ? refreshedScripts
+    : refreshedScripts.filter((s) => s.workspace_id === workspaceId);
 
   // Hydrate creators
   const creatorIds = Array.from(
@@ -176,11 +188,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     };
   });
 
-  return { apps, hasWorkspace: true, filter, orgSlug };
+  return { apps, hasWorkspace: true, filter, orgSlug, orgCustomDomain };
 }
 
 export default function WorkspaceAppsPage() {
-  const { apps, hasWorkspace, filter, orgSlug } = useLoaderData<typeof loader>();
+  const { apps, hasWorkspace, filter, orgSlug, orgCustomDomain } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [deleteTarget, setDeleteTarget] = useState<AppRow | null>(null);
@@ -247,7 +259,7 @@ export default function WorkspaceAppsPage() {
               <TableRow key={app.script_name}>
                 <TableCell className="font-medium font-mono text-sm">
                   <a
-                    href={getAppUrl(app.script_name, undefined, orgSlug)}
+                    href={getPreferredAppUrl(app, { orgSlug, orgCustomDomain })}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="hover:underline"
@@ -282,7 +294,7 @@ export default function WorkspaceAppsPage() {
                       asChild
                     >
                       <a
-                        href={getAppUrl(app.script_name, undefined, orgSlug)}
+                        href={getPreferredAppUrl(app, { orgSlug, orgCustomDomain })}
                         target="_blank"
                         rel="noopener noreferrer"
                         title="Open in new tab"

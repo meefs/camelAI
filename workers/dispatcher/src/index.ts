@@ -70,6 +70,7 @@ interface Env {
   SKIP_AUTH?: string;
   // Policy for workers missing KV access metadata ("open" during migration, "closed" for strict enforcement)
   DISPATCHER_MISSING_REGISTRY_MODE?: string;
+  MAIN_APP_URL?: string;
 }
 
 // Helper functions to replace RPC calls
@@ -237,7 +238,12 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 const SCREENSHOT_SESSION_MAX_AGE = SCREENSHOT_SESSION_TTL_SECONDS;
 
 // Main app URL for auth redirects (determined from request hostname)
-function getMainAppUrl(hostname: string): string {
+function getMainAppUrl(hostname: string, configuredMainAppUrl?: string): string {
+  const explicitUrl = configuredMainAppUrl?.trim();
+  if (explicitUrl) {
+    return explicitUrl;
+  }
+
   // Extract environment from hostname
   // New format: worker.org-slug.camelai.app -> camelai.dev (main app)
   // New format: worker.org-slug.dev-miguel.camelai.app -> dev-miguel.camelai.dev (main app)
@@ -527,7 +533,7 @@ async function handleWorkerRequest(
     accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName, scriptName, orgSlug);
   } catch (e) {
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
-    return errorResponse(error503Page(getMainAppUrl(url.hostname)));
+    return errorResponse(error503Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
   }
 
   // Ambiguity resolution: If the single-hyphen parse found no KV entry, retry
@@ -615,7 +621,7 @@ async function handleWorkerRequest(
       return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
     }
     console.warn(`[dispatcher] Worker "${effectiveDispatchScriptName}" not in registry, denying access (fail closed)`);
-    return errorResponse(error404Page(getMainAppUrl(url.hostname), effectiveScriptName));
+    return errorResponse(error404Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL), effectiveScriptName));
   }
 
   // Legacy URL redirect: If using old URL format AND the worker was deployed with the
@@ -661,14 +667,14 @@ async function handleWorkerRequest(
     if (!mainSessionId) {
       // No session cookie - user is not logged in
       console.log(`[dispatcher] No session cookie found for ${effectiveScriptName}`);
-      return errorResponse(error401Page(getMainAppUrl(url.hostname)));
+      return errorResponse(error401Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
     }
 
     try {
       const session = await parseSignedSession(env.TOKEN_SIGNING_SECRET, mainSessionId);
       if (!session) {
         console.log(`[dispatcher] Session invalid for ${effectiveScriptName}, token prefix: ${mainSessionId.slice(0, 8)}...`);
-        return errorResponse(error401Page(getMainAppUrl(url.hostname)));
+        return errorResponse(error401Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
       }
 
       // Check if user is a member of the org that owns this worker
@@ -677,14 +683,14 @@ async function handleWorkerRequest(
       if (!memberCheck) {
         // User is logged in but not a member of this workspace
         console.log(`[dispatcher] User ${session.user_id} is not a member of org ${accessInfo.org_id}`);
-        return errorResponse(error403Page(getMainAppUrl(url.hostname)));
+        return errorResponse(error403Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
       }
 
       console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${effectiveScriptName} via main session`);
       return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
     } catch (e) {
       console.error(`[dispatcher] Error validating main session: ${e}`);
-      return errorResponse(error503Page(getMainAppUrl(url.hostname)));
+      return errorResponse(error503Page(getMainAppUrl(url.hostname, env.MAIN_APP_URL)));
     }
   }
 
@@ -781,7 +787,7 @@ async function dispatchToWorker(
     return response;
   } catch (e) {
     const error = e as Error;
-    const pageHomeUrl = getMainAppUrl(new URL(request.url).hostname);
+    const pageHomeUrl = getMainAppUrl(new URL(request.url).hostname, env.MAIN_APP_URL);
     if (error.message?.startsWith('Worker not found')) {
       return errorResponse(error404Page(pageHomeUrl, userFacingScriptName));
     }
@@ -807,7 +813,7 @@ async function redirectToAuth(
   });
 
   // Build main app auth URL
-  const mainAppUrl = getMainAppUrl(url.hostname);
+  const mainAppUrl = getMainAppUrl(url.hostname, env.MAIN_APP_URL);
   const authUrl = new URL('/auth/worker', mainAppUrl);
   authUrl.searchParams.set('state', state);
 

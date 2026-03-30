@@ -12,31 +12,7 @@ const sendUserVerificationEmailMock = vi.fn();
 const fetchMock = vi.fn();
 const originalFetch = globalThis.fetch;
 
-vi.mock("@/lib/wait-until", () => ({
-  waitUntil: waitUntilMock,
-}));
-
-vi.mock("@/lib/cloudflare.server", () => ({
-  getEnv: getEnvMock,
-}));
-
-vi.mock("@/lib/cookies.server", () => ({
-  createSessionCookieHeader: createSessionCookieHeaderMock,
-}));
-
-vi.mock("@/lib/auth-do", () => ({
-  getUserByEmail: getUserByEmailMock,
-  createUser: createUserMock,
-  createOrg: createOrgMock,
-  createSession: createSessionMock,
-  isSignupIpBlocked: isSignupIpBlockedMock,
-}));
-
-vi.mock("@/lib/email-verification.server", () => ({
-  sendUserVerificationEmail: sendUserVerificationEmailMock,
-}));
-
-const { action } = await import("@/routes/api/auth.signup");
+let action: typeof import("@/routes/api/auth.signup").action;
 
 class MemoryKvNamespace {
   private readonly data = new Map<string, string>();
@@ -70,10 +46,32 @@ function buildSignupBody(overrides: Record<string, unknown> = {}) {
 describe("auth signup sales prompt flow", () => {
   let setPendingSalesPromptMock: ReturnType<typeof vi.fn>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    vi.resetModules();
     setPendingSalesPromptMock = vi.fn();
     globalThis.fetch = fetchMock as typeof fetch;
+
+    vi.doMock("@/lib/wait-until", () => ({
+      waitUntil: waitUntilMock,
+    }));
+    vi.doMock("@/lib/cloudflare.server", () => ({
+      getEnv: getEnvMock,
+    }));
+    vi.doMock("@/lib/cookies.server", () => ({
+      createSessionCookieHeader: createSessionCookieHeaderMock,
+    }));
+    vi.doMock("@/lib/auth-do", () => ({
+      getUserByEmail: getUserByEmailMock,
+      createUser: createUserMock,
+      createOrg: createOrgMock,
+      createSession: createSessionMock,
+      isSignupIpBlocked: isSignupIpBlockedMock,
+    }));
+    vi.doMock("@/lib/email-verification.server", () => ({
+      sendUserVerificationEmail: sendUserVerificationEmailMock,
+    }));
+    vi.doUnmock("@/lib/turnstile.server");
 
     // waitUntil runs callbacks synchronously in tests so we can assert side effects
     waitUntilMock.mockImplementation((p: Promise<unknown>) => {
@@ -126,6 +124,8 @@ describe("auth signup sales prompt flow", () => {
     createSessionMock.mockResolvedValue({ signedToken: "signed-token" });
     isSignupIpBlockedMock.mockResolvedValue(false);
     sendUserVerificationEmailMock.mockResolvedValue({ status: "sent" });
+
+    ({ action } = await import("@/routes/api/auth.signup"));
   });
 
   afterEach(() => {

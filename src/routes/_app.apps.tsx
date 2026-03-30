@@ -11,6 +11,7 @@ import {
 } from '@/lib/auth-do';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import * as chatDO from '@/lib/chat-do.server';
+import { refreshWorkerScriptCustomDomainStates } from '@/lib/custom-domain.server';
 import AppsClient from '@/components/pages/apps/apps-client';
 import { AppsLoadingSkeleton } from '@/components/pages/apps/apps-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -166,13 +167,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id)).listWorkerScripts(),
     getOrgCustomDomain(authEnv, authContext.currentOrg.id),
   ]);
-  const orgCustomDomain = orgCustomDomainRecord?.status === 'active' ? orgCustomDomainRecord.domain : null;
+  const orgCustomDomain = orgCustomDomainRecord?.domain ?? null;
+  const refreshedScripts = await refreshWorkerScriptCustomDomainStates(
+    env,
+    authContext.currentOrg.id,
+    scripts,
+    orgCustomDomain
+  );
 
   // Filter based on filter param
   const filteredScripts = filter === 'all-workspaces'
-    ? scripts
+    ? refreshedScripts
     : workspaceId
-      ? scripts.filter((script) => script.workspace_id === workspaceId)
+      ? refreshedScripts.filter((script) => script.workspace_id === workspaceId)
       : [];
 
   // Get creator profiles
@@ -201,6 +208,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       preview_status: script.preview_status,
       preview_error: script.preview_error,
       config_path: script.config_path,
+      custom_domain_hostname: script.custom_domain_hostname,
+      custom_domain_cf_hostname_id: script.custom_domain_cf_hostname_id,
+      custom_domain_status: script.custom_domain_status,
+      custom_domain_ssl_status: script.custom_domain_ssl_status,
+      custom_domain_error: script.custom_domain_error,
+      custom_domain_updated_at: script.custom_domain_updated_at,
       creator: creator
         ? {
             id: creator.id,

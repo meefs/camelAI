@@ -19,6 +19,9 @@ describe('oauth email domain blocklist', () => {
       put: ReturnType<typeof vi.fn>;
       delete: ReturnType<typeof vi.fn>;
     };
+    APP_KV: {
+      get: ReturnType<typeof vi.fn>;
+    };
   };
 
   beforeEach(() => {
@@ -29,6 +32,9 @@ describe('oauth email domain blocklist', () => {
         get: vi.fn(),
         put: vi.fn(),
         delete: vi.fn(),
+      },
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(JSON.stringify(['mailinator.com'])),
       },
     };
   });

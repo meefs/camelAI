@@ -432,6 +432,12 @@ export interface WorkerScript {
   preview_status: AppPreviewStatus | null;
   preview_error: string | null;
   config_path: string | null;
+  custom_domain_hostname: string | null;
+  custom_domain_cf_hostname_id: string | null;
+  custom_domain_status: string | null;
+  custom_domain_ssl_status: string | null;
+  custom_domain_error: string | null;
+  custom_domain_updated_at: number | null;
 }
 
 export interface AppCreator {

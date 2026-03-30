@@ -187,6 +187,7 @@ export interface CfApiProxyEnv {
   SANDBOX_PROXY_SECRET?: string;
   CF_ZONE_ID?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
+  CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
 }
 
 export interface DeploySideEffectsInfo {
@@ -910,6 +911,27 @@ export async function listCustomHostnames(
     page++;
   }
   return results;
+}
+
+export async function findCustomHostnameByHostname(
+  zoneId: string,
+  apiToken: string,
+  hostname: string
+): Promise<CfCustomHostname | null> {
+  const normalizedHostname = hostname.trim().toLowerCase();
+  const hostnames = await listCustomHostnames(zoneId, apiToken, normalizedHostname);
+  return hostnames.find((entry) => entry.hostname.trim().toLowerCase() === normalizedHostname) ?? null;
+}
+
+export async function listCustomHostnamesByBaseDomain(
+  zoneId: string,
+  apiToken: string,
+  baseDomain: string
+): Promise<CfCustomHostname[]> {
+  const normalizedBaseDomain = baseDomain.trim().toLowerCase();
+  const suffix = `.${normalizedBaseDomain}`;
+  const hostnames = await listCustomHostnames(zoneId, apiToken, normalizedBaseDomain);
+  return hostnames.filter((entry) => entry.hostname.trim().toLowerCase().endsWith(suffix));
 }
 
 /**

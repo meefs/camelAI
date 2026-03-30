@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
 import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
-import { getAppUrl, getCustomDomainAppUrl } from '@/lib/app-url';
+import { getPreferredAppUrl } from '@/lib/app-url';
 import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
@@ -84,7 +84,7 @@ export default function AppsClient({
     if (chatFetcher.data.thread && pendingChatAppRef.current) {
       // Build the camelai system message
       const app = pendingChatAppRef.current;
-      const appUrl = orgCustomDomain ? getCustomDomainAppUrl(app.script_name, orgCustomDomain) : getAppUrl(app.script_name, hostname, orgSlug);
+      const appUrl = getPreferredAppUrl(app, { hostname, orgSlug, orgCustomDomain });
       const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
       const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
       const threadTitle = buildAppThreadFallbackTitle(app.script_name);

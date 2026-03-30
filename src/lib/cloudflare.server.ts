@@ -48,6 +48,7 @@ export interface CloudflareEnv {
   CF_API_TOKEN?: string;
   CF_ZONE_ID?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
+  CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
   CF_DCV_DELEGATION_UUID?: string;
   WORKER_BASE_URL: string;
   TOKEN_SIGNING_SECRET: string;

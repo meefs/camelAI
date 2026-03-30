@@ -7,6 +7,7 @@
 	// Local dev defaults - skip auth and use local namespace
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
+		"MAIN_APP_URL": "https://local.camelai.dev",
 		"SKIP_AUTH": "true",
 		// Temporary migration mode. "legacy-open" fails closed except for legacy hostnames.
 		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
@@ -35,6 +36,9 @@
 	"env": {
 		"prod": {
 			"name": "chiridion-dispatcher",
+			"vars": {
+				"MAIN_APP_URL": "https://camelai.dev"
+			},
 			"routes": [
 				{ "pattern": "*.apps.camelai.dev/*", "zone_name": "camelai.dev" },
 				{ "pattern": "*.camelai.app/*", "zone_name": "camelai.app" }
@@ -63,6 +67,9 @@
 		},
 		"staging": {
 			"name": "chiridion-dispatcher-staging",
+			"vars": {
+				"MAIN_APP_URL": "https://staging.camelai.dev"
+			},
 			"routes": [
 				{ "pattern": "*.apps.staging.camelai.dev/*", "zone_name": "camelai.dev" },
 				{ "pattern": "*.staging.camelai.app/*", "zone_name": "camelai.app" }
@@ -91,6 +98,9 @@
 		},
 		"dev-miguel": {
 			"name": "chiridion-dispatcher-dev-miguel",
+			"vars": {
+				"MAIN_APP_URL": "https://dev-miguel.camelai.dev"
+			},
 			"routes": [
 				{ "pattern": "*.apps.dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" },
 				{ "pattern": "*.dev-miguel.camelai.app/*", "zone_name": "camelai.app" }
@@ -119,6 +129,9 @@
 		},
 		"dev-illiana": {
 			"name": "chiridion-dispatcher-dev-illiana",
+			"vars": {
+				"MAIN_APP_URL": "https://dev-illiana.camelai.dev"
+			},
 			"routes": [
 				{ "pattern": "*.apps.dev-illiana.camelai.dev/*", "zone_name": "camelai.dev" },
 				{ "pattern": "*.dev-illiana.camelai.app/*", "zone_name": "camelai.app" }
@@ -153,6 +166,7 @@
 			],
 			"vars": {
 				"AI_VIRTUAL_MODEL": "dynamic/auto",
+				"MAIN_APP_URL": "https://local.camelai.dev",
 				"SKIP_AUTH": "true"
 			},
 			"dispatch_namespaces": [

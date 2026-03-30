@@ -6,6 +6,7 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
+		"MAIN_APP_URL": "https://camelai.dev",
 		// Temporary migration mode. "legacy-open" fails closed except for legacy hostnames.
 		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
 	},
