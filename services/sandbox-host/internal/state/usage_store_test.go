@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -415,5 +416,243 @@ func TestGetUsageLogSumNilStore(t *testing.T) {
 	}
 	if sum.TotalRequests != 0 {
 		t.Fatalf("expected zero sum from nil store")
+	}
+}
+
+func TestGetOrgUsageAnalytics(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.RecordUsage(UsageRecord{
+		OrgID: "org-a", Model: "claude-sonnet-4-5-20250929",
+		InputTokens: 100, OutputTokens: 50, CostUSD: 3,
+	}); err != nil {
+		t.Fatalf("record usage org-a #1: %v", err)
+	}
+	if err := store.RecordUsage(UsageRecord{
+		OrgID: "org-a", Model: "claude-sonnet-4-5-20250929",
+		InputTokens: 200, OutputTokens: 100, CostUSD: 7,
+	}); err != nil {
+		t.Fatalf("record usage org-a #2: %v", err)
+	}
+	if err := store.RecordUsage(UsageRecord{
+		OrgID: "org-b", Model: "claude-opus-4-6",
+		InputTokens: 300, OutputTokens: 150, CostUSD: 2,
+	}); err != nil {
+		t.Fatalf("record usage org-b: %v", err)
+	}
+
+	rows, err := store.GetOrgUsageAnalytics([]string{"org-a", "org-c"}, true)
+	if err != nil {
+		t.Fatalf("get org usage analytics: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 analytics rows, got %d", len(rows))
+	}
+
+	if rows[0].OrgID != "org-a" {
+		t.Fatalf("expected first row for org-a, got %s", rows[0].OrgID)
+	}
+	if rows[0].TotalRequests != 2 {
+		t.Fatalf("expected org-a total_requests=2, got %d", rows[0].TotalRequests)
+	}
+	if rows[0].TotalCostUSD != 10 {
+		t.Fatalf("expected org-a total_cost_usd=10, got %f", rows[0].TotalCostUSD)
+	}
+	if rows[0].Spend7d != 10 || rows[0].Spend30d != 10 {
+		t.Fatalf("expected org-a rolling spend totals of 10, got %+v", rows[0])
+	}
+	if len(rows[0].Windows) != len(DefaultSpendLimits) {
+		t.Fatalf("expected default windows for org-a, got %d", len(rows[0].Windows))
+	}
+
+	if rows[1].OrgID != "org-c" {
+		t.Fatalf("expected second row for org-c, got %s", rows[1].OrgID)
+	}
+	if rows[1].TotalRequests != 0 || rows[1].TotalCostUSD != 0 || rows[1].Spend7d != 0 || rows[1].Spend30d != 0 {
+		t.Fatalf("expected zero analytics row for org-c, got %+v", rows[1])
+	}
+	if len(rows[1].Windows) != len(DefaultSpendLimits) {
+		t.Fatalf("expected default windows for org-c, got %d", len(rows[1].Windows))
+	}
+}
+
+func TestListSpamOrgIDs(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	spamLimits := []SpendLimit{
+		{Window: 5 * time.Hour, LimitUSD: 0.01, Label: "5h"},
+		{Window: 7 * 24 * time.Hour, LimitUSD: 0.01, Label: "7d"},
+	}
+	notSpamLimits := []SpendLimit{
+		{Window: 5 * time.Hour, LimitUSD: 0.01, Label: "5h"},
+		{Window: 7 * 24 * time.Hour, LimitUSD: 1, Label: "7d"},
+	}
+
+	if err := store.SetSpendLimits("org-spam", spamLimits); err != nil {
+		t.Fatalf("set spam limits: %v", err)
+	}
+	if err := store.SetSpendLimits("org-not-spam", notSpamLimits); err != nil {
+		t.Fatalf("set non-spam limits: %v", err)
+	}
+
+	orgIDs, err := store.ListSpamOrgIDs()
+	if err != nil {
+		t.Fatalf("list spam org ids: %v", err)
+	}
+	if len(orgIDs) != 1 || orgIDs[0] != "org-spam" {
+		t.Fatalf("expected only org-spam, got %v", orgIDs)
+	}
+}
+
+func TestCustomOverrideLimitsNotClobberedByDefaultSeeding(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Set custom override limits with non-default labels.
+	customLimits := []SpendLimit{
+		{Window: time.Hour, LimitUSD: 0.01, Label: "1h"},
+		{Window: 24 * time.Hour, LimitUSD: 0.01, Label: "24h"},
+	}
+	if err := store.SetSpendLimits("org-custom", customLimits); err != nil {
+		t.Fatalf("set custom limits: %v", err)
+	}
+
+	// Record usage — this calls ensureAnalyticsDefaultLimitsTx internally.
+	if err := store.RecordUsage(UsageRecord{
+		OrgID: "org-custom", Model: "claude-sonnet-4-5-20250929",
+		InputTokens: 100, OutputTokens: 50, CostUSD: 1,
+	}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	// The org should still be classified as spam (all limits <= 0.01).
+	// Before the fix, default 5h/$50 and 7d/$200 rows would be added,
+	// making MAX(limit_usd) = 200 and misclassifying the org as non-spam.
+	orgIDs, err := store.ListSpamOrgIDs()
+	if err != nil {
+		t.Fatalf("list spam org ids: %v", err)
+	}
+	if len(orgIDs) != 1 || orgIDs[0] != "org-custom" {
+		t.Fatalf("expected org-custom to remain spam after usage recording, got %v", orgIDs)
+	}
+
+	// Verify the analytics only has the 2 custom rows, not 4.
+	rows, err := store.GetOrgUsageAnalytics([]string{"org-custom"}, true)
+	if err != nil {
+		t.Fatalf("get org usage analytics: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 analytics row, got %d", len(rows))
+	}
+	if len(rows[0].Windows) != 2 {
+		t.Fatalf("expected 2 custom windows, got %d: %+v", len(rows[0].Windows), rows[0].Windows)
+	}
+	for _, w := range rows[0].Windows {
+		if w.LimitUSD != 0.01 {
+			t.Fatalf("expected all window limits to be 0.01, got %+v", w)
+		}
+	}
+}
+
+func TestRecordUsageIgnoresAnalyticsWriteFailure(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.analytics.Close(); err != nil {
+		t.Fatalf("close analytics db: %v", err)
+	}
+
+	if err := store.RecordUsage(UsageRecord{
+		OrgID: "org-primary", Model: "claude-sonnet-4-5-20250929",
+		InputTokens: 100, OutputTokens: 50, CostUSD: 1.25,
+	}); err != nil {
+		t.Fatalf("record usage should ignore analytics failure, got: %v", err)
+	}
+
+	spend, err := store.GetOrgSpend("org-primary")
+	if err != nil {
+		t.Fatalf("get org spend: %v", err)
+	}
+	if spend.TotalRequests != 1 || spend.TotalCostUSD != 1.25 {
+		t.Fatalf("expected primary spend write to succeed, got %+v", spend)
+	}
+}
+
+func TestSetSpendLimitsIgnoresAnalyticsWriteFailure(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.analytics.Close(); err != nil {
+		t.Fatalf("close analytics db: %v", err)
+	}
+
+	custom := []SpendLimit{{Window: time.Hour, LimitUSD: 10, Label: "1h"}}
+	if err := store.SetSpendLimits("org-primary", custom); err != nil {
+		t.Fatalf("set spend limits should ignore analytics failure, got: %v", err)
+	}
+
+	limits, err := store.GetSpendLimits("org-primary")
+	if err != nil {
+		t.Fatalf("get spend limits: %v", err)
+	}
+	if len(limits) != 1 || limits[0].Label != "1h" || limits[0].LimitUSD != 10 {
+		t.Fatalf("expected primary limit write to succeed, got %+v", limits)
+	}
+}
+
+func TestNewUsageStoreSkipsAnalyticsRebuildWhenSchemaIsCurrent(t *testing.T) {
+	baseDir := t.TempDir()
+	store, err := NewUsageStore(baseDir)
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := store.analytics.ExecContext(
+		ctx,
+		`INSERT INTO org_usage_rollups (org_id, total_cost_usd, total_requests, updated_at_ms)
+		 VALUES ('sentinel-org', 99, 7, ?)`,
+		time.Now().UTC().UnixMilli(),
+	); err != nil {
+		t.Fatalf("insert sentinel analytics row: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close usage store: %v", err)
+	}
+
+	reopened, err := NewUsageStore(baseDir)
+	if err != nil {
+		t.Fatalf("reopen usage store: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+
+	rows, err := reopened.GetOrgUsageAnalytics([]string{"sentinel-org"}, false)
+	if err != nil {
+		t.Fatalf("get org usage analytics after reopen: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one sentinel analytics row, got %d", len(rows))
+	}
+	if rows[0].OrgID != "sentinel-org" || rows[0].TotalCostUSD != 99 || rows[0].TotalRequests != 7 {
+		t.Fatalf("expected sentinel analytics row to persist without rebuild, got %+v", rows[0])
 	}
 }

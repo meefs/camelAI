@@ -16,13 +16,21 @@ import { Hono } from 'hono';
 import { openApi } from 'hono-zod-openapi';
 import { z } from 'zod';
 import type { Env } from '../../types.js';
-import type { UserFilters, ThreadFilters, OrgFilters, WorkspaceFilters, AppFilters } from '../../admin-index-do.js';
+import type {
+  UserFilters,
+  ThreadFilters,
+  WorkspaceFilters,
+  AppFilters,
+  AdminOrgDirectoryRow,
+  AdminUserSummaryRow,
+  AdminThreadListRow,
+  AdminAppListRow,
+} from '../../admin-index-do.js';
 import {
   ErrorSchema,
   StatsResponseSchema,
   UserSummarySchema,
   OrgMembershipSchema,
-  OrgSchema,
   OrgDetailSchema,
   ThreadSchema,
   WorkspaceSchema,
@@ -41,17 +49,29 @@ import {
   OrgsQuerySchema,
   WorkspacesQuerySchema,
   AppsQuerySchema,
-  PaginationQuerySchema,
   OrgUsageSpendSchema,
   OrgUsageLimitsSchema,
   OrgUsageLogSchema,
   OrgUsageLogSumSchema,
+  SpamOrgIdsResponseSchema,
+  AdminOrgListItemSchema,
+  DashboardTopOrgsQuerySchema,
+  DashboardTopOrgsResponseSchema,
+  DashboardSpamSummaryResponseSchema,
   SetOrgLimitsBodySchema,
   EmailDomainBlocklistSchema,
   AddEmailDomainBodySchema,
   paginatedList,
   dataList,
 } from './schemas.js';
+import {
+  fetchOrgUsageAnalytics,
+  fetchSpamOrgIds,
+  isOrgExcludedByInternalDomains,
+  normalizeBillingStatus,
+  normalizeInternalDomains,
+  type OrgUsageAnalyticsItem,
+} from './metrics.js';
 import {
   getBlocklistDomainsFromKV,
   setBlocklistInKV,
@@ -79,6 +99,93 @@ async function fetchSandboxHostUsage(
     return Response.json({ error: 'SANDBOX_HOST binding not configured' }, { status: 502 });
   }
   return env.SANDBOX_HOST.fetch(url, init);
+}
+
+type AdminOrgDirectoryLookup = {
+  getOrgDirectoryRows(): Promise<AdminOrgDirectoryRow[]>;
+  getOrgDirectoryByIds(orgIds: string[]): Promise<AdminOrgDirectoryRow[]>;
+  getOrgDirectoryPaginated(
+    offset: number,
+    limit: number,
+    search?: string,
+    filters?: {
+      archived?: boolean;
+      sort_by?: 'created_at' | 'name';
+      sort_dir?: 'asc' | 'desc';
+      exclude_org_ids?: string[];
+      exclude_creator_domains?: string[];
+    },
+  ): Promise<{
+    items: AdminOrgDirectoryRow[];
+    total: number;
+    offset: number;
+    limit: number;
+  }>;
+  getUsersByOrgIds(orgIds: string[]): Promise<AdminUserSummaryRow[]>;
+  getThreadsByOrgIds(orgIds: string[]): Promise<AdminThreadListRow[]>;
+  getAppsByOrgIds(orgIds: string[]): Promise<AdminAppListRow[]>;
+};
+
+function enrichOrgListItems(
+  orgs: AdminOrgDirectoryRow[],
+  usageByOrgId: Map<string, OrgUsageAnalyticsItem>,
+  options: {
+    includeUsage: boolean;
+    includeSpend30d: boolean;
+  },
+) {
+  return orgs.map((org) => {
+    const usage = usageByOrgId.get(org.id);
+    return {
+      id: org.id,
+      name: org.name,
+      slug: org.slug ?? null,
+      created_by: org.created_by,
+      created_at: org.created_at,
+      archived: org.archived,
+      // Keep the raw billing enum here for backwards compatibility on the
+      // long-standing /orgs admin route. Metrics-specific endpoints normalize
+      // "paying" -> "active" at their own boundary.
+      billing_status: org.billing_status ?? null,
+      member_count: org.member_count,
+      workspace_count: org.workspace_count,
+      ...(options.includeUsage
+        ? {
+            total_requests: usage?.total_requests ?? 0,
+            total_cost_usd: usage?.total_cost_usd ?? 0,
+            windows: usage?.windows ?? [],
+          }
+        : {}),
+      ...(options.includeSpend30d
+        ? {
+            spend_30d: usage?.spend_30d ?? 0,
+          }
+        : {}),
+    };
+  });
+}
+
+function toDashboardTopOrgItem(
+  org: AdminOrgDirectoryRow,
+  usage: OrgUsageAnalyticsItem | undefined,
+) {
+  return {
+    org_id: org.id,
+    name: org.name,
+    slug: org.slug ?? null,
+    created_at: org.created_at,
+    created_by: org.created_by,
+    creator_name: org.creator_name ?? null,
+    creator_email: org.creator_email ?? null,
+    member_count: org.member_count,
+    workspace_count: org.workspace_count,
+    billing_status: normalizeBillingStatus(org.billing_status),
+    total_requests: usage?.total_requests ?? 0,
+    total_cost_usd: usage?.total_cost_usd ?? 0,
+    spend_7d: usage?.spend_7d ?? 0,
+    spend_30d: usage?.spend_30d ?? 0,
+    windows: usage?.windows ?? [],
+  };
 }
 
 export const routes = new Hono<HonoEnv>();
@@ -168,6 +275,29 @@ routes.get(
 );
 
 // ---------------------------------------------------------------------------
+// GET /spam/org-ids
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/spam/org-ids',
+  openApi({
+    summary: 'List spam org IDs from effective spend limits',
+    responses: {
+      200: SpamOrgIdsResponseSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    try {
+      const orgIds = await fetchSpamOrgIds(c.env);
+      return c.json({ org_ids: orgIds, count: orgIds.length });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Failed to load spam org IDs' }, 502);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // GET /orgs
 // ---------------------------------------------------------------------------
 
@@ -179,17 +309,60 @@ routes.get(
       query: OrgsQuerySchema,
     },
     responses: {
-      200: paginatedList(OrgSchema),
+      200: paginatedList(AdminOrgListItemSchema),
+      502: ErrorSchema,
     },
   }),
   async (c) => {
-    const { limit, offset, search, archived, sort_by, sort_dir } = c.req.valid('query');
-    const adminIndex = getAdminIndexStub(c.env);
-    const filters: OrgFilters = { sort_by, sort_dir };
-    if (archived !== undefined) filters.archived = archived;
+    try {
+      const {
+        limit,
+        offset,
+        search,
+        archived,
+        exclude_spam,
+        exclude_internal_domains,
+        include_usage,
+        include_spend_30d,
+        sort_by,
+        sort_dir,
+      } = c.req.valid('query');
+      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const internalDomains = exclude_internal_domains
+        ? Array.from(normalizeInternalDomains(exclude_internal_domains))
+        : [];
+      // /orgs is an additive admin list endpoint, so internal-domain filtering
+      // stays opt-in here instead of defaulting to camelai.com.
+      const spamOrgIds = exclude_spam ? await fetchSpamOrgIds(c.env) : [];
+      const result = await adminIndex.getOrgDirectoryPaginated(offset, limit, search, {
+        archived,
+        sort_by,
+        sort_dir,
+        exclude_creator_domains: internalDomains,
+        exclude_org_ids: spamOrgIds,
+      });
+      const pagedOrgs = result.items;
+      const needsUsage = include_usage === true || include_spend_30d === true;
+      const usageByOrgId = needsUsage
+        ? await fetchOrgUsageAnalytics(
+            c.env,
+            pagedOrgs.map((org) => org.id),
+            { includeWindows: include_usage === true },
+          )
+        : new Map<string, OrgUsageAnalyticsItem>();
 
-    const result = await adminIndex.getOrgsPaginated(offset, limit, search, filters);
-    return c.json(result);
+      return c.json({
+        items: enrichOrgListItems(pagedOrgs, usageByOrgId, {
+          includeUsage: include_usage === true,
+          includeSpend30d: include_spend_30d === true,
+        }),
+        total: result.total,
+        offset: result.offset,
+        limit: result.limit,
+      });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Failed to load organizations' }, 502);
+    }
   },
 );
 
@@ -499,6 +672,203 @@ routes.get(
 
     const result = await adminIndex.getAppsPaginated(offset, limit, search, filters);
     return c.json(result);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/top-orgs
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/dashboard/top-orgs',
+  openApi({
+    summary: 'Top orgs ranked by spend or member count',
+    request: {
+      query: DashboardTopOrgsQuerySchema,
+    },
+    responses: {
+      200: DashboardTopOrgsResponseSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    try {
+      const {
+        limit,
+        exclude_spam,
+        exclude_internal_domains,
+        sort_by,
+      } = c.req.valid('query');
+
+      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      let orgs = await adminIndex.getOrgDirectoryRows();
+      const internalDomains = normalizeInternalDomains(exclude_internal_domains, ['camelai.com']);
+      orgs = orgs.filter((org) => !isOrgExcludedByInternalDomains(org, internalDomains));
+
+      if (exclude_spam !== false) {
+        const spamOrgIds = new Set(await fetchSpamOrgIds(c.env));
+        orgs = orgs.filter((org) => !spamOrgIds.has(org.id));
+      }
+
+      // Two-pass: rank without windows first, then fetch windows for top-N only.
+      const rankingUsage = await fetchOrgUsageAnalytics(
+        c.env,
+        orgs.map((org) => org.id),
+        { includeWindows: false },
+      );
+
+      const ranked = orgs
+        .map((org) => ({ org, usage: rankingUsage.get(org.id) }))
+        .sort((left, right) => {
+          if (sort_by === 'member_count') {
+            if (right.org.member_count !== left.org.member_count) {
+              return right.org.member_count - left.org.member_count;
+            }
+            const leftSpend = left.usage?.spend_30d ?? 0;
+            const rightSpend = right.usage?.spend_30d ?? 0;
+            if (rightSpend !== leftSpend) {
+              return rightSpend - leftSpend;
+            }
+            return left.org.id.localeCompare(right.org.id);
+          }
+
+          const leftSpend = sort_by === 'spend_30d'
+            ? (left.usage?.spend_30d ?? 0)
+            : (left.usage?.spend_7d ?? 0);
+          const rightSpend = sort_by === 'spend_30d'
+            ? (right.usage?.spend_30d ?? 0)
+            : (right.usage?.spend_7d ?? 0);
+          if (rightSpend !== leftSpend) {
+            return rightSpend - leftSpend;
+          }
+          if (right.org.member_count !== left.org.member_count) {
+            return right.org.member_count - left.org.member_count;
+          }
+          return left.org.id.localeCompare(right.org.id);
+        })
+        .slice(0, limit);
+
+      const topOrgIds = ranked.map(({ org }) => org.id);
+      const windowUsage = topOrgIds.length > 0
+        ? await fetchOrgUsageAnalytics(c.env, topOrgIds, { includeWindows: true })
+        : new Map<string, OrgUsageAnalyticsItem>();
+
+      const items = ranked.map(({ org }) =>
+        toDashboardTopOrgItem(org, windowUsage.get(org.id)),
+      );
+
+      return c.json({
+        items,
+        count: items.length,
+        limit,
+        sort_by,
+      });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Failed to load top orgs' }, 502);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/summary
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/dashboard/summary',
+  openApi({
+    summary: 'Dashboard summary (blocked until dashboard formulas are attached)',
+    responses: {
+      501: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    return c.json(
+      { error: 'Dashboard summary is blocked until the authoritative dashboard formulas or fixtures are available in this repo.' },
+      501,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/retention
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/dashboard/retention',
+  openApi({
+    summary: 'Dashboard retention (blocked until dashboard formulas are attached)',
+    responses: {
+      501: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    return c.json(
+      { error: 'Dashboard retention is blocked until the authoritative dashboard formulas or fixtures are available in this repo.' },
+      501,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/spam-summary
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/dashboard/spam-summary',
+  openApi({
+    summary: 'Dashboard spam summary for spam-flagged orgs',
+    responses: {
+      200: DashboardSpamSummaryResponseSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    try {
+      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const spamOrgIds = await fetchSpamOrgIds(c.env);
+
+      const [users, threads, apps, orgs, usageByOrgId] = await Promise.all([
+        adminIndex.getUsersByOrgIds(spamOrgIds),
+        adminIndex.getThreadsByOrgIds(spamOrgIds),
+        adminIndex.getAppsByOrgIds(spamOrgIds),
+        adminIndex.getOrgDirectoryByIds(spamOrgIds),
+        fetchOrgUsageAnalytics(c.env, spamOrgIds, { includeWindows: true }),
+      ]);
+
+      const org_usage = orgs
+        .map((org) => toDashboardTopOrgItem(org, usageByOrgId.get(org.id)))
+        .sort((left, right) => {
+          if (right.spend_30d !== left.spend_30d) {
+            return right.spend_30d - left.spend_30d;
+          }
+          if (right.created_at !== left.created_at) {
+            return right.created_at - left.created_at;
+          }
+          return left.org_id.localeCompare(right.org_id);
+        });
+
+      return c.json({
+        // The spam tab is investigative: include any user attached to a spam
+        // org, even if that user also belongs to non-spam orgs elsewhere.
+        users,
+        threads,
+        apps,
+        orgs: orgs.map((org) => ({
+          id: org.id,
+          name: org.name,
+          slug: org.slug ?? null,
+          created_by: org.created_by,
+          created_at: org.created_at,
+          archived: org.archived,
+          billing_status: normalizeBillingStatus(org.billing_status),
+          member_count: org.member_count,
+          workspace_count: org.workspace_count,
+        })),
+        org_usage,
+      });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Failed to load spam summary' }, 502);
+    }
   },
 );
 

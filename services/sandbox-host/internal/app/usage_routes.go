@@ -22,6 +22,11 @@ import (
 var usageOrgRouteRegex = regexp.MustCompile(`^/v1/usage/orgs/([^/]+)(/[^/]*(?:/[^/]*)?)$`)
 
 func (s *Server) handleUsageRoute(w http.ResponseWriter, req *http.Request) {
+	if strings.HasPrefix(req.URL.Path, "/v1/usage/analytics/") {
+		s.handleUsageAnalyticsRoute(w, req)
+		return
+	}
+
 	match := usageOrgRouteRegex.FindStringSubmatch(req.URL.Path)
 	if match == nil {
 		errorJSON(w, "Not found", http.StatusNotFound)
@@ -45,6 +50,76 @@ func (s *Server) handleUsageRoute(w http.ResponseWriter, req *http.Request) {
 	default:
 		errorJSON(w, "Not found", http.StatusNotFound)
 	}
+}
+
+func (s *Server) handleUsageAnalyticsRoute(w http.ResponseWriter, req *http.Request) {
+	switch {
+	case req.URL.Path == "/v1/usage/analytics/spam-org-ids" && req.Method == http.MethodGet:
+		s.handleGetSpamOrgIDs(w)
+	case req.URL.Path == "/v1/usage/analytics/orgs/query" && req.Method == http.MethodPost:
+		s.handlePostUsageAnalyticsOrgsQuery(w, req)
+	default:
+		errorJSON(w, "Not found", http.StatusNotFound)
+	}
+}
+
+func (s *Server) handleGetSpamOrgIDs(w http.ResponseWriter) {
+	orgIDs, err := s.usage.ListSpamOrgIDs()
+	if err != nil {
+		errorJSON(w, "Failed to read spam org ids", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"org_ids": orgIDs,
+		"count":   len(orgIDs),
+	})
+}
+
+type usageAnalyticsOrgsQueryRequest struct {
+	OrgIDs         []string `json:"org_ids"`
+	IncludeWindows bool     `json:"include_windows"`
+}
+
+func (s *Server) handlePostUsageAnalyticsOrgsQuery(w http.ResponseWriter, req *http.Request) {
+	var body usageAnalyticsOrgsQueryRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		errorJSON(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if len(body.OrgIDs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": []state.OrgUsageAnalyticsRow{},
+			"count": 0,
+		})
+		return
+	}
+
+	seen := make(map[string]struct{}, len(body.OrgIDs))
+	orgIDs := make([]string, 0, len(body.OrgIDs))
+	for _, rawOrgID := range body.OrgIDs {
+		orgID := strings.TrimSpace(rawOrgID)
+		if orgID == "" {
+			continue
+		}
+		if _, ok := seen[orgID]; ok {
+			continue
+		}
+		seen[orgID] = struct{}{}
+		orgIDs = append(orgIDs, orgID)
+	}
+
+	items, err := s.usage.GetOrgUsageAnalytics(orgIDs, body.IncludeWindows)
+	if err != nil {
+		errorJSON(w, "Failed to read usage analytics", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"count": len(items),
+	})
 }
 
 func (s *Server) handleGetOrgSpend(w http.ResponseWriter, orgID string) {
@@ -202,15 +277,15 @@ func (s *Server) handleGetOrgUsageLogSum(w http.ResponseWriter, req *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"org_id":                           orgID,
-		"total_cost_usd":                   sum.TotalCostUSD,
-		"total_requests":                   sum.TotalRequests,
-		"total_input_tokens":               sum.TotalInputTokens,
-		"total_output_tokens":              sum.TotalOutputTokens,
+		"org_id":                            orgID,
+		"total_cost_usd":                    sum.TotalCostUSD,
+		"total_requests":                    sum.TotalRequests,
+		"total_input_tokens":                sum.TotalInputTokens,
+		"total_output_tokens":               sum.TotalOutputTokens,
 		"total_cache_creation_input_tokens": sum.TotalCacheCreationInputTokens,
-		"total_cache_read_input_tokens":    sum.TotalCacheReadInputTokens,
-		"from_ms":                          fromMs,
-		"to_ms":                            toMs,
+		"total_cache_read_input_tokens":     sum.TotalCacheReadInputTokens,
+		"from_ms":                           fromMs,
+		"to_ms":                             toMs,
 	})
 }
 

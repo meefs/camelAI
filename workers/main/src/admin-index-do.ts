@@ -26,6 +26,69 @@ export interface OrgFilters {
   sort_dir?: 'asc' | 'desc';
 }
 
+export interface OrgDirectoryFilters extends OrgFilters {
+  exclude_org_ids?: string[];
+  exclude_creator_domains?: string[];
+}
+
+export interface AdminOrgDirectoryRow {
+  id: string;
+  name: string;
+  slug: string | null;
+  created_at: number;
+  archived: boolean;
+  billing_status: string | null;
+  created_by: string;
+  member_count: number;
+  workspace_count: number;
+  creator_email: string | null;
+  creator_name: string | null;
+}
+
+export interface AdminUserSummaryRow {
+  id: string;
+  email: string;
+  name: string | null;
+  avatar: {
+    color: string;
+    content: string;
+  };
+  created_at: number;
+  org_count: number;
+  is_superuser: boolean;
+  is_orphaned: boolean;
+}
+
+export interface AdminThreadListRow {
+  id: string;
+  title: string | null;
+  workspace_id: string;
+  created_at: number;
+  updated_at: number;
+  created_by: string | null;
+  org_id: string;
+  org_name: string | null;
+  workspace_name: string | null;
+}
+
+export interface AdminAppListRow {
+  app_id: string;
+  script_name: string;
+  org_id: string;
+  workspace_id: string;
+  org_name: string | null;
+  org_slug: string | null;
+  workspace_name: string | null;
+  created_by: string;
+  created_by_name: string | null;
+  created_by_email: string | null;
+  created_at: number;
+  updated_at: number;
+  is_public: boolean;
+  preview_status: string | null;
+  preview_error: string | null;
+}
+
 export interface WorkspaceFilters {
   org_id?: string;
   archived?: boolean;
@@ -45,8 +108,10 @@ export interface AppFilters {
 const USER_SORT_COLS: Record<string, string> = { created_at: 'created_at', email: 'email', name: 'name' };
 const THREAD_SORT_COLS: Record<string, string> = { created_at: 't.created_at', updated_at: 't.updated_at' };
 const ORG_SORT_COLS: Record<string, string> = { created_at: 'created_at', name: 'name' };
+const ORG_DIRECTORY_SORT_COLS: Record<string, string> = { created_at: 'o.created_at', name: 'o.name' };
 const WORKSPACE_SORT_COLS: Record<string, string> = { created_at: 'w.created_at', name: 'w.name' };
 const APP_SORT_COLS: Record<string, string> = { created_at: 'a.created_at', updated_at: 'a.updated_at' };
+const ORG_MEMBERSHIP_SYNC_CONCURRENCY = 8;
 
 export type AdminEventType =
   | { type: 'user_upsert'; payload: any }
@@ -61,7 +126,12 @@ export type AdminEventType =
   | { type: 'invitation_delete'; payload: { id: string } }
   | { type: 'workspace_delete'; payload: { id: string } }
   | { type: 'org_member_delta'; payload: { org_id: string; delta: number } }
-  | { type: 'user_org_delta'; payload: { user_id: string; delta: number } };
+  | { type: 'user_org_delta'; payload: { user_id: string; delta: number } }
+  | {
+      type: 'org_membership_upsert';
+      payload: { org_id: string; user_id: string; role: string; joined_at: number };
+    }
+  | { type: 'org_membership_delete'; payload: { org_id: string; user_id: string } };
 
 export class AdminIndexDO extends DurableObject<DOEnv> {
   private sql: SqlStorage;
@@ -99,6 +169,106 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
   private normalizeSignupIp(ip: string): string | null {
     const normalized = ip.trim().toLowerCase();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private async syncItemsWithConcurrency<T>(
+    items: readonly T[],
+    concurrency: number,
+    worker: (item: T) => Promise<void>,
+  ): Promise<void> {
+    if (items.length === 0) {
+      return;
+    }
+
+    let nextIndex = 0;
+    const runner = async () => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= items.length) {
+          return;
+        }
+        await worker(items[index]);
+      }
+    };
+
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    await Promise.all(Array.from({ length: workerCount }, () => runner()));
+  }
+
+  private async syncOrgMembershipSnapshot(orgId: string): Promise<void> {
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const members = await orgStub.getMembers();
+
+    this.sql.exec('DELETE FROM org_memberships WHERE org_id = ?', orgId);
+    for (const member of members) {
+      this.sql.exec(
+        `
+          INSERT INTO org_memberships (org_id, user_id, role, joined_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(org_id, user_id) DO UPDATE SET
+            role = excluded.role,
+            joined_at = excluded.joined_at
+        `,
+        orgId,
+        member.user_id,
+        member.role,
+        member.joined_at,
+      );
+    }
+    this.sql.exec('UPDATE orgs SET member_count = ? WHERE id = ?', members.length, orgId);
+  }
+
+  private async ensureOrgMembershipsIndexed(orgIds: string[]): Promise<void> {
+    const normalizedOrgIds = Array.from(
+      new Set(orgIds.map((orgId) => orgId.trim()).filter((orgId) => orgId.length > 0))
+    );
+    if (normalizedOrgIds.length === 0) {
+      return;
+    }
+
+    const coverageRows = Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            o.id AS org_id,
+            COALESCE(o.member_count, 0) AS expected_count,
+            COUNT(m.user_id) AS indexed_count
+          FROM orgs o
+          LEFT JOIN org_memberships m ON m.org_id = o.id
+          WHERE o.id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          GROUP BY o.id, o.member_count
+        `,
+        ...normalizedOrgIds,
+      ),
+    ) as Array<{
+      org_id: string;
+      expected_count: number;
+      indexed_count: number;
+    }>;
+
+    const orgIdsNeedingSync = coverageRows
+      .filter((row) => Number(row.expected_count ?? 0) !== Number(row.indexed_count ?? 0))
+      .map((row) => row.org_id);
+
+    if (orgIdsNeedingSync.length === 0) {
+      return;
+    }
+
+    await this.syncItemsWithConcurrency(
+      orgIdsNeedingSync,
+      ORG_MEMBERSHIP_SYNC_CONCURRENCY,
+      async (orgId) => {
+        try {
+          await this.syncOrgMembershipSnapshot(orgId);
+        } catch (error) {
+          console.warn('[AdminIndexDO] Failed to sync org memberships snapshot', {
+            orgId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    );
   }
 
   private migrate() {
@@ -182,9 +352,18 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         blocked_by TEXT,
         reason TEXT
       );
+      CREATE TABLE IF NOT EXISTS org_memberships (
+        org_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT,
+        joined_at INTEGER,
+        PRIMARY KEY (org_id, user_id)
+      );
       CREATE INDEX IF NOT EXISTS idx_threads_org_updated_at ON threads(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_apps_org_updated_at ON apps(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_workspaces_org_created_at ON workspaces(org_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_org_memberships_user_id ON org_memberships(user_id);
+      CREATE INDEX IF NOT EXISTS idx_org_memberships_org_joined_at ON org_memberships(org_id, joined_at DESC);
     `);
 
     const appColumns = this.sql.exec<{ name: string }>('PRAGMA table_info(apps)').toArray();
@@ -320,6 +499,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             event.payload.id,
             Date.now()
           );
+          this.sql.exec('DELETE FROM org_memberships WHERE user_id = ?', event.payload.id);
           this.sql.exec('DELETE FROM users WHERE id = ?', event.payload.id);
           break;
         case 'org_upsert': {
@@ -459,6 +639,28 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         case 'user_org_delta':
           this.sql.exec('UPDATE users SET org_count = MAX(0, org_count + ?) WHERE id = ?', event.payload.delta, event.payload.user_id);
           break;
+        case 'org_membership_upsert':
+          this.sql.exec(
+            `
+              INSERT INTO org_memberships (org_id, user_id, role, joined_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(org_id, user_id) DO UPDATE SET
+                role = excluded.role,
+                joined_at = COALESCE(org_memberships.joined_at, excluded.joined_at)
+            `,
+            event.payload.org_id,
+            event.payload.user_id,
+            event.payload.role,
+            event.payload.joined_at
+          );
+          break;
+        case 'org_membership_delete':
+          this.sql.exec(
+            'DELETE FROM org_memberships WHERE org_id = ? AND user_id = ?',
+            event.payload.org_id,
+            event.payload.user_id
+          );
+          break;
       }
     } catch (err) {
       console.error('AdminIndexDO event error:', err);
@@ -574,8 +776,9 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const params: any[] = [];
 
     if (search) {
-      conditions.push('name LIKE ?');
-      params.push(`%${search}%`);
+      conditions.push('(name LIKE ? OR slug LIKE ?)');
+      const like = `%${search}%`;
+      params.push(like, like);
     }
     if (filters?.archived !== undefined) {
       conditions.push('archived = ?');
@@ -596,6 +799,296 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const total = this.sql.exec(`SELECT COUNT(*) as count FROM orgs${where}`, ...params).next().value?.count || 0;
 
     return { items, total, offset, limit };
+  }
+
+  async getOrgDirectoryRows(): Promise<AdminOrgDirectoryRow[]> {
+    return Array.from(
+      this.sql.exec(`
+        SELECT
+          o.id,
+          o.name,
+          o.slug,
+          o.created_at,
+          o.archived,
+          o.billing_status,
+          o.created_by,
+          o.member_count,
+          o.workspace_count,
+          u.email AS creator_email,
+          u.name AS creator_name
+        FROM orgs o
+        LEFT JOIN users u ON o.created_by = u.id
+      `)
+    ).map((row: any) => ({
+      ...row,
+      archived: row.archived === 1,
+      slug: row.slug ?? null,
+      billing_status: row.billing_status ?? null,
+      creator_email: row.creator_email ?? null,
+      creator_name: row.creator_name ?? null,
+    }));
+  }
+
+  async getOrgDirectoryPaginated(
+    offset: number,
+    limit: number,
+    search?: string,
+    filters?: OrgDirectoryFilters,
+  ) {
+    const base = `
+      FROM orgs o
+      LEFT JOIN users u ON o.created_by = u.id
+    `;
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (search) {
+      conditions.push('(o.name LIKE ? OR o.slug LIKE ?)');
+      const like = `%${search}%`;
+      params.push(like, like);
+    }
+    if (filters?.archived !== undefined) {
+      conditions.push('o.archived = ?');
+      params.push(filters.archived ? 1 : 0);
+    }
+    if (filters?.exclude_org_ids && filters.exclude_org_ids.length > 0) {
+      conditions.push(`o.id NOT IN (${filters.exclude_org_ids.map(() => '?').join(', ')})`);
+      params.push(...filters.exclude_org_ids);
+    }
+    if (filters?.exclude_creator_domains && filters.exclude_creator_domains.length > 0) {
+      conditions.push(`
+        (
+          u.email IS NULL
+          OR INSTR(u.email, '@') <= 0
+          OR LOWER(SUBSTR(u.email, INSTR(u.email, '@') + 1)) NOT IN (${filters.exclude_creator_domains.map(() => '?').join(', ')})
+        )
+      `);
+      params.push(...filters.exclude_creator_domains);
+    }
+
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = ORG_DIRECTORY_SORT_COLS[filters?.sort_by ?? 'created_at'] ?? 'o.created_at';
+    const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+    const items = Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            o.id,
+            o.name,
+            o.slug,
+            o.created_at,
+            o.archived,
+            o.billing_status,
+            o.created_by,
+            o.member_count,
+            o.workspace_count,
+            u.email AS creator_email,
+            u.name AS creator_name
+          ${base}
+          ${where}
+          ORDER BY ${sortCol} ${sortDir}
+          LIMIT ? OFFSET ?
+        `,
+        ...params,
+        limit,
+        offset,
+      ),
+    ).map((row: any) => ({
+      ...row,
+      archived: row.archived === 1,
+      slug: row.slug ?? null,
+      billing_status: row.billing_status ?? null,
+      creator_email: row.creator_email ?? null,
+      creator_name: row.creator_name ?? null,
+    }));
+
+    const total = this.sql.exec(
+      `SELECT COUNT(*) as count ${base} ${where}`,
+      ...params,
+    ).next().value?.count || 0;
+
+    return { items, total, offset, limit };
+  }
+
+  async getOrgDirectoryByIds(orgIds: string[]): Promise<AdminOrgDirectoryRow[]> {
+    const normalizedOrgIds = Array.from(
+      new Set(orgIds.map((orgId) => orgId.trim()).filter((orgId) => orgId.length > 0))
+    );
+    if (normalizedOrgIds.length === 0) {
+      return [];
+    }
+
+    return Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            o.id,
+            o.name,
+            o.slug,
+            o.created_at,
+            o.archived,
+            o.billing_status,
+            o.created_by,
+            o.member_count,
+            o.workspace_count,
+            u.email AS creator_email,
+            u.name AS creator_name
+          FROM orgs o
+          LEFT JOIN users u ON o.created_by = u.id
+          WHERE o.id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          ORDER BY o.created_at DESC, o.id ASC
+        `,
+        ...normalizedOrgIds,
+      ),
+    ).map((row: any) => ({
+      ...row,
+      archived: row.archived === 1,
+      slug: row.slug ?? null,
+      billing_status: row.billing_status ?? null,
+      creator_email: row.creator_email ?? null,
+      creator_name: row.creator_name ?? null,
+    }));
+  }
+
+  async getUsersByOrgIds(orgIds: string[]): Promise<AdminUserSummaryRow[]> {
+    const normalizedOrgIds = Array.from(
+      new Set(orgIds.map((orgId) => orgId.trim()).filter((orgId) => orgId.length > 0))
+    );
+    if (normalizedOrgIds.length === 0) {
+      return [];
+    }
+
+    // Older AdminIndexDO deployments populated org/member counts but had no
+    // membership table. Re-sync any queried org whose membership rows do not
+    // match the indexed member_count before answering membership-based queries.
+    await this.ensureOrgMembershipsIndexed(normalizedOrgIds);
+
+    return Array.from(
+      this.sql.exec(
+        `
+          SELECT DISTINCT
+            u.id,
+            u.email,
+            u.name,
+            u.avatar_color,
+            u.avatar_content,
+            u.created_at,
+            u.org_count,
+            u.is_superuser,
+            u.is_orphaned
+          FROM org_memberships m
+          INNER JOIN users u ON u.id = m.user_id
+          WHERE m.org_id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          ORDER BY u.created_at DESC, u.id ASC
+        `,
+        ...normalizedOrgIds,
+      ),
+    ).map((row: any) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name ?? null,
+      avatar: {
+        color: row.avatar_color || '#666',
+        content: row.avatar_content || 'U',
+      },
+      created_at: row.created_at,
+      org_count: row.org_count ?? 0,
+      is_superuser: row.is_superuser === 1,
+      is_orphaned: row.is_orphaned === 1,
+    }));
+  }
+
+  async getThreadsByOrgIds(orgIds: string[]): Promise<AdminThreadListRow[]> {
+    const normalizedOrgIds = Array.from(
+      new Set(orgIds.map((orgId) => orgId.trim()).filter((orgId) => orgId.length > 0))
+    );
+    if (normalizedOrgIds.length === 0) {
+      return [];
+    }
+
+    // Keep the first version contract unbounded; add optional section limits if
+    // the spam-tab payload grows large enough to justify a follow-up change.
+    return Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            t.id,
+            t.title,
+            t.workspace_id,
+            t.created_at,
+            t.updated_at,
+            t.created_by,
+            t.org_id,
+            o.name AS org_name,
+            w.name AS workspace_name
+          FROM threads t
+          LEFT JOIN orgs o ON t.org_id = o.id
+          LEFT JOIN workspaces w ON t.workspace_id = w.id
+          WHERE t.org_id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          ORDER BY t.created_at DESC, t.id ASC
+        `,
+        ...normalizedOrgIds,
+      ),
+    ).map((row: any) => ({
+      ...row,
+      title: row.title ?? null,
+      created_by: row.created_by ?? null,
+      org_name: row.org_name ?? null,
+      workspace_name: row.workspace_name ?? null,
+    }));
+  }
+
+  async getAppsByOrgIds(orgIds: string[]): Promise<AdminAppListRow[]> {
+    const normalizedOrgIds = Array.from(
+      new Set(orgIds.map((orgId) => orgId.trim()).filter((orgId) => orgId.length > 0))
+    );
+    if (normalizedOrgIds.length === 0) {
+      return [];
+    }
+
+    const orgSlugExpr = this.getOrgSlugSelectExpression();
+    // Keep the first version contract unbounded; add optional section limits if
+    // the spam-tab payload grows large enough to justify a follow-up change.
+    return Array.from(
+      this.sql.exec(
+        `
+          SELECT
+            a.app_id,
+            a.script_name,
+            a.org_id,
+            a.workspace_id,
+            o.name AS org_name,
+            ${orgSlugExpr} AS org_slug,
+            w.name AS workspace_name,
+            a.created_by,
+            u.name AS created_by_name,
+            u.email AS created_by_email,
+            a.created_at,
+            a.updated_at,
+            a.is_public,
+            a.preview_status,
+            a.preview_error
+          FROM apps a
+          LEFT JOIN orgs o ON a.org_id = o.id
+          LEFT JOIN workspaces w ON a.workspace_id = w.id
+          LEFT JOIN users u ON a.created_by = u.id
+          WHERE a.org_id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          ORDER BY a.created_at DESC, a.app_id ASC
+        `,
+        ...normalizedOrgIds,
+      ),
+    ).map((row: any) => ({
+      ...row,
+      org_name: row.org_name ?? null,
+      org_slug: row.org_slug ?? null,
+      workspace_name: row.workspace_name ?? null,
+      created_by_name: row.created_by_name ?? null,
+      created_by_email: row.created_by_email ?? null,
+      is_public: row.is_public === 1,
+      preview_status: row.preview_status ?? null,
+      preview_error: row.preview_error ?? null,
+    }));
   }
 
   async getWorkspacesPaginated(offset: number, limit: number, search?: string, filters?: WorkspaceFilters) {

@@ -350,6 +350,18 @@ async function performInitialAdminSync(env: CloudflareEnv) {
         });
       }
 
+      for (const member of members) {
+        await adminIndex.handleEvent({
+          type: 'org_membership_upsert',
+          payload: {
+            org_id: orgId,
+            user_id: member.user.id,
+            role: member.role,
+            joined_at: member.joined_at,
+          },
+        });
+      }
+
       const integrationCounts = await Promise.all(
         workspaces.map(async (ws) => [ws.id, (await authDO.listWorkspaceIntegrations(authEnv, ws.id)).length] as const)
       );

@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -40,9 +43,14 @@ type WindowSpend struct {
 type UsageStore struct {
 	baseDir string
 
-	mu    sync.Mutex
-	conns map[string]*sql.DB // orgId -> *sql.DB
+	mu          sync.Mutex
+	conns       map[string]*sql.DB // orgId -> *sql.DB
+	analytics   *sql.DB
+	analyticsMu sync.RWMutex
 }
+
+const analyticsDirName = "_analytics"
+const analyticsSchemaVersion = "1"
 
 // NewUsageStore creates a new per-org usage store rooted at baseDir.
 func NewUsageStore(baseDir string) (*UsageStore, error) {
@@ -52,10 +60,19 @@ func NewUsageStore(baseDir string) (*UsageStore, error) {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create usage store base dir: %w", err)
 	}
-	return &UsageStore{
+	store := &UsageStore{
 		baseDir: baseDir,
 		conns:   make(map[string]*sql.DB),
-	}, nil
+	}
+	if err := store.openAnalyticsDB(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	if err := store.ensureAnalyticsIndexCurrent(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 // Close closes all open per-org database connections.
@@ -73,7 +90,216 @@ func (u *UsageStore) Close() error {
 		}
 		delete(u.conns, orgID)
 	}
+	if u.analytics != nil {
+		if err := u.analytics.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		u.analytics = nil
+	}
 	return firstErr
+}
+
+func (u *UsageStore) openAnalyticsDB() error {
+	analyticsDir := filepath.Join(u.baseDir, analyticsDirName)
+	if err := os.MkdirAll(analyticsDir, 0o755); err != nil {
+		return fmt.Errorf("create analytics usage dir: %w", err)
+	}
+
+	dbPath := filepath.Join(analyticsDir, "usage_analytics.db")
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return fmt.Errorf("open usage analytics db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetConnMaxIdleTime(2 * time.Minute)
+	db.SetConnMaxLifetime(30 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("ping usage analytics db: %w", err)
+	}
+
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS org_usage_rollups (
+			org_id TEXT PRIMARY KEY,
+			total_cost_usd REAL NOT NULL DEFAULT 0,
+			total_requests INTEGER NOT NULL DEFAULT 0,
+			updated_at_ms INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS usage_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			org_id TEXT NOT NULL,
+			workspace_id TEXT NOT NULL DEFAULT '',
+			user_id TEXT NOT NULL DEFAULT '',
+			thread_id TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL,
+			provider TEXT NOT NULL DEFAULT '',
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cost_usd REAL NOT NULL DEFAULT 0,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			created_at_ms INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_events_org_created_at ON usage_events(org_id, created_at_ms DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_events_created_at ON usage_events(created_at_ms DESC)`,
+		`CREATE TABLE IF NOT EXISTS org_effective_limits (
+			org_id TEXT NOT NULL,
+			window_ms INTEGER NOT NULL,
+			limit_usd REAL NOT NULL,
+			label TEXT NOT NULL,
+			updated_at_ms INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (org_id, label)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_org_effective_limits_org_id ON org_effective_limits(org_id)`,
+		`CREATE TABLE IF NOT EXISTS analytics_meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			_ = db.Close()
+			return fmt.Errorf("init usage analytics schema: %w", err)
+		}
+	}
+
+	u.analytics = db
+	return nil
+}
+
+func (u *UsageStore) ensureAnalyticsIndexCurrent() error {
+	if u == nil || u.analytics == nil {
+		return nil
+	}
+
+	needsRebuild, err := u.analyticsNeedsRebuild()
+	if err != nil {
+		return err
+	}
+	if !needsRebuild {
+		return nil
+	}
+	return u.rebuildAnalyticsIndex()
+}
+
+func (u *UsageStore) analyticsNeedsRebuild() (bool, error) {
+	if u == nil || u.analytics == nil {
+		return false, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var schemaVersion string
+	u.analyticsMu.RLock()
+	err := u.analytics.QueryRowContext(
+		ctx,
+		`SELECT value FROM analytics_meta WHERE key = 'schema_version'`,
+	).Scan(&schemaVersion)
+	u.analyticsMu.RUnlock()
+	if err == nil {
+		return schemaVersion != analyticsSchemaVersion, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read analytics schema version: %w", err)
+	}
+
+	orgIDs, err := u.listOrgIDsOnDisk()
+	if err != nil {
+		return false, err
+	}
+	if len(orgIDs) == 0 {
+		if err := u.markAnalyticsSchemaCurrent(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func (u *UsageStore) markAnalyticsSchemaCurrent() error {
+	if u == nil || u.analytics == nil {
+		return nil
+	}
+
+	u.analyticsMu.Lock()
+	defer u.analyticsMu.Unlock()
+
+	return u.markAnalyticsSchemaCurrentLocked()
+}
+
+func (u *UsageStore) markAnalyticsSchemaCurrentLocked() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	return markAnalyticsSchemaCurrentTx(ctx, u.analytics, analyticsSchemaVersion)
+}
+
+func markAnalyticsSchemaCurrentTx(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, version string) error {
+	_, err := exec.ExecContext(
+		ctx,
+		`INSERT INTO analytics_meta (key, value)
+		 VALUES ('schema_version', ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		version,
+	)
+	if err != nil {
+		return fmt.Errorf("write analytics schema version: %w", err)
+	}
+	return nil
+}
+
+func logAnalyticsWarning(operation string, err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("[UsageStore] analytics sync warning during %s: %v", operation, err)
+}
+
+// ensureAnalyticsDefaultLimitsTx seeds default spend-limit rows for an org
+// only when no rows exist yet. This avoids clobbering custom override labels
+// (e.g. "1h"/"24h") with the default "5h"/"7d" rows.
+func ensureAnalyticsDefaultLimitsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	orgID string,
+	updatedAtMs int64,
+) error {
+	var existingCount int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM org_effective_limits WHERE org_id = ?`,
+		orgID,
+	).Scan(&existingCount); err != nil {
+		return fmt.Errorf("check existing analytics limits: %w", err)
+	}
+	if existingCount > 0 {
+		return nil
+	}
+
+	for _, limit := range DefaultSpendLimits {
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO org_effective_limits (org_id, window_ms, limit_usd, label, updated_at_ms)
+			 VALUES (?, ?, ?, ?, ?)`,
+			orgID,
+			limit.Window.Milliseconds(),
+			limit.LimitUSD,
+			limit.Label,
+			updatedAtMs,
+		); err != nil {
+			return fmt.Errorf("ensure default analytics limit: %w", err)
+		}
+	}
+	return nil
 }
 
 // getDB returns or creates the SQLite connection for an org.
@@ -232,7 +458,13 @@ func (u *UsageStore) RecordUsage(record UsageRecord) error {
 		return fmt.Errorf("update spend: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := u.recordAnalyticsUsage(record, now); err != nil {
+		logAnalyticsWarning("record usage", err)
+	}
+	return nil
 }
 
 // OrgSpend holds lifetime totals for an org.
@@ -321,7 +553,18 @@ func (u *UsageStore) SetSpendLimits(orgID string, limits []SpendLimit) error {
 		UPDATE spend SET limits_json = ?, updated_at_ms = ? WHERE id = 1`,
 		limitsJSON, now,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	effective := DefaultSpendLimits
+	if len(limits) > 0 {
+		effective = limits
+	}
+	if err := u.replaceAnalyticsEffectiveLimits(orgID, effective, now); err != nil {
+		logAnalyticsWarning("set spend limits", err)
+	}
+	return nil
 }
 
 // CheckSpendLimits checks all rolling time windows for an org.
@@ -533,12 +776,12 @@ func (u *UsageStore) GetUsageLogPaginated(orgID string, q UsageLogQuery) (UsageL
 
 // UsageLogSum holds aggregated usage totals for a date range.
 type UsageLogSum struct {
-	TotalCostUSD                 float64 `json:"total_cost_usd"`
-	TotalRequests                int64   `json:"total_requests"`
-	TotalInputTokens             int64   `json:"total_input_tokens"`
-	TotalOutputTokens            int64   `json:"total_output_tokens"`
-	TotalCacheCreationInputTokens int64  `json:"total_cache_creation_input_tokens"`
-	TotalCacheReadInputTokens    int64   `json:"total_cache_read_input_tokens"`
+	TotalCostUSD                  float64 `json:"total_cost_usd"`
+	TotalRequests                 int64   `json:"total_requests"`
+	TotalInputTokens              int64   `json:"total_input_tokens"`
+	TotalOutputTokens             int64   `json:"total_output_tokens"`
+	TotalCacheCreationInputTokens int64   `json:"total_cache_creation_input_tokens"`
+	TotalCacheReadInputTokens     int64   `json:"total_cache_read_input_tokens"`
 }
 
 // GetUsageLogSum returns aggregated totals for usage log entries in a date range.
@@ -574,4 +817,534 @@ func (u *UsageStore) GetUsageLogSum(orgID string, fromMs, toMs int64) (UsageLogS
 		return UsageLogSum{}, fmt.Errorf("query usage_log sum: %w", err)
 	}
 	return s, nil
+}
+
+type OrgUsageAnalyticsRow struct {
+	OrgID         string        `json:"org_id"`
+	TotalCostUSD  float64       `json:"total_cost_usd"`
+	TotalRequests int64         `json:"total_requests"`
+	Spend7d       float64       `json:"spend_7d"`
+	Spend30d      float64       `json:"spend_30d"`
+	Windows       []WindowSpend `json:"windows,omitempty"`
+}
+
+func (u *UsageStore) recordAnalyticsUsage(record UsageRecord, createdAtMs int64) error {
+	if u == nil || u.analytics == nil {
+		return nil
+	}
+
+	u.analyticsMu.Lock()
+	defer u.analyticsMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	tx, err := u.analytics.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin analytics tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO usage_events (
+			org_id, workspace_id, user_id, thread_id, model, provider,
+			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			cost_usd, duration_ms, created_at_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.OrgID, record.WorkspaceID, record.UserID, record.ThreadID,
+		record.Model, record.Provider,
+		record.InputTokens, record.OutputTokens,
+		record.CacheCreationInputTokens, record.CacheReadInputTokens,
+		record.CostUSD, record.DurationMs, createdAtMs,
+	); err != nil {
+		return fmt.Errorf("insert analytics usage event: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO org_usage_rollups (org_id, total_cost_usd, total_requests, updated_at_ms)
+		VALUES (?, ?, 1, ?)
+		ON CONFLICT(org_id) DO UPDATE SET
+			total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+			total_requests = total_requests + 1,
+			updated_at_ms = excluded.updated_at_ms`,
+		record.OrgID, record.CostUSD, createdAtMs,
+	); err != nil {
+		return fmt.Errorf("upsert analytics rollup: %w", err)
+	}
+
+	if err := ensureAnalyticsDefaultLimitsTx(ctx, tx, record.OrgID, createdAtMs); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (u *UsageStore) replaceAnalyticsEffectiveLimits(orgID string, limits []SpendLimit, updatedAtMs int64) error {
+	if u == nil || u.analytics == nil {
+		return nil
+	}
+
+	u.analyticsMu.Lock()
+	defer u.analyticsMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	tx, err := u.analytics.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin limits analytics tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM org_effective_limits WHERE org_id = ?`, orgID); err != nil {
+		return fmt.Errorf("clear analytics limits: %w", err)
+	}
+	for _, limit := range limits {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO org_effective_limits (org_id, window_ms, limit_usd, label, updated_at_ms)
+			VALUES (?, ?, ?, ?, ?)`,
+			orgID, limit.Window.Milliseconds(), limit.LimitUSD, limit.Label, updatedAtMs,
+		); err != nil {
+			return fmt.Errorf("insert analytics limit: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (u *UsageStore) rebuildAnalyticsIndex() error {
+	if u == nil || u.analytics == nil {
+		return nil
+	}
+
+	u.analyticsMu.Lock()
+	defer u.analyticsMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	tx, err := u.analytics.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rebuild analytics tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	for _, stmt := range []string{
+		`DELETE FROM org_usage_rollups`,
+		`DELETE FROM usage_events`,
+		`DELETE FROM org_effective_limits`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("clear analytics tables: %w", err)
+		}
+	}
+
+	orgIDs, err := u.listOrgIDsOnDisk()
+	if err != nil {
+		return err
+	}
+	for _, orgID := range orgIDs {
+		db, err := u.getDB(orgID)
+		if err != nil {
+			return fmt.Errorf("open org db during analytics rebuild: %w", err)
+		}
+
+		var totalCostUSD float64
+		var totalRequests int64
+		var updatedAtMs int64
+		err = db.QueryRowContext(ctx, `
+			SELECT total_cost_usd, total_requests, updated_at_ms
+			FROM spend WHERE id = 1`,
+		).Scan(&totalCostUSD, &totalRequests, &updatedAtMs)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read org spend rollup: %w", err)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO org_usage_rollups (org_id, total_cost_usd, total_requests, updated_at_ms)
+				VALUES (?, ?, ?, ?)`,
+				orgID, totalCostUSD, totalRequests, updatedAtMs,
+			); err != nil {
+				return fmt.Errorf("insert rebuilt org rollup: %w", err)
+			}
+		}
+
+		rows, err := db.QueryContext(ctx, `
+			SELECT workspace_id, user_id, thread_id, model, provider,
+			       input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			       cost_usd, duration_ms, created_at_ms
+			FROM usage_log`)
+		if err != nil {
+			return fmt.Errorf("query org usage log during rebuild: %w", err)
+		}
+		for rows.Next() {
+			var entry UsageLogEntry
+			if err := rows.Scan(
+				&entry.WorkspaceID, &entry.UserID, &entry.ThreadID,
+				&entry.Model, &entry.Provider,
+				&entry.InputTokens, &entry.OutputTokens,
+				&entry.CacheCreationInputTokens, &entry.CacheReadInputTokens,
+				&entry.CostUSD, &entry.DurationMs, &entry.CreatedAtMs,
+			); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan usage log during rebuild: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO usage_events (
+					org_id, workspace_id, user_id, thread_id, model, provider,
+					input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+					cost_usd, duration_ms, created_at_ms
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				orgID, entry.WorkspaceID, entry.UserID, entry.ThreadID,
+				entry.Model, entry.Provider,
+				entry.InputTokens, entry.OutputTokens,
+				entry.CacheCreationInputTokens, entry.CacheReadInputTokens,
+				entry.CostUSD, entry.DurationMs, entry.CreatedAtMs,
+			); err != nil {
+				rows.Close()
+				return fmt.Errorf("insert usage event during rebuild: %w", err)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close usage log rows during rebuild: %w", err)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate usage log during rebuild: %w", err)
+		}
+
+		limits, err := u.GetSpendLimits(orgID)
+		if err != nil {
+			return fmt.Errorf("load spend limits during rebuild: %w", err)
+		}
+		for _, limit := range limits {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO org_effective_limits (org_id, window_ms, limit_usd, label, updated_at_ms)
+				VALUES (?, ?, ?, ?, ?)`,
+				orgID, limit.Window.Milliseconds(), limit.LimitUSD, limit.Label, updatedAtMs,
+			); err != nil {
+				return fmt.Errorf("insert effective limit during rebuild: %w", err)
+			}
+		}
+	}
+
+	if err := markAnalyticsSchemaCurrentTx(ctx, tx, analyticsSchemaVersion); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (u *UsageStore) listOrgIDsOnDisk() ([]string, error) {
+	entries, err := os.ReadDir(u.baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("list usage dir: %w", err)
+	}
+
+	orgIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == analyticsDirName {
+			continue
+		}
+		dbPath := filepath.Join(u.baseDir, entry.Name(), "usage.db")
+		if _, err := os.Stat(dbPath); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("stat usage db %s: %w", dbPath, err)
+		}
+		orgIDs = append(orgIDs, entry.Name())
+	}
+	slices.Sort(orgIDs)
+	return orgIDs, nil
+}
+
+func (u *UsageStore) ListSpamOrgIDs() ([]string, error) {
+	if u == nil || u.analytics == nil {
+		return nil, nil
+	}
+
+	u.analyticsMu.RLock()
+	defer u.analyticsMu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	rows, err := u.analytics.QueryContext(ctx, `
+		SELECT org_id
+		FROM org_effective_limits
+		GROUP BY org_id
+		HAVING COUNT(*) > 0 AND MAX(limit_usd) <= 0.01
+		ORDER BY org_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query spam org ids: %w", err)
+	}
+	defer rows.Close()
+
+	var orgIDs []string
+	for rows.Next() {
+		var orgID string
+		if err := rows.Scan(&orgID); err != nil {
+			return nil, fmt.Errorf("scan spam org id: %w", err)
+		}
+		orgIDs = append(orgIDs, orgID)
+	}
+	return orgIDs, rows.Err()
+}
+
+func (u *UsageStore) GetOrgUsageAnalytics(orgIDs []string, includeWindows bool) ([]OrgUsageAnalyticsRow, error) {
+	if u == nil || u.analytics == nil || len(orgIDs) == 0 {
+		return []OrgUsageAnalyticsRow{}, nil
+	}
+
+	orderedOrgIDs := append([]string(nil), orgIDs...)
+	slices.Sort(orderedOrgIDs)
+
+	u.analyticsMu.RLock()
+	defer u.analyticsMu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resultByOrg := make(map[string]*OrgUsageAnalyticsRow, len(orderedOrgIDs))
+	for _, orgID := range orderedOrgIDs {
+		resultByOrg[orgID] = &OrgUsageAnalyticsRow{OrgID: orgID}
+	}
+
+	placeholders := make([]string, len(orderedOrgIDs))
+	args := make([]any, 0, len(orderedOrgIDs))
+	for i, orgID := range orderedOrgIDs {
+		placeholders[i] = "?"
+		args = append(args, orgID)
+	}
+
+	rollupQuery := fmt.Sprintf(`
+		SELECT org_id, total_cost_usd, total_requests
+		FROM org_usage_rollups
+		WHERE org_id IN (%s)`, strings.Join(placeholders, ","))
+	rows, err := u.analytics.QueryContext(ctx, rollupQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query usage rollups: %w", err)
+	}
+	for rows.Next() {
+		var orgID string
+		var totalCostUSD float64
+		var totalRequests int64
+		if err := rows.Scan(&orgID, &totalCostUSD, &totalRequests); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan usage rollup: %w", err)
+		}
+		if row := resultByOrg[orgID]; row != nil {
+			row.TotalCostUSD = totalCostUSD
+			row.TotalRequests = totalRequests
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close usage rollups rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage rollups rows: %w", err)
+	}
+
+	now := time.Now().UTC().UnixMilli()
+	windowAggregates := []struct {
+		label  string
+		cutoff int64
+		setter func(*OrgUsageAnalyticsRow, float64)
+	}{
+		{
+			label:  "spend_7d",
+			cutoff: now - (7 * 24 * time.Hour).Milliseconds(),
+			setter: func(row *OrgUsageAnalyticsRow, value float64) { row.Spend7d = value },
+		},
+		{
+			label:  "spend_30d",
+			cutoff: now - (30 * 24 * time.Hour).Milliseconds(),
+			setter: func(row *OrgUsageAnalyticsRow, value float64) { row.Spend30d = value },
+		},
+	}
+	for _, aggregate := range windowAggregates {
+		windowArgs := append([]any{aggregate.cutoff}, args...)
+		windowQuery := fmt.Sprintf(`
+			SELECT org_id, COALESCE(SUM(cost_usd), 0)
+			FROM usage_events
+			WHERE created_at_ms >= ? AND org_id IN (%s)
+			GROUP BY org_id`, strings.Join(placeholders, ","))
+		rows, err := u.analytics.QueryContext(ctx, windowQuery, windowArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("query %s: %w", aggregate.label, err)
+		}
+		for rows.Next() {
+			var orgID string
+			var spentUSD float64
+			if err := rows.Scan(&orgID, &spentUSD); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan %s: %w", aggregate.label, err)
+			}
+			if row := resultByOrg[orgID]; row != nil {
+				aggregate.setter(row, spentUSD)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close %s rows: %w", aggregate.label, err)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate %s rows: %w", aggregate.label, err)
+		}
+	}
+
+	if includeWindows {
+		if err := u.loadAnalyticsWindows(ctx, resultByOrg, orderedOrgIDs, placeholders, args, now); err != nil {
+			return nil, err
+		}
+	}
+
+	items := make([]OrgUsageAnalyticsRow, 0, len(orderedOrgIDs))
+	for _, orgID := range orgIDs {
+		if row := resultByOrg[orgID]; row != nil {
+			items = append(items, *row)
+		}
+	}
+	return items, nil
+}
+
+func (u *UsageStore) loadAnalyticsWindows(
+	ctx context.Context,
+	resultByOrg map[string]*OrgUsageAnalyticsRow,
+	orderedOrgIDs []string,
+	placeholders []string,
+	args []any,
+	now int64,
+) error {
+	type storedLimit struct {
+		label    string
+		windowMs int64
+		limitUSD float64
+	}
+
+	limitQuery := fmt.Sprintf(`
+		SELECT org_id, label, window_ms, limit_usd
+		FROM org_effective_limits
+		WHERE org_id IN (%s)
+		ORDER BY org_id ASC, window_ms ASC`, strings.Join(placeholders, ","))
+	rows, err := u.analytics.QueryContext(ctx, limitQuery, args...)
+	if err != nil {
+		return fmt.Errorf("query effective limits: %w", err)
+	}
+	storedLimitsByOrg := make(map[string][]storedLimit, len(orderedOrgIDs))
+	for rows.Next() {
+		var orgID string
+		var limit storedLimit
+		if err := rows.Scan(&orgID, &limit.label, &limit.windowMs, &limit.limitUSD); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan effective limit: %w", err)
+		}
+		storedLimitsByOrg[orgID] = append(storedLimitsByOrg[orgID], limit)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close effective limits rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate effective limits rows: %w", err)
+	}
+
+	defaultMissingOrgIDs := make([]string, 0)
+	for _, orgID := range orderedOrgIDs {
+		if len(storedLimitsByOrg[orgID]) == 0 {
+			defaultMissingOrgIDs = append(defaultMissingOrgIDs, orgID)
+		}
+	}
+
+	if len(storedLimitsByOrg) > 0 {
+		spendRows, err := u.analytics.QueryContext(ctx, fmt.Sprintf(`
+			SELECT l.org_id, l.label, l.window_ms, l.limit_usd, COALESCE(SUM(e.cost_usd), 0)
+			FROM org_effective_limits l
+			LEFT JOIN usage_events e
+			  ON e.org_id = l.org_id
+			 AND e.created_at_ms >= (? - l.window_ms)
+			WHERE l.org_id IN (%s)
+			GROUP BY l.org_id, l.label, l.window_ms, l.limit_usd
+			ORDER BY l.org_id ASC, l.window_ms ASC`, strings.Join(placeholders, ",")), append([]any{now}, args...)...)
+		if err != nil {
+			return fmt.Errorf("query window spends: %w", err)
+		}
+		for spendRows.Next() {
+			var orgID string
+			var label string
+			var windowMs int64
+			var limitUSD float64
+			var spentUSD float64
+			if err := spendRows.Scan(&orgID, &label, &windowMs, &limitUSD, &spentUSD); err != nil {
+				spendRows.Close()
+				return fmt.Errorf("scan window spend: %w", err)
+			}
+			if row := resultByOrg[orgID]; row != nil {
+				row.Windows = append(row.Windows, WindowSpend{
+					Label:    label,
+					WindowMs: windowMs,
+					LimitUSD: limitUSD,
+					SpentUSD: spentUSD,
+					Exceeded: spentUSD >= limitUSD,
+				})
+			}
+		}
+		if err := spendRows.Close(); err != nil {
+			return fmt.Errorf("close window spend rows: %w", err)
+		}
+		if err := spendRows.Err(); err != nil {
+			return fmt.Errorf("iterate window spend rows: %w", err)
+		}
+	}
+
+	if len(defaultMissingOrgIDs) == 0 {
+		return nil
+	}
+
+	missingPlaceholders := make([]string, len(defaultMissingOrgIDs))
+	missingArgs := make([]any, 0, len(defaultMissingOrgIDs))
+	for i, orgID := range defaultMissingOrgIDs {
+		missingPlaceholders[i] = "?"
+		missingArgs = append(missingArgs, orgID)
+	}
+
+	for _, limit := range DefaultSpendLimits {
+		queryArgs := append([]any{now - limit.Window.Milliseconds()}, missingArgs...)
+		defaultWindowRows, err := u.analytics.QueryContext(ctx, fmt.Sprintf(`
+			SELECT org_id, COALESCE(SUM(cost_usd), 0)
+			FROM usage_events
+			WHERE created_at_ms >= ? AND org_id IN (%s)
+			GROUP BY org_id`, strings.Join(missingPlaceholders, ",")), queryArgs...)
+		if err != nil {
+			return fmt.Errorf("query default window spend: %w", err)
+		}
+		spendByOrg := make(map[string]float64, len(defaultMissingOrgIDs))
+		for defaultWindowRows.Next() {
+			var orgID string
+			var spentUSD float64
+			if err := defaultWindowRows.Scan(&orgID, &spentUSD); err != nil {
+				defaultWindowRows.Close()
+				return fmt.Errorf("scan default window spend: %w", err)
+			}
+			spendByOrg[orgID] = spentUSD
+		}
+		if err := defaultWindowRows.Close(); err != nil {
+			return fmt.Errorf("close default window spend rows: %w", err)
+		}
+		if err := defaultWindowRows.Err(); err != nil {
+			return fmt.Errorf("iterate default window spend rows: %w", err)
+		}
+
+		for _, orgID := range defaultMissingOrgIDs {
+			spentUSD := spendByOrg[orgID]
+			if row := resultByOrg[orgID]; row != nil {
+				row.Windows = append(row.Windows, WindowSpend{
+					Label:    limit.Label,
+					WindowMs: limit.Window.Milliseconds(),
+					LimitUSD: limit.LimitUSD,
+					SpentUSD: spentUSD,
+					Exceeded: spentUSD >= limit.LimitUSD,
+				})
+			}
+		}
+	}
+
+	return nil
 }
