@@ -51,7 +51,9 @@ describe('auth signup domain blocklist', () => {
       WORKSPACE: {},
       SESSIONS: {},
       EMAIL_TO_USER: {},
-      APP_KV: {},
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(JSON.stringify(['mailinator.com'])),
+      },
       TOKEN_SIGNING_SECRET: 'secret',
     });
     getUserByEmailMock.mockResolvedValue(null);
