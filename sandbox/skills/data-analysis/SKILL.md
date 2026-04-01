@@ -23,6 +23,8 @@ uv run jupyter nbconvert --to notebook --execute --inplace notebook.ipynb
 
 Add more packages with `uv add <package>`. The project's `pyproject.toml` and `.venv` persist across sessions. Skip `uv init` if `pyproject.toml` already exists.
 
+The shared base interpreter also includes `google-cloud-bigquery`, `google-cloud-bigquery-storage`, and `google-auth`. Add them with `uv add` if you need them inside a project `.venv`.
+
 ## Database CLI
 
 ### usql - Universal SQL CLI
@@ -241,6 +243,7 @@ predictions = model.predict(X_test)
 | `psycopg` | PostgreSQL driver | cached |
 | `pymysql` | MySQL driver | `uv add pymysql` |
 | `google-cloud-bigquery` | BigQuery client | cached |
+| `google-cloud-bigquery-storage` | BigQuery Storage API client for faster downloads | base env + cached |
 | `google-auth` | Google authentication (used for BigQuery tokens) | cached |
 
 ### SQL Server / PostgreSQL / MySQL (Primary: Worker `DATA_PROXY` service binding)
