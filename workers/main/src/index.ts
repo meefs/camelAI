@@ -69,16 +69,53 @@ let adminApiModulePromise: Promise<typeof import('./routes/admin/index.js')> | u
 let emailIngressModulePromise: Promise<typeof import('./email-ingress.js')> | undefined;
 let screenshotQueueModulePromise: Promise<typeof import('./screenshot-queue.js')> | undefined;
 
+function loadCachedModule<T>(
+  getCurrent: () => Promise<T> | undefined,
+  setCurrent: (promise: Promise<T> | undefined) => void,
+  loader: () => Promise<T>
+): Promise<T> {
+  const current = getCurrent();
+  if (current) return current;
+
+  const promise = loader().catch((error) => {
+    if (getCurrent() === promise) {
+      setCurrent(undefined);
+    }
+    throw error;
+  });
+
+  setCurrent(promise);
+  return promise;
+}
+
 function loadAdminApiModule() {
-  return adminApiModulePromise ??= import('./routes/admin/index.js');
+  return loadCachedModule(
+    () => adminApiModulePromise,
+    (promise) => {
+      adminApiModulePromise = promise;
+    },
+    () => import('./routes/admin/index.js')
+  );
 }
 
 function loadEmailIngressModule() {
-  return emailIngressModulePromise ??= import('./email-ingress.js');
+  return loadCachedModule(
+    () => emailIngressModulePromise,
+    (promise) => {
+      emailIngressModulePromise = promise;
+    },
+    () => import('./email-ingress.js')
+  );
 }
 
 function loadScreenshotQueueModule() {
-  return screenshotQueueModulePromise ??= import('./screenshot-queue.js');
+  return loadCachedModule(
+    () => screenshotQueueModulePromise,
+    (promise) => {
+      screenshotQueueModulePromise = promise;
+    },
+    () => import('./screenshot-queue.js')
+  );
 }
 
 // =============================================================================
