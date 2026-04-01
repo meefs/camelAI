@@ -48,7 +48,7 @@ Each sandbox maps to a leaf directory:
 
 - Host: `/srv/sandboxes/<sandbox-id>`
 - Container bind mount: `/home/claude`
-- Python env behavior: sandbox image prewarms a seed cache at `/opt/uv-cache-seed`; entrypoint syncs that into persistent workspace cache at `/home/claude/.cache/uv`; runtime uses `UV_LINK_MODE=hardlink` so installs are fast while both cache and `.venv` survive container restarts.
+- Python env behavior: sandbox image prewarms a seed cache at `/opt/uv-cache-seed`; entrypoint syncs that into persistent workspace cache at `/home/claude/.cache/uv`; runtime uses `UV_LINK_MODE=hardlink` so installs are fast while both cache and `.venv` survive container restarts. The shared Python 3.13 interpreter also includes the BigQuery client stack (`google-cloud-bigquery`, `google-cloud-bigquery-storage`, `google-auth`) for ad hoc scripts before a workspace `.venv` exists.
 
 Recommended host mount options:
 

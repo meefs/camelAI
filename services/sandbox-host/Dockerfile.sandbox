@@ -45,12 +45,16 @@ RUN uv venv /tmp/warmup --python 3.13 && \
         jupyterlab notebook nbconvert ipykernel ipywidgets \
         openpyxl xlsxwriter duckdb beautifulsoup4 \
         pdfplumber python-docx python-pptx \
-        sqlalchemy psycopg google-cloud-bigquery google-auth \
+        sqlalchemy psycopg google-cloud-bigquery google-cloud-bigquery-storage google-auth \
         requests httpx openai \
         sympy networkx \
         pillow \
         tqdm && \
-    rm -rf /tmp/warmup
+    rm -rf /tmp/warmup && \
+    uv pip install --system \
+        google-cloud-bigquery \
+        google-cloud-bigquery-storage \
+        google-auth
 
 # Runtime defaults: persistent workspace cache + fast linking into .venv.
 ENV UV_CACHE_DIR=/home/claude/.cache/uv
