@@ -15,10 +15,9 @@
 
 import { createRequestHandler } from 'react-router';
 import type { Env, Route } from './types.js';
-import { handleScreenshotQueue, type AppScreenshotJob } from './screenshot-queue.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
+import type { AppScreenshotJob } from './screenshot-queue.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
-import { handleWorkspaceEmailIngress } from './email-ingress.js';
 
 // Route handlers
 import { handleCfProxy } from './routes/cf-proxy.js';
@@ -44,7 +43,6 @@ import {
 } from './routes/data-proxy.js';
 import { handleResendProxy } from './routes/resend-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
-import { handleAdminApi } from './routes/admin/index.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -67,13 +65,33 @@ declare module 'react-router' {
   }
 }
 
+let adminApiModulePromise: Promise<typeof import('./routes/admin/index.js')> | undefined;
+let emailIngressModulePromise: Promise<typeof import('./email-ingress.js')> | undefined;
+let screenshotQueueModulePromise: Promise<typeof import('./screenshot-queue.js')> | undefined;
+
+function loadAdminApiModule() {
+  return adminApiModulePromise ??= import('./routes/admin/index.js');
+}
+
+function loadEmailIngressModule() {
+  return emailIngressModulePromise ??= import('./email-ingress.js');
+}
+
+function loadScreenshotQueueModule() {
+  return screenshotQueueModulePromise ??= import('./screenshot-queue.js');
+}
+
 // =============================================================================
 // Route Table
 // =============================================================================
 
 const routes: Route[] = [
   // Admin REST API (ADMIN_API_KEY auth; returns null to fall through to React Router for session-auth routes)
-  { method: 'ALL', path: /^\/api\/admin\//, handler: handleAdminApi },
+  {
+    method: 'ALL',
+    path: /^\/api\/admin\//,
+    handler: async (context) => (await loadAdminApiModule()).handleAdminApi(context),
+  },
 
   // CF API Proxy
   { method: 'ALL', path: /^\/client\/v4\//, handler: handleCfProxy },
@@ -158,12 +176,15 @@ export default {
   },
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
-    await handleWorkspaceEmailIngress(message, env);
+    await (await loadEmailIngressModule()).handleWorkspaceEmailIngress(message, env);
   },
 
   async queue(batch: MessageBatch<AppScreenshotJob | SlackEventQueueMessage>, env: Env): Promise<void> {
     if (batch.queue.startsWith('chiridion-app-screenshots')) {
-      return handleScreenshotQueue(batch as MessageBatch<AppScreenshotJob>, env);
+      return (await loadScreenshotQueueModule()).handleScreenshotQueue(
+        batch as MessageBatch<AppScreenshotJob>,
+        env
+      );
     }
     if (batch.queue.startsWith('chiridion-app-slack-events')) {
       return handleSlackEventsQueue(batch as MessageBatch<SlackEventQueueMessage>, env);
