@@ -376,7 +376,7 @@ export function WelcomeScreen({
   }, [onPromptChange, focusInput]);
 
   const handleConnectionSelect = useCallback((connection: Integration) => {
-    onPromptChange(`Use my ${connection.name || connection.integration_type} connection to create `);
+    onPromptChange(`Use my ${connection.name || connection.integration_type} connection to `);
     focusInput();
   }, [onPromptChange, focusInput]);
 
