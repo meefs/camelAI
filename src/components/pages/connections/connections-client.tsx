@@ -9,7 +9,7 @@ import { useAuthData } from '@/hooks/use-auth-data';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
-import { draftKey } from '@/hooks/use-draft-persistence';
+import { writeDraft } from '@/hooks/use-draft-persistence';
 import { PageHeader } from '@/components/page-header';
 import { AddConnectionDialog } from './AddConnectionDialog';
 import { EditConnectionDialog } from './EditConnectionDialog';
@@ -319,8 +319,7 @@ export default function ConnectionsClient({
   const handleNewChat = (connection: Integration) => {
     if (!currentWorkspace) return;
     const text = `Use my ${connection.name || connection.integration_type} connection to create `;
-    const key = draftKey(currentWorkspace.id, null);
-    localStorage.setItem(key, JSON.stringify({ text, attachments: [], savedAt: Date.now() }));
+    writeDraft(currentWorkspace.id, null, text, []);
     navigate('/chat');
   };
 
