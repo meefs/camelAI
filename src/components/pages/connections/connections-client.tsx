@@ -31,7 +31,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Copy,
-  MessageSquarePlus,
+  MessageSquare,
   Plug,
   Plus,
   Search,
@@ -531,7 +531,7 @@ export default function ConnectionsClient({
                       const hasIcon = hasIntegrationIcon(resolvedType);
 
                       return (
-                        <Card key={connection.id} className="group transition-colors hover:bg-accent/50">
+                        <Card key={connection.id}>
                           <CardHeader className="flex flex-row items-center justify-between gap-4">
                             <div className="flex items-center gap-3">
                               <Tooltip>
@@ -551,11 +551,15 @@ export default function ConnectionsClient({
                               </Tooltip>
                               <CardTitle>{connection.name}</CardTitle>
                             </div>
-                            <div className="flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
-                              <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => handleNewChat(connection)}>
-                                <MessageSquarePlus className="size-3.5" />
-                                New chat
-                              </Button>
+                            <div className="flex items-center gap-1">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button variant="ghost" size="icon" aria-label="New chat" onClick={() => handleNewChat(connection)}>
+                                    <MessageSquare className="size-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>New chat</TooltipContent>
+                              </Tooltip>
                               {isAdmin && (
                                 <>
                                   <Tooltip>
