@@ -1,0 +1,6 @@
+*
+!.dockerignore
+!Dockerfile
+!control-plane.mjs
+!entrypoint.sh
+!package.json

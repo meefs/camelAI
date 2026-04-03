@@ -1,0 +1,86 @@
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: hsl(var(--background));
+}
+
+.desktop-shell {
+  height: 100%;
+  background: hsl(var(--background));
+}
+
+.desktop-shell-body {
+  height: calc(100% - 3rem);
+}
+
+.desktop-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.desktop-no-drag,
+.desktop-no-drag * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.desktop-titlebar {
+  position: relative;
+  z-index: 40;
+  height: 3rem;
+  border-bottom: 1px solid hsl(var(--border));
+  background: color-mix(in oklab, hsl(var(--background)) 96%, white 4%);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 color-mix(in oklab, hsl(var(--foreground)) 3%, transparent);
+}
+
+.dark .desktop-titlebar {
+  background: color-mix(in oklab, hsl(var(--background)) 92%, black 8%);
+  box-shadow: 0 1px 0 color-mix(in oklab, hsl(var(--foreground)) 8%, transparent);
+}
+
+.desktop-titlebar-inner {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  padding-left: 5.25rem;
+  padding-right: 0.75rem;
+}
+
+.desktop-traffic-spacer {
+  width: 0;
+  flex: 0 0 0;
+}
+
+.desktop-shell [data-slot='sidebar-wrapper'] {
+  min-height: 100%;
+  height: 100%;
+}
+
+.desktop-shell [data-slot='sidebar-container'] {
+  top: 3rem;
+  height: calc(100svh - 3rem);
+}
+
+.desktop-shell [data-slot='sidebar-inset'] {
+  min-height: 100%;
+}
+
+@media (max-width: 960px) {
+  .desktop-titlebar-inner {
+    padding-left: 4.75rem;
+  }
+}

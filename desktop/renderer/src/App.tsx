@@ -1,0 +1,711 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, Loader2, Plus } from "lucide-react";
+import { ContentBlockRenderer } from "@/components/message-bubble";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/page-header";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { PromptInput } from "@/components/prompt-input";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { LoadingDots } from "@/components/loading-dots";
+import { MarkdownRenderer } from "@/components/markdown-renderer";
+import {
+  SDKEvent,
+  mergeTaskNotifications,
+  mergeTeammateMessages,
+  normalizeToolResultMessages,
+} from "@/lib/streaming";
+import type { ContentBlock, Message } from "@/types";
+import type {
+  DesktopClientEvent,
+  DesktopModel,
+  DesktopServerEvent,
+  DesktopSnapshot,
+  DesktopThread,
+} from "../../shared/protocol";
+import {
+  applySdkEventToMessages,
+  mergeSnapshotMessages,
+} from "../../shared/message-state";
+import { DesktopSidebar } from "./desktop-sidebar";
+
+const desktopShell = window.desktopShell;
+const fallbackBackendUrl = "http://127.0.0.1:4315";
+const MODEL_OPTIONS: DesktopModel[] = ["sonnet", "opus"];
+
+function getActiveThread(
+  snapshot: DesktopSnapshot | null,
+  threadId: string | null,
+): DesktopThread | null {
+  if (!snapshot || !threadId) return null;
+  return snapshot.threads.find((thread) => thread.id === threadId) ?? null;
+}
+
+function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function authBadgeLabel(snapshot: DesktopSnapshot | null): string {
+  if (!snapshot) {
+    return "Checking Claude auth";
+  }
+  if (!snapshot?.hasClaudeAuth) {
+    return "Claude auth missing";
+  }
+  if (snapshot.authSource === "claude-ai") {
+    return `Claude.ai · ${snapshot.model}`;
+  }
+  return `API key · ${snapshot.model}`;
+}
+
+function vmDetail(snapshot: DesktopSnapshot | null): string | null {
+  if (!snapshot) {
+    return null;
+  }
+  const detail = snapshot.vmStatus.detail?.trim();
+  return detail || null;
+}
+
+function shouldShowVmNotice(snapshot: DesktopSnapshot | null): boolean {
+  if (!snapshot) {
+    return false;
+  }
+
+  return snapshot.vmStatus.state !== "running" && Boolean(vmDetail(snapshot));
+}
+
+function shouldBlockOnRuntime(
+  snapshot: DesktopSnapshot | null,
+  connectionState: "connecting" | "open" | "closed",
+): boolean {
+  if (connectionState === "connecting") {
+    return true;
+  }
+  if (!snapshot) {
+    return true;
+  }
+  return snapshot.vmStatus.state !== "running";
+}
+
+function getRuntimeBootProgress(snapshot: DesktopSnapshot | null): number {
+  if (!snapshot) {
+    return 8;
+  }
+
+  const detail = snapshot.vmStatus.detail.toLowerCase();
+  if (snapshot.vmStatus.state === "running") {
+    return 100;
+  }
+  if (snapshot.vmStatus.state === "error") {
+    return 100;
+  }
+  if (detail.includes("run prepare")) {
+    return 10;
+  }
+  if (detail.includes("prepared direct avf vm artifacts")) {
+    return 20;
+  }
+  if (detail.includes("waiting-for-runtime-bundle")) {
+    return 42;
+  }
+  if (detail.includes("waiting-for-docker")) {
+    return 56;
+  }
+  if (detail.includes("pulling-control-plane-image")) {
+    return 72;
+  }
+  if (detail.includes("starting-control-plane-container")) {
+    return 84;
+  }
+  if (detail.includes("starting-control-plane")) {
+    return 92;
+  }
+  if (detail.includes("vsock-bridge-ready")) {
+    return 96;
+  }
+  if (detail.includes("the vm is running but guest readiness has not been published yet")) {
+    return 66;
+  }
+  if (detail.includes("the vm is starting")) {
+    return 32;
+  }
+  if (detail.includes("starting the local runtime")) {
+    return 18;
+  }
+  return 24;
+}
+
+function getRuntimeBootTitle(
+  snapshot: DesktopSnapshot | null,
+  connectionState: "connecting" | "open" | "closed",
+): string {
+  if (connectionState === "connecting") {
+    return "Connecting desktop runtime";
+  }
+  if (!snapshot) {
+    return "Preparing desktop runtime";
+  }
+  if (snapshot.vmStatus.state === "error") {
+    return "Runtime failed to start";
+  }
+  if (snapshot.vmStatus.state === "running") {
+    return "Runtime ready";
+  }
+  return "Starting local runtime";
+}
+
+function getRuntimeBootCaption(
+  snapshot: DesktopSnapshot | null,
+  connectionState: "connecting" | "open" | "closed",
+): string {
+  if (connectionState === "connecting") {
+    return "Connecting the desktop shell to the local backend.";
+  }
+  if (!snapshot) {
+    return "Preparing the Ubuntu guest and control plane.";
+  }
+
+  const detail = snapshot.vmStatus.detail.toLowerCase();
+  if (snapshot.vmStatus.state === "error") {
+    return "The local runtime did not finish booting.";
+  }
+  if (detail.includes("waiting-for-runtime-bundle")) {
+    return "Staging the runtime bundle into the guest.";
+  }
+  if (detail.includes("waiting-for-docker")) {
+    return "Waiting for Docker inside the Ubuntu guest.";
+  }
+  if (detail.includes("pulling-control-plane-image")) {
+    return "Pulling the control-plane container image.";
+  }
+  if (detail.includes("starting-control-plane-container")) {
+    return "Launching the control-plane container.";
+  }
+  if (detail.includes("starting-control-plane")) {
+    return "Starting the Claude control plane inside the guest.";
+  }
+  if (detail.includes("the vm is running but guest readiness has not been published yet")) {
+    return "The VM is up. Waiting for guest services to publish readiness.";
+  }
+  return "Booting the isolated local runtime automatically.";
+}
+
+function RuntimeBootScreen({
+  snapshot,
+  connectionState,
+}: {
+  snapshot: DesktopSnapshot | null;
+  connectionState: "connecting" | "open" | "closed";
+}) {
+  const isError = snapshot?.vmStatus.state === "error";
+  const detail = vmDetail(snapshot);
+  const progress = getRuntimeBootProgress(snapshot);
+
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 py-10">
+      <div className="w-full max-w-xl rounded-3xl border border-border/70 bg-card/85 p-8 shadow-sm backdrop-blur-xl">
+        <div className="flex items-center gap-3">
+          <div
+            className={`flex size-10 items-center justify-center rounded-2xl border ${
+              isError
+                ? "border-destructive/30 bg-destructive/10 text-destructive"
+                : "border-border bg-background text-foreground"
+            }`}
+          >
+            {isError ? (
+              <AlertCircle className="size-5" />
+            ) : (
+              <Loader2 className="size-5 animate-spin" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-xl font-semibold">
+              {getRuntimeBootTitle(snapshot, connectionState)}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {getRuntimeBootCaption(snapshot, connectionState)}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-6 space-y-3">
+          <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <span>Guest boot</span>
+            <span>{isError ? "Error" : `${progress}%`}</span>
+          </div>
+          <Progress value={progress} className="h-2 rounded-full" />
+        </div>
+
+        {detail ? (
+          <Alert
+            variant={isError ? "destructive" : "default"}
+            className="mt-6 bg-background/70"
+          >
+            <AlertTitle>
+              {isError ? "Runtime error" : "Current step"}
+            </AlertTitle>
+            <AlertDescription>{detail}</AlertDescription>
+          </Alert>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function isSdkEvent(event: unknown): event is SDKEvent {
+  return Boolean(
+    event &&
+    typeof event === "object" &&
+    typeof (event as { type?: unknown }).type === "string",
+  );
+}
+
+function coerceTextContent(content: string | ContentBlock[]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .filter(
+      (block): block is Extract<ContentBlock, { type: "text" }> =>
+        block.type === "text",
+    )
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+}
+
+function MessageRow({ message }: { message: Message }) {
+  if (message.isMeta || message.sourceToolUseID) {
+    return null;
+  }
+
+  if (message.role === "user") {
+    const content = coerceTextContent(message.content);
+    if (!content) {
+      return null;
+    }
+
+    return (
+      <div className="group flex flex-col items-end gap-2 py-3">
+        <div className="max-w-[85%] rounded-3xl border border-border bg-muted/30 px-4 py-3 text-foreground">
+          <div className="max-w-none">
+            <MarkdownRenderer content={content} variant="user" />
+          </div>
+        </div>
+        <div className="flex items-center gap-0.5 text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+          <span>{formatTime(message.created_at)}</span>
+        </div>
+      </div>
+    );
+  }
+
+  const isStreaming = Boolean(message.isStreaming);
+  const hasContent =
+    typeof message.content === "string"
+      ? Boolean(message.content.trim())
+      : message.content.length > 0;
+
+  return (
+    <div className="group flex flex-col gap-1 py-3">
+      {hasContent ? (
+        <div className="max-w-none space-y-4">
+          <ContentBlockRenderer
+            content={message.content}
+            messageId={message.id}
+            isStreaming={isStreaming}
+          />
+        </div>
+      ) : null}
+      {isStreaming && <LoadingDots />}
+      {hasContent && (
+        <div className="flex items-center gap-0.5 text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+          <span>{formatTime(message.created_at)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function App() {
+  const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
+  const [uiMessagesByThread, setUiMessagesByThread] = useState<
+    Record<string, Message[]>
+  >({});
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [connectionState, setConnectionState] = useState<
+    "connecting" | "open" | "closed"
+  >("connecting");
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const fallbackSocketRef = useRef<WebSocket | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
+  const reportedReadyRef = useRef(false);
+
+  const activeThread = useMemo(
+    () => getActiveThread(snapshot, activeThreadId),
+    [snapshot, activeThreadId],
+  );
+  const rawMessages = useMemo(() => {
+    if (!activeThreadId) return [];
+    return uiMessagesByThread[activeThreadId] ?? [];
+  }, [activeThreadId, uiMessagesByThread]);
+  const messages = useMemo(
+    () =>
+      mergeTaskNotifications(
+        mergeTeammateMessages(normalizeToolResultMessages(rawMessages)),
+      ),
+    [rawMessages],
+  );
+  const isStreaming = rawMessages.some(
+    (message) => message.role === "assistant" && message.isStreaming,
+  );
+  const shouldBlockRuntime = shouldBlockOnRuntime(snapshot, connectionState);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSnapshot() {
+      try {
+        const next = desktopShell?.getSnapshot
+          ? await desktopShell.getSnapshot()
+          : await fetch(`${fallbackBackendUrl}/api/snapshot`).then(
+              (response) => response.json() as Promise<DesktopSnapshot>,
+            );
+        if (!next || cancelled) return;
+        setSnapshot(next);
+        setUiMessagesByThread((current) => {
+          const merged = { ...current };
+          for (const [threadId, threadMessages] of Object.entries(
+            next.messagesByThread,
+          )) {
+            merged[threadId] = mergeSnapshotMessages(
+              current[threadId],
+              threadMessages,
+              threadId,
+              streamingMessageIdsRef.current,
+            );
+          }
+          return merged;
+        });
+        setActiveThreadId(
+          (current) =>
+            current ?? next.activeThreadId ?? next.threads[0]?.id ?? null,
+        );
+      } catch {
+        setConnectionState("closed");
+      }
+    }
+
+    void loadSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleEvent = (event: DesktopServerEvent) => {
+      if (event.type === "snapshot") {
+        setSnapshot(event.snapshot);
+        setUiMessagesByThread((current) => {
+          const merged = { ...current };
+          for (const [threadId, threadMessages] of Object.entries(
+            event.snapshot.messagesByThread,
+          )) {
+            merged[threadId] = mergeSnapshotMessages(
+              current[threadId],
+              threadMessages,
+              threadId,
+              streamingMessageIdsRef.current,
+            );
+          }
+          return merged;
+        });
+        setActiveThreadId(
+          (current) =>
+            current ??
+            event.snapshot.activeThreadId ??
+            event.snapshot.threads[0]?.id ??
+            null,
+        );
+        setConnectionState("open");
+        return;
+      }
+
+      if (event.type === "assistant_delta") {
+        setUiMessagesByThread((current) => {
+          const threadMessages = current[event.threadId];
+          if (!threadMessages) return current;
+          const nextThreadMessages = threadMessages.map((message) => {
+            if (message.id !== event.messageId) return message;
+            if (Array.isArray(message.content)) return message;
+            return {
+              ...message,
+              content: `${message.content}${event.delta}`,
+              isStreaming: true,
+            };
+          });
+          return {
+            ...current,
+            [event.threadId]: nextThreadMessages,
+          };
+        });
+        return;
+      }
+
+      if (event.type === "sdk_event" && isSdkEvent(event.event)) {
+        const sdkEvent = event.event;
+        setUiMessagesByThread((current) => {
+          const threadMessages = current[event.threadId] ?? [];
+          return {
+            ...current,
+            [event.threadId]: applySdkEventToMessages(
+              threadMessages,
+              event.threadId,
+              sdkEvent,
+              streamingMessageIdsRef.current,
+            ),
+          };
+        });
+      }
+    };
+
+    if (desktopShell?.onEvent) {
+      setConnectionState("connecting");
+      const unsubscribe = desktopShell.onEvent(handleEvent);
+      return () => {
+        unsubscribe();
+      };
+    }
+
+    const url = `${fallbackBackendUrl.replace("http://", "ws://").replace("https://", "wss://")}/ws`;
+    const socket = new WebSocket(url);
+    fallbackSocketRef.current = socket;
+
+    socket.addEventListener("open", () => {
+      setConnectionState("open");
+    });
+
+    socket.addEventListener("close", () => {
+      setConnectionState("closed");
+    });
+
+    socket.addEventListener("message", (raw) => {
+      handleEvent(JSON.parse(raw.data) as DesktopServerEvent);
+    });
+
+    return () => {
+      socket.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    if (!snapshot || reportedReadyRef.current || !desktopShell?.reportReady) {
+      return;
+    }
+    reportedReadyRef.current = true;
+    desktopShell.reportReady({
+      activeThreadId: snapshot.activeThreadId,
+      authSource: snapshot.authSource,
+      hasClaudeAuth: snapshot.hasClaudeAuth,
+      vmState: snapshot.vmStatus.state,
+    });
+  }, [snapshot]);
+
+  function sendEvent(event: DesktopClientEvent) {
+    if (desktopShell?.sendEvent) {
+      desktopShell.sendEvent(event);
+      return;
+    }
+
+    const socket = fallbackSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify(event));
+  }
+
+  function handleCreateThread() {
+    sendEvent({ type: "create_thread" });
+  }
+
+  function handleSetModel(model: string) {
+    if (model !== "sonnet" && model !== "opus") {
+      return;
+    }
+    sendEvent({ type: "set_model", model });
+  }
+
+  function handleSubmit() {
+    if (!activeThreadId || !draft.trim() || isStreaming) return;
+    sendEvent({
+      type: "send_message",
+      threadId: activeThreadId,
+      content: draft,
+    });
+    setDraft("");
+  }
+
+  return (
+    <TooltipProvider>
+      <div className="desktop-shell text-foreground">
+        <header className="desktop-titlebar desktop-drag">
+          <div className="desktop-titlebar-inner">
+            <div className="desktop-traffic-spacer" />
+            <div className="min-w-0">
+              <p className="truncate text-[0.7rem] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                camelAI Desktop
+              </p>
+            </div>
+            <div className="desktop-no-drag ml-auto flex items-center gap-2">
+              <Select
+                value={snapshot?.model ?? "sonnet"}
+                onValueChange={handleSetModel}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-[118px] bg-background/70 backdrop-blur"
+                  aria-label="Model"
+                >
+                  <SelectValue placeholder="Model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {MODEL_OPTIONS.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model === "sonnet" ? "Sonnet" : "Opus"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Badge
+                variant={snapshot?.hasClaudeAuth ? "secondary" : "destructive"}
+              >
+                {authBadgeLabel(snapshot)}
+              </Badge>
+              <Button variant="outline" size="sm" onClick={handleCreateThread}>
+                <Plus />
+                New thread
+              </Button>
+            </div>
+          </div>
+          {shouldShowVmNotice(snapshot) ? (
+            <div className="desktop-no-drag border-t border-border/50 px-4 py-2">
+              <p
+                className={`line-clamp-2 text-xs leading-relaxed ${
+                  snapshot?.vmStatus.state === "error"
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+                }`}
+                title={vmDetail(snapshot) ?? undefined}
+              >
+                {vmDetail(snapshot)}
+              </p>
+            </div>
+          ) : null}
+        </header>
+
+        <div className="desktop-shell-body">
+          <SidebarProvider defaultOpen>
+            <DesktopSidebar
+              activeThreadId={activeThreadId}
+              connectionState={connectionState}
+              onCreateThread={handleCreateThread}
+              onSelectThread={setActiveThreadId}
+              snapshot={snapshot}
+              threads={snapshot?.threads ?? []}
+            />
+            <SidebarInset className="overflow-hidden flex flex-col">
+              <PageHeader
+                breadcrumbs={[
+                  { label: "Chat" },
+                  { label: activeThread?.title ?? "New Chat" },
+                ]}
+                className="border-b border-border/60"
+              />
+
+              <div className="flex flex-1 min-h-0 flex-col">
+                {shouldBlockRuntime ? (
+                  <RuntimeBootScreen
+                    snapshot={snapshot}
+                    connectionState={connectionState}
+                  />
+                ) : (
+                  <>
+                    <div
+                      ref={messagesViewportRef}
+                      role="region"
+                      aria-label="Chat messages"
+                      className="flex flex-1 flex-col overflow-y-auto overflow-x-hidden"
+                    >
+                      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pb-6 pt-2 md:px-6">
+                        {messages.length === 0 ? (
+                          <div className="flex flex-1 items-center justify-center py-12">
+                            <div className="max-w-md text-center">
+                              <h2 className="text-xl font-semibold">
+                                Start a new chat
+                              </h2>
+                              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                                This desktop renderer now uses the same sidebar,
+                                header, and composer primitives as the web app. The
+                                remaining gap is deeper message rendering parity for
+                                SDK tool events.
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          messages.map((message) => (
+                            <MessageRow key={message.id} message={message} />
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="sticky bottom-0 z-20 shrink-0">
+                      <div
+                        className="pointer-events-none absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent"
+                        aria-hidden="true"
+                      />
+                      <div className="bg-background">
+                        <div className="px-4 pb-4 pt-2">
+                          <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
+                            <PromptInput
+                              className="shrink-0"
+                              value={draft}
+                              onChange={setDraft}
+                              onSubmit={handleSubmit}
+                              placeholder="Type a message..."
+                              isAssistantRunning={isStreaming}
+                              textareaRef={composerTextareaRef}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </SidebarInset>
+          </SidebarProvider>
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}

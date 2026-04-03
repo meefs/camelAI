@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "types": ["node", "vite/client", "bun-types"],
+    "baseUrl": "..",
+    "paths": {
+      "@/*": ["src/*"],
+      "@desktop/*": ["desktop/renderer/src/*"]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    "./**/*.tsx",
+    "../src/components/theme-provider.tsx",
+    "../src/components/ui/**/*.tsx",
+    "../src/lib/utils.ts"
+  ]
+}

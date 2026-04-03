@@ -82,6 +82,14 @@ package-lock.json
 
 # Pre-built renderer bundle (built at CI time)
 sandbox/create-worker/renderer-dist/
+desktop/.local/
+desktop/app-resources/
+desktop/renderer-dist/
+desktop/guest/node_modules/
+desktop/vm-helper/.build/
+desktop/build/icon.icns
+desktop/build/icon.ico
+desktop/build/icon.png
 
 # Auto-generated embedded files
 workers/main/src/embedded-create-worker.ts

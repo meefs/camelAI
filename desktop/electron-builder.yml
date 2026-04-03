@@ -1,0 +1,45 @@
+appId: dev.camelai.desktop
+productName: camelAI
+
+directories:
+  output: dist/desktop
+  buildResources: desktop/build
+
+files:
+  - package.json
+  - desktop/electron/**/* 
+  - "!desktop/electron/**/*.map"
+
+extraResources:
+  - from: desktop/app-resources
+    to: desktop
+    filter:
+      - "**/*"
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  artifactName: camelAI-${version}-${arch}.${ext}
+  executableName: camelAI
+  icon: desktop/build/icon.icns
+  darkModeSupport: true
+  hardenedRuntime: true
+  entitlements: desktop/build/entitlements.mac.plist
+  entitlementsInherit: desktop/build/entitlements.mac.inherit.plist
+  notarize: true
+  binaries:
+    - Contents/Resources/desktop/bin/camelai-desktop-backend
+    - Contents/Resources/desktop/bin/camelai-vm-helper
+
+dmg:
+  artifactName: camelAI-${version}-${arch}.${ext}
+  contents:
+    - x: 160
+      y: 220
+      type: file
+    - x: 430
+      y: 220
+      type: link
+      path: /Applications

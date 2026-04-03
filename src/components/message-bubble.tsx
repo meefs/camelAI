@@ -248,7 +248,7 @@ interface ContentBlockRendererProps {
   skillSheets?: Map<string, string>;
 }
 
-function ContentBlockRenderer({ content, messageId, isStreaming = false, skillSheets }: ContentBlockRendererProps) {
+export function ContentBlockRenderer({ content, messageId, isStreaming = false, skillSheets }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
     const displayContent = stripSystemMessageTags(content);
