@@ -38,6 +38,7 @@ import {
   X,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 const categoryLabels: Record<string, string> = {
   databases: 'Databases',
@@ -362,6 +363,7 @@ export default function ConnectionsClient({
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
 
   return (
+    <TooltipProvider>
     <>
       <PageHeader breadcrumbs={[{ label: 'Connections' }]} />
 
@@ -517,71 +519,59 @@ export default function ConnectionsClient({
                         connection.name,
                       ]);
                       const hasIcon = hasIntegrationIcon(resolvedType);
-                      const categoryLabel = categoryLabels[connection.category] || connection.category;
 
                       return (
                         <Card key={connection.id}>
-                          <CardHeader className="flex flex-row items-start justify-between gap-4">
-                            <div className="flex items-start gap-3">
-                              <div className="flex size-10 items-center justify-center rounded-lg border">
-                                {hasIcon ? (
-                                  <IntegrationIcon
-                                    type={resolvedType}
-                                    className="size-5"
-                                  />
-                                ) : (
-                                  <Settings className="size-5" />
-                                )}
-                              </div>
-                              <div className="space-y-1">
-                                <CardTitle>{connection.name}</CardTitle>
-                                <CardDescription>
-                                  {getConnectionDescription(connection)}
-                                </CardDescription>
-                                <p className="text-sm text-muted-foreground">{categoryLabel}</p>
-                              </div>
-                            </div>
-                          </CardHeader>
-                          <CardContent className="space-y-4">
-                            <div className="flex items-center justify-between text-sm text-muted-foreground">
-                              <span>Last updated</span>
-                              <span>
-                                {new Date(connection.updated_at).toLocaleDateString()}
-                              </span>
+                          <CardHeader className="flex flex-row items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="flex size-10 items-center justify-center rounded-lg border">
+                                    {hasIcon ? (
+                                      <IntegrationIcon
+                                        type={resolvedType}
+                                        className="size-5"
+                                      />
+                                    ) : (
+                                      <Settings className="size-5" />
+                                    )}
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent>{getConnectionDescription(connection)}</TooltipContent>
+                              </Tooltip>
+                              <CardTitle>{connection.name}</CardTitle>
                             </div>
                             {isAdmin && (
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => handleEditClick(connection)}
-                                  >
-                                    <Settings className="mr-2 size-3.5" />
-                                    Configure
-                                  </Button>
-                                  {otherWorkspaces.length > 0 && (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => setCopyTarget(connection)}
-                                    >
-                                      <Copy className="mr-2 size-3.5" />
-                                      Clone to workspace
+                              <div className="flex items-center gap-1">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button variant="ghost" size="icon" onClick={() => handleEditClick(connection)}>
+                                      <Settings className="size-4" />
                                     </Button>
-                                  )}
-                                </div>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="text-destructive hover:text-destructive"
-                                  onClick={() => setDeleteTarget(connection)}
-                                >
-                                  <Trash2 className="size-4" />
-                                </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Configure</TooltipContent>
+                                </Tooltip>
+                                {otherWorkspaces.length > 0 && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button variant="ghost" size="icon" onClick={() => setCopyTarget(connection)}>
+                                        <Copy className="size-4" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Clone to workspace</TooltipContent>
+                                  </Tooltip>
+                                )}
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(connection)}>
+                                      <Trash2 className="size-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Delete</TooltipContent>
+                                </Tooltip>
                               </div>
                             )}
-                          </CardContent>
+                          </CardHeader>
                         </Card>
                       );
                     })}
@@ -806,5 +796,6 @@ export default function ConnectionsClient({
         </DialogContent>
       </Dialog>
     </>
+    </TooltipProvider>
   );
 }
