@@ -248,7 +248,7 @@ Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-cr
 ### Computer Tab File Mutations
 
 - During beta, user-initiated Computer Tab writes are hard-blocked server-side via `blockBetaFileEdit()` in `src/routes/api/workspaces.utils.ts`.
-- The block covers `/api/workspaces/:id/fs/write`, `/fs/create`, `/fs/mkdir`, `/fs/upload`, `/fs/move`, `/fs/delete`, and `PUT /api/ext/files/write`.
+- The block covers `/api/workspaces/:id/fs/write`, `/fs/create`, `/fs/mkdir`, `/fs/upload`, `/fs/move`, `/fs/delete`, `PUT /api/ext/files/write`, and `POST /api/ext/files/upload`.
 - Computer Tab remains readable and downloadable, but the UI is forced read-only with beta messaging. Agent-initiated sandbox writes and chat attachment uploads remain enabled.
 
 ### Todo State Persistence
