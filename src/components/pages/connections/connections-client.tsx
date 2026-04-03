@@ -593,8 +593,8 @@ export default function ConnectionsClient({
                                     )}
                                     <DropdownMenuSeparator />
                                     <DropdownMenuItem
+                                      variant="destructive"
                                       onClick={() => setDeleteTarget(connection)}
-                                      className="text-destructive focus:text-destructive focus:bg-destructive/10"
                                     >
                                       <Trash2 className="h-4 w-4 mr-2" />
                                       Delete
