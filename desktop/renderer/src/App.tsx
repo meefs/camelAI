@@ -71,20 +71,23 @@ function authBadgeLabel(snapshot: DesktopSnapshot | null): string {
   return `API key · ${snapshot.model}`;
 }
 
-function vmDetail(snapshot: DesktopSnapshot | null): string | null {
+function runtimeDetail(snapshot: DesktopSnapshot | null): string | null {
   if (!snapshot) {
     return null;
   }
-  const detail = snapshot.vmStatus.detail?.trim();
+  const detail = snapshot.runtimeStatus.detail?.trim();
   return detail || null;
 }
 
-function shouldShowVmNotice(snapshot: DesktopSnapshot | null): boolean {
+function shouldShowRuntimeNotice(snapshot: DesktopSnapshot | null): boolean {
   if (!snapshot) {
     return false;
   }
 
-  return snapshot.vmStatus.state !== "running" && Boolean(vmDetail(snapshot));
+  return (
+    snapshot.runtimeStatus.state !== "running" &&
+    Boolean(runtimeDetail(snapshot))
+  );
 }
 
 function shouldBlockOnRuntime(
@@ -97,55 +100,24 @@ function shouldBlockOnRuntime(
   if (!snapshot) {
     return true;
   }
-  return snapshot.vmStatus.state !== "running";
+  return snapshot.runtimeStatus.state !== "running";
 }
 
 function getRuntimeBootProgress(snapshot: DesktopSnapshot | null): number {
   if (!snapshot) {
-    return 8;
-  }
-
-  const detail = snapshot.vmStatus.detail.toLowerCase();
-  if (snapshot.vmStatus.state === "running") {
-    return 100;
-  }
-  if (snapshot.vmStatus.state === "error") {
-    return 100;
-  }
-  if (detail.includes("run prepare")) {
     return 10;
   }
-  if (detail.includes("prepared direct avf vm artifacts")) {
-    return 20;
+
+  if (snapshot.runtimeStatus.state === "running") {
+    return 100;
   }
-  if (detail.includes("waiting-for-runtime-bundle")) {
-    return 42;
+  if (snapshot.runtimeStatus.state === "error") {
+    return 100;
   }
-  if (detail.includes("waiting-for-docker")) {
-    return 56;
+  if (snapshot.runtimeStatus.state === "starting") {
+    return 60;
   }
-  if (detail.includes("pulling-control-plane-image")) {
-    return 72;
-  }
-  if (detail.includes("starting-control-plane-container")) {
-    return 84;
-  }
-  if (detail.includes("starting-control-plane")) {
-    return 92;
-  }
-  if (detail.includes("vsock-bridge-ready")) {
-    return 96;
-  }
-  if (detail.includes("the vm is running but guest readiness has not been published yet")) {
-    return 66;
-  }
-  if (detail.includes("the vm is starting")) {
-    return 32;
-  }
-  if (detail.includes("starting the local runtime")) {
-    return 18;
-  }
-  return 24;
+  return 20;
 }
 
 function getRuntimeBootTitle(
@@ -158,10 +130,10 @@ function getRuntimeBootTitle(
   if (!snapshot) {
     return "Preparing desktop runtime";
   }
-  if (snapshot.vmStatus.state === "error") {
+  if (snapshot.runtimeStatus.state === "error") {
     return "Runtime failed to start";
   }
-  if (snapshot.vmStatus.state === "running") {
+  if (snapshot.runtimeStatus.state === "running") {
     return "Runtime ready";
   }
   return "Starting local runtime";
@@ -175,32 +147,16 @@ function getRuntimeBootCaption(
     return "Connecting the desktop shell to the local backend.";
   }
   if (!snapshot) {
-    return "Preparing the Ubuntu guest and control plane.";
+    return "Preparing the local container runtime.";
   }
 
-  const detail = snapshot.vmStatus.detail.toLowerCase();
-  if (snapshot.vmStatus.state === "error") {
+  if (snapshot.runtimeStatus.state === "error") {
     return "The local runtime did not finish booting.";
   }
-  if (detail.includes("waiting-for-runtime-bundle")) {
-    return "Staging the runtime bundle into the guest.";
+  if (snapshot.runtimeStatus.state === "starting") {
+    return "Starting the local control-plane container.";
   }
-  if (detail.includes("waiting-for-docker")) {
-    return "Waiting for Docker inside the Ubuntu guest.";
-  }
-  if (detail.includes("pulling-control-plane-image")) {
-    return "Pulling the control-plane container image.";
-  }
-  if (detail.includes("starting-control-plane-container")) {
-    return "Launching the control-plane container.";
-  }
-  if (detail.includes("starting-control-plane")) {
-    return "Starting the Claude control plane inside the guest.";
-  }
-  if (detail.includes("the vm is running but guest readiness has not been published yet")) {
-    return "The VM is up. Waiting for guest services to publish readiness.";
-  }
-  return "Booting the isolated local runtime automatically.";
+  return "Preparing the local runtime inputs.";
 }
 
 function RuntimeBootScreen({
@@ -210,8 +166,8 @@ function RuntimeBootScreen({
   snapshot: DesktopSnapshot | null;
   connectionState: "connecting" | "open" | "closed";
 }) {
-  const isError = snapshot?.vmStatus.state === "error";
-  const detail = vmDetail(snapshot);
+  const isError = snapshot?.runtimeStatus.state === "error";
+  const detail = runtimeDetail(snapshot);
   const progress = getRuntimeBootProgress(snapshot);
 
   return (
@@ -243,7 +199,7 @@ function RuntimeBootScreen({
 
         <div className="mt-6 space-y-3">
           <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-            <span>Guest boot</span>
+            <span>Runtime boot</span>
             <span>{isError ? "Error" : `${progress}%`}</span>
           </div>
           <Progress value={progress} className="h-2 rounded-full" />
@@ -528,7 +484,7 @@ export function App() {
       activeThreadId: snapshot.activeThreadId,
       authSource: snapshot.authSource,
       hasClaudeAuth: snapshot.hasClaudeAuth,
-      vmState: snapshot.vmStatus.state,
+      runtimeState: snapshot.runtimeStatus.state,
     });
   }, [snapshot]);
 
@@ -606,17 +562,17 @@ export function App() {
               </Button>
             </div>
           </div>
-          {shouldShowVmNotice(snapshot) ? (
+          {shouldShowRuntimeNotice(snapshot) ? (
             <div className="desktop-no-drag border-t border-border/50 px-4 py-2">
               <p
                 className={`line-clamp-2 text-xs leading-relaxed ${
-                  snapshot?.vmStatus.state === "error"
+                  snapshot?.runtimeStatus.state === "error"
                     ? "text-destructive"
                     : "text-muted-foreground"
                 }`}
-                title={vmDetail(snapshot) ?? undefined}
+                title={runtimeDetail(snapshot) ?? undefined}
               >
-                {vmDetail(snapshot)}
+                {runtimeDetail(snapshot)}
               </p>
             </div>
           ) : null}

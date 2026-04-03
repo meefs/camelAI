@@ -1,5 +1,5 @@
 {
-  "name": "camelai-desktop-guest",
+  "name": "camelai-desktop-control-plane",
   "private": true,
   "type": "module",
   "dependencies": {

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "camelai-desktop-guest",
+      "name": "camelai-desktop-control-plane",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "0.2.89",
       },

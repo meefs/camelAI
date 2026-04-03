@@ -61,7 +61,7 @@ function finishStartupProbe(ok, detail = {}) {
           ? {
               authSource: latestSnapshot.authSource,
               hasClaudeAuth: latestSnapshot.hasClaudeAuth,
-              vmState: latestSnapshot.vmStatus.state,
+              runtimeState: latestSnapshot.runtimeStatus.state,
               activeThreadId: latestSnapshot.activeThreadId,
             }
           : null,
@@ -106,45 +106,23 @@ function getBackendModuleEntry() {
   return existsSync(stagedBackendModuleEntry) ? stagedBackendModuleEntry : null;
 }
 
-function getVmApplianceImagePath(resourcesDir) {
-  if (process.env.DESKTOP_VM_APPLIANCE_IMAGE_PATH) {
-    return process.env.DESKTOP_VM_APPLIANCE_IMAGE_PATH;
-  }
-
-  const stagedApplianceImagePath = resolve(resourcesDir, 'vm-appliance/disk.raw');
-  if (existsSync(stagedApplianceImagePath)) {
-    return stagedApplianceImagePath;
-  }
-
-  const devApplianceImagePath = resolve(repoRoot, 'desktop/.local/vm/disk.raw');
-  if (existsSync(devApplianceImagePath)) {
-    return devApplianceImagePath;
-  }
-
-  throw new Error(
-    `Desktop VM appliance disk is missing. Run \`bun run desktop:appliance:bake\` in development or stage/package the app with a bundled appliance.`,
-  );
-}
-
 function getDesktopRuntimeEnv() {
   const resourcesDir = getDesktopResourcesDir();
   const userDataDirectory = app.getPath('userData');
   const dataDirectory = resolve(userDataDirectory, 'data');
-  const vmDirectory = resolve(userDataDirectory, 'vm');
-  const stagedVmHelperPath = resolve(resourcesDir, 'bin/camelai-vm-helper');
-  const devVmHelperPath = resolve(__dirname, '../vm-helper/.build/debug/camelai-vm-helper');
-  const vmHelperPath = existsSync(stagedVmHelperPath) ? stagedVmHelperPath : devVmHelperPath;
-  const stagedGuestBundleDir = resolve(resourcesDir, 'guest');
-  const devGuestBundleDir = resolve(__dirname, '../guest');
-  const guestBundleDir = existsSync(stagedGuestBundleDir) ? stagedGuestBundleDir : devGuestBundleDir;
-  const applianceImagePath = getVmApplianceImagePath(resourcesDir);
+  const runtimeDirectory = resolve(userDataDirectory, 'runtime');
+  const stagedRuntimeHelperPath = resolve(resourcesDir, 'bin/camelai-runtime-helper');
+  const devRuntimeHelperPath = resolve(__dirname, '../runtime-helper/.build/debug/camelai-runtime-helper');
+  const runtimeHelperPath = existsSync(stagedRuntimeHelperPath) ? stagedRuntimeHelperPath : devRuntimeHelperPath;
+  const stagedKernelPath = resolve(resourcesDir, 'kernel/vmlinux');
+  const devKernelPath = resolve(__dirname, '../runtime-helper/assets/vmlinux');
+  const runtimeKernelPath = existsSync(stagedKernelPath) ? stagedKernelPath : devKernelPath;
 
   return {
     DESKTOP_DATA_DIR: dataDirectory,
-    DESKTOP_VM_DIR: vmDirectory,
-    DESKTOP_VM_HELPER_PATH: vmHelperPath,
-    DESKTOP_GUEST_BUNDLE_DIR: guestBundleDir,
-    DESKTOP_VM_APPLIANCE_IMAGE_PATH: applianceImagePath,
+    DESKTOP_RUNTIME_DIR: runtimeDirectory,
+    DESKTOP_RUNTIME_HELPER_PATH: runtimeHelperPath,
+    DESKTOP_RUNTIME_KERNEL_PATH: runtimeKernelPath,
   };
 }
 
@@ -162,17 +140,17 @@ function publishBackendEvent(event) {
     recordStartup('backend_snapshot', {
       authSource: event.snapshot.authSource,
       hasClaudeAuth: event.snapshot.hasClaudeAuth,
-      vmState: event.snapshot.vmStatus.state,
+      runtimeState: event.snapshot.runtimeStatus.state,
     });
     if (
       startupProbeEnabled &&
       startupProbeRendererReady &&
-      event.snapshot.vmStatus.state !== 'starting'
+      event.snapshot.runtimeStatus.state !== 'starting'
     ) {
       finishStartupProbe(true, {
         rendererReady: startupProbeRendererReady,
-        settledVmState: event.snapshot.vmStatus.state,
-        settledVmDetail: event.snapshot.vmStatus.detail,
+        settledRuntimeState: event.snapshot.runtimeStatus.state,
+        settledRuntimeDetail: event.snapshot.runtimeStatus.detail,
       });
     }
   }
@@ -261,7 +239,7 @@ async function ensureDirectDesktopService() {
   latestSnapshot = directDesktopService.getSnapshot();
   recordStartup('direct_service_snapshot_loaded', {
     authSource: latestSnapshot.authSource,
-    vmState: latestSnapshot.vmStatus.state,
+    runtimeState: latestSnapshot.runtimeStatus.state,
   });
 }
 
@@ -397,11 +375,11 @@ ipcMain.on('desktop:ready', (_event, payload) => {
   if (!startupProbeEnabled) {
     return;
   }
-  if (latestSnapshot && latestSnapshot.vmStatus.state !== 'starting') {
+  if (latestSnapshot && latestSnapshot.runtimeStatus.state !== 'starting') {
     finishStartupProbe(true, {
       rendererReady: payload,
-      settledVmState: latestSnapshot.vmStatus.state,
-      settledVmDetail: latestSnapshot.vmStatus.detail,
+      settledRuntimeState: latestSnapshot.runtimeStatus.state,
+      settledRuntimeDetail: latestSnapshot.runtimeStatus.detail,
     });
   }
 });

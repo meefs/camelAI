@@ -115,7 +115,7 @@ function startHttpTransport(): void {
             hasClaudeAuth: snapshot.hasClaudeAuth,
             authSource: snapshot.authSource,
           },
-          vmStatus: snapshot.vmStatus,
+          runtimeStatus: snapshot.runtimeStatus,
         });
       }
 

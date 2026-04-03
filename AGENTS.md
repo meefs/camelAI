@@ -44,15 +44,14 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
 
 3. **Desktop Prototype** (`desktop/`)
    - Separate local-first macOS desktop project, intentionally not coupled to Cloudflare runtime bindings
-   - `backend/` - Desktop service + optional transport wrapper with persisted local threads/messages; it auto-starts the Linux VM as an internal runtime dependency on app boot, pre-stages the guest Docker build context/auth/env into the narrow shared host directory before boot, proxies chat turns into the Linux VM, persists structured assistant transcripts (tool calls/thinking blocks) for reloads, keeps a warm per-thread guest bridge, and talks to the Swift VM helper over a persistent stdio JSON-RPC daemon for VM lifecycle/status commands
-   - `guest/` - Dockerized Linux-side Claude Agent SDK control plane plus its guest-local dependency manifest and entrypoint
+   - `backend/` - Desktop service + optional transport wrapper with persisted local threads/messages; it auto-starts the local runtime as an internal dependency on app boot, stages runtime auth/env into the narrow shared runtime directory before startup, proxies chat turns into the runtime control plane, persists structured assistant transcripts (tool calls/thinking blocks) for reloads, keeps a warm per-thread bridge, and talks to the runtime helper over a persistent stdio JSON-RPC daemon for lifecycle/status commands
+   - `control-plane/` - Source for the Linux-side Node control-plane image; runtime boot now uses the published registry image instead of mounting this directory into the container
    - `electron/` - Electron shell + preload bridge; renderer talks to Electron main over IPC, staged/packageable builds load the bundled desktop service directly in-process, local development falls back to the backend child over stdio, and startup probe mode can emit JSON diagnostics for preload/backend/renderer handshake failures
    - `renderer/` - Vite/React chat UI reusing the repo's Tailwind/shadcn primitives
-   - `vm-helper/` - Swift executable boundary for local VM lifecycle; supports a persistent `daemon` mode for JSON-RPC lifecycle/status commands, boots the desktop Ubuntu guest directly with Apple Virtualization Framework, mounts the narrow host share over virtiofs, configures guest DNS, starts Docker, exposes the guest control-plane port back to the host via a local vsock-backed proxy, and treats the guest disk as a prebaked appliance so normal boots never install packages for the app runtime
-   - `scripts/stage.mjs` - Stages a packaging-friendly desktop payload under `desktop/app-resources/` with a bundled desktop-service module, compiled backend binary fallback, guest Docker build context, a packaged Ubuntu appliance disk, built renderer, and VM helper binary
-   - `scripts/bake-appliance.mjs` - One-time appliance hydration flow that boots a temporary VM clone, installs the base guest runtime packages into the disk image, waits for an `appliance-baked` sentinel, then writes the baked disk back for fast future boots; all normal desktop boots require this baked disk
+   - `runtime-helper/` - Swift executable boundary for local runtime lifecycle; supports a persistent `daemon` mode for JSON-RPC lifecycle/status commands, uses Apple containerization to start and stop the local runtime, validates the staged kernel/runtime directories, pulls the published control-plane image (`docker.io/vercantes/camelai-openwork:20260403-v3`) when needed, and preserves a cached root filesystem across app restarts for faster warm boots
+   - `scripts/stage.mjs` - Stages a packaging-friendly desktop payload under `desktop/app-resources/` with a bundled desktop-service module, compiled backend binary fallback, built renderer, staged Linux kernel, and runtime helper binary
    - `scripts/probe.mjs` - Hidden Electron startup probe for debugging desktop initialization regressions against dev or staged app paths
-   - `scripts/probe-guest.mjs` - Fast guest-only probe harness that boots the VM, then verifies `/health` or a real `/turn` without Electron or backend stdio in the loop
+   - `scripts/probe-turn.mjs` - Fast runtime-turn probe harness that waits for the local runtime and verifies a real `/turn` without Electron or backend stdio in the loop
 
 4. **Sandbox Host** (`services/sandbox-host/`)
    - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
@@ -423,8 +422,7 @@ bun run dev          # Full Cloudflare dev (recommended), default port 3001
 bun run build        # Production build → build/client/ + build/server/
 bun run desktop:dev  # Local Electron + Bun backend desktop prototype
 bun run desktop:check
-bun run desktop:appliance:bake
-bun run desktop:vm-helper:build
+bun run desktop:runtime-helper:build
 ```
 
 ### Environment Variables

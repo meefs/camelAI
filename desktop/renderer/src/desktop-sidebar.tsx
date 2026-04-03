@@ -58,11 +58,11 @@ function authLabel(snapshot: DesktopSnapshot | null): string {
   return `${snapshot.model} via API key`;
 }
 
-function vmDetail(snapshot: DesktopSnapshot | null): string | null {
+function runtimeDetail(snapshot: DesktopSnapshot | null): string | null {
   if (!snapshot) {
     return null;
   }
-  const detail = snapshot.vmStatus.detail?.trim();
+  const detail = snapshot.runtimeStatus.detail?.trim();
   return detail || null;
 }
 
@@ -72,7 +72,8 @@ function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
   }
 
   return (
-    snapshot.vmStatus.state !== "running" || snapshot.authSource === "missing"
+    snapshot.runtimeStatus.state !== "running" ||
+    snapshot.authSource === "missing"
   );
 }
 
@@ -215,13 +216,13 @@ export function DesktopSidebar({
               <div className="flex flex-wrap items-center gap-2">
                 <Badge
                   variant={
-                    snapshot?.vmStatus.state === "error"
+                    snapshot?.runtimeStatus.state === "error"
                       ? "destructive"
                       : "outline"
                   }
                 >
                   {snapshot
-                    ? `Runtime ${snapshot.vmStatus.state}`
+                    ? `Runtime ${snapshot.runtimeStatus.state}`
                     : "Runtime starting"}
                 </Badge>
                 <Badge
@@ -235,16 +236,16 @@ export function DesktopSidebar({
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                 {authLabel(snapshot)}
               </p>
-              {vmDetail(snapshot) ? (
+              {runtimeDetail(snapshot) ? (
                 <p
                   className={`mt-2 text-xs leading-relaxed ${
-                    snapshot?.vmStatus.state === "error"
+                    snapshot?.runtimeStatus.state === "error"
                       ? "text-destructive"
                       : "text-muted-foreground"
                   }`}
-                  title={vmDetail(snapshot) ?? undefined}
+                  title={runtimeDetail(snapshot) ?? undefined}
                 >
-                  {vmDetail(snapshot)}
+                  {runtimeDetail(snapshot)}
                 </p>
               ) : null}
             </div>

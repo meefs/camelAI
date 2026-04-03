@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { DesktopStore } from "./store";
-import { VmManager } from "./vm";
+import { RuntimeManager } from "./runtime";
 import {
   getClaudeAuthState,
   getDefaultConfiguredModel,
   normalizeDesktopModel,
 } from "./anthropic";
-import { streamGuestChat } from "./guest-control-plane";
+import { streamRuntimeChat } from "./runtime-control-plane";
 import { logDesktop } from "./log";
 import {
   applySdkEventToMessages,
@@ -25,18 +25,18 @@ type Listener = (event: DesktopServerEvent) => void;
 
 export class DesktopService {
   private readonly store = new DesktopStore();
-  private readonly vmManager = new VmManager();
+  private readonly runtimeManager = new RuntimeManager();
   private readonly activeThreads = new Set<string>();
   private readonly listeners = new Set<Listener>();
-  private vmStatus = this.vmManager.getCachedStatus();
-  private vmStartupPromise: Promise<void> | null = null;
+  private runtimeStatus = this.runtimeManager.getCachedStatus();
+  private runtimeStartupPromise: Promise<void> | null = null;
 
   constructor() {
     logDesktop("service", "init", {
       model: this.store.getModel(),
       authSource: getClaudeAuthState().authSource,
     });
-    void this.ensureVmRunning("startup");
+    void this.ensureRuntimeRunning("startup");
   }
 
   subscribe(listener: Listener): () => void {
@@ -47,7 +47,7 @@ export class DesktopService {
   }
 
   dispose(): void {
-    this.vmManager.dispose();
+    this.runtimeManager.dispose();
     this.listeners.clear();
     this.activeThreads.clear();
   }
@@ -66,7 +66,7 @@ export class DesktopService {
 
   getSnapshot(): DesktopSnapshot {
     return this.store.buildSnapshot(
-      this.vmStatus,
+      this.runtimeStatus,
       this.store.getModel(),
       getClaudeAuthState(),
     );
@@ -108,89 +108,70 @@ export class DesktopService {
     }
   }
 
-  private normalizeRuntimeProgressStatus(status: DesktopSnapshot["vmStatus"]): DesktopSnapshot["vmStatus"] {
-    if (status.state === "stopped") {
-      return {
-        ...status,
-        state: "starting",
-      };
-    }
-
-    if (
-      status.state === "running" &&
-      /guest readiness has not been published yet/i.test(status.detail)
-    ) {
-      return {
-        ...status,
-        state: "starting",
-      };
-    }
-
-    return status;
-  }
-
-  private async ensureVmRunning(
+  private async ensureRuntimeRunning(
     reason: "startup" | "send_message",
     model = this.store.getModel(),
   ): Promise<void> {
-    if (this.vmStartupPromise) {
-      await this.vmStartupPromise;
+    if (this.runtimeStartupPromise) {
+      await this.runtimeStartupPromise;
       return;
     }
 
-    if (this.vmStatus.state === "running") {
+    if (this.runtimeStatus.state === "running") {
       return;
     }
 
-    this.vmStatus = {
-      ...this.vmStatus,
+    this.runtimeStatus = {
+      ...this.runtimeStatus,
       state: "starting",
       detail:
         reason === "startup"
           ? "Starting the local runtime automatically."
           : "Starting the local runtime for this message.",
-      helperPath: this.vmStatus.helperPath ?? this.vmManager.getHelperPath(),
+      helperPath:
+        this.runtimeStatus.helperPath ?? this.runtimeManager.getHelperPath(),
     };
     this.emitSnapshot();
 
-    this.vmStartupPromise = (async () => {
-      logDesktop("service", "vm_runtime:start", {
+    this.runtimeStartupPromise = (async () => {
+      logDesktop("service", "runtime:start", {
         reason,
         model,
       });
       try {
-        this.vmStatus = await this.vmManager.ensureGuestAgentRuntime(
+        this.runtimeStatus =
+          await this.runtimeManager.ensureControlPlaneRuntime(
           model,
           (status) => {
-            this.vmStatus = this.normalizeRuntimeProgressStatus(status);
+            this.runtimeStatus = status;
             this.emitSnapshot();
           },
         );
-        if (this.vmStatus.state !== "running") {
-          throw new Error(this.vmStatus.detail);
+        if (this.runtimeStatus.state !== "running") {
+          throw new Error(this.runtimeStatus.detail);
         }
-        logDesktop("service", "vm_runtime:ready", {
+        logDesktop("service", "runtime:ready", {
           reason,
-          state: this.vmStatus.state,
-          detail: this.vmStatus.detail,
+          state: this.runtimeStatus.state,
+          detail: this.runtimeStatus.detail,
         });
       } catch (error) {
-        logDesktop("service", "vm_runtime:error", {
+        logDesktop("service", "runtime:error", {
           reason,
           error,
         });
-        this.vmStatus = {
+        this.runtimeStatus = {
           state: "error",
           detail: error instanceof Error ? error.message : String(error),
-          helperPath: this.vmManager.getHelperPath(),
+          helperPath: this.runtimeManager.getHelperPath(),
         };
       } finally {
         this.emitSnapshot();
-        this.vmStartupPromise = null;
+        this.runtimeStartupPromise = null;
       }
     })();
 
-    await this.vmStartupPromise;
+    await this.runtimeStartupPromise;
   }
 
   private appendErrorMessage(threadId: string, error: unknown): void {
@@ -266,18 +247,18 @@ export class DesktopService {
         [threadId]: assistant.id,
       };
 
-      await this.ensureVmRunning("send_message", model);
+      await this.ensureRuntimeRunning("send_message", model);
 
       logDesktop("service", "send_message:runtime_ready", {
         turnId,
         threadId,
-        state: this.vmStatus.state,
-        detail: this.vmStatus.detail,
+        state: this.runtimeStatus.state,
+        detail: this.runtimeStatus.detail,
       });
       this.emitSnapshot();
 
-      const result = await streamGuestChat({
-        vmManager: this.vmManager,
+      const result = await streamRuntimeChat({
+        runtimeManager: this.runtimeManager,
         threadId,
         content: trimmed,
         model,

@@ -1,8 +1,8 @@
-import { VmManager } from "./vm";
+import { RuntimeManager } from "./runtime";
 import { logDesktop } from "./log";
 import type { SDKEvent } from "../../src/lib/streaming";
 
-interface GuestControlPlaneEvent {
+interface ControlPlaneEvent {
   type: string;
   error?: string;
   message?: string;
@@ -15,8 +15,8 @@ interface ResultLikeEvent extends SDKEvent {
   result?: string;
 }
 
-export interface StreamGuestChatOptions {
-  vmManager: VmManager;
+export interface StreamRuntimeChatOptions {
+  runtimeManager: RuntimeManager;
   threadId: string;
   content: string;
   model: string;
@@ -25,7 +25,7 @@ export interface StreamGuestChatOptions {
   onText: (delta: string) => void;
 }
 
-export interface StreamGuestChatResult {
+export interface StreamRuntimeChatResult {
   finalText: string;
   model: string;
 }
@@ -70,7 +70,7 @@ function pushAssistantText(
     const delta = nextText.slice(knownText.length);
     if (delta) {
       logDesktop(
-        "guest-bridge",
+        "runtime-bridge",
         "http_stream:assistant_text_delta",
         {
           turnId,
@@ -84,7 +84,7 @@ function pushAssistantText(
     }
   } else if (!knownText) {
     logDesktop(
-      "guest-bridge",
+      "runtime-bridge",
       "http_stream:assistant_text_initial",
       {
         turnId,
@@ -100,17 +100,17 @@ function pushAssistantText(
   state.latestAssistantText = nextText;
 }
 
-export async function streamGuestChat({
-  vmManager,
+export async function streamRuntimeChat({
+  runtimeManager,
   threadId,
   content,
   model,
   turnId,
   onEvent,
   onText,
-}: StreamGuestChatOptions): Promise<StreamGuestChatResult> {
+}: StreamRuntimeChatOptions): Promise<StreamRuntimeChatResult> {
   logDesktop(
-    "guest-bridge",
+    "runtime-bridge",
     "send_message:start",
     {
       turnId,
@@ -121,7 +121,9 @@ export async function streamGuestChat({
     "debug",
   );
 
-  const response = await fetch(`${vmManager.getGuestControlPlaneHttpUrl()}/turn`, {
+  const response = await fetch(
+    `${runtimeManager.getControlPlaneHttpUrl()}/turn`,
+    {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -134,13 +136,14 @@ export async function streamGuestChat({
         DESKTOP_ANTHROPIC_MODEL: model,
       },
     }),
-  });
+    },
+  );
 
   if (!response.ok || !response.body) {
     const errorText = await response.text().catch(() => "");
     throw new Error(
       errorText.trim() ||
-        `Guest control plane returned HTTP ${response.status}.`,
+        `Control plane returned HTTP ${response.status}.`,
     );
   }
 
@@ -172,18 +175,18 @@ export async function streamGuestChat({
         continue;
       }
 
-      let event: GuestControlPlaneEvent;
+      let event: ControlPlaneEvent;
       try {
-        event = JSON.parse(line) as GuestControlPlaneEvent;
+        event = JSON.parse(line) as ControlPlaneEvent;
       } catch {
-        throw new Error("Guest control plane returned invalid JSON.");
+        throw new Error("Control plane returned invalid JSON.");
       }
 
       if (event.type === "error") {
         const error = new Error(
-          event.error || event.message || "Guest control plane failed.",
+          event.error || event.message || "Control plane failed.",
         );
-        logDesktop("guest-bridge", "http_stream:event_error", {
+        logDesktop("runtime-bridge", "http_stream:event_error", {
           turnId,
           threadId,
           model,
@@ -207,7 +210,7 @@ export async function streamGuestChat({
 
       const sdkEvent = event.event;
       logDesktop(
-        "guest-bridge",
+        "runtime-bridge",
         "http_stream:sdk_event",
         {
           turnId,
@@ -270,7 +273,7 @@ export async function streamGuestChat({
 
         const finalText = state.finalAssistantText || state.streamedText;
         logDesktop(
-          "guest-bridge",
+          "runtime-bridge",
           "send_message:success",
           {
             turnId,
@@ -289,6 +292,6 @@ export async function streamGuestChat({
   }
 
   throw new Error(
-    "Guest control plane stream ended before the Claude SDK reported a result.",
+    "Control plane stream ended before the Claude SDK reported a result.",
   );
 }

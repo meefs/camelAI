@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import type {
   DesktopMessage,
   DesktopModel,
+  DesktopRuntimeStatus,
   DesktopSnapshot,
   DesktopThread,
-  DesktopVmStatus,
 } from '../shared/protocol';
 import type { ContentBlock } from '../../src/types';
 import { extractTextContent } from '../shared/message-state';
@@ -246,7 +246,7 @@ export class DesktopStore {
   }
 
   buildSnapshot(
-    vmStatus: DesktopVmStatus,
+    runtimeStatus: DesktopRuntimeStatus,
     model: DesktopModel,
     auth: {
       hasClaudeAuth: boolean;
@@ -260,7 +260,7 @@ export class DesktopStore {
       model,
       hasClaudeAuth: auth.hasClaudeAuth,
       authSource: auth.authSource,
-      vmStatus,
+      runtimeStatus,
     };
   }
 }

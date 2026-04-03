@@ -21,16 +21,16 @@ export interface DesktopMessage {
   sourceToolUseID?: string;
 }
 
-export interface DesktopVmStatus {
+export interface DesktopRuntimeStatus {
   state: "unavailable" | "stopped" | "starting" | "running" | "error";
   detail: string;
   helperPath: string | null;
   prepared?: boolean;
-  vmDirectory?: string | null;
-  diskPath?: string | null;
-  instanceName?: string | null;
-  localProxyPort?: number | null;
-  guestIPAddress?: string | null;
+  runtimeDirectory?: string | null;
+  containerID?: string | null;
+  controlPlaneAddress?: string | null;
+  controlPlanePort?: number | null;
+  imageReference?: string | null;
 }
 
 export interface DesktopSnapshot {
@@ -40,7 +40,7 @@ export interface DesktopSnapshot {
   model: string;
   hasClaudeAuth: boolean;
   authSource: "claude-ai" | "api-key" | "missing";
-  vmStatus: DesktopVmStatus;
+  runtimeStatus: DesktopRuntimeStatus;
 }
 
 export interface DesktopStartupDiagnostic {

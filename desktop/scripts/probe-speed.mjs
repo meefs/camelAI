@@ -1,16 +1,17 @@
 import { mkdtempSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import { getDefaultConfiguredModel } from "../backend/anthropic.ts";
-import { VmManager } from "../backend/vm.ts";
+import { RuntimeManager } from "../backend/runtime.ts";
 
 const TURN_TIMEOUT_MS = Number(process.env.DESKTOP_TURN_PROBE_TIMEOUT_MS || 420000);
 const PROMPT = process.env.DESKTOP_TURN_PROBE_PROMPT || "Reply with exactly pong.";
 const warmTurns = Number(process.env.DESKTOP_SPEED_PROBE_WARM_TURNS || 2);
 const keepRunning = process.argv.includes("--keep-running");
-const reuseVmDir = process.argv.includes("--reuse-vm-dir");
+const reuseRuntimeDir = process.argv.includes("--reuse-runtime-dir");
 
 function now() {
   return Date.now();
@@ -34,7 +35,7 @@ function average(values) {
 async function readNdjsonStream(response, onLine) {
   const reader = response.body?.getReader();
   if (!reader) {
-    throw new Error("Guest turn response did not include a readable body.");
+    throw new Error("Runtime turn response did not include a readable body.");
   }
 
   const decoder = new TextDecoder();
@@ -79,7 +80,7 @@ async function sendTurn(baseUrl, model, prompt) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Guest turn request failed: ${response.status} ${body}`);
+    throw new Error(`Runtime turn request failed: ${response.status} ${body}`);
   }
 
   let assistantText = "";
@@ -102,7 +103,7 @@ async function sendTurn(baseUrl, model, prompt) {
     }
 
     if (event?.type === "error") {
-      errors.push(event.error || "Unknown guest error");
+      errors.push(event.error || "Unknown runtime error");
     }
   });
 
@@ -124,74 +125,52 @@ async function readLogFile(filePath) {
   }
 }
 
-function extractTimingLines(logText, marker) {
-  return logText
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.includes(marker) && line.includes("elapsed_ms="));
-}
-
-function parseElapsedMap(lines, marker) {
-  const timings = {};
-  for (const line of lines) {
-    const cleaned = line.replace(/^\+ /, "");
-    const elapsedMatch = cleaned.match(/elapsed_ms=(\d+)/);
-    if (!elapsedMatch) continue;
-    const labelMatch = cleaned.match(new RegExp(`${marker}:\\s+(.*?)\\s+elapsed_ms=`));
-    if (!labelMatch) continue;
-    const label = labelMatch[1].trim().replace(/\s+/g, "_");
-    timings[label] = Number(elapsedMatch[1]);
-    const totalMatch = cleaned.match(/total_elapsed_ms=(\d+)/);
-    if (totalMatch) {
-      timings[`${label}_total`] = Number(totalMatch[1]);
-    }
-  }
-  return timings;
-}
-
-async function collectGuestTimings(vmDir) {
-  const runtimeSetupLog = await readLogFile(resolve(vmDir, "shared/logs/runtime-setup.log"));
-  const controlPlaneServiceLog = await readLogFile(resolve(vmDir, "shared/logs/guest-control-plane-service.log"));
-  const guestControlPlaneLog = await readLogFile(resolve(vmDir, "shared/logs/guest-control-plane.log"));
+async function collectRuntimeLogs(runtimeDir) {
+  const controlPlaneServiceLog = await readLogFile(
+    resolve(runtimeDir, "shared/logs/control-plane-service.log"),
+  );
+  const controlPlaneLog = await readLogFile(
+    resolve(runtimeDir, "shared/logs/control-plane.log"),
+  );
 
   return {
-    runtimeSetup: parseElapsedMap(
-      extractTimingLines(runtimeSetupLog, "camelai-runtime-setup"),
-      "camelai-runtime-setup",
-    ),
-    controlPlaneService: parseElapsedMap(
-      extractTimingLines(controlPlaneServiceLog, "camelai-start-control-plane"),
-      "camelai-start-control-plane",
-    ),
-    samples: {
-      runtimeSetup: extractTimingLines(runtimeSetupLog, "camelai-runtime-setup"),
-      controlPlaneService: extractTimingLines(controlPlaneServiceLog, "camelai-start-control-plane"),
-      guestBootstrap: guestControlPlaneLog
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.includes('"event":"bootstrap:start"') || line.includes('"event":"server:listening"')),
-    },
+    controlPlaneServiceTail: controlPlaneServiceLog.split("\n").slice(-40).filter(Boolean),
+    controlPlaneTail: controlPlaneLog.split("\n").slice(-40).filter(Boolean),
   };
 }
 
 async function main() {
-  const vmDir = process.env.DESKTOP_VM_DIR
-    || (reuseVmDir
-      ? resolve(process.cwd(), "desktop/.local/vm-speed-probe")
+  for (const script of [
+    "desktop/scripts/prepare-runtime-helper.mjs",
+  ]) {
+    const result = spawnSync("node", [script], {
+      cwd: process.cwd(),
+      stdio: "inherit",
+      env: process.env,
+    });
+    if (result.status !== 0) {
+      process.exit(result.status ?? 1);
+    }
+  }
+
+  const runtimeDir =
+    process.env.DESKTOP_RUNTIME_DIR ||
+    (reuseRuntimeDir
+      ? resolve(process.cwd(), "desktop/.local/runtime-speed-probe")
       : mkdtempSync(join(tmpdir(), "camelai-speed-probe-")));
 
-  const originalVmDir = process.env.DESKTOP_VM_DIR;
-  process.env.DESKTOP_VM_DIR = vmDir;
+  const originalRuntimeDir = process.env.DESKTOP_RUNTIME_DIR;
+  process.env.DESKTOP_RUNTIME_DIR = runtimeDir;
 
-  const vm = new VmManager();
-  const vmStates = [];
+  const runtime = new RuntimeManager();
+  const runtimeStates = [];
   let lastStatusLine = "";
 
   const onStatus = (status) => {
     const line = `${status.state}:${status.detail}`;
     if (line === lastStatusLine) return;
     lastStatusLine = line;
-    vmStates.push({
+    runtimeStates.push({
       at: now(),
       state: status.state,
       detail: status.detail,
@@ -201,17 +180,17 @@ async function main() {
   const finish = async (result, exitCode = 0) => {
     try {
       if (!keepRunning) {
-        await vm.stopRuntime().catch(() => {});
+        await runtime.stopRuntime().catch(() => {});
       }
     } finally {
-      vm.dispose();
-      if (originalVmDir) {
-        process.env.DESKTOP_VM_DIR = originalVmDir;
+      runtime.dispose();
+      if (originalRuntimeDir) {
+        process.env.DESKTOP_RUNTIME_DIR = originalRuntimeDir;
       } else {
-        delete process.env.DESKTOP_VM_DIR;
+        delete process.env.DESKTOP_RUNTIME_DIR;
       }
-      if (!keepRunning && !reuseVmDir) {
-        await rm(vmDir, { recursive: true, force: true }).catch(() => {});
+      if (!keepRunning && !reuseRuntimeDir) {
+        await rm(runtimeDir, { recursive: true, force: true }).catch(() => {});
       }
     }
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -221,9 +200,9 @@ async function main() {
   try {
     const model = process.env.DESKTOP_ANTHROPIC_MODEL || getDefaultConfiguredModel();
     const coldBootStartedAt = now();
-    const runtimeStatus = await vm.ensureGuestAgentRuntime(model, onStatus);
+    const runtimeStatus = await runtime.ensureControlPlaneRuntime(model, onStatus);
     const coldBootElapsedMs = now() - coldBootStartedAt;
-    const baseUrl = vm.getGuestControlPlaneHttpUrl();
+    const baseUrl = runtime.getControlPlaneHttpUrl();
     const firstTurn = await sendTurn(baseUrl, model, PROMPT);
 
     const warmTurnResults = [];
@@ -231,18 +210,18 @@ async function main() {
       warmTurnResults.push(await sendTurn(baseUrl, model, PROMPT));
     }
 
-    const guestTimings = await collectGuestTimings(vmDir);
+    const runtimeLogs = await collectRuntimeLogs(runtimeDir);
 
     await finish({
       ok: true,
       mode: "speed",
-      vmDir,
+      runtimeDir,
       model,
       prompt: PROMPT,
       runtimeStatus,
       coldBoot: {
         elapsedMs: coldBootElapsedMs,
-        vmStates,
+        runtimeStates,
       },
       firstTurn: {
         elapsedMs: firstTurn.elapsedMs,
@@ -260,16 +239,16 @@ async function main() {
         warmTurnAverageMs: average(warmTurnResults.map((turn) => turn.elapsedMs)),
         warmTurnMedianMs: median(warmTurnResults.map((turn) => turn.elapsedMs)),
       },
-      guestTimings,
+      runtimeLogs,
     });
   } catch (error) {
     await finish(
       {
         ok: false,
         mode: "speed",
-        vmDir,
+        runtimeDir,
         message: error instanceof Error ? error.message : String(error),
-        vmStates,
+        runtimeStates,
       },
       1,
     );

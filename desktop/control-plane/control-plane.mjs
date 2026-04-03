@@ -4,12 +4,17 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { access, mkdir, rm } from 'node:fs/promises';
 import http from 'node:http';
 import { homedir } from 'node:os';
-const PORT = parseInt(process.env.DESKTOP_GUEST_CONTROL_PLANE_PORT || '4317', 10);
+const PORT = parseInt(
+  process.env.DESKTOP_RUNTIME_CONTROL_PLANE_PORT ||
+    '4317',
+  10,
+);
 const SYSTEM_PROMPT = 'You are camelAI Desktop. Be concise, practical, and helpful.';
-const SHARED_LOG_DIR = '/mnt/camelai-shared/logs';
-const RUNTIME_STATUS_FILE = '/mnt/camelai-shared/runtime/status.txt';
+const SHARED_ROOT = process.env.DESKTOP_RUNTIME_SHARED_DIR || '/mnt/camelai-shared';
+const SHARED_LOG_DIR = `${SHARED_ROOT}/logs`;
+const RUNTIME_STATUS_FILE = `${SHARED_ROOT}/runtime/status.txt`;
 const DEFAULT_SDK_DEBUG_FILE = `${SHARED_LOG_DIR}/claude-sdk-debug.log`;
-const DEFAULT_GUEST_LOG_FILE = `${SHARED_LOG_DIR}/guest-control-plane.log`;
+const DEFAULT_CONTROL_PLANE_LOG_FILE = `${SHARED_LOG_DIR}/control-plane.log`;
 const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || `${homedir()}/.claude`;
 const CLAUDE_CREDENTIALS_PATH = `${CLAUDE_CONFIG_DIR}/.credentials.json`;
 const sessions = new Map();
@@ -29,22 +34,22 @@ async function getClaudeQuery() {
   return queryModulePromise;
 }
 
-function logGuest(event, details = {}) {
+function logControlPlane(event, details = {}) {
   const payload = {
     ts: new Date().toISOString(),
     pid: process.pid,
-    component: 'guest-control-plane',
+    component: 'desktop-control-plane',
     event,
     ...details,
   };
   const line = `${JSON.stringify(payload)}\n`;
   process.stderr.write(line);
   try {
-    appendFileSync(DEFAULT_GUEST_LOG_FILE, line, 'utf8');
+    appendFileSync(DEFAULT_CONTROL_PLANE_LOG_FILE, line, 'utf8');
   } catch {}
 }
 
-logGuest('bootstrap:start', {
+logControlPlane('bootstrap:start', {
   port: PORT,
   cwd: process.cwd(),
   model: process.env.DESKTOP_ANTHROPIC_MODEL || 'sonnet',
@@ -120,7 +125,7 @@ class ChatSession {
     } else {
       this.model = nextModel;
     }
-    logGuest('session:update_config', {
+    logControlPlane('session:update_config', {
       threadId: this.threadId,
       model: this.model,
       needsReinit: this.needsReinit,
@@ -178,11 +183,11 @@ class ChatSession {
         preset: 'claude_code',
         append: SYSTEM_PROMPT,
       },
-      debugFile: process.env.DESKTOP_GUEST_SDK_DEBUG_FILE || DEFAULT_SDK_DEBUG_FILE,
+      debugFile: process.env.DESKTOP_CONTROL_PLANE_DEBUG_FILE || DEFAULT_SDK_DEBUG_FILE,
       stderr: (data) => {
         const trimmed = typeof data === 'string' ? data.trim() : '';
         if (trimmed) {
-          logGuest('claude_sdk:stderr', {
+          logControlPlane('claude_sdk:stderr', {
             threadId: this.threadId,
             model: this.model,
             data: trimmed.slice(0, 1000),
@@ -242,7 +247,7 @@ class ChatSession {
       const query = await getClaudeQuery();
       const queryOptions = this.getQueryOptions(hasSessionFile);
       await mkdir(SHARED_LOG_DIR, { recursive: true });
-      logGuest('session:init', {
+      logControlPlane('session:init', {
         threadId: this.threadId,
         model: this.model,
         hasSessionFile,
@@ -257,7 +262,7 @@ class ChatSession {
       });
       this.queryIterator = this.activeQuery[Symbol.asyncIterator]();
       this.needsReinit = false;
-      logGuest('session:query_created', {
+      logControlPlane('session:query_created', {
         threadId: this.threadId,
         model: this.model,
         hasSessionFile,
@@ -272,7 +277,7 @@ class ChatSession {
   }
 
   async resetRuntime() {
-    logGuest('session:reset_runtime', {
+    logControlPlane('session:reset_runtime', {
       threadId: this.threadId,
       model: this.model,
       hasActiveQuery: Boolean(this.activeQuery),
@@ -292,7 +297,7 @@ class ChatSession {
       const sessionPath = getProjectSessionPath(this.threadId);
       await rm(sessionPath, { force: true }).catch(() => {});
       this.discardSessionFileOnReinit = false;
-      logGuest('session:discard_session_file', {
+      logControlPlane('session:discard_session_file', {
         threadId: this.threadId,
         model: this.model,
         sessionPath,
@@ -312,7 +317,7 @@ class ChatSession {
     }
 
     this.eventLoopRunning = true;
-    logGuest('session:event_loop_start', {
+    logControlPlane('session:event_loop_start', {
       threadId: this.threadId,
       model: this.model,
     });
@@ -322,13 +327,13 @@ class ChatSession {
         while (true) {
           const { value: event, done } = await this.queryIterator.next();
           if (done) {
-            logGuest('session:event_loop_done', {
+            logControlPlane('session:event_loop_done', {
               threadId: this.threadId,
               model: this.model,
             });
             break;
           }
-          logGuest('session:sdk_event', {
+          logControlPlane('session:sdk_event', {
             threadId: this.threadId,
             model: this.model,
             eventType: event?.type,
@@ -349,7 +354,7 @@ class ChatSession {
           }
         }
       } catch (error) {
-        logGuest('session:event_loop_error', {
+        logControlPlane('session:event_loop_error', {
           threadId: this.threadId,
           model: this.model,
           error: error instanceof Error ? error.message : String(error),
@@ -357,13 +362,13 @@ class ChatSession {
         this.broadcast({
           type: 'error',
           error: error instanceof Error ? error.message : String(error),
-          source: 'guest_event_loop',
+          source: 'control_plane_event_loop',
         });
       } finally {
         this.activeQuery = null;
         this.queryIterator = null;
         this.eventLoopRunning = false;
-        logGuest('session:event_loop_finish', {
+        logControlPlane('session:event_loop_finish', {
           threadId: this.threadId,
           model: this.model,
         });
@@ -377,7 +382,7 @@ class ChatSession {
       throw new Error('Message content cannot be empty.');
     }
 
-    logGuest('session:handle_message', {
+    logControlPlane('session:handle_message', {
       threadId: this.threadId,
       model: this.model,
       length: trimmed.length,
@@ -470,7 +475,7 @@ const server = http.createServer(async (req, res) => {
 
     const threadId = message.threadId.trim();
     const session = getOrCreateSession(threadId, message.env, message.model);
-    logGuest('http:turn_start', {
+    logControlPlane('http:turn_start', {
       threadId,
       model: message.model,
       length: message.content.length,
@@ -499,7 +504,7 @@ const server = http.createServer(async (req, res) => {
             cleanup();
           }
         } catch (error) {
-          logGuest('http:stream_send_error', {
+          logControlPlane('http:stream_send_error', {
             threadId,
             error: error instanceof Error ? error.message : String(error),
           });
@@ -524,16 +529,16 @@ const server = http.createServer(async (req, res) => {
 
     session.addClient(client);
     req.once('aborted', () => {
-      logGuest('http:turn_abort', { threadId });
+      logControlPlane('http:turn_abort', { threadId });
       cleanup();
     });
     res.once('close', () => {
-      logGuest('http:turn_close', { threadId });
+      logControlPlane('http:turn_close', { threadId });
       cleanup();
     });
 
     session.handleMessage(message.content).catch((error) => {
-      logGuest('http:turn_error', {
+      logControlPlane('http:turn_error', {
         threadId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -541,7 +546,7 @@ const server = http.createServer(async (req, res) => {
         JSON.stringify({
           type: 'error',
           error: error instanceof Error ? error.message : String(error),
-          source: 'guest_handle_message',
+          source: 'control_plane_handle_message',
         }),
       );
     });
@@ -553,7 +558,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   writeRuntimeStatus('control-plane-ready');
-  logGuest('server:listening', {
+  logControlPlane('server:listening', {
     port: PORT,
     model: process.env.DESKTOP_ANTHROPIC_MODEL || 'sonnet',
   });
@@ -561,7 +566,7 @@ server.listen(PORT, () => {
 
 server.on('error', (error) => {
   writeRuntimeStatus('control-plane-error');
-  logGuest('server:error', {
+  logControlPlane('server:error', {
     error: error instanceof Error ? error.message : String(error),
   });
   process.exit(1);

@@ -16,17 +16,16 @@ const repoRoot = resolve(desktopDirectory, '..');
 const stageDirectory = resolve(desktopDirectory, 'app-resources');
 const stageBinDirectory = resolve(stageDirectory, 'bin');
 const stageBackendDirectory = resolve(stageDirectory, 'backend');
-const stageVmApplianceDirectory = resolve(stageDirectory, 'vm-appliance');
+const stageKernelDirectory = resolve(stageDirectory, 'kernel');
 const rendererOutputDirectory = resolve(desktopDirectory, 'renderer-dist');
-const guestSourceDirectory = resolve(desktopDirectory, 'guest');
-const guestStageDirectory = resolve(stageDirectory, 'guest');
-const defaultApplianceDiskPath = resolve(desktopDirectory, '.local/vm/disk.raw');
+const runtimeKernelSourcePath = resolve(desktopDirectory, 'runtime-helper/assets/vmlinux');
+const runtimeKernelStagePath = resolve(stageKernelDirectory, 'vmlinux');
 const backendEntry = resolve(desktopDirectory, 'backend/server.ts');
 const backendServiceEntry = resolve(desktopDirectory, 'backend/electron-service.ts');
 const backendBinaryPath = resolve(stageBinDirectory, 'camelai-desktop-backend');
 const backendServiceBundlePath = resolve(stageBackendDirectory, 'index.mjs');
-const vmHelperReleasePath = resolve(desktopDirectory, 'vm-helper/.build/release/camelai-vm-helper');
-const vmHelperStagePath = resolve(stageBinDirectory, 'camelai-vm-helper');
+const runtimeHelperReleasePath = resolve(desktopDirectory, 'runtime-helper/.build/release/camelai-runtime-helper');
+const runtimeHelperStagePath = resolve(stageBinDirectory, 'camelai-runtime-helper');
 const manifestPath = resolve(stageDirectory, 'manifest.json');
 
 function run(command, args) {
@@ -41,72 +40,32 @@ function run(command, args) {
   }
 }
 
-function copyGuestBundle() {
-  cpSync(guestSourceDirectory, guestStageDirectory, {
-    recursive: true,
-    force: true,
-  });
-}
-
-function copyVmAppliance() {
-  const applianceDiskPath =
-    process.env.DESKTOP_VM_APPLIANCE_IMAGE_PATH || defaultApplianceDiskPath;
-
-  if (!existsSync(applianceDiskPath)) {
-    throw new Error(
-      `VM appliance disk is missing: ${applianceDiskPath}. Set DESKTOP_VM_APPLIANCE_IMAGE_PATH or prepare desktop/.local/vm/disk.raw.`,
-    );
-  }
-
-  mkdirSync(stageVmApplianceDirectory, { recursive: true });
-  const stagedDiskPath = resolve(stageVmApplianceDirectory, 'disk.raw');
-  const result = spawnSync('/bin/cp', ['-c', applianceDiskPath, stagedDiskPath], {
-    cwd: repoRoot,
-    env: process.env,
-    encoding: 'utf8',
-  });
-
-  if (result.status !== 0) {
-    throw new Error(
-      [
-        'Failed to clone the VM appliance disk into the staged app resources.',
-        result.stderr.trim() || result.stdout.trim(),
-        'The staging directory must live on an APFS volume with clonefile support.',
-      ]
-        .filter(Boolean)
-        .join(' '),
-    );
-  }
-}
-
 rmSync(stageDirectory, { recursive: true, force: true });
 mkdirSync(stageBinDirectory, { recursive: true });
 mkdirSync(stageBackendDirectory, { recursive: true });
-mkdirSync(stageVmApplianceDirectory, { recursive: true });
+mkdirSync(stageKernelDirectory, { recursive: true });
 
 run('bun', ['x', 'vite', 'build', '--config', 'desktop/vite.config.ts']);
 run('bun', ['build', '--target=node', '--format=esm', '--outfile', backendServiceBundlePath, backendServiceEntry]);
 run('bun', ['build', '--compile', '--target=bun', '--outfile', backendBinaryPath, backendEntry]);
-run('swift', ['build', '--package-path', 'desktop/vm-helper', '-c', 'release']);
+run('node', ['desktop/scripts/prepare-runtime-helper.mjs', 'release']);
 
 cpSync(rendererOutputDirectory, resolve(stageDirectory, 'renderer'), { recursive: true, force: true });
-copyGuestBundle();
-copyVmAppliance();
-cpSync(vmHelperReleasePath, vmHelperStagePath, { force: true });
-run('node', ['desktop/scripts/sign-vm-helper.mjs', 'desktop/app-resources/bin/camelai-vm-helper']);
+cpSync(runtimeKernelSourcePath, runtimeKernelStagePath, { force: true });
+cpSync(runtimeHelperReleasePath, runtimeHelperStagePath, { force: true });
+run('node', ['desktop/scripts/sign-runtime-helper.mjs', 'desktop/app-resources/bin/camelai-runtime-helper']);
 chmodSync(backendBinaryPath, 0o755);
-chmodSync(vmHelperStagePath, 0o755);
+chmodSync(runtimeHelperStagePath, 0o755);
 
 writeFileSync(
   manifestPath,
   JSON.stringify(
     {
       rendererDirectory: 'renderer',
-      guestDirectory: 'guest',
-      vmApplianceDisk: 'vm-appliance/disk.raw',
+      kernelPath: 'kernel/vmlinux',
       backendModule: 'backend/index.mjs',
       backendBinary: 'bin/camelai-desktop-backend',
-      vmHelperBinary: 'bin/camelai-vm-helper',
+      runtimeHelperBinary: 'bin/camelai-runtime-helper',
     },
     null,
     2
@@ -121,10 +80,6 @@ if (!existsSync(backendServiceBundlePath)) {
   throw new Error('Staged desktop service bundle is missing.');
 }
 
-if (!existsSync(resolve(guestStageDirectory, 'control-plane.mjs'))) {
-  throw new Error('Staged guest bundle is missing control-plane.mjs.');
-}
-
-if (!existsSync(resolve(stageVmApplianceDirectory, 'disk.raw'))) {
-  throw new Error('Staged VM appliance disk is missing.');
+if (!existsSync(runtimeKernelStagePath)) {
+  throw new Error('Staged runtime kernel is missing.');
 }

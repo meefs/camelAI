@@ -1,6 +1,6 @@
 *
-!.dockerignore
 !Dockerfile
 !control-plane.mjs
 !entrypoint.sh
 !package.json
+!package-lock.json

@@ -3,8 +3,8 @@ import { spawn } from 'node:child_process';
 const TURN_TIMEOUT_MS = Number(process.env.DESKTOP_TURN_PROBE_TIMEOUT_MS || 420000);
 const PROMPT = process.env.DESKTOP_TURN_PROBE_PROMPT || 'Reply with exactly pong.';
 
-function isRuntimeReady(vmStatus) {
-  return vmStatus?.state === 'running';
+function isRuntimeReady(runtimeStatus) {
+  return runtimeStatus?.state === 'running';
 }
 
 function now() {
@@ -26,9 +26,28 @@ function sendEvent(child, event) {
   child.stdin.write(`${JSON.stringify(event)}\n`);
 }
 
+function run(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      stdio: 'inherit',
+      env: process.env,
+    });
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} ${args.join(' ')} failed with code ${code ?? 'null'} signal ${signal ?? 'null'}.`));
+    });
+  });
+}
+
 async function main() {
+  await run('node', ['desktop/scripts/prepare-runtime-helper.mjs']);
   const backend = startBackend();
-  const vmStates = [];
+  const runtimeStates = [];
   const diagnostics = [];
   const errors = [];
   const sdkEvents = [];
@@ -63,7 +82,7 @@ async function main() {
         message,
         threadId,
         prompt: PROMPT,
-        vmStates,
+        runtimeStates,
         diagnostics,
         assistantText,
         sdkEvents,
@@ -103,19 +122,19 @@ async function main() {
 
       if (event.type === 'snapshot') {
         const snapshot = event.snapshot;
-        const vmStatus = snapshot.vmStatus;
-        vmStates.push({
+        const runtimeStatus = snapshot.runtimeStatus;
+        runtimeStates.push({
           at: now(),
-          state: vmStatus.state,
-          detail: vmStatus.detail,
+          state: runtimeStatus.state,
+          detail: runtimeStatus.detail,
         });
 
-        if (vmStatus.state === 'error') {
-          fail(vmStatus.detail);
+        if (runtimeStatus.state === 'error') {
+          fail(runtimeStatus.detail);
           return;
         }
 
-        const runtimeReady = isRuntimeReady(vmStatus);
+        const runtimeReady = isRuntimeReady(runtimeStatus);
 
         if (!createdThread && runtimeReady) {
           createdThread = true;
@@ -166,7 +185,7 @@ async function main() {
               threadId,
               prompt: PROMPT,
               assistantText,
-              vmStates,
+              runtimeStates,
               diagnostics,
               result: sdkEvent,
               stderr: stderr.trim() || undefined,

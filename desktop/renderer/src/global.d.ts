@@ -13,7 +13,7 @@ interface DesktopShellApi {
     activeThreadId: string | null;
     authSource: DesktopSnapshot['authSource'];
     hasClaudeAuth: boolean;
-    vmState: DesktopSnapshot['vmStatus']['state'];
+    runtimeState: DesktopSnapshot['runtimeStatus']['state'];
   }) => void;
   onEvent: (listener: (event: DesktopServerEvent) => void) => () => void;
 }

@@ -67,6 +67,8 @@ async function waitForUrl(url, timeoutMs = 30_000) {
 
 const cwd = process.cwd();
 
+await run('node', ['desktop/scripts/prepare-runtime-helper.mjs'], { cwd });
+
 const renderer = spawn(
   'bun',
   ['x', 'vite', '--config', 'desktop/vite.config.ts', '--port', rendererPort],

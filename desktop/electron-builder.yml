@@ -7,7 +7,7 @@ directories:
 
 files:
   - package.json
-  - desktop/electron/**/* 
+  - desktop/electron/**/*
   - "!desktop/electron/**/*.map"
 
 extraResources:
@@ -31,7 +31,7 @@ mac:
   notarize: true
   binaries:
     - Contents/Resources/desktop/bin/camelai-desktop-backend
-    - Contents/Resources/desktop/bin/camelai-vm-helper
+    - Contents/Resources/desktop/bin/camelai-runtime-helper
 
 dmg:
   artifactName: camelAI-${version}-${arch}.${ext}
