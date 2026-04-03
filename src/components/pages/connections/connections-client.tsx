@@ -26,12 +26,20 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   AlertCircle,
   CheckCircle2,
   Copy,
   MessageSquare,
+  MoreVertical,
   Plug,
   Plus,
   Search,
@@ -561,34 +569,38 @@ export default function ConnectionsClient({
                                 <TooltipContent>New chat</TooltipContent>
                               </Tooltip>
                               {isAdmin && (
-                                <>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button variant="ghost" size="icon" aria-label="Configure" onClick={() => handleEditClick(connection)}>
-                                        <Settings className="size-4" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Configure</TooltipContent>
-                                  </Tooltip>
-                                  {otherWorkspaces.length > 0 && (
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <Button variant="ghost" size="icon" aria-label="Clone to workspace" onClick={() => setCopyTarget(connection)}>
-                                          <Copy className="size-4" />
-                                        </Button>
-                                      </TooltipTrigger>
-                                      <TooltipContent>Clone to workspace</TooltipContent>
-                                    </Tooltip>
-                                  )}
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button variant="ghost" size="icon" aria-label="Delete" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(connection)}>
-                                        <Trash2 className="size-4" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Delete</TooltipContent>
-                                  </Tooltip>
-                                </>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      className="h-7 w-7 data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
+                                    >
+                                      <MoreVertical className="h-4 w-4" />
+                                      <span className="sr-only">Connection options</span>
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-48">
+                                    <DropdownMenuItem onClick={() => handleEditClick(connection)}>
+                                      <Settings className="h-4 w-4 mr-2" />
+                                      Configure
+                                    </DropdownMenuItem>
+                                    {otherWorkspaces.length > 0 && (
+                                      <DropdownMenuItem onClick={() => setCopyTarget(connection)}>
+                                        <Copy className="h-4 w-4 mr-2" />
+                                        Clone to workspace
+                                      </DropdownMenuItem>
+                                    )}
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      onClick={() => setDeleteTarget(connection)}
+                                      className="text-destructive focus:text-destructive focus:bg-destructive/10"
+                                    >
+                                      <Trash2 className="h-4 w-4 mr-2" />
+                                      Delete
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               )}
                             </div>
                           </CardHeader>
