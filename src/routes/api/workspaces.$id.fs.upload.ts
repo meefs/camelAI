@@ -1,5 +1,6 @@
 import type { Route } from './+types/workspaces.$id.fs.upload';
 import {
+  blockBetaFileEdit,
   requireWorkspaceAuth,
   resolveContainerPathForWrite,
   normalizeWorkspacePath,
@@ -24,6 +25,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     const { container } = await requireWorkspaceAuth(request, context, workspaceId, {
       requireWrite: true,
     });
+
+    // Beta: file editing disabled. Remove this line to re-enable.
+    return blockBetaFileEdit();
 
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
