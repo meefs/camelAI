@@ -14,7 +14,8 @@ import {
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const DEFAULT_POLL_MAX_ITERATIONS = 600; // 5 min cap
-const TEAMS_BASE_DIR = () => join(homedir(), '.claude', 'teams');
+const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+const TEAMS_BASE_DIR = () => join(CLAUDE_CONFIG_DIR, 'teams');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -91,7 +92,7 @@ export class TeamPollingController {
 
   statePath() {
     const projectPath = process.cwd().replace(/\//g, '-');
-    return join(homedir(), '.claude', 'projects', projectPath, `${this.threadId}.team-poll-state.json`);
+    return join(CLAUDE_CONFIG_DIR, 'projects', projectPath, `${this.threadId}.team-poll-state.json`);
   }
 
   _trace(event, details = {}) {

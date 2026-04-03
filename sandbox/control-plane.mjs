@@ -20,6 +20,7 @@ import { homedir } from 'os';
 import { TeamPollingController } from './team-poll-controller.mjs';
 
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '8080', 10);
+const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || `${homedir()}/.claude`;
 const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
   10,
   parseInt(process.env.CONTROL_PLANE_IDLE_TIMEOUT_SECS || '120', 10)
@@ -959,7 +960,7 @@ class ChatSession {
   async sessionFileExists() {
     if (!this.threadId) return false;
     const projectPath = process.cwd().replace(/\//g, '-');
-    const jsonlPath = `${homedir()}/.claude/projects/${projectPath}/${this.threadId}.jsonl`;
+    const jsonlPath = `${CLAUDE_CONFIG_DIR}/projects/${projectPath}/${this.threadId}.jsonl`;
     try {
       await access(jsonlPath);
       return true;
@@ -1158,7 +1159,7 @@ class ChatSession {
 
   async forwardCompactSummary(boundaryEvent) {
     const projectPath = process.cwd().replace(/\//g, '-');
-    const jsonlPath = `${homedir()}/.claude/projects/${projectPath}/${this.threadId}.jsonl`;
+    const jsonlPath = `${CLAUDE_CONFIG_DIR}/projects/${projectPath}/${this.threadId}.jsonl`;
     const retryDelays = [0, 150, 300, 500, 800, 1200, 1800, 2600, 3600];
     const skewMs = 15_000;
     const maxAgeMs = 2 * 60_000;

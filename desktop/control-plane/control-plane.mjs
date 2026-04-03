@@ -84,7 +84,7 @@ function writeRuntimeStatus(value) {
 
 function getProjectSessionPath(threadId) {
   const projectPath = process.cwd().replace(/\//g, '-');
-  return `${homedir()}/.claude/projects/${projectPath}/${threadId}.jsonl`;
+  return `${CLAUDE_CONFIG_DIR}/projects/${projectPath}/${threadId}.jsonl`;
 }
 
 function extractAssistantText(content) {
