@@ -11,7 +11,7 @@ import {
   useState,
   type ComponentType,
 } from 'react';
-import { useFetcher, useNavigate, useSearchParams } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { useTheme } from 'next-themes';
 import type { Monaco } from '@monaco-editor/react';
 import { loader } from '@monaco-editor/react';
@@ -35,7 +35,6 @@ import {
   RefreshCw,
   Save,
   Search,
-  Upload,
   X,
 } from 'lucide-react';
 
@@ -45,7 +44,6 @@ import type { WorkspaceFileRead, WorkspaceListResponse } from '@/types';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   Dialog,
   DialogContent,
@@ -67,7 +65,6 @@ import {
 } from '@/components/ui/input-group';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   ContextMenu,
@@ -161,6 +158,7 @@ const ROOT_PATH = '/';
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 const MAX_EDITABLE_BYTES = 1024 * 1024;
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
+const BETA_FILE_EDIT_DISABLED_MESSAGE = 'File editing is disabled during beta.';
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   ts: 'typescript',
@@ -361,8 +359,6 @@ export default function ComputerPageContent({
   const [dialogName, setDialogName] = useState('');
   const [dialogSubmitting, setDialogSubmitting] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
-  const [confirmEditOpen, setConfirmEditOpen] = useState(false);
-  const [editingEnabled, setEditingEnabled] = useState(false);
   const [savingPaths, setSavingPaths] = useState<Set<string>>(new Set());
   const [conflictState, setConflictState] = useState<ConflictState | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -398,9 +394,8 @@ export default function ComputerPageContent({
   const openingFilesRef = useRef<Set<string>>(new Set());
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
   const readOnlyHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const editingEnabledRef = useRef(editingEnabled);
   const initialFileHandledRef = useRef<string | null>(null);
-  const canMutate = editingEnabled && !readOnly;
+  const canMutate = false; // File editing disabled during beta.
 
   const copyToClipboard = useCallback(async (value: string) => {
     try {
@@ -423,7 +418,6 @@ export default function ComputerPageContent({
   }, []);
 
   const showReadOnlyHint = useCallback(() => {
-    if (editingEnabledRef.current) return;
     setReadOnlyHintOpen(true);
     if (readOnlyHintTimeoutRef.current) {
       clearTimeout(readOnlyHintTimeoutRef.current);
@@ -447,27 +441,13 @@ export default function ComputerPageContent({
     const data = {
       openTabs: uniqueTabs,
       activePath,
-      editingEnabled,
     };
     localStorage.setItem(storageKey, JSON.stringify(data));
-  }, [openTabs, activePath, editingEnabled, hydrated, storageKey, readOnly]);
+  }, [openTabs, activePath, hydrated, storageKey, readOnly]);
 
   useEffect(() => {
     activePathRef.current = activePath;
   }, [activePath]);
-
-  useEffect(() => {
-    editingEnabledRef.current = editingEnabled;
-    if (editingEnabled) {
-      setReadOnlyHintOpen(false);
-    }
-  }, [editingEnabled]);
-
-  useEffect(() => {
-    if (readOnly && editingEnabled) {
-      setEditingEnabled(false);
-    }
-  }, [readOnly, editingEnabled]);
 
   useEffect(() => {
     return () => {
@@ -490,7 +470,6 @@ export default function ComputerPageContent({
           expandedPaths?: string[];
           openTabs?: string[];
           activePath?: string;
-          editingEnabled?: boolean;
         };
         if (Array.isArray(parsed.openTabs)) {
           const uniquePaths = Array.from(
@@ -506,9 +485,6 @@ export default function ComputerPageContent({
         }
         if (typeof parsed.activePath === 'string') {
           setActivePath(parsed.activePath);
-        }
-        if (typeof parsed.editingEnabled === 'boolean' && !readOnly) {
-          setEditingEnabled(parsed.editingEnabled);
         }
       } catch (error) {
         console.warn('Failed to parse workspace IDE state', error);
@@ -1594,11 +1570,6 @@ export default function ComputerPageContent({
     removeTabsUnderPath,
   ]);
 
-  const handleEnableEditing = useCallback(() => {
-    if (readOnly) return;
-    setConfirmEditOpen(true);
-  }, [readOnly]);
-
   const editorOptions = useMemo<monacoEditor.editor.IStandaloneEditorConstructionOptions>(
     () => ({
       readOnly: !canMutate,
@@ -1760,7 +1731,12 @@ export default function ComputerPageContent({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <DropdownMenuTrigger asChild>
-                        <Button size="icon" variant="ghost" className="h-7 w-7">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7"
+                          disabled={!canMutate}
+                        >
                           <Plus className="size-3.5" />
                         </Button>
                       </DropdownMenuTrigger>
@@ -2014,7 +1990,9 @@ export default function ComputerPageContent({
                             >
                               {!dragEnabled && dragBlockedPath === node.path && (
                                 <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/90 px-2 py-0.5 text-[10px] font-medium text-foreground">
-                                  {readOnly ? 'Admin read-only mode' : 'Enable editing to move'}
+                                  {readOnly
+                                    ? 'Admin read-only mode'
+                                    : BETA_FILE_EDIT_DISABLED_MESSAGE}
                                 </span>
                               )}
                               {isDragOver && (
@@ -2071,14 +2049,12 @@ export default function ComputerPageContent({
                               <ContextMenuSeparator />
                             </>
                           )}
-                          {!editingEnabled && !readOnly && (
-                            <>
-                              <ContextMenuItem onSelect={handleEnableEditing}>
-                                Enable editing...
-                              </ContextMenuItem>
-                              <ContextMenuSeparator />
-                            </>
-                          )}
+                          <ContextMenuItem disabled>
+                            {readOnly
+                              ? 'Admin read-only mode'
+                              : BETA_FILE_EDIT_DISABLED_MESSAGE}
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
                           {node.path !== ROOT_PATH && (
                             <>
                               <ContextMenuItem
@@ -2185,21 +2161,11 @@ export default function ComputerPageContent({
                     Saving...
                   </Badge>
                 )}
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>{readOnly ? 'Admin read-only mode' : 'Enable editing'}</span>
-                  <Switch
-                    checked={canMutate}
-                    disabled={readOnly}
-                    onCheckedChange={(checked) => {
-                      if (readOnly) return;
-                      if (checked) {
-                        handleEnableEditing();
-                        return;
-                      }
-                      setEditingEnabled(false);
-                    }}
-                  />
-                </div>
+                {readOnly && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>Admin read-only mode</span>
+                  </div>
+                )}
                 <Button
                   size="sm"
                   variant="outline"
@@ -2220,7 +2186,7 @@ export default function ComputerPageContent({
               <div className="flex flex-1 items-center gap-1 overflow-x-auto">
                 {openTabs.length === 0 && (
                   <span className="px-2 text-xs text-muted-foreground">
-                    Open a file to start editing.
+                    Open a file to inspect it.
                   </span>
                 )}
                 {openTabs.map((tab) => (
@@ -2318,7 +2284,7 @@ export default function ComputerPageContent({
                         <AlertDescription>
                           {readOnly
                             ? 'Admin read-only mode is enabled for this view.'
-                            : 'Enable editing to modify files.'}
+                            : BETA_FILE_EDIT_DISABLED_MESSAGE}
                         </AlertDescription>
                       </Alert>
                     </div>
@@ -2371,31 +2337,6 @@ export default function ComputerPageContent({
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
-
-      <Dialog open={confirmEditOpen} onOpenChange={setConfirmEditOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{`Edit Claude's files directly?`}</DialogTitle>
-            <DialogDescription>
-              {`Claude keeps track of what's where in this workspace. If you move, rename, or delete files without Claude knowing, things will get confusing fast. Unless you know exactly what you're doing, ask Claude to make changes instead.`}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmEditOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                if (readOnly) return;
-                setEditingEnabled(true);
-                setConfirmEditOpen(false);
-              }}
-            >
-              Enable editing
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={dialogState !== null}

@@ -245,6 +245,12 @@ Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-cr
 - Recursive list requests are handled in one sandbox-host call (host-side walk) instead of per-directory worker recursion.
 - `WorkspaceContainer.listFiles()` keeps a compatibility fallback to legacy per-directory recursion when sandbox-host responses do not include `recursive: true`.
 
+### Computer Tab File Mutations
+
+- During beta, user-initiated Computer Tab writes are hard-blocked server-side via `blockBetaFileEdit()` in `src/routes/api/workspaces.utils.ts`.
+- The block covers `/api/workspaces/:id/fs/write`, `/fs/create`, `/fs/mkdir`, `/fs/upload`, `/fs/move`, `/fs/delete`, `PUT /api/ext/files/write`, and `POST /api/ext/files/upload`.
+- Computer Tab remains readable and downloadable, but the UI is forced read-only with beta messaging. Agent-initiated sandbox writes and chat attachment uploads remain enabled.
+
 ### Todo State Persistence
 
 `control-plane.mjs` emits `todo_state` on `TodoWrite` tool calls. `ChatThreadDO` persists it and replays on WebSocket init. Cleared on turn completion (`result` event).
