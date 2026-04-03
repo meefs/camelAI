@@ -276,6 +276,13 @@ export class RuntimeManager {
     }
 
     phaseStartedAt = Date.now();
+    const initialHealthReachable =
+      status.state === "running"
+        ? await this.probeControlPlaneHealthReachable(status, 3, 500)
+        : false;
+    phaseTimings.initialHealthProbeMs = elapsedMs(phaseStartedAt);
+
+    phaseStartedAt = Date.now();
     this.prepareRuntimeDirectories();
     this.writeControlPlaneEnv(model);
     this.syncHostClaudeConfigToRuntimeHome(
@@ -294,7 +301,42 @@ export class RuntimeManager {
       onStatus,
     );
 
-    if (status.state !== "running") {
+    if (status.state === "running" && !initialHealthReachable) {
+      logDesktop("runtime", "control_plane_health:restart_required", {
+        model,
+        state: status.state,
+        detail: status.detail,
+        controlPlaneAddress: status.controlPlaneAddress,
+        controlPlanePort: status.controlPlanePort,
+      });
+      this.reportStatus(
+        {
+          ...status,
+          state: "starting",
+          detail:
+            "The existing local runtime did not answer GET /health. Restarting the control-plane container.",
+        },
+        onStatus,
+      );
+
+      phaseStartedAt = Date.now();
+      status = await this.stopRuntime();
+      phaseTimings.restartStopMs = elapsedMs(phaseStartedAt);
+      this.reportStatus(status, onStatus);
+
+      if (status.state === "unavailable" || status.state === "error") {
+        throw new Error(status.detail);
+      }
+
+      phaseStartedAt = Date.now();
+      status = await this.sendHelperCommand("start");
+      phaseTimings.restartStartMs = elapsedMs(phaseStartedAt);
+      this.reportStatus(status, onStatus);
+
+      if (status.state === "unavailable" || status.state === "error") {
+        throw new Error(status.detail);
+      }
+    } else if (status.state !== "running") {
       phaseStartedAt = Date.now();
       status = await this.sendHelperCommand("start");
       phaseTimings.startCommandMs = elapsedMs(phaseStartedAt);
@@ -763,10 +805,27 @@ export class RuntimeManager {
     });
   }
 
-  private async isControlPlaneHealthReachable(): Promise<boolean> {
-    const address = this.lastRuntimeStatus?.controlPlaneAddress;
-    const port =
-      this.lastRuntimeStatus?.controlPlanePort ?? this.controlPlanePort;
+  private async probeControlPlaneHealthReachable(
+    status: DesktopRuntimeStatus | null = this.lastRuntimeStatus,
+    attempts = 1,
+    delayMs = 0,
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (await this.isControlPlaneHealthReachable(status)) {
+        return true;
+      }
+      if (attempt < attempts - 1 && delayMs > 0) {
+        await sleep(delayMs);
+      }
+    }
+    return false;
+  }
+
+  private async isControlPlaneHealthReachable(
+    status: DesktopRuntimeStatus | null = this.lastRuntimeStatus,
+  ): Promise<boolean> {
+    const address = status?.controlPlaneAddress;
+    const port = status?.controlPlanePort ?? this.controlPlanePort;
     if (!address) {
       return false;
     }

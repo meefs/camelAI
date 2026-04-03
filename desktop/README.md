@@ -116,7 +116,7 @@ The helper supports a lightweight `prepare` step for manual checks. It creates:
 
 In development, the runtime helper is prepared automatically. There is no separate bake step, no disk image to hydrate, and no runtime-time dependency install inside the container.
 
-The desktop app treats the local runtime as an internal dependency. On launch it automatically tries to bring the runtime up, and the first message send will also ensure the runtime is ready if startup has not completed yet. The UI only surfaces runtime state when startup is still in progress or when there is an actual error.
+The desktop app treats the local runtime as an internal dependency. On launch it automatically tries to bring the runtime up, and the first message send will also ensure the runtime is ready if startup has not completed yet. If the helper reports an already-running runtime after a relaunch, the backend does a short `/health` probe before trusting it and restarts the container once when that probe fails. The UI only surfaces runtime state when startup is still in progress or when there is an actual error.
 
 The backend talks to the helper daemon for `status`, `prepare`, `start`, and `stop` instead of spawning a one-shot process for each operation.
 
