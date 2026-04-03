@@ -9,6 +9,7 @@ import { useAuthData } from '@/hooks/use-auth-data';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
+import { draftKey } from '@/hooks/use-draft-persistence';
 import { PageHeader } from '@/components/page-header';
 import { AddConnectionDialog } from './AddConnectionDialog';
 import { EditConnectionDialog } from './EditConnectionDialog';
@@ -30,6 +31,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Copy,
+  MessageSquarePlus,
   Plug,
   Plus,
   Search,
@@ -86,7 +88,7 @@ export default function ConnectionsClient({
   otherWorkspaces = [],
 }: ConnectionsClientProps) {
   const navigate = useNavigate();
-  const { currentOrg, orgs } = useAuthData();
+  const { currentOrg, currentWorkspace, orgs } = useAuthData();
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const createThreadFetcher = useFetcher<{
@@ -306,6 +308,14 @@ export default function ConnectionsClient({
     setEditDialogOpen(true);
   };
 
+  const handleNewChat = (connection: Integration) => {
+    if (!currentWorkspace) return;
+    const text = `Use my ${connection.name || connection.integration_type} connection to create `;
+    const key = draftKey(currentWorkspace.id, null);
+    localStorage.setItem(key, JSON.stringify({ text, attachments: [], savedAt: Date.now() }));
+    navigate('/chat');
+  };
+
   const handleAddSuccess = () => {
     setAddDialogOpen(false);
     setSelectedType(null);
@@ -521,7 +531,7 @@ export default function ConnectionsClient({
                       const hasIcon = hasIntegrationIcon(resolvedType);
 
                       return (
-                        <Card key={connection.id}>
+                        <Card key={connection.id} className="group transition-colors hover:bg-accent/50">
                           <CardHeader className="flex flex-row items-center justify-between gap-4">
                             <div className="flex items-center gap-3">
                               <Tooltip>
@@ -541,36 +551,42 @@ export default function ConnectionsClient({
                               </Tooltip>
                               <CardTitle>{connection.name}</CardTitle>
                             </div>
-                            {isAdmin && (
-                              <div className="flex items-center gap-1">
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button variant="ghost" size="icon" onClick={() => handleEditClick(connection)}>
-                                      <Settings className="size-4" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Configure</TooltipContent>
-                                </Tooltip>
-                                {otherWorkspaces.length > 0 && (
+                            <div className="flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+                              <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => handleNewChat(connection)}>
+                                <MessageSquarePlus className="size-3.5" />
+                                New chat
+                              </Button>
+                              {isAdmin && (
+                                <>
                                   <Tooltip>
                                     <TooltipTrigger asChild>
-                                      <Button variant="ghost" size="icon" onClick={() => setCopyTarget(connection)}>
-                                        <Copy className="size-4" />
+                                      <Button variant="ghost" size="icon" aria-label="Configure" onClick={() => handleEditClick(connection)}>
+                                        <Settings className="size-4" />
                                       </Button>
                                     </TooltipTrigger>
-                                    <TooltipContent>Clone to workspace</TooltipContent>
+                                    <TooltipContent>Configure</TooltipContent>
                                   </Tooltip>
-                                )}
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(connection)}>
-                                      <Trash2 className="size-4" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Delete</TooltipContent>
-                                </Tooltip>
-                              </div>
-                            )}
+                                  {otherWorkspaces.length > 0 && (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Button variant="ghost" size="icon" aria-label="Clone to workspace" onClick={() => setCopyTarget(connection)}>
+                                          <Copy className="size-4" />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>Clone to workspace</TooltipContent>
+                                    </Tooltip>
+                                  )}
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button variant="ghost" size="icon" aria-label="Delete" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(connection)}>
+                                        <Trash2 className="size-4" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Delete</TooltipContent>
+                                  </Tooltip>
+                                </>
+                              )}
+                            </div>
                           </CardHeader>
                         </Card>
                       );
