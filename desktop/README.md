@@ -58,6 +58,7 @@ export DESKTOP_DATA_DIR=/custom/path
 export DESKTOP_RUNTIME_DIR=/custom/path/runtime
 export DESKTOP_RUNTIME_HELPER_PATH=/custom/path/to/camelai-runtime-helper
 export DESKTOP_RUNTIME_IMAGE=docker.io/vercantes/camelai-openwork:20260403-v3
+export DESKTOP_DISABLE_LOCAL_CONTROL_PLANE_OVERRIDE=1 # opt out of desktop:dev local control-plane override
 export DESKTOP_VERBOSE_LOGS=1
 export DESKTOP_LOG_LEVEL=debug
 export DESKTOP_STDERR_LOG_LEVEL=info
@@ -86,6 +87,8 @@ export APPLE_TEAM_ID=ABCDE12345
 - The desktop renderer talks to Electron main over preload IPC in the normal app path.
 - In staged/packageable builds, Electron main loads the bundled desktop service directly from app resources.
 - In local development, Electron main still falls back to the backend child process and bridges backend stdio events to the renderer.
+- `bun run desktop:dev` now stages the local [desktop/control-plane/control-plane.mjs](/Users/miguelsalinas/.codex/worktrees/a0ee/chiridion-2/desktop/control-plane/control-plane.mjs) into the shared runtime directory and the guest entrypoint prefers that dev override automatically, so control-plane edits are picked up on the next dev start without rebuilding or publishing the image.
+- `bun run desktop:dev` also defaults the runtime image to `docker.io/vercantes/camelai-openwork:20260403-v4`, which is the first base image that knows how to load the staged dev override. Set `DESKTOP_RUNTIME_IMAGE` explicitly if you need a different image.
 - `bun run desktop:probe` runs a hidden Electron startup probe against the real dev startup path and prints JSON diagnostics for renderer/backend/preload handshake issues.
 - `bun run desktop:probe-startup` is the fastest startup-only repro loop and includes backend runtime stderr trace output.
 - `bun run desktop:probe-turn` waits for the local runtime to boot and then verifies a real desktop chat turn over the stdio backend transport.
@@ -105,6 +108,12 @@ The desktop stack writes structured JSON logs for the host send path, runtime li
 
 The backend logger also mirrors those JSON lines to stderr, so `bun run desktop:probe-startup` will show the important startup trace directly in the terminal.
 Normal desktop runs now suppress debug chatter on stderr by default. Use `DESKTOP_VERBOSE_LOGS=1` to re-enable full terminal tracing.
+
+## Dev Control Plane Override
+
+- `bun run desktop:dev` stops any existing local runtime before launch and stages the current checkout's `desktop/control-plane/control-plane.mjs` into the shared runtime directory.
+- The runtime image entrypoint prefers that staged dev override when present, while still reusing the image-bundled `node_modules`.
+- Set `DESKTOP_DISABLE_LOCAL_CONTROL_PLANE_OVERRIDE=1` if you need `desktop:dev` to use the image-bundled control plane instead.
 
 ## Runtime Artifacts
 

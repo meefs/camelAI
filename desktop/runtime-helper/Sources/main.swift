@@ -1,6 +1,7 @@
 import Containerization
 import ContainerizationError
 import ContainerizationExtras
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -165,7 +166,12 @@ func runtimeContainerRootfsURL() -> URL {
 }
 
 func cachedRootfsURL() -> URL {
-    artifactsDirectoryURL().appendingPathComponent("rootfs-cache-v3.ext4")
+    let imageHash = Insecure.SHA1
+        .hash(data: Data(runtimeImageReference.utf8))
+        .map { String(format: "%02x", $0) }
+        .joined()
+        .prefix(12)
+    return artifactsDirectoryURL().appendingPathComponent("rootfs-cache-\(imageHash).ext4")
 }
 
 func serviceLogURL() -> URL {

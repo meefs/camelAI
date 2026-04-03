@@ -59,6 +59,7 @@ const DEFAULT_HELPER_STOP_TIMEOUT_MS = Number(
 const KEEP_RUNTIME_ON_DISPOSE =
   process.env.DESKTOP_RUNTIME_SHUTDOWN_ON_EXIT !== "1";
 const HOST_CLAUDE_SYNC_PATHS = [".claude.json"] as const;
+const LOCAL_CONTROL_PLANE_BASENAME = "control-plane.mjs";
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
@@ -321,6 +322,7 @@ export class RuntimeManager {
     phaseStartedAt = Date.now();
     this.prepareRuntimeDirectories();
     this.writeControlPlaneEnv(model);
+    this.syncLocalControlPlaneOverride();
     this.syncHostClaudeConfigToRuntimeHome(
       this.getExistingHostClaudeAuthPaths(getHostClaudeCredentialsJson()),
       getHostClaudeCredentialsJson(),
@@ -440,6 +442,31 @@ export class RuntimeManager {
 
     writeFileSync(this.getControlPlaneEnvPath(), `${lines.join("\n")}\n`, "utf8");
     makePathWritableForContainerUser(this.getControlPlaneEnvPath());
+  }
+
+  private syncLocalControlPlaneOverride(): void {
+    const sourcePath =
+      process.env.DESKTOP_RUNTIME_LOCAL_CONTROL_PLANE_SOURCE?.trim();
+    const overrideDirectory = resolve(this.getRuntimeRootPath(), "dev-control-plane");
+    const overrideTargetPath = resolve(
+      overrideDirectory,
+      LOCAL_CONTROL_PLANE_BASENAME,
+    );
+
+    if (!sourcePath) {
+      rmSync(overrideDirectory, { recursive: true, force: true });
+      return;
+    }
+
+    if (!existsSync(sourcePath)) {
+      throw new Error(
+        `Local desktop control-plane override was configured but not found: ${sourcePath}`,
+      );
+    }
+
+    mkdirSync(overrideDirectory, { recursive: true });
+    cpSync(sourcePath, overrideTargetPath, { force: true });
+    makePathWritableForContainerUser(overrideDirectory);
   }
 
   private syncHostClaudeConfigToRuntimeHome(

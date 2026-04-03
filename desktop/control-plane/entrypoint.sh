@@ -20,5 +20,15 @@ mkdir -p "$HOME_DIR" "$CLAUDE_DIR" "$SHARED_ROOT/logs" "$SHARED_ROOT/runtime" "$
 echo starting-control-plane > "$SHARED_ROOT/runtime/status.txt"
 chmod 666 "$SHARED_ROOT/runtime/status.txt" || true
 
+DEV_CONTROL_PLANE_DIR="$SHARED_ROOT/runtime/dev-control-plane"
+CONTROL_PLANE_ENTRYPOINT="/opt/camelai-desktop-guest/control-plane.mjs"
+
+if [ -f "$DEV_CONTROL_PLANE_DIR/control-plane.mjs" ]; then
+  if [ ! -e "$DEV_CONTROL_PLANE_DIR/node_modules" ]; then
+    ln -s /opt/camelai-desktop-guest/node_modules "$DEV_CONTROL_PLANE_DIR/node_modules"
+  fi
+  CONTROL_PLANE_ENTRYPOINT="$DEV_CONTROL_PLANE_DIR/control-plane.mjs"
+fi
+
 cd "$SHARED_ROOT/workspace"
-exec gosu node:node node /opt/camelai-desktop-guest/control-plane.mjs
+exec gosu node:node node "$CONTROL_PLANE_ENTRYPOINT"
