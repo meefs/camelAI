@@ -94,3 +94,7 @@ desktop/build/icon.png
 # Auto-generated embedded files
 workers/main/src/embedded-create-worker.ts
 workers/main/src/embedded-skills.ts
+
+# Local keys and state
+.admin_key
+.bedrock_key
