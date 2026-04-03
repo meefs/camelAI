@@ -2,7 +2,9 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -98,6 +100,40 @@ function sleep(ms: number): Promise<void> {
 
 function elapsedMs(startedAt: number): number {
   return Date.now() - startedAt;
+}
+
+function makePathWritableForContainerUser(targetPath: string): void {
+  let stats;
+  try {
+    stats = lstatSync(targetPath);
+  } catch {
+    return;
+  }
+
+  if (stats.isSymbolicLink()) {
+    return;
+  }
+
+  try {
+    chmodSync(targetPath, stats.isDirectory() ? 0o777 : 0o666);
+  } catch {
+    // Best effort only.
+  }
+
+  if (!stats.isDirectory()) {
+    return;
+  }
+
+  let entries: string[];
+  try {
+    entries = readdirSync(targetPath);
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    makePathWritableForContainerUser(resolve(targetPath, entry));
+  }
 }
 
 export class RuntimeManager {
@@ -381,11 +417,7 @@ export class RuntimeManager {
 
     for (const directory of writableDirectories) {
       mkdirSync(directory, { recursive: true });
-      try {
-        chmodSync(directory, 0o777);
-      } catch {
-        // Best effort only.
-      }
+      makePathWritableForContainerUser(directory);
     }
   }
 
@@ -407,6 +439,7 @@ export class RuntimeManager {
     }
 
     writeFileSync(this.getControlPlaneEnvPath(), `${lines.join("\n")}\n`, "utf8");
+    makePathWritableForContainerUser(this.getControlPlaneEnvPath());
   }
 
   private syncHostClaudeConfigToRuntimeHome(
@@ -440,6 +473,8 @@ export class RuntimeManager {
         force: true,
       });
     }
+
+    makePathWritableForContainerUser(runtimeHome);
   }
 
   private getExistingHostClaudeAuthPaths(

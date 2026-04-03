@@ -627,25 +627,7 @@ actor ContainerRuntime: RuntimeHandling {
             }
             let imageConfig = try await image.config(for: .current).config
 
-            let workspaceDir = "\(runtimeMountPath)/workspace"
-            let envFile = "\(runtimeMountPath)/runtime/control-plane-env.sh"
-            let processArguments = [
-                "/bin/sh",
-                "-lc",
-                """
-                set -e
-                export DESKTOP_RUNTIME_SHARED_DIR="\(runtimeMountPath)"
-                export DESKTOP_RUNTIME_CONTROL_PLANE_PORT="\(controlPlanePort)"
-                if [ -f "\(envFile)" ]; then
-                  set -a
-                  . "\(envFile)"
-                  set +a
-                fi
-                echo starting-control-plane > \(runtimeMountPath)/runtime/status.txt
-                cd "\(workspaceDir)"
-                exec node /opt/camelai-desktop-guest/control-plane.mjs
-                """
-            ]
+            let processArguments = ["/usr/local/bin/camelai-desktop-entrypoint"]
             let runtimeInterface = try makeRuntimeNetworkInterface()
             let runtimeDNS = runtimeContainerNameservers.isEmpty ? nil : DNS(nameservers: runtimeContainerNameservers)
             let processOutputWriter = self.logWriter

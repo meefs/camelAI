@@ -77,11 +77,11 @@ export APPLE_TEAM_ID=ABCDE12345
 ## Architecture
 
 - `desktop/backend` owns local persistence and starts the local runtime as part of app boot.
-- `desktop/runtime-helper` is the Swift executable boundary for local runtime lifecycle. It uses Apple containerization, exposes a persistent daemon socket for `status` / `prepare` / `start` / `stop`, validates the staged kernel/runtime directories, pulls the published control-plane image from the registry when needed, and starts the container.
+- `desktop/runtime-helper` is the Swift executable boundary for local runtime lifecycle. It uses Apple containerization, exposes a persistent daemon socket for `status` / `prepare` / `start` / `stop`, validates the staged kernel/runtime directories, pulls the published control-plane image from the registry when needed, and starts the container through the image entrypoint so the control plane runs as the unprivileged `node` user.
 - `desktop/electron` owns the app window and preload bridge.
 - `desktop/renderer` owns the chat UI.
 - `desktop/app-resources` is the staged immutable app payload for packaging: bundled desktop-service module, compiled backend binary fallback, built renderer, staged Linux kernel, and runtime helper binary.
-- The desktop backend stages Claude auth files and runtime env into the shared runtime directory before startup. The control-plane code lives inside the published container image instead of being mounted from the host.
+- The desktop backend stages Claude auth files and runtime env into the shared runtime directory before startup, then makes that staged home tree writable by the unprivileged container user. The control-plane code lives inside the published container image instead of being mounted from the host.
 - Host Claude login follows the same rule in both dev and packaged runs: the desktop backend stages `~/.claude.json` plus usable Claude Code OAuth credentials into the runtime auth home, including macOS Keychain-backed auth.
 - The desktop renderer talks to Electron main over preload IPC in the normal app path.
 - In staged/packageable builds, Electron main loads the bundled desktop service directly from app resources.
