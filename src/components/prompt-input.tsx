@@ -335,8 +335,7 @@ export function PromptInput({
               />
             ) : (
               <>
-                {/* Left side buttons: Plus and Mic */}
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5">
                   {/* Plus button for file upload */}
                   {showFileUpload && (
                     <Tooltip>
@@ -357,6 +356,39 @@ export function PromptInput({
                     </Tooltip>
                   )}
 
+                  {model && onModelChange && (
+                    <Select
+                      value={model}
+                      onValueChange={(value) => onModelChange(value as LlmModel)}
+                      disabled={modelDisabled}
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        aria-label="Claude model"
+                        className="h-auto gap-1 rounded-none border-0 bg-transparent px-0 py-0 text-xs font-medium text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground focus-visible:border-0 focus-visible:text-foreground focus-visible:ring-0 focus-visible:underline focus-visible:underline-offset-4"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent align="start">
+                        {LLM_MODEL_OPTIONS.map((option) => (
+                          <SelectItem
+                            key={option.value}
+                            value={option.value}
+                            description={option.description}
+                          >
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+
+                  {contextUsedPercent != null && contextUsedPercent >= 50 && onCompact && (
+                    <ContextIndicator usedPercent={contextUsedPercent} onCompact={onCompact} />
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1">
                   {/* Microphone button for voice recording */}
                   {showVoiceButton && (
                     <Tooltip>
@@ -385,44 +417,13 @@ export function PromptInput({
                     </Tooltip>
                   )}
 
-                  {model && onModelChange && (
-                    <Select
-                      value={model}
-                      onValueChange={(value) => onModelChange(value as LlmModel)}
-                      disabled={modelDisabled}
-                    >
-                      <SelectTrigger
-                        size="sm"
-                        aria-label="Claude model"
-                        className="rounded-full border-border bg-muted/40 px-3 text-muted-foreground hover:text-foreground"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent align="start">
-                        {LLM_MODEL_OPTIONS.map((option) => (
-                          <SelectItem
-                            key={option.value}
-                            value={option.value}
-                            description={option.description}
-                          >
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-
-                  {contextUsedPercent != null && contextUsedPercent >= 50 && onCompact && (
-                    <ContextIndicator usedPercent={contextUsedPercent} onCompact={onCompact} />
-                  )}
+                  <MemoizedSendButton
+                    showStopButton={showStopButton}
+                    isSubmitDisabled={isSubmitDisabled}
+                    isLoading={isLoading}
+                    onClick={handleButtonClick}
+                  />
                 </div>
-
-                <MemoizedSendButton
-                  showStopButton={showStopButton}
-                  isSubmitDisabled={isSubmitDisabled}
-                  isLoading={isLoading}
-                  onClick={handleButtonClick}
-                />
               </>
             )}
           </InputGroupAddon>
