@@ -221,8 +221,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const orgId = authContext.currentOrg.id;
   const isNewThread = url.searchParams.get('newThread') === '1';
 
-  // Skip fetching thread metadata for new threads — we just created it and it has no title yet
-  const thread = isNewThread ? null : await chatDO.getThread(context, params.id, workspaceId);
+  // Even for newly created threads, load the persisted thread record so the UI
+  // reflects the actual saved model instead of the Sonnet default.
+  const thread = await chatDO.getThread(context, params.id, workspaceId);
   if (!isNewThread && !thread) {
     throw redirect('/chat');
   }

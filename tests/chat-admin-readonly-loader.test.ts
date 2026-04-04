@@ -167,4 +167,28 @@ describe('chat loader workspace mismatch handling', () => {
       previewTarget: null,
     });
   });
+
+  it('keeps the saved thread model for new-thread navigations', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+      model: 'opus',
+    });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.readOnly).toBe(false);
+    expect(result.isNewThread).toBe(true);
+    expect(result.threadModel).toBe('opus');
+    expect(getThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_active');
+  });
 });
