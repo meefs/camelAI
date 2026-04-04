@@ -35,6 +35,7 @@ describe('web Codex provider wiring', () => {
       stringifyStoredLlmProviderConfig({}),
       userId
     );
+    await orgStub.setExperimentalSettings({ codex_gpt_models: true });
 
     const thread = await createThread(
       buildContext(testEnv) as never,
@@ -76,6 +77,7 @@ describe('web Codex provider wiring', () => {
     });
 
     expect(runnerEnv.envVars.CHIRIDION_CHAT_PROVIDER).toBe('codex');
+    expect(runnerEnv.envVars.OPENAI_API_KEY).toBeUndefined();
     expect(runnerEnv.byokProxy).toEqual({
       provider: 'openai',
       apiKey: 'sk-test-openai-abcdef',

@@ -28,6 +28,7 @@ const CODEX_HOME = process.env.CODEX_HOME || `${homedir()}/.codex`;
 const DEFAULT_CHAT_PROVIDER = process.env.CHIRIDION_CHAT_PROVIDER === 'codex' ? 'codex' : 'claude';
 const DEFAULT_CODEX_MODEL = process.env.CHIRIDION_CODEX_MODEL || 'gpt-5.4';
 const DEFAULT_CLAUDE_MODEL = process.env.CHIRIDION_CLAUDE_MODEL || 'opus';
+const CAMELAI_CODEX_PROVIDER_ID = 'camelai_openai_proxy';
 const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
   10,
   parseInt(process.env.CONTROL_PLANE_IDLE_TIMEOUT_SECS || '120', 10)
@@ -821,10 +822,10 @@ class CodexAppServerClient {
       `${this.codexHome}/config.toml`,
       [
         `model = "${DEFAULT_CODEX_MODEL}"`,
-        `model_provider = "openai"`,
-        `openai_base_url = "${this.baseUrl}"`,
+        `model_provider = "${CAMELAI_CODEX_PROVIDER_ID}"`,
         '',
-        '[model_providers.openai]',
+        `[model_providers.${CAMELAI_CODEX_PROVIDER_ID}]`,
+        'name = "CamelAI OpenAI Proxy"',
         `base_url = "${this.baseUrl}"`,
         'wire_api = "responses"',
         'supports_websockets = false',
