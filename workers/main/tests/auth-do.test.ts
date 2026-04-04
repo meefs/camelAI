@@ -239,6 +239,33 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.model).toBe('sonnet');
     });
 
+    it('self-heals legacy thread schema before creating new threads', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Legacy Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Legacy Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      await orgStub.downgradeThreadSchemaForTest();
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Recovered thread',
+        userId,
+        'hello',
+        'gpt-5.4',
+        'codex'
+      );
+
+      expect(thread.provider).toBe('codex');
+      expect(thread.model).toBe('gpt-5.4');
+      expect(thread.first_user_message).toBe('hello');
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.provider).toBe('codex');
+      expect(stored?.model).toBe('gpt-5.4');
+      expect(stored?.first_user_message).toBe('hello');
+    });
+
     it('locks per-thread model after creation', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');

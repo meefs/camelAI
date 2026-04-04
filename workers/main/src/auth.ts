@@ -1444,6 +1444,60 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
   }
 
+  private ensureThreadSchemaColumns(): void {
+    try {
+      const rows = this.sql.exec<{ name: string }>('PRAGMA table_info(threads)').toArray();
+      if (rows.length === 0) return;
+
+      const names = new Set(rows.map((row) => row.name));
+
+      if (!names.has('source')) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN source TEXT NOT NULL DEFAULT 'web'");
+        } catch {}
+        try {
+          this.sql.exec("UPDATE threads SET source = 'web' WHERE source IS NULL OR source = ''");
+        } catch {}
+      }
+
+      if (!names.has('user_message_count')) {
+        try {
+          this.sql.exec('ALTER TABLE threads ADD COLUMN user_message_count INTEGER NOT NULL DEFAULT 0');
+        } catch {}
+      }
+
+      if (!names.has('first_user_message')) {
+        try {
+          this.sql.exec('ALTER TABLE threads ADD COLUMN first_user_message TEXT');
+        } catch {}
+      }
+
+      if (!names.has('provider')) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'");
+        } catch {}
+        try {
+          this.sql.exec("UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''");
+        } catch {}
+      }
+
+      if (!names.has('model')) {
+        try {
+          this.sql.exec(
+            `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`
+          );
+        } catch {}
+        try {
+          this.sql.exec(
+            `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`
+          );
+        } catch {}
+      }
+    } catch (err) {
+      console.error('[OrgDO] failed to ensure thread schema columns', err);
+    }
+  }
+
   private execWorkerScriptsQuery(
     queryWithPreview: string,
     queryBase: string,
@@ -2547,6 +2601,7 @@ export class OrgDO extends DurableObject<DOEnv> {
    * Get all threads across all workspaces in this org
    */
   getThreads(): OrgThread[] {
+    this.ensureThreadSchemaColumns();
     return this.sql
       .exec('SELECT * FROM threads ORDER BY updated_at DESC')
       .toArray() as unknown as OrgThread[];
@@ -2556,6 +2611,7 @@ export class OrgDO extends DurableObject<DOEnv> {
    * Get threads for a specific workspace
    */
   getThreadsByWorkspace(workspaceId: string): OrgThread[] {
+    this.ensureThreadSchemaColumns();
     return this.sql
       .exec('SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC', workspaceId)
       .toArray() as unknown as OrgThread[];
@@ -2570,6 +2626,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     workspaceId?: string,
     createdBy?: string
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
+    this.ensureThreadSchemaColumns();
     const resolvedOffset = Math.max(0, Math.floor(offset));
     const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
 
@@ -2620,6 +2677,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     offset = 0,
     limit = 50
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
+    this.ensureThreadSchemaColumns();
     const resolvedOffset = Math.max(0, Math.floor(offset));
     const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
 
@@ -2671,6 +2729,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     model?: LlmModel,
     provider: 'claude' | 'codex' = 'claude'
   ): OrgThread {
+    this.ensureThreadSchemaColumns();
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || DEFAULT_THREAD_TITLE;
@@ -2712,10 +2771,58 @@ export class OrgDO extends DurableObject<DOEnv> {
    * Get a thread by ID
    */
   getThread(id: string): OrgThread | null {
+    this.ensureThreadSchemaColumns();
     const rows = this.sql
       .exec('SELECT * FROM threads WHERE id = ?', id)
       .toArray() as unknown as OrgThread[];
     return rows[0] || null;
+  }
+
+  // Test helper RPC: simulate a legacy thread schema before provider/model columns existed.
+  async downgradeThreadSchemaForTest(): Promise<void> {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DROP TABLE IF EXISTS threads_legacy_test');
+      this.sql.exec(`
+        CREATE TABLE threads_legacy_test (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          source TEXT NOT NULL DEFAULT 'web',
+          user_message_count INTEGER NOT NULL DEFAULT 0,
+          first_user_message TEXT
+        )
+      `);
+      this.sql.exec(`
+        INSERT INTO threads_legacy_test (
+          id,
+          workspace_id,
+          title,
+          created_by,
+          created_at,
+          updated_at,
+          source,
+          user_message_count,
+          first_user_message
+        )
+        SELECT
+          id,
+          workspace_id,
+          title,
+          created_by,
+          created_at,
+          updated_at,
+          COALESCE(source, 'web'),
+          COALESCE(user_message_count, 0),
+          first_user_message
+        FROM threads
+      `);
+      this.sql.exec('DROP TABLE threads');
+      this.sql.exec('ALTER TABLE threads_legacy_test RENAME TO threads');
+    });
+    this.ctx.storage.kv.put('schemaVersion', 20);
   }
 
   /**
