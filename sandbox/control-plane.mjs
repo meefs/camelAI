@@ -20,6 +20,7 @@ import { existsSync } from 'node:fs';
 import { readFile, access, mkdir, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import { resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { TeamPollingController } from './team-poll-controller.mjs';
 
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '8080', 10);
@@ -33,6 +34,7 @@ const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
   10,
   parseInt(process.env.CONTROL_PLANE_IDLE_TIMEOUT_SECS || '120', 10)
 );
+const SCREENSHOT_MCP_SERVER_PATH = fileURLToPath(new URL('./screenshot-mcp-server.mjs', import.meta.url));
 
 // ─── Screenshot MCP Server (in-process) ─────────────────────
 
@@ -670,6 +672,70 @@ function withThreadProxyPath(rawUrl, threadId) {
   }
 }
 
+function buildThreadScopedEnv(sessionEnv = {}, threadId) {
+  const mergedEnv = {
+    ...process.env,
+    ...sessionEnv,
+    THREAD_ID: threadId,
+  };
+
+  const proxyThreadId = threadId;
+  if (proxyThreadId) {
+    for (const key of [
+      'ANTHROPIC_BASE_URL',
+      'CLOUDFLARE_API_BASE_URL',
+      'DATA_PROXY_URL',
+      'OPENAI_PROXY_URL',
+      'OPENAI_BASE_URL',
+      'MCP_SERVER_URL',
+      'RESEND_PROXY_URL',
+    ]) {
+      const value = mergedEnv[key];
+      if (typeof value === 'string' && value.length > 0) {
+        mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);
+      }
+    }
+  }
+
+  return mergedEnv;
+}
+
+function serializeTomlString(value) {
+  return JSON.stringify(value);
+}
+
+function buildCodexConfigToml({ baseUrl, mcpServerUrl, screenshotSessionToken }) {
+  const lines = [
+    `model = ${serializeTomlString(DEFAULT_CODEX_MODEL)}`,
+    `model_provider = ${serializeTomlString(CAMELAI_CODEX_PROVIDER_ID)}`,
+    '',
+    `[model_providers.${CAMELAI_CODEX_PROVIDER_ID}]`,
+    `name = ${serializeTomlString('CamelAI OpenAI Proxy')}`,
+    `base_url = ${serializeTomlString(baseUrl)}`,
+    `wire_api = ${serializeTomlString('responses')}`,
+    'supports_websockets = false',
+    '',
+  ];
+
+  if (mcpServerUrl) {
+    lines.push('[mcp_servers.camelai]');
+    lines.push(`url = ${serializeTomlString(mcpServerUrl)}`);
+    lines.push('');
+  }
+
+  lines.push('[mcp_servers.screenshot]');
+  lines.push(`command = ${serializeTomlString(process.execPath)}`);
+  lines.push(`args = [${serializeTomlString(SCREENSHOT_MCP_SERVER_PATH)}]`);
+  if (screenshotSessionToken) {
+    lines.push(
+      `env = { CHIRIDION_APP_SESSION = ${serializeTomlString(screenshotSessionToken)} }`
+    );
+  }
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 function getProviderFromEnv(sessionEnv = {}) {
   const provider = sessionEnv?.CHIRIDION_CHAT_PROVIDER;
   return provider === 'codex' ? 'codex' : 'claude';
@@ -722,8 +788,9 @@ function shouldRetryWithFreshThread(error) {
 }
 
 class CodexAppServerClient {
-  constructor(threadId) {
+  constructor(threadId, sessionEnv = {}) {
     this.threadId = threadId;
+    this.sessionEnv = sessionEnv;
     this.child = null;
     this.startPromise = null;
     this.nextRequestId = 1;
@@ -734,10 +801,27 @@ class CodexAppServerClient {
     this.activeTurns = new Map();
     this.codexExecutable = getCodexExecutable();
     this.codexHome = `${CODEX_HOME}/threads/${threadId}`;
-    this.baseUrl = withThreadProxyPath(
-      process.env.OPENAI_BASE_URL || 'http://127.0.0.1/api/openai/v1',
-      threadId,
-    );
+    this.refreshConfig();
+  }
+
+  refreshConfig() {
+    const mergedEnv = buildThreadScopedEnv(this.sessionEnv, this.threadId);
+    this.baseUrl = mergedEnv.OPENAI_BASE_URL || 'http://127.0.0.1/api/openai/v1';
+    this.mcpServerUrl = mergedEnv.MCP_SERVER_URL || '';
+    this.screenshotSessionToken =
+      typeof mergedEnv.CHIRIDION_APP_SESSION === 'string' &&
+      mergedEnv.CHIRIDION_APP_SESSION.trim()
+        ? mergedEnv.CHIRIDION_APP_SESSION.trim()
+        : '';
+    this.developerInstructions = buildSystemPromptAppend().trim();
+  }
+
+  updateSessionEnv(sessionEnv = {}) {
+    this.sessionEnv = {
+      ...this.sessionEnv,
+      ...sessionEnv,
+    };
+    this.refreshConfig();
   }
 
   dispose() {
@@ -820,17 +904,11 @@ class CodexAppServerClient {
     await mkdir(this.codexHome, { recursive: true });
     await writeFile(
       `${this.codexHome}/config.toml`,
-      [
-        `model = "${DEFAULT_CODEX_MODEL}"`,
-        `model_provider = "${CAMELAI_CODEX_PROVIDER_ID}"`,
-        '',
-        `[model_providers.${CAMELAI_CODEX_PROVIDER_ID}]`,
-        'name = "CamelAI OpenAI Proxy"',
-        `base_url = "${this.baseUrl}"`,
-        'wire_api = "responses"',
-        'supports_websockets = false',
-        '',
-      ].join('\n'),
+      buildCodexConfigToml({
+        baseUrl: this.baseUrl,
+        mcpServerUrl: this.mcpServerUrl,
+        screenshotSessionToken: this.screenshotSessionToken,
+      }),
       'utf8',
     );
 
@@ -1033,6 +1111,7 @@ class CodexAppServerClient {
           approvalPolicy: 'never',
           sandbox: 'danger-full-access',
           model: options.model,
+          developerInstructions: this.developerInstructions,
           personality: 'none',
         });
         const resumedThreadId = response?.thread?.id || existingThreadId;
@@ -1051,6 +1130,7 @@ class CodexAppServerClient {
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
       model: options.model,
+      developerInstructions: this.developerInstructions,
       personality: 'none',
     });
     const startedThreadId = response?.thread?.id;
@@ -1195,6 +1275,9 @@ class ChatSession {
       this.sessionEnv.CHIRIDION_CODEX_SESSION_ID.trim()
     ) {
       this.codexSessionId = this.sessionEnv.CHIRIDION_CODEX_SESSION_ID.trim();
+    }
+    if (this.codexClient) {
+      this.codexClient.updateSessionEnv(this.sessionEnv);
     }
   }
 
@@ -1461,7 +1544,7 @@ class ChatSession {
 
   getCodexClient() {
     if (!this.codexClient) {
-      this.codexClient = new CodexAppServerClient(this.threadId);
+      this.codexClient = new CodexAppServerClient(this.threadId, this.sessionEnv);
     }
     return this.codexClient;
   }
@@ -1514,27 +1597,12 @@ class ChatSession {
     if (this.provider !== 'claude') {
       throw new Error('Claude query options requested for a non-Claude session.');
     }
-    // Merge: process.env (Docker env vars) + sessionEnv (per-thread from WebSocket init)
     const mergedEnv = {
-      ...process.env,
-      ...this.sessionEnv,
-      THREAD_ID: this.threadId,
+      ...buildThreadScopedEnv(this.sessionEnv, this.threadId),
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
       CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
       CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1',
     };
-    // Rewrite all proxy URLs (including Anthropic) to route through the
-    // sandbox-host proxy with thread context. BYOK credentials are handled
-    // entirely in sandbox-host via WebSocket upgrade headers.
-    const proxyThreadId = this.threadId;
-    if (proxyThreadId) {
-      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL', 'RESEND_PROXY_URL']) {
-        const value = mergedEnv[key];
-        if (typeof value === 'string' && value.length > 0) {
-          mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);
-        }
-      }
-    }
 
     const mcpServerUrl = mergedEnv.MCP_SERVER_URL;
     const mcpServers = {};
