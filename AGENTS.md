@@ -264,7 +264,7 @@ MCP-driven prompts (connection setup, bug reports) are persisted in `ChatThreadD
 
 ### MCP App Logs Tool
 
-The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured runtime logs for a deployed app in the current workspace. It validates script ownership, resolves the dispatch script key (`{script}--{org-slug}`), and reads from `WorkerLogsDO`, which persists per-script logs in Durable Object SQLite storage.
+The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured runtime logs for a deployed app in the current workspace. It validates script ownership, resolves the dispatch script key (`{script}--{org-slug}`), and reads from `WorkerLogsDO`, which persists per-script logs in Durable Object SQLite storage. To protect the app from log floods, `WorkerLogsDO` also rate-limits writes per script and drops excess log events when a worker is emitting logs too quickly, inserting a warning log when sampling activates.
 
 ### External MCP Server
 

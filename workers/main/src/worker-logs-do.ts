@@ -52,9 +52,25 @@ export interface GetLogsOptions {
 
 const MAX_LOGS = 10000;
 const REPLAY_LIMIT = 100;
+const LOG_WRITE_WINDOW_MS = 5_000;
+const MAX_LOG_WRITES_PER_WINDOW = 200;
+const LOG_SAMPLING_WARNING_LEVEL = 'warn';
+
+function createLogSamplingWarning(now: number): LogEvent {
+  return {
+    timestamp: now,
+    level: LOG_SAMPLING_WARNING_LEVEL,
+    message: `Log sampling active: dropping worker logs because write rate exceeded ${MAX_LOG_WRITES_PER_WINDOW} entries per ${LOG_WRITE_WINDOW_MS / 1000}s window.`,
+    exception: null,
+    scriptVersion: null,
+  };
+}
 
 export class WorkerLogsDO extends DurableObject<Env> {
   private sql: SqlStorage;
+  private writeWindowStartedAt = 0;
+  private writesInWindow = 0;
+  private hasWrittenSamplingWarningInWindow = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -124,30 +140,30 @@ export class WorkerLogsDO extends DurableObject<Env> {
     const now = Date.now();
     const insertedLogs: LogEntry[] = [];
 
+    this.rotateWriteWindow(now);
+
     for (const event of events) {
-      this.sql.exec(
-        `INSERT INTO logs (timestamp, level, message, exception, script_version)
-         VALUES (?, ?, ?, ?, ?)`,
-        event.timestamp ?? now,
-        event.level ?? 'log',
-        event.message ?? null,
-        event.exception ?? null,
-        event.scriptVersion ?? null
-      );
+      if (!this.canWriteEventInWindow()) {
+        if (!this.hasWrittenSamplingWarningInWindow && this.tryConsumeWriteSlot()) {
+          const warning = createLogSamplingWarning(now);
+          insertedLogs.push(this.insertLogRow(warning));
+          this.hasWrittenSamplingWarningInWindow = true;
+        }
+        continue;
+      }
 
-      const lastId = this.sql.exec<{ id: number; [key: string]: SqlStorageValue }>(
-        'SELECT last_insert_rowid() as id'
-      ).toArray()[0]?.id ?? 0;
+      this.tryConsumeWriteSlot();
 
-      insertedLogs.push({
-        id: lastId,
+      insertedLogs.push(this.insertLogRow({
         timestamp: event.timestamp ?? now,
         level: event.level ?? 'log',
         message: event.message ?? null,
         exception: event.exception ?? null,
         scriptVersion: event.scriptVersion ?? null,
-      });
+      }));
     }
+
+    if (insertedLogs.length === 0) return;
 
     this.pruneOldLogs();
 
@@ -163,6 +179,50 @@ export class WorkerLogsDO extends DurableObject<Env> {
         }
       }
     }
+  }
+
+  private rotateWriteWindow(now: number): void {
+    if (this.writeWindowStartedAt === 0 || now - this.writeWindowStartedAt >= LOG_WRITE_WINDOW_MS) {
+      this.writeWindowStartedAt = now;
+      this.writesInWindow = 0;
+      this.hasWrittenSamplingWarningInWindow = false;
+    }
+  }
+
+  private canWriteEventInWindow(): boolean {
+    const reservedSlots = this.hasWrittenSamplingWarningInWindow ? 0 : 1;
+    return this.writesInWindow < MAX_LOG_WRITES_PER_WINDOW - reservedSlots;
+  }
+
+  private tryConsumeWriteSlot(): boolean {
+    if (this.writesInWindow >= MAX_LOG_WRITES_PER_WINDOW) return false;
+    this.writesInWindow += 1;
+    return true;
+  }
+
+  private insertLogRow(event: LogEvent): LogEntry {
+    this.sql.exec(
+      `INSERT INTO logs (timestamp, level, message, exception, script_version)
+       VALUES (?, ?, ?, ?, ?)`,
+      event.timestamp,
+      event.level,
+      event.message,
+      event.exception,
+      event.scriptVersion
+    );
+
+    const lastId = this.sql.exec<{ id: number; [key: string]: SqlStorageValue }>(
+      'SELECT last_insert_rowid() as id'
+    ).toArray()[0]?.id ?? 0;
+
+    return {
+      id: lastId,
+      timestamp: event.timestamp,
+      level: event.level,
+      message: event.message,
+      exception: event.exception,
+      scriptVersion: event.scriptVersion,
+    };
   }
 
   /**
@@ -236,6 +296,9 @@ export class EphemeralWorkerLogsDO extends DurableObject<Env> {
   private logs: LogEntry[] = [];
   private nextId = 1;
   private lastLogAt: number | null = null;
+  private writeWindowStartedAt = 0;
+  private writesInWindow = 0;
+  private hasWrittenSamplingWarningInWindow = false;
 
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get('Upgrade') !== 'websocket') {
@@ -267,20 +330,35 @@ export class EphemeralWorkerLogsDO extends DurableObject<Env> {
     const now = Date.now();
     const insertedLogs: LogEntry[] = [];
 
+    this.rotateWriteWindow(now);
+
     for (const event of events) {
-      const entry: LogEntry = {
-        id: this.nextId++,
+      if (!this.canWriteEventInWindow()) {
+        if (!this.hasWrittenSamplingWarningInWindow && this.tryConsumeWriteSlot()) {
+          insertedLogs.push(this.insertLog({
+            timestamp: now,
+            level: LOG_SAMPLING_WARNING_LEVEL,
+            message: createLogSamplingWarning(now).message,
+            exception: null,
+            scriptVersion: null,
+          }));
+          this.hasWrittenSamplingWarningInWindow = true;
+        }
+        continue;
+      }
+
+      this.tryConsumeWriteSlot();
+
+      insertedLogs.push(this.insertLog({
         timestamp: event.timestamp ?? now,
         level: event.level ?? 'log',
         message: event.message ?? null,
         exception: event.exception ?? null,
         scriptVersion: event.scriptVersion ?? null,
-      };
-
-      this.logs.push(entry);
-      this.lastLogAt = this.lastLogAt === null ? entry.timestamp : Math.max(this.lastLogAt, entry.timestamp);
-      insertedLogs.push(entry);
+      }));
     }
+
+    if (insertedLogs.length === 0) return;
 
     this.logs.sort((left, right) => {
       if (left.timestamp !== right.timestamp) {
@@ -301,6 +379,40 @@ export class EphemeralWorkerLogsDO extends DurableObject<Env> {
         }
       }
     }
+  }
+
+  private rotateWriteWindow(now: number): void {
+    if (this.writeWindowStartedAt === 0 || now - this.writeWindowStartedAt >= LOG_WRITE_WINDOW_MS) {
+      this.writeWindowStartedAt = now;
+      this.writesInWindow = 0;
+      this.hasWrittenSamplingWarningInWindow = false;
+    }
+  }
+
+  private canWriteEventInWindow(): boolean {
+    const reservedSlots = this.hasWrittenSamplingWarningInWindow ? 0 : 1;
+    return this.writesInWindow < MAX_LOG_WRITES_PER_WINDOW - reservedSlots;
+  }
+
+  private tryConsumeWriteSlot(): boolean {
+    if (this.writesInWindow >= MAX_LOG_WRITES_PER_WINDOW) return false;
+    this.writesInWindow += 1;
+    return true;
+  }
+
+  private insertLog(event: LogEvent): LogEntry {
+    const entry: LogEntry = {
+      id: this.nextId++,
+      timestamp: event.timestamp,
+      level: event.level,
+      message: event.message,
+      exception: event.exception,
+      scriptVersion: event.scriptVersion,
+    };
+
+    this.logs.push(entry);
+    this.lastLogAt = this.lastLogAt === null ? entry.timestamp : Math.max(this.lastLogAt, entry.timestamp);
+    return entry;
   }
 
   async getLogs(opts: GetLogsOptions = {}): Promise<LogEntry[]> {
