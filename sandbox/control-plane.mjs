@@ -1554,7 +1554,6 @@ class ChatSession {
       // Force Node as the runtime executable — Bun has a bug that breaks the SDK.
       executable: 'node',
       model: configuredModel,
-      fallbackModel: 'sonnet',
       includePartialMessages: true,
       permissionMode: 'bypassPermissions',
       allowUnsandboxedCommands: true,
