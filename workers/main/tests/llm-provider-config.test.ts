@@ -7,6 +7,7 @@ import {
   getDefaultLlmModel,
   getDefaultThreadProvider,
   getLlmModelOptions,
+  getProviderForModel,
   getVisibleLlmModelOptions,
   parseOrganizationExperimentalSettings,
   normalizeLlmModel,
@@ -39,10 +40,28 @@ describe('llm provider config helpers', () => {
     ]);
   });
 
+  it('shows both Claude and GPT options for new chats when the experimental flag is on', () => {
+    expect(
+      getVisibleLlmModelOptions(
+        'claude',
+        { codex_gpt_models: true },
+        undefined,
+        { allowModelFamilySwitch: true },
+      ).map((option) => option.value)
+    ).toEqual(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']);
+  });
+
   it('keeps the current GPT model visible for existing locked threads when the flag is off', () => {
     expect(
       getVisibleLlmModelOptions('codex', { codex_gpt_models: false }, 'gpt-5.4-mini').map((option) => option.value)
     ).toEqual(['gpt-5.4-mini']);
+  });
+
+  it('infers the thread provider from the selected model', () => {
+    expect(getProviderForModel('gpt-5.4', 'claude')).toBe('codex');
+    expect(getProviderForModel('gpt-5.4-mini', 'claude')).toBe('codex');
+    expect(getProviderForModel('sonnet', 'codex')).toBe('claude');
+    expect(getProviderForModel(undefined, 'claude')).toBe('claude');
   });
 
   it('round-trips explicit region values', () => {

@@ -82,22 +82,37 @@ export function getLlmModelOptions(provider: ChatHarness): ReadonlyArray<{
   return provider === 'codex' ? CODEX_LLM_MODEL_OPTIONS : CLAUDE_LLM_MODEL_OPTIONS;
 }
 
+export function getProviderForModel(
+  model: LlmModel | null | undefined,
+  fallbackProvider: ChatHarness = 'claude',
+): ChatHarness {
+  if (model === 'gpt-5.4' || model === 'gpt-5.4-mini') {
+    return 'codex';
+  }
+  if (model === 'sonnet' || model === 'opus') {
+    return 'claude';
+  }
+  return fallbackProvider;
+}
+
 export function getVisibleLlmModelOptions(
   provider: ChatHarness,
   experimentalSettings?: OrganizationExperimentalSettings | null,
   includeModel?: LlmModel | null,
+  options?: {
+    allowModelFamilySwitch?: boolean;
+  },
 ): ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
 }> {
-  const baseOptions = provider === 'codex'
-    ? (
-        isExperimentalCodexModelsEnabled(experimentalSettings)
-          ? CODEX_LLM_MODEL_OPTIONS
-          : []
-      )
-    : CLAUDE_LLM_MODEL_OPTIONS;
+  const codexModelsEnabled = isExperimentalCodexModelsEnabled(experimentalSettings);
+  const baseOptions = options?.allowModelFamilySwitch && codexModelsEnabled
+    ? [...CLAUDE_LLM_MODEL_OPTIONS, ...CODEX_LLM_MODEL_OPTIONS]
+    : provider === 'codex'
+      ? (codexModelsEnabled ? CODEX_LLM_MODEL_OPTIONS : [])
+      : CLAUDE_LLM_MODEL_OPTIONS;
 
   if (!includeModel || baseOptions.some((option) => option.value === includeModel)) {
     return baseOptions;

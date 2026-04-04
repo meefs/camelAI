@@ -9,6 +9,7 @@ import { getWorkerScript } from '@/lib/auth-do';
 import {
   getDefaultLlmModel,
   getDefaultThreadProvider,
+  getProviderForModel,
   isLlmModel,
 } from '@/lib/llm-provider-config';
 import * as chatDO from '@/lib/chat-do.server';
@@ -193,9 +194,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       const model = formData.get('model');
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       const llmProviderConfig = await orgStub.getLlmProviderConfig();
-      const threadProvider: ChatHarness = getDefaultThreadProvider(
+      const defaultThreadProvider: ChatHarness = getDefaultThreadProvider(
         llmProviderConfig?.provider,
         await orgStub.getExperimentalSettings(),
+      );
+      const threadProvider: ChatHarness = getProviderForModel(
+        model as LlmModel | null | undefined,
+        defaultThreadProvider,
       );
       if (model !== null && !isLlmModel(model, threadProvider)) {
         return Response.json({ error: 'Invalid thread model' }, { status: 400 });

@@ -12,6 +12,7 @@ import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/ma
 import type { LlmModel } from '@/types';
 import {
   getDefaultThreadProvider,
+  getProviderForModel,
   normalizeLlmModel,
   THREAD_MODEL_LOCK_MESSAGE,
 } from './llm-provider-config';
@@ -132,10 +133,11 @@ export async function createThread(
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const llmProviderConfig = await orgStub.getLlmProviderConfig();
-  const provider = getDefaultThreadProvider(
+  const defaultProvider = getDefaultThreadProvider(
     llmProviderConfig?.provider,
     await orgStub.getExperimentalSettings(),
   );
+  const provider = getProviderForModel(model, defaultProvider);
   const normalizedModel = normalizeLlmModel(model, provider);
   const thread = await orgStub.createThread(
     workspaceId,

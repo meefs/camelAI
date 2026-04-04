@@ -1207,8 +1207,9 @@ export default function Chat({
       resolvedThreadProvider,
       experimentalSettings,
       threadModel ?? getDefaultLlmModel(resolvedThreadProvider),
+      { allowModelFamilySwitch: !threadId },
     ),
-    [resolvedThreadProvider, experimentalSettings, threadModel]
+    [resolvedThreadProvider, experimentalSettings, threadId, threadModel]
   );
 
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? '');
