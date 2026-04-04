@@ -294,9 +294,59 @@ export function getToolSummaryParts(
       if (isRunning) return { action: 'Retrieving task output...' };
       if (isError) return { action: 'Failed to retrieve task output' };
       return { action: 'Retrieved task output' };
+    case 'CodexFileChange': {
+      const changes = Array.isArray(inputRecord.changes) ? inputRecord.changes : [];
+      const firstPath = changes.find((change): change is { path: string } => (
+        Boolean(change) &&
+        typeof change === 'object' &&
+        typeof (change as { path?: unknown }).path === 'string'
+      ))?.path;
+      if (isRunning) {
+        return firstPath
+          ? { action: 'Updating', filename: getFilename(firstPath), path: firstPath }
+          : { action: 'Applying file changes...' };
+      }
+      if (isError) {
+        return firstPath
+          ? { action: 'Failed to update', filename: getFilename(firstPath), path: firstPath }
+          : { action: 'Failed to apply file changes' };
+      }
+      return firstPath
+        ? { action: 'Updated', filename: getFilename(firstPath), path: firstPath }
+        : { action: 'Applied file changes' };
+    }
+    case 'CodexReviewMode':
+      if (isRunning) return { action: 'Updating review mode...' };
+      if (isError) return { action: 'Failed to update review mode' };
+      return { action: 'Updated review mode' };
+    case 'CodexContextCompaction':
+      if (isRunning) return { action: 'Compacting context...' };
+      if (isError) return { action: 'Failed to compact context' };
+      return { action: 'Compacted context' };
+    case 'CodexImageView': {
+      const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
+      if (isRunning) {
+        return path
+          ? { action: 'Viewing', filename: getFilename(path), path }
+          : { action: 'Viewing image...' };
+      }
+      if (isError) {
+        return path
+          ? { action: 'Failed to view', filename: getFilename(path), path }
+          : { action: 'Failed to view image' };
+      }
+      return path
+        ? { action: 'Viewed', filename: getFilename(path), path }
+        : { action: 'Viewed image' };
+    }
+    case 'CodexImageGeneration':
+      if (isRunning) return { action: 'Generating image...' };
+      if (isError) return { action: 'Failed to generate image' };
+      return { action: 'Generated image' };
     default:
-      if (isRunning) return { action: `${name}...` };
-      return { action: name };
+      if (isRunning) return { action: `${name || 'Tool'}...` };
+      if (isError) return { action: `Failed ${name || 'tool'}` };
+      return { action: name || (result ? 'Result' : 'Tool call') };
   }
 }
 

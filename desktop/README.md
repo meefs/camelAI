@@ -57,7 +57,7 @@ export DESKTOP_RENDERER_PORT=4316
 export DESKTOP_DATA_DIR=/custom/path
 export DESKTOP_RUNTIME_DIR=/custom/path/runtime
 export DESKTOP_RUNTIME_HELPER_PATH=/custom/path/to/camelai-runtime-helper
-export DESKTOP_RUNTIME_IMAGE=docker.io/vercantes/camelai-openwork:20260403-v3
+export DESKTOP_RUNTIME_IMAGE=docker.io/vercantes/camelai-openwork:20260404-v5
 export DESKTOP_DISABLE_LOCAL_CONTROL_PLANE_OVERRIDE=1 # opt out of desktop:dev local control-plane override
 export DESKTOP_VERBOSE_LOGS=1
 export DESKTOP_LOG_LEVEL=debug
@@ -82,13 +82,16 @@ export APPLE_TEAM_ID=ABCDE12345
 - `desktop/electron` owns the app window and preload bridge.
 - `desktop/renderer` owns the chat UI.
 - `desktop/app-resources` is the staged immutable app payload for packaging: bundled desktop-service module, compiled backend binary fallback, built renderer, staged Linux kernel, and runtime helper binary.
-- The desktop backend stages Claude auth files and runtime env into the shared runtime directory before startup, then makes that staged home tree writable by the unprivileged container user. The control-plane code lives inside the published container image instead of being mounted from the host.
-- Host Claude login follows the same rule in both dev and packaged runs: the desktop backend stages `~/.claude.json` plus usable Claude Code OAuth credentials into the runtime auth home, including macOS Keychain-backed auth.
+- The desktop backend now owns provider-aware state for the desktop shell: active provider, provider-scoped model selection, provider auth state, and provider metadata exposed to the renderer all flow through the shared desktop protocol rather than Claude-only fields.
+- The current runtime implementation still stages Claude auth files and runtime env into the shared runtime directory before startup, then makes that staged home tree writable by the unprivileged container user. The provider abstraction is in place so additional runtimes can slot into the same desktop contract later without rewriting the renderer/backend boundary.
+- Host Claude login still follows the same rule in both dev and packaged runs: the desktop backend stages `~/.claude.json` plus usable Claude Code OAuth credentials into the runtime auth home, including macOS Keychain-backed auth.
 - The desktop renderer talks to Electron main over preload IPC in the normal app path.
 - In staged/packageable builds, Electron main loads the bundled desktop service directly from app resources.
 - In local development, Electron main still falls back to the backend child process and bridges backend stdio events to the renderer.
-- `bun run desktop:dev` now stages the local [desktop/control-plane/control-plane.mjs](/Users/miguelsalinas/.codex/worktrees/a0ee/chiridion-2/desktop/control-plane/control-plane.mjs) into the shared runtime directory and the guest entrypoint prefers that dev override automatically, so control-plane edits are picked up on the next dev start without rebuilding or publishing the image.
-- `bun run desktop:dev` also defaults the runtime image to `docker.io/vercantes/camelai-openwork:20260403-v4`, which is the first base image that knows how to load the staged dev override. Set `DESKTOP_RUNTIME_IMAGE` explicitly if you need a different image.
+- `bun run desktop:dev` now stages the local [desktop/control-plane/control-plane.mjs](/Users/miguelsalinas/.codex/worktrees/581d/chiridion-2/desktop/control-plane/control-plane.mjs) plus companion `package.json`, `package-lock.json`, and `node_modules/` into the shared runtime directory, and the guest entrypoint prefers that dev override automatically. That means provider runtime changes, including in-container `codex app-server` support, are picked up on the next dev start without rebuilding or publishing the image.
+- `bun run desktop:dev` also prepares `desktop/control-plane/node_modules/` before launch and ensures the Linux arm64 Codex package is present, so the guest can run `codex app-server` even when development starts from a macOS checkout.
+- `bun run desktop:dev` defaults the runtime image to `docker.io/vercantes/camelai-openwork:20260404-v5`, which supports the staged dev control-plane override. The desktop backend also stages the host CA bundle into the shared runtime mount and exports `SSL_CERT_FILE`-style env vars so guest-side tools can complete TLS even when the base image is minimal.
+- The active desktop provider always runs inside the guest runtime. Claude uses the Claude Agent SDK in the control plane; Codex uses `codex app-server` from the same control-plane container.
 - `bun run desktop:probe` runs a hidden Electron startup probe against the real dev startup path and prints JSON diagnostics for renderer/backend/preload handshake issues.
 - `bun run desktop:probe-startup` is the fastest startup-only repro loop and includes backend runtime stderr trace output.
 - `bun run desktop:probe-turn` waits for the local runtime to boot and then verifies a real desktop chat turn over the stdio backend transport.
@@ -98,7 +101,7 @@ export APPLE_TEAM_ID=ABCDE12345
 
 ## Logging
 
-The desktop stack writes structured JSON logs for the host send path, runtime lifecycle, control-plane bridge, and Claude SDK stderr.
+The desktop stack writes structured JSON logs for the host send path, runtime lifecycle, control-plane bridge, and provider runtime stderr.
 
 - Dev backend logs: `desktop/.local/logs/desktop-backend.log`
 - Electron app logs: `~/Library/Application Support/Electron/data/logs/desktop-backend.log`

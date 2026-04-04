@@ -6,7 +6,7 @@ const repoRoot = resolve(import.meta.dirname, "..", "..");
 const controlPlaneDir = resolve(repoRoot, "desktop/control-plane");
 const imageRef =
   process.env.DESKTOP_RUNTIME_IMAGE?.trim() ||
-  "docker.io/vercantes/camelai-openwork:20260403-v3";
+  "docker.io/vercantes/camelai-openwork:20260404-v5";
 
 function fail(message) {
   process.stderr.write(`${message}\n`);

@@ -51,7 +51,12 @@ export function normalizeToolResultContent(content: unknown): string {
     return blocks
       .map(block => {
         if (block.type === 'text') return block.text;
-        if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+        if (block.type === 'thinking') {
+          const summaryText = Array.isArray(block.summaries) ? block.summaries.join('\n\n') : '';
+          return summaryText
+            ? `[Thinking Summary]\n${summaryText}\n\n[Thinking]\n${block.thinking}`
+            : `[Thinking]\n${block.thinking}`;
+        }
         if (block.type === 'redacted_thinking') return '[Thinking redacted]';
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;

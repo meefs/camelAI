@@ -2,26 +2,35 @@ import { randomUUID } from "node:crypto";
 import { DesktopStore } from "./store";
 import { RuntimeManager } from "./runtime";
 import {
-  getClaudeAuthState,
-  getDefaultConfiguredModel,
-  normalizeDesktopModel,
-} from "./anthropic";
+  requireDesktopProvider,
+  getProviderOptions,
+} from "./providers";
 import { streamRuntimeChat } from "./runtime-control-plane";
 import { logDesktop } from "./log";
 import {
-  applySdkEventToMessages,
+  applyRuntimeEventToMessages,
   desktopMessageToUiMessage,
   extractTextContent,
   uiMessagesToDesktopMessages,
 } from "../shared/message-state";
 import type {
   DesktopClientEvent,
+  DesktopRuntimeStatus,
   DesktopServerEvent,
   DesktopSnapshot,
 } from "../shared/protocol";
+import type { SDKEvent } from "../../src/lib/streaming";
 import type { Message } from "../../src/types";
 
 type Listener = (event: DesktopServerEvent) => void;
+
+function isClaudeRuntimeEvent(event: unknown): event is SDKEvent {
+  return Boolean(
+    event &&
+      typeof event === "object" &&
+      typeof (event as { type?: unknown }).type === "string",
+  );
+}
 
 export class DesktopService {
   private readonly store = new DesktopStore();
@@ -32,11 +41,16 @@ export class DesktopService {
   private runtimeStartupPromise: Promise<void> | null = null;
 
   constructor() {
+    const provider = this.getCurrentProvider();
+    const model = this.getCurrentModel(provider);
     logDesktop("service", "init", {
-      model: this.store.getModel(),
-      authSource: getClaudeAuthState().authSource,
+      provider: provider.id,
+      model,
+      authSource: provider.getAuthState().source,
     });
-    void this.ensureRuntimeRunning("startup");
+    if (provider.transport === "runtime-control-plane") {
+      void this.ensureRuntimeRunning("startup", provider, model);
+    }
   }
 
   subscribe(listener: Listener): () => void {
@@ -65,22 +79,82 @@ export class DesktopService {
   }
 
   getSnapshot(): DesktopSnapshot {
+    const provider = this.getCurrentProvider();
+    const model = this.getCurrentModel(provider);
     return this.store.buildSnapshot(
-      this.runtimeStatus,
-      this.store.getModel(),
-      getClaudeAuthState(),
+      this.getRuntimeStatus(provider),
+      provider.id,
+      getProviderOptions(),
+      model,
+      provider.getAvailableModels(),
+      provider.getAuthState(),
     );
+  }
+
+  private getCurrentProvider() {
+    return requireDesktopProvider(this.store.getProvider());
+  }
+
+  private getCurrentModel(provider = this.getCurrentProvider()): string {
+    return provider.normalizeModel(this.store.getModel(provider.id));
+  }
+
+  private getRuntimeStatus(
+    provider = this.getCurrentProvider(),
+  ): DesktopRuntimeStatus {
+    return this.runtimeStatus;
   }
 
   handleClientEvent(event: DesktopClientEvent): void {
     switch (event.type) {
       case "create_thread": {
-        this.store.createThread(event.title);
+        this.store.createThread(event.title, this.store.getProvider());
         this.emitSnapshot();
         return;
       }
+      case "select_thread": {
+        this.store.setActiveThread(event.threadId);
+        this.emitSnapshot();
+        const provider = this.getCurrentProvider();
+        if (provider.transport === "runtime-control-plane") {
+          void this.ensureRuntimeRunning(
+            "startup",
+            provider,
+            this.getCurrentModel(provider),
+          );
+        }
+        return;
+      }
+      case "set_provider": {
+        const provider = requireDesktopProvider(event.provider).id;
+        const activeThreadId = this.store.getActiveThreadId();
+        const activeThread =
+          activeThreadId ? this.store.getThread(activeThreadId) : null;
+        if (!activeThread) {
+          this.store.setProvider(provider);
+        } else if (
+          activeThread.provider === provider ||
+          !this.store.threadHasHarnessState(activeThread.id)
+        ) {
+          this.store.setThreadProvider(activeThread.id, provider);
+        } else {
+          this.store.setProvider(provider);
+          this.store.createThread(undefined, provider);
+        }
+        this.emitSnapshot();
+        const nextProvider = this.getCurrentProvider();
+        if (nextProvider.transport === "runtime-control-plane") {
+          void this.ensureRuntimeRunning(
+            "startup",
+            nextProvider,
+            this.getCurrentModel(nextProvider),
+          );
+        }
+        return;
+      }
       case "set_model": {
-        this.store.setModel(normalizeDesktopModel(event.model));
+        const provider = this.getCurrentProvider();
+        this.store.setModel(provider.normalizeModel(event.model), provider.id);
         this.emitSnapshot();
         return;
       }
@@ -110,14 +184,11 @@ export class DesktopService {
 
   private async ensureRuntimeRunning(
     reason: "startup" | "send_message",
-    model = this.store.getModel(),
+    provider = this.getCurrentProvider(),
+    model = this.getCurrentModel(provider),
   ): Promise<void> {
     if (this.runtimeStartupPromise) {
       await this.runtimeStartupPromise;
-      return;
-    }
-
-    if (this.runtimeStatus.state === "running") {
       return;
     }
 
@@ -136,11 +207,13 @@ export class DesktopService {
     this.runtimeStartupPromise = (async () => {
       logDesktop("service", "runtime:start", {
         reason,
+        provider: provider.id,
         model,
       });
       try {
         this.runtimeStatus =
           await this.runtimeManager.ensureControlPlaneRuntime(
+          provider,
           model,
           (status) => {
             this.runtimeStatus = status;
@@ -152,12 +225,14 @@ export class DesktopService {
         }
         logDesktop("service", "runtime:ready", {
           reason,
+          provider: provider.id,
           state: this.runtimeStatus.state,
           detail: this.runtimeStatus.detail,
         });
       } catch (error) {
         logDesktop("service", "runtime:error", {
           reason,
+          provider: provider.id,
           error,
         });
         this.runtimeStatus = {
@@ -221,7 +296,11 @@ export class DesktopService {
     this.activeThreads.add(threadId);
     const turnId = randomUUID();
     let assistantId: string | null = null;
-    const model = this.store.getModel() ?? getDefaultConfiguredModel();
+    const provider = requireDesktopProvider(
+      this.store.getThreadProvider(threadId),
+    );
+    const model = this.getCurrentModel(provider);
+    const providerSessionId = this.store.getProviderSessionId(threadId, provider.id);
 
     try {
       this.store.appendMessage(threadId, "user", trimmed, "done");
@@ -235,6 +314,7 @@ export class DesktopService {
       logDesktop("service", "send_message:accepted", {
         turnId,
         threadId,
+        provider: provider.id,
         assistantId,
         model,
       });
@@ -247,43 +327,61 @@ export class DesktopService {
         [threadId]: assistant.id,
       };
 
-      await this.ensureRuntimeRunning("send_message", model);
+      await this.ensureRuntimeRunning("send_message", provider, model);
+      const runtimeStatus = this.getRuntimeStatus(provider);
 
       logDesktop("service", "send_message:runtime_ready", {
         turnId,
         threadId,
-        state: this.runtimeStatus.state,
-        detail: this.runtimeStatus.detail,
+        provider: provider.id,
+        state: runtimeStatus.state,
+        detail: runtimeStatus.detail,
       });
       this.emitSnapshot();
 
       const result = await streamRuntimeChat({
         runtimeManager: this.runtimeManager,
+        provider,
         threadId,
         content: trimmed,
         model,
         turnId,
+        sessionId: providerSessionId,
+        onSessionId: (sessionId) => {
+          this.store.setProviderSessionId(threadId, provider.id, sessionId);
+        },
         onEvent: (event) => {
-          logDesktop(
-            "service",
-            "send_message:sdk_event",
-            {
-              turnId,
-              threadId,
-              eventType: event.type,
-              subtype: "subtype" in event ? event.subtype : undefined,
-              streamType:
-                event.type === "stream_event" ? event.event?.type : undefined,
-              deltaType:
-                event.type === "stream_event"
-                  ? event.event?.delta?.type
-                  : undefined,
-            },
-            "debug",
-          );
-          persistedThreadMessages = applySdkEventToMessages(
+          this.broadcast({
+            type: "runtime_event",
+            threadId,
+            provider: provider.id,
+            event,
+          });
+
+          if (provider.id === "claude" && isClaudeRuntimeEvent(event)) {
+            logDesktop(
+              "service",
+              "send_message:sdk_event",
+              {
+                turnId,
+                threadId,
+                eventType: event.type,
+                subtype: "subtype" in event ? event.subtype : undefined,
+                streamType:
+                  event.type === "stream_event" ? event.event?.type : undefined,
+                deltaType:
+                  event.type === "stream_event"
+                    ? event.event?.delta?.type
+                    : undefined,
+              },
+              "debug",
+            );
+          }
+
+          persistedThreadMessages = applyRuntimeEventToMessages(
             persistedThreadMessages,
             threadId,
+            provider.id,
             event,
             streamingMessageIds,
           );
@@ -294,13 +392,12 @@ export class DesktopService {
               this.store.getThreadMessages(threadId),
             ),
           );
-          this.broadcast({
-            type: "sdk_event",
-            threadId,
-            event,
-          });
         },
         onText: (delta) => {
+          if (provider.id !== "claude") {
+            return;
+          }
+          this.store.appendToMessage(threadId, assistant.id, delta);
           logDesktop(
             "service",
             "send_message:assistant_delta",
@@ -323,18 +420,23 @@ export class DesktopService {
       const latestAssistant = this.store
         .getThreadMessages(threadId)
         .find((message) => message.id === assistant.id);
-      const hasPersistedContent = latestAssistant
-        ? extractTextContent(latestAssistant.content).trim().length > 0
-        : false;
+      const persistedAssistantText = latestAssistant
+        ? extractTextContent(latestAssistant.content).trim()
+        : "";
       this.store.finalizeMessage(
         threadId,
         assistant.id,
         "done",
-        hasPersistedContent ? undefined : result.finalText,
+        provider.id === "claude" &&
+          result.finalText.trim() &&
+          result.finalText.trim() !== persistedAssistantText
+          ? result.finalText
+          : undefined,
       );
       logDesktop("service", "send_message:completed", {
         turnId,
         threadId,
+        provider: provider.id,
         assistantId,
         finalTextLength: result.finalText.length,
         model: result.model,
@@ -344,6 +446,7 @@ export class DesktopService {
       logDesktop("service", "send_message:error", {
         turnId,
         threadId,
+        provider: provider.id,
         assistantId,
         error,
       });

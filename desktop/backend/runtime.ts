@@ -4,19 +4,18 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
-import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DesktopRuntimeStatus } from "../shared/protocol";
-import { getHostClaudeCredentialsJson } from "./anthropic";
+import type { DesktopProviderDefinition } from "./provider-types";
 import { logDesktop } from "./log";
 
 const backendDirectory = dirname(fileURLToPath(import.meta.url));
@@ -58,12 +57,13 @@ const DEFAULT_HELPER_STOP_TIMEOUT_MS = Number(
 );
 const KEEP_RUNTIME_ON_DISPOSE =
   process.env.DESKTOP_RUNTIME_SHUTDOWN_ON_EXIT !== "1";
-const HOST_CLAUDE_SYNC_PATHS = [".claude.json"] as const;
 const LOCAL_CONTROL_PLANE_BASENAME = "control-plane.mjs";
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
-}
+const HOST_CA_BUNDLE_CANDIDATES = [
+  process.env.SSL_CERT_FILE?.trim() || "",
+  "/etc/ssl/cert.pem",
+  "/private/etc/ssl/cert.pem",
+  "/etc/ssl/certs/ca-certificates.crt",
+].filter(Boolean);
 
 interface RuntimeHelperResponse {
   state?: DesktopRuntimeStatus["state"];
@@ -116,7 +116,14 @@ function makePathWritableForContainerUser(targetPath: string): void {
   }
 
   try {
-    chmodSync(targetPath, stats.isDirectory() ? 0o777 : 0o666);
+    const existingMode = stats.mode & 0o777;
+    let writableMode = existingMode | 0o666;
+    if (stats.isDirectory()) {
+      writableMode |= 0o111;
+    } else if ((existingMode & 0o111) !== 0) {
+      writableMode |= 0o111;
+    }
+    chmodSync(targetPath, writableMode);
   } catch {
     // Best effort only.
   }
@@ -225,6 +232,10 @@ export class RuntimeManager {
     return resolve(this.getRuntimeRootPath(), "container-home");
   }
 
+  private getRuntimeCABundlePath(): string {
+    return resolve(this.getRuntimeRootPath(), "ca-certificates.pem");
+  }
+
   getCachedStatus(): DesktopRuntimeStatus {
     if (!existsSync(this.helperPath)) {
       return {
@@ -286,6 +297,7 @@ export class RuntimeManager {
   }
 
   async ensureControlPlaneRuntime(
+    provider: DesktopProviderDefinition,
     model: string,
     onStatus?: (status: DesktopRuntimeStatus) => void,
   ): Promise<DesktopRuntimeStatus> {
@@ -296,6 +308,7 @@ export class RuntimeManager {
       "runtime",
       "ensure_control_plane_runtime:start",
       {
+        provider: provider.id,
         model,
         helperPath: this.helperPath,
         instanceName: this.instanceName,
@@ -321,12 +334,11 @@ export class RuntimeManager {
 
     phaseStartedAt = Date.now();
     this.prepareRuntimeDirectories();
-    this.writeControlPlaneEnv(model);
+    this.stageHostCertificates();
+    this.writeControlPlaneEnv(provider, model);
     this.syncLocalControlPlaneOverride();
-    this.syncHostClaudeConfigToRuntimeHome(
-      this.getExistingHostClaudeAuthPaths(getHostClaudeCredentialsJson()),
-      getHostClaudeCredentialsJson(),
-    );
+    provider.stageRuntimeHome(this.getControlPlaneHomePath());
+    makePathWritableForContainerUser(this.getControlPlaneHomePath());
     phaseTimings.stageRuntimeInputsMs = elapsedMs(phaseStartedAt);
 
     this.reportStatus(
@@ -334,13 +346,14 @@ export class RuntimeManager {
         ...status,
         state: "starting",
         detail:
-          "Prepared the runtime workspace, synced Claude auth, and wrote the container environment. Starting the container next.",
+          `Prepared the runtime workspace, synced ${provider.label} auth, and wrote the container environment. Starting the container next.`,
       },
       onStatus,
     );
 
     if (status.state === "running" && !initialHealthReachable) {
       logDesktop("runtime", "control_plane_health:restart_required", {
+        provider: provider.id,
         model,
         state: status.state,
         detail: status.detail,
@@ -399,6 +412,7 @@ export class RuntimeManager {
     this.reportStatus(finalStatus, onStatus);
 
     logDesktop("runtime", "ensure_control_plane_runtime:success", {
+      provider: provider.id,
       model,
       elapsedMs: elapsedMs(startedAt),
       state: finalStatus.state,
@@ -423,25 +437,27 @@ export class RuntimeManager {
     }
   }
 
-  private writeControlPlaneEnv(model: string): void {
-    const lines = [
-      `export DESKTOP_ANTHROPIC_MODEL=${shellQuote(model)}`,
-      `export DESKTOP_RUNTIME_CONTROL_PLANE_PORT=${shellQuote(
-        String(this.controlPlanePort),
-      )}`,
-      "export DESKTOP_RUNTIME_SHARED_DIR='/mnt/camelai-shared'",
-      "export DESKTOP_CONTROL_PLANE_DEBUG_FILE='/mnt/camelai-shared/logs/claude-sdk-debug.log'",
-      "export HOME='/mnt/camelai-shared/runtime/container-home'",
-      "export CLAUDE_CONFIG_DIR='/mnt/camelai-shared/runtime/container-home/.claude'",
-    ];
-
-    const anthropicApiKey = process.env.ANTHROPIC_API_KEY?.trim();
-    if (anthropicApiKey) {
-      lines.push(`export ANTHROPIC_API_KEY=${shellQuote(anthropicApiKey)}`);
-    }
-
+  private writeControlPlaneEnv(
+    provider: DesktopProviderDefinition,
+    model: string,
+  ): void {
+    const lines = provider.buildControlPlaneEnv(model, this.controlPlanePort);
     writeFileSync(this.getControlPlaneEnvPath(), `${lines.join("\n")}\n`, "utf8");
     makePathWritableForContainerUser(this.getControlPlaneEnvPath());
+  }
+
+  private stageHostCertificates(): void {
+    const sourcePath = HOST_CA_BUNDLE_CANDIDATES.find((candidate) =>
+      existsSync(candidate),
+    );
+    if (!sourcePath) {
+      return;
+    }
+
+    const destinationPath = this.getRuntimeCABundlePath();
+    mkdirSync(dirname(destinationPath), { recursive: true });
+    cpSync(sourcePath, destinationPath, { force: true });
+    makePathWritableForContainerUser(destinationPath);
   }
 
   private syncLocalControlPlaneOverride(): void {
@@ -466,58 +482,25 @@ export class RuntimeManager {
 
     mkdirSync(overrideDirectory, { recursive: true });
     cpSync(sourcePath, overrideTargetPath, { force: true });
-    makePathWritableForContainerUser(overrideDirectory);
-  }
 
-  private syncHostClaudeConfigToRuntimeHome(
-    existingPaths: string[],
-    hostCredentialsJson: string | null,
-  ): void {
-    const runtimeHome = this.getControlPlaneHomePath();
-    mkdirSync(runtimeHome, { recursive: true });
-
-    for (const relativePath of HOST_CLAUDE_SYNC_PATHS) {
-      rmSync(resolve(runtimeHome, relativePath), { recursive: true, force: true });
-    }
-
-    for (const relativePath of existingPaths) {
-      const sourcePath = resolve(homedir(), relativePath);
-      const destinationPath = resolve(runtimeHome, relativePath);
-      mkdirSync(dirname(destinationPath), { recursive: true });
-      cpSync(sourcePath, destinationPath, { force: true });
-    }
-
-    const claudeConfigDirectory = resolve(runtimeHome, ".claude");
-    mkdirSync(claudeConfigDirectory, { recursive: true });
-    if (hostCredentialsJson) {
-      writeFileSync(
-        resolve(claudeConfigDirectory, ".credentials.json"),
-        hostCredentialsJson,
-        "utf8",
-      );
-    } else {
-      rmSync(resolve(claudeConfigDirectory, ".credentials.json"), {
+    const sourceDirectory = dirname(sourcePath);
+    for (const companionName of ["package.json", "package-lock.json", "node_modules"] as const) {
+      const companionSourcePath = resolve(sourceDirectory, companionName);
+      if (!existsSync(companionSourcePath)) {
+        continue;
+      }
+      rmSync(resolve(overrideDirectory, companionName), {
+        recursive: true,
         force: true,
       });
-    }
-
-    makePathWritableForContainerUser(runtimeHome);
-  }
-
-  private getExistingHostClaudeAuthPaths(
-    hostCredentialsJson: string | null,
-  ): string[] {
-    const existingPaths = HOST_CLAUDE_SYNC_PATHS.filter((relativePath) =>
-      existsSync(resolve(homedir(), relativePath)),
-    );
-
-    if (!hostCredentialsJson && !process.env.ANTHROPIC_API_KEY?.trim()) {
-      throw new Error(
-        "Claude Code auth was not found on the host. Run `claude auth login` or set ANTHROPIC_API_KEY before starting the desktop runtime.",
+      cpSync(
+        companionSourcePath,
+        resolve(overrideDirectory, companionName),
+        { force: true, recursive: true },
       );
     }
 
-    return existingPaths;
+    makePathWritableForContainerUser(overrideDirectory);
   }
 
   private async waitForRuntimeRunning(

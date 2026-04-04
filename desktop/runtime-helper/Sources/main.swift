@@ -46,7 +46,7 @@ enum HelperCommand: String {
 let environment = ProcessInfo.processInfo.environment
 let instanceName = environment["DESKTOP_RUNTIME_INSTANCE_NAME"] ?? "camelai-desktop"
 let runtimeImageReference =
-    environment["DESKTOP_RUNTIME_IMAGE"] ?? "docker.io/vercantes/camelai-openwork:20260403-v3"
+    environment["DESKTOP_RUNTIME_IMAGE"] ?? "docker.io/vercantes/camelai-openwork:20260404-v5"
 let initfsReference =
     environment["DESKTOP_RUNTIME_INITFS_REFERENCE"]
     ?? "ghcr.io/apple/containerization/vminit:0.26.5"

@@ -19,7 +19,6 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { LoadingDots } from "@/components/loading-dots";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import {
-  SDKEvent,
   mergeTaskNotifications,
   mergeTeammateMessages,
   normalizeToolResultMessages,
@@ -28,19 +27,20 @@ import type { ContentBlock, Message } from "@/types";
 import type {
   DesktopClientEvent,
   DesktopModel,
+  DesktopProvider,
   DesktopServerEvent,
   DesktopSnapshot,
   DesktopThread,
 } from "../../shared/protocol";
 import {
-  applySdkEventToMessages,
+  applyRuntimeEventToMessages,
   mergeSnapshotMessages,
 } from "../../shared/message-state";
 import { DesktopSidebar } from "./desktop-sidebar";
 
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
-const MODEL_OPTIONS: DesktopModel[] = ["sonnet", "opus"];
+const RUNTIME_BOOT_SCREEN_DELAY_MS = 450;
 
 function getActiveThread(
   snapshot: DesktopSnapshot | null,
@@ -60,15 +60,12 @@ function formatTime(timestamp: number): string {
 
 function authBadgeLabel(snapshot: DesktopSnapshot | null): string {
   if (!snapshot) {
-    return "Checking Claude auth";
+    return "Checking auth";
   }
-  if (!snapshot?.hasClaudeAuth) {
-    return "Claude auth missing";
+  if (!snapshot.auth.available) {
+    return snapshot.auth.label;
   }
-  if (snapshot.authSource === "claude-ai") {
-    return `Claude.ai · ${snapshot.model}`;
-  }
-  return `API key · ${snapshot.model}`;
+  return `${snapshot.auth.label} · ${snapshot.model}`;
 }
 
 function runtimeDetail(snapshot: DesktopSnapshot | null): string | null {
@@ -221,14 +218,6 @@ function RuntimeBootScreen({
   );
 }
 
-function isSdkEvent(event: unknown): event is SDKEvent {
-  return Boolean(
-    event &&
-    typeof event === "object" &&
-    typeof (event as { type?: unknown }).type === "string",
-  );
-}
-
 function coerceTextContent(content: string | ContentBlock[]): string {
   if (typeof content === "string") {
     return content;
@@ -305,6 +294,7 @@ export function App() {
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
+  const [runtimeBootDelayElapsed, setRuntimeBootDelayElapsed] = useState(false);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -329,7 +319,14 @@ export function App() {
   const isStreaming = rawMessages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
-  const shouldBlockRuntime = shouldBlockOnRuntime(snapshot, connectionState);
+  const shouldDelayRuntimeBootScreen =
+    connectionState === "open" &&
+    snapshot !== null &&
+    snapshot.runtimeStatus.state !== "running" &&
+    snapshot.runtimeStatus.state !== "error";
+  const shouldBlockRuntime =
+    shouldBlockOnRuntime(snapshot, connectionState) &&
+    (!shouldDelayRuntimeBootScreen || runtimeBootDelayElapsed);
 
   useEffect(() => {
     let cancelled = false;
@@ -357,10 +354,7 @@ export function App() {
           }
           return merged;
         });
-        setActiveThreadId(
-          (current) =>
-            current ?? next.activeThreadId ?? next.threads[0]?.id ?? null,
-        );
+        setActiveThreadId(next.activeThreadId ?? next.threads[0]?.id ?? null);
       } catch {
         setConnectionState("closed");
       }
@@ -392,9 +386,7 @@ export function App() {
           return merged;
         });
         setActiveThreadId(
-          (current) =>
-            current ??
-            event.snapshot.activeThreadId ??
+          event.snapshot.activeThreadId ??
             event.snapshot.threads[0]?.id ??
             null,
         );
@@ -423,16 +415,16 @@ export function App() {
         return;
       }
 
-      if (event.type === "sdk_event" && isSdkEvent(event.event)) {
-        const sdkEvent = event.event;
+      if (event.type === "runtime_event") {
         setUiMessagesByThread((current) => {
           const threadMessages = current[event.threadId] ?? [];
           return {
             ...current,
-            [event.threadId]: applySdkEventToMessages(
+            [event.threadId]: applyRuntimeEventToMessages(
               threadMessages,
               event.threadId,
-              sdkEvent,
+              event.provider,
+              event.event,
               streamingMessageIdsRef.current,
             ),
           };
@@ -476,14 +468,31 @@ export function App() {
   }, [messages]);
 
   useEffect(() => {
+    if (!shouldDelayRuntimeBootScreen) {
+      setRuntimeBootDelayElapsed(false);
+      return;
+    }
+
+    setRuntimeBootDelayElapsed(false);
+    const timeoutId = window.setTimeout(() => {
+      setRuntimeBootDelayElapsed(true);
+    }, RUNTIME_BOOT_SCREEN_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [shouldDelayRuntimeBootScreen, snapshot?.runtimeStatus.state]);
+
+  useEffect(() => {
     if (!snapshot || reportedReadyRef.current || !desktopShell?.reportReady) {
       return;
     }
     reportedReadyRef.current = true;
     desktopShell.reportReady({
       activeThreadId: snapshot.activeThreadId,
-      authSource: snapshot.authSource,
-      hasClaudeAuth: snapshot.hasClaudeAuth,
+      provider: snapshot.provider,
+      authSource: snapshot.auth.source,
+      hasAuth: snapshot.auth.available,
       runtimeState: snapshot.runtimeStatus.state,
     });
   }, [snapshot]);
@@ -503,11 +512,23 @@ export function App() {
     sendEvent({ type: "create_thread" });
   }
 
+  function handleSelectThread(threadId: string) {
+    setActiveThreadId(threadId);
+    sendEvent({ type: "select_thread", threadId });
+  }
+
   function handleSetModel(model: string) {
-    if (model !== "sonnet" && model !== "opus") {
+    if (!snapshot?.availableModels.some((option) => option.id === model)) {
       return;
     }
-    sendEvent({ type: "set_model", model });
+    sendEvent({ type: "set_model", model: model as DesktopModel });
+  }
+
+  function handleSetProvider(provider: string) {
+    if (!snapshot?.availableProviders.some((option) => option.id === provider)) {
+      return;
+    }
+    sendEvent({ type: "set_provider", provider: provider as DesktopProvider });
   }
 
   function handleSubmit() {
@@ -532,8 +553,29 @@ export function App() {
               </p>
             </div>
             <div className="desktop-no-drag ml-auto flex items-center gap-2">
+              {snapshot && snapshot.availableProviders.length > 1 ? (
+                <Select
+                  value={snapshot.provider}
+                  onValueChange={handleSetProvider}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-[118px] bg-background/70 backdrop-blur"
+                    aria-label="Provider"
+                  >
+                    <SelectValue placeholder="Provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {snapshot.availableProviders.map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {provider.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
               <Select
-                value={snapshot?.model ?? "sonnet"}
+                value={snapshot?.model ?? ""}
                 onValueChange={handleSetModel}
               >
                 <SelectTrigger
@@ -544,15 +586,15 @@ export function App() {
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>
                 <SelectContent>
-                  {MODEL_OPTIONS.map((model) => (
-                    <SelectItem key={model} value={model}>
-                      {model === "sonnet" ? "Sonnet" : "Opus"}
+                  {(snapshot?.availableModels ?? []).map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <Badge
-                variant={snapshot?.hasClaudeAuth ? "secondary" : "destructive"}
+                variant={snapshot?.auth.available ? "secondary" : "destructive"}
               >
                 {authBadgeLabel(snapshot)}
               </Badge>
@@ -584,7 +626,7 @@ export function App() {
               activeThreadId={activeThreadId}
               connectionState={connectionState}
               onCreateThread={handleCreateThread}
-              onSelectThread={setActiveThreadId}
+              onSelectThread={handleSelectThread}
               snapshot={snapshot}
               threads={snapshot?.threads ?? []}
             />

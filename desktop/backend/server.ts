@@ -110,11 +110,9 @@ function startHttpTransport(): void {
         const snapshot = service.getSnapshot();
         return json({
           ok: true,
+          provider: snapshot.provider,
           model: snapshot.model,
-          auth: {
-            hasClaudeAuth: snapshot.hasClaudeAuth,
-            authSource: snapshot.authSource,
-          },
+          auth: snapshot.auth,
           runtimeStatus: snapshot.runtimeStatus,
         });
       }

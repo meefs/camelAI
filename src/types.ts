@@ -36,6 +36,8 @@ export interface PreviewTab {
 export interface TextBlock {
   type: 'text';
   text: string;
+  itemId?: string;
+  itemKind?: string;
 }
 
 export interface ToolUseBlock {
@@ -43,6 +45,7 @@ export interface ToolUseBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  itemKind?: string;
 }
 
 export interface ToolResultBlock {
@@ -51,12 +54,18 @@ export interface ToolResultBlock {
   content: string | ContentBlock[];
   /** Marks a Task progress update (not the final Task result). */
   isTaskUpdate?: boolean;
+  itemId?: string;
+  itemKind?: string;
 }
 
 export interface ThinkingBlock {
   type: 'thinking';
   thinking: string;
   signature?: string;
+  itemId?: string;
+  itemKind?: string;
+  label?: string;
+  summaries?: string[];
 }
 
 export interface RedactedThinkingBlock {

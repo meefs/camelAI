@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { getDefaultConfiguredModel } from "../backend/anthropic.ts";
+import { getDefaultProvider, requireDesktopProvider } from "../backend/providers.ts";
 import { RuntimeManager } from "../backend/runtime.ts";
 
 const TURN_TIMEOUT_MS = Number(process.env.DESKTOP_TURN_PROBE_TIMEOUT_MS || 420000);
@@ -62,7 +62,7 @@ async function readNdjsonStream(response, onLine) {
   }
 }
 
-async function sendTurn(baseUrl, model, prompt) {
+async function sendTurn(baseUrl, provider, model, prompt) {
   const threadId = randomUUID();
   const startedAt = now();
   const response = await fetch(`${baseUrl}/turn`, {
@@ -74,6 +74,7 @@ async function sendTurn(baseUrl, model, prompt) {
       threadId,
       content: prompt,
       model,
+      env: provider.buildTurnEnv(model),
     }),
     signal: AbortSignal.timeout(TURN_TIMEOUT_MS),
   });
@@ -198,16 +199,20 @@ async function main() {
   };
 
   try {
-    const model = process.env.DESKTOP_ANTHROPIC_MODEL || getDefaultConfiguredModel();
+    const provider = requireDesktopProvider(getDefaultProvider());
+    const model =
+      process.env.DESKTOP_MODEL ||
+      process.env.DESKTOP_ANTHROPIC_MODEL ||
+      provider.getDefaultModel();
     const coldBootStartedAt = now();
-    const runtimeStatus = await runtime.ensureControlPlaneRuntime(model, onStatus);
+    const runtimeStatus = await runtime.ensureControlPlaneRuntime(provider, model, onStatus);
     const coldBootElapsedMs = now() - coldBootStartedAt;
     const baseUrl = runtime.getControlPlaneHttpUrl();
-    const firstTurn = await sendTurn(baseUrl, model, PROMPT);
+    const firstTurn = await sendTurn(baseUrl, provider, model, PROMPT);
 
     const warmTurnResults = [];
     for (let index = 0; index < warmTurns; index += 1) {
-      warmTurnResults.push(await sendTurn(baseUrl, model, PROMPT));
+      warmTurnResults.push(await sendTurn(baseUrl, provider, model, PROMPT));
     }
 
     const runtimeLogs = await collectRuntimeLogs(runtimeDir);

@@ -187,7 +187,12 @@ function normalizeToolResultContent(content: unknown): string {
     return content
       .map(block => {
         if (block.type === 'text') return block.text;
-        if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+        if (block.type === 'thinking') {
+          const summaryText = Array.isArray(block.summaries) ? block.summaries.join('\n\n') : '';
+          return summaryText
+            ? `[Thinking Summary]\n${summaryText}\n\n[Thinking]\n${block.thinking}`
+            : `[Thinking]\n${block.thinking}`;
+        }
         if (block.type === 'redacted_thinking') return '[Thinking redacted]';
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
@@ -232,7 +237,12 @@ export function contentToString(content: string | ContentBlock[]): string {
       if (block.type === 'text') return stripSystemMessageTags(block.text);
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
-      if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+      if (block.type === 'thinking') {
+        const summaryText = Array.isArray(block.summaries) ? block.summaries.join('\n\n') : '';
+        return summaryText
+          ? `[Thinking Summary]\n${summaryText}\n\n[Thinking]\n${block.thinking}`
+          : `[Thinking]\n${block.thinking}`;
+      }
       if (block.type === 'redacted_thinking') return '[Thinking redacted]';
       if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
       if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
@@ -296,7 +306,7 @@ export function ContentBlockRenderer({ content, messageId, isStreaming = false, 
       items.push({
         kind: 'other',
         key: `thinking-${index}`,
-        node: <ThinkingBlock thinking={block.thinking} />,
+        node: <ThinkingBlock thinking={block.thinking} label={block.label} summaries={block.summaries} />,
       });
       return;
     }

@@ -8,7 +8,7 @@ import { createConnection } from 'node:net';
 const rendererPort = process.env.DESKTOP_RENDERER_PORT || '4316';
 const rendererUrl = `http://127.0.0.1:${rendererPort}`;
 const repoRoot = resolve(import.meta.dirname, '..', '..');
-const defaultDevRuntimeImage = 'docker.io/vercantes/camelai-openwork:20260403-v4';
+const defaultDevRuntimeImage = 'docker.io/vercantes/camelai-openwork:20260404-v5';
 const electronUserDataDir =
   process.env.DESKTOP_USER_DATA_DIR || join(homedir(), 'Library/Application Support/Electron');
 const electronDataDir = resolve(electronUserDataDir, 'data');
@@ -177,6 +177,7 @@ mkdirSync(resolve(electronRuntimeDir, 'shared/logs'), { recursive: true });
 mkdirSync(resolve(electronRuntimeDir, 'shared/runtime'), { recursive: true });
 
 await runAndWait('node', ['desktop/scripts/prepare-runtime-helper.mjs']);
+await runAndWait('node', ['desktop/scripts/prepare-control-plane-deps.mjs']);
 
 await stopExistingRuntime(electronRuntimeDir);
 

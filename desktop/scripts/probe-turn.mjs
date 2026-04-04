@@ -11,6 +11,18 @@ function now() {
   return Date.now();
 }
 
+function isCodexTurnCompleted(event) {
+  return (
+    event &&
+    typeof event === "object" &&
+    event.method === "turn/completed" &&
+    event.params &&
+    typeof event.params === "object" &&
+    event.params.turn &&
+    typeof event.params.turn === "object"
+  );
+}
+
 function startBackend() {
   return spawn('bun', ['run', 'desktop/backend/server.ts'], {
     cwd: process.cwd(),
@@ -167,13 +179,24 @@ async function main() {
         continue;
       }
 
-      if (event.type === 'sdk_event') {
+      if (event.type === 'runtime_event') {
         sdkEvents.push({
           at: now(),
           event: event.event,
         });
 
         const sdkEvent = event.event;
+        if (
+          sdkEvent &&
+          typeof sdkEvent === "object" &&
+          sdkEvent.method === "item/agentMessage/delta" &&
+          sdkEvent.params &&
+          typeof sdkEvent.params === "object" &&
+          typeof sdkEvent.params.delta === "string"
+        ) {
+          assistantText += sdkEvent.params.delta;
+        }
+
         if (
           sdkEvent &&
           typeof sdkEvent === 'object' &&
@@ -195,6 +218,28 @@ async function main() {
 
           fail(
             `Desktop turn failed with SDK result subtype ${sdkEvent.subtype || 'unknown'}.`,
+          );
+          return;
+        }
+
+        if (isCodexTurnCompleted(sdkEvent)) {
+          const turn = sdkEvent.params.turn;
+          if (turn.status === "completed") {
+            finish({
+              ok: true,
+              threadId,
+              prompt: PROMPT,
+              assistantText,
+              runtimeStates,
+              diagnostics,
+              result: sdkEvent,
+              stderr: stderr.trim() || undefined,
+            });
+            return;
+          }
+
+          fail(
+            `Desktop turn failed with Codex turn status ${turn.status || "unknown"}.`,
           );
           return;
         }

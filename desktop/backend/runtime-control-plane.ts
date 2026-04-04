@@ -1,4 +1,5 @@
 import { RuntimeManager } from "./runtime";
+import type { DesktopProviderDefinition } from "./provider-types";
 import { logDesktop } from "./log";
 import type { SDKEvent } from "../../src/lib/streaming";
 
@@ -8,6 +9,8 @@ interface ControlPlaneEvent {
   message?: string;
   event?: SDKEvent;
   text?: string;
+  result?: string;
+  sessionId?: string;
 }
 
 interface ResultLikeEvent extends SDKEvent {
@@ -17,17 +20,21 @@ interface ResultLikeEvent extends SDKEvent {
 
 export interface StreamRuntimeChatOptions {
   runtimeManager: RuntimeManager;
+  provider: DesktopProviderDefinition;
   threadId: string;
   content: string;
   model: string;
   turnId: string;
-  onEvent?: (event: SDKEvent) => void;
+  sessionId?: string | null;
+  onEvent?: (event: unknown) => void;
   onText: (delta: string) => void;
+  onSessionId?: (sessionId: string) => void;
 }
 
 export interface StreamRuntimeChatResult {
   finalText: string;
   model: string;
+  sessionId?: string | null;
 }
 
 function extractAssistantText(
@@ -71,7 +78,7 @@ function pushAssistantText(
     if (delta) {
       logDesktop(
         "runtime-bridge",
-        "http_stream:assistant_text_delta",
+        "assistant_text_delta",
         {
           turnId,
           threadId,
@@ -85,7 +92,7 @@ function pushAssistantText(
   } else if (!knownText) {
     logDesktop(
       "runtime-bridge",
-      "http_stream:assistant_text_initial",
+      "assistant_text_initial",
       {
         turnId,
         threadId,
@@ -100,42 +107,32 @@ function pushAssistantText(
   state.latestAssistantText = nextText;
 }
 
-export async function streamRuntimeChat({
+async function streamClaudeRuntimeChat({
   runtimeManager,
+  provider,
   threadId,
   content,
   model,
   turnId,
+  sessionId,
   onEvent,
   onText,
+  onSessionId,
 }: StreamRuntimeChatOptions): Promise<StreamRuntimeChatResult> {
-  logDesktop(
-    "runtime-bridge",
-    "send_message:start",
-    {
-      turnId,
-      threadId,
-      model,
-      length: content.length,
-    },
-    "debug",
-  );
-
   const response = await fetch(
     `${runtimeManager.getControlPlaneHttpUrl()}/turn`,
     {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      threadId,
-      model,
-      content,
-      env: {
-        DESKTOP_ANTHROPIC_MODEL: model,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
       },
-    }),
+      body: JSON.stringify({
+        threadId,
+        model,
+        content,
+        sessionId,
+        env: provider.buildTurnEnv(model),
+      }),
     },
   );
 
@@ -189,6 +186,7 @@ export async function streamRuntimeChat({
         logDesktop("runtime-bridge", "http_stream:event_error", {
           turnId,
           threadId,
+          provider: provider.id,
           model,
           error,
         });
@@ -204,6 +202,39 @@ export async function streamRuntimeChat({
         continue;
       }
 
+      if (
+        event.type === "assistant_delta" &&
+        typeof event.text === "string"
+      ) {
+        state.streamedText += event.text;
+        onText(event.text);
+        continue;
+      }
+
+      if (event.type === "session_id" && typeof event.sessionId === "string") {
+        onSessionId?.(event.sessionId);
+        continue;
+      }
+
+      if (event.type === "runtime_event" && event.event) {
+        onEvent?.(event.event);
+        continue;
+      }
+
+      if (event.type === "result") {
+        if (typeof event.sessionId === "string") {
+          onSessionId?.(event.sessionId);
+        }
+        if (typeof event.result === "string" && event.result.trim()) {
+          state.finalAssistantText = event.result;
+        }
+        return {
+          finalText: state.finalAssistantText || state.streamedText,
+          model,
+          sessionId: event.sessionId ?? sessionId ?? null,
+        };
+      }
+
       if (event.type !== "sdk_event" || !event.event) {
         continue;
       }
@@ -215,6 +246,7 @@ export async function streamRuntimeChat({
         {
           turnId,
           threadId,
+          provider: provider.id,
           model,
           eventType: sdkEvent.type,
           subtype: "subtype" in sdkEvent ? sdkEvent.subtype : undefined,
@@ -255,7 +287,7 @@ export async function streamRuntimeChat({
         const resultEvent = sdkEvent as ResultLikeEvent;
         if (sdkEvent.subtype && sdkEvent.subtype !== "success") {
           const errorMessage = [
-            `Claude SDK execution failed (${sdkEvent.subtype}).`,
+            `${provider.label} execution failed (${sdkEvent.subtype}).`,
             ...(Array.isArray(resultEvent.errors) ? resultEvent.errors : []),
           ]
             .filter(Boolean)
@@ -271,27 +303,54 @@ export async function streamRuntimeChat({
           state.finalAssistantText = resultEvent.result;
         }
 
-        const finalText = state.finalAssistantText || state.streamedText;
-        logDesktop(
-          "runtime-bridge",
-          "send_message:success",
-          {
-            turnId,
-            threadId,
-            model,
-            finalTextLength: finalText.length,
-          },
-          "debug",
-        );
         return {
-          finalText,
+          finalText: state.finalAssistantText || state.streamedText,
           model,
+          sessionId: sessionId ?? null,
         };
       }
     }
   }
 
   throw new Error(
-    "Control plane stream ended before the Claude SDK reported a result.",
+    `Control plane stream ended before ${provider.label} reported a result.`,
   );
+}
+
+export async function streamRuntimeChat(
+  options: StreamRuntimeChatOptions,
+): Promise<StreamRuntimeChatResult> {
+  const { provider, threadId, model, turnId, content } = options;
+
+  logDesktop(
+    "runtime-bridge",
+    "send_message:start",
+    {
+      turnId,
+      threadId,
+      provider: provider.id,
+      model,
+      length: content.length,
+      transport: provider.transport,
+    },
+    "debug",
+  );
+
+  const result = await streamClaudeRuntimeChat(options);
+
+  logDesktop(
+    "runtime-bridge",
+    "send_message:success",
+    {
+      turnId,
+      threadId,
+      provider: provider.id,
+      model: result.model,
+      finalTextLength: result.finalText.length,
+      sessionId: result.sessionId,
+    },
+    "debug",
+  );
+
+  return result;
 }

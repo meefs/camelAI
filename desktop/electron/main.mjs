@@ -59,8 +59,9 @@ function finishStartupProbe(ok, detail = {}) {
         events: startupEvents,
         latestSnapshotSummary: latestSnapshot
           ? {
-              authSource: latestSnapshot.authSource,
-              hasClaudeAuth: latestSnapshot.hasClaudeAuth,
+              provider: latestSnapshot.provider,
+              authSource: latestSnapshot.auth.source,
+              hasAuth: latestSnapshot.auth.available,
               runtimeState: latestSnapshot.runtimeStatus.state,
               activeThreadId: latestSnapshot.activeThreadId,
             }
@@ -138,8 +139,9 @@ function publishBackendEvent(event) {
   if (event.type === 'snapshot') {
     latestSnapshot = event.snapshot;
     recordStartup('backend_snapshot', {
-      authSource: event.snapshot.authSource,
-      hasClaudeAuth: event.snapshot.hasClaudeAuth,
+      provider: event.snapshot.provider,
+      authSource: event.snapshot.auth.source,
+      hasAuth: event.snapshot.auth.available,
       runtimeState: event.snapshot.runtimeStatus.state,
     });
     if (
@@ -238,7 +240,8 @@ async function ensureDirectDesktopService() {
   });
   latestSnapshot = directDesktopService.getSnapshot();
   recordStartup('direct_service_snapshot_loaded', {
-    authSource: latestSnapshot.authSource,
+    provider: latestSnapshot.provider,
+    authSource: latestSnapshot.auth.source,
     runtimeState: latestSnapshot.runtimeStatus.state,
   });
 }

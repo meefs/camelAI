@@ -47,15 +47,12 @@ function formatTime(timestamp: number): string {
 
 function authLabel(snapshot: DesktopSnapshot | null): string {
   if (!snapshot) {
-    return "Checking Claude auth";
+    return "Checking auth";
   }
-  if (!snapshot?.hasClaudeAuth) {
-    return "Claude auth missing";
+  if (!snapshot.auth.available) {
+    return snapshot.auth.label;
   }
-  if (snapshot.authSource === "claude-ai") {
-    return `${snapshot.model} via Claude.ai`;
-  }
-  return `${snapshot.model} via API key`;
+  return `${snapshot.model} via ${snapshot.auth.label}`;
 }
 
 function runtimeDetail(snapshot: DesktopSnapshot | null): string | null {
@@ -73,7 +70,7 @@ function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
 
   return (
     snapshot.runtimeStatus.state !== "running" ||
-    snapshot.authSource === "missing"
+    !snapshot.auth.available
   );
 }
 

@@ -11,8 +11,9 @@ interface DesktopShellApi {
   sendEvent: (event: DesktopClientEvent) => void;
   reportReady: (payload: {
     activeThreadId: string | null;
-    authSource: DesktopSnapshot['authSource'];
-    hasClaudeAuth: boolean;
+    provider: DesktopSnapshot['provider'];
+    authSource: DesktopSnapshot['auth']['source'];
+    hasAuth: boolean;
     runtimeState: DesktopSnapshot['runtimeStatus']['state'];
   }) => void;
   onEvent: (listener: (event: DesktopServerEvent) => void) => () => void;

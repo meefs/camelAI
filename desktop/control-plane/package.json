@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.89"
+    "@anthropic-ai/claude-agent-sdk": "0.2.89",
+    "@openai/codex": "^0.116.0"
+  },
+  "optionalDependencies": {
+    "@openai/codex-linux-arm64": "npm:@openai/codex@^0.116.0-linux-arm64"
   }
 }

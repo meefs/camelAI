@@ -1,9 +1,30 @@
 import type { ContentBlock } from "../../src/types";
 
-export type DesktopModel = "sonnet" | "opus";
+export type DesktopProvider = "claude" | "codex";
+export type DesktopModel = string;
+export type DesktopAuthSource = "provider-account" | "api-key" | "missing";
+
+export interface DesktopProviderOption {
+  id: DesktopProvider;
+  label: string;
+}
+
+export interface DesktopModelOption {
+  id: DesktopModel;
+  label: string;
+  provider: DesktopProvider;
+}
+
+export interface DesktopAuthState {
+  provider: DesktopProvider;
+  available: boolean;
+  source: DesktopAuthSource;
+  label: string;
+}
 
 export interface DesktopThread {
   id: string;
+  provider: DesktopProvider;
   title: string;
   createdAt: number;
   updatedAt: number;
@@ -37,9 +58,11 @@ export interface DesktopSnapshot {
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
   activeThreadId: string | null;
-  model: string;
-  hasClaudeAuth: boolean;
-  authSource: "claude-ai" | "api-key" | "missing";
+  provider: DesktopProvider;
+  availableProviders: DesktopProviderOption[];
+  model: DesktopModel;
+  availableModels: DesktopModelOption[];
+  auth: DesktopAuthState;
   runtimeStatus: DesktopRuntimeStatus;
 }
 
@@ -55,9 +78,17 @@ export type DesktopClientEvent =
       title?: string;
     }
   | {
+      type: "select_thread";
+      threadId: string;
+    }
+  | {
       type: "send_message";
       threadId: string;
       content: string;
+    }
+  | {
+      type: "set_provider";
+      provider: DesktopProvider;
     }
   | {
       type: "set_model";
@@ -83,8 +114,9 @@ export type DesktopServerEvent =
       delta: string;
     }
   | {
-      type: "sdk_event";
+      type: "runtime_event";
       threadId: string;
+      provider: DesktopProvider;
       event: unknown;
     }
   | {
