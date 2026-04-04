@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { AlertCircle, Loader2, Plus } from "lucide-react";
 import { ContentBlockRenderer } from "@/components/message-bubble";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -41,6 +48,7 @@ import { DesktopSidebar } from "./desktop-sidebar";
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const RUNTIME_BOOT_SCREEN_DELAY_MS = 450;
+const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
 
 function getActiveThread(
   snapshot: DesktopSnapshot | null,
@@ -74,6 +82,10 @@ function runtimeDetail(snapshot: DesktopSnapshot | null): string | null {
   }
   const detail = snapshot.runtimeStatus.detail?.trim();
   return detail || null;
+}
+
+function getDraftKey(threadId: string | null): string {
+  return threadId ?? EMPTY_THREAD_DRAFT_KEY;
 }
 
 function shouldShowRuntimeNotice(snapshot: DesktopSnapshot | null): boolean {
@@ -284,20 +296,137 @@ function MessageRow({ message }: { message: Message }) {
   );
 }
 
+const MemoizedMessageRow = memo(
+  MessageRow,
+  (prev, next) => prev.message === next.message,
+);
+
+function TranscriptPane({
+  rawMessages,
+}: {
+  rawMessages: Message[];
+}) {
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const messages = useMemo(
+    () =>
+      mergeTaskNotifications(
+        mergeTeammateMessages(normalizeToolResultMessages(rawMessages)),
+      ),
+    [rawMessages],
+  );
+
+  useEffect(() => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    const frameId = window.requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [messages]);
+
+  return (
+    <div
+      ref={messagesViewportRef}
+      role="region"
+      aria-label="Chat messages"
+      className="flex flex-1 flex-col overflow-y-auto overflow-x-hidden"
+    >
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pb-6 pt-2 md:px-6">
+        {messages.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center py-12">
+            <div className="max-w-md text-center">
+              <h2 className="text-xl font-semibold">Start a new chat</h2>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                This desktop renderer now uses the same sidebar, header, and
+                composer primitives as the web app. The remaining gap is deeper
+                message rendering parity for SDK tool events.
+              </p>
+            </div>
+          </div>
+        ) : (
+          messages.map((message) => (
+            <MemoizedMessageRow key={message.id} message={message} />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+const MemoizedTranscriptPane = memo(
+  TranscriptPane,
+  (prev, next) => prev.rawMessages === next.rawMessages,
+);
+
+function Composer({
+  activeThreadId,
+  initialDraft,
+  isStreaming,
+  onDraftChange,
+  onSubmitMessage,
+}: {
+  activeThreadId: string | null;
+  initialDraft: string;
+  isStreaming: boolean;
+  onDraftChange: (threadId: string | null, draft: string) => void;
+  onSubmitMessage: (threadId: string, content: string) => void;
+}) {
+  const [draft, setDraft] = useState(initialDraft);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    setDraft(initialDraft);
+  }, [activeThreadId, initialDraft]);
+
+  const handleChange = useCallback((value: string) => {
+    setDraft(value);
+    onDraftChange(activeThreadId, value);
+  }, [activeThreadId, onDraftChange]);
+
+  const handleSubmit = useCallback(() => {
+    if (!activeThreadId || !draft.trim() || isStreaming) return;
+    onSubmitMessage(activeThreadId, draft);
+    setDraft("");
+    onDraftChange(activeThreadId, "");
+  }, [activeThreadId, draft, isStreaming, onDraftChange, onSubmitMessage]);
+
+  return (
+    <PromptInput
+      className="shrink-0"
+      value={draft}
+      onChange={handleChange}
+      onSubmit={handleSubmit}
+      placeholder="Type a message..."
+      isAssistantRunning={isStreaming}
+      textareaRef={composerTextareaRef}
+    />
+  );
+}
+
+const MemoizedComposer = memo(
+  Composer,
+  (prev, next) =>
+    prev.activeThreadId === next.activeThreadId &&
+    prev.initialDraft === next.initialDraft &&
+    prev.isStreaming === next.isStreaming &&
+    prev.onDraftChange === next.onDraftChange &&
+    prev.onSubmitMessage === next.onSubmitMessage,
+);
+
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [uiMessagesByThread, setUiMessagesByThread] = useState<
     Record<string, Message[]>
   >({});
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
   const [runtimeBootDelayElapsed, setRuntimeBootDelayElapsed] = useState(false);
-  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const composerDraftsRef = useRef<Record<string, string>>({});
   const fallbackSocketRef = useRef<WebSocket | null>(null);
-  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
   const reportedReadyRef = useRef(false);
 
@@ -309,13 +438,6 @@ export function App() {
     if (!activeThreadId) return [];
     return uiMessagesByThread[activeThreadId] ?? [];
   }, [activeThreadId, uiMessagesByThread]);
-  const messages = useMemo(
-    () =>
-      mergeTaskNotifications(
-        mergeTeammateMessages(normalizeToolResultMessages(rawMessages)),
-      ),
-    [rawMessages],
-  );
   const isStreaming = rawMessages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
@@ -394,27 +516,6 @@ export function App() {
         return;
       }
 
-      if (event.type === "assistant_delta") {
-        setUiMessagesByThread((current) => {
-          const threadMessages = current[event.threadId];
-          if (!threadMessages) return current;
-          const nextThreadMessages = threadMessages.map((message) => {
-            if (message.id !== event.messageId) return message;
-            if (Array.isArray(message.content)) return message;
-            return {
-              ...message,
-              content: `${message.content}${event.delta}`,
-              isStreaming: true,
-            };
-          });
-          return {
-            ...current,
-            [event.threadId]: nextThreadMessages,
-          };
-        });
-        return;
-      }
-
       if (event.type === "runtime_event") {
         setUiMessagesByThread((current) => {
           const threadMessages = current[event.threadId] ?? [];
@@ -462,12 +563,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const viewport = messagesViewportRef.current;
-    if (!viewport) return;
-    viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
     if (!shouldDelayRuntimeBootScreen) {
       setRuntimeBootDelayElapsed(false);
       return;
@@ -497,7 +592,7 @@ export function App() {
     });
   }, [snapshot]);
 
-  function sendEvent(event: DesktopClientEvent) {
+  const sendEvent = useCallback((event: DesktopClientEvent) => {
     if (desktopShell?.sendEvent) {
       desktopShell.sendEvent(event);
       return;
@@ -506,40 +601,45 @@ export function App() {
     const socket = fallbackSocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(event));
-  }
+  }, []);
 
-  function handleCreateThread() {
+  const handleCreateThread = useCallback(() => {
     sendEvent({ type: "create_thread" });
-  }
+  }, [sendEvent]);
 
-  function handleSelectThread(threadId: string) {
+  const handleSelectThread = useCallback((threadId: string) => {
     setActiveThreadId(threadId);
     sendEvent({ type: "select_thread", threadId });
-  }
+  }, [sendEvent]);
 
-  function handleSetModel(model: string) {
+  const handleSetModel = useCallback((model: string) => {
     if (!snapshot?.availableModels.some((option) => option.id === model)) {
       return;
     }
     sendEvent({ type: "set_model", model: model as DesktopModel });
-  }
+  }, [sendEvent, snapshot?.availableModels]);
 
-  function handleSetProvider(provider: string) {
+  const handleSetProvider = useCallback((provider: string) => {
     if (!snapshot?.availableProviders.some((option) => option.id === provider)) {
       return;
     }
     sendEvent({ type: "set_provider", provider: provider as DesktopProvider });
-  }
+  }, [sendEvent, snapshot?.availableProviders]);
 
-  function handleSubmit() {
-    if (!activeThreadId || !draft.trim() || isStreaming) return;
+  const initialDraft = composerDraftsRef.current[getDraftKey(activeThreadId)] ?? "";
+
+  const handleDraftChange = useCallback((threadId: string | null, draft: string) => {
+    composerDraftsRef.current[getDraftKey(threadId)] = draft;
+  }, []);
+
+  const handleSubmitMessage = useCallback((threadId: string, content: string) => {
+    composerDraftsRef.current[getDraftKey(threadId)] = "";
     sendEvent({
       type: "send_message",
-      threadId: activeThreadId,
-      content: draft,
+      threadId,
+      content,
     });
-    setDraft("");
-  }
+  }, [sendEvent]);
 
   return (
     <TooltipProvider>
@@ -647,34 +747,7 @@ export function App() {
                   />
                 ) : (
                   <>
-                    <div
-                      ref={messagesViewportRef}
-                      role="region"
-                      aria-label="Chat messages"
-                      className="flex flex-1 flex-col overflow-y-auto overflow-x-hidden"
-                    >
-                      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pb-6 pt-2 md:px-6">
-                        {messages.length === 0 ? (
-                          <div className="flex flex-1 items-center justify-center py-12">
-                            <div className="max-w-md text-center">
-                              <h2 className="text-xl font-semibold">
-                                Start a new chat
-                              </h2>
-                              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                                This desktop renderer now uses the same sidebar,
-                                header, and composer primitives as the web app. The
-                                remaining gap is deeper message rendering parity for
-                                SDK tool events.
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          messages.map((message) => (
-                            <MessageRow key={message.id} message={message} />
-                          ))
-                        )}
-                      </div>
-                    </div>
+                    <MemoizedTranscriptPane rawMessages={rawMessages} />
 
                     <div className="sticky bottom-0 z-20 shrink-0">
                       <div
@@ -684,14 +757,12 @@ export function App() {
                       <div className="bg-background">
                         <div className="px-4 pb-4 pt-2">
                           <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
-                            <PromptInput
-                              className="shrink-0"
-                              value={draft}
-                              onChange={setDraft}
-                              onSubmit={handleSubmit}
-                              placeholder="Type a message..."
-                              isAssistantRunning={isStreaming}
-                              textareaRef={composerTextareaRef}
+                            <MemoizedComposer
+                              activeThreadId={activeThreadId}
+                              initialDraft={initialDraft}
+                              isStreaming={isStreaming}
+                              onDraftChange={handleDraftChange}
+                              onSubmitMessage={handleSubmitMessage}
                             />
                           </div>
                         </div>

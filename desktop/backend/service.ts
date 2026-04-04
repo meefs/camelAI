@@ -393,28 +393,6 @@ export class DesktopService {
             ),
           );
         },
-        onText: (delta) => {
-          if (provider.id !== "claude") {
-            return;
-          }
-          this.store.appendToMessage(threadId, assistant.id, delta);
-          logDesktop(
-            "service",
-            "send_message:assistant_delta",
-            {
-              turnId,
-              threadId,
-              deltaLength: delta.length,
-            },
-            "debug",
-          );
-          this.broadcast({
-            type: "assistant_delta",
-            threadId,
-            messageId: assistant.id,
-            delta,
-          });
-        },
       });
 
       const latestAssistant = this.store

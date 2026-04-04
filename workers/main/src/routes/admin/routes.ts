@@ -819,6 +819,11 @@ routes.get(
         orgs = orgs.filter((org) => !spamOrgIds.has(org.id));
       }
 
+      // Top-org ranking depends on member_count being current. The org directory
+      // row can be present before membership deltas finish indexing, so force the
+      // membership snapshot to catch up before we sort or return counts.
+      await adminIndex.getUsersByOrgIds(orgs.map((org) => org.id));
+
       // Two-pass: rank without windows first, then fetch windows for top-N only.
       const rankingUsage = await fetchOrgUsageAnalytics(
         c.env,

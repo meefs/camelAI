@@ -981,12 +981,21 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
           o.archived,
           o.billing_status,
           o.created_by,
-          o.member_count,
+          CASE
+            WHEN COALESCE(m.indexed_member_count, 0) > COALESCE(o.member_count, 0)
+              THEN m.indexed_member_count
+            ELSE COALESCE(o.member_count, 0)
+          END AS member_count,
           o.workspace_count,
           u.email AS creator_email,
           u.name AS creator_name
         FROM orgs o
         LEFT JOIN users u ON o.created_by = u.id
+        LEFT JOIN (
+          SELECT org_id, COUNT(*) AS indexed_member_count
+          FROM org_memberships
+          GROUP BY org_id
+        ) m ON m.org_id = o.id
       `)
     ).map((row: any) => ({
       ...row,
@@ -1007,6 +1016,11 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const base = `
       FROM orgs o
       LEFT JOIN users u ON o.created_by = u.id
+      LEFT JOIN (
+        SELECT org_id, COUNT(*) AS indexed_member_count
+        FROM org_memberships
+        GROUP BY org_id
+      ) m ON m.org_id = o.id
     `;
     const conditions: string[] = [];
     const params: any[] = [];
@@ -1050,7 +1064,11 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             o.archived,
             o.billing_status,
             o.created_by,
-            o.member_count,
+            CASE
+              WHEN COALESCE(m.indexed_member_count, 0) > COALESCE(o.member_count, 0)
+                THEN m.indexed_member_count
+              ELSE COALESCE(o.member_count, 0)
+            END AS member_count,
             o.workspace_count,
             u.email AS creator_email,
             u.name AS creator_name
@@ -1099,12 +1117,21 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             o.archived,
             o.billing_status,
             o.created_by,
-            o.member_count,
+            CASE
+              WHEN COALESCE(m.indexed_member_count, 0) > COALESCE(o.member_count, 0)
+                THEN m.indexed_member_count
+              ELSE COALESCE(o.member_count, 0)
+            END AS member_count,
             o.workspace_count,
             u.email AS creator_email,
             u.name AS creator_name
           FROM orgs o
           LEFT JOIN users u ON o.created_by = u.id
+          LEFT JOIN (
+            SELECT org_id, COUNT(*) AS indexed_member_count
+            FROM org_memberships
+            GROUP BY org_id
+          ) m ON m.org_id = o.id
           WHERE o.id IN (${normalizedOrgIds.map(() => '?').join(', ')})
           ORDER BY o.created_at DESC, o.id ASC
         `,

@@ -21,6 +21,7 @@
 # production
 /build
 /dist
+/dist/desktop/
 
 # misc
 .DS_Store
@@ -85,6 +86,7 @@ sandbox/create-worker/renderer-dist/
 desktop/.local/
 desktop/app-resources/
 desktop/renderer-dist/
+dist/desktop/
 desktop/guest/node_modules/
 desktop/vm-helper/.build/
 desktop/build/icon.icns

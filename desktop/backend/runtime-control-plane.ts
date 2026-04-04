@@ -27,7 +27,6 @@ export interface StreamRuntimeChatOptions {
   turnId: string;
   sessionId?: string | null;
   onEvent?: (event: unknown) => void;
-  onText: (delta: string) => void;
   onSessionId?: (sessionId: string) => void;
 }
 
@@ -61,7 +60,6 @@ function pushAssistantText(
   nextText: string,
   turnId: string,
   threadId: string,
-  onText: (delta: string) => void,
 ): void {
   if (!nextText) {
     return;
@@ -87,7 +85,6 @@ function pushAssistantText(
         "debug",
       );
       state.streamedText += delta;
-      onText(delta);
     }
   } else if (!knownText) {
     logDesktop(
@@ -101,7 +98,6 @@ function pushAssistantText(
       "debug",
     );
     state.streamedText += nextText;
-    onText(nextText);
   }
 
   state.latestAssistantText = nextText;
@@ -116,7 +112,6 @@ async function streamClaudeRuntimeChat({
   turnId,
   sessionId,
   onEvent,
-  onText,
   onSessionId,
 }: StreamRuntimeChatOptions): Promise<StreamRuntimeChatResult> {
   const response = await fetch(
@@ -198,7 +193,10 @@ async function streamClaudeRuntimeChat({
         typeof event.text === "string" &&
         !state.streamedText
       ) {
-        pushAssistantText(state, event.text, turnId, threadId, onText);
+        // Keep the text only for final-text reconstruction. Claude UI updates
+        // now flow through the structured runtime_event path to avoid a second
+        // frontend update per chunk.
+        pushAssistantText(state, event.text, turnId, threadId);
         continue;
       }
 
@@ -207,7 +205,6 @@ async function streamClaudeRuntimeChat({
         typeof event.text === "string"
       ) {
         state.streamedText += event.text;
-        onText(event.text);
         continue;
       }
 
@@ -269,7 +266,6 @@ async function streamClaudeRuntimeChat({
         typeof sdkEvent.event.delta.text === "string"
       ) {
         state.streamedText += sdkEvent.event.delta.text;
-        onText(sdkEvent.event.delta.text);
         continue;
       }
 
@@ -278,7 +274,7 @@ async function streamClaudeRuntimeChat({
           sdkEvent.message?.content,
         );
         if (nextAssistantText) {
-          pushAssistantText(state, nextAssistantText, turnId, threadId, onText);
+          pushAssistantText(state, nextAssistantText, turnId, threadId);
         }
         continue;
       }
