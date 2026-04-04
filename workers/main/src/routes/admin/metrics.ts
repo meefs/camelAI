@@ -32,20 +32,20 @@ export interface DailySpendAnalyticsHourlyRow {
   non_spam_spend_usd: number;
 }
 
-export interface DailySpendAnalyticsModelRow {
+export interface DailySpendAnalyticsHostModelRow {
   model: string;
   spend_usd: number;
   requests: number;
 }
 
-export interface DailySpendAnalyticsOrgRow {
+export interface DailySpendAnalyticsHostOrgRow {
   org_id: string;
   spend_usd: number;
   requests: number;
   is_spam: boolean;
 }
 
-export interface DailySpendAnalyticsResponse {
+export interface DailySpendAnalyticsHostResponse {
   date: string;
   is_partial: boolean;
   total_spend_usd: number;
@@ -56,10 +56,26 @@ export interface DailySpendAnalyticsResponse {
   non_spam_org_count: number;
   previous_day: DailySpendAnalyticsSummary;
   hourly_series: DailySpendAnalyticsHourlyRow[];
-  model_breakdown: DailySpendAnalyticsModelRow[];
-  top_orgs: DailySpendAnalyticsOrgRow[];
+  model_breakdown: DailySpendAnalyticsHostModelRow[];
+  top_orgs: DailySpendAnalyticsHostOrgRow[];
   other_orgs_spend_usd: number;
   other_orgs_count: number;
+}
+
+export interface DailySpendDashboardModelRow extends DailySpendAnalyticsHostModelRow {
+  pct_of_total: number;
+}
+
+export interface DailySpendDashboardOrgRow extends DailySpendAnalyticsHostOrgRow {
+  org_name: string;
+  org_slug: string | null;
+  billing_plan: string;
+}
+
+export interface DailySpendDashboardResponse
+  extends Omit<DailySpendAnalyticsHostResponse, 'model_breakdown' | 'top_orgs'> {
+  model_breakdown: DailySpendDashboardModelRow[];
+  top_orgs: DailySpendDashboardOrgRow[];
 }
 
 async function fetchSandboxHostJson<T>(
@@ -131,8 +147,8 @@ export async function fetchDailySpendAnalytics(
     orgIds: string[];
     topOrgsLimit: number;
   },
-): Promise<DailySpendAnalyticsResponse> {
-  return fetchSandboxHostJson<DailySpendAnalyticsResponse>(
+): Promise<DailySpendAnalyticsHostResponse> {
+  return fetchSandboxHostJson<DailySpendAnalyticsHostResponse>(
     env,
     '/v1/usage/analytics/daily-spend/query',
     {

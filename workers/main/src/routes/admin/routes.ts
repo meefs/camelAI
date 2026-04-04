@@ -84,6 +84,7 @@ import {
   normalizeBillingStatus,
   normalizeInternalDomains,
   type OrgUsageAnalyticsItem,
+  type DailySpendDashboardResponse,
 } from './metrics.js';
 import { parseDateOnlyUtc } from '../../admin-dashboard-metrics.js';
 import {
@@ -834,7 +835,7 @@ routes.get(
         orgIds: includedOrgs.map((org) => org.id),
       });
 
-      return c.json({
+      const response: DailySpendDashboardResponse = {
         ...dailySpend,
         model_breakdown: dailySpend.model_breakdown.map((item) => ({
           ...item,
@@ -852,7 +853,9 @@ routes.get(
             billing_plan: toDailySpendBillingPlan(org?.billing_status),
           };
         }),
-      });
+      };
+
+      return c.json(response);
     } catch (error) {
       return c.json(
         { error: error instanceof Error ? error.message : 'Failed to load daily spend metrics' },
