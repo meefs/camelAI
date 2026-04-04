@@ -63,7 +63,7 @@ RUN npm install -g wrangler --loglevel=warn
 RUN npm install -g @mariozechner/pi-coding-agent --loglevel=warn
 
 # Directories (R2 mount points are bind-mounted from host)
-RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/create-worker \
+RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /etc/codex /usr/local/lib/create-worker \
     /mnt/user-uploads /mnt/user-outputs && \
     chown 1001:1001 /mnt/user-uploads /mnt/user-outputs
 
@@ -87,6 +87,7 @@ COPY sandbox/team-poll-controller.mjs /opt/chiridion/team-poll-controller.mjs
 COPY sandbox/team-poll-state.mjs /opt/chiridion/team-poll-state.mjs
 COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
 COPY sandbox/skills/ /etc/claude-code/.claude/skills/
+RUN ln -s /etc/claude-code/.claude/skills /etc/codex/skills
 COPY sandbox/create-worker/ /usr/local/lib/create-worker/
 RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     chmod 644 /opt/chiridion/team-poll-controller.mjs && \
