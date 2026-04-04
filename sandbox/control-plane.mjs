@@ -806,6 +806,7 @@ class CodexAppServerClient {
 
   refreshConfig() {
     const mergedEnv = buildThreadScopedEnv(this.sessionEnv, this.threadId);
+    this.mergedEnv = mergedEnv;
     this.baseUrl = mergedEnv.OPENAI_BASE_URL || 'http://127.0.0.1/api/openai/v1';
     this.mcpServerUrl = mergedEnv.MCP_SERVER_URL || '';
     this.screenshotSessionToken =
@@ -817,11 +818,50 @@ class CodexAppServerClient {
   }
 
   updateSessionEnv(sessionEnv = {}) {
+    const previousBaseUrl = this.baseUrl;
+    const previousMcpServerUrl = this.mcpServerUrl;
+    const previousScreenshotSessionToken = this.screenshotSessionToken;
+    const previousEnvSignature = JSON.stringify({
+      CLOUDFLARE_API_BASE_URL: this.mergedEnv?.CLOUDFLARE_API_BASE_URL || '',
+      CLOUDFLARE_API_TOKEN: this.mergedEnv?.CLOUDFLARE_API_TOKEN || '',
+      CLOUDFLARE_ACCOUNT_ID: this.mergedEnv?.CLOUDFLARE_ACCOUNT_ID || '',
+      WRANGLER_SEND_METRICS: this.mergedEnv?.WRANGLER_SEND_METRICS || '',
+      DATA_PROXY_URL: this.mergedEnv?.DATA_PROXY_URL || '',
+      OPENAI_PROXY_URL: this.mergedEnv?.OPENAI_PROXY_URL || '',
+      OPENAI_BASE_URL: this.mergedEnv?.OPENAI_BASE_URL || '',
+      OPENAI_API_KEY: this.mergedEnv?.OPENAI_API_KEY || '',
+      MCP_SERVER_URL: this.mergedEnv?.MCP_SERVER_URL || '',
+      RESEND_PROXY_URL: this.mergedEnv?.RESEND_PROXY_URL || '',
+      THREAD_ID: this.mergedEnv?.THREAD_ID || '',
+      CHIRIDION_APP_SESSION: this.mergedEnv?.CHIRIDION_APP_SESSION || '',
+    });
     this.sessionEnv = {
       ...this.sessionEnv,
       ...sessionEnv,
     };
     this.refreshConfig();
+    const nextEnvSignature = JSON.stringify({
+      CLOUDFLARE_API_BASE_URL: this.mergedEnv?.CLOUDFLARE_API_BASE_URL || '',
+      CLOUDFLARE_API_TOKEN: this.mergedEnv?.CLOUDFLARE_API_TOKEN || '',
+      CLOUDFLARE_ACCOUNT_ID: this.mergedEnv?.CLOUDFLARE_ACCOUNT_ID || '',
+      WRANGLER_SEND_METRICS: this.mergedEnv?.WRANGLER_SEND_METRICS || '',
+      DATA_PROXY_URL: this.mergedEnv?.DATA_PROXY_URL || '',
+      OPENAI_PROXY_URL: this.mergedEnv?.OPENAI_PROXY_URL || '',
+      OPENAI_BASE_URL: this.mergedEnv?.OPENAI_BASE_URL || '',
+      OPENAI_API_KEY: this.mergedEnv?.OPENAI_API_KEY || '',
+      MCP_SERVER_URL: this.mergedEnv?.MCP_SERVER_URL || '',
+      RESEND_PROXY_URL: this.mergedEnv?.RESEND_PROXY_URL || '',
+      THREAD_ID: this.mergedEnv?.THREAD_ID || '',
+      CHIRIDION_APP_SESSION: this.mergedEnv?.CHIRIDION_APP_SESSION || '',
+    });
+    const configChanged =
+      previousBaseUrl !== this.baseUrl ||
+      previousMcpServerUrl !== this.mcpServerUrl ||
+      previousScreenshotSessionToken !== this.screenshotSessionToken ||
+      previousEnvSignature !== nextEnvSignature;
+    if (configChanged && this.child && this.activeTurns.size === 0) {
+      this.dispose();
+    }
   }
 
   dispose() {
@@ -915,7 +955,7 @@ class CodexAppServerClient {
     const child = spawn(this.codexExecutable, ['app-server'], {
       cwd: process.cwd(),
       env: {
-        ...process.env,
+        ...this.mergedEnv,
         CODEX_HOME: this.codexHome,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
