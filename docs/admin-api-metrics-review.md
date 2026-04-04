@@ -85,11 +85,11 @@ GROUP BY org_id
 HAVING COUNT(*) > 0 AND MAX(limit_usd) <= 0.01
 ```
 
-Orgs that have **never** had `SetSpendLimits` called won't have rows in `org_effective_limits` (they only get rows during rebuild or when limits are explicitly set). The plan defines spam as orgs where all effective windows have `limit_usd <= 0.01`, and the default limits are `$50/$200` — so missing orgs are correctly non-spam. But this means the analytics store's `org_effective_limits` table is only populated for orgs that existed at last startup (via rebuild) or had limits explicitly changed since. Any org created after the last restart that never had `SetSpendLimits` called will have no rows.
+Orgs that have **never** had `SetSpendLimits` called won't have rows in `org_effective_limits` until defaults are seeded or synced. The plan defines spam as orgs where all effective windows have `limit_usd <= 0.01`, and the default limits are `$25/$100` — so missing orgs are correctly non-spam. The runtime now resyncs analytics effective-limit rows on startup when the default-limit version changes, so existing orgs can pick up new defaults without a full analytics rebuild.
 
-This is currently correct behavior (new orgs have default high limits = not spam), but it's fragile. If an admin later tries to query effective limits for a specific new org via the analytics store, they'll get nothing.
+This is currently correct behavior (new orgs have default high limits = not spam), but unsynced analytics rows can still be stale between seeding events.
 
-**Recommendation:** Add a comment documenting this invariant, or populate default limits on first `RecordUsage` for an org.
+**Recommendation:** Keep the startup resync/versioning path alongside first-usage default seeding so analytics rows stay aligned with current defaults.
 
 ---
 

@@ -361,7 +361,7 @@ Response shape:
     {
       "label": "5h",
       "window_ms": 18000000,
-      "limit_usd": 50,
+      "limit_usd": 25,
       "spent_usd": 12.34,
       "exceeded": false
     }
@@ -373,8 +373,8 @@ Notes:
 
 - `windows` come from the sandbox-host usage store.
 - Default limits, if no overrides exist, are currently:
-  - `5h` / `$50`
-  - `7d` / `$200`
+  - `5h` / `$25`
+  - `7d` / `$100`
 
 ### `GET /api/admin/orgs/:id/usage/limits`
 
@@ -388,7 +388,7 @@ Response shape:
   "limits": [
     {
       "window": 18000000000000,
-      "limit_usd": 50,
+      "limit_usd": 25,
       "label": "5h"
     }
   ]

@@ -2,7 +2,7 @@
 
 ## Problem
 
-When a user hits their org spend limit, the agent silently stops responding. The raw error (`API Error: 429 {"error":"Usage limit exceeded: $50.21 spent in the last 5h (limit $50.00). Please try again later."}`) only appears after a page reload. The current generic error banner gives no actionable guidance.
+When a user hits their org spend limit, the agent silently stops responding. The raw error (`API Error: 429 {"error":"Usage limit exceeded: $25.21 spent in the last 5h (limit $25.00). Please try again later."}`) only appears after a page reload. The current generic error banner gives no actionable guidance.
 
 **Current experience:**
 1. Agent stops mid-turn with no feedback
@@ -37,7 +37,7 @@ sandbox-host (Go)                control-plane.mjs              ChatThreadDO    
 Parse the error string in Chat.tsx to detect usage limit errors. The format is stable and controlled by our own sandbox-host code:
 
 ```
-Usage limit exceeded: $50.21 spent in the last 5h (limit $50.00). Please try again later.
+Usage limit exceeded: $25.21 spent in the last 5h (limit $25.00). Please try again later.
 ```
 
 Regex pattern:
@@ -60,7 +60,7 @@ Replace the current generic error banner with a **context-aware** display. When 
 │                                                                          │
 │   ⏸  Usage limit reached                                            ✕   │
 │                                                                          │
-│   You've used $50.21 of your $50.00 limit in the last 5 hours.          │
+│   You've used $25.21 of your $25.00 limit in the last 5 hours.          │
 │   Your usage will refresh soon — you can continue chatting then.         │
 │                                                                          │
 │   ┌──────────────────────────────────────────────────────────────────┐   │

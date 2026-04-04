@@ -529,7 +529,7 @@ describe('admin API metrics routes', () => {
                 {
                   label: '5h',
                   window_ms: 18_000_000,
-                  limit_usd: 50,
+                  limit_usd: 25,
                   spent_usd: 1.25,
                   exceeded: false,
                 },
@@ -565,7 +565,7 @@ describe('admin API metrics routes', () => {
             {
               label: '5h',
               window_ms: 18_000_000,
-              limit_usd: 50,
+              limit_usd: 25,
               spent_usd: 1.25,
               exceeded: false,
             },
@@ -810,7 +810,7 @@ describe('admin API metrics routes', () => {
                       {
                         label: '7d',
                         window_ms: 604_800_000,
-                        limit_usd: 200,
+                        limit_usd: 100,
                         spent_usd: 20,
                         exceeded: false,
                       },
@@ -854,7 +854,7 @@ describe('admin API metrics routes', () => {
             {
               label: '7d',
               window_ms: 604_800_000,
-              limit_usd: 200,
+              limit_usd: 100,
               spent_usd: 20,
               exceeded: false,
             },

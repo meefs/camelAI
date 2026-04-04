@@ -25,8 +25,8 @@ type SpendLimit struct {
 
 // DefaultSpendLimits are enforced for all orgs unless overridden.
 var DefaultSpendLimits = []SpendLimit{
-	{Window: 5 * time.Hour, LimitUSD: 50, Label: "5h"},
-	{Window: 7 * 24 * time.Hour, LimitUSD: 200, Label: "7d"},
+	{Window: 5 * time.Hour, LimitUSD: 25, Label: "5h"},
+	{Window: 7 * 24 * time.Hour, LimitUSD: 100, Label: "7d"},
 }
 
 // WindowSpend holds the spend for a single rolling window.
@@ -51,6 +51,7 @@ type UsageStore struct {
 
 const analyticsDirName = "_analytics"
 const analyticsSchemaVersion = "1"
+const analyticsMetaSchemaVersionKey = "schema_version"
 
 // NewUsageStore creates a new per-org usage store rooted at baseDir.
 func NewUsageStore(baseDir string) (*UsageStore, error) {
@@ -200,7 +201,8 @@ func (u *UsageStore) analyticsNeedsRebuild() (bool, error) {
 	u.analyticsMu.RLock()
 	err := u.analytics.QueryRowContext(
 		ctx,
-		`SELECT value FROM analytics_meta WHERE key = 'schema_version'`,
+		`SELECT value FROM analytics_meta WHERE key = ?`,
+		analyticsMetaSchemaVersionKey,
 	).Scan(&schemaVersion)
 	u.analyticsMu.RUnlock()
 	if err == nil {
@@ -238,21 +240,22 @@ func (u *UsageStore) markAnalyticsSchemaCurrentLocked() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	return markAnalyticsSchemaCurrentTx(ctx, u.analytics, analyticsSchemaVersion)
+	return writeAnalyticsMetaValueTx(ctx, u.analytics, analyticsMetaSchemaVersionKey, analyticsSchemaVersion)
 }
 
-func markAnalyticsSchemaCurrentTx(ctx context.Context, exec interface {
+func writeAnalyticsMetaValueTx(ctx context.Context, exec interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, version string) error {
+}, key string, value string) error {
 	_, err := exec.ExecContext(
 		ctx,
 		`INSERT INTO analytics_meta (key, value)
-		 VALUES ('schema_version', ?)
+		 VALUES (?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		version,
+		key,
+		value,
 	)
 	if err != nil {
-		return fmt.Errorf("write analytics schema version: %w", err)
+		return fmt.Errorf("write analytics meta value for %s: %w", key, err)
 	}
 	return nil
 }
@@ -302,6 +305,18 @@ func ensureAnalyticsDefaultLimitsTx(
 	return nil
 }
 
+func openSQLiteDB(dbPath string) (*sql.DB, error) {
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetConnMaxIdleTime(2 * time.Minute)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	return db, nil
+}
+
 // getDB returns or creates the SQLite connection for an org.
 func (u *UsageStore) getDB(orgID string) (*sql.DB, error) {
 	u.mu.Lock()
@@ -317,14 +332,10 @@ func (u *UsageStore) getDB(orgID string) (*sql.DB, error) {
 	}
 
 	dbPath := filepath.Join(orgDir, "usage.db")
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openSQLiteDB(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open org usage db: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetConnMaxIdleTime(2 * time.Minute)
-	db.SetConnMaxLifetime(30 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -498,6 +509,20 @@ func (u *UsageStore) GetOrgSpend(orgID string) (OrgSpend, error) {
 	return spend, err
 }
 
+func loadSpendLimitsFromDB(ctx context.Context, db *sql.DB) ([]SpendLimit, error) {
+	var limitsJSON string
+	err := db.QueryRowContext(ctx, `SELECT limits_json FROM spend WHERE id = 1`).Scan(&limitsJSON)
+	if err != nil || limitsJSON == "" {
+		return DefaultSpendLimits, nil
+	}
+
+	var limits []SpendLimit
+	if json.Unmarshal([]byte(limitsJSON), &limits) != nil || len(limits) == 0 {
+		return DefaultSpendLimits, nil
+	}
+	return limits, nil
+}
+
 // GetSpendLimits returns the effective spend limits for an org.
 // Returns per-org overrides if set, otherwise DefaultSpendLimits.
 func (u *UsageStore) GetSpendLimits(orgID string) ([]SpendLimit, error) {
@@ -512,17 +537,7 @@ func (u *UsageStore) GetSpendLimits(orgID string) ([]SpendLimit, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var limitsJSON string
-	err = db.QueryRowContext(ctx, `SELECT limits_json FROM spend WHERE id = 1`).Scan(&limitsJSON)
-	if err != nil || limitsJSON == "" {
-		return DefaultSpendLimits, nil
-	}
-
-	var limits []SpendLimit
-	if json.Unmarshal([]byte(limitsJSON), &limits) != nil || len(limits) == 0 {
-		return DefaultSpendLimits, nil
-	}
-	return limits, nil
+	return loadSpendLimitsFromDB(ctx, db)
 }
 
 // SetSpendLimits sets per-org spend limit overrides. Pass nil to revert to defaults.
@@ -1079,7 +1094,7 @@ func (u *UsageStore) rebuildAnalyticsIndex() error {
 		}
 	}
 
-	if err := markAnalyticsSchemaCurrentTx(ctx, tx, analyticsSchemaVersion); err != nil {
+	if err := writeAnalyticsMetaValueTx(ctx, tx, analyticsMetaSchemaVersionKey, analyticsSchemaVersion); err != nil {
 		return err
 	}
 

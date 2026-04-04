@@ -111,10 +111,10 @@ func TestCheckSpendLimitsDefault(t *testing.T) {
 		}
 	}
 
-	// Add $51 of usage — should exceed the 5h/$50 window.
+	// Add $26 of usage — should exceed the 5h/$25 window.
 	if err := store.RecordUsage(UsageRecord{
 		OrgID: "org-1", Model: "claude-opus-4-6",
-		InputTokens: 100000, OutputTokens: 50000, CostUSD: 51.0,
+		InputTokens: 100000, OutputTokens: 50000, CostUSD: 26.0,
 	}); err != nil {
 		t.Fatalf("record usage: %v", err)
 	}
@@ -129,11 +129,11 @@ func TestCheckSpendLimitsDefault(t *testing.T) {
 	if exc.Label != "5h" {
 		t.Errorf("expected 5h window exceeded, got %s", exc.Label)
 	}
-	if exc.SpentUSD != 51.0 {
-		t.Errorf("expected $51 spent, got %f", exc.SpentUSD)
+	if exc.SpentUSD != 26.0 {
+		t.Errorf("expected $26 spent, got %f", exc.SpentUSD)
 	}
 
-	// The 7d window should also show $51 spent but not be exceeded (limit $200).
+	// The 7d window should also show $26 spent but not be exceeded (limit $100).
 	var weeklyWindow *WindowSpend
 	for i := range windows {
 		if windows[i].Label == "7d" {
@@ -144,10 +144,10 @@ func TestCheckSpendLimitsDefault(t *testing.T) {
 		t.Fatal("expected 7d window in results")
 	}
 	if weeklyWindow.Exceeded {
-		t.Error("7d window should not be exceeded at $51")
+		t.Error("7d window should not be exceeded at $26")
 	}
-	if weeklyWindow.SpentUSD != 51.0 {
-		t.Errorf("expected $51 in 7d window, got %f", weeklyWindow.SpentUSD)
+	if weeklyWindow.SpentUSD != 26.0 {
+		t.Errorf("expected $26 in 7d window, got %f", weeklyWindow.SpentUSD)
 	}
 }
 
@@ -202,7 +202,7 @@ func TestCustomSpendLimits(t *testing.T) {
 		t.Fatalf("expected defaults after clear, got %d limits", len(limits))
 	}
 
-	// $11 is under the default 5h/$50 limit.
+	// $11 is under the default 5h/$25 limit.
 	exc, _, _ = store.CheckSpendLimits("org-1")
 	if exc != nil {
 		t.Fatalf("expected no exceeded window with default limits, got %+v", exc)
@@ -686,8 +686,8 @@ func TestCustomOverrideLimitsNotClobberedByDefaultSeeding(t *testing.T) {
 	}
 
 	// The org should still be classified as spam (all limits <= 0.01).
-	// Before the fix, default 5h/$50 and 7d/$200 rows would be added,
-	// making MAX(limit_usd) = 200 and misclassifying the org as non-spam.
+	// Before the fix, default 5h/$25 and 7d/$100 rows would be added,
+	// making MAX(limit_usd) = 100 and misclassifying the org as non-spam.
 	orgIDs, err := store.ListSpamOrgIDs()
 	if err != nil {
 		t.Fatalf("list spam org ids: %v", err)

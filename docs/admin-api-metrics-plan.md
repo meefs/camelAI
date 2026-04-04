@@ -158,7 +158,7 @@ Important data-model notes from this repo:
 - Workspaces belong to orgs.
 - Threads belong to workspaces and orgs; author is `created_by`.
 - Apps are `worker_scripts`; author is `created_by`; visibility is `is_public`.
-- Usage limits currently exist as effective per-org windows, with defaults of `5h/$50` and `7d/$200` if no override exists.
+- Usage limits currently exist as effective per-org windows, with defaults of `5h/$25` and `7d/$100` if no override exists.
 - Spam orgs are defined here as orgs where **every effective usage window has `limit_usd <= 0.01`**.
 
 ## Centralized Analytics Design Decision
