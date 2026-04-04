@@ -1031,6 +1031,7 @@ class CodexAppServerClient {
           threadId: existingThreadId,
           cwd: process.cwd(),
           approvalPolicy: 'never',
+          sandbox: 'danger-full-access',
           model: options.model,
           personality: 'none',
         });
@@ -1048,7 +1049,7 @@ class CodexAppServerClient {
     const response = await this.request('thread/start', {
       cwd: process.cwd(),
       approvalPolicy: 'never',
-      sandbox: 'workspace-write',
+      sandbox: 'danger-full-access',
       model: options.model,
       personality: 'none',
     });
