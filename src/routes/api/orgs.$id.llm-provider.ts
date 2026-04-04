@@ -2,10 +2,15 @@ import type { Route } from './+types/orgs.$id.llm-provider';
 import { requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { encryptCredentials, decryptCredentials } from '@/lib/integration-crypto';
+import {
+  buildPublicLlmProviderConfig,
+  parseStoredLlmProviderConfig,
+  stringifyStoredLlmProviderConfig,
+  keyHint,
+} from '@/lib/llm-provider-config';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
 const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock'];
-
 const VALID_AWS_REGIONS = [
   'us-east-1',
   'us-east-2',
@@ -22,11 +27,6 @@ const VALID_AWS_REGIONS = [
   'ca-central-1',
 ];
 
-function keyHint(key: string): string {
-  if (key.length <= 8) return key.slice(0, 4) + '...';
-  return key.slice(0, 8) + '...';
-}
-
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const orgId = params.id;
   await requireOrgAdmin(request, context, orgId);
@@ -40,34 +40,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return Response.json({ config: null });
   }
 
-  const config = JSON.parse(record.config) as Record<string, unknown>;
-
-  // Decrypt to get key hint only
-  let hint = '********';
-  try {
-    const creds = await decryptCredentials<Record<string, string>>(
-      record.credentials_encrypted,
-      env.INTEGRATION_SECRET_KEY
-    );
-    const primaryKey =
-      record.provider === 'anthropic'
-        ? creds.api_key
-        : creds.bearer_token;
-    if (primaryKey) {
-      hint = keyHint(primaryKey);
-    }
-  } catch {
-    // If decryption fails, show generic hint
-  }
-
-  const publicConfig: LlmProviderConfigPublic = {
-    provider: record.provider as LlmProvider,
-    config: { aws_region: config.aws_region as string | undefined },
-    key_hint: hint,
-    created_by: record.created_by,
-    created_at: record.created_at,
-    updated_at: record.updated_at,
-  };
+  const publicConfig: LlmProviderConfigPublic = await buildPublicLlmProviderConfig(
+    record,
+    env.INTEGRATION_SECRET_KEY
+  );
 
   return Response.json({ config: publicConfig });
 }
@@ -100,23 +76,37 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       );
     }
 
+    const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+
     if (provider === 'anthropic') {
       const apiKey = (body.api_key as string)?.trim();
-      if (!apiKey) {
-        return Response.json({ error: 'API key is required' }, { status: 400 });
-      }
-      if (!apiKey.startsWith('sk-ant-')) {
+      const config = stringifyStoredLlmProviderConfig({});
+      const existing = await orgStub.getLlmProviderConfig();
+
+      if (apiKey && !apiKey.startsWith('sk-ant-')) {
         return Response.json(
           { error: 'Invalid Anthropic API key format. Keys should start with sk-ant-' },
           { status: 400 }
         );
       }
 
-      const encrypted = await encryptCredentials({ api_key: apiKey }, env.INTEGRATION_SECRET_KEY);
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-      await orgStub.setLlmProviderConfig(provider, encrypted, '{}', authContext.user.id);
+      if (apiKey) {
+        const encrypted = await encryptCredentials({ api_key: apiKey }, env.INTEGRATION_SECRET_KEY);
+        await orgStub.setLlmProviderConfig(provider, encrypted, config, authContext.user.id);
+        return Response.json({ success: true, key_hint: keyHint(apiKey) });
+      }
 
-      return Response.json({ success: true, key_hint: keyHint(apiKey) });
+      if (!existing || existing.provider !== 'anthropic') {
+        return Response.json({ error: 'API key is required' }, { status: 400 });
+      }
+
+      await orgStub.setLlmProviderConfig(
+        provider,
+        existing.credentials_encrypted,
+        config,
+        authContext.user.id
+      );
+      return Response.json({ success: true });
     }
 
     if (provider === 'bedrock') {
@@ -130,8 +120,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         );
       }
 
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-      const config = JSON.stringify({ aws_region: awsRegion });
+      const config = stringifyStoredLlmProviderConfig({ aws_region: awsRegion });
 
       if (bearerToken) {
         // New key provided — encrypt and save
@@ -179,7 +168,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         record.credentials_encrypted,
         env.INTEGRATION_SECRET_KEY
       );
-      const config = JSON.parse(record.config) as Record<string, unknown>;
+      const config = parseStoredLlmProviderConfig(record.config);
 
       if (record.provider === 'anthropic') {
         // Test with a lightweight count_tokens call
@@ -215,7 +204,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
       if (record.provider === 'bedrock') {
         // Test Bedrock API key by listing foundation models
-        const region = (config.aws_region as string) || 'us-east-1';
+        const region = config.aws_region || 'us-east-1';
         const resp = await fetch(
           `https://bedrock.${region}.amazonaws.com/foundation-models?byProvider=anthropic`,
           {

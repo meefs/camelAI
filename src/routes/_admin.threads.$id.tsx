@@ -48,15 +48,46 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   if (intent === 'updateThread') {
     const title = formData.get('title') as string;
+    const model = formData.get('model');
     const orgId = formData.get('orgId') as string;
     if (!title?.trim()) {
       return { error: 'Thread title is required' };
+    }
+    if (model !== null && model !== 'sonnet' && model !== 'opus') {
+      return { error: 'Invalid thread model' };
     }
     if (!orgId) {
       return { error: 'Org ID is required' };
     }
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-    await stub.updateThread(threadId, title.trim(), 'system-admin');
+    await stub.adminUpdateThread(
+      threadId,
+      {
+        title: title.trim(),
+        ...(model === 'sonnet' || model === 'opus' ? { model } : {}),
+      },
+      'system-admin'
+    );
+    try {
+      const env = getEnv(context);
+      if (typeof env.CHAT_THREAD?.get !== 'function' || typeof env.CHAT_THREAD.idFromName !== 'function') {
+        return { success: true };
+      }
+      const chatThread = env.CHAT_THREAD.get(
+        env.CHAT_THREAD.idFromName(threadId)
+      ) as unknown as {
+        setTitle(title: string): Promise<void>;
+        setModel(model: 'sonnet' | 'opus'): Promise<void>;
+        refreshRunnerConfig(): Promise<void>;
+      };
+      await chatThread.setTitle(title.trim());
+      if (model === 'sonnet' || model === 'opus') {
+        await chatThread.setModel(model);
+        await chatThread.refreshRunnerConfig();
+      }
+    } catch (error) {
+      console.error('Failed to refresh runner after admin thread model update:', error);
+    }
     return { success: true };
   }
 
@@ -80,6 +111,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     id: thread.id,
     title: thread.title,
     created_by: thread.created_by,
+    model: thread.model,
     created_at: thread.created_at,
     updated_at: thread.updated_at,
   };
@@ -167,6 +199,10 @@ export default function AdminThreadDetailPage() {
                     </dd>
                   </div>
                   <div>
+                    <dt className="text-sm font-medium text-muted-foreground">Model</dt>
+                    <dd className="text-sm capitalize">{thread.model}</dd>
+                  </div>
+                  <div>
                     <dt className="text-sm font-medium text-muted-foreground">Created</dt>
                     <dd className="text-sm">{formatTimestamp(thread.created_at)}</dd>
                   </div>
@@ -236,7 +272,7 @@ export default function AdminThreadDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Edit Thread</CardTitle>
-                <CardDescription>Update thread title</CardDescription>
+                <CardDescription>Update thread title and Claude model</CardDescription>
               </CardHeader>
               <CardContent>
                 <ThreadEditForm thread={thread} orgId={org_id} />

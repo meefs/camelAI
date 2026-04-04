@@ -16,6 +16,9 @@ import { Hono } from 'hono';
 import { openApi } from 'hono-zod-openapi';
 import { z } from 'zod';
 import type { Env } from '../../types.js';
+import {
+  buildPublicLlmProviderConfig,
+} from '../../../../../src/lib/llm-provider-config.js';
 import type {
   UserFilters,
   ThreadFilters,
@@ -43,6 +46,7 @@ import {
   AppSchema,
   AddMemberBodySchema,
   AddMemberResponseSchema,
+  UpdateThreadBodySchema,
   BlockSignupIpBodySchema,
   BlockedSignupIpSchema,
   KvEntrySchema,
@@ -206,6 +210,46 @@ function toDashboardTopOrgItem(
     spend_30d: usage?.spend_30d ?? 0,
     windows: usage?.windows ?? [],
   };
+}
+
+async function getAdminOrgLlmProvider(env: Env, orgId: string) {
+  const orgStub = getOrgStub(env, orgId);
+  const record = await orgStub.getLlmProviderConfig();
+  if (!record) return null;
+
+  return buildPublicLlmProviderConfig(record, env.INTEGRATION_SECRET_KEY);
+}
+
+async function notifyThreadMetadataChange(
+  env: Env,
+  threadId: string,
+  updates: { title?: string; model?: 'sonnet' | 'opus' }
+): Promise<void> {
+  if (!env.CHAT_THREAD || typeof env.CHAT_THREAD.get !== 'function' || typeof env.CHAT_THREAD.idFromName !== 'function') {
+    return;
+  }
+
+  try {
+    const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId)) as unknown as {
+      setTitle(title: string): Promise<void>;
+      setModel(model: 'sonnet' | 'opus'): Promise<void>;
+      refreshRunnerConfig(): Promise<void>;
+    };
+
+    if (updates.title) {
+      await chatThread.setTitle(updates.title);
+    }
+    if (updates.model) {
+      await chatThread.setModel(updates.model);
+      await chatThread.refreshRunnerConfig();
+    }
+  } catch (error) {
+    console.error('[admin api] failed to notify ChatThreadDO of thread metadata change', {
+      threadId,
+      updates,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function toDailySpendBillingPlan(status: string | null | undefined): string {
@@ -420,7 +464,10 @@ routes.get(
       return c.json({ error: 'Organization not found' }, 404);
     }
 
-    const activity = await adminIndex.getOrgRecentActivity(orgId);
+    const [activity, llmProvider] = await Promise.all([
+      adminIndex.getOrgRecentActivity(orgId),
+      getAdminOrgLlmProvider(c.env, orgId),
+    ]);
 
     return c.json({
       id: orgInfo.id,
@@ -431,6 +478,7 @@ routes.get(
       archived: orgInfo.archived,
       member_count: orgInfo.member_count ?? 0,
       workspace_count: orgInfo.workspace_count ?? 0,
+      llm_provider: llmProvider,
       threads: activity.threads,
       apps: activity.apps,
       threadCount: activity.threadCount,
@@ -607,12 +655,9 @@ routes.get(
 routes.patch(
   '/threads/:id',
   openApi({
-    summary: 'Update thread title or creator',
+    summary: 'Update thread title, model, or creator',
     request: {
-      json: z.object({
-        title: z.string().optional(),
-        created_by: z.string().optional(),
-      }),
+      json: UpdateThreadBodySchema,
     },
     responses: {
       200: ThreadSchema,
@@ -625,8 +670,8 @@ routes.patch(
     const threadId = c.req.param('id');
     const body = c.req.valid('json');
 
-    if (!body.title && !body.created_by) {
-      return c.json({ error: 'At least one of title or created_by is required' }, 400);
+    if (!body.title && !body.created_by && !body.model) {
+      return c.json({ error: 'At least one of title, created_by, or model is required' }, 400);
     }
 
     // Try AdminIndexDO first (fast single-SQL lookup)
@@ -636,7 +681,10 @@ routes.patch(
     if (threadContext) {
       const orgStub = getOrgStub(env, threadContext.org_id);
       const result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
-      if (result) return c.json(result);
+      if (result) {
+        await notifyThreadMetadataChange(env, threadId, body);
+        return c.json(result);
+      }
     }
 
     // Fallback: index may be stale — scan orgs via AdminIndexDO org list
@@ -644,7 +692,10 @@ routes.patch(
     for (const org of orgsResult.items) {
       const orgStub = getOrgStub(env, org.id);
       const result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
-      if (result) return c.json(result);
+      if (result) {
+        await notifyThreadMetadataChange(env, threadId, body);
+        return c.json(result);
+      }
     }
 
     return c.json({ error: 'Thread not found' }, 404);

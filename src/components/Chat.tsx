@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import type {
   Message,
   ContentBlock,
+  LlmModel,
   Thread,
   ToolResultBlock,
   ToolUseBlock,
@@ -79,6 +80,7 @@ import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';
 import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
 import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
+import { DEFAULT_LLM_MODEL } from '@/lib/llm-provider-config';
 import {
   loadDraft,
   removeDraft,
@@ -92,6 +94,7 @@ interface ChatProps {
   workspaceId: string;
   initialMessages?: Message[];
   threadTitle?: string | null;
+  threadModel?: LlmModel | null;
   initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
   initialActiveTabId?: string | null;
@@ -119,6 +122,7 @@ interface PendingNewThreadMessagePayload {
   message?: string;
   threadId?: string;
   threadTitle?: string;
+  threadModel?: LlmModel;
   workspaceId?: string;
   orgSlug?: string;
 }
@@ -876,6 +880,7 @@ export default function Chat({
   workspaceId,
   initialMessages,
   threadTitle,
+  threadModel,
   initialPreviewTarget,
   initialPreviewTabs,
   initialActiveTabId,
@@ -891,7 +896,11 @@ export default function Chat({
   const location = useLocation();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{
-    thread?: { id: string; title?: string };
+    thread?: { id: string; title?: string; model: LlmModel };
+    error?: string;
+  }>();
+  const updateThreadModelFetcher = useFetcher<{
+    thread?: { id: string; model: LlmModel };
     error?: string;
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
@@ -1185,6 +1194,9 @@ export default function Chat({
   const [welcomeInput, setWelcomeInput] = useState(() => (
     initialWelcomeInput ?? initialWelcomeDraft?.text ?? ''
   ));
+  const [selectedThreadModel, setSelectedThreadModel] = useState<LlmModel>(
+    threadModel ?? DEFAULT_LLM_MODEL
+  );
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? '');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -1434,6 +1446,10 @@ export default function Chat({
   useEffect(() => {
     setCurrentTitle(threadTitle);
   }, [threadTitle]);
+
+  useEffect(() => {
+    setSelectedThreadModel(threadModel ?? DEFAULT_LLM_MODEL);
+  }, [threadId, threadModel]);
 
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
@@ -2039,6 +2055,11 @@ export default function Chat({
       return;
     }
 
+    if (data.type === 'thread_model_updated' && (data.model === 'sonnet' || data.model === 'opus')) {
+      setSelectedThreadModel(data.model);
+      return;
+    }
+
     if (data.type === 'connection_setup_prompt' && data.requestId && data.integrationType) {
       setConnectionSetupPrompt({
         requestId: data.requestId as string,
@@ -2116,6 +2137,9 @@ export default function Chat({
       sessionStorage.removeItem(pendingMessageKey);
       if (pendingPayload.threadTitle) {
         setCurrentTitle(pendingPayload.threadTitle);
+      }
+      if (pendingPayload.threadModel) {
+        setSelectedThreadModel(pendingPayload.threadModel);
       }
       if (resolvedWorkspaceId) {
         pendingDeliveryDraftRef.current = {
@@ -2646,6 +2670,7 @@ export default function Chat({
       } else if (
         data.type === 'preview_state' ||
         data.type === 'title_updated' ||
+        data.type === 'thread_model_updated' ||
         data.type === 'connection_setup_prompt' ||
         data.type === 'bug_report_prompt'
       ) {
@@ -3288,6 +3313,7 @@ export default function Chat({
   const pendingNewChatRef = useRef<{
     finalContent: string;
     threadTitle?: string;
+    threadModel: LlmModel;
     draftText?: string;
     draftAttachments?: Attachment[];
   } | null>(null);
@@ -3298,7 +3324,7 @@ export default function Chat({
       const data = createThreadFetcher.data;
       if (data.thread && pendingNewChatRef.current) {
         // Thread created successfully - store message and navigate
-        const { finalContent, threadTitle, draftText, draftAttachments } = pendingNewChatRef.current;
+        const { finalContent, threadTitle, threadModel, draftText, draftAttachments } = pendingNewChatRef.current;
         const messageWithContext = finalContent;
 
         pendingDeliveryDraftRef.current = null;
@@ -3322,6 +3348,7 @@ export default function Chat({
               message: messageWithContext,
               threadId: data.thread.id,
               threadTitle,
+              threadModel,
               workspaceId: resolvedWorkspaceId,
               orgSlug: currentOrg?.slug,
             })
@@ -3355,6 +3382,37 @@ export default function Chat({
     }
   }, [createThreadFetcher.state, createThreadFetcher.data, navigate, resolvedWorkspaceId, currentOrg]);
 
+  useEffect(() => {
+    if (updateThreadModelFetcher.state !== 'idle' || !updateThreadModelFetcher.data) return;
+    if (updateThreadModelFetcher.data.error) {
+      setSelectedThreadModel(threadModel ?? DEFAULT_LLM_MODEL);
+      toast.error(updateThreadModelFetcher.data.error);
+      return;
+    }
+    if (updateThreadModelFetcher.data.thread?.model) {
+      setSelectedThreadModel(updateThreadModelFetcher.data.thread.model);
+      revalidator.revalidate();
+    }
+  }, [revalidator, threadModel, updateThreadModelFetcher.state, updateThreadModelFetcher.data]);
+
+  const handleThreadModelChange = useCallback((nextModel: LlmModel) => {
+    setSelectedThreadModel(nextModel);
+    if (!threadId) {
+      return;
+    }
+    updateThreadModelFetcher.submit(
+      {
+        intent: 'updateThreadModel',
+        threadId,
+        model: nextModel,
+      },
+      {
+        method: 'post',
+        action: `/chat/${threadId}`,
+      }
+    );
+  }, [threadId, updateThreadModelFetcher]);
+
   const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
     if (!resolvedWorkspaceId) {
       toast.error('No workspace selected');
@@ -3382,6 +3440,7 @@ export default function Chat({
     pendingNewChatRef.current = {
       finalContent: systemMessage,
       threadTitle,
+      threadModel: selectedThreadModel,
     };
 
     // Create thread with preview settings
@@ -3390,10 +3449,11 @@ export default function Chat({
         intent: 'createThread',
         initialTitle: threadTitle,
         previewApps: app.script_name,
+        model: selectedThreadModel,
       },
       { method: 'post', action: '/chat' }
     );
-  }, [hostname, orgSlug, resolvedWorkspaceId, createThreadFetcher, isCreatingThread]);
+  }, [hostname, orgSlug, resolvedWorkspaceId, createThreadFetcher, isCreatingThread, selectedThreadModel]);
 
   function startNewChat() {
     const currentWelcomeInput = welcomeInputRef.current;
@@ -3436,13 +3496,14 @@ export default function Chat({
     // Store pending message info for the effect to use after thread creation
     pendingNewChatRef.current = {
       finalContent,
+      threadModel: selectedThreadModel,
       draftText: currentWelcomeInput,
       draftAttachments: currentAttachments,
     };
 
     // Submit to route action to create thread
     createThreadFetcher.submit(
-      { intent: 'createThread', firstMessage: userMessage },
+      { intent: 'createThread', firstMessage: userMessage, model: selectedThreadModel },
       { method: 'post', action: '/chat' }
     );
   }
@@ -4235,6 +4296,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   onAttachmentRemove={handleAttachmentRemove}
                   contextUsedPercent={contextUsedPercent}
                   onCompact={handleCompactFromIndicator}
+                  model={selectedThreadModel}
+                  onModelChange={handleThreadModelChange}
+                  modelDisabled={loading || isStreaming || updateThreadModelFetcher.state !== 'idle'}
                   textareaRef={composerTextareaRef}
                 />
               </div>
@@ -4355,6 +4419,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   onFilesSelected={handleFilesSelected}
                   onAttachmentRemove={handleAttachmentRemove}
                   isCreatingThread={isCreatingThread || createThreadFetcher.state !== 'idle'}
+                  model={selectedThreadModel}
+                  onModelChange={handleThreadModelChange}
                 />
               </div>
             </>

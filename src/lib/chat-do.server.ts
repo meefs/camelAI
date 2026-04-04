@@ -9,6 +9,7 @@ import {
 import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
+import type { LlmModel } from '@/types';
 
 export interface ThreadPreviewState {
   target: PreviewTarget | null;
@@ -24,6 +25,7 @@ function toThread(orgThread: OrgThread): Thread {
     workspace_id: orgThread.workspace_id,
     title: orgThread.title,
     created_by: orgThread.created_by,
+    model: orgThread.model,
     created_at: orgThread.created_at,
     updated_at: orgThread.updated_at,
     user_message_count: orgThread.user_message_count ?? 0,
@@ -113,7 +115,8 @@ export async function createThread(
   workspaceId: string,
   title: string | undefined,
   createdBy?: string,
-  firstUserMessage?: string
+  firstUserMessage?: string,
+  model?: LlmModel
 ): Promise<Thread> {
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
@@ -121,7 +124,7 @@ export async function createThread(
     throw new Error('Workspace not found');
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const thread = await orgStub.createThread(workspaceId, title, createdBy, firstUserMessage);
+  const thread = await orgStub.createThread(workspaceId, title, createdBy, firstUserMessage, model);
   return toThread(thread);
 }
 
@@ -170,6 +173,37 @@ export async function updateThread(
   if (!existing || existing.workspace_id !== workspaceId) return null;
   const thread = await orgStub.updateThread(id, title);
   if (!thread) return null;
+  return toThread(thread);
+}
+
+export async function updateThreadModel(
+  context: AppLoadContext,
+  id: string,
+  model: LlmModel,
+  workspaceId: string
+): Promise<Thread | null> {
+  const env = getEnv(context);
+  const wsInfo = await getWorkspaceInfo(env, workspaceId);
+  if (!wsInfo) return null;
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  const existing = await orgStub.getThread(id);
+  if (!existing || existing.workspace_id !== workspaceId) return null;
+  if (existing.model === model) return toThread(existing);
+  const thread = await orgStub.updateThreadModel(id, model);
+  if (!thread) return null;
+  try {
+    if (typeof env.CHAT_THREAD?.get !== 'function' || typeof env.CHAT_THREAD.idFromName !== 'function') {
+      return toThread(thread);
+    }
+    const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(id)) as unknown as {
+      setModel(nextModel: LlmModel): Promise<void>;
+      refreshRunnerConfig(): Promise<void>;
+    };
+    await threadStub.setModel(model);
+    await threadStub.refreshRunnerConfig();
+  } catch (err) {
+    console.error('[updateThreadModel] Failed to notify ChatThreadDO:', err);
+  }
   return toThread(thread);
 }
 

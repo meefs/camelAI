@@ -6,11 +6,15 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
+import type { LlmModel } from '@/types';
 
 interface Thread {
   id: string;
   title: string;
   created_by: string;
+  model: LlmModel;
   created_at: number;
   updated_at: number;
 }
@@ -23,7 +27,14 @@ interface ThreadEditFormProps {
 export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [title, setTitle] = useState(thread.title);
+  const [model, setModel] = useState<LlmModel>(thread.model);
   const saving = fetcher.state !== 'idle';
+  const hasChanges = title.trim() !== thread.title || model !== thread.model;
+
+  useEffect(() => {
+    setTitle(thread.title);
+    setModel(thread.model);
+  }, [thread.title, thread.model]);
 
   // Handle response
   useEffect(() => {
@@ -39,7 +50,12 @@ export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     fetcher.submit(
-      { intent: 'updateThread', title: title.trim(), orgId },
+      {
+        intent: 'updateThread',
+        title: title.trim(),
+        ...(model !== thread.model ? { model } : {}),
+        orgId,
+      },
       { method: 'POST' }
     );
   };
@@ -57,7 +73,27 @@ export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
         />
       </div>
 
-      <Button type="submit" disabled={saving}>
+      <div className="space-y-2">
+        <Label htmlFor="thread-model">Claude Model</Label>
+        <Select value={model} onValueChange={(value) => setModel(value as LlmModel)}>
+          <SelectTrigger id="thread-model">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {LLM_MODEL_OPTIONS.map((option) => (
+              <SelectItem
+                key={option.value}
+                value={option.value}
+                description={option.description}
+              >
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <Button type="submit" disabled={saving || !hasChanges}>
         {saving ? 'Saving...' : 'Save Changes'}
       </Button>
     </form>

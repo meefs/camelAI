@@ -217,6 +217,12 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - The custom worker receives Anthropic-style `/v1/messages` payloads, rewrites them for Bedrock runtime, forwards the Gateway-managed `Authorization` header to Bedrock, and converts Bedrock eventstream frames (`{"bytes":"<base64>"}`) into Anthropic SSE before returning them to Gateway.
 - sandbox-host no longer performs Bedrock stream decoding or universal-endpoint provider wrapping for Claude traffic; it now does a dumb raw-body fallback from `custom-bedrock-provider` to `anthropic` on non-`2xx` responses.
 
+### Org BYOK Claude Model Selection
+
+- The web chat control plane now defaults Claude Agent SDK sessions to `sonnet` and does not configure a fallback model.
+- Org-scoped BYOK provider config (`llm_provider_config`) stores only provider-specific settings (`aws_region` for Bedrock) plus encrypted credentials. It does not store the Claude model.
+- Claude model selection (`sonnet` or `opus`) is stored per thread on the org `threads` record. The web chat welcome/composer UI can set it, qaml-backdoor thread detail can edit it, and the admin thread API exposes it on `PATCH /api/admin/threads/:id`.
+
 ### Virtual AI Binding
 
 - User uploaded workers can declare a native `ai` binding (for example `AI`) and the deploy pipeline rewrites it to an internal service entrypoint (`AIVirtualBinding`) scoped with `{orgId, workspaceId}` props.
@@ -509,7 +515,7 @@ curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<hos
 | GET    | `/dashboard/spam-summary` | Spam-tab entity snapshot plus usage analytics      |
 | GET    | `/threads`          | All threads across orgs                                    |
 | POST   | `/orgs/:id/members` | Add member to org (`{ user_id, role? }`)                   |
-| PATCH  | `/threads/:id`      | Update thread (`{ title?, created_by? }`)                  |
+| PATCH  | `/threads/:id`      | Update thread (`{ title?, created_by?, model? }`)          |
 | GET    | `/kv`               | List KV keys (`?prefix=` supported)                        |
 | GET    | `/kv/:key`          | Get KV value                                               |
 | GET    | `/email-domain-blocklist` | Get KV-backed email domain blocklist                  |

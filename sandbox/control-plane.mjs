@@ -1038,11 +1038,12 @@ class ChatSession {
 
     const systemAppend = buildSystemPromptAppend().trim();
 
+    const configuredModel = mergedEnv.CHIRIDION_CLAUDE_MODEL === 'opus' ? 'opus' : 'sonnet';
+
     const options = {
       // Force Node as the runtime executable — Bun has a bug that breaks the SDK.
       executable: 'node',
-      model: 'opus',
-      fallbackModel: 'sonnet',
+      model: configuredModel,
       includePartialMessages: true,
       permissionMode: 'bypassPermissions',
       allowUnsandboxedCommands: true,

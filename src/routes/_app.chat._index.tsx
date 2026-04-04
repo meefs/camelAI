@@ -170,13 +170,18 @@ export async function action({ request, context }: Route.ActionArgs) {
       const initialTitle = formData.get('initialTitle') as string | null;
       const firstMessage = formData.get('firstMessage') as string | null;
       const previewAppsRaw = formData.get('previewApps') as string | null;
+      const model = formData.get('model');
+      if (model !== null && model !== 'sonnet' && model !== 'opus') {
+        return Response.json({ error: 'Invalid Claude model' }, { status: 400 });
+      }
 
       const thread = await chatDO.createThread(
         context,
         workspaceId,
         initialTitle || undefined,
         userId,
-        firstMessage || undefined
+        firstMessage || undefined,
+        (model as 'sonnet' | 'opus' | null) ?? undefined
       );
 
       // Set preview apps if provided (for "chat with this app" flow)

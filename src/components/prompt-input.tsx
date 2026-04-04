@@ -14,6 +14,9 @@ import { VoiceRecorderBar } from '@/components/voice-recorder';
 import { cn } from '@/lib/utils';
 import { useVoiceRecording } from '@/hooks/use-voice-recording';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
+import type { LlmModel } from '@/types';
 
 interface PromptInputProps {
   value: string;
@@ -39,6 +42,9 @@ interface PromptInputProps {
   // Context indicator props
   contextUsedPercent?: number | null;
   onCompact?: () => void;
+  model?: LlmModel;
+  onModelChange?: (model: LlmModel) => void;
+  modelDisabled?: boolean;
   // Ref for programmatic focus
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
@@ -97,6 +103,9 @@ export function PromptInput({
   enableVoiceRecording = true,
   contextUsedPercent,
   onCompact,
+  model,
+  onModelChange,
+  modelDisabled = false,
   textareaRef,
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -374,6 +383,33 @@ export function PromptInput({
                       </TooltipTrigger>
                       <TooltipContent>Dictate</TooltipContent>
                     </Tooltip>
+                  )}
+
+                  {model && onModelChange && (
+                    <Select
+                      value={model}
+                      onValueChange={(value) => onModelChange(value as LlmModel)}
+                      disabled={modelDisabled}
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        aria-label="Claude model"
+                        className="rounded-full border-border bg-muted/40 px-3 text-muted-foreground hover:text-foreground"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent align="start">
+                        {LLM_MODEL_OPTIONS.map((option) => (
+                          <SelectItem
+                            key={option.value}
+                            value={option.value}
+                            description={option.description}
+                          >
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   )}
 
                   {contextUsedPercent != null && contextUsedPercent >= 50 && onCompact && (

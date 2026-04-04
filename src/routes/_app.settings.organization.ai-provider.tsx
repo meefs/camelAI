@@ -3,7 +3,7 @@ import { useLoaderData, useFetcher } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.ai-provider';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { decryptCredentials } from '@/lib/integration-crypto';
+import { buildPublicLlmProviderConfig } from '@/lib/llm-provider-config';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { Button } from '@/components/ui/button';
@@ -55,30 +55,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     return { config: null, orgId: authContext.currentOrg.id };
   }
 
-  // Decrypt to get key hint only
-  let hint = '********';
-  try {
-    const creds = await decryptCredentials<Record<string, string>>(
-      record.credentials_encrypted,
-      env.INTEGRATION_SECRET_KEY
-    );
-    const primaryKey =
-      record.provider === 'anthropic' ? creds.api_key : creds.bearer_token;
-    if (primaryKey) {
-      hint = primaryKey.length <= 8 ? primaryKey.slice(0, 4) + '...' : primaryKey.slice(0, 8) + '...';
-    }
-  } catch {
-    // If decryption fails, show generic hint
-  }
-
-  const config: LlmProviderConfigPublic = {
-    provider: record.provider as LlmProvider,
-    config: JSON.parse(record.config) as { aws_region?: string },
-    key_hint: hint,
-    created_by: record.created_by,
-    created_at: record.created_at,
-    updated_at: record.updated_at,
-  };
+  const config: LlmProviderConfigPublic = await buildPublicLlmProviderConfig(
+    record,
+    env.INTEGRATION_SECRET_KEY
+  );
 
   return { config, orgId: authContext.currentOrg.id };
 }
@@ -137,7 +117,11 @@ export default function AiProviderPage() {
     }
 
     if (selectedProvider === 'bedrock') {
-      if (!bearerToken && config?.provider === 'bedrock' && awsRegion === config.config.aws_region) {
+      if (
+        !bearerToken &&
+        config?.provider === 'bedrock' &&
+        awsRegion === config.config.aws_region
+      ) {
         // Nothing changed
         return;
       }
@@ -253,26 +237,28 @@ export default function AiProviderPage() {
           </div>
 
           {selectedProvider === 'anthropic' && (
-            <div className="space-y-2">
-              <Label htmlFor="anthropic-key">Anthropic API Key</Label>
-              <Input
-                id="anthropic-key"
-                type="password"
-                placeholder={config?.provider === 'anthropic' ? config.key_hint : 'sk-ant-...'}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Get your API key from{' '}
-                <a
-                  href="https://console.anthropic.com/settings/keys"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline"
-                >
-                  console.anthropic.com
-                </a>
-              </p>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="anthropic-key">Anthropic API Key</Label>
+                <Input
+                  id="anthropic-key"
+                  type="password"
+                  placeholder={config?.provider === 'anthropic' ? config.key_hint : 'sk-ant-...'}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Get your API key from{' '}
+                  <a
+                    href="https://console.anthropic.com/settings/keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline"
+                  >
+                    console.anthropic.com
+                  </a>
+                </p>
+              </div>
             </div>
           )}
 
@@ -318,6 +304,10 @@ export default function AiProviderPage() {
               </div>
             </div>
           )}
+
+          <p className="text-xs text-muted-foreground">
+            Claude model selection is configured per thread in the web chat UI.
+          </p>
 
           {fetcherData?.error && (
             <p className="text-sm text-destructive">{fetcherData.error}</p>

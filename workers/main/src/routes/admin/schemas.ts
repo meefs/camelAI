@@ -110,6 +110,7 @@ export const BlockSignupIpBodySchema = z.object({
 export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
+  model: z.enum(['sonnet', 'opus']).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -153,6 +154,19 @@ export const OrgSchema = z.object({
   workspace_count: z.number().int(),
 });
 
+export const LlmModelSchema = z.enum(['sonnet', 'opus']);
+
+export const LlmProviderConfigSchema = z.object({
+  provider: z.enum(['anthropic', 'bedrock']),
+  config: z.object({
+    aws_region: z.string().optional(),
+  }),
+  key_hint: z.string(),
+  created_by: z.string(),
+  created_at: z.number(),
+  updated_at: z.number(),
+});
+
 export const OrgDetailSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -162,6 +176,7 @@ export const OrgDetailSchema = z.object({
   archived: z.boolean(),
   member_count: z.number().int(),
   workspace_count: z.number().int(),
+  llm_provider: LlmProviderConfigSchema.nullable(),
   threads: z.array(z.any()),
   apps: z.array(z.any()),
   threadCount: z.number().int().nullable(),
@@ -171,6 +186,7 @@ export const OrgDetailSchema = z.object({
 export const ThreadSchema = z.object({
   id: z.string(),
   title: z.string().nullable().optional(),
+  model: LlmModelSchema,
   workspace_id: z.string(),
   created_at: z.number(),
   updated_at: z.number(),

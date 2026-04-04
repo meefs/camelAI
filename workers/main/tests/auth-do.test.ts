@@ -233,8 +233,26 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       expect(thread.title).toBe('Working on my-todo-app');
       expect(thread.first_user_message).toBeNull();
+      expect(thread.model).toBe('sonnet');
       expect(stored?.title).toBe('Working on my-todo-app');
       expect(stored?.first_user_message).toBeNull();
+      expect(stored?.model).toBe('sonnet');
+    });
+
+    it('persists per-thread Claude model changes', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus');
+      expect(thread.model).toBe('opus');
+
+      const updated = await orgStub.updateThreadModel(thread.id, 'sonnet', userId);
+      expect(updated?.model).toBe('sonnet');
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.model).toBe('sonnet');
     });
   });
 

@@ -3,6 +3,7 @@ export interface Thread {
   workspace_id: string;
   title: string;
   created_by: string;
+  model: LlmModel;
   created_at: number;
   updated_at: number;
   user_message_count: number;
@@ -462,6 +463,7 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 
 // LLM Provider BYOK types
 export type LlmProvider = 'anthropic' | 'bedrock';
+export type LlmModel = 'sonnet' | 'opus';
 
 export interface LlmProviderConfigPublic {
   provider: LlmProvider;

@@ -74,6 +74,7 @@ export interface AdminUserSummaryRow {
 export interface AdminThreadListRow {
   id: string;
   title: string | null;
+  model: string | null;
   workspace_id: string;
   created_at: number;
   updated_at: number;
@@ -326,6 +327,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
         title TEXT,
+        model TEXT,
         org_id TEXT,
         workspace_id TEXT,
         created_at INTEGER,
@@ -377,6 +379,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       CREATE INDEX IF NOT EXISTS idx_org_memberships_user_id ON org_memberships(user_id);
       CREATE INDEX IF NOT EXISTS idx_org_memberships_org_joined_at ON org_memberships(org_id, joined_at DESC);
     `);
+
+    try {
+      this.sql.exec('ALTER TABLE threads ADD COLUMN model TEXT');
+    } catch {}
 
     const appColumns = this.sql.exec<{ name: string }>('PRAGMA table_info(apps)').toArray();
     const hasAppId = appColumns.some((col) => col.name === 'app_id');
@@ -438,6 +444,14 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     if (!workspaceColumns.has('compute_tier')) {
       this.sql.exec("ALTER TABLE workspaces ADD COLUMN compute_tier TEXT DEFAULT 'standard'");
     }
+
+    const threadColumns = new Set(
+      this.sql.exec<{ name: string }>('PRAGMA table_info(threads)').toArray().map((col) => col.name)
+    );
+    if (!threadColumns.has('model')) {
+      this.sql.exec("ALTER TABLE threads ADD COLUMN model TEXT");
+    }
+    this.sql.exec("UPDATE threads SET model = 'sonnet' WHERE model IS NULL OR model = ''");
   }
 
   async isSignupIpBlocked(ip: string): Promise<boolean> {
@@ -582,10 +596,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         case 'thread_upsert': {
           const t = event.payload;
           this.sql.exec(`
-            INSERT INTO threads (id, title, org_id, workspace_id, created_at, updated_at, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at
-          `, t.id, t.title || null, t.org_id, t.workspace_id, t.created_at, t.updated_at, t.created_by);
+            INSERT INTO threads (id, title, model, org_id, workspace_id, created_at, updated_at, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title, model=excluded.model, updated_at=excluded.updated_at
+          `, t.id, t.title || null, t.model || 'sonnet', t.org_id, t.workspace_id, t.created_at, t.updated_at, t.created_by);
           this.sql.exec('UPDATE workspaces SET thread_count = (SELECT COUNT(*) FROM threads WHERE workspace_id = ?) WHERE id = ?', t.workspace_id, t.workspace_id);
           break;
         }
@@ -702,6 +716,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
           SELECT
             t.id,
             t.title,
+            COALESCE(t.model, 'sonnet') AS model,
             t.workspace_id,
             t.created_at,
             t.updated_at,
@@ -718,6 +733,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     ).map((row: any) => ({
       id: row.id,
       title: row.title ?? null,
+      model: row.model ?? 'sonnet',
       workspace_id: row.workspace_id,
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -1379,6 +1395,16 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     ).toArray()[0] as any;
 
     return row || null;
+  }
+
+  // Test helper RPC: simulate constructor migration path on an existing DO.
+  async remigrate(): Promise<void> {
+    this.migrate();
+  }
+
+  // Test helper RPC: force a thread model value for migration regression tests.
+  async setThreadModelForTest(threadId: string, model: string | null): Promise<void> {
+    this.sql.exec('UPDATE threads SET model = ? WHERE id = ?', model, threadId);
   }
 
   async getOrgRecentThreads(orgId: string, limit = 10) {

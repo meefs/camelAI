@@ -16,6 +16,7 @@ import {
   sanitizeGeneratedThreadTitle,
   THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
 } from '../../../src/lib/thread-title';
+import type { LlmModel } from '../../../src/types';
 
 export type PreviewTarget =
   | {
@@ -96,6 +97,7 @@ export interface BugReportCaptureResponse {
 export interface Thread {
   id: string;
   title: string;
+  model: 'sonnet' | 'opus';
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -1075,6 +1077,27 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Set thread title and broadcast to connected chat clients
   async setTitle(title: string): Promise<void> {
     this.broadcastRealtime({ type: 'title_updated', title });
+  }
+
+  async setModel(model: LlmModel): Promise<void> {
+    this.broadcastRealtime({ type: 'thread_model_updated', model });
+  }
+
+  async refreshRunnerConfig(): Promise<void> {
+    await this.withRunnerTransitionLock('refresh_runner_config', async () => {
+      this.stopRunnerReconnectLoop('refresh_runner_config');
+      this.cancelRunnerDisconnectGrace('refresh_runner_config');
+      if (!this.runnerSocket) {
+        return;
+      }
+      this.runnerIntentionalIdleDisconnect = true;
+      this.ctx.storage.kv.put(CHAT_RUNNER_IDLE_DISCONNECT_KEY, true);
+      try {
+        this.runnerSocket.close(1000, 'runner_config_changed');
+      } catch {
+        this.trace('refresh_runner_config_close_failed');
+      }
+    });
   }
 
   private async handleConnectionSetupResponse(response: ConnectionSetupResponse): Promise<void> {

@@ -9,9 +9,11 @@ import type {
   User,
   Organization,
   Workspace,
+  LlmModel,
   OnboardingPreferences,
 } from '../../../src/types';
 import { WorkspaceDO } from './workspace';
+import { DEFAULT_LLM_MODEL, normalizeLlmModel } from '../../../src/lib/llm-provider-config';
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from '../../../src/types';
@@ -270,6 +272,7 @@ export interface OrgThread {
   workspace_id: string;
   title: string;
   created_by: string;
+  model: LlmModel;
   created_at: number;
   updated_at: number;
   user_message_count: number;
@@ -1382,7 +1385,16 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {}
     }
 
-    const CURRENT_SCHEMA_VERSION = 20;
+    if (version < 21) {
+      try {
+        this.sql.exec(`ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`);
+      } catch {}
+      try {
+        this.sql.exec(`UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`);
+      } catch {}
+    }
+
+    const CURRENT_SCHEMA_VERSION = 21;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -2606,19 +2618,22 @@ export class OrgDO extends DurableObject<DOEnv> {
     workspaceId: string,
     title: string | undefined,
     createdBy?: string,
-    firstUserMessage?: string
+    firstUserMessage?: string,
+    model?: LlmModel
   ): OrgThread {
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || DEFAULT_THREAD_TITLE;
     const creator = createdBy?.trim() || 'system';
     const msg = firstUserMessage?.slice(0, 500) || null;
+    const normalizedModel = normalizeLlmModel(model);
     this.sql.exec(
-      'INSERT INTO threads (id, workspace_id, title, created_by, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO threads (id, workspace_id, title, created_by, model, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       id,
       workspaceId,
       t,
       creator,
+      normalizedModel,
       now,
       now,
       msg
@@ -2629,6 +2644,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       workspace_id: workspaceId,
       title: t,
       created_by: creator,
+      model: normalizedModel,
       created_at: now,
       updated_at: now,
       user_message_count: 0,
@@ -2674,6 +2690,28 @@ export class OrgDO extends DurableObject<DOEnv> {
     return updated;
   }
 
+  updateThreadModel(id: string, model: LlmModel, actorId?: string): OrgThread | null {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+    const now = Date.now();
+    const normalizedModel = normalizeLlmModel(model);
+    this.sql.exec('UPDATE threads SET model = ?, updated_at = ? WHERE id = ?', normalizedModel, now, id);
+    if (actorId) {
+      this.log('thread_model_updated', actorId, id, { model: normalizedModel });
+    }
+    const updated = {
+      ...existing,
+      model: normalizedModel,
+      updated_at: now,
+    };
+    this.getInfo().then((info) => {
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
+    }).catch((err) => {
+      console.error('Failed to sync thread model update to AdminIndex', err);
+    });
+    return updated;
+  }
+
   /**
    * Set first user message used for welcome-screen previews.
    * This intentionally does not modify updated_at to avoid reordering threads.
@@ -2699,7 +2737,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   /**
    * Admin: Update thread with arbitrary fields
    */
-  adminUpdateThread(id: string, updates: { title?: string; created_by?: string }, actorId?: string): OrgThread | null {
+  adminUpdateThread(id: string, updates: { title?: string; created_by?: string; model?: LlmModel }, actorId?: string): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
     const now = Date.now();
@@ -2715,6 +2753,10 @@ export class OrgDO extends DurableObject<DOEnv> {
       setClauses.push('created_by = ?');
       params.push(updates.created_by);
     }
+    if (updates.model !== undefined) {
+      setClauses.push('model = ?');
+      params.push(normalizeLlmModel(updates.model));
+    }
 
     params.push(id);
     this.sql.exec(`UPDATE threads SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
@@ -2727,6 +2769,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       ...existing,
       title: updates.title ?? existing.title,
       created_by: updates.created_by ?? existing.created_by,
+      model: updates.model !== undefined ? normalizeLlmModel(updates.model) : existing.model,
       updated_at: now,
     };
     this.getInfo().then((info) => {

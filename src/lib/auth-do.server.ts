@@ -628,7 +628,7 @@ export async function adminGetThreadWithMessages(
   context: AppLoadContext,
   threadId: string
 ): Promise<{
-  thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number };
+  thread: { id: string; title: string; model: Thread['model']; created_by: string; created_at: number; updated_at: number };
   messages: Message[];
   org_id: string;
   workspace_id: string;
@@ -656,6 +656,7 @@ export async function adminGetThreadWithMessages(
     thread: {
       id: thread.id,
       title: thread.title || 'Untitled',
+      model: thread.model,
       created_by: thread.created_by,
       created_at: thread.created_at,
       updated_at: thread.updated_at,
@@ -695,6 +696,7 @@ export async function adminGetWorkspaceDetail(
       id: t.id,
       workspace_id: t.workspace_id,
       title: t.title,
+      model: t.model,
       created_by: t.created_by,
       created_at: t.created_at,
       updated_at: t.updated_at,

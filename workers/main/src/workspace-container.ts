@@ -19,10 +19,14 @@
  */
 import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import {
+  DEFAULT_LLM_MODEL,
+  parseStoredLlmProviderConfig,
+  normalizeLlmModel,
+} from '../../../src/lib/llm-provider-config';
 import { createDispatcherSession } from './worker-auth';
 import type { WorkspaceDO } from './workspace';
 import type { OrgDO } from './auth';
-
 export interface WorkspaceContainerEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace<OrgDO>;
@@ -434,8 +438,15 @@ export class WorkspaceContainer {
       ...appSessionEnv,
     });
 
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
+    const thread = await orgStub.getThread(options.threadId);
+
     // Fetch org-level BYOK provider config (if any)
     const byokProxy = await this.fetchByokProxyCredentials();
+    integrationEnv.CHIRIDION_CLAUDE_MODEL =
+      thread && thread.workspace_id === this.workspaceId
+        ? normalizeLlmModel(thread.model)
+        : DEFAULT_LLM_MODEL;
 
     return {
       envVars: { ...integrationEnv, ...appSessionEnv },
@@ -461,7 +472,7 @@ export class WorkspaceContainer {
         record.credentials_encrypted,
         this.env.INTEGRATION_SECRET_KEY
       );
-      const config = JSON.parse(record.config) as Record<string, string>;
+      const config = parseStoredLlmProviderConfig(record.config);
 
       if (record.provider === 'anthropic') {
         console.log(`[Sandbox] BYOK: using Anthropic via proxy for org=${this.orgId}`);

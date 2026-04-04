@@ -30,14 +30,20 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     initialTitle?: string;
     firstMessage?: string;
     previewApps?: string;
+    model?: 'sonnet' | 'opus';
   };
+
+  if (body.model !== undefined && body.model !== 'sonnet' && body.model !== 'opus') {
+    return Response.json({ error: 'Invalid Claude model' }, { status: 400 });
+  }
 
   const thread = await chatDO.createThread(
     context,
     workspaceId,
     body.initialTitle || undefined,
     userId,
-    body.firstMessage || undefined
+    body.firstMessage || undefined,
+    body.model
   );
 
   // Set preview apps if provided

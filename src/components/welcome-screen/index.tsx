@@ -3,7 +3,7 @@
 import { Suspense, use, useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
-import type { WorkerScriptWithCreator, Integration, Thread } from '@/types';
+import type { WorkerScriptWithCreator, Integration, LlmModel, Thread } from '@/types';
 import type { Attachment } from '@/components/attachment-list';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { PromptInput } from '@/components/prompt-input';
@@ -202,6 +202,8 @@ interface WelcomeScreenProps {
   onFilesSelected: (files: File[]) => void;
   onAttachmentRemove: (id: string) => void;
   isCreatingThread: boolean;
+  model: LlmModel;
+  onModelChange: (model: LlmModel) => void;
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
@@ -325,6 +327,8 @@ export function WelcomeScreen({
   onFilesSelected,
   onAttachmentRemove,
   isCreatingThread,
+  model,
+  onModelChange,
 }: WelcomeScreenProps) {
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
@@ -408,6 +412,9 @@ export function WelcomeScreen({
             attachments={attachments}
             onFilesSelected={onFilesSelected}
             onAttachmentRemove={onAttachmentRemove}
+            model={model}
+            onModelChange={onModelChange}
+            modelDisabled={isCreatingThread}
           />
         )}
       </AnimatedPlaceholder>

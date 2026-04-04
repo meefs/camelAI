@@ -1,15 +1,16 @@
 import { Suspense, use, useCallback, useEffect, useState } from 'react';
 import { redirect, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
-import { requireAuthContext, requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, requireSuperuser, requireSessionWorkspaceAccess, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
+import { DEFAULT_LLM_MODEL } from '@/lib/llm-provider-config';
 import { getOrg, getWorkerScript } from '@/lib/auth-do';
 import * as authDO from '@/lib/auth-do.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { Message, PreviewTarget } from '@/types';
+import type { LlmModel, Message, PreviewTarget } from '@/types';
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || 'Chat';
@@ -37,6 +38,7 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
           threadId?: string;
           workspaceId?: string;
           orgSlug?: string;
+          threadModel?: LlmModel;
         };
         if (parsed.threadId === params.id && parsed.workspaceId) {
           return {
@@ -44,6 +46,7 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
             workspaceId: parsed.workspaceId,
             chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
             threadTitle: null,
+            threadModel: parsed.threadModel === 'opus' ? 'opus' : DEFAULT_LLM_MODEL,
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
@@ -57,6 +60,36 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
   }
 
   return serverLoader();
+}
+
+export async function action({ request, context, params }: Route.ActionArgs) {
+  const url = new URL(request.url);
+  if (url.searchParams.get('adminReadonly') === '1') {
+    await requireSuperuser(request, context);
+    return { error: 'Read-only admin view' };
+  }
+
+  const { workspaceId } = await requireSessionWorkspaceAccess(request, context, undefined, {
+    requireWrite: true,
+  });
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'updateThreadModel') {
+    const model = formData.get('model');
+    if (model !== 'sonnet' && model !== 'opus') {
+      return { error: 'A valid Claude model is required' };
+    }
+
+    const updated = await chatDO.updateThreadModel(context, params.id, model as LlmModel, workspaceId);
+    if (!updated) {
+      return { error: 'Thread not found' };
+    }
+
+    return { thread: updated };
+  }
+
+  return { error: 'Unknown action' };
 }
 
 interface ChatData {
@@ -161,6 +194,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         params.id
       ),
       threadTitle: thread?.title ?? threadContext.title ?? null,
+      threadModel: thread?.model ?? ((threadContext.model as LlmModel | undefined) ?? DEFAULT_LLM_MODEL),
       isNewThread: false,
       hostname,
       orgSlug: org?.slug,
@@ -176,6 +210,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       workspaceId: null,
       chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
       threadTitle: null,
+      threadModel: DEFAULT_LLM_MODEL,
       isNewThread: false,
       hostname: undefined,
       readOnly: false,
@@ -201,6 +236,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspaceId,
     chatDataPromise,
     threadTitle: thread?.title ?? null,
+    threadModel: thread?.model ?? DEFAULT_LLM_MODEL,
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
@@ -231,6 +267,7 @@ export default function ChatPage() {
     workspaceId,
     chatDataPromise,
     threadTitle,
+    threadModel,
     isNewThread,
     hostname,
     orgSlug,
@@ -268,6 +305,7 @@ export default function ChatPage() {
         workspaceId={workspaceId}
         initialMessages={chatData.messages}
         threadTitle={threadTitle}
+        threadModel={threadModel}
         initialPreviewTarget={chatData.previewTarget}
         initialPreviewTabs={chatData.previewTabs}
         initialActiveTabId={chatData.activeTabId}
