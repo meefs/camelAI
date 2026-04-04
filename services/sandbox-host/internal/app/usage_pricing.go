@@ -1,7 +1,8 @@
 package app
 
-// Model pricing for Claude models (USD per token).
-// Prices are kept identical across Anthropic direct and Bedrock by contract.
+import "strings"
+
+// Model pricing for supported Claude and OpenAI models (USD per token).
 
 type ModelPricing struct {
 	InputPerToken         float64
@@ -10,8 +11,8 @@ type ModelPricing struct {
 	CacheReadPerToken     float64 // cache_read_input_tokens
 }
 
-// modelPricingTable maps canonical Anthropic model IDs to per-token costs.
-// Keep this in sync with the models in bedrockModelMap.
+// modelPricingTable maps canonical model IDs to per-token costs.
+// Keep Claude entries in sync with the models in bedrockModelMap.
 var modelPricingTable = map[string]ModelPricing{
 	// Claude 4.6
 	"claude-opus-4-6": {
@@ -71,13 +72,30 @@ var modelPricingTable = map[string]ModelPricing{
 		CacheCreationPerToken: 0.00000125,
 		CacheReadPerToken:     0.0000001,
 	},
+	// GPT-5.4
+	"gpt-5.4": {
+		InputPerToken:     0.0000025,
+		OutputPerToken:    0.000015,
+		CacheReadPerToken: 0.00000025,
+	},
+	"gpt-5.4-mini": {
+		InputPerToken:     0.00000075,
+		OutputPerToken:    0.0000045,
+		CacheReadPerToken: 0.000000075,
+	},
 }
 
-// lookupPricing returns pricing for a model. Falls back to Sonnet 4.5 pricing
-// if the model is unknown (safe default — not the cheapest, not the most expensive).
+// lookupPricing returns pricing for a model. Snapshot-style model names fall back
+// to their family pricing. Unknown models fall back to Sonnet 4.5 pricing.
 func lookupPricing(model string) ModelPricing {
 	if p, ok := modelPricingTable[model]; ok {
 		return p
+	}
+	switch {
+	case strings.HasPrefix(model, "gpt-5.4-mini"):
+		return modelPricingTable["gpt-5.4-mini"]
+	case strings.HasPrefix(model, "gpt-5.4"):
+		return modelPricingTable["gpt-5.4"]
 	}
 	// Fallback: Sonnet-tier pricing
 	return modelPricingTable["claude-sonnet-4-5-20250929"]
@@ -90,6 +108,13 @@ type UsageTokens struct {
 	OutputTokens             int64
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
+}
+
+func (u UsageTokens) HasBillableTokens() bool {
+	return u.InputTokens > 0 ||
+		u.OutputTokens > 0 ||
+		u.CacheCreationInputTokens > 0 ||
+		u.CacheReadInputTokens > 0
 }
 
 // CostUSD calculates the total cost in USD for the given usage.

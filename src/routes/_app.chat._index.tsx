@@ -6,11 +6,16 @@ import { getEnv } from '@/lib/cloudflare.server';
 import { waitUntil } from '@/lib/wait-until';
 import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
+import {
+  getDefaultLlmModel,
+  getDefaultThreadProvider,
+  isLlmModel,
+} from '@/lib/llm-provider-config';
 import * as chatDO from '@/lib/chat-do.server';
 import { consumeSalesPrompt, getPromptKeyFromUrl } from '@/lib/sales-prompt.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { Integration, Thread, WorkerScriptWithCreator } from '@/types';
+import type { ChatHarness, Integration, LlmModel, Thread, WorkerScriptWithCreator } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 
 /**
@@ -139,9 +144,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     recentThreadsPromise,
     connectionsPromise,
   ]);
+  const orgStub = workspaceId && authContext.currentOrg?.id
+    ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
+    : null;
+  const llmProviderConfig = orgStub
+    ? await orgStub.getLlmProviderConfig().catch(() => null)
+    : null;
+  const experimentalSettings = orgStub
+    ? await orgStub.getExperimentalSettings().catch(() => ({ codex_gpt_models: false }))
+    : { codex_gpt_models: false };
+  const threadProvider: ChatHarness = getDefaultThreadProvider(
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  );
 
   return {
     workspaceId: workspaceId ?? null,
+    threadProvider,
+    experimentalSettings,
     hostname,
     userId,
     userName,
@@ -171,8 +191,14 @@ export async function action({ request, context }: Route.ActionArgs) {
       const firstMessage = formData.get('firstMessage') as string | null;
       const previewAppsRaw = formData.get('previewApps') as string | null;
       const model = formData.get('model');
-      if (model !== null && model !== 'sonnet' && model !== 'opus') {
-        return Response.json({ error: 'Invalid Claude model' }, { status: 400 });
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      const llmProviderConfig = await orgStub.getLlmProviderConfig();
+      const threadProvider: ChatHarness = getDefaultThreadProvider(
+        llmProviderConfig?.provider,
+        await orgStub.getExperimentalSettings(),
+      );
+      if (model !== null && !isLlmModel(model, threadProvider)) {
+        return Response.json({ error: 'Invalid thread model' }, { status: 400 });
       }
 
       const thread = await chatDO.createThread(
@@ -181,7 +207,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         initialTitle || undefined,
         userId,
         firstMessage || undefined,
-        (model as 'sonnet' | 'opus' | null) ?? undefined
+        (model as LlmModel | null) ?? undefined
       );
 
       // Set preview apps if provided (for "chat with this app" flow)
@@ -223,6 +249,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 export default function NewChatPage() {
   const {
     workspaceId,
+    threadProvider,
     hostname,
     userId,
     userName,
@@ -231,6 +258,7 @@ export default function NewChatPage() {
     recentThreads,
     renderedAt,
     salesPrompt,
+    experimentalSettings,
   } = useLoaderData<typeof loader>();
   const { currentWorkspace } = useAuthData();
   const revalidator = useRevalidator();
@@ -251,6 +279,7 @@ export default function NewChatPage() {
   return (
     <Chat
       workspaceId={workspaceId}
+      threadProvider={threadProvider}
       hostname={hostname}
       welcomeData={{
         userId,
@@ -260,6 +289,8 @@ export default function NewChatPage() {
         recentThreads,
         renderedAt,
       }}
+      experimentalSettings={experimentalSettings}
+      threadModel={getDefaultLlmModel(threadProvider)}
       initialWelcomeInput={salesPrompt}
     />
   );

@@ -88,6 +88,82 @@ func TestCopyNonStreamingWithUsage(t *testing.T) {
 	}
 }
 
+func TestCopyResponsesSSEStreamWithUsage(t *testing.T) {
+	sseStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_01","model":"gpt-5.4-mini"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_01","model":"gpt-5.4-mini","usage":{"input_tokens":140,"input_tokens_details":{"cached_tokens":40},"output_tokens":25,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":165}}}`,
+		"",
+	}, "\n")
+
+	w := httptest.NewRecorder()
+	usage, err := copySSEStreamWithUsage(w, strings.NewReader(sseStream))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if usage.Model != "gpt-5.4-mini" {
+		t.Errorf("expected model gpt-5.4-mini, got %s", usage.Model)
+	}
+	if usage.InputTokens != 100 {
+		t.Errorf("expected 100 uncached input tokens, got %d", usage.InputTokens)
+	}
+	if usage.CacheReadInputTokens != 40 {
+		t.Errorf("expected 40 cached input tokens, got %d", usage.CacheReadInputTokens)
+	}
+	if usage.OutputTokens != 25 {
+		t.Errorf("expected 25 output tokens, got %d", usage.OutputTokens)
+	}
+}
+
+func TestCopyNonStreamingWithUsage_OpenAIResponses(t *testing.T) {
+	jsonBody := `{"id":"resp_01","object":"response","model":"gpt-5.4","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":200},"output_tokens":300,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":1500}}`
+
+	w := httptest.NewRecorder()
+	usage, err := copyNonStreamingWithUsage(w, strings.NewReader(jsonBody))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if usage.Model != "gpt-5.4" {
+		t.Errorf("expected model gpt-5.4, got %s", usage.Model)
+	}
+	if usage.InputTokens != 1000 {
+		t.Errorf("expected 1000 uncached input tokens, got %d", usage.InputTokens)
+	}
+	if usage.CacheReadInputTokens != 200 {
+		t.Errorf("expected 200 cached input tokens, got %d", usage.CacheReadInputTokens)
+	}
+	if usage.OutputTokens != 300 {
+		t.Errorf("expected 300 output tokens, got %d", usage.OutputTokens)
+	}
+}
+
+func TestCopyNonStreamingWithUsage_OpenAIChatCompletions(t *testing.T) {
+	jsonBody := `{"id":"chatcmpl_01","object":"chat.completion","model":"gpt-5.4-mini","usage":{"prompt_tokens":220,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens":55,"completion_tokens_details":{"reasoning_tokens":5},"total_tokens":275}}`
+
+	w := httptest.NewRecorder()
+	usage, err := copyNonStreamingWithUsage(w, strings.NewReader(jsonBody))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if usage.Model != "gpt-5.4-mini" {
+		t.Errorf("expected model gpt-5.4-mini, got %s", usage.Model)
+	}
+	if usage.InputTokens != 200 {
+		t.Errorf("expected 200 uncached input tokens, got %d", usage.InputTokens)
+	}
+	if usage.CacheReadInputTokens != 20 {
+		t.Errorf("expected 20 cached input tokens, got %d", usage.CacheReadInputTokens)
+	}
+	if usage.OutputTokens != 55 {
+		t.Errorf("expected 55 output tokens, got %d", usage.OutputTokens)
+	}
+}
+
 func TestExtractModelFromRequestBody(t *testing.T) {
 	body := `{"model":"claude-sonnet-4-5-20250929","messages":[{"role":"user","content":"Hi"}]}`
 	model := extractModelFromRequestBody([]byte(body))

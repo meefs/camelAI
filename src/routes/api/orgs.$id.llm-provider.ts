@@ -10,7 +10,7 @@ import {
 } from '@/lib/llm-provider-config';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
-const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock'];
+const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'openai'];
 const VALID_AWS_REGIONS = [
   'us-east-1',
   'us-east-2',
@@ -147,6 +147,29 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ success: true });
     }
 
+    if (provider === 'openai') {
+      const apiKey = (body.api_key as string)?.trim();
+      if (!apiKey) {
+        return Response.json({ error: 'API key is required' }, { status: 400 });
+      }
+      if (!apiKey.startsWith('sk-')) {
+        return Response.json(
+          { error: 'Invalid OpenAI API key format. Keys should start with sk-' },
+          { status: 400 }
+        );
+      }
+
+      const encrypted = await encryptCredentials({ api_key: apiKey }, env.INTEGRATION_SECRET_KEY);
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      await orgStub.setLlmProviderConfig(
+        provider,
+        encrypted,
+        stringifyStoredLlmProviderConfig({}),
+        authContext.user.id
+      );
+      return Response.json({ success: true, key_hint: keyHint(apiKey) });
+    }
+
     return Response.json({ error: 'Unsupported provider' }, { status: 400 });
   }
 
@@ -227,6 +250,31 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         }
         return Response.json(
           { success: false, message: `Bedrock API returned ${resp.status}` },
+          { status: 200 }
+        );
+      }
+
+      if (record.provider === 'openai') {
+        const resp = await fetch('https://api.openai.com/v1/models?limit=1', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${creds.api_key}`,
+          },
+        });
+
+        if (resp.ok) {
+          return Response.json({ success: true, message: 'OpenAI API key is valid' });
+        }
+
+        const errorBody = await resp.text();
+        if (resp.status === 401 || resp.status === 403) {
+          return Response.json(
+            { success: false, message: 'Invalid OpenAI API key. Please check and try again.' },
+            { status: 200 }
+          );
+        }
+        return Response.json(
+          { success: false, message: `OpenAI API returned ${resp.status}: ${errorBody.slice(0, 200)}` },
           { status: 200 }
         );
       }

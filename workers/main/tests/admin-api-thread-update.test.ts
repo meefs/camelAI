@@ -29,7 +29,7 @@ async function waitForAdminIndexThreadPresence(threadId: string): Promise<void> 
 }
 
 describe('admin API thread patch route', () => {
-  it('updates the per-thread Claude model', async () => {
+  it('rejects per-thread model changes after creation', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Admin API User');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Admin API Org', userId);
@@ -59,14 +59,13 @@ describe('admin API thread patch route', () => {
     });
 
     expect(response).not.toBeNull();
-    expect(response!.status).toBe(200);
+    expect(response!.status).toBe(400);
     await expect(response!.json()).resolves.toMatchObject({
-      id: thread.id,
-      model: 'opus',
+      error: 'This thread is locked to its original model. Start a new thread to use a different model.',
     });
 
     const stored = await orgStub.getThread(thread.id);
-    expect(stored?.model).toBe('opus');
+    expect(stored?.model).toBe('sonnet');
   });
 
   it('backfills null thread models during AdminIndexDO remigration', async () => {

@@ -14,13 +14,20 @@
 
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { spawn } from 'node:child_process';
 
-import { readFile, access } from 'fs/promises';
+import { existsSync } from 'node:fs';
+import { readFile, access, mkdir, writeFile } from 'fs/promises';
 import { homedir } from 'os';
+import { resolve } from 'path';
 import { TeamPollingController } from './team-poll-controller.mjs';
 
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '8080', 10);
 const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || `${homedir()}/.claude`;
+const CODEX_HOME = process.env.CODEX_HOME || `${homedir()}/.codex`;
+const DEFAULT_CHAT_PROVIDER = process.env.CHIRIDION_CHAT_PROVIDER === 'codex' ? 'codex' : 'claude';
+const DEFAULT_CODEX_MODEL = process.env.CHIRIDION_CODEX_MODEL || 'gpt-5.4';
+const DEFAULT_CLAUDE_MODEL = process.env.CHIRIDION_CLAUDE_MODEL || 'opus';
 const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
   10,
   parseInt(process.env.CONTROL_PLANE_IDLE_TIMEOUT_SECS || '120', 10)
@@ -662,12 +669,490 @@ function withThreadProxyPath(rawUrl, threadId) {
   }
 }
 
+function getProviderFromEnv(sessionEnv = {}) {
+  const provider = sessionEnv?.CHIRIDION_CHAT_PROVIDER;
+  return provider === 'codex' ? 'codex' : 'claude';
+}
+
+function getDefaultModelForProvider(provider) {
+  return provider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL;
+}
+
+function getCodexExecutable() {
+  for (const candidate of [
+    resolve('/opt/chiridion/node_modules/.bin/codex'),
+    resolve(process.cwd(), 'node_modules/.bin/codex'),
+    'codex',
+  ]) {
+    if (candidate === 'codex' || existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return 'codex';
+}
+
+function extractCodexItemText(item) {
+  if (!item || typeof item !== 'object') {
+    return '';
+  }
+  if (typeof item.text === 'string') {
+    return item.text;
+  }
+  const message = item.message;
+  if (message && typeof message === 'object' && Array.isArray(message.content)) {
+    return message.content
+      .filter((part) => part?.type === 'output_text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('');
+  }
+  return '';
+}
+
+function shouldRetryWithFreshThread(error) {
+  const message =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('invalid request') ||
+    normalized.includes('thread') ||
+    normalized.includes('not found') ||
+    normalized.includes('unknown')
+  );
+}
+
+class CodexAppServerClient {
+  constructor(threadId) {
+    this.threadId = threadId;
+    this.child = null;
+    this.startPromise = null;
+    this.nextRequestId = 1;
+    this.stdoutBuffer = '';
+    this.stderrBuffer = '';
+    this.pendingRequests = new Map();
+    this.knownThreadIds = new Set();
+    this.activeTurns = new Map();
+    this.codexExecutable = getCodexExecutable();
+    this.codexHome = `${CODEX_HOME}/threads/${threadId}`;
+    this.baseUrl = withThreadProxyPath(
+      process.env.OPENAI_BASE_URL || 'http://127.0.0.1/api/openai/v1',
+      threadId,
+    );
+  }
+
+  dispose() {
+    if (this.child && !this.child.killed) {
+      this.child.kill();
+    }
+    this.handleExit(new Error('codex app-server stopped.'));
+  }
+
+  async runTurn(options) {
+    await this.ensureStarted();
+
+    const codexThreadId = await this.ensureThread(options);
+    if (this.activeTurns.has(codexThreadId)) {
+      throw new Error('A Codex turn is already active for this thread.');
+    }
+
+    const resultPromise = new Promise((resolvePromise, rejectPromise) => {
+      this.activeTurns.set(codexThreadId, {
+        codexThreadId,
+        model: options.model,
+        state: {
+          streamedText: '',
+          finalAssistantText: '',
+          latestAssistantText: '',
+        },
+        onEvent: options.onEvent,
+        onText: options.onText,
+        resolve: resolvePromise,
+        reject: rejectPromise,
+        settled: false,
+      });
+    });
+
+    try {
+      const response = await this.request('turn/start', {
+        threadId: codexThreadId,
+        input: [{ type: 'text', text: options.content }],
+        cwd: process.cwd(),
+        approvalPolicy: 'never',
+        model: options.model,
+        summary: 'auto',
+        personality: 'none',
+      });
+
+      if (response?.turn?.status === 'failed') {
+        throw new Error(
+          typeof response.turn?.error?.message === 'string'
+            ? response.turn.error.message
+            : 'Codex turn failed.',
+        );
+      }
+    } catch (error) {
+      this.failTurn(
+        codexThreadId,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
+
+    return await resultPromise;
+  }
+
+  async ensureStarted() {
+    if (this.child && this.child.stdin.writable) {
+      return;
+    }
+    if (this.startPromise) {
+      await this.startPromise;
+      return;
+    }
+    this.startPromise = this.start();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  async start() {
+    await mkdir(this.codexHome, { recursive: true });
+    await writeFile(
+      `${this.codexHome}/config.toml`,
+      [
+        `model = "${DEFAULT_CODEX_MODEL}"`,
+        `model_provider = "openai"`,
+        `openai_base_url = "${this.baseUrl}"`,
+        '',
+        '[model_providers.openai]',
+        `base_url = "${this.baseUrl}"`,
+        'wire_api = "responses"',
+        'supports_websockets = false',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const child = spawn(this.codexExecutable, ['app-server'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        CODEX_HOME: this.codexHome,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    this.child = child;
+    this.stdoutBuffer = '';
+    this.stderrBuffer = '';
+    this.pendingRequests.clear();
+    this.knownThreadIds.clear();
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => this.handleStdout(chunk));
+    child.stderr.on('data', (chunk) => {
+      this.stderrBuffer += chunk;
+      const trimmed = chunk.trim();
+      if (trimmed) {
+        traceControlPlane('codex_app_server_stderr', {
+          threadId: this.threadId,
+          data: trimmed.slice(-1000),
+        });
+      }
+    });
+    child.on('error', (error) => {
+      this.handleExit(
+        error instanceof Error ? error : new Error('Failed to start codex app-server.'),
+      );
+    });
+    child.on('close', (code, signal) => {
+      this.handleExit(
+        new Error(
+          this.stderrBuffer.trim() ||
+            `codex app-server exited (${signal ?? code ?? 'unknown'}).`,
+        ),
+      );
+    });
+
+    await this.request('initialize', {
+      clientInfo: {
+        name: 'camelai_web_runtime',
+        title: 'camelAI Web Runtime',
+        version: '0.1.0',
+      },
+    });
+    this.notify('initialized', {});
+  }
+
+  handleStdout(chunk) {
+    this.stdoutBuffer += chunk;
+    while (true) {
+      const newlineIndex = this.stdoutBuffer.indexOf('\n');
+      if (newlineIndex === -1) {
+        break;
+      }
+      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+      if (!line) {
+        continue;
+      }
+
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        this.handleExit(new Error('codex app-server returned invalid JSON.'));
+        return;
+      }
+
+      if (typeof message.method === 'string') {
+        this.handleNotification(message);
+      } else {
+        this.handleResponse(message);
+      }
+    }
+  }
+
+  handleResponse(message) {
+    if (typeof message.id !== 'number') {
+      return;
+    }
+    const pending = this.pendingRequests.get(message.id);
+    if (!pending) {
+      return;
+    }
+    this.pendingRequests.delete(message.id);
+    if (message.error) {
+      pending.reject(
+        new Error(
+          message.error.message
+            ? `${pending.method}: ${message.error.message}`
+            : `${pending.method} failed.`,
+        ),
+      );
+      return;
+    }
+    pending.resolve(message.result);
+  }
+
+  handleNotification(message) {
+    const params = message.params ?? {};
+    const codexThreadId = typeof params.threadId === 'string' ? params.threadId : null;
+    const activeTurn = codexThreadId ? this.activeTurns.get(codexThreadId) ?? null : null;
+
+    activeTurn?.onEvent?.(message);
+
+    if (!activeTurn) {
+      return;
+    }
+
+    if (message.method === 'item/agentMessage/delta') {
+      const delta = params.delta;
+      if (typeof delta === 'string' && delta) {
+        activeTurn.state.streamedText += delta;
+        activeTurn.state.latestAssistantText += delta;
+        activeTurn.onText(delta);
+      }
+      return;
+    }
+
+    if (message.method === 'item/completed') {
+      const item = params.item;
+      if (!item || typeof item !== 'object') {
+        return;
+      }
+      if (item.type === 'agentMessage') {
+        const nextText = extractCodexItemText(item);
+        if (nextText) {
+          activeTurn.state.finalAssistantText = nextText;
+          if (
+            nextText.startsWith(activeTurn.state.latestAssistantText) &&
+            nextText.length > activeTurn.state.latestAssistantText.length
+          ) {
+            const delta = nextText.slice(activeTurn.state.latestAssistantText.length);
+            activeTurn.state.streamedText += delta;
+            activeTurn.onText(delta);
+          }
+          activeTurn.state.latestAssistantText = nextText;
+        }
+        return;
+      }
+      if (item.type === 'error') {
+        this.failTurn(
+          activeTurn.codexThreadId,
+          new Error(typeof item.message === 'string' ? item.message : 'Codex turn failed.'),
+        );
+      }
+      return;
+    }
+
+    if (message.method === 'error') {
+      if (params.willRetry === true) {
+        return;
+      }
+      const error = params.error;
+      this.failTurn(
+        activeTurn.codexThreadId,
+        new Error(
+          error && typeof error.message === 'string' ? error.message : 'Codex turn failed.',
+        ),
+      );
+      return;
+    }
+
+    if (message.method === 'turn/completed') {
+      const turn = params.turn;
+      if (turn?.status !== 'completed') {
+        this.failTurn(
+          activeTurn.codexThreadId,
+          new Error(
+            turn?.error && typeof turn.error.message === 'string'
+              ? turn.error.message
+              : 'Codex turn failed.',
+          ),
+        );
+        return;
+      }
+      this.completeTurn(activeTurn.codexThreadId);
+    }
+  }
+
+  async ensureThread(options) {
+    const existingThreadId = options.sessionId?.trim();
+    if (existingThreadId && this.knownThreadIds.has(existingThreadId)) {
+      return existingThreadId;
+    }
+
+    if (existingThreadId) {
+      try {
+        const response = await this.request('thread/resume', {
+          threadId: existingThreadId,
+          cwd: process.cwd(),
+          approvalPolicy: 'never',
+          model: options.model,
+          personality: 'none',
+        });
+        const resumedThreadId = response?.thread?.id || existingThreadId;
+        this.knownThreadIds.add(resumedThreadId);
+        options.onSessionId?.(resumedThreadId);
+        return resumedThreadId;
+      } catch (error) {
+        if (!shouldRetryWithFreshThread(error)) {
+          throw error;
+        }
+      }
+    }
+
+    const response = await this.request('thread/start', {
+      cwd: process.cwd(),
+      approvalPolicy: 'never',
+      sandbox: 'workspace-write',
+      model: options.model,
+      personality: 'none',
+    });
+    const startedThreadId = response?.thread?.id;
+    if (!startedThreadId) {
+      throw new Error('Codex did not return a thread id.');
+    }
+    this.knownThreadIds.add(startedThreadId);
+    options.onSessionId?.(startedThreadId);
+    return startedThreadId;
+  }
+
+  completeTurn(codexThreadId) {
+    const activeTurn = this.activeTurns.get(codexThreadId);
+    if (!activeTurn || activeTurn.settled) {
+      return;
+    }
+    activeTurn.settled = true;
+    this.activeTurns.delete(codexThreadId);
+    activeTurn.resolve({
+      finalText: activeTurn.state.finalAssistantText || activeTurn.state.streamedText,
+      model: activeTurn.model,
+      sessionId: codexThreadId,
+    });
+  }
+
+  failTurn(codexThreadId, error) {
+    const activeTurn = this.activeTurns.get(codexThreadId);
+    if (!activeTurn || activeTurn.settled) {
+      return;
+    }
+    activeTurn.settled = true;
+    this.activeTurns.delete(codexThreadId);
+    activeTurn.reject(error);
+  }
+
+  notify(method, params) {
+    this.send({ method, params });
+  }
+
+  async request(method, params) {
+    if (!this.child || !this.child.stdin.writable) {
+      throw new Error('codex app-server is not running.');
+    }
+    const id = this.nextRequestId++;
+    return await new Promise((resolvePromise, rejectPromise) => {
+      this.pendingRequests.set(id, {
+        method,
+        resolve: resolvePromise,
+        reject: rejectPromise,
+      });
+      try {
+        this.send({ id, method, params });
+      } catch (error) {
+        this.pendingRequests.delete(id);
+        rejectPromise(error instanceof Error ? error : new Error(`${method} failed.`));
+      }
+    });
+  }
+
+  send(message) {
+    if (!this.child || !this.child.stdin.writable) {
+      throw new Error('codex app-server is not running.');
+    }
+    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  handleExit(error) {
+    if (!this.child && this.pendingRequests.size === 0 && this.activeTurns.size === 0) {
+      return;
+    }
+
+    this.child = null;
+    this.stdoutBuffer = '';
+    this.stderrBuffer = '';
+    this.knownThreadIds.clear();
+
+    for (const [requestId, pending] of this.pendingRequests.entries()) {
+      this.pendingRequests.delete(requestId);
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    for (const [threadId, activeTurn] of this.activeTurns.entries()) {
+      this.activeTurns.delete(threadId);
+      if (!activeTurn.settled) {
+        activeTurn.settled = true;
+        activeTurn.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  }
+}
+
 // ─── Chat Session ──────────────────────────────────────────
 
 class ChatSession {
   constructor(threadId, sessionEnv) {
     this.threadId = threadId;
-    this.sessionEnv = sessionEnv; // Thread-specific env vars
+    this.sessionEnv = sessionEnv;
+    this.provider = getProviderFromEnv(sessionEnv);
+    this.model = getDefaultModelForProvider(this.provider);
+    this.codexSessionId =
+      typeof sessionEnv?.CHIRIDION_CODEX_SESSION_ID === 'string' &&
+      sessionEnv.CHIRIDION_CODEX_SESSION_ID.trim()
+        ? sessionEnv.CHIRIDION_CODEX_SESSION_ID.trim()
+        : null;
     this.activeQuery = null;
     this.queryIterator = null;
     this.eventLoopRunning = false;
@@ -691,6 +1176,8 @@ class ChatSession {
     });
     this.nextOutboundSeq = 1;
     this.replayBuffer = [];
+    this.activeCodexTurnPromise = null;
+    this.codexClient = null;
   }
 
   updateSessionEnv(nextSessionEnv) {
@@ -699,6 +1186,14 @@ class ChatSession {
       ...this.sessionEnv,
       ...incoming,
     };
+    this.provider = getProviderFromEnv(this.sessionEnv);
+    this.model = getDefaultModelForProvider(this.provider);
+    if (
+      typeof this.sessionEnv.CHIRIDION_CODEX_SESSION_ID === 'string' &&
+      this.sessionEnv.CHIRIDION_CODEX_SESSION_ID.trim()
+    ) {
+      this.codexSessionId = this.sessionEnv.CHIRIDION_CODEX_SESSION_ID.trim();
+    }
   }
 
   addClient(ws) {
@@ -955,6 +1450,18 @@ class ChatSession {
     if (this.activeQuery) {
       this.activeQuery.interrupt().catch(() => {});
     }
+    this.activeCodexTurnPromise = null;
+    if (this.codexClient) {
+      this.codexClient.dispose();
+      this.codexClient = null;
+    }
+  }
+
+  getCodexClient() {
+    if (!this.codexClient) {
+      this.codexClient = new CodexAppServerClient(this.threadId);
+    }
+    return this.codexClient;
   }
 
   async sessionFileExists() {
@@ -1002,6 +1509,9 @@ class ChatSession {
   }
 
   getQueryOptions(fileExists) {
+    if (this.provider !== 'claude') {
+      throw new Error('Claude query options requested for a non-Claude session.');
+    }
     // Merge: process.env (Docker env vars) + sessionEnv (per-thread from WebSocket init)
     const mergedEnv = {
       ...process.env,
@@ -1044,6 +1554,7 @@ class ChatSession {
       // Force Node as the runtime executable — Bun has a bug that breaks the SDK.
       executable: 'node',
       model: configuredModel,
+      fallbackModel: 'sonnet',
       includePartialMessages: true,
       permissionMode: 'bypassPermissions',
       allowUnsandboxedCommands: true,
@@ -1106,6 +1617,10 @@ class ChatSession {
   }
 
   async init() {
+    if (this.provider !== 'claude') {
+      return;
+    }
+
     if (this.activeQuery || this.initPromise) {
       if (this.initPromise) await this.initPromise;
       traceControlPlane('session_init_reused', {
@@ -1197,7 +1712,7 @@ class ChatSession {
   }
 
   startEventLoop() {
-    if (this.eventLoopRunning || !this.queryIterator) return;
+    if (this.provider !== 'claude' || this.eventLoopRunning || !this.queryIterator) return;
     this.eventLoopRunning = true;
     traceControlPlane('session_event_loop_start', {
       threadId: this.threadId,
@@ -1247,6 +1762,54 @@ class ChatSession {
     })();
   }
 
+  async handleCodexMessage(trimmed) {
+    if (this.activeCodexTurnPromise) {
+      throw new Error('A Codex response is already streaming for this thread.');
+    }
+
+    const runPromise = this.getCodexClient().runTurn({
+      threadId: this.threadId,
+      content: trimmed,
+      model: this.model,
+      sessionId: this.codexSessionId,
+      onEvent: (event) => {
+        this.broadcast({ type: 'runtime_event', event });
+      },
+      onText: (delta) => {
+        this.broadcast({ type: 'assistant_delta', threadId: this.threadId, text: delta });
+      },
+      onSessionId: (sessionId) => {
+        this.codexSessionId = sessionId;
+        this.broadcast({ type: 'session_id', threadId: this.threadId, sessionId });
+      },
+    });
+
+    this.activeCodexTurnPromise = runPromise;
+
+    try {
+      const result = await runPromise;
+      if (result?.sessionId) {
+        this.codexSessionId = result.sessionId;
+      }
+      this.markTerminalResult();
+      this.broadcast({
+        type: 'result',
+        threadId: this.threadId,
+        result: result?.finalText || '',
+        sessionId: result?.sessionId || this.codexSessionId || undefined,
+      });
+    } catch (error) {
+      this.broadcast({
+        type: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        source: 'codex_app_server',
+      });
+    } finally {
+      this.activeCodexTurnPromise = null;
+      this.scheduleDisconnectIfIdleEligible('codex_turn_complete');
+    }
+  }
+
   async handleMessage(content) {
     if (typeof content !== 'string' || !content.trim()) return;
     traceControlPlane('session_handle_message', {
@@ -1257,6 +1820,12 @@ class ChatSession {
       clientCount: this.clients.size,
     });
     this.markUserActivity('message');
+
+    if (this.provider === 'codex') {
+      await this.handleCodexMessage(content.trim());
+      return;
+    }
+
     await this.init();
     this.startEventLoop();
 
@@ -1285,6 +1854,9 @@ class ChatSession {
       this.pendingQuestions.delete(qid);
       this.broadcast({ type: 'question_answered', questionId: qid });
       pending.resolve({});
+    }
+    if (this.provider !== 'claude') {
+      return;
     }
     if (this.activeQuery) {
       try {

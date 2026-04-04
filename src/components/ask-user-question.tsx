@@ -531,7 +531,7 @@ export function AskUserQuestion({
             )}
           >
             <MessageCircleQuestion className="h-4 w-4 text-muted-foreground/60" />
-            <span className="flex-1 text-left">Claude needs your input</span>
+            <span className="flex-1 text-left">The agent needs your input</span>
             {isExpanded ? (
               <ChevronUp className="h-4 w-4 text-muted-foreground/40" />
             ) : (

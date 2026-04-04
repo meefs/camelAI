@@ -8,12 +8,18 @@ import type {
   BillingStatus,
   User,
   Organization,
+  OrganizationExperimentalSettings,
   Workspace,
   LlmModel,
   OnboardingPreferences,
 } from '../../../src/types';
 import { WorkspaceDO } from './workspace';
-import { DEFAULT_LLM_MODEL, normalizeLlmModel } from '../../../src/lib/llm-provider-config';
+import {
+  DEFAULT_LLM_MODEL,
+  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+  normalizeLlmModel,
+  parseOrganizationExperimentalSettings,
+} from '../../../src/lib/llm-provider-config';
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from '../../../src/types';
@@ -34,6 +40,7 @@ const SUPERUSER_EMAILS = new Set([
 ]);
 const USER_ONBOARDING_KEY = 'onboarding';
 const USER_SIGNUP_IP_KEY = 'signup_ip';
+const ORG_EXPERIMENTAL_SETTINGS_KEY = 'experimental_settings';
 
 function isSuperuserEmail(email: string | null): boolean {
   if (!email) return false;
@@ -271,6 +278,7 @@ export interface OrgThread {
   id: string;
   workspace_id: string;
   title: string;
+  provider: 'claude' | 'codex';
   created_by: string;
   model: LlmModel;
   created_at: number;
@@ -1387,10 +1395,20 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     if (version < 21) {
       try {
-        this.sql.exec(`ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`);
+        this.sql.exec("ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'");
       } catch {}
       try {
-        this.sql.exec(`UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`);
+        this.sql.exec("UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''");
+      } catch {}
+      try {
+        this.sql.exec(
+          `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`
+        );
+      } catch {}
+      try {
+        this.sql.exec(
+          `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`
+        );
       } catch {}
     }
 
@@ -1519,6 +1537,37 @@ export class OrgDO extends DurableObject<DOEnv> {
       JSON.stringify(info)
     );
     dispatchAdminEvent(this.ctx, this.env, { type: 'org_upsert', payload: info });
+  }
+
+  getExperimentalSettings(): OrganizationExperimentalSettings {
+    const rows = this.sql.exec<{ value: string }>(
+      'SELECT value FROM org_info WHERE key = ?',
+      ORG_EXPERIMENTAL_SETTINGS_KEY,
+    ).toArray();
+    if (rows.length === 0) {
+      return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
+    }
+
+    try {
+      return parseOrganizationExperimentalSettings(JSON.parse(rows[0]!.value));
+    } catch {
+      return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
+    }
+  }
+
+  setExperimentalSettings(settings: Partial<OrganizationExperimentalSettings>): OrganizationExperimentalSettings {
+    const nextSettings = parseOrganizationExperimentalSettings({
+      ...this.getExperimentalSettings(),
+      ...settings,
+    });
+
+    this.sql.exec(
+      'INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)',
+      ORG_EXPERIMENTAL_SETTINGS_KEY,
+      JSON.stringify(nextSettings),
+    );
+
+    return nextSettings;
   }
 
   async createOrg(id: string, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
@@ -2619,19 +2668,21 @@ export class OrgDO extends DurableObject<DOEnv> {
     title: string | undefined,
     createdBy?: string,
     firstUserMessage?: string,
-    model?: LlmModel
+    model?: LlmModel,
+    provider: 'claude' | 'codex' = 'claude'
   ): OrgThread {
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || DEFAULT_THREAD_TITLE;
     const creator = createdBy?.trim() || 'system';
     const msg = firstUserMessage?.slice(0, 500) || null;
-    const normalizedModel = normalizeLlmModel(model);
+    const normalizedModel = normalizeLlmModel(model, provider);
     this.sql.exec(
-      'INSERT INTO threads (id, workspace_id, title, created_by, model, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       id,
       workspaceId,
       t,
+      provider,
       creator,
       normalizedModel,
       now,
@@ -2643,6 +2694,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       id,
       workspace_id: workspaceId,
       title: t,
+      provider,
       created_by: creator,
       model: normalizedModel,
       created_at: now,
@@ -2693,23 +2745,11 @@ export class OrgDO extends DurableObject<DOEnv> {
   updateThreadModel(id: string, model: LlmModel, actorId?: string): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
-    const now = Date.now();
-    const normalizedModel = normalizeLlmModel(model);
-    this.sql.exec('UPDATE threads SET model = ?, updated_at = ? WHERE id = ?', normalizedModel, now, id);
-    if (actorId) {
-      this.log('thread_model_updated', actorId, id, { model: normalizedModel });
+    const normalizedModel = normalizeLlmModel(model, existing.provider ?? 'claude');
+    if (normalizedModel !== existing.model) {
+      return existing;
     }
-    const updated = {
-      ...existing,
-      model: normalizedModel,
-      updated_at: now,
-    };
-    this.getInfo().then((info) => {
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
-    }).catch((err) => {
-      console.error('Failed to sync thread model update to AdminIndex', err);
-    });
-    return updated;
+    return existing;
   }
 
   /**
@@ -2740,6 +2780,10 @@ export class OrgDO extends DurableObject<DOEnv> {
   adminUpdateThread(id: string, updates: { title?: string; created_by?: string; model?: LlmModel }, actorId?: string): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
+    const normalizedModel = updates.model !== undefined
+      ? normalizeLlmModel(updates.model, existing.provider ?? 'claude')
+      : undefined;
+    const persistedModel = normalizedModel === existing.model ? normalizedModel : undefined;
     const now = Date.now();
 
     const setClauses: string[] = ['updated_at = ?'];
@@ -2753,9 +2797,9 @@ export class OrgDO extends DurableObject<DOEnv> {
       setClauses.push('created_by = ?');
       params.push(updates.created_by);
     }
-    if (updates.model !== undefined) {
+    if (persistedModel !== undefined) {
       setClauses.push('model = ?');
-      params.push(normalizeLlmModel(updates.model));
+      params.push(persistedModel);
     }
 
     params.push(id);
@@ -2769,7 +2813,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       ...existing,
       title: updates.title ?? existing.title,
       created_by: updates.created_by ?? existing.created_by,
-      model: updates.model !== undefined ? normalizeLlmModel(updates.model) : existing.model,
+      model: persistedModel ?? existing.model,
       updated_at: now,
     };
     this.getInfo().then((info) => {

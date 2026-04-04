@@ -14,7 +14,7 @@ const BOOT_LINES = [
   },
   {
     text: 'Starting first conversation',
-    subtitle: 'Claude will ask a couple questions to get you started',
+    subtitle: 'The agent will ask a couple questions to get you started',
   },
   {
     text: 'Enabling live publishing',

@@ -204,6 +204,11 @@ interface WelcomeScreenProps {
   isCreatingThread: boolean;
   model: LlmModel;
   onModelChange: (model: LlmModel) => void;
+  modelOptions: ReadonlyArray<{
+    value: LlmModel;
+    label: string;
+    description: string;
+  }>;
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
@@ -329,6 +334,7 @@ export function WelcomeScreen({
   isCreatingThread,
   model,
   onModelChange,
+  modelOptions,
 }: WelcomeScreenProps) {
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
@@ -414,6 +420,7 @@ export function WelcomeScreen({
             onAttachmentRemove={onAttachmentRemove}
             model={model}
             onModelChange={onModelChange}
+            modelOptions={modelOptions}
             modelDisabled={isCreatingThread}
           />
         )}

@@ -4,7 +4,7 @@
 
 ## Overview
 
-camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Users chat with a Claude-powered agent that has a persistent workspace where files survive across sessions. Users create applications by having the agent write code, then publish them to live `*.camelai.app` URLs. The app supports integrations (connections) to external services.
+camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Users chat with a persistent coding agent workspace that can run either the Claude Agent SDK or Codex app-server depending on thread/provider settings. Users create applications by having the agent write code, then publish them to live `*.camelai.app` URLs. The app supports integrations (connections) to external services.
 
 ## Architecture
 
@@ -36,6 +36,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - WebSocket client for real-time streaming
    - Tailwind CSS v4 + shadcn/ui components
    - Cloudflare Workers SSR via `@cloudflare/vite-plugin`
+   - Organization settings include an Experimental page; the `codex_gpt_models` org flag controls whether GPT model options appear in Camel chat for new OpenAI-backed threads, while existing GPT threads still render their locked model
 
 2. **Workers** (`workers/`)
    - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP, admin CLI API)
@@ -124,18 +125,19 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 
 1. WebSocket connects to `/ws/{workspace}` → Worker validates access → forwards to `ChatThreadDO`
 2. `ChatThreadDO` opens WebSocket to sandbox `control-plane.mjs`
-3. `control-plane.mjs` calls Claude SDK `query()` and streams events back with monotonic `seq` numbers
+3. `control-plane.mjs` selects the thread harness: Claude threads use Claude SDK `query()`, while Codex threads run a warm per-thread `codex app-server` over stdio against the sandbox OpenAI proxy
 4. On reconnects, `ChatThreadDO` sends `lastSeq`, replays missed events, dedupes, resumes streaming
 5. Browser user messages are author-attributed inside `ChatThreadDO` by serializing each WebSocket's `{ userId, userName, userEmail }` as a socket attachment on upgrade and reading that attachment when the socket sends `type: "message"`. This keeps multiplayer threads from reusing a thread-global author identity across collaborators.
-6. Claude SDK stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
-7. `Chat.tsx` discloses compaction progress in-flight: `CompactingIndicator` turns on for manual `/compact` and auto-compaction (`system/status` with `status: "compacting"`, plus `stream_event/content_block_start(type=compaction)` fallback) and clears on summary capture, `status: null`, turn `result`/`error`, reconnect reset, or reconnect-exhausted close.
-8. `ChatThreadDO` computes context usage from `stream_event.message_start` usage and now broadcasts live `context_usage_state` updates during a turn when a model-scoped `contextWindow` cache is available (`chatContextWindowByModel`, persisted in DO KV). On `result`, it computes and persists the canonical value (`chatContextUsedPercent`) and replays `transientContextUsedPercent ?? contextUsedPercent` on chat init so reconnects can resume from the freshest value. The composer `ContextIndicator` (left toolbar, after Mic) appears when usage is `>= 50%`, shows `"XX% used"`, and can trigger `/compact` without mutating unsent draft text.
-9. Pending `AskUserQuestion` widgets are keyboard-first: the card auto-focuses on arrival, supports `1`-`9`/`0` option shortcuts, `↑`/`↓` focus movement, `Space` toggle, `Enter` next/submit, `Escape` blur-or-collapse, and returns focus to the composer after submission.
-10. Chat composer drafts are stored client-side in `localStorage` under `draft:{workspaceId}:{threadId|new}`. Thread chats and the welcome screen keep separate text + completed-attachment drafts, flush pending debounced saves on unmount/navigation, preserve a backup across optimistic clears while delivery is in flight, and clear that backup only after a confirmed success path (`result` for thread sends, thread creation handoff plus first-turn result for new chats).
-11. Threads created from hidden system-seeded handoff flows can start with a fallback title (for example app chats use `Working on <app>`). `ChatThreadDO` upgrades both the thread title and `first_user_message` when the first non-system, non-slash user message arrives.
-12. `ChatThreadDO` scans any `(user uploaded file to /mnt/user-uploads/...)` references on browser and external turns with an allowlist heuristic and prepends a hidden file-safety `<camelai system message>` before author attribution when any file looks unsafe.
-13. Stored-name overrides treat `Dockerfile*`, `docker-compose*`, `compose*`, `Makefile*`, and `.env*` as unsafe even when the extension itself is in the safe allowlist. This currently affects web chat and email ingress; Slack is unchanged until it starts appending upload refs.
-14. `sandbox/control-plane.mjs` appends a standing `<prohibited_activities>` section to the agent system prompt requiring hard refusals for reverse proxies/tunnels, relay or forwarding use, non-Cloudflare-Worker deployments, crypto mining, and malware or exploit work.
+6. Threads persist their harness on the org `threads` table (`provider = claude|codex`), and new web threads default to `codex` when the org AI provider is set to OpenAI
+7. Claude SDK still stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`, while `ChatThreadDO` now also persists normalized structured transcripts in DO KV so Codex intermediate items survive reloads
+8. `Chat.tsx` discloses compaction progress in-flight: `CompactingIndicator` turns on for manual `/compact` and auto-compaction (`system/status` with `status: "compacting"`, plus `stream_event/content_block_start(type=compaction)` fallback) and clears on summary capture, `status: null`, turn `result`/`error`, reconnect reset, or reconnect-exhausted close.
+9. `ChatThreadDO` computes context usage from `stream_event.message_start` usage and now broadcasts live `context_usage_state` updates during a turn when a model-scoped `contextWindow` cache is available (`chatContextWindowByModel`, persisted in DO KV). On `result`, it computes and persists the canonical value (`chatContextUsedPercent`) and replays `transientContextUsedPercent ?? contextUsedPercent` on chat init so reconnects can resume from the freshest value. The composer `ContextIndicator` (left toolbar, after Mic) appears when usage is `>= 50%`, shows `"XX% used"`, and can trigger `/compact` without mutating unsent draft text.
+10. Pending `AskUserQuestion` widgets are keyboard-first: the card auto-focuses on arrival, supports `1`-`9`/`0` option shortcuts, `↑`/`↓` focus movement, `Space` toggle, `Enter` next/submit, `Escape` blur-or-collapse, and returns focus to the composer after submission.
+11. Chat composer drafts are stored client-side in `localStorage` under `draft:{workspaceId}:{threadId|new}`. Thread chats and the welcome screen keep separate text + completed-attachment drafts, flush pending debounced saves on unmount/navigation, preserve a backup across optimistic clears while delivery is in flight, and clear that backup only after a confirmed success path (`result` for thread sends, thread creation handoff plus first-turn result for new chats).
+12. Threads created from hidden system-seeded handoff flows can start with a fallback title (for example app chats use `Working on <app>`). `ChatThreadDO` upgrades both the thread title and `first_user_message` when the first non-system, non-slash user message arrives.
+13. `ChatThreadDO` scans any `(user uploaded file to /mnt/user-uploads/...)` references on browser and external turns with an allowlist heuristic and prepends a hidden file-safety `<camelai system message>` before author attribution when any file looks unsafe.
+14. Stored-name overrides treat `Dockerfile*`, `docker-compose*`, `compose*`, `Makefile*`, and `.env*` as unsafe even when the extension itself is in the safe allowlist. This currently affects web chat and email ingress; Slack is unchanged until it starts appending upload refs.
+15. `sandbox/control-plane.mjs` appends a standing `<prohibited_activities>` section to the agent system prompt requiring hard refusals for reverse proxies/tunnels, relay or forwarding use, non-Cloudflare-Worker deployments, crypto mining, and malware or exploit work.
 
 ### Agent Teams Polling
 
@@ -145,7 +147,7 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 
 ### Thread Message History Retrieval
 
-`getMessages()` no longer parses JSONL in the Worker runtime. It now calls sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, and sandbox-host reads + parses the JSONL file into `Message[]` before returning it. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the JSON response body through from sandbox-host without buffering the full payload in Worker memory.
+`getMessages()` no longer parses JSONL in the Worker runtime. It first checks `ChatThreadDO` for persisted normalized transcript state (used for Codex and for reconnect-safe structured history), then falls back to sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}` for legacy Claude JSONL-backed threads. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker returns the persisted DO transcript when available or streams the sandbox-host JSON response body through otherwise.
 
 ### QAML Backdoor Read-Only Thread View
 
@@ -191,6 +193,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
 - Sandbox-host injects `x-sandbox-secret`, `x-chiridion-org-id`, `x-chiridion-workspace-id`, and `x-chiridion-thread-id` on upstream worker requests.
 - `claude-proxy` (`/api/claude/v1/messages` and `/api/claude/v1/messages/count_tokens`) and OpenAI proxy (`/api/openai/v1/*`) accept only sandbox-host injected auth (no signed-token fallback path).
+- Org BYOK credentials stay off the container env and are attached to the chat websocket upgrade as thread-scoped sandbox-host headers. Anthropic/Bedrock keys are used for Claude threads; OpenAI keys are used for Codex threads.
 - Proxy thread mappings are session-based: active while chat WS is open; on close they enter close-grace (`PROXY_SESSION_CLOSE_GRACE_MS`) and then are cleaned up.
 
 ### Data Proxy (SQL Server, PostgreSQL, MySQL)
@@ -207,8 +210,10 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 
 - Sandbox containers call OpenAI-compatible routes at `OPENAI_PROXY_URL` / `OPENAI_BASE_URL` (no real API key required; `OPENAI_API_KEY=proxy`).
 - Worker route `/api/openai/v1/*` validates sandbox proxy headers, derives org/workspace/thread identity, and forwards through sandbox-host control route `/v1/workspaces/{orgId}/{workspaceId}/openai-proxy/v1/*`.
+- When a chat websocket registered a thread-scoped OpenAI BYOK key, sandbox-host bypasses AI Gateway for that thread and forwards `/api/openai/v1/*` directly to `https://api.openai.com/v1/*` with the real key.
 - sandbox-host control route forwards to Cloudflare AI Gateway and injects `cf-aig-metadata` with tenant context (`uid`, `chiridion.orgId`, `chiridion.workspaceId`, `chiridion.threadId`) so gateway-side rate limits/spend policies can be scoped per tenant.
 - For `/v1/chat/completions`, sandbox-host enforces `model: "dynamic/auto"` to mirror virtual AI binding behavior.
+- sandbox-host records OpenAI usage and spend for both direct BYOK and AI Gateway proxy traffic by parsing response usage fields from non-streaming JSON bodies and streamed Responses API `response.completed` events, then pricing cached vs uncached input locally.
 
 ### Anthropic Gateway Bedrock Fallback
 

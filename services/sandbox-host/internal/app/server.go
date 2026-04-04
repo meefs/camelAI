@@ -50,6 +50,7 @@ type ProxyThreadContext struct {
 	ByokAnthropicKey  string
 	ByokBedrockToken  string
 	ByokBedrockRegion string
+	ByokOpenAIKey     string
 }
 
 type WorkspaceRoute struct {
@@ -610,6 +611,7 @@ func (s *Server) handleChatProxy(
 	byokAnthropicKey := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Anthropic-Key"))
 	byokBedrockToken := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Bedrock-Token"))
 	byokBedrockRegion := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Bedrock-Region"))
+	byokOpenAIKey := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-OpenAI-Key"))
 
 	workerBaseURL := normalizeWorkerBaseURL(firstNonEmpty(req.Header.Get(s.cfg.HeaderWorkerBaseURL), s.cfg.WorkerBaseURL))
 	if workerBaseURL == "" {
@@ -645,6 +647,7 @@ func (s *Server) handleChatProxy(
 		ByokAnthropicKey:  byokAnthropicKey,
 		ByokBedrockToken:  byokBedrockToken,
 		ByokBedrockRegion: byokBedrockRegion,
+		ByokOpenAIKey:     byokOpenAIKey,
 	}
 	current := copyProxyThreadContext(s.proxyThreads[threadKey])
 	s.proxyMu.Unlock()
@@ -914,6 +917,12 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	// Route Claude API requests directly to Bedrock/Anthropic (no AI Gateway).
 	if strings.HasPrefix(proxy.UpstreamPath, "/api/claude/") && (s.cfg.AnthropicAPIKey != "" || s.cfg.BedrockAccessToken != "") {
 		s.forwardClaudeDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+		return
+	}
+
+	// Route OpenAI API requests to AI Gateway (still uses gateway).
+	if strings.HasPrefix(proxy.UpstreamPath, "/api/openai/") && threadContext.ByokOpenAIKey != "" {
+		s.forwardOpenAIDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
 		return
 	}
 
@@ -1239,8 +1248,8 @@ func (s *Server) forwardClaudeDirect(
 		usage.Model = extractModelFromRequestBody(rawBody)
 	}
 
-	if isMessagesEndpoint && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
-		go s.recordClaudeUsage(threadContext, usedProvider, usage, totalDurationMs)
+	if isMessagesEndpoint && usage.HasBillableTokens() {
+		go s.recordUsage(threadContext, usedProvider, usage, totalDurationMs)
 	}
 }
 
@@ -1344,8 +1353,8 @@ func (s *Server) checkOrgBudget(orgID string) (exceeded bool, message string) {
 	)
 }
 
-// recordClaudeUsage persists token usage and cost to the state store.
-func (s *Server) recordClaudeUsage(tc *ProxyThreadContext, provider string, usage UsageTokens, durationMs int64) {
+// recordUsage persists token usage and cost to the state store.
+func (s *Server) recordUsage(tc *ProxyThreadContext, provider string, usage UsageTokens, durationMs int64) {
 	costUSD := usage.CostUSD()
 
 	record := state.UsageRecord{
@@ -1607,9 +1616,11 @@ func (s *Server) forwardOpenAIToAIGateway(
 
 	// Resolve model and determine gateway provider
 	gatewayProvider := "compat"
+	var err error
+	var rawBody []byte
 	var forwardBody io.Reader = req.Body
 	if req.Method == http.MethodPost {
-		rawBody, err := io.ReadAll(req.Body)
+		rawBody, err = io.ReadAll(req.Body)
 		if err != nil {
 			errorJSON(w, "Failed to read request body", http.StatusBadRequest)
 			return
@@ -1690,7 +1701,9 @@ func (s *Server) forwardOpenAIToAIGateway(
 	copyHeaders(w.Header(), resp.Header)
 	applyStreamingResponseHeaders(w.Header(), resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
-	if err := copyResponseBody(w, resp.Body); err != nil {
+	streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
+	usage, err := copyResponseBodyWithUsage(w, resp.Body, streaming)
+	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.trace("gateway_openai_proxy_copy_error", map[string]any{
 				"requestId":       requestID,
@@ -1699,6 +1712,117 @@ func (s *Server) forwardOpenAIToAIGateway(
 				"error":           err.Error(),
 			})
 		}
+	}
+	if usage.Model == "" {
+		usage.Model = extractModelFromRequestBody(rawBody)
+	}
+	if resp.StatusCode < 400 && usage.HasBillableTokens() {
+		provider := "openai"
+		if gatewayProvider == "openrouter" {
+			provider = "openrouter"
+		}
+		go s.recordUsage(threadContext, provider, usage, durationMs)
+	}
+}
+
+func (s *Server) forwardOpenAIDirect(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	openaiPath := strings.TrimPrefix(proxy.UpstreamPath, "/api/openai")
+	normalizedPath, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
+	if !ok {
+		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
+		return
+	}
+
+	targetURL := "https://api.openai.com" + normalizedPath
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	var err error
+	var rawBody []byte
+	var forwardBody io.Reader = req.Body
+	if req.Method == http.MethodPost {
+		rawBody, err = io.ReadAll(req.Body)
+		if err != nil {
+			errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		forwardBody = bytes.NewReader(rawBody)
+	}
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, forwardBody)
+	if err != nil {
+		errorJSON(w, "Failed to create OpenAI request", http.StatusInternalServerError)
+		return
+	}
+
+	headers := sanitizeGatewayUpstreamHeaders(req.Header)
+	headers.Set("Authorization", "Bearer "+threadContext.ByokOpenAIKey)
+	applyStreamingRequestHeaders(headers)
+	forwardReq.Header = headers
+
+	s.trace("byok_openai_direct_start", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"targetPath":      normalizedPath,
+	})
+	s.containers.AddProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath))
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		s.trace("byok_openai_direct_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"method":          req.Method,
+			"threadId":        threadContext.ThreadID,
+			"durationMs":      durationMs,
+			"error":           upstreamErr.Error(),
+		})
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, durationMs)
+		errorJSON(w, "OpenAI upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	s.trace("byok_openai_direct_complete", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"status":          resp.StatusCode,
+		"durationMs":      durationMs,
+	})
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), resp.StatusCode, durationMs)
+
+	copyHeaders(w.Header(), resp.Header)
+	applyStreamingResponseHeaders(w.Header(), resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
+	usage, err := copyResponseBodyWithUsage(w, resp.Body, streaming)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.trace("byok_openai_direct_copy_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"threadId":        threadContext.ThreadID,
+			"error":           err.Error(),
+		})
+	}
+	if usage.Model == "" {
+		usage.Model = extractModelFromRequestBody(rawBody)
+	}
+	if resp.StatusCode < 400 && usage.HasBillableTokens() {
+		go s.recordUsage(threadContext, "openai", usage, durationMs)
 	}
 }
 

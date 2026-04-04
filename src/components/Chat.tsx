@@ -6,6 +6,7 @@ import { useNavigate, useFetcher, useLocation, useRevalidator } from 'react-rout
 import { ArrowDown, RefreshCw, X, ChevronDown, Globe, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import type {
+  ChatHarness,
   Message,
   ContentBlock,
   LlmModel,
@@ -16,6 +17,7 @@ import type {
   Integration,
   PreviewTarget,
   PreviewTab,
+  OrganizationExperimentalSettings,
 } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -75,12 +77,18 @@ import {
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from '@/lib/streaming';
+import { applyRuntimeEventToMessages } from '../../desktop/shared/message-state';
 import { getAppUrl, getVanityDomain, getIframeDomain, buildAppLabel } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';
 import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
 import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
-import { DEFAULT_LLM_MODEL } from '@/lib/llm-provider-config';
+import {
+  getDefaultLlmModel,
+  getVisibleLlmModelOptions,
+  isLlmModel,
+  THREAD_MODEL_LOCK_MESSAGE,
+} from '@/lib/llm-provider-config';
 import {
   loadDraft,
   removeDraft,
@@ -95,6 +103,8 @@ interface ChatProps {
   initialMessages?: Message[];
   threadTitle?: string | null;
   threadModel?: LlmModel | null;
+  threadProvider?: ChatHarness | null;
+  experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
   initialActiveTabId?: string | null;
@@ -123,6 +133,7 @@ interface PendingNewThreadMessagePayload {
   threadId?: string;
   threadTitle?: string;
   threadModel?: LlmModel;
+  threadProvider?: ChatHarness;
   workspaceId?: string;
   orgSlug?: string;
 }
@@ -881,6 +892,8 @@ export default function Chat({
   initialMessages,
   threadTitle,
   threadModel,
+  threadProvider,
+  experimentalSettings,
   initialPreviewTarget,
   initialPreviewTabs,
   initialActiveTabId,
@@ -896,7 +909,7 @@ export default function Chat({
   const location = useLocation();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{
-    thread?: { id: string; title?: string; model: LlmModel };
+    thread?: { id: string; title?: string; model: LlmModel; provider: ChatHarness };
     error?: string;
   }>();
   const updateThreadModelFetcher = useFetcher<{
@@ -905,6 +918,7 @@ export default function Chat({
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
+  const resolvedThreadProvider = threadProvider ?? 'claude';
   const resolvedWorkspaceId = readOnly ? workspaceId : (currentWorkspace?.id ?? workspaceId);
   // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
   // synchronous localStorage reads on every streaming re-render.
@@ -1084,6 +1098,7 @@ export default function Chat({
   // Refs to track current state for use in callbacks (avoids stale closures)
   const messagesRef = useRef(messages);
   const streamingMessageIdRef = useRef(streamingMessageId);
+  const runtimeStreamingMessageIdsRef = useRef<Record<string, string | null>>({});
   const lastCompletedAssistantMessageIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
 
@@ -1187,6 +1202,14 @@ export default function Chat({
     }
     return map;
   }, [messages]);
+  const availableThreadModels = useMemo(
+    () => getVisibleLlmModelOptions(
+      resolvedThreadProvider,
+      experimentalSettings,
+      threadModel ?? getDefaultLlmModel(resolvedThreadProvider),
+    ),
+    [resolvedThreadProvider, experimentalSettings, threadModel]
+  );
 
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? '');
   const [ready, setReady] = useState(false);
@@ -1195,7 +1218,7 @@ export default function Chat({
     initialWelcomeInput ?? initialWelcomeDraft?.text ?? ''
   ));
   const [selectedThreadModel, setSelectedThreadModel] = useState<LlmModel>(
-    threadModel ?? DEFAULT_LLM_MODEL
+    threadModel ?? getDefaultLlmModel(resolvedThreadProvider)
   );
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? '');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
@@ -1448,8 +1471,8 @@ export default function Chat({
   }, [threadTitle]);
 
   useEffect(() => {
-    setSelectedThreadModel(threadModel ?? DEFAULT_LLM_MODEL);
-  }, [threadId, threadModel]);
+    setSelectedThreadModel(threadModel ?? getDefaultLlmModel(resolvedThreadProvider));
+  }, [resolvedThreadProvider, threadId, threadModel]);
 
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
@@ -2055,7 +2078,7 @@ export default function Chat({
       return;
     }
 
-    if (data.type === 'thread_model_updated' && (data.model === 'sonnet' || data.model === 'opus')) {
+    if (data.type === 'thread_model_updated' && isLlmModel(data.model, resolvedThreadProvider)) {
       setSelectedThreadModel(data.model);
       return;
     }
@@ -2080,6 +2103,7 @@ export default function Chat({
     }
   }, [
     openTabForTarget,
+    resolvedThreadProvider,
     setLocalPreviewSessionState,
     bumpIframeKey,
     bumpFilePreviewKey,
@@ -2262,6 +2286,34 @@ export default function Chat({
         sessionIdRef.current = newSessionId;
         if (id) {
           persistSessionState(id);
+        }
+      } else if (data.type === 'runtime_event') {
+        if (!id) {
+          return;
+        }
+        const runtimeEvent = data.event;
+        setMessages((prev) => {
+          const next = applyRuntimeEventToMessages(
+            prev,
+            id,
+            'codex',
+            runtimeEvent,
+            runtimeStreamingMessageIdsRef.current,
+          );
+          return next;
+        });
+        const nextStreamingId = runtimeStreamingMessageIdsRef.current[id] ?? null;
+        setStreamingMessageId(nextStreamingId);
+
+        if (
+          runtimeEvent &&
+          typeof runtimeEvent === 'object' &&
+          (runtimeEvent as { method?: unknown }).method === 'turn/completed'
+        ) {
+          lastCompletedAssistantMessageIdRef.current = nextStreamingId;
+          setStreamingMessageId(null);
+          setLoading(false);
+          clearPendingDeliveryDraft();
         }
       } else if (data.type === 'sdk_event') {
         // Handle SDK events for streaming
@@ -3324,7 +3376,7 @@ export default function Chat({
       const data = createThreadFetcher.data;
       if (data.thread && pendingNewChatRef.current) {
         // Thread created successfully - store message and navigate
-        const { finalContent, threadTitle, threadModel, draftText, draftAttachments } = pendingNewChatRef.current;
+        const { finalContent, threadTitle, draftText, draftAttachments } = pendingNewChatRef.current;
         const messageWithContext = finalContent;
 
         pendingDeliveryDraftRef.current = null;
@@ -3348,7 +3400,8 @@ export default function Chat({
               message: messageWithContext,
               threadId: data.thread.id,
               threadTitle,
-              threadModel,
+              threadModel: data.thread.model,
+              threadProvider: data.thread.provider,
               workspaceId: resolvedWorkspaceId,
               orgSlug: currentOrg?.slug,
             })
@@ -3385,7 +3438,7 @@ export default function Chat({
   useEffect(() => {
     if (updateThreadModelFetcher.state !== 'idle' || !updateThreadModelFetcher.data) return;
     if (updateThreadModelFetcher.data.error) {
-      setSelectedThreadModel(threadModel ?? DEFAULT_LLM_MODEL);
+      setSelectedThreadModel(threadModel ?? getDefaultLlmModel(resolvedThreadProvider));
       toast.error(updateThreadModelFetcher.data.error);
       return;
     }
@@ -3393,25 +3446,18 @@ export default function Chat({
       setSelectedThreadModel(updateThreadModelFetcher.data.thread.model);
       revalidator.revalidate();
     }
-  }, [revalidator, threadModel, updateThreadModelFetcher.state, updateThreadModelFetcher.data]);
+  }, [revalidator, resolvedThreadProvider, threadModel, updateThreadModelFetcher.state, updateThreadModelFetcher.data]);
 
   const handleThreadModelChange = useCallback((nextModel: LlmModel) => {
-    setSelectedThreadModel(nextModel);
     if (!threadId) {
+      setSelectedThreadModel(nextModel);
       return;
     }
-    updateThreadModelFetcher.submit(
-      {
-        intent: 'updateThreadModel',
-        threadId,
-        model: nextModel,
-      },
-      {
-        method: 'post',
-        action: `/chat/${threadId}`,
-      }
-    );
-  }, [threadId, updateThreadModelFetcher]);
+    if (nextModel !== selectedThreadModel) {
+      toast.error(THREAD_MODEL_LOCK_MESSAGE);
+    }
+    setSelectedThreadModel(threadModel ?? getDefaultLlmModel(resolvedThreadProvider));
+  }, [resolvedThreadProvider, selectedThreadModel, threadId, threadModel]);
 
   const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
     if (!resolvedWorkspaceId) {
@@ -4298,6 +4344,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   onCompact={handleCompactFromIndicator}
                   model={selectedThreadModel}
                   onModelChange={handleThreadModelChange}
+                  modelOptions={availableThreadModels}
                   modelDisabled={loading || isStreaming || updateThreadModelFetcher.state !== 'idle'}
                   textareaRef={composerTextareaRef}
                 />
@@ -4421,6 +4468,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   isCreatingThread={isCreatingThread || createThreadFetcher.state !== 'idle'}
                   model={selectedThreadModel}
                   onModelChange={handleThreadModelChange}
+                  modelOptions={availableThreadModels}
                 />
               </div>
             </>

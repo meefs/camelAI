@@ -71,6 +71,7 @@ export default function AiProviderPage() {
     config?.provider ?? 'default'
   );
   const [apiKey, setApiKey] = useState('');
+  const [openAiApiKey, setOpenAiApiKey] = useState('');
   const [bearerToken, setBearerToken] = useState('');
   const [awsRegion, setAwsRegion] = useState(config?.config?.aws_region ?? 'us-east-1');
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -85,6 +86,7 @@ export default function AiProviderPage() {
       if (fetcherData.success && !fetcherData.message) {
         // Save succeeded, clear form
         setApiKey('');
+        setOpenAiApiKey('');
         setBearerToken('');
         setTestResult(null);
       }
@@ -111,6 +113,17 @@ export default function AiProviderPage() {
       }
       fetcher.submit(
         { intent: 'setProvider', provider: 'anthropic', api_key: apiKey },
+        { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+      );
+      return;
+    }
+
+    if (selectedProvider === 'openai') {
+      if (!openAiApiKey && config?.provider === 'openai') {
+        return;
+      }
+      fetcher.submit(
+        { intent: 'setProvider', provider: 'openai', api_key: openAiApiKey },
         { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
       );
       return;
@@ -149,6 +162,7 @@ export default function AiProviderPage() {
   function handleRemove() {
     setTestResult(null);
     setApiKey('');
+    setOpenAiApiKey('');
     setBearerToken('');
     setSelectedProvider('default');
     fetcher.submit(
@@ -161,7 +175,7 @@ export default function AiProviderPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="AI Provider"
-        description="Configure your own API key to bypass the default proxy. Your key will be encrypted and stored securely."
+        description="Configure your own provider key for Claude or Codex. Keys are encrypted at rest and used through the sandbox proxy."
       />
       <Separator />
 
@@ -228,6 +242,12 @@ export default function AiProviderPage() {
                 </Label>
               </div>
               <div className="flex items-center space-x-2">
+                <RadioGroupItem value="openai" id="openai" />
+                <Label htmlFor="openai" className="font-normal cursor-pointer">
+                  OpenAI / Codex (direct API)
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2">
                 <RadioGroupItem value="bedrock" id="bedrock" />
                 <Label htmlFor="bedrock" className="font-normal cursor-pointer">
                   AWS Bedrock (API key)
@@ -259,6 +279,22 @@ export default function AiProviderPage() {
                   </a>
                 </p>
               </div>
+            </div>
+          )}
+
+          {selectedProvider === 'openai' && (
+            <div className="space-y-2">
+              <Label htmlFor="openai-key">OpenAI API Key</Label>
+              <Input
+                id="openai-key"
+                type="password"
+                placeholder={config?.provider === 'openai' ? config.key_hint : 'sk-...'}
+                value={openAiApiKey}
+                onChange={(e) => setOpenAiApiKey(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Codex chats use this key through the same sandbox proxy path as Claude.
+              </p>
             </div>
           )}
 
@@ -319,6 +355,9 @@ export default function AiProviderPage() {
               disabled={
                 isSaving ||
                 (selectedProvider === 'anthropic' && !apiKey && config?.provider !== 'anthropic') ||
+                (selectedProvider === 'openai' &&
+                  !openAiApiKey &&
+                  config?.provider !== 'openai') ||
                 (selectedProvider === 'bedrock' &&
                   !bearerToken &&
                   config?.provider !== 'bedrock')

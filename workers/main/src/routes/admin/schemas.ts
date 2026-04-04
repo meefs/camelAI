@@ -110,7 +110,7 @@ export const BlockSignupIpBodySchema = z.object({
 export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
-  model: z.enum(['sonnet', 'opus']).optional(),
+  model: z.enum(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -154,10 +154,10 @@ export const OrgSchema = z.object({
   workspace_count: z.number().int(),
 });
 
-export const LlmModelSchema = z.enum(['sonnet', 'opus']);
+export const LlmModelSchema = z.enum(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']);
 
 export const LlmProviderConfigSchema = z.object({
-  provider: z.enum(['anthropic', 'bedrock']),
+  provider: z.enum(['anthropic', 'bedrock', 'openai']),
   config: z.object({
     aws_region: z.string().optional(),
   }),

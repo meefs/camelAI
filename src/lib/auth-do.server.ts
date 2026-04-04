@@ -696,11 +696,13 @@ export async function adminGetWorkspaceDetail(
       id: t.id,
       workspace_id: t.workspace_id,
       title: t.title,
+      provider: t.provider ?? 'claude',
       model: t.model,
       created_by: t.created_by,
       created_at: t.created_at,
       updated_at: t.updated_at,
       user_message_count: t.user_message_count ?? 0,
+      first_user_message: t.first_user_message ?? null,
     }));
 
   return {

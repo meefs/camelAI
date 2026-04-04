@@ -1,9 +1,18 @@
-import type { LlmModel, LlmProvider, LlmProviderConfigPublic } from '../types';
+import type {
+  ChatHarness,
+  LlmModel,
+  LlmProvider,
+  LlmProviderConfigPublic,
+  OrganizationExperimentalSettings,
+} from '../types';
 import { decryptCredentials } from './integration-crypto';
 
 export const DEFAULT_LLM_MODEL: LlmModel = 'sonnet';
+export const DEFAULT_CODEX_MODEL: LlmModel = 'gpt-5.4';
+export const THREAD_MODEL_LOCK_MESSAGE =
+  'This thread is locked to its original model. Start a new thread to use a different model.';
 
-export const LLM_MODEL_OPTIONS: ReadonlyArray<{
+export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
@@ -12,16 +21,111 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
   { value: 'opus', label: 'Opus', description: 'Smarter, but slower and more expensive' },
 ];
 
+export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
+  value: LlmModel;
+  label: string;
+  description: string;
+}> = [
+  { value: 'gpt-5.4', label: 'GPT-5.4', description: 'Default and recommended' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', description: 'Faster and cheaper' },
+];
+
+export const LLM_MODEL_OPTIONS: ReadonlyArray<{
+  value: LlmModel;
+  label: string;
+  description: string;
+}> = CLAUDE_LLM_MODEL_OPTIONS;
+
 export interface LlmProviderStoredConfig {
   aws_region?: string;
 }
 
-export function isLlmModel(value: unknown): value is LlmModel {
-  return value === 'sonnet' || value === 'opus';
+export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings = {
+  codex_gpt_models: false,
+};
+
+export function parseOrganizationExperimentalSettings(raw: unknown): OrganizationExperimentalSettings {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
+  }
+
+  const settings = raw as Record<string, unknown>;
+  return {
+    codex_gpt_models: settings.codex_gpt_models === true,
+  };
 }
 
-export function normalizeLlmModel(value: unknown): LlmModel {
-  return isLlmModel(value) ? value : DEFAULT_LLM_MODEL;
+export function isExperimentalCodexModelsEnabled(
+  settings: OrganizationExperimentalSettings | null | undefined,
+): boolean {
+  return Boolean(settings?.codex_gpt_models);
+}
+
+export function getDefaultThreadProvider(
+  orgProvider: string | null | undefined,
+  experimentalSettings?: OrganizationExperimentalSettings | null,
+): ChatHarness {
+  return orgProvider === 'openai' && isExperimentalCodexModelsEnabled(experimentalSettings)
+    ? 'codex'
+    : 'claude';
+}
+
+export function getDefaultLlmModel(provider: ChatHarness): LlmModel {
+  return provider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_LLM_MODEL;
+}
+
+export function getLlmModelOptions(provider: ChatHarness): ReadonlyArray<{
+  value: LlmModel;
+  label: string;
+  description: string;
+}> {
+  return provider === 'codex' ? CODEX_LLM_MODEL_OPTIONS : CLAUDE_LLM_MODEL_OPTIONS;
+}
+
+export function getVisibleLlmModelOptions(
+  provider: ChatHarness,
+  experimentalSettings?: OrganizationExperimentalSettings | null,
+  includeModel?: LlmModel | null,
+): ReadonlyArray<{
+  value: LlmModel;
+  label: string;
+  description: string;
+}> {
+  const baseOptions = provider === 'codex'
+    ? (
+        isExperimentalCodexModelsEnabled(experimentalSettings)
+          ? CODEX_LLM_MODEL_OPTIONS
+          : []
+      )
+    : CLAUDE_LLM_MODEL_OPTIONS;
+
+  if (!includeModel || baseOptions.some((option) => option.value === includeModel)) {
+    return baseOptions;
+  }
+
+  const fallbackOption = [...CODEX_LLM_MODEL_OPTIONS, ...CLAUDE_LLM_MODEL_OPTIONS]
+    .find((option) => option.value === includeModel);
+
+  return fallbackOption ? [fallbackOption, ...baseOptions] : baseOptions;
+}
+
+export function isLlmModel(value: unknown, provider?: ChatHarness): value is LlmModel {
+  if (provider === 'codex') {
+    return value === 'gpt-5.4' || value === 'gpt-5.4-mini';
+  }
+  if (provider === 'claude') {
+    return value === 'sonnet' || value === 'opus';
+  }
+  return (
+    value === 'sonnet' ||
+    value === 'opus' ||
+    value === 'gpt-5.4' ||
+    value === 'gpt-5.4-mini'
+  );
+}
+
+export function normalizeLlmModel(value: unknown, provider: ChatHarness = 'claude'): LlmModel {
+  return isLlmModel(value, provider) ? value : getDefaultLlmModel(provider);
 }
 
 export function parseStoredLlmProviderConfig(raw: unknown): LlmProviderStoredConfig {
@@ -85,7 +189,10 @@ export async function buildPublicLlmProviderConfig(
       record.credentials_encrypted,
       integrationSecretKey
     );
-    const primaryKey = record.provider === 'anthropic' ? creds.api_key : creds.bearer_token;
+    const primaryKey =
+      record.provider === 'anthropic' || record.provider === 'openai'
+        ? creds.api_key
+        : creds.bearer_token;
     if (primaryKey) {
       hint = keyHint(primaryKey);
     }

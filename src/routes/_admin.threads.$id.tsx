@@ -4,6 +4,7 @@ import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
 import { getVanityDomain } from '@/lib/app-url.server';
+import { isLlmModel, THREAD_MODEL_LOCK_MESSAGE } from '@/lib/llm-provider-config';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { ThreadEditForm } from '@/components/admin/thread-edit-form';
 import { Badge } from '@/components/ui/badge';
@@ -53,18 +54,26 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!title?.trim()) {
       return { error: 'Thread title is required' };
     }
-    if (model !== null && model !== 'sonnet' && model !== 'opus') {
-      return { error: 'Invalid thread model' };
-    }
     if (!orgId) {
       return { error: 'Org ID is required' };
     }
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+    const existingThread = await stub.getThread(threadId);
+    if (!existingThread) {
+      return { error: 'Thread not found' };
+    }
+    const threadProvider = existingThread.provider ?? 'claude';
+    if (model !== null && !isLlmModel(model, threadProvider)) {
+      return { error: 'Invalid thread model' };
+    }
+    if (model !== null && model !== existingThread.model) {
+      return { error: THREAD_MODEL_LOCK_MESSAGE };
+    }
     await stub.adminUpdateThread(
       threadId,
       {
         title: title.trim(),
-        ...(model === 'sonnet' || model === 'opus' ? { model } : {}),
+        ...(model !== null ? { model } : {}),
       },
       'system-admin'
     );
@@ -77,11 +86,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         env.CHAT_THREAD.idFromName(threadId)
       ) as unknown as {
         setTitle(title: string): Promise<void>;
-        setModel(model: 'sonnet' | 'opus'): Promise<void>;
+        setModel(model: string): Promise<void>;
         refreshRunnerConfig(): Promise<void>;
       };
       await chatThread.setTitle(title.trim());
-      if (model === 'sonnet' || model === 'opus') {
+      if (model !== null) {
         await chatThread.setModel(model);
         await chatThread.refreshRunnerConfig();
       }
@@ -105,12 +114,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   }
 
   const { thread, messages, org_id, org_name, workspace_id, workspace_name, preview_target } = result;
+  const experimentalSettings = await authEnv.ORG
+    .get(authEnv.ORG.idFromName(org_id))
+    .getExperimentalSettings();
 
   // Create plain object for Client Component
   const safeThread = {
     id: thread.id,
     title: thread.title,
     created_by: thread.created_by,
+    provider: thread.provider ?? 'claude',
     model: thread.model,
     created_at: thread.created_at,
     updated_at: thread.updated_at,
@@ -130,6 +143,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspace_id,
     workspace_name,
     preview_target,
+    experimentalSettings,
     vanityDomain,
     jsonlDownloadUrl,
   };
@@ -144,6 +158,7 @@ export default function AdminThreadDetailPage() {
     workspace_id,
     workspace_name,
     preview_target,
+    experimentalSettings,
     vanityDomain,
     jsonlDownloadUrl,
   } = useLoaderData<typeof loader>();
@@ -275,7 +290,7 @@ export default function AdminThreadDetailPage() {
                 <CardDescription>Update thread title and Claude model</CardDescription>
               </CardHeader>
               <CardContent>
-                <ThreadEditForm thread={thread} orgId={org_id} />
+            <ThreadEditForm thread={thread} orgId={org_id} experimentalSettings={experimentalSettings} />
               </CardContent>
             </Card>
 

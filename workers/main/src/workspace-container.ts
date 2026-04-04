@@ -21,6 +21,7 @@ import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   DEFAULT_LLM_MODEL,
+  DEFAULT_CODEX_MODEL,
   parseStoredLlmProviderConfig,
   normalizeLlmModel,
 } from '../../../src/lib/llm-provider-config';
@@ -117,13 +118,15 @@ interface ControlPlaneDeleteResponse {
   code?: string;
 }
 
-export interface ClaudeRunnerEnvOptions {
+export interface ChatRunnerEnvOptions {
   threadId: string;
+  provider: 'claude' | 'codex';
 }
 
 export type ByokProxyCredentials =
   | { provider: 'anthropic'; apiKey: string }
-  | { provider: 'bedrock'; bearerToken: string; region: string };
+  | { provider: 'bedrock'; bearerToken: string; region: string }
+  | { provider: 'openai'; apiKey: string };
 
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
 
@@ -419,7 +422,7 @@ export class WorkspaceContainer {
    * into the container env. The SDK always talks standard Anthropic Messages
    * API through the proxy; sandbox-host decides the upstream.
    */
-  async buildClaudeRunnerEnv(options: ClaudeRunnerEnvOptions): Promise<{
+  async buildChatRunnerEnv(options: ChatRunnerEnvOptions): Promise<{
     envVars: Record<string, string>;
     byokProxy?: ByokProxyCredentials;
   }> {
@@ -427,7 +430,9 @@ export class WorkspaceContainer {
       throw new Error('WorkspaceContainer not initialized');
     }
 
-    console.log(`[Sandbox] buildClaudeRunnerEnv: thread=${options.threadId}`);
+    console.log(
+      `[Sandbox] buildChatRunnerEnv: thread=${options.threadId} provider=${options.provider}`
+    );
     const integrationEnv = await this.fetchIntegrationEnvVars();
 
     // Create a dispatcher session so Playwright scripts can access private deployed apps
@@ -441,15 +446,23 @@ export class WorkspaceContainer {
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
     const thread = await orgStub.getThread(options.threadId);
 
-    // Fetch org-level BYOK provider config (if any)
-    const byokProxy = await this.fetchByokProxyCredentials();
-    integrationEnv.CHIRIDION_CLAUDE_MODEL =
+    const threadProvider = options.provider;
+    const threadModel =
       thread && thread.workspace_id === this.workspaceId
-        ? normalizeLlmModel(thread.model)
-        : DEFAULT_LLM_MODEL;
+        ? normalizeLlmModel(thread.model, threadProvider)
+        : (threadProvider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_LLM_MODEL);
+
+    integrationEnv.CHIRIDION_CLAUDE_MODEL = threadProvider === 'claude' ? threadModel : DEFAULT_LLM_MODEL;
+    // Fetch org-level BYOK provider config (if any)
+    const byokProxy = await this.fetchByokProxyCredentials(options.provider);
+    integrationEnv.CHIRIDION_CODEX_MODEL = threadProvider === 'codex' ? threadModel : DEFAULT_CODEX_MODEL;
 
     return {
-      envVars: { ...integrationEnv, ...appSessionEnv },
+      envVars: {
+        ...integrationEnv,
+        ...appSessionEnv,
+        CHIRIDION_CHAT_PROVIDER: options.provider,
+      },
       byokProxy,
     };
   }
@@ -460,7 +473,9 @@ export class WorkspaceContainer {
    * Both Anthropic and Bedrock BYOK are handled in the Go proxy (sandbox-host).
    * Credentials are passed via WebSocket headers, not container env vars.
    */
-  private async fetchByokProxyCredentials(): Promise<ByokProxyCredentials | undefined> {
+  private async fetchByokProxyCredentials(
+    provider: 'claude' | 'codex'
+  ): Promise<ByokProxyCredentials | undefined> {
     if (!this.orgId) return undefined;
 
     try {
@@ -483,6 +498,11 @@ export class WorkspaceContainer {
         const region = config.aws_region || 'us-east-1';
         console.log(`[Sandbox] BYOK: using Bedrock via proxy (${region}) for org=${this.orgId}`);
         return { provider: 'bedrock', bearerToken: creds.bearer_token, region };
+      }
+
+      if (record.provider === 'openai' && provider === 'codex') {
+        console.log(`[Sandbox] BYOK: using OpenAI via proxy for org=${this.orgId}`);
+        return { provider: 'openai', apiKey: creds.api_key };
       }
 
       return undefined;
@@ -546,6 +566,8 @@ export class WorkspaceContainer {
     } else if (options.byokProxy?.provider === 'bedrock') {
       headers['X-Chiridion-Byok-Bedrock-Token'] = options.byokProxy.bearerToken;
       headers['X-Chiridion-Byok-Bedrock-Region'] = options.byokProxy.region;
+    } else if (options.byokProxy?.provider === 'openai') {
+      headers['X-Chiridion-Byok-OpenAI-Key'] = options.byokProxy.apiKey;
     }
 
     const response = await this.fetchSandbox(this.sandboxUrl('/chat'), {

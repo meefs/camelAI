@@ -69,6 +69,10 @@ export default [
           'routes/_app.settings.organization.ai-provider.tsx'
         ),
         route(
+          'settings/organization/experimental',
+          'routes/_app.settings.organization.experimental.tsx'
+        ),
+        route(
           'settings/organization/usage',
           'routes/_app.settings.organization.usage.tsx'
         ),

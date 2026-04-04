@@ -44,6 +44,11 @@ interface PromptInputProps {
   onCompact?: () => void;
   model?: LlmModel;
   onModelChange?: (model: LlmModel) => void;
+  modelOptions?: ReadonlyArray<{
+    value: LlmModel;
+    label: string;
+    description: string;
+  }>;
   modelDisabled?: boolean;
   // Ref for programmatic focus
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
@@ -105,6 +110,7 @@ export function PromptInput({
   onCompact,
   model,
   onModelChange,
+  modelOptions = LLM_MODEL_OPTIONS,
   modelDisabled = false,
   textareaRef,
 }: PromptInputProps) {
@@ -364,13 +370,13 @@ export function PromptInput({
                     >
                       <SelectTrigger
                         size="sm"
-                        aria-label="Claude model"
+                        aria-label="Thread model"
                         className="h-auto gap-1 rounded-none border-0 bg-transparent px-0 py-0 text-xs font-medium text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground focus-visible:border-0 focus-visible:text-foreground focus-visible:ring-0 focus-visible:underline focus-visible:underline-offset-4"
                       >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent align="start">
-                        {LLM_MODEL_OPTIONS.map((option) => (
+                        {modelOptions.map((option) => (
                           <SelectItem
                             key={option.value}
                             value={option.value}

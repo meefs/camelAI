@@ -7,13 +7,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
-import type { LlmModel } from '@/types';
+import { getVisibleLlmModelOptions, THREAD_MODEL_LOCK_MESSAGE } from '@/lib/llm-provider-config';
+import type { ChatHarness, LlmModel, OrganizationExperimentalSettings } from '@/types';
 
 interface Thread {
   id: string;
   title: string;
   created_by: string;
+  provider: ChatHarness;
   model: LlmModel;
   created_at: number;
   updated_at: number;
@@ -22,9 +23,10 @@ interface Thread {
 interface ThreadEditFormProps {
   thread: Thread;
   orgId: string;
+  experimentalSettings: OrganizationExperimentalSettings;
 }
 
-export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
+export function ThreadEditForm({ thread, orgId, experimentalSettings }: ThreadEditFormProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [title, setTitle] = useState(thread.title);
   const [model, setModel] = useState<LlmModel>(thread.model);
@@ -46,6 +48,8 @@ export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
       }
     }
   }, [fetcher.state, fetcher.data]);
+
+  const modelOptions = getVisibleLlmModelOptions(thread.provider, experimentalSettings, thread.model);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,13 +78,13 @@ export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="thread-model">Claude Model</Label>
-        <Select value={model} onValueChange={(value) => setModel(value as LlmModel)}>
+        <Label htmlFor="thread-model">Thread Model</Label>
+        <Select value={model} onValueChange={(value) => setModel(value as LlmModel)} disabled>
           <SelectTrigger id="thread-model">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {LLM_MODEL_OPTIONS.map((option) => (
+            {modelOptions.map((option) => (
               <SelectItem
                 key={option.value}
                 value={option.value}
@@ -91,6 +95,7 @@ export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
             ))}
           </SelectContent>
         </Select>
+        <p className="text-xs text-muted-foreground">{THREAD_MODEL_LOCK_MESSAGE}</p>
       </div>
 
       <Button type="submit" disabled={saving || !hasChanges}>

@@ -3,14 +3,14 @@ import { redirect, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext, requireSuperuser, requireSessionWorkspaceAccess, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { DEFAULT_LLM_MODEL } from '@/lib/llm-provider-config';
+import { getDefaultLlmModel, isLlmModel, THREAD_MODEL_LOCK_MESSAGE } from '@/lib/llm-provider-config';
 import { getOrg, getWorkerScript } from '@/lib/auth-do';
 import * as authDO from '@/lib/auth-do.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { LlmModel, Message, PreviewTarget } from '@/types';
+import type { ChatHarness, LlmModel, Message, OrganizationExperimentalSettings, PreviewTarget } from '@/types';
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || 'Chat';
@@ -39,14 +39,20 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
           workspaceId?: string;
           orgSlug?: string;
           threadModel?: LlmModel;
+          threadProvider?: ChatHarness;
         };
         if (parsed.threadId === params.id && parsed.workspaceId) {
+          const threadProvider = parsed.threadProvider === 'codex' ? 'codex' : 'claude';
           return {
             threadId: params.id,
             workspaceId: parsed.workspaceId,
             chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
             threadTitle: null,
-            threadModel: parsed.threadModel === 'opus' ? 'opus' : DEFAULT_LLM_MODEL,
+            threadModel: isLlmModel(parsed.threadModel, threadProvider)
+              ? parsed.threadModel
+              : getDefaultLlmModel(threadProvider),
+            threadProvider,
+            experimentalSettings: { codex_gpt_models: false } satisfies OrganizationExperimentalSettings,
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
@@ -77,11 +83,18 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   if (intent === 'updateThreadModel') {
     const model = formData.get('model');
-    if (model !== 'sonnet' && model !== 'opus') {
-      return { error: 'A valid Claude model is required' };
+    const existingThread = await chatDO.getThread(context, params.id, workspaceId);
+    if (!existingThread) {
+      return { error: 'Thread not found' };
+    }
+    if (!isLlmModel(model, existingThread.provider ?? 'claude')) {
+      return { error: 'A valid thread model is required' };
+    }
+    if (model !== existingThread.model) {
+      return { error: THREAD_MODEL_LOCK_MESSAGE };
     }
 
-    const updated = await chatDO.updateThreadModel(context, params.id, model as LlmModel, workspaceId);
+    const updated = await chatDO.updateThreadModel(context, params.id, model, workspaceId);
     if (!updated) {
       return { error: 'Thread not found' };
     }
@@ -194,7 +207,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         params.id
       ),
       threadTitle: thread?.title ?? threadContext.title ?? null,
-      threadModel: thread?.model ?? ((threadContext.model as LlmModel | undefined) ?? DEFAULT_LLM_MODEL),
+      threadModel: thread?.model ?? ((threadContext.model as LlmModel | undefined) ?? getDefaultLlmModel((thread?.provider ?? (threadContext.provider as ChatHarness | undefined) ?? 'claude'))),
+      threadProvider: thread?.provider ?? ((threadContext.provider as ChatHarness | undefined) ?? 'claude'),
+      experimentalSettings: { codex_gpt_models: false } satisfies OrganizationExperimentalSettings,
       isNewThread: false,
       hostname,
       orgSlug: org?.slug,
@@ -210,7 +225,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       workspaceId: null,
       chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
       threadTitle: null,
-      threadModel: DEFAULT_LLM_MODEL,
+      threadModel: getDefaultLlmModel('claude'),
+      threadProvider: 'claude' as const,
+      experimentalSettings: { codex_gpt_models: false } satisfies OrganizationExperimentalSettings,
       isNewThread: false,
       hostname: undefined,
       readOnly: false,
@@ -220,6 +237,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const workspaceId = authContext.currentWorkspace.id;
   const orgId = authContext.currentOrg.id;
   const isNewThread = url.searchParams.get('newThread') === '1';
+  const experimentalSettings = await authEnv.ORG.get(
+    authEnv.ORG.idFromName(orgId)
+  ).getExperimentalSettings();
 
   // Even for newly created threads, load the persisted thread record so the UI
   // reflects the actual saved model instead of the Sonnet default.
@@ -237,7 +257,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspaceId,
     chatDataPromise,
     threadTitle: thread?.title ?? null,
-    threadModel: thread?.model ?? DEFAULT_LLM_MODEL,
+    threadModel: thread?.model ?? getDefaultLlmModel(thread?.provider ?? 'claude'),
+    threadProvider: thread?.provider ?? 'claude',
+    experimentalSettings,
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
@@ -269,6 +291,8 @@ export default function ChatPage() {
     chatDataPromise,
     threadTitle,
     threadModel,
+    threadProvider,
+    experimentalSettings,
     isNewThread,
     hostname,
     orgSlug,
@@ -307,6 +331,8 @@ export default function ChatPage() {
         initialMessages={chatData.messages}
         threadTitle={threadTitle}
         threadModel={threadModel}
+        threadProvider={threadProvider}
+        experimentalSettings={experimentalSettings}
         initialPreviewTarget={chatData.previewTarget}
         initialPreviewTabs={chatData.previewTabs}
         initialActiveTabId={chatData.activeTabId}

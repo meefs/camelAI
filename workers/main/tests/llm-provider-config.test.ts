@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import {
+  DEFAULT_CODEX_MODEL,
   buildPublicLlmProviderConfig,
   DEFAULT_LLM_MODEL,
+  getDefaultLlmModel,
+  getDefaultThreadProvider,
+  getLlmModelOptions,
+  getVisibleLlmModelOptions,
+  parseOrganizationExperimentalSettings,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
   stringifyStoredLlmProviderConfig,
@@ -11,7 +17,32 @@ import {
 describe('llm provider config helpers', () => {
   it('defaults missing thread model to sonnet', () => {
     expect(normalizeLlmModel(undefined)).toBe(DEFAULT_LLM_MODEL);
+    expect(normalizeLlmModel(undefined, 'codex')).toBe(DEFAULT_CODEX_MODEL);
+    expect(getDefaultLlmModel('claude')).toBe(DEFAULT_LLM_MODEL);
+    expect(getDefaultLlmModel('codex')).toBe(DEFAULT_CODEX_MODEL);
     expect(parseStoredLlmProviderConfig('{}')).toEqual({});
+  });
+
+  it('returns provider-specific model options', () => {
+    expect(getLlmModelOptions('claude').map((option) => option.value)).toEqual(['sonnet', 'opus']);
+    expect(getLlmModelOptions('codex').map((option) => option.value)).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+  });
+
+  it('guards Codex GPT models behind the org experimental setting for new chats', () => {
+    expect(parseOrganizationExperimentalSettings(null)).toEqual({ codex_gpt_models: false });
+    expect(getDefaultThreadProvider('openai', { codex_gpt_models: false })).toBe('claude');
+    expect(getDefaultThreadProvider('openai', { codex_gpt_models: true })).toBe('codex');
+    expect(getVisibleLlmModelOptions('codex', { codex_gpt_models: false })).toEqual([]);
+    expect(getVisibleLlmModelOptions('codex', { codex_gpt_models: true }).map((option) => option.value)).toEqual([
+      'gpt-5.4',
+      'gpt-5.4-mini',
+    ]);
+  });
+
+  it('keeps the current GPT model visible for existing locked threads when the flag is off', () => {
+    expect(
+      getVisibleLlmModelOptions('codex', { codex_gpt_models: false }, 'gpt-5.4-mini').map((option) => option.value)
+    ).toEqual(['gpt-5.4-mini']);
   });
 
   it('round-trips explicit region values', () => {

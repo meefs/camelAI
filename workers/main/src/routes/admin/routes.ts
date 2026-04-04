@@ -18,6 +18,7 @@ import { z } from 'zod';
 import type { Env } from '../../types.js';
 import {
   buildPublicLlmProviderConfig,
+  THREAD_MODEL_LOCK_MESSAGE,
 } from '../../../../../src/lib/llm-provider-config.js';
 import type {
   UserFilters,
@@ -223,7 +224,7 @@ async function getAdminOrgLlmProvider(env: Env, orgId: string) {
 async function notifyThreadMetadataChange(
   env: Env,
   threadId: string,
-  updates: { title?: string; model?: 'sonnet' | 'opus' }
+  updates: { title?: string; model?: 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini' }
 ): Promise<void> {
   if (!env.CHAT_THREAD || typeof env.CHAT_THREAD.get !== 'function' || typeof env.CHAT_THREAD.idFromName !== 'function') {
     return;
@@ -232,7 +233,7 @@ async function notifyThreadMetadataChange(
   try {
     const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId)) as unknown as {
       setTitle(title: string): Promise<void>;
-      setModel(model: 'sonnet' | 'opus'): Promise<void>;
+      setModel(model: 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini'): Promise<void>;
       refreshRunnerConfig(): Promise<void>;
     };
 
@@ -680,7 +681,20 @@ routes.patch(
 
     if (threadContext) {
       const orgStub = getOrgStub(env, threadContext.org_id);
-      const result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+      const existingThread = await orgStub.getThread(threadId);
+      if (body.model && existingThread && body.model !== existingThread.model) {
+        return c.json({ error: THREAD_MODEL_LOCK_MESSAGE }, 400);
+      }
+      let result;
+      try {
+        result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === THREAD_MODEL_LOCK_MESSAGE) {
+          return c.json({ error: message }, 400);
+        }
+        throw error;
+      }
       if (result) {
         await notifyThreadMetadataChange(env, threadId, body);
         return c.json(result);
@@ -691,7 +705,20 @@ routes.patch(
     const orgsResult = await adminIndex.getOrgsPaginated(0, 1000);
     for (const org of orgsResult.items) {
       const orgStub = getOrgStub(env, org.id);
-      const result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+      const existingThread = await orgStub.getThread(threadId);
+      if (body.model && existingThread && body.model !== existingThread.model) {
+        return c.json({ error: THREAD_MODEL_LOCK_MESSAGE }, 400);
+      }
+      let result;
+      try {
+        result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === THREAD_MODEL_LOCK_MESSAGE) {
+          return c.json({ error: message }, 400);
+        }
+        throw error;
+      }
       if (result) {
         await notifyThreadMetadataChange(env, threadId, body);
         return c.json(result);

@@ -51,6 +51,7 @@
 		"test:run": "vitest run",
 		"test:all": "bun run test:run && bun run test:workers",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
+		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
 		"dev:sandbox-host": "node scripts/dev-sandbox-host.mjs",

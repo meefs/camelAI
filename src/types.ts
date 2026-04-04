@@ -2,6 +2,7 @@ export interface Thread {
   id: string;
   workspace_id: string;
   title: string;
+  provider: ChatHarness;
   created_by: string;
   model: LlmModel;
   created_at: number;
@@ -462,8 +463,12 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 }
 
 // LLM Provider BYOK types
-export type LlmProvider = 'anthropic' | 'bedrock';
-export type LlmModel = 'sonnet' | 'opus';
+export type ChatHarness = 'claude' | 'codex';
+export type LlmProvider = 'anthropic' | 'bedrock' | 'openai';
+export type LlmModel = 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini';
+export interface OrganizationExperimentalSettings {
+  codex_gpt_models: boolean;
+}
 
 export interface LlmProviderConfigPublic {
   provider: LlmProvider;

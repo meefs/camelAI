@@ -1,6 +1,6 @@
 import type { AppLoadContext } from 'react-router';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
-import type { Thread, Message, PaginatedResult, PaginationParams } from '@/types';
+import type { Thread, Message, PaginatedResult, PaginationParams, ChatHarness } from '@/types';
 import type { PreviewTarget } from '@/types';
 import {
   sanitizeGeneratedThreadTitle,
@@ -10,6 +10,12 @@ import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import type { LlmModel } from '@/types';
+import {
+  getDefaultThreadProvider,
+  normalizeLlmModel,
+  THREAD_MODEL_LOCK_MESSAGE,
+} from './llm-provider-config';
+import { mergeThreadMessages, readMessagesFromResponse } from './thread-messages.server';
 
 export interface ThreadPreviewState {
   target: PreviewTarget | null;
@@ -24,6 +30,7 @@ function toThread(orgThread: OrgThread): Thread {
     id: orgThread.id,
     workspace_id: orgThread.workspace_id,
     title: orgThread.title,
+    provider: orgThread.provider ?? 'claude',
     created_by: orgThread.created_by,
     model: orgThread.model,
     created_at: orgThread.created_at,
@@ -124,7 +131,20 @@ export async function createThread(
     throw new Error('Workspace not found');
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const thread = await orgStub.createThread(workspaceId, title, createdBy, firstUserMessage, model);
+  const llmProviderConfig = await orgStub.getLlmProviderConfig();
+  const provider = getDefaultThreadProvider(
+    llmProviderConfig?.provider,
+    await orgStub.getExperimentalSettings(),
+  );
+  const normalizedModel = normalizeLlmModel(model, provider);
+  const thread = await orgStub.createThread(
+    workspaceId,
+    title,
+    createdBy,
+    firstUserMessage,
+    normalizedModel,
+    provider
+  );
   return toThread(thread);
 }
 
@@ -188,23 +208,9 @@ export async function updateThreadModel(
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return null;
-  if (existing.model === model) return toThread(existing);
-  const thread = await orgStub.updateThreadModel(id, model);
-  if (!thread) return null;
-  try {
-    if (typeof env.CHAT_THREAD?.get !== 'function' || typeof env.CHAT_THREAD.idFromName !== 'function') {
-      return toThread(thread);
-    }
-    const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(id)) as unknown as {
-      setModel(nextModel: LlmModel): Promise<void>;
-      refreshRunnerConfig(): Promise<void>;
-    };
-    await threadStub.setModel(model);
-    await threadStub.refreshRunnerConfig();
-  } catch (err) {
-    console.error('[updateThreadModel] Failed to notify ChatThreadDO:', err);
-  }
-  return toThread(thread);
+  const normalizedModel = normalizeLlmModel(model, existing.provider ?? 'claude');
+  if (existing.model === normalizedModel) return toThread(existing);
+  throw new Error(THREAD_MODEL_LOCK_MESSAGE);
 }
 
 export async function setThreadFirstUserMessage(
@@ -294,27 +300,30 @@ export async function getMessages(
   threadId: string,
   workspaceId: string
 ): Promise<Message[]> {
+  const env = getEnv(context);
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const persistedMessages = await threadStub.getPersistedMessages().catch(() => null);
+
   // Messages are parsed on sandbox-host from the container's Claude JSONL file.
   // threadId is the Claude session_id.
   try {
-    const env = getEnv(context);
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
-    if (!wsInfo) return [];
+    if (!wsInfo) return Array.isArray(persistedMessages) ? persistedMessages as Message[] : [];
 
     const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
     const streamResult = await container.readThreadMessagesStream(threadId);
     if (!streamResult.success || !streamResult.response) {
-      return [];
+      return Array.isArray(persistedMessages) ? persistedMessages as Message[] : [];
     }
 
-    const payload = await streamResult.response.json() as { success?: unknown; messages?: unknown };
-    if (payload.success !== true || !Array.isArray(payload.messages)) {
-      return [];
+    const legacyMessages = await readMessagesFromResponse(streamResult.response);
+    if (Array.isArray(persistedMessages) && persistedMessages.length > 0) {
+      return mergeThreadMessages(legacyMessages, persistedMessages as Message[]);
     }
-    return payload.messages as Message[];
+    return legacyMessages;
   } catch (e) {
     console.error('[getMessages] Error:', e);
-    return [];
+    return Array.isArray(persistedMessages) ? persistedMessages as Message[] : [];
   }
 }
 

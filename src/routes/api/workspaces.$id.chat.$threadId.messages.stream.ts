@@ -1,5 +1,7 @@
 import type { Route } from './+types/workspaces.$id.chat.$threadId.messages.stream';
 import { requireWorkspaceAuth } from './workspaces.utils';
+import { getEnv } from '@/lib/cloudflare.server';
+import { mergeThreadMessages, readMessagesFromResponse } from '@/lib/thread-messages.server';
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
@@ -13,8 +15,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     }
 
     const { container } = await requireWorkspaceAuth(request, context, workspaceId);
+    const env = getEnv(context);
+    const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+    const persistedMessages = await chatThread.getPersistedMessages().catch(() => null);
     const streamResult = await container.readThreadMessagesStream(threadId);
     if (!streamResult.success || !streamResult.response) {
+      if (Array.isArray(persistedMessages) && persistedMessages.length > 0) {
+        return Response.json({ success: true, messages: persistedMessages }, {
+          headers: { 'Cache-Control': 'no-cache, no-transform' },
+        });
+      }
       const status = streamResult.code?.startsWith('HTTP_')
         ? Number.parseInt(streamResult.code.slice(5), 10) || 500
         : 500;
@@ -25,6 +35,14 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     }
 
     const upstream = streamResult.response;
+    if (Array.isArray(persistedMessages) && persistedMessages.length > 0) {
+      const legacyMessages = await readMessagesFromResponse(upstream);
+      return Response.json(
+        { success: true, messages: mergeThreadMessages(legacyMessages, persistedMessages) },
+        { headers: { 'Cache-Control': 'no-cache, no-transform' } },
+      );
+    }
+
     const headers = new Headers(upstream.headers);
     if (!headers.get('Content-Type')) {
       headers.set('Content-Type', 'application/json');

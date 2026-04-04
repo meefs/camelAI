@@ -16,7 +16,8 @@ import {
   sanitizeGeneratedThreadTitle,
   THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
 } from '../../../src/lib/thread-title';
-import type { LlmModel } from '../../../src/types';
+import type { Message as UiMessage, LlmModel } from '../../../src/types';
+import { applyRuntimeEventToMessages } from '../../../desktop/shared/message-state';
 
 export type PreviewTarget =
   | {
@@ -157,6 +158,7 @@ interface ChatContextState {
   threadId: string;
   workspaceId: string;
   orgId: string;
+  provider?: 'claude' | 'codex';
   userId: string | null;
   userName: string | null;
   userEmail: string | null;
@@ -471,6 +473,8 @@ const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
 const HEADER_USER_ID = 'X-Chiridion-User-Id';
 
 const TRACE_CHAT_THREAD_DO = false;
+const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
+const CHAT_PERSISTED_MESSAGES_KEY = 'chatPersistedMessages';
 
 /**
  * ChatThreadDO - One per thread, holds preview state + chat websocket bridge.
@@ -508,6 +512,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
   private pendingExternalTurn: PendingExternalTurn | null = null;
   private titleGenerationInFlight: boolean = false;
+  private codexSessionId: string | null = null;
+  private persistedMessages: UiMessage[] = [];
+  private persistedStreamingMessageIds: Record<string, string | null> = {};
 
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
@@ -669,6 +676,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.currentTodos = storedTodos;
       }
 
+      const storedPersistedMessages = ctx.storage.kv.get<UiMessage[]>(CHAT_PERSISTED_MESSAGES_KEY);
+      if (Array.isArray(storedPersistedMessages)) {
+        this.persistedMessages = storedPersistedMessages.filter((message) => (
+          Boolean(message) &&
+          typeof message.id === 'string' &&
+          typeof message.thread_id === 'string' &&
+          (message.role === 'user' || message.role === 'assistant') &&
+          typeof message.created_at === 'number'
+        ));
+      }
+
       const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
       if (typeof storedContextUsedPercent === 'number' && Number.isFinite(storedContextUsedPercent)) {
         this.contextUsedPercent = Math.max(0, Math.min(100, Math.round(storedContextUsedPercent)));
@@ -698,6 +716,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const storedIdleDisconnect = ctx.storage.kv.get<boolean>(CHAT_RUNNER_IDLE_DISCONNECT_KEY);
       if (storedIdleDisconnect === true) {
         this.runnerIntentionalIdleDisconnect = true;
+      }
+
+      const storedCodexSessionId = ctx.storage.kv.get<string>(CHAT_CODEX_SESSION_ID_KEY);
+      if (typeof storedCodexSessionId === 'string' && storedCodexSessionId.trim()) {
+        this.codexSessionId = storedCodexSessionId.trim();
       }
 
       // chatIsStreaming is intentionally in-memory only (not persisted).
@@ -1300,6 +1323,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.emitChatError('Failed to send message to sandbox');
       return;
     }
+    this.appendPersistedUserMessage(attributedContent);
     this.setChatIsStreaming(true);
 
     this.ctx.waitUntil(
@@ -1611,6 +1635,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         error: 'Failed to send message to sandbox',
       });
     } else {
+      this.appendPersistedUserMessage(attributedContent);
       this.setChatIsStreaming(true);
       this.ctx.waitUntil(
         this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
@@ -1654,6 +1679,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       threadId,
       workspaceId,
       orgId,
+      provider: this.chatContext?.provider ?? 'claude',
       userId: this.chatContext?.userId ?? null,
       userName: this.chatContext?.userName ?? null,
       userEmail: this.chatContext?.userEmail ?? null,
@@ -1786,6 +1812,48 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return textBlocks.join('\n').trim();
   }
 
+  private persistMessagesSnapshot(): void {
+    this.ctx.storage.kv.put(CHAT_PERSISTED_MESSAGES_KEY, this.persistedMessages);
+  }
+
+  private appendPersistedUserMessage(content: string): void {
+    const context = this.chatContext;
+    if (!context?.threadId) return;
+
+    this.persistedMessages = [
+      ...this.persistedMessages,
+      {
+        id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        thread_id: context.threadId,
+        role: 'user',
+        content,
+        created_at: Date.now(),
+      },
+    ];
+    this.persistMessagesSnapshot();
+  }
+
+  private applyPersistedRunnerEvent(
+    provider: 'claude' | 'codex',
+    event: unknown,
+  ): void {
+    const context = this.chatContext;
+    if (!context?.threadId) return;
+
+    this.persistedMessages = applyRuntimeEventToMessages(
+      this.persistedMessages,
+      context.threadId,
+      provider,
+      event,
+      this.persistedStreamingMessageIds,
+    );
+    this.persistMessagesSnapshot();
+  }
+
+  getPersistedMessages(): UiMessage[] | null {
+    return this.persistedMessages.length > 0 ? this.persistedMessages : null;
+  }
+
   private async updateThreadMetadataForUserMessage(messageContent: string): Promise<void> {
     const context = this.chatContext;
     if (!context?.orgId || !context?.threadId || !context.workspaceId) return;
@@ -1881,10 +1949,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
 
       const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+      const thread = await orgStub.getThread(context.threadId);
+      const provider = thread?.provider === 'codex' ? 'codex' : 'claude';
+      if (context.provider !== provider) {
+        this.chatContext = { ...context, provider };
+        this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
+      }
       // Build thread-specific env (integration creds + thread ID).
-      const { envVars, byokProxy } = await container.buildClaudeRunnerEnv({
+      const { envVars, byokProxy } = await container.buildChatRunnerEnv({
         threadId: context.threadId,
+        provider,
       });
+      if (provider === 'codex' && this.codexSessionId) {
+        envVars.CHIRIDION_CODEX_SESSION_ID = this.codexSessionId;
+      }
       // Forward auto-compaction override so dev/staging can trigger compaction early.
       if (this.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) {
         envVars.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = this.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
@@ -2086,6 +2165,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.setChatIsStreaming(true);
     }
 
+    if (eventType === 'assistant_delta') {
+      return;
+    }
+
     if (eventType === 'todo_state') {
       const todos = event.todos;
       if (Array.isArray(todos)) {
@@ -2136,6 +2219,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (questionId) {
         this.pendingQuestions.delete(questionId);
       }
+    }
+
+    if (eventType === 'session_id') {
+      const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
+      if (sessionId) {
+        this.codexSessionId = sessionId;
+        this.ctx.storage.kv.put(CHAT_CODEX_SESSION_ID_KEY, sessionId);
+      }
+      return;
     }
 
     if (eventType === 'sdk_event') {
@@ -2209,6 +2301,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.persistRunnerSeqIfNeeded('result');
         this.resolvePendingExternalTurn({ status: 'result' });
       }
+
+      this.applyPersistedRunnerEvent('claude', sdkEvent);
+    }
+
+    if (eventType === 'runtime_event') {
+      const runtimeEvent = event.event;
+      this.applyPersistedRunnerEvent('codex', runtimeEvent);
+
+      const method =
+        runtimeEvent && typeof runtimeEvent === 'object' && 'method' in (runtimeEvent as Record<string, unknown>)
+          ? (runtimeEvent as { method?: unknown }).method
+          : null;
+
+      if (method === 'turn/completed') {
+        this.setChatIsStreaming(false);
+        this.persistRunnerSeqIfNeeded('result');
+      }
+    }
+
+    if (eventType === 'result') {
+      this.setChatIsStreaming(false);
+      const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
+      if (sessionId) {
+        this.codexSessionId = sessionId;
+        this.ctx.storage.kv.put(CHAT_CODEX_SESSION_ID_KEY, sessionId);
+      }
+      this.resolvePendingExternalTurn({
+        status: 'result',
+        reply: typeof event.result === 'string' ? event.result : undefined,
+      });
+      return;
     }
 
     if (eventType === 'session' || eventType === 'ready') {

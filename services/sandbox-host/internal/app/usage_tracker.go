@@ -92,7 +92,25 @@ func copySSEStreamWithUsage(w http.ResponseWriter, body io.Reader) (UsageTokens,
 }
 
 func isUsageEvent(eventType string) bool {
-	return eventType == "message_start" || eventType == "message_delta"
+	return eventType == "message_start" || eventType == "message_delta" || eventType == "response.completed"
+}
+
+func applyOpenAIUsage(usage *UsageTokens, model string, inputTokens, cachedTokens, outputTokens int64) {
+	if usage == nil {
+		return
+	}
+	if model != "" {
+		usage.Model = model
+	}
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if inputTokens < cachedTokens {
+		cachedTokens = inputTokens
+	}
+	usage.InputTokens += inputTokens - cachedTokens
+	usage.CacheReadInputTokens += cachedTokens
+	usage.OutputTokens += outputTokens
 }
 
 // extractUsageFromSSEData parses a single SSE data payload and accumulates
@@ -130,11 +148,70 @@ func extractUsageFromSSEData(data []byte, eventType string, usage *UsageTokens) 
 		if json.Unmarshal(data, &ev) == nil {
 			usage.OutputTokens += ev.Usage.OutputTokens
 		}
+
+	case "response.completed":
+		// {"type":"response.completed","response":{"model":"...","usage":{"input_tokens":N,"input_tokens_details":{"cached_tokens":M},"output_tokens":K}}}
+		var ev struct {
+			Response struct {
+				Model string `json:"model"`
+				Usage struct {
+					InputTokens        int64 `json:"input_tokens"`
+					OutputTokens       int64 `json:"output_tokens"`
+					InputTokensDetails *struct {
+						CachedTokens int64 `json:"cached_tokens"`
+					} `json:"input_tokens_details"`
+				} `json:"usage"`
+			} `json:"response"`
+		}
+		if json.Unmarshal(data, &ev) == nil {
+			var cachedTokens int64
+			if ev.Response.Usage.InputTokensDetails != nil {
+				cachedTokens = ev.Response.Usage.InputTokensDetails.CachedTokens
+			}
+			applyOpenAIUsage(
+				usage,
+				ev.Response.Model,
+				ev.Response.Usage.InputTokens,
+				cachedTokens,
+				ev.Response.Usage.OutputTokens,
+			)
+		}
 	}
 }
 
-// extractUsageFromJSON parses a non-streaming Anthropic response body.
+// extractUsageFromJSON parses a non-streaming Anthropic, Responses API, or
+// OpenAI chat completions response body.
 func extractUsageFromJSON(data []byte) UsageTokens {
+	var responsesResp struct {
+		Object string `json:"object"`
+		Type   string `json:"type"`
+		Model  string `json:"model"`
+		Usage  struct {
+			InputTokens        int64 `json:"input_tokens"`
+			OutputTokens       int64 `json:"output_tokens"`
+			InputTokensDetails *struct {
+				CachedTokens int64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(data, &responsesResp) == nil {
+		if responsesResp.Object == "response" || responsesResp.Type == "response" || responsesResp.Usage.InputTokensDetails != nil {
+			var usage UsageTokens
+			var cachedTokens int64
+			if responsesResp.Usage.InputTokensDetails != nil {
+				cachedTokens = responsesResp.Usage.InputTokensDetails.CachedTokens
+			}
+			applyOpenAIUsage(
+				&usage,
+				responsesResp.Model,
+				responsesResp.Usage.InputTokens,
+				cachedTokens,
+				responsesResp.Usage.OutputTokens,
+			)
+			return usage
+		}
+	}
+
 	var resp struct {
 		Model string `json:"model"`
 		Usage struct {
@@ -145,15 +222,46 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(data, &resp) != nil {
+		resp = struct {
+			Model string `json:"model"`
+			Usage struct {
+				InputTokens              int64 `json:"input_tokens"`
+				OutputTokens             int64 `json:"output_tokens"`
+				CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		}{}
+	} else if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 ||
+		resp.Usage.CacheCreationInputTokens > 0 || resp.Usage.CacheReadInputTokens > 0 {
+		return UsageTokens{
+			Model:                    resp.Model,
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+		}
+	}
+
+	var chatResp struct {
+		Model string `json:"model"`
+		Usage struct {
+			PromptTokens        int64 `json:"prompt_tokens"`
+			CompletionTokens    int64 `json:"completion_tokens"`
+			PromptTokensDetails *struct {
+				CachedTokens int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(data, &chatResp) != nil {
 		return UsageTokens{}
 	}
-	return UsageTokens{
-		Model:                    resp.Model,
-		InputTokens:              resp.Usage.InputTokens,
-		OutputTokens:             resp.Usage.OutputTokens,
-		CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
-		CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+	var usage UsageTokens
+	var cachedTokens int64
+	if chatResp.Usage.PromptTokensDetails != nil {
+		cachedTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
 	}
+	applyOpenAIUsage(&usage, chatResp.Model, chatResp.Usage.PromptTokens, cachedTokens, chatResp.Usage.CompletionTokens)
+	return usage
 }
 
 // extractModelFromRequestBody reads the "model" field from the request JSON.

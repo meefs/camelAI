@@ -239,7 +239,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.model).toBe('sonnet');
     });
 
-    it('persists per-thread Claude model changes', async () => {
+    it('locks per-thread model after creation', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
@@ -249,10 +249,10 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(thread.model).toBe('opus');
 
       const updated = await orgStub.updateThreadModel(thread.id, 'sonnet', userId);
-      expect(updated?.model).toBe('sonnet');
+      expect(updated?.model).toBe('opus');
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('sonnet');
+      expect(stored?.model).toBe('opus');
     });
   });
 
