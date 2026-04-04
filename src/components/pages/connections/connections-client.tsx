@@ -9,6 +9,7 @@ import { useAuthData } from '@/hooks/use-auth-data';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
+import { writeDraft } from '@/hooks/use-draft-persistence';
 import { PageHeader } from '@/components/page-header';
 import { AddConnectionDialog } from './AddConnectionDialog';
 import { EditConnectionDialog } from './EditConnectionDialog';
@@ -25,11 +26,20 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   AlertCircle,
   CheckCircle2,
   Copy,
+  MessageSquare,
+  MoreVertical,
   Plug,
   Plus,
   Search,
@@ -38,6 +48,7 @@ import {
   X,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 const categoryLabels: Record<string, string> = {
   databases: 'Databases',
@@ -85,7 +96,7 @@ export default function ConnectionsClient({
   otherWorkspaces = [],
 }: ConnectionsClientProps) {
   const navigate = useNavigate();
-  const { currentOrg, orgs } = useAuthData();
+  const { currentOrg, currentWorkspace, orgs } = useAuthData();
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const createThreadFetcher = useFetcher<{
@@ -305,6 +316,13 @@ export default function ConnectionsClient({
     setEditDialogOpen(true);
   };
 
+  const handleNewChat = (connection: Integration) => {
+    if (!currentWorkspace) return;
+    const text = `Use my ${connection.name || connection.integration_type} connection to create `;
+    writeDraft(currentWorkspace.id, null, text, []);
+    navigate('/chat');
+  };
+
   const handleAddSuccess = () => {
     setAddDialogOpen(false);
     setSelectedType(null);
@@ -362,6 +380,7 @@ export default function ConnectionsClient({
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
 
   return (
+    <TooltipProvider>
     <>
       <PageHeader breadcrumbs={[{ label: 'Connections' }]} />
 
@@ -517,71 +536,73 @@ export default function ConnectionsClient({
                         connection.name,
                       ]);
                       const hasIcon = hasIntegrationIcon(resolvedType);
-                      const categoryLabel = categoryLabels[connection.category] || connection.category;
 
                       return (
                         <Card key={connection.id}>
-                          <CardHeader className="flex flex-row items-start justify-between gap-4">
-                            <div className="flex items-start gap-3">
-                              <div className="flex size-10 items-center justify-center rounded-lg border">
-                                {hasIcon ? (
-                                  <IntegrationIcon
-                                    type={resolvedType}
-                                    className="size-5"
-                                  />
-                                ) : (
-                                  <Settings className="size-5" />
-                                )}
-                              </div>
-                              <div className="space-y-1">
-                                <CardTitle>{connection.name}</CardTitle>
-                                <CardDescription>
-                                  {getConnectionDescription(connection)}
-                                </CardDescription>
-                                <p className="text-sm text-muted-foreground">{categoryLabel}</p>
-                              </div>
+                          <CardHeader className="flex flex-row items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="flex size-10 items-center justify-center rounded-lg border">
+                                    {hasIcon ? (
+                                      <IntegrationIcon
+                                        type={resolvedType}
+                                        className="size-5"
+                                      />
+                                    ) : (
+                                      <Settings className="size-5" />
+                                    )}
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent>{getConnectionDescription(connection)}</TooltipContent>
+                              </Tooltip>
+                              <CardTitle>{connection.name}</CardTitle>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button variant="ghost" size="icon" aria-label="New chat" onClick={() => handleNewChat(connection)}>
+                                    <MessageSquare className="size-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>New chat</TooltipContent>
+                              </Tooltip>
+                              {isAdmin && (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      className="h-7 w-7 data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
+                                    >
+                                      <MoreVertical className="h-4 w-4" />
+                                      <span className="sr-only">Connection options</span>
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-48">
+                                    <DropdownMenuItem onClick={() => handleEditClick(connection)}>
+                                      <Settings className="h-4 w-4 mr-2" />
+                                      Configure
+                                    </DropdownMenuItem>
+                                    {otherWorkspaces.length > 0 && (
+                                      <DropdownMenuItem onClick={() => setCopyTarget(connection)}>
+                                        <Copy className="h-4 w-4 mr-2" />
+                                        Clone to workspace
+                                      </DropdownMenuItem>
+                                    )}
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      variant="destructive"
+                                      onClick={() => setDeleteTarget(connection)}
+                                    >
+                                      <Trash2 className="h-4 w-4 mr-2" />
+                                      Delete
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              )}
                             </div>
                           </CardHeader>
-                          <CardContent className="space-y-4">
-                            <div className="flex items-center justify-between text-sm text-muted-foreground">
-                              <span>Last updated</span>
-                              <span>
-                                {new Date(connection.updated_at).toLocaleDateString()}
-                              </span>
-                            </div>
-                            {isAdmin && (
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => handleEditClick(connection)}
-                                  >
-                                    <Settings className="mr-2 size-3.5" />
-                                    Configure
-                                  </Button>
-                                  {otherWorkspaces.length > 0 && (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => setCopyTarget(connection)}
-                                    >
-                                      <Copy className="mr-2 size-3.5" />
-                                      Clone to workspace
-                                    </Button>
-                                  )}
-                                </div>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="text-destructive hover:text-destructive"
-                                  onClick={() => setDeleteTarget(connection)}
-                                >
-                                  <Trash2 className="size-4" />
-                                </Button>
-                              </div>
-                            )}
-                          </CardContent>
                         </Card>
                       );
                     })}
@@ -806,5 +827,6 @@ export default function ConnectionsClient({
         </DialogContent>
       </Dialog>
     </>
+    </TooltipProvider>
   );
 }

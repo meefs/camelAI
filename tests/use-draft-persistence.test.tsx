@@ -107,6 +107,23 @@ describe('use-draft-persistence', () => {
     expect(loadDraft('ws-1', 'thread-50')?.text).toBe('draft 50');
   });
 
+  it('returns null instead of throwing when localStorage writes fail', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Quota exceeded', 'QuotaExceededError');
+    });
+
+    expect(writeDraft('ws-1', null, 'hello world', [])).toBeNull();
+    expect(loadDraft('ws-1', null)).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Failed to persist draft',
+      expect.any(DOMException)
+    );
+
+    setItemSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it('flushes a pending debounced save during unmount', () => {
     vi.useFakeTimers();
 
