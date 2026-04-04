@@ -536,7 +536,7 @@ uv run jupyter nbconvert --to notebook --execute --inplace notebook.ipynb
 
 **Add packages:** \`uv add <package>\` — common data analysis packages are cached in the image for instant installation. The project's \`pyproject.toml\` and \`.venv\` persist across sessions.
 
-**BigQuery note:** the shared base interpreter already includes \`google-cloud-bigquery\`, \`google-cloud-bigquery-storage\`, and \`google-auth\`. Add them with \`uv add\` if you need them inside a project \`.venv\`.
+**BigQuery note:** \`google-cloud-bigquery\`, \`google-cloud-bigquery-storage\`, and \`google-auth\` are cached in the image for fast \`uv add\`, but they are not preinstalled in the shared base interpreter.
 
 **Skip \`uv init\` if \`pyproject.toml\` already exists** — just \`uv add\` and \`uv run\`.
 </python>

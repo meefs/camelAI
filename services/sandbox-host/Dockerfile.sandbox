@@ -50,11 +50,7 @@ RUN uv venv /tmp/warmup --python 3.13 && \
         sympy networkx \
         pillow \
         tqdm && \
-    rm -rf /tmp/warmup && \
-    uv pip install --system \
-        google-cloud-bigquery \
-        google-cloud-bigquery-storage \
-        google-auth
+    rm -rf /tmp/warmup
 
 # Runtime defaults: persistent workspace cache + fast linking into .venv.
 ENV UV_CACHE_DIR=/home/claude/.cache/uv
