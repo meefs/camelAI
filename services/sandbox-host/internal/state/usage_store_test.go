@@ -480,6 +480,155 @@ func TestGetOrgUsageAnalytics(t *testing.T) {
 	}
 }
 
+func TestGetDailySpendAnalytics(t *testing.T) {
+	store, err := NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	recordUsageAt := func(orgID string, model string, costUSD float64, createdAt time.Time) {
+		t.Helper()
+		err := store.recordAnalyticsUsage(UsageRecord{
+			OrgID:    orgID,
+			Model:    model,
+			CostUSD:  costUSD,
+			Provider: "anthropic",
+		}, createdAt.UTC().UnixMilli())
+		if err != nil {
+			t.Fatalf("record analytics usage for %s at %s: %v", orgID, createdAt.Format(time.RFC3339), err)
+		}
+	}
+
+	if err := store.SetSpendLimits("org-spam", []SpendLimit{
+		{Window: 5 * time.Hour, LimitUSD: 0.01, Label: "5h"},
+		{Window: 7 * 24 * time.Hour, LimitUSD: 0.01, Label: "7d"},
+	}); err != nil {
+		t.Fatalf("set spam limits: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 4, 15, 30, 0, 0, time.UTC)
+	recordUsageAt("org-a", "claude-sonnet-4-6", 10, time.Date(2026, time.April, 4, 1, 5, 0, 0, time.UTC))
+	recordUsageAt("org-a", "claude-opus-4-6", 20, time.Date(2026, time.April, 4, 15, 5, 0, 0, time.UTC))
+	recordUsageAt("org-spam", "claude-sonnet-4-6", 5, time.Date(2026, time.April, 4, 15, 10, 0, 0, time.UTC))
+	recordUsageAt("org-b", "claude-haiku-4-5", 2, time.Date(2026, time.April, 4, 9, 0, 0, 0, time.UTC))
+	recordUsageAt("org-a", "claude-sonnet-4-6", 99, time.Date(2026, time.April, 4, 20, 0, 0, 0, time.UTC))
+	recordUsageAt("org-a", "claude-sonnet-4-6", 3, time.Date(2026, time.April, 3, 11, 0, 0, 0, time.UTC))
+	recordUsageAt("org-spam", "claude-haiku-4-5", 1, time.Date(2026, time.April, 3, 17, 0, 0, 0, time.UTC))
+
+	result, err := store.GetDailySpendAnalytics(DailySpendAnalyticsQuery{
+		Date:         "2026-04-04",
+		OrgIDs:       []string{"org-a", "org-spam", "org-b", "org-unused"},
+		TopOrgsLimit: 2,
+		Now:          now,
+	})
+	if err != nil {
+		t.Fatalf("get daily spend analytics: %v", err)
+	}
+
+	if result.Date != "2026-04-04" || !result.IsPartial {
+		t.Fatalf("expected partial result for 2026-04-04, got %+v", result)
+	}
+	if result.TotalSpendUSD != 37 || result.TotalRequests != 4 {
+		t.Fatalf("expected selected-day totals 37 USD / 4 requests, got %+v", result)
+	}
+	if result.SpamSpendUSD != 5 || result.NonSpamSpendUSD != 32 {
+		t.Fatalf("expected spam/non-spam split of 5/32, got %+v", result)
+	}
+	if result.SpamOrgCount != 1 || result.NonSpamOrgCount != 2 {
+		t.Fatalf("expected spam/non-spam org counts of 1/2, got %+v", result)
+	}
+
+	if result.PreviousDay.Date != "2026-04-03" {
+		t.Fatalf("expected previous day 2026-04-03, got %+v", result.PreviousDay)
+	}
+	if result.PreviousDay.TotalSpendUSD != 4 || result.PreviousDay.TotalRequests != 2 {
+		t.Fatalf("expected previous-day totals 4 USD / 2 requests, got %+v", result.PreviousDay)
+	}
+	if result.PreviousDay.SpamSpendUSD != 1 || result.PreviousDay.NonSpamSpendUSD != 3 {
+		t.Fatalf("expected previous-day spam/non-spam split of 1/3, got %+v", result.PreviousDay)
+	}
+
+	if len(result.HourlySeries) != 16 {
+		t.Fatalf("expected hourly series through hour 15, got %d entries", len(result.HourlySeries))
+	}
+	if result.HourlySeries[1] != (DailySpendHourlyRow{
+		Hour:            1,
+		SpendUSD:        10,
+		Requests:        1,
+		SpamSpendUSD:    0,
+		NonSpamSpendUSD: 10,
+	}) {
+		t.Fatalf("unexpected hour-1 row: %+v", result.HourlySeries[1])
+	}
+	if result.HourlySeries[9] != (DailySpendHourlyRow{
+		Hour:            9,
+		SpendUSD:        2,
+		Requests:        1,
+		SpamSpendUSD:    0,
+		NonSpamSpendUSD: 2,
+	}) {
+		t.Fatalf("unexpected hour-9 row: %+v", result.HourlySeries[9])
+	}
+	if result.HourlySeries[15] != (DailySpendHourlyRow{
+		Hour:            15,
+		SpendUSD:        25,
+		Requests:        2,
+		SpamSpendUSD:    5,
+		NonSpamSpendUSD: 20,
+	}) {
+		t.Fatalf("unexpected hour-15 row: %+v", result.HourlySeries[15])
+	}
+
+	if len(result.ModelBreakdown) != 3 {
+		t.Fatalf("expected 3 model rows, got %+v", result.ModelBreakdown)
+	}
+	if result.ModelBreakdown[0] != (DailySpendModelRow{
+		Model:    "claude-opus-4-6",
+		SpendUSD: 20,
+		Requests: 1,
+	}) {
+		t.Fatalf("unexpected first model row: %+v", result.ModelBreakdown[0])
+	}
+	if result.ModelBreakdown[1] != (DailySpendModelRow{
+		Model:    "claude-sonnet-4-6",
+		SpendUSD: 15,
+		Requests: 2,
+	}) {
+		t.Fatalf("unexpected second model row: %+v", result.ModelBreakdown[1])
+	}
+	if result.ModelBreakdown[2] != (DailySpendModelRow{
+		Model:    "claude-haiku-4-5",
+		SpendUSD: 2,
+		Requests: 1,
+	}) {
+		t.Fatalf("unexpected third model row: %+v", result.ModelBreakdown[2])
+	}
+
+	if len(result.TopOrgs) != 2 {
+		t.Fatalf("expected 2 top org rows, got %+v", result.TopOrgs)
+	}
+	if result.TopOrgs[0] != (DailySpendOrgRow{
+		OrgID:    "org-a",
+		SpendUSD: 30,
+		Requests: 2,
+		IsSpam:   false,
+	}) {
+		t.Fatalf("unexpected first top org row: %+v", result.TopOrgs[0])
+	}
+	if result.TopOrgs[1] != (DailySpendOrgRow{
+		OrgID:    "org-spam",
+		SpendUSD: 5,
+		Requests: 1,
+		IsSpam:   true,
+	}) {
+		t.Fatalf("unexpected second top org row: %+v", result.TopOrgs[1])
+	}
+	if result.OtherOrgsSpendUSD != 2 || result.OtherOrgsCount != 1 {
+		t.Fatalf("expected other bucket 2 USD / 1 org, got %+v", result)
+	}
+}
+
 func TestListSpamOrgIDs(t *testing.T) {
 	store, err := NewUsageStore(t.TempDir())
 	if err != nil {

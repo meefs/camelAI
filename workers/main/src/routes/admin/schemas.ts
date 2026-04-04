@@ -321,6 +321,11 @@ export const DashboardSummaryQuerySchema = z.object({
   exclude_internal_domains: z.string().optional(),
 });
 
+export const DashboardDailySpendQuerySchema = z.object({
+  date: DateOnlySchema.optional(),
+  top_orgs_limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+});
+
 export const DashboardRetentionQuerySchema = z.object({
   exclude_spam: booleanQueryParam,
   exclude_internal_domains: z.string().optional(),
@@ -459,6 +464,56 @@ export const DashboardSummaryResponseSchema = z.object({
     private: z.number().int(),
   }),
   retention_snapshot: DashboardRetentionSnapshotSchema,
+});
+
+const DashboardDailySpendSummarySchema = z.object({
+  date: DateOnlySchema,
+  total_spend_usd: z.number(),
+  total_requests: z.number().int(),
+  spam_spend_usd: z.number(),
+  non_spam_spend_usd: z.number(),
+});
+
+const DashboardDailySpendHourlyRowSchema = z.object({
+  hour: z.number().int().min(0).max(23),
+  spend_usd: z.number(),
+  requests: z.number().int(),
+  spam_spend_usd: z.number(),
+  non_spam_spend_usd: z.number(),
+});
+
+const DashboardDailySpendModelRowSchema = z.object({
+  model: z.string(),
+  spend_usd: z.number(),
+  requests: z.number().int(),
+  pct_of_total: z.number(),
+});
+
+const DashboardDailySpendTopOrgSchema = z.object({
+  org_id: z.string(),
+  org_name: z.string(),
+  org_slug: z.string().nullable(),
+  spend_usd: z.number(),
+  requests: z.number().int(),
+  is_spam: z.boolean(),
+  billing_plan: z.string(),
+});
+
+export const DashboardDailySpendResponseSchema = z.object({
+  date: DateOnlySchema,
+  is_partial: z.boolean(),
+  total_spend_usd: z.number(),
+  total_requests: z.number().int(),
+  spam_spend_usd: z.number(),
+  non_spam_spend_usd: z.number(),
+  spam_org_count: z.number().int(),
+  non_spam_org_count: z.number().int(),
+  previous_day: DashboardDailySpendSummarySchema,
+  hourly_series: z.array(DashboardDailySpendHourlyRowSchema),
+  model_breakdown: z.array(DashboardDailySpendModelRowSchema),
+  top_orgs: z.array(DashboardDailySpendTopOrgSchema),
+  other_orgs_spend_usd: z.number(),
+  other_orgs_count: z.number().int(),
 });
 
 const DashboardCohortWeekSchema = z.object({

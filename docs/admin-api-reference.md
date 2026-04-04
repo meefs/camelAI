@@ -1,6 +1,6 @@
 # camelAI Admin API Reference
 
-Audited from code on 2026-03-30.
+Audited from code on 2026-04-04.
 
 This document covers the internal admin API surface in `camelAI`, with emphasis on the endpoints an external agent can call safely and the response shapes that actually come back from the current implementation.
 
@@ -101,6 +101,7 @@ For an agent client:
 | `GET` | `/api/admin/workspaces` | Bearer | Paginated workspaces |
 | `GET` | `/api/admin/apps` | Bearer | Paginated apps |
 | `GET` | `/api/admin/dashboard/top-orgs` | Bearer | Top orgs ranked by spend or member count |
+| `GET` | `/api/admin/dashboard/daily-spend` | Bearer | Cross-org daily spend aggregation with hourly, model, and per-org breakdowns |
 | `GET` | `/api/admin/dashboard/summary` | Bearer | Dashboard summary KPIs, daily/weekly series, drill-downs, and retention snapshot |
 | `GET` | `/api/admin/dashboard/retention` | Bearer | Retention cohorts, curve, WAU series, stickiness, and retention KPIs |
 | `GET` | `/api/admin/dashboard/spam-summary` | Bearer | Spam-tab entity + usage snapshot for the resolved spam-org set |
@@ -766,6 +767,83 @@ Item fields:
 - `spend_7d`
 - `spend_30d`
 - `windows`
+
+### `GET /api/admin/dashboard/daily-spend`
+
+Returns cross-org daily spend aggregation for a single calendar day, including hourly series, model breakdown, and per-org top-N ranking with an "other" bucket.
+
+Query params:
+
+- `date` optional, `YYYY-MM-DD`, defaults to the current UTC day
+- `top_orgs_limit` optional, `1..50`, default `20`
+
+Response shape:
+
+```json
+{
+  "date": "2026-04-04",
+  "is_partial": true,
+  "total_spend_usd": 1234.56,
+  "total_requests": 45678,
+  "spam_spend_usd": 123.45,
+  "non_spam_spend_usd": 1111.11,
+  "spam_org_count": 15,
+  "non_spam_org_count": 42,
+  "previous_day": {
+    "date": "2026-04-03",
+    "total_spend_usd": 1100.00,
+    "total_requests": 42000,
+    "spam_spend_usd": 110.00,
+    "non_spam_spend_usd": 990.00
+  },
+  "hourly_series": [
+    {
+      "hour": 0,
+      "spend_usd": 45.23,
+      "requests": 1234,
+      "spam_spend_usd": 5.00,
+      "non_spam_spend_usd": 40.23
+    }
+  ],
+  "model_breakdown": [
+    {
+      "model": "claude-opus-4-6",
+      "spend_usd": 800.00,
+      "requests": 12000,
+      "pct_of_total": 64.8
+    }
+  ],
+  "top_orgs": [
+    {
+      "org_id": "uuid",
+      "org_name": "Acme Corp",
+      "org_slug": "acme-corp",
+      "spend_usd": 200.00,
+      "requests": 5000,
+      "is_spam": false,
+      "billing_plan": "pro"
+    }
+  ],
+  "other_orgs_spend_usd": 50.00,
+  "other_orgs_count": 30
+}
+```
+
+Field details:
+
+- `is_partial`: `true` when viewing today (data through current hour only)
+- `hourly_series`: array of hours `0` through `23` (or through the current hour when `is_partial` is true). Each entry includes total, spam, and non-spam spend
+- `model_breakdown`: sorted by `spend_usd` descending. Model strings are raw versioned IDs as stored in the usage log (e.g. `claude-sonnet-4-6`, `claude-opus-4-6`). `pct_of_total` is computed as percentage of `total_spend_usd`
+- `top_orgs`: sorted by `spend_usd` descending, capped at `top_orgs_limit`. Each org is enriched with `org_name`, `org_slug`, `billing_plan` (`pro` or `free`), and `is_spam` flag
+- `other_orgs_spend_usd` / `other_orgs_count`: aggregated remainder beyond the top-N cutoff
+- `previous_day`: always the full calendar day before `date` (never partial), for delta comparisons
+- Spam detection reuses the existing effective spend window logic (all limits <= $0.01)
+
+Behavior notes:
+
+- This endpoint includes **all** orgs (including internal `@camelai.com` orgs). It does not accept `exclude_internal_domains` or `exclude_spam` filters. This is intentional — the daily spend view is for understanding total platform cost, including internal usage.
+- The heavy aggregation runs in Go on sandbox-host. The Worker route enriches `top_orgs` with org metadata (name, slug, billing plan) from `AdminIndexDO`.
+- At exactly midnight UTC, `is_partial: true` with all-zero values is expected (no data for hour 0 yet).
 
 ### `GET /api/admin/dashboard/summary`
 

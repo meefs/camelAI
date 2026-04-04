@@ -63,6 +63,8 @@ import {
   AdminOrgListItemSchema,
   DashboardTopOrgsQuerySchema,
   DashboardTopOrgsResponseSchema,
+  DashboardDailySpendQuerySchema,
+  DashboardDailySpendResponseSchema,
   DashboardSpamSummaryResponseSchema,
   DashboardSummaryQuerySchema,
   DashboardSummaryResponseSchema,
@@ -77,10 +79,12 @@ import {
 import {
   fetchOrgUsageAnalytics,
   fetchSpamOrgIds,
+  fetchDailySpendAnalytics,
   isOrgExcludedByInternalDomains,
   normalizeBillingStatus,
   normalizeInternalDomains,
   type OrgUsageAnalyticsItem,
+  type DailySpendDashboardResponse,
 } from './metrics.js';
 import { parseDateOnlyUtc } from '../../admin-dashboard-metrics.js';
 import {
@@ -202,6 +206,17 @@ function toDashboardTopOrgItem(
     spend_30d: usage?.spend_30d ?? 0,
     windows: usage?.windows ?? [],
   };
+}
+
+function toDailySpendBillingPlan(status: string | null | undefined): string {
+  return status === 'paying' ? 'pro' : 'free';
+}
+
+function toDailySpendPct(value: number, total: number): number {
+  if (total <= 0) {
+    return 0;
+  }
+  return Number(((value / total) * 100).toFixed(1));
 }
 
 export const routes = new Hono<HonoEnv>();
@@ -781,6 +796,71 @@ routes.get(
       });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Failed to load top orgs' }, 502);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/daily-spend
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/dashboard/daily-spend',
+  openApi({
+    summary: 'Cross-org daily spend dashboard metrics',
+    request: {
+      query: DashboardDailySpendQuerySchema,
+    },
+    responses: {
+      200: DashboardDailySpendResponseSchema,
+      400: ErrorSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const { date, top_orgs_limit } = c.req.valid('query');
+    const selectedDate = date ?? new Date().toISOString().slice(0, 10);
+    if (parseDateOnlyUtc(selectedDate) === null) {
+      return c.json({ error: 'Invalid date. Expected YYYY-MM-DD.' }, 400);
+    }
+
+    try {
+      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const includedOrgs = await adminIndex.getOrgDirectoryRows();
+      const orgById = new Map(includedOrgs.map((org) => [org.id, org]));
+
+      const dailySpend = await fetchDailySpendAnalytics(c.env, {
+        date: selectedDate,
+        topOrgsLimit: top_orgs_limit,
+        orgIds: includedOrgs.map((org) => org.id),
+      });
+
+      const response: DailySpendDashboardResponse = {
+        ...dailySpend,
+        model_breakdown: dailySpend.model_breakdown.map((item) => ({
+          ...item,
+          pct_of_total: toDailySpendPct(item.spend_usd, dailySpend.total_spend_usd),
+        })),
+        top_orgs: dailySpend.top_orgs.map((item) => {
+          const org = orgById.get(item.org_id);
+          return {
+            org_id: item.org_id,
+            org_name: org?.name ?? item.org_id,
+            org_slug: org?.slug ?? null,
+            spend_usd: item.spend_usd,
+            requests: item.requests,
+            is_spam: item.is_spam,
+            billing_plan: toDailySpendBillingPlan(org?.billing_status),
+          };
+        }),
+      };
+
+      return c.json(response);
+    } catch (error) {
+      return c.json(
+        { error: error instanceof Error ? error.message : 'Failed to load daily spend metrics' },
+        502,
+      );
     }
   },
 );

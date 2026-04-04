@@ -403,6 +403,23 @@ async function waitForAdminIndexOrgIds(orgIds: string[]): Promise<void> {
   throw new Error(`Timed out waiting for org ids ${orgIds.join(', ')} in AdminIndexDO`);
 }
 
+async function waitForAdminIndexOrgBillingStatus(
+  orgId: string,
+  billingStatus: string | null,
+): Promise<void> {
+  const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const rows = await adminIndex.getOrgDirectoryByIds([orgId]);
+    if ((rows[0]?.billing_status ?? null) === billingStatus) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  throw new Error(`Timed out waiting for billing status ${billingStatus} on org ${orgId}`);
+}
+
 async function waitForAdminIndexSpamSummary(orgIds: string[], expected: {
   users: number;
   threads: number;
@@ -558,6 +575,177 @@ describe('admin API metrics routes', () => {
       total: 1,
       offset: 0,
       limit: 50,
+    });
+    expect(sandboxFetch).toHaveBeenCalledOnce();
+  });
+
+  it('serves dashboard daily spend with internal orgs included and enriched top-org metadata', async () => {
+    const { userId: payingUserId } = await createUser(
+      testEnv,
+      uniqueEmail(),
+      'password123',
+      'Daily Spend Paying User',
+    );
+    const { userId: spamUserId } = await createUser(
+      testEnv,
+      uniqueEmail(),
+      'password123',
+      'Daily Spend Spam User',
+    );
+    const { userId: internalUserId } = await createUser(
+      testEnv,
+      uniqueEmail('camelai.com'),
+      'password123',
+      'Daily Spend Internal User',
+    );
+
+    const { org: payingOrg } = await createOrg(testEnv, 'Daily Spend Paying Org', payingUserId);
+    const { org: spamOrg } = await createOrg(testEnv, 'Daily Spend Spam Org', spamUserId);
+    const { org: internalOrg } = await createOrg(testEnv, 'Daily Spend Internal Org', internalUserId);
+
+    await waitForAdminIndexOrgIds([payingOrg.id, spamOrg.id, internalOrg.id]);
+
+    const payingOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(payingOrg.id));
+    const payingOrgInfo = await payingOrgStub.getInfo();
+    expect(payingOrgInfo).not.toBeNull();
+    await payingOrgStub.setInfo({
+      ...payingOrgInfo!,
+      billing_status: 'paying',
+    });
+    await waitForAdminIndexOrgBillingStatus(payingOrg.id, 'paying');
+
+    const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+    const expectedOrgIds = (await adminIndex.getOrgDirectoryRows())
+      .map((org: { id: string }) => org.id)
+      .sort();
+
+    const sandboxFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input.toString(), init);
+      const url = new URL(request.url);
+      expect(url.pathname).toBe('/v1/usage/analytics/daily-spend/query');
+
+      const body = await request.json() as {
+        date: string;
+        org_ids: string[];
+        top_orgs_limit: number;
+      };
+      expect(body.date).toBe('2026-04-04');
+      expect(body.top_orgs_limit).toBe(1);
+      expect(body.org_ids.slice().sort()).toEqual(expectedOrgIds);
+      expect(body.org_ids).toContain(internalOrg.id);
+
+      return Response.json({
+        date: '2026-04-04',
+        is_partial: true,
+        total_spend_usd: 150,
+        total_requests: 15,
+        spam_spend_usd: 25,
+        non_spam_spend_usd: 125,
+        spam_org_count: 1,
+        non_spam_org_count: 1,
+        previous_day: {
+          date: '2026-04-03',
+          total_spend_usd: 100,
+          total_requests: 10,
+          spam_spend_usd: 10,
+          non_spam_spend_usd: 90,
+        },
+        hourly_series: [
+          {
+            hour: 0,
+            spend_usd: 30,
+            requests: 3,
+            spam_spend_usd: 5,
+            non_spam_spend_usd: 25,
+          },
+        ],
+        model_breakdown: [
+          {
+            model: 'claude-opus-4-6',
+            spend_usd: 100,
+            requests: 5,
+          },
+          {
+            model: 'claude-sonnet-4-6',
+            spend_usd: 50,
+            requests: 10,
+          },
+        ],
+        top_orgs: [
+          {
+            org_id: payingOrg.id,
+            spend_usd: 125,
+            requests: 12,
+            is_spam: false,
+          },
+        ],
+        other_orgs_spend_usd: 25,
+        other_orgs_count: 1,
+      });
+    });
+
+    const request = new Request(
+      'http://example/api/admin/dashboard/daily-spend?date=2026-04-04&top_orgs_limit=1',
+      {
+        headers: { Authorization: 'Bearer test-admin-api-key' },
+      },
+    );
+    const response = await callAdminApi(request, sandboxFetch);
+
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    await expect(response!.json()).resolves.toEqual({
+      date: '2026-04-04',
+      is_partial: true,
+      total_spend_usd: 150,
+      total_requests: 15,
+      spam_spend_usd: 25,
+      non_spam_spend_usd: 125,
+      spam_org_count: 1,
+      non_spam_org_count: 1,
+      previous_day: {
+        date: '2026-04-03',
+        total_spend_usd: 100,
+        total_requests: 10,
+        spam_spend_usd: 10,
+        non_spam_spend_usd: 90,
+      },
+      hourly_series: [
+        {
+          hour: 0,
+          spend_usd: 30,
+          requests: 3,
+          spam_spend_usd: 5,
+          non_spam_spend_usd: 25,
+        },
+      ],
+      model_breakdown: [
+        {
+          model: 'claude-opus-4-6',
+          spend_usd: 100,
+          requests: 5,
+          pct_of_total: 66.7,
+        },
+        {
+          model: 'claude-sonnet-4-6',
+          spend_usd: 50,
+          requests: 10,
+          pct_of_total: 33.3,
+        },
+      ],
+      top_orgs: [
+        {
+          org_id: payingOrg.id,
+          org_name: 'Daily Spend Paying Org',
+          org_slug: payingOrg.slug,
+          spend_usd: 125,
+          requests: 12,
+          is_spam: false,
+          billing_plan: 'pro',
+        },
+      ],
+      other_orgs_spend_usd: 25,
+      other_orgs_count: 1,
     });
     expect(sandboxFetch).toHaveBeenCalledOnce();
   });

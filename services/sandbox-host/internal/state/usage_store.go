@@ -828,6 +828,59 @@ type OrgUsageAnalyticsRow struct {
 	Windows       []WindowSpend `json:"windows,omitempty"`
 }
 
+type DailySpendSummary struct {
+	Date            string  `json:"date"`
+	TotalSpendUSD   float64 `json:"total_spend_usd"`
+	TotalRequests   int64   `json:"total_requests"`
+	SpamSpendUSD    float64 `json:"spam_spend_usd"`
+	NonSpamSpendUSD float64 `json:"non_spam_spend_usd"`
+}
+
+type DailySpendHourlyRow struct {
+	Hour            int     `json:"hour"`
+	SpendUSD        float64 `json:"spend_usd"`
+	Requests        int64   `json:"requests"`
+	SpamSpendUSD    float64 `json:"spam_spend_usd"`
+	NonSpamSpendUSD float64 `json:"non_spam_spend_usd"`
+}
+
+type DailySpendModelRow struct {
+	Model    string  `json:"model"`
+	SpendUSD float64 `json:"spend_usd"`
+	Requests int64   `json:"requests"`
+}
+
+type DailySpendOrgRow struct {
+	OrgID    string  `json:"org_id"`
+	SpendUSD float64 `json:"spend_usd"`
+	Requests int64   `json:"requests"`
+	IsSpam   bool    `json:"is_spam"`
+}
+
+type DailySpendAnalytics struct {
+	Date              string                `json:"date"`
+	IsPartial         bool                  `json:"is_partial"`
+	TotalSpendUSD     float64               `json:"total_spend_usd"`
+	TotalRequests     int64                 `json:"total_requests"`
+	SpamSpendUSD      float64               `json:"spam_spend_usd"`
+	NonSpamSpendUSD   float64               `json:"non_spam_spend_usd"`
+	SpamOrgCount      int                   `json:"spam_org_count"`
+	NonSpamOrgCount   int                   `json:"non_spam_org_count"`
+	PreviousDay       DailySpendSummary     `json:"previous_day"`
+	HourlySeries      []DailySpendHourlyRow `json:"hourly_series"`
+	ModelBreakdown    []DailySpendModelRow  `json:"model_breakdown"`
+	TopOrgs           []DailySpendOrgRow    `json:"top_orgs"`
+	OtherOrgsSpendUSD float64               `json:"other_orgs_spend_usd"`
+	OtherOrgsCount    int                   `json:"other_orgs_count"`
+}
+
+type DailySpendAnalyticsQuery struct {
+	Date         string
+	OrgIDs       []string
+	TopOrgsLimit int
+	Now          time.Time
+}
+
 func (u *UsageStore) recordAnalyticsUsage(record UsageRecord, createdAtMs int64) error {
 	if u == nil || u.analytics == nil {
 		return nil
@@ -1090,6 +1143,220 @@ func (u *UsageStore) ListSpamOrgIDs() ([]string, error) {
 	return orgIDs, rows.Err()
 }
 
+func (u *UsageStore) GetDailySpendAnalytics(options DailySpendAnalyticsQuery) (DailySpendAnalytics, error) {
+	selectedDayStart, err := parseDailySpendDate(options.Date)
+	if err != nil {
+		return DailySpendAnalytics{}, err
+	}
+
+	now := options.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+
+	topOrgsLimit := options.TopOrgsLimit
+	switch {
+	case topOrgsLimit <= 0:
+		topOrgsLimit = 20
+	case topOrgsLimit > 50:
+		topOrgsLimit = 50
+	}
+
+	selectedDate := selectedDayStart.Format("2006-01-02")
+	previousDayStart := selectedDayStart.Add(-24 * time.Hour)
+	nextDayStart := selectedDayStart.Add(24 * time.Hour)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	isPartial := selectedDayStart.Equal(todayStart)
+	effectiveDayEnd := nextDayStart
+	lastHour := 23
+	if isPartial {
+		effectiveDayEnd = now
+		lastHour = now.Hour()
+		if effectiveDayEnd.Before(selectedDayStart) {
+			effectiveDayEnd = selectedDayStart
+			lastHour = 0
+		}
+	}
+
+	result := DailySpendAnalytics{
+		Date:            selectedDate,
+		IsPartial:       isPartial,
+		PreviousDay:     DailySpendSummary{Date: previousDayStart.Format("2006-01-02")},
+		HourlySeries:    make([]DailySpendHourlyRow, 0, lastHour+1),
+		ModelBreakdown:  []DailySpendModelRow{},
+		TopOrgs:         []DailySpendOrgRow{},
+		SpamOrgCount:    0,
+		NonSpamOrgCount: 0,
+	}
+	for hour := 0; hour <= lastHour; hour += 1 {
+		result.HourlySeries = append(result.HourlySeries, DailySpendHourlyRow{Hour: hour})
+	}
+
+	if u == nil || u.analytics == nil {
+		return result, nil
+	}
+
+	orgIDs := normalizeDailySpendOrgIDs(options.OrgIDs)
+	if len(orgIDs) == 0 {
+		return result, nil
+	}
+
+	spamOrgIDs, err := u.ListSpamOrgIDs()
+	if err != nil {
+		return DailySpendAnalytics{}, err
+	}
+	spamOrgIDSet := make(map[string]struct{}, len(spamOrgIDs))
+	for _, orgID := range spamOrgIDs {
+		spamOrgIDSet[orgID] = struct{}{}
+	}
+
+	u.analyticsMu.RLock()
+	defer u.analyticsMu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	selectedStartMs := selectedDayStart.UnixMilli()
+	selectedEndMs := effectiveDayEnd.UnixMilli()
+	previousStartMs := previousDayStart.UnixMilli()
+	previousEndMs := selectedDayStart.UnixMilli()
+	perOrg := make(map[string]*DailySpendOrgRow, len(orgIDs))
+	modelBreakdownByName := make(map[string]*DailySpendModelRow)
+
+	for _, chunk := range chunkDailySpendOrgIDs(orgIDs, 400) {
+		if err := u.accumulateDailySpendOrgTotals(
+			ctx,
+			chunk,
+			selectedStartMs,
+			selectedEndMs,
+			perOrg,
+		); err != nil {
+			return DailySpendAnalytics{}, err
+		}
+
+		previousRows, err := u.queryDailySpendGroupedByOrg(
+			ctx,
+			chunk,
+			previousStartMs,
+			previousEndMs,
+		)
+		if err != nil {
+			return DailySpendAnalytics{}, err
+		}
+		for _, row := range previousRows {
+			result.PreviousDay.TotalSpendUSD += row.SpendUSD
+			result.PreviousDay.TotalRequests += row.Requests
+			if _, isSpam := spamOrgIDSet[row.OrgID]; isSpam {
+				result.PreviousDay.SpamSpendUSD += row.SpendUSD
+				continue
+			}
+			result.PreviousDay.NonSpamSpendUSD += row.SpendUSD
+		}
+
+		if err := u.accumulateDailySpendHourlySeries(
+			ctx,
+			chunk,
+			selectedStartMs,
+			selectedEndMs,
+			spamOrgIDSet,
+			result.HourlySeries,
+		); err != nil {
+			return DailySpendAnalytics{}, err
+		}
+
+		if err := u.accumulateDailySpendModelBreakdown(
+			ctx,
+			chunk,
+			selectedStartMs,
+			selectedEndMs,
+			modelBreakdownByName,
+		); err != nil {
+			return DailySpendAnalytics{}, err
+		}
+	}
+
+	orgRows := make([]DailySpendOrgRow, 0, len(perOrg))
+	for _, orgID := range orgIDs {
+		row := perOrg[orgID]
+		if row == nil || row.Requests <= 0 {
+			continue
+		}
+		_, row.IsSpam = spamOrgIDSet[row.OrgID]
+		result.TotalSpendUSD += row.SpendUSD
+		result.TotalRequests += row.Requests
+		if row.IsSpam {
+			result.SpamSpendUSD += row.SpendUSD
+			result.SpamOrgCount += 1
+		} else {
+			result.NonSpamSpendUSD += row.SpendUSD
+			result.NonSpamOrgCount += 1
+		}
+		orgRows = append(orgRows, *row)
+	}
+
+	slices.SortFunc(orgRows, func(left, right DailySpendOrgRow) int {
+		if left.SpendUSD != right.SpendUSD {
+			if left.SpendUSD > right.SpendUSD {
+				return -1
+			}
+			return 1
+		}
+		if left.Requests != right.Requests {
+			if left.Requests > right.Requests {
+				return -1
+			}
+			return 1
+		}
+		if left.OrgID < right.OrgID {
+			return -1
+		}
+		if left.OrgID > right.OrgID {
+			return 1
+		}
+		return 0
+	})
+
+	topCount := minDailySpendInt(len(orgRows), topOrgsLimit)
+	if topCount > 0 {
+		result.TopOrgs = append(result.TopOrgs, orgRows[:topCount]...)
+	}
+	for _, row := range orgRows[topCount:] {
+		result.OtherOrgsSpendUSD += row.SpendUSD
+		result.OtherOrgsCount += 1
+	}
+
+	modelRows := make([]DailySpendModelRow, 0, len(modelBreakdownByName))
+	for _, row := range modelBreakdownByName {
+		modelRows = append(modelRows, *row)
+	}
+	slices.SortFunc(modelRows, func(left, right DailySpendModelRow) int {
+		if left.SpendUSD != right.SpendUSD {
+			if left.SpendUSD > right.SpendUSD {
+				return -1
+			}
+			return 1
+		}
+		if left.Requests != right.Requests {
+			if left.Requests > right.Requests {
+				return -1
+			}
+			return 1
+		}
+		if left.Model < right.Model {
+			return -1
+		}
+		if left.Model > right.Model {
+			return 1
+		}
+		return 0
+	})
+	result.ModelBreakdown = modelRows
+
+	return result, nil
+}
+
 func (u *UsageStore) GetOrgUsageAnalytics(orgIDs []string, includeWindows bool) ([]OrgUsageAnalyticsRow, error) {
 	if u == nil || u.analytics == nil || len(orgIDs) == 0 {
 		return []OrgUsageAnalyticsRow{}, nil
@@ -1204,6 +1471,259 @@ func (u *UsageStore) GetOrgUsageAnalytics(orgIDs []string, includeWindows bool) 
 		}
 	}
 	return items, nil
+}
+
+func (u *UsageStore) accumulateDailySpendOrgTotals(
+	ctx context.Context,
+	orgIDs []string,
+	fromMs int64,
+	toMs int64,
+	target map[string]*DailySpendOrgRow,
+) error {
+	rows, err := u.queryDailySpendGroupedByOrg(ctx, orgIDs, fromMs, toMs)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		current := target[row.OrgID]
+		if current == nil {
+			current = &DailySpendOrgRow{OrgID: row.OrgID}
+			target[row.OrgID] = current
+		}
+		current.SpendUSD += row.SpendUSD
+		current.Requests += row.Requests
+	}
+	return nil
+}
+
+func (u *UsageStore) queryDailySpendGroupedByOrg(
+	ctx context.Context,
+	orgIDs []string,
+	fromMs int64,
+	toMs int64,
+) ([]DailySpendOrgRow, error) {
+	if fromMs >= toMs || len(orgIDs) == 0 {
+		return []DailySpendOrgRow{}, nil
+	}
+
+	query, args := buildDailySpendFilterQuery(
+		`
+			SELECT org_id, COALESCE(SUM(cost_usd), 0), COUNT(*)
+			FROM usage_events
+		`,
+		orgIDs,
+		fromMs,
+		toMs,
+		"GROUP BY org_id",
+	)
+	rows, err := u.analytics.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query daily spend org totals: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]DailySpendOrgRow, 0, len(orgIDs))
+	for rows.Next() {
+		var row DailySpendOrgRow
+		if err := rows.Scan(&row.OrgID, &row.SpendUSD, &row.Requests); err != nil {
+			return nil, fmt.Errorf("scan daily spend org total: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate daily spend org totals: %w", err)
+	}
+	return result, nil
+}
+
+func (u *UsageStore) accumulateDailySpendHourlySeries(
+	ctx context.Context,
+	orgIDs []string,
+	fromMs int64,
+	toMs int64,
+	spamOrgIDSet map[string]struct{},
+	hourlySeries []DailySpendHourlyRow,
+) error {
+	if fromMs >= toMs || len(orgIDs) == 0 || len(hourlySeries) == 0 {
+		return nil
+	}
+
+	query, args := buildDailySpendFilterQuery(
+		`
+			SELECT CAST(strftime('%H', created_at_ms / 1000, 'unixepoch') AS INTEGER), org_id, COALESCE(SUM(cost_usd), 0), COUNT(*)
+			FROM usage_events
+		`,
+		orgIDs,
+		fromMs,
+		toMs,
+		"GROUP BY 1, 2",
+	)
+	rows, err := u.analytics.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("query daily spend hourly series: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var hour int
+		var orgID string
+		var spendUSD float64
+		var requests int64
+		if err := rows.Scan(&hour, &orgID, &spendUSD, &requests); err != nil {
+			return fmt.Errorf("scan daily spend hourly row: %w", err)
+		}
+		if hour < 0 || hour >= len(hourlySeries) {
+			continue
+		}
+		hourlySeries[hour].SpendUSD += spendUSD
+		hourlySeries[hour].Requests += requests
+		if _, isSpam := spamOrgIDSet[orgID]; isSpam {
+			hourlySeries[hour].SpamSpendUSD += spendUSD
+			continue
+		}
+		hourlySeries[hour].NonSpamSpendUSD += spendUSD
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate daily spend hourly series: %w", err)
+	}
+	return nil
+}
+
+func (u *UsageStore) accumulateDailySpendModelBreakdown(
+	ctx context.Context,
+	orgIDs []string,
+	fromMs int64,
+	toMs int64,
+	target map[string]*DailySpendModelRow,
+) error {
+	if fromMs >= toMs || len(orgIDs) == 0 {
+		return nil
+	}
+
+	query, args := buildDailySpendFilterQuery(
+		`
+			SELECT model, COALESCE(SUM(cost_usd), 0), COUNT(*)
+			FROM usage_events
+		`,
+		orgIDs,
+		fromMs,
+		toMs,
+		"GROUP BY model",
+	)
+	rows, err := u.analytics.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("query daily spend model breakdown: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var model string
+		var spendUSD float64
+		var requests int64
+		if err := rows.Scan(&model, &spendUSD, &requests); err != nil {
+			return fmt.Errorf("scan daily spend model row: %w", err)
+		}
+		model = normalizeDailySpendModel(model)
+		current := target[model]
+		if current == nil {
+			current = &DailySpendModelRow{Model: model}
+			target[model] = current
+		}
+		current.SpendUSD += spendUSD
+		current.Requests += requests
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate daily spend model breakdown: %w", err)
+	}
+	return nil
+}
+
+func buildDailySpendFilterQuery(
+	baseQuery string,
+	orgIDs []string,
+	fromMs int64,
+	toMs int64,
+	suffix string,
+) (string, []any) {
+	placeholders := make([]string, len(orgIDs))
+	args := make([]any, 0, len(orgIDs)+2)
+	args = append(args, fromMs, toMs)
+	for index, orgID := range orgIDs {
+		placeholders[index] = "?"
+		args = append(args, orgID)
+	}
+	query := fmt.Sprintf(
+		`%s
+			WHERE created_at_ms >= ? AND created_at_ms < ?
+			  AND org_id IN (%s)
+			%s`,
+		baseQuery,
+		strings.Join(placeholders, ","),
+		suffix,
+	)
+	return query, args
+}
+
+func normalizeDailySpendOrgIDs(orgIDs []string) []string {
+	seen := make(map[string]struct{}, len(orgIDs))
+	result := make([]string, 0, len(orgIDs))
+	for _, rawOrgID := range orgIDs {
+		orgID := strings.TrimSpace(rawOrgID)
+		if orgID == "" {
+			continue
+		}
+		if _, ok := seen[orgID]; ok {
+			continue
+		}
+		seen[orgID] = struct{}{}
+		result = append(result, orgID)
+	}
+	return result
+}
+
+func normalizeDailySpendModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return "unknown"
+	}
+	return trimmed
+}
+
+func chunkDailySpendOrgIDs(orgIDs []string, chunkSize int) [][]string {
+	if len(orgIDs) == 0 {
+		return nil
+	}
+	if chunkSize <= 0 {
+		chunkSize = len(orgIDs)
+	}
+
+	chunks := make([][]string, 0, (len(orgIDs)+chunkSize-1)/chunkSize)
+	for start := 0; start < len(orgIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(orgIDs) {
+			end = len(orgIDs)
+		}
+		chunks = append(chunks, orgIDs[start:end])
+	}
+	return chunks
+}
+
+func parseDailySpendDate(date string) (time.Time, error) {
+	if strings.TrimSpace(date) == "" {
+		return time.Time{}, errors.New("daily spend date is required")
+	}
+	parsed, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid daily spend date: %w", err)
+	}
+	return parsed.UTC(), nil
+}
+
+func minDailySpendInt(left int, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (u *UsageStore) loadAnalyticsWindows(
