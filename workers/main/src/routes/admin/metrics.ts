@@ -16,6 +16,52 @@ export interface OrgUsageAnalyticsItem {
   }>;
 }
 
+export interface DailySpendAnalyticsSummary {
+  date: string;
+  total_spend_usd: number;
+  total_requests: number;
+  spam_spend_usd: number;
+  non_spam_spend_usd: number;
+}
+
+export interface DailySpendAnalyticsHourlyRow {
+  hour: number;
+  spend_usd: number;
+  requests: number;
+  spam_spend_usd: number;
+  non_spam_spend_usd: number;
+}
+
+export interface DailySpendAnalyticsModelRow {
+  model: string;
+  spend_usd: number;
+  requests: number;
+}
+
+export interface DailySpendAnalyticsOrgRow {
+  org_id: string;
+  spend_usd: number;
+  requests: number;
+  is_spam: boolean;
+}
+
+export interface DailySpendAnalyticsResponse {
+  date: string;
+  is_partial: boolean;
+  total_spend_usd: number;
+  total_requests: number;
+  spam_spend_usd: number;
+  non_spam_spend_usd: number;
+  spam_org_count: number;
+  non_spam_org_count: number;
+  previous_day: DailySpendAnalyticsSummary;
+  hourly_series: DailySpendAnalyticsHourlyRow[];
+  model_breakdown: DailySpendAnalyticsModelRow[];
+  top_orgs: DailySpendAnalyticsOrgRow[];
+  other_orgs_spend_usd: number;
+  other_orgs_count: number;
+}
+
 async function fetchSandboxHostJson<T>(
   env: Env,
   path: string,
@@ -75,6 +121,29 @@ export async function fetchOrgUsageAnalytics(
         windows: item.windows ?? [],
       },
     ]),
+  );
+}
+
+export async function fetchDailySpendAnalytics(
+  env: Env,
+  options: {
+    date: string;
+    orgIds: string[];
+    topOrgsLimit: number;
+  },
+): Promise<DailySpendAnalyticsResponse> {
+  return fetchSandboxHostJson<DailySpendAnalyticsResponse>(
+    env,
+    '/v1/usage/analytics/daily-spend/query',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date: options.date,
+        org_ids: options.orgIds,
+        top_orgs_limit: options.topOrgsLimit,
+      }),
+    },
   );
 }
 

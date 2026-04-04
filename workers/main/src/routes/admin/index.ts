@@ -16,6 +16,7 @@
  *   GET   /api/admin/spam/org-ids          — Spam org IDs from effective spend limits
  *   GET   /api/admin/orgs                  — All orgs (enriched)
  *   GET   /api/admin/dashboard/top-orgs    — Top orgs by spend or member count
+ *   GET   /api/admin/dashboard/daily-spend — Cross-org daily spend aggregation
  *   GET   /api/admin/dashboard/summary     — Dashboard summary metrics
  *   GET   /api/admin/dashboard/retention   — Dashboard retention metrics
  *   GET   /api/admin/dashboard/spam-summary — Spam-tab entity + usage snapshot

@@ -18,6 +18,7 @@ import (
 //   PUT  /v1/usage/orgs/{orgId}/limits  — set per-org limit overrides (or clear)
 //   GET  /v1/usage/orgs/{orgId}/log         — recent usage log entries (paginated)
 //   GET  /v1/usage/orgs/{orgId}/log/sum     — aggregated spend between dates
+//   POST /v1/usage/analytics/daily-spend/query — cross-org daily spend aggregation
 
 var usageOrgRouteRegex = regexp.MustCompile(`^/v1/usage/orgs/([^/]+)(/[^/]*(?:/[^/]*)?)$`)
 
@@ -58,6 +59,8 @@ func (s *Server) handleUsageAnalyticsRoute(w http.ResponseWriter, req *http.Requ
 		s.handleGetSpamOrgIDs(w)
 	case req.URL.Path == "/v1/usage/analytics/orgs/query" && req.Method == http.MethodPost:
 		s.handlePostUsageAnalyticsOrgsQuery(w, req)
+	case req.URL.Path == "/v1/usage/analytics/daily-spend/query" && req.Method == http.MethodPost:
+		s.handlePostUsageAnalyticsDailySpendQuery(w, req)
 	default:
 		errorJSON(w, "Not found", http.StatusNotFound)
 	}
@@ -120,6 +123,40 @@ func (s *Server) handlePostUsageAnalyticsOrgsQuery(w http.ResponseWriter, req *h
 		"items": items,
 		"count": len(items),
 	})
+}
+
+type usageAnalyticsDailySpendQueryRequest struct {
+	Date         string   `json:"date"`
+	OrgIDs       []string `json:"org_ids"`
+	TopOrgsLimit int      `json:"top_orgs_limit"`
+}
+
+func (s *Server) handlePostUsageAnalyticsDailySpendQuery(w http.ResponseWriter, req *http.Request) {
+	var body usageAnalyticsDailySpendQueryRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		errorJSON(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Date) == "" {
+		errorJSON(w, "Date is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := time.Parse("2006-01-02", body.Date); err != nil {
+		errorJSON(w, "Invalid date. Expected YYYY-MM-DD.", http.StatusBadRequest)
+		return
+	}
+
+	response, err := s.usage.GetDailySpendAnalytics(state.DailySpendAnalyticsQuery{
+		Date:         body.Date,
+		OrgIDs:       body.OrgIDs,
+		TopOrgsLimit: body.TopOrgsLimit,
+	})
+	if err != nil {
+		errorJSON(w, "Failed to compute daily spend analytics", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleGetOrgSpend(w http.ResponseWriter, orgID string) {
