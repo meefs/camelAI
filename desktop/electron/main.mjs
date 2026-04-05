@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -102,9 +102,19 @@ function getRendererEntry() {
 }
 
 function getBackendModuleEntry() {
+  if (process.env.DESKTOP_BACKEND_MODULE_ENTRY) {
+    return resolveDesktopOverridePath(process.env.DESKTOP_BACKEND_MODULE_ENTRY);
+  }
   const resourcesDir = getDesktopResourcesDir();
   const stagedBackendModuleEntry = resolve(resourcesDir, 'backend/index.mjs');
   return existsSync(stagedBackendModuleEntry) ? stagedBackendModuleEntry : null;
+}
+
+function resolveDesktopOverridePath(target) {
+  if (!target) {
+    return null;
+  }
+  return isAbsolute(target) ? target : resolve(repoRoot, target);
 }
 
 function getDesktopRuntimeEnv() {
@@ -270,7 +280,13 @@ async function ensureBackend() {
   }
 
   const resourcesDir = getDesktopResourcesDir();
-  const backendBinaryPath = resolve(resourcesDir, 'bin/camelai-desktop-backend');
+  const backendBinaryPath =
+    resolveDesktopOverridePath(process.env.DESKTOP_BACKEND_BINARY_PATH) ??
+    resolve(resourcesDir, 'bin/camelai-desktop-backend');
+  const backendEntry =
+    process.env.DESKTOP_BACKEND_ENTRY || 'desktop/backend/server.ts';
+  const backendCwd =
+    resolveDesktopOverridePath(process.env.DESKTOP_BACKEND_CWD) ?? repoRoot;
   const runtimeEnv = applyDesktopRuntimeEnv();
   recordStartup('runtime_env_applied', { mode: 'backend-child' });
   const backendEnv = {
@@ -282,11 +298,11 @@ async function ensureBackend() {
   backendReadyPromise = new Promise((resolvePromise, rejectPromise) => {
     let ready = false;
     const command = existsSync(backendBinaryPath) ? backendBinaryPath : 'bun';
-    const args = existsSync(backendBinaryPath) ? [] : ['run', 'desktop/backend/server.ts'];
+    const args = existsSync(backendBinaryPath) ? [] : ['run', backendEntry];
     recordStartup('backend_process_spawn', { command, args });
 
     backendProcess = spawn(command, args, {
-      cwd: repoRoot,
+      cwd: backendCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: backendEnv,
     });

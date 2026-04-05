@@ -156,16 +156,16 @@ function getRuntimeBootCaption(
     return "Connecting the desktop shell to the local backend.";
   }
   if (!snapshot) {
-    return "Preparing the local container runtime.";
+    return "Preparing the local runtime.";
   }
 
   if (snapshot.runtimeStatus.state === "error") {
     return "The local runtime did not finish booting.";
   }
   if (snapshot.runtimeStatus.state === "starting") {
-    return "Starting the local control-plane container.";
+    return "Starting the local runtime.";
   }
-  return "Preparing the local runtime inputs.";
+  return "Preparing the local runtime.";
 }
 
 function RuntimeBootScreen({
@@ -242,6 +242,28 @@ function coerceTextContent(content: string | ContentBlock[]): string {
     .map((block) => block.text)
     .join("\n")
     .trim();
+}
+
+function appendAssistantDeltaContent(
+  content: string | ContentBlock[],
+  delta: string,
+): string | ContentBlock[] {
+  if (typeof content === "string") {
+    return `${content}${delta}`;
+  }
+
+  const nextContent = [...content];
+  const lastBlock = nextContent[nextContent.length - 1];
+  if (lastBlock?.type === "text") {
+    nextContent[nextContent.length - 1] = {
+      ...lastBlock,
+      text: `${lastBlock.text}${delta}`,
+    };
+    return nextContent;
+  }
+
+  nextContent.push({ type: "text", text: delta });
+  return nextContent;
 }
 
 function MessageRow({ message }: { message: Message }) {
@@ -513,6 +535,28 @@ export function App() {
             null,
         );
         setConnectionState("open");
+        return;
+      }
+
+      if (event.type === "assistant_delta") {
+        setUiMessagesByThread((current) => {
+          const threadMessages = current[event.threadId] ?? [];
+          return {
+            ...current,
+            [event.threadId]: threadMessages.map((message) =>
+              message.id === event.messageId
+                ? {
+                    ...message,
+                    content: appendAssistantDeltaContent(
+                      message.content,
+                      event.delta,
+                    ),
+                    isStreaming: true,
+                  }
+                : message,
+            ),
+          };
+        });
         return;
       }
 

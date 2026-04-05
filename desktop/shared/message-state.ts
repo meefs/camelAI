@@ -261,6 +261,23 @@ type CodexNotification = {
   params?: Record<string, unknown>;
 };
 
+type AgentOsNotification = {
+  jsonrpc?: string;
+  method?: string;
+  params?: Record<string, unknown>;
+  type?: string;
+};
+
+type AgentOsSessionUpdate = {
+  sessionUpdate?: unknown;
+  content?: unknown;
+  toolCallId?: unknown;
+  title?: unknown;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  status?: unknown;
+};
+
 type CodexThreadItem = {
   id: string;
   type: string;
@@ -288,6 +305,17 @@ function isCodexRuntimeEvent(event: unknown): event is CodexNotification {
     event &&
       typeof event === 'object' &&
       typeof (event as { method?: unknown }).method === 'string'
+  );
+}
+
+function isAgentOsRuntimeEvent(event: unknown): event is AgentOsNotification {
+  return Boolean(
+    event &&
+      typeof event === 'object' &&
+      (
+        typeof (event as { method?: unknown }).method === 'string' ||
+        (event as { type?: unknown }).type === 'permission_request'
+      )
   );
 }
 
@@ -435,6 +463,33 @@ function appendTextDeltaBlock(
   ];
 }
 
+function appendContiguousTextBlock(
+  blocks: ContentBlock[],
+  delta: string,
+  itemKind: string,
+  itemIdPrefix: string
+): ContentBlock[] {
+  const nextBlocks = [...blocks];
+  const lastBlock = nextBlocks[nextBlocks.length - 1];
+  if (lastBlock?.type === 'text') {
+    nextBlocks[nextBlocks.length - 1] = {
+      ...lastBlock,
+      text: `${lastBlock.text}${delta}`,
+      itemKind,
+    };
+    return nextBlocks;
+  }
+
+  const nextIndex = nextBlocks.filter((block) => block.type === 'text').length;
+  nextBlocks.push({
+    type: 'text',
+    text: delta,
+    itemId: `${itemIdPrefix}:${nextIndex}`,
+    itemKind,
+  });
+  return nextBlocks;
+}
+
 function upsertTextBlock(
   blocks: ContentBlock[],
   itemId: string,
@@ -490,6 +545,38 @@ function appendThinkingDeltaBlock(
       summaries: [],
     },
   ];
+}
+
+function appendContiguousThinkingBlock(
+  blocks: ContentBlock[],
+  delta: string,
+  label: string,
+  itemKind: string,
+  itemIdPrefix: string
+): ContentBlock[] {
+  const nextBlocks = [...blocks];
+  const lastBlock = nextBlocks[nextBlocks.length - 1];
+  if (lastBlock?.type === 'thinking') {
+    nextBlocks[nextBlocks.length - 1] = {
+      ...lastBlock,
+      thinking: `${lastBlock.thinking}${delta}`,
+      label,
+      itemKind,
+      summaries: lastBlock.summaries,
+    };
+    return nextBlocks;
+  }
+
+  const nextIndex = nextBlocks.filter((block) => block.type === 'thinking').length;
+  nextBlocks.push({
+    type: 'thinking',
+    thinking: delta,
+    itemId: `${itemIdPrefix}:${nextIndex}`,
+    itemKind,
+    label,
+    summaries: [],
+  });
+  return nextBlocks;
 }
 
 function upsertThinkingBlock(
@@ -635,6 +722,17 @@ function upsertToolUseBlock(
   );
 }
 
+function getToolUseBlock(
+  blocks: ContentBlock[],
+  itemId: string
+): Extract<ContentBlock, { type: 'tool_use' }> | null {
+  const block = blocks.find(
+    (candidate): candidate is Extract<ContentBlock, { type: 'tool_use' }> =>
+      candidate.type === 'tool_use' && candidate.id === itemId
+  );
+  return block ?? null;
+}
+
 function upsertToolResultBlock(
   blocks: ContentBlock[],
   itemId: string,
@@ -691,6 +789,170 @@ function stringifyCodexValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function getAgentOsSessionUpdate(event: AgentOsNotification): AgentOsSessionUpdate | null {
+  if (event.type === 'permission_request') {
+    return null;
+  }
+
+  if (event.method !== 'session/update') {
+    return null;
+  }
+
+  const params = event.params;
+  if (!params || typeof params !== 'object') {
+    return null;
+  }
+
+  const update = params.update;
+  return update && typeof update === 'object'
+    ? (update as AgentOsSessionUpdate)
+    : null;
+}
+
+function extractAgentOsTextContent(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => extractAgentOsTextContent(entry)).filter(Boolean).join('');
+  }
+
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+
+  const record = value as Record<string, unknown>;
+  if (record.type === 'text' && typeof record.text === 'string') {
+    return record.text;
+  }
+  if (record.type === 'content') {
+    return extractAgentOsTextContent(record.content);
+  }
+  if (record.type === 'diff') {
+    const path = typeof record.path === 'string' ? record.path : 'file';
+    return `Updated ${path}`;
+  }
+  if ('content' in record) {
+    return extractAgentOsTextContent(record.content);
+  }
+  return '';
+}
+
+function applyAgentOsRuntimeEvent(
+  currentMessages: Message[],
+  threadId: string,
+  event: AgentOsNotification,
+  streamingMessageIds: Record<string, string | null>
+): Message[] {
+  const update = getAgentOsSessionUpdate(event);
+  if (!update) {
+    return currentMessages;
+  }
+
+  const sessionUpdate = typeof update.sessionUpdate === 'string'
+    ? update.sessionUpdate
+    : null;
+
+  if (sessionUpdate === 'agent_message_chunk') {
+    const text = extractAgentOsTextContent(update.content);
+    if (!text) return currentMessages;
+    return updateStreamingAssistantMessage(
+      currentMessages,
+      threadId,
+      streamingMessageIds,
+      (blocks) => appendContiguousTextBlock(
+        blocks,
+        text,
+        'agentos',
+        'agentos:message'
+      )
+    );
+  }
+
+  if (sessionUpdate === 'agent_thought_chunk') {
+    const text = extractAgentOsTextContent(update.content);
+    if (!text) return currentMessages;
+    return updateStreamingAssistantMessage(
+      currentMessages,
+      threadId,
+      streamingMessageIds,
+      (blocks) => appendContiguousThinkingBlock(
+        blocks,
+        text,
+        'Thinking',
+        'agentos',
+        'agentos:thinking'
+      )
+    );
+  }
+
+  const toolCallId = typeof update.toolCallId === 'string' ? update.toolCallId : null;
+
+  if (sessionUpdate === 'tool_call' && toolCallId) {
+    const title = typeof update.title === 'string' && update.title.trim()
+      ? update.title
+      : 'tool';
+    const rawInput =
+      update.rawInput && typeof update.rawInput === 'object'
+        ? (update.rawInput as Record<string, unknown>)
+        : {};
+    return updateStreamingAssistantMessage(
+      currentMessages,
+      threadId,
+      streamingMessageIds,
+      (blocks) => upsertToolUseBlock(blocks, toolCallId, title, rawInput, 'agentos')
+    );
+  }
+
+  if (sessionUpdate === 'tool_call_update' && toolCallId) {
+    const text = extractAgentOsTextContent(update.content) || extractAgentOsTextContent(update.rawOutput);
+    const status = typeof update.status === 'string' ? update.status : '';
+    const rawInput =
+      update.rawInput && typeof update.rawInput === 'object'
+        ? (update.rawInput as Record<string, unknown>)
+        : null;
+    const title = typeof update.title === 'string' && update.title.trim()
+      ? update.title
+      : null;
+    return updateStreamingAssistantMessage(
+      currentMessages,
+      threadId,
+      streamingMessageIds,
+      (blocks) => {
+        let nextBlocks = blocks;
+        const existingToolUse = getToolUseBlock(nextBlocks, toolCallId);
+        if (!existingToolUse) {
+          nextBlocks = upsertToolUseBlock(
+            nextBlocks,
+            toolCallId,
+            title ?? 'tool',
+            rawInput ?? {},
+            'agentos'
+          );
+        } else if (rawInput || title) {
+          nextBlocks = upsertToolUseBlock(
+            nextBlocks,
+            toolCallId,
+            title ?? existingToolUse.name,
+            rawInput ?? existingToolUse.input,
+            'agentos'
+          );
+        }
+        if (text) {
+          return appendToolResultText(nextBlocks, toolCallId, text, 'agentos');
+        }
+        if (status === 'failed') {
+          return upsertToolResultBlock(nextBlocks, toolCallId, 'Tool failed.', 'agentos');
+        }
+        return nextBlocks;
+      }
+    );
+  }
+
+  return currentMessages;
 }
 
 function normalizeCodexTodoStatus(status: unknown): CodexTodoStatus {
@@ -1296,6 +1558,15 @@ export function applyRuntimeEventToMessages(
 
   if (provider === 'codex' && isCodexRuntimeEvent(event)) {
     return applyCodexRuntimeEvent(
+      currentMessages,
+      threadId,
+      event,
+      streamingMessageIds,
+    );
+  }
+
+  if (provider === 'agentos' && isAgentOsRuntimeEvent(event)) {
+    return applyAgentOsRuntimeEvent(
       currentMessages,
       threadId,
       event,

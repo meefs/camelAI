@@ -53,14 +53,22 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - `scripts/stage.mjs` - Stages a packaging-friendly desktop payload under `desktop/app-resources/` with a bundled desktop-service module, compiled backend binary fallback, built renderer, staged Linux kernel, and runtime helper binary
    - `scripts/probe.mjs` - Hidden Electron startup probe for debugging desktop initialization regressions against dev or staged app paths
    - `scripts/probe-turn.mjs` - Fast runtime-turn probe harness that waits for the local runtime and verifies a real `/turn` without Electron or backend stdio in the loop
+   - `../desktop-agentos/` - Experimental sibling desktop variant that reuses the Electron shell and renderer but swaps the Docker or Apple-containerized runtime for a direct AgentOS VM booted by the backend; it currently runs the AgentOS Pi adapter against a host-mounted workspace and an app-managed Pi settings home
 
-4. **Sandbox Host** (`services/sandbox-host/`)
+4. **Desktop AgentOS Prototype** (`desktop-agentos/`)
+   - Parallel experimental desktop runtime that keeps the existing Electron shell + renderer protocol but swaps the containerized sandbox path for an embedded Rivet AgentOS VM
+   - `backend/` - Codex-only desktop backend that persists local threads/messages, mounts a writable host workspace into AgentOS, auto-answers ACP permission prompts, stages Pi settings plus host `~/.pi/agent/auth.json` into the app-managed Pi home, and translates AgentOS session updates into the existing desktop Codex event shape so the shared renderer can keep rendering tool calls/thinking blocks
+   - `electron/` - Lightweight Electron main/preload pair for this variant; it always runs the backend over stdio and reuses the shared desktop renderer bundle/dev server
+   - `scripts/dev.mjs` - Starts the shared renderer, tails the AgentOS backend log, and launches Electron against the AgentOS-backed desktop variant
+   - Current limitation: development-oriented only; it still expects the workspace checkout and root `node_modules/` to be available, and OpenAI-backed Pi sessions over AgentOS ACP still return empty responses even when Pi OAuth credentials are staged from `~/.pi/agent/auth.json`
+
+5. **Sandbox Host** (`services/sandbox-host/`)
    - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
    - Accessed via Workers VPC binding (Cloudflare Tunnel) — not exposed to public internet
    - Host FS operations on a Premium SSD v2 managed disk mounted as XFS at `/srv/sandboxes`
    - Proxies control plane traffic (health, env, chat WebSocket) to containers
 
-5. **Sandbox** (`sandbox/`)
+6. **Sandbox** (`sandbox/`)
    - `control-plane.mjs` - In-sandbox control plane server + Claude Agent SDK session runner
    - `create-worker/` - Project scaffolders (`create-worker` for starter apps, `publish` for deploying files as standalone apps)
    - `skills/` - Agent skills (data-analysis, developing-software, file-sharing, testing-debugging)
