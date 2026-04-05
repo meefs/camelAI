@@ -371,7 +371,7 @@ export function PromptInput({
                       <SelectTrigger
                         size="sm"
                         aria-label="Thread model"
-                        className="h-auto gap-1 rounded-none border-0 bg-transparent px-0 py-0 text-xs font-medium text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground focus-visible:border-0 focus-visible:text-foreground focus-visible:ring-0 focus-visible:underline focus-visible:underline-offset-4"
+                        className="h-auto gap-1 rounded-none border-0 !bg-transparent px-0 py-0 text-xs font-medium text-muted-foreground shadow-none hover:!bg-transparent hover:text-foreground focus-visible:border-0 focus-visible:text-foreground focus-visible:ring-0 focus-visible:underline focus-visible:underline-offset-4"
                       >
                         <SelectValue />
                       </SelectTrigger>
