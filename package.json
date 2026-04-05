@@ -28,6 +28,7 @@
 		"desktop-agentos:dev": "node desktop-agentos/scripts/dev.mjs",
 		"desktop-agentos:backend": "node --import tsx/esm desktop-agentos/scripts/backend-smoke.mjs",
 		"desktop-agentos:probe-acp": "node --import tsx/esm desktop-agentos/scripts/probe-acp-stream.mjs",
+		"desktop-agentos:probe-resume": "node --import tsx/esm desktop-agentos/scripts/probe-session-resume.mjs",
 		"desktop-agentos:test-gpt54": "node --import tsx/esm desktop-agentos/scripts/test-gpt54-acp.mjs",
 		"desktop-agentos:probe-turn": "node desktop-agentos/scripts/probe-turn.mjs",
 		"desktop-agentos:start": "NODE_OPTIONS='--import tsx/esm' electron desktop-agentos/electron/main.mjs",

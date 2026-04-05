@@ -18,6 +18,7 @@ const DEFAULT_RUNTIME_DIRECTORY = resolve(process.cwd(), "desktop-agentos/.local
 const DEFAULT_WORKSPACE_DIRECTORY = resolve(process.cwd());
 const VM_WORKSPACE_PATH = "/workspace";
 const VM_PI_HOME_PATH = "/home/user/.pi";
+const VM_PI_THREAD_SESSIONS_PATH = `${VM_PI_HOME_PATH}/thread-sessions`;
 
 function getPiAgentSoftware() {
   return process.env.DESKTOP_AGENTOS_PI_ADAPTER?.trim() === "upstream"
@@ -119,6 +120,10 @@ function getPromptResponseErrorMessage(
       : null;
 
   return stderr ? `${message} (${stderr})` : message;
+}
+
+function getVmPiSessionDir(threadId: string, providerId: string): string {
+  return `${VM_PI_THREAD_SESSIONS_PATH}/${providerId}/${threadId}`;
 }
 
 export class AgentOsRuntimeManager {
@@ -262,6 +267,7 @@ export class AgentOsRuntimeManager {
 
   private async ensureSession(
     provider: DesktopProviderDefinition,
+    threadId: string,
     model: string,
     sessionId?: string | null,
   ): Promise<string> {
@@ -282,9 +288,13 @@ export class AgentOsRuntimeManager {
     if (!resolvedSessionId) {
       this.syncPiAuthFile();
       this.writePiSettings(model, provider.getThoughtLevel());
+      const env = {
+        ...provider.buildSessionEnv(model),
+        PI_SESSION_DIR: getVmPiSessionDir(threadId, provider.id),
+      };
       const created = await vm.createSession("pi", {
         cwd: VM_WORKSPACE_PATH,
-        env: provider.buildSessionEnv(model),
+        env,
       });
       resolvedSessionId = created.sessionId;
     }
@@ -313,7 +323,7 @@ export class AgentOsRuntimeManager {
       throw new Error("AgentOS runtime failed to initialize.");
     }
 
-    const resolvedSessionId = await this.ensureSession(provider, model, sessionId);
+    const resolvedSessionId = await this.ensureSession(provider, threadId, model, sessionId);
     onSessionId?.(resolvedSessionId);
     let accumulatedText = "";
 

@@ -53,7 +53,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - `scripts/stage.mjs` - Stages a packaging-friendly desktop payload under `desktop/app-resources/` with a bundled desktop-service module, compiled backend binary fallback, built renderer, staged Linux kernel, and runtime helper binary
    - `scripts/probe.mjs` - Hidden Electron startup probe for debugging desktop initialization regressions against dev or staged app paths
    - `scripts/probe-turn.mjs` - Fast runtime-turn probe harness that waits for the local runtime and verifies a real `/turn` without Electron or backend stdio in the loop
-   - `../desktop-agentos/` - Experimental sibling desktop variant that reuses the Electron shell and renderer but swaps the Docker or Apple-containerized runtime for a direct AgentOS VM booted by the backend; it currently runs the AgentOS Pi adapter against a host-mounted workspace and an app-managed Pi settings home
+   - `../desktop-agentos/` - Experimental sibling desktop variant that reuses the Electron shell and renderer but swaps the Docker or Apple-containerized runtime for a direct AgentOS VM booted by the backend; it currently runs the AgentOS Pi adapter against a host-mounted workspace, an app-managed Pi settings home, and per-thread persisted Pi session directories so chats survive desktop/runtime restarts
 
 4. **Desktop AgentOS Prototype** (`desktop-agentos/`)
    - Parallel experimental desktop runtime that keeps the existing Electron shell + renderer protocol but swaps the containerized sandbox path for an embedded Rivet AgentOS VM

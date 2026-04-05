@@ -12,7 +12,7 @@
 import { AgentSideConnection, ndJsonStream, } from "@agentclientprotocol/sdk";
 import { SessionManager, createAgentSession, createCodingTools, createFindTool, createGrepTool, createLsTool, } from "@mariozechner/pi-coding-agent";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 // ── CLI argument parsing ────────────────────────────────────────────
 let appendSystemPrompt;
@@ -63,6 +63,14 @@ function discoverExtensionFactories(cwd) {
     }
     return factories;
 }
+function resolveSessionManager(cwd) {
+    const sessionDir = process.env.PI_SESSION_DIR?.trim();
+    if (sessionDir) {
+        mkdirSync(sessionDir, { recursive: true });
+        return SessionManager.continueRecent(cwd, sessionDir);
+    }
+    return SessionManager.continueRecent(cwd);
+}
 // ── Agent implementation ────────────────────────────────────────────
 class PiSdkAgent {
     conn;
@@ -109,7 +117,7 @@ class PiSdkAgent {
         await resourceLoader.reload();
         const { session, extensionsResult } = await createAgentSession({
             cwd: params.cwd,
-            sessionManager: SessionManager.inMemory(),
+            sessionManager: resolveSessionManager(params.cwd),
             resourceLoader,
             tools: [
                 ...createCodingTools(params.cwd),
