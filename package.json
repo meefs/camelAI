@@ -58,6 +58,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:desktop-agentos-renderer": "vitest run tests/desktop-agentos-app-streaming.test.tsx",
+    "test:desktop-agentos-openrouter": "vitest run tests/desktop-agentos-openrouter.test.ts",
     "test:all": "bun run test:run && bun run test:workers",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",

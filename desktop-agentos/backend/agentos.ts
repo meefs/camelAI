@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { getModels } from "@mariozechner/pi-ai";
 import type {
   DesktopAuthState,
   DesktopModel,
@@ -11,12 +12,17 @@ import type { DesktopProviderDefinition } from "./provider-types";
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.4";
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.1-codex";
 const DEFAULT_THOUGHT_LEVEL =
   process.env.DESKTOP_AGENTOS_THOUGHT_LEVEL?.trim() || "medium";
 const HOST_PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim()
   ? resolve(process.env.PI_CODING_AGENT_DIR)
   : resolve(homedir(), ".pi", "agent");
 const HOST_PI_AUTH_PATH = resolve(HOST_PI_AGENT_DIR, "auth.json");
+const OPENROUTER_MODELS = getModels("openrouter");
+const OPENROUTER_MODELS_BY_ID = new Map(
+  OPENROUTER_MODELS.map((model) => [model.id, model]),
+);
 
 type PiAuthCredential = {
   type?: unknown;
@@ -34,6 +40,10 @@ function getEnvOpenAiApiKey(): string | null {
 
 function getEnvAnthropicApiKey(): string | null {
   return process.env.ANTHROPIC_API_KEY?.trim() || null;
+}
+
+function getEnvOpenRouterApiKey(): string | null {
+  return process.env.OPENROUTER_API_KEY?.trim() || null;
 }
 
 function readHostPiAuthFile(): PiAuthFile | null {
@@ -73,6 +83,14 @@ function getPiCredential(providerId: string): PiAuthCredential | null {
 
 function isClaudeModel(model: string | null | undefined): boolean {
   return Boolean(model?.startsWith("claude-"));
+}
+
+function isOpenRouterModel(model: string | null | undefined): boolean {
+  return Boolean(model && OPENROUTER_MODELS_BY_ID.has(model));
+}
+
+function hasOpenRouterAuth(): boolean {
+  return hasPiApiKey("openrouter") || Boolean(getEnvOpenRouterApiKey());
 }
 
 function getHostClaudeOAuthToken(): string | null {
@@ -131,6 +149,24 @@ function getAuthStateForModel(model: string | null | undefined): DesktopAuthStat
     };
   }
 
+  if (isOpenRouterModel(model)) {
+    if (hasOpenRouterAuth()) {
+      return {
+        provider: "agentos",
+        available: true,
+        source: "api-key",
+        label: "OpenRouter API key via Pi/env",
+      };
+    }
+
+    return {
+      provider: "agentos",
+      available: false,
+      source: "missing",
+      label: "Create an OpenRouter app key and set OPENROUTER_API_KEY",
+    };
+  }
+
   if (hasPiOAuth("openai-codex")) {
     return {
       provider: "agentos",
@@ -177,9 +213,13 @@ function hasPiApiKey(providerId: string): boolean {
 
 function inferProviderForModel(
   model: string,
-): "anthropic" | "openai" | "openai-codex" {
+): "anthropic" | "openai" | "openai-codex" | "openrouter" {
   if (model.startsWith("claude-")) {
     return "anthropic";
+  }
+
+  if (isOpenRouterModel(model)) {
+    return "openrouter";
   }
 
   return hasPiOAuth("openai-codex") ? "openai-codex" : "openai";
@@ -204,10 +244,18 @@ function getDefaultAgentOsModel(): DesktopModel {
     return DEFAULT_OPENAI_MODEL;
   }
 
+  if (hasOpenRouterAuth()) {
+    return DEFAULT_OPENROUTER_MODEL;
+  }
+
   return DEFAULT_OPENAI_MODEL;
 }
 
 function getModelLabel(model: string): string {
+  const openRouterModel = OPENROUTER_MODELS_BY_ID.get(model);
+  if (openRouterModel) {
+    return `OpenRouter · ${openRouterModel.name}`;
+  }
   if (model === "gpt-5.4") {
     return "GPT-5.4 via Pi";
   }
@@ -221,12 +269,16 @@ function getModelLabel(model: string): string {
 }
 
 function getModelCandidates(): DesktopModel[] {
-  return [DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL];
+  const models = [DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL];
+  if (hasOpenRouterAuth()) {
+    models.push(...OPENROUTER_MODELS.map((model) => model.id));
+  }
+  return models;
 }
 
 function getAvailableModels(): DesktopModelOption[] {
-  const models = getModelCandidates().filter(
-    (model) => getAuthStateForModel(model).available,
+  const models = Array.from(new Set(getModelCandidates())).filter((model) =>
+    getAuthStateForModel(model).available,
   );
 
   if (models.length === 0) {
@@ -295,8 +347,18 @@ export const agentOsProvider: DesktopProviderDefinition = {
     };
 
     const openAiApiKey = getEnvOpenAiApiKey();
-    if (openAiApiKey && !hasPiOAuth("openai-codex") && !isClaudeModel(model)) {
+    if (
+      openAiApiKey &&
+      !hasPiOAuth("openai-codex") &&
+      !isClaudeModel(model) &&
+      !isOpenRouterModel(model)
+    ) {
       env.OPENAI_API_KEY = openAiApiKey;
+    }
+
+    const openRouterApiKey = getEnvOpenRouterApiKey();
+    if (openRouterApiKey && !hasPiApiKey("openrouter") && isOpenRouterModel(model)) {
+      env.OPENROUTER_API_KEY = openRouterApiKey;
     }
 
     const anthropicApiKey = getEnvAnthropicApiKey();

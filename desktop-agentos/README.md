@@ -16,9 +16,9 @@ Current limits:
 - dev-only prototype; no staging or packaged runtime flow yet
 - single `agentos` provider only
 - workspace is mounted directly from the host checkout into the VM at `/workspace`
-- auth prefers Pi credentials from `~/.pi/agent/auth.json` and falls back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+- auth prefers Pi credentials from `~/.pi/agent/auth.json` and falls back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY`
 - the session model is chosen from `DESKTOP_AGENTOS_MODEL` and written into a Pi settings file before boot
-- the default model currently prefers Anthropic (`claude-sonnet-4-20250514`) because Pi over AgentOS ACP dropped empty responses for `openai/gpt-5.4` in local testing even though direct Pi SDK calls succeeded
+- the default model prefers Claude when Claude auth exists, then `gpt-5.4` for direct OpenAI auth, then OpenRouter's `openai/gpt-5.1-codex` when only OpenRouter auth exists
 
 ## Commands
 
@@ -30,6 +30,7 @@ bun run desktop-agentos:backend
 bun run desktop-agentos:probe-resume
 bun run desktop-agentos:probe-turn
 bun run desktop-agentos:test-gpt54
+bun run test:desktop-agentos-openrouter
 bun run desktop-agentos:start
 ```
 
@@ -39,6 +40,7 @@ Notes:
 - `desktop-agentos:backend` is a smoke check for the AgentOS runtime bootstrap, not a long-lived backend server.
 - `desktop-agentos:probe-resume` runs two real turns across a full desktop-service restart and fails unless the second turn remembers the first.
 - `desktop-agentos:test-gpt54` runs a real AgentOS ACP probe against `gpt-5.4` and fails if streamed assistant text chunks do not appear.
+- `test:desktop-agentos-openrouter` validates OpenRouter model exposure, auth detection, and session env staging without needing a live Electron window.
 - `desktop-agentos:probe-turn` runs an end-to-end stdio turn against the AgentOS backend using a fresh temporary desktop data directory.
 - `desktop-agentos:start` is the lower-level Electron entrypoint and expects the renderer URL to already be available.
 
@@ -65,7 +67,10 @@ Optional API key fallback:
 ```bash
 export OPENAI_API_KEY=...
 export ANTHROPIC_API_KEY=...
+export OPENROUTER_API_KEY=...
 ```
+
+OpenRouter uses an app-specific API key flow rather than Pi OAuth. Create a key in OpenRouter settings, export `OPENROUTER_API_KEY`, and the AgentOS model picker will expose Pi's built-in OpenRouter model catalog.
 
 ## Architecture
 
