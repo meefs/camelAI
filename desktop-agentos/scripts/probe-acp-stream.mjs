@@ -1,5 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import commonSoftware from "@rivet-dev/agent-os-common";
 import AgentOsPi from "@rivet-dev/agent-os-pi";
@@ -11,23 +12,15 @@ import {
   readHostPiAuthFileContents,
 } from "../backend/agentos.ts";
 
-const MODEL =
-  process.env.DESKTOP_AGENTOS_MODEL?.trim() || "claude-sonnet-4-20250514";
-const THOUGHT_LEVEL =
-  process.env.DESKTOP_AGENTOS_THOUGHT_LEVEL?.trim() || "medium";
-const PROMPT =
-  process.env.DESKTOP_AGENTOS_ACP_PROMPT?.trim() ||
+const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+const DEFAULT_THOUGHT_LEVEL = "medium";
+const DEFAULT_PROMPT =
   'Before using any tool, first tell me exactly: Checking now. Then use the ls tool in the current directory. After the tool finishes, tell me exactly: Done checking.';
-const WORKSPACE_DIRECTORY = resolve(
-  process.env.DESKTOP_AGENTOS_WORKSPACE_DIR || process.cwd(),
-);
 const VM_WORKSPACE_PATH = "/workspace";
 const VM_PI_HOME_PATH = "/home/user/.pi";
 
-function getPiAgentSoftware() {
-  return process.env.DESKTOP_AGENTOS_PI_ADAPTER?.trim() === "upstream"
-    ? AgentOsPi
-    : AgentOsPiLocal;
+function getPiAgentSoftware(adapter) {
+  return adapter === "upstream" ? AgentOsPi : AgentOsPiLocal;
 }
 
 function normalizeTimestamp(value) {
@@ -103,7 +96,31 @@ function summarizeUpdate(update) {
   };
 }
 
-async function main() {
+function getProbeOptions(options = {}) {
+  return {
+    model: options.model ?? process.env.DESKTOP_AGENTOS_MODEL?.trim() ?? DEFAULT_MODEL,
+    thoughtLevel:
+      options.thoughtLevel ??
+      process.env.DESKTOP_AGENTOS_THOUGHT_LEVEL?.trim() ??
+      DEFAULT_THOUGHT_LEVEL,
+    prompt: options.prompt ?? process.env.DESKTOP_AGENTOS_ACP_PROMPT?.trim() ?? DEFAULT_PROMPT,
+    workspaceDirectory: resolve(
+      options.workspaceDirectory ??
+        process.env.DESKTOP_AGENTOS_WORKSPACE_DIR ??
+        process.cwd(),
+    ),
+    adapter:
+      options.adapter ??
+      process.env.DESKTOP_AGENTOS_PI_ADAPTER?.trim() ??
+      "local",
+    keepRuntime:
+      options.keepRuntime ??
+      process.env.DESKTOP_AGENTOS_KEEP_PROBE_RUNTIME === "1",
+  };
+}
+
+export async function runAgentOsAcpProbe(options = {}) {
+  const probeOptions = getProbeOptions(options);
   const runtimeDirectory = mkdtempSync(
     join(tmpdir(), "camelai-agentos-acp-probe-"),
   );
@@ -119,7 +136,7 @@ async function main() {
   }
   writeFileSync(
     piSettingsPath,
-    `${JSON.stringify(buildAgentOsPiSettings(MODEL, THOUGHT_LEVEL), null, 2)}\n`,
+    `${JSON.stringify(buildAgentOsPiSettings(probeOptions.model, probeOptions.thoughtLevel), null, 2)}\n`,
     "utf8",
   );
 
@@ -129,7 +146,7 @@ async function main() {
       {
         path: VM_WORKSPACE_PATH,
         driver: createNormalizedHostDirBackend({
-          hostPath: WORKSPACE_DIRECTORY,
+          hostPath: probeOptions.workspaceDirectory,
           readOnly: false,
         }),
       },
@@ -141,7 +158,7 @@ async function main() {
         }),
       },
     ],
-    software: [...commonSoftware, getPiAgentSoftware()],
+    software: [...commonSoftware, getPiAgentSoftware(probeOptions.adapter)],
   });
 
   const start = Date.now();
@@ -150,7 +167,7 @@ async function main() {
   try {
     const created = await vm.createSession("pi", {
       cwd: VM_WORKSPACE_PATH,
-      env: agentOsProvider.buildSessionEnv(MODEL),
+      env: agentOsProvider.buildSessionEnv(probeOptions.model),
     });
 
     const sessionId = created.sessionId;
@@ -174,35 +191,37 @@ async function main() {
       void vm.respondPermission(sessionId, request.permissionId, "once");
     });
 
-    const result = await vm.prompt(sessionId, PROMPT);
+    const result = await vm.prompt(sessionId, probeOptions.prompt);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
 
     unsubscribeSessionEvents();
     unsubscribePermissions();
 
-    process.stdout.write(
-      `${JSON.stringify(
-        {
-          ok: true,
-          workspaceDirectory: WORKSPACE_DIRECTORY,
-          runtimeDirectory,
-          model: MODEL,
-          thoughtLevel: THOUGHT_LEVEL,
-          prompt: PROMPT,
-          resultText: result.text,
-          error: result.response?.error ?? null,
-          events,
-        },
-        null,
-        2,
-      )}\n`,
-    );
+    return {
+      ok: true,
+      workspaceDirectory: probeOptions.workspaceDirectory,
+      runtimeDirectory,
+      model: probeOptions.model,
+      thoughtLevel: probeOptions.thoughtLevel,
+      prompt: probeOptions.prompt,
+      adapter: probeOptions.adapter,
+      resultText: result.text,
+      error: result.response?.error ?? null,
+      events,
+    };
   } finally {
     await vm.dispose().catch(() => undefined);
-    if (process.env.DESKTOP_AGENTOS_KEEP_PROBE_RUNTIME !== "1") {
+    if (!probeOptions.keepRuntime) {
       rmSync(runtimeDirectory, { recursive: true, force: true });
     }
   }
 }
 
-await main();
+async function main() {
+  const result = await runAgentOsAcpProbe();
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}

@@ -27,6 +27,7 @@ bun run desktop-agentos:dev
 bun run desktop-agentos:check
 bun run desktop-agentos:backend
 bun run desktop-agentos:probe-turn
+bun run desktop-agentos:test-gpt54
 bun run desktop-agentos:start
 ```
 
@@ -34,6 +35,7 @@ Notes:
 
 - `desktop-agentos:dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
 - `desktop-agentos:backend` is a smoke check for the AgentOS runtime bootstrap, not a long-lived backend server.
+- `desktop-agentos:test-gpt54` runs a real AgentOS ACP probe against `gpt-5.4` and fails if streamed assistant text chunks do not appear.
 - `desktop-agentos:probe-turn` runs an end-to-end stdio turn against the AgentOS backend using a fresh temporary desktop data directory.
 - `desktop-agentos:start` is the lower-level Electron entrypoint and expects the renderer URL to already be available.
 

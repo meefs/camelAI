@@ -167,7 +167,8 @@ class PiSdkAgent {
                 : emittedText === finalText
                     ? ""
                     : finalText;
-            if (missingText) {
+            const isRepeatedTail = Boolean(missingText && emittedText && emittedText.endsWith(missingText));
+            if (missingText && !isRepeatedTail) {
                 this.emittedAssistantText = finalText;
                 await this.emit({
                     sessionUpdate: "agent_message_chunk",

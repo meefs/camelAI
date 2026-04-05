@@ -220,23 +220,42 @@ function getModelLabel(model: string): string {
   return `${model} via Pi`;
 }
 
+function getModelCandidates(): DesktopModel[] {
+  return [DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL];
+}
+
 function getAvailableModels(): DesktopModelOption[] {
-  const model = getDefaultAgentOsModel();
-  return [
-    {
-      id: model,
-      label: getModelLabel(model),
-      provider: "agentos",
-    },
-  ];
+  const models = getModelCandidates().filter(
+    (model) => getAuthStateForModel(model).available,
+  );
+
+  if (models.length === 0) {
+    const fallbackModel = getDefaultAgentOsModel();
+    return [
+      {
+        id: fallbackModel,
+        label: getModelLabel(fallbackModel),
+        provider: "agentos",
+      },
+    ];
+  }
+
+  return models.map((model) => ({
+    id: model,
+    label: getModelLabel(model),
+    provider: "agentos",
+  }));
 }
 
 export function normalizeAgentOsModel(
   value: string | null | undefined,
 ): DesktopModel {
   const normalized = value?.trim();
-  const defaultModel = getDefaultAgentOsModel();
-  return normalized === defaultModel ? normalized : defaultModel;
+  const availableModels = getAvailableModels().map((model) => model.id);
+  if (normalized && availableModels.includes(normalized)) {
+    return normalized;
+  }
+  return getDefaultAgentOsModel();
 }
 
 export function getAgentOsAuthState(model?: DesktopModel): DesktopAuthState {
