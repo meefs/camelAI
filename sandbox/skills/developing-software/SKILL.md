@@ -524,6 +524,38 @@ export default [
 ] satisfies RouteConfig;
 ```
 
+### React Router 7: Non-Navigational Mutations
+
+In Framework Mode with SSR, loaders are automatically revalidated after navigations and form submissions. Revalidation is not a full browser page reload, but it can feel page-wide because loader data is fetched again and the route tree rerenders.
+
+Use these rules:
+
+- If the submit should feel like navigation, use normal `<Form>`.
+- If the submit should feel inline/local, use:
+  - `<Form navigate={false} fetcherKey="some-key">` if you want to keep the `<Form>` API
+  - `useFetcher({ key: "some-key" })` to read the submission state/result for that keyed form
+  - or `<fetcher.Form>` if you want the fetcher object directly
+
+Important:
+
+- `reloadDocument` causes a real full page reload. Revalidation does not.
+- `navigate={false}` prevents navigational form behavior by using a fetcher internally.
+- Even with `navigate={false}`, Framework Mode may still revalidate loaders after the action, which can make the UI feel like it reloaded.
+- If the mutation should feel truly local, consider:
+  - returning JSON from `action()` instead of redirecting
+  - rendering from `fetcher.data`
+  - using `fetcher.formData` for optimistic UI
+  - exporting `shouldRevalidate()` to skip unnecessary loader revalidation for successful local mutations
+
+Recommended pattern for inline toggles, deletes, likes, and similar actions:
+
+1. Use `<Form method="post" navigate={false} fetcherKey="item-actions">`
+2. Read the shared fetcher with `useFetcher({ key: "item-actions" })`
+3. Return structured JSON from `action()`
+4. Use optimistic UI from `fetcher.formData`
+5. Use `shouldRevalidate()` only when you want to suppress route-wide revalidation
+6. Reserve redirects for submissions that are actually navigational
+
 ### Organizing API Routes
 
 For larger APIs, split endpoints by resource:
