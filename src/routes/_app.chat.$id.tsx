@@ -237,9 +237,14 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const workspaceId = authContext.currentWorkspace.id;
   const orgId = authContext.currentOrg.id;
   const isNewThread = url.searchParams.get('newThread') === '1';
-  const experimentalSettings = await authEnv.ORG.get(
-    authEnv.ORG.idFromName(orgId)
-  ).getExperimentalSettings();
+  const orgStub = authEnv.ORG
+    ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
+    : null;
+  const experimentalSettings = typeof orgStub?.getExperimentalSettings === 'function'
+    ? await orgStub.getExperimentalSettings().catch(() => ({
+        codex_gpt_models: false,
+      }))
+    : ({ codex_gpt_models: false } satisfies OrganizationExperimentalSettings);
 
   // Even for newly created threads, load the persisted thread record so the UI
   // reflects the actual saved model instead of the Sonnet default.

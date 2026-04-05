@@ -426,7 +426,7 @@ describe("AskUserQuestion keyboard shortcuts", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /claude needs your input/i }),
+        screen.getByRole("button", { name: /agent needs your input/i }),
       ).toHaveFocus();
     });
     expect(onSubmit).not.toHaveBeenCalled();

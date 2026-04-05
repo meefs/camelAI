@@ -148,10 +148,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const orgStub = workspaceId && authContext.currentOrg?.id
     ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
     : null;
-  const llmProviderConfig = orgStub
+  const llmProviderConfig = typeof orgStub?.getLlmProviderConfig === 'function'
     ? await orgStub.getLlmProviderConfig().catch(() => null)
     : null;
-  const experimentalSettings = orgStub
+  const experimentalSettings = typeof orgStub?.getExperimentalSettings === 'function'
     ? await orgStub.getExperimentalSettings().catch(() => ({ codex_gpt_models: false }))
     : { codex_gpt_models: false };
   const threadProvider: ChatHarness = getDefaultThreadProvider(

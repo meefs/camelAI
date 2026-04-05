@@ -31,8 +31,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Thread not found' }, { status: 404 });
     }
 
-    const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-    const persistedMessages = await chatThread.getPersistedMessages().catch(() => null);
+    const chatThread = env.CHAT_THREAD
+      ? env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId))
+      : null;
+    const persistedMessages = chatThread
+      ? await chatThread.getPersistedMessages().catch(() => null)
+      : null;
 
     const container = new WorkspaceContainer(
       env as unknown as WorkspaceContainerEnv,
