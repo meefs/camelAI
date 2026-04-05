@@ -13,6 +13,7 @@ import type {
   LlmModel,
   OnboardingPreferences,
 } from '../../../src/types';
+import type { ChatThreadDO } from './durable-objects';
 import { WorkspaceDO } from './workspace';
 import {
   DEFAULT_LLM_MODEL,
@@ -29,6 +30,7 @@ export interface DOEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   ADMIN_INDEX: DurableObjectNamespace<import('./admin-index-do.js').AdminIndexDO>;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
@@ -3062,6 +3064,33 @@ export class OrgDO extends DurableObject<DOEnv> {
   deleteLlmProviderConfig(): boolean {
     this.sql.exec("DELETE FROM llm_provider_config WHERE id = 'active'");
     return true;
+  }
+
+  async notifyByokChanged(): Promise<void> {
+    const activeSince = Date.now() - 30 * 60 * 1000;
+    const rows = this.sql
+      .exec<{ id: string }>(
+        'SELECT id FROM threads WHERE updated_at > ? ORDER BY updated_at DESC LIMIT 100',
+        activeSince
+      )
+      .toArray();
+
+    await Promise.allSettled(
+      rows.map((row) => {
+        const threadId = row.id;
+        if (!threadId) {
+          return Promise.resolve();
+        }
+
+        const chatThread = this.env.CHAT_THREAD.get(
+          this.env.CHAT_THREAD.idFromName(threadId)
+        ) as unknown as {
+          byokChanged(): Promise<void>;
+        };
+
+        return chatThread.byokChanged();
+      })
+    );
   }
 
   hasLlmProviderConfig(): boolean {

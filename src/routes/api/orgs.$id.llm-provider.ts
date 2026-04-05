@@ -8,6 +8,7 @@ import {
   stringifyStoredLlmProviderConfig,
   keyHint,
 } from '@/lib/llm-provider-config';
+import { waitUntil } from '@/lib/wait-until';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
 const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'openai'];
@@ -77,6 +78,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     }
 
     const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+    const notifyByokChanged = () => {
+      waitUntil(
+        orgStub.notifyByokChanged().catch((error: unknown) => {
+          console.error('[llm-provider] Failed to notify BYOK change:', error);
+        })
+      );
+    };
 
     if (provider === 'anthropic') {
       const apiKey = (body.api_key as string)?.trim();
@@ -93,6 +101,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       if (apiKey) {
         const encrypted = await encryptCredentials({ api_key: apiKey }, env.INTEGRATION_SECRET_KEY);
         await orgStub.setLlmProviderConfig(provider, encrypted, config, authContext.user.id);
+        notifyByokChanged();
         return Response.json({ success: true, key_hint: keyHint(apiKey) });
       }
 
@@ -106,6 +115,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         config,
         authContext.user.id
       );
+      notifyByokChanged();
       return Response.json({ success: true });
     }
 
@@ -129,6 +139,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
           env.INTEGRATION_SECRET_KEY
         );
         await orgStub.setLlmProviderConfig(provider, encrypted, config, authContext.user.id);
+        notifyByokChanged();
         return Response.json({ success: true, key_hint: keyHint(bearerToken) });
       }
 
@@ -144,6 +155,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         config,
         authContext.user.id
       );
+      notifyByokChanged();
       return Response.json({ success: true });
     }
 
@@ -160,13 +172,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       }
 
       const encrypted = await encryptCredentials({ api_key: apiKey }, env.INTEGRATION_SECRET_KEY);
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       await orgStub.setLlmProviderConfig(
         provider,
         encrypted,
         stringifyStoredLlmProviderConfig({}),
         authContext.user.id
       );
+      notifyByokChanged();
       return Response.json({ success: true, key_hint: keyHint(apiKey) });
     }
 
@@ -176,6 +188,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   if (intent === 'deleteProvider') {
     const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     await orgStub.deleteLlmProviderConfig();
+    waitUntil(
+      orgStub.notifyByokChanged().catch((error: unknown) => {
+        console.error('[llm-provider] Failed to notify BYOK change:', error);
+      })
+    );
     return Response.json({ success: true });
   }
 

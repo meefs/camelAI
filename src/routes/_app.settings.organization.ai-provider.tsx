@@ -1,12 +1,15 @@
-import { useState, useEffect } from 'react';
-import { useLoaderData, useFetcher } from 'react-router';
+import { useEffect, useMemo, useState } from 'react';
+import { useFetcher, useLoaderData } from 'react-router';
+import { ChevronDown } from 'lucide-react';
 import type { Route } from './+types/_app.settings.organization.ai-provider';
-import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import { buildPublicLlmProviderConfig } from '@/lib/llm-provider-config';
-import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -17,6 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
+import { buildPublicLlmProviderConfig } from '@/lib/llm-provider-config';
+import { cn } from '@/lib/utils';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
 const AWS_REGIONS = [
@@ -33,12 +41,166 @@ const AWS_REGIONS = [
   { value: 'ap-south-1', label: 'Asia Pacific (Mumbai)' },
   { value: 'sa-east-1', label: 'South America (Sao Paulo)' },
   { value: 'ca-central-1', label: 'Canada (Central)' },
+] as const;
+
+type ProviderChoice = 'default' | LlmProvider;
+type FetcherIntent = 'setProvider' | 'deleteProvider' | 'testProvider' | null;
+
+interface ProviderActionResponse {
+  success?: boolean;
+  error?: string;
+  message?: string;
+  key_hint?: string;
+}
+
+interface ProviderGuide {
+  displayName: string;
+  description: string;
+  fieldLabel: string;
+  placeholder: string;
+  href: string;
+  firstStepLinkLabel: string;
+  firstStepPrefix?: string;
+  firstStepSuffix?: string;
+  steps: string[];
+  note: string;
+}
+
+const PROVIDER_CARD_OPTIONS: Array<{
+  value: ProviderChoice;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'default',
+    label: 'Default (free tier)',
+    description: 'Free with usage limits ($25/5hrs, $100/7days)',
+  },
+  {
+    value: 'anthropic',
+    label: 'Anthropic (recommended)',
+    description: 'Direct access to Claude models',
+  },
+  {
+    value: 'openai',
+    label: 'OpenAI',
+    description: 'For Codex-powered threads',
+  },
+  {
+    value: 'bedrock',
+    label: 'AWS Bedrock',
+    description: 'Claude via your AWS account',
+  },
 ];
+
+const PROVIDER_GUIDES: Record<LlmProvider, ProviderGuide> = {
+  anthropic: {
+    displayName: 'Anthropic',
+    description: 'Direct access to Claude models',
+    fieldLabel: 'Anthropic API Key',
+    placeholder: 'sk-ant-...',
+    href: 'https://console.anthropic.com/settings/keys',
+    firstStepLinkLabel: 'console.anthropic.com/settings/keys',
+    steps: [
+      'Click "Create Key".',
+      'Name it anything, such as "camelAI".',
+      'Copy the key and paste it above.',
+    ],
+    note: "You'll need to add a payment method on Anthropic's site first if you haven't already.",
+  },
+  openai: {
+    displayName: 'OpenAI',
+    description: 'For Codex-powered threads',
+    fieldLabel: 'OpenAI API Key',
+    placeholder: 'sk-...',
+    href: 'https://platform.openai.com/api-keys',
+    firstStepLinkLabel: 'platform.openai.com/api-keys',
+    steps: [
+      'Click "Create new secret key".',
+      'Name it anything, such as "camelAI".',
+      'Copy the key and paste it above.',
+    ],
+    note: "You'll need to add a payment method on OpenAI's platform first if you haven't already.",
+  },
+  bedrock: {
+    displayName: 'AWS Bedrock',
+    description: 'Claude via your AWS account',
+    fieldLabel: 'Bedrock API Key',
+    placeholder: 'Enter your AWS Bedrock API key',
+    href: 'https://console.aws.amazon.com/bedrock/',
+    firstStepPrefix: 'Go to your ',
+    firstStepLinkLabel: 'AWS Console',
+    firstStepSuffix: ' and open Bedrock.',
+    steps: [
+      'Make sure Claude models are enabled in your region.',
+      'Go to Bedrock API keys and create a new key.',
+      'Copy the key and paste it above.',
+      'Select your AWS region below.',
+    ],
+    note: 'AWS Bedrock usage is billed through your AWS account.',
+  },
+};
+
+function ProviderSetupInstructions({
+  provider,
+  open,
+  onOpenChange,
+}: {
+  provider: LlmProvider;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const guide = PROVIDER_GUIDES[provider];
+
+  return (
+    <Collapsible open={open} onOpenChange={onOpenChange}>
+      <div className="rounded-lg border bg-muted/50">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-3 p-3 text-left text-xs font-medium"
+          >
+            <span>How to get your API key</span>
+            <ChevronDown className={cn('size-4 transition-transform', open && 'rotate-180')} />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
+          <div className="px-3 pb-3">
+            <ol className="space-y-2 text-xs text-muted-foreground">
+              <li className="flex gap-2">
+                <span className="w-4 shrink-0 text-foreground">1.</span>
+                <span>
+                  {guide.firstStepPrefix ?? 'Go to '}
+                  <a
+                    href={guide.href}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-foreground underline underline-offset-4"
+                  >
+                    {guide.firstStepLinkLabel}
+                  </a>
+                  {guide.firstStepSuffix ?? ''}
+                </span>
+              </li>
+              {guide.steps.map((step, index) => (
+                <li key={step} className="flex gap-2">
+                  <span className="w-4 shrink-0 text-foreground">{index + 2}.</span>
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-3 text-xs text-muted-foreground">{guide.note}</p>
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
 
 export function meta() {
   return [
     { title: 'AI Provider - Settings - camelAI' },
-    { name: 'description', content: 'Configure your AI provider API keys' },
+    { name: 'description', content: 'Add your own AI provider key to remove usage limits' },
   ];
 }
 
@@ -65,39 +227,96 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export default function AiProviderPage() {
   const { config, orgId } = useLoaderData<typeof loader>();
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<ProviderActionResponse>();
 
-  const [selectedProvider, setSelectedProvider] = useState<'default' | LlmProvider>(
-    config?.provider ?? 'default'
-  );
+  const [selectedProvider, setSelectedProvider] = useState<ProviderChoice>(config?.provider ?? 'default');
   const [apiKey, setApiKey] = useState('');
   const [openAiApiKey, setOpenAiApiKey] = useState('');
   const [bearerToken, setBearerToken] = useState('');
   const [awsRegion, setAwsRegion] = useState(config?.config?.aws_region ?? 'us-east-1');
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [lastIntent, setLastIntent] = useState<FetcherIntent>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  const fetcherData = fetcher.data;
   const isSaving = fetcher.state !== 'idle';
-  const fetcherData = fetcher.data as
-    | { success?: boolean; error?: string; message?: string; key_hint?: string }
-    | undefined;
+  const configuredProvider = config?.provider ?? null;
+  const selectedLlmProvider = selectedProvider === 'default' ? null : selectedProvider;
+  const selectedGuide = selectedLlmProvider ? PROVIDER_GUIDES[selectedLlmProvider] : null;
 
   useEffect(() => {
-    if (fetcherData && fetcher.state === 'idle') {
-      if (fetcherData.success && !fetcherData.message) {
-        // Save succeeded, clear form
-        setApiKey('');
-        setOpenAiApiKey('');
-        setBearerToken('');
-        setTestResult(null);
-      }
-      if (fetcherData.message) {
-        setTestResult({ success: fetcherData.success ?? false, message: fetcherData.message });
-      }
+    setSelectedProvider(config?.provider ?? 'default');
+    setAwsRegion(config?.config?.aws_region ?? 'us-east-1');
+  }, [config?.provider, config?.config?.aws_region]);
+
+  useEffect(() => {
+    if (fetcher.state !== 'idle' || !fetcherData) {
+      return;
     }
-  }, [fetcherData, fetcher.state]);
+
+    if (fetcherData.message) {
+      setTestResult({
+        success: fetcherData.success ?? false,
+        message: fetcherData.message,
+      });
+      return;
+    }
+
+    if (fetcherData.success) {
+      setApiKey('');
+      setOpenAiApiKey('');
+      setBearerToken('');
+      setTestResult(null);
+    }
+  }, [fetcher.state, fetcherData]);
+
+  const saveDisabled = useMemo(() => {
+    if (isSaving) {
+      return true;
+    }
+
+    if (selectedProvider === 'default') {
+      return !config;
+    }
+
+    if (selectedProvider === 'anthropic') {
+      return apiKey.trim().length === 0;
+    }
+
+    if (selectedProvider === 'openai') {
+      return openAiApiKey.trim().length === 0;
+    }
+
+    const missingNewBedrockKey = configuredProvider !== 'bedrock' && bearerToken.trim().length === 0;
+    const regionUnchanged =
+      configuredProvider === 'bedrock' && awsRegion === config?.config?.aws_region;
+    return missingNewBedrockKey || (bearerToken.trim().length === 0 && regionUnchanged);
+  }, [
+    apiKey,
+    awsRegion,
+    config,
+    configuredProvider,
+    isSaving,
+    openAiApiKey,
+    selectedProvider,
+    bearerToken,
+  ]);
+
+  const saveSuccessVisible =
+    fetcher.state === 'idle' &&
+    fetcherData?.success &&
+    !fetcherData.message &&
+    lastIntent === 'setProvider';
+
+  function clearActionFeedback() {
+    setLastIntent(null);
+    setTestResult(null);
+  }
 
   function handleSave() {
-    setTestResult(null);
+    clearActionFeedback();
+    setLastIntent('setProvider');
+
     if (selectedProvider === 'default') {
       fetcher.submit(
         { intent: 'deleteProvider' },
@@ -107,51 +326,34 @@ export default function AiProviderPage() {
     }
 
     if (selectedProvider === 'anthropic') {
-      if (!apiKey && config?.provider === 'anthropic') {
-        // No change if key isn't re-entered and already configured
-        return;
-      }
       fetcher.submit(
-        { intent: 'setProvider', provider: 'anthropic', api_key: apiKey },
+        { intent: 'setProvider', provider: 'anthropic', api_key: apiKey.trim() },
         { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
       );
       return;
     }
 
     if (selectedProvider === 'openai') {
-      if (!openAiApiKey && config?.provider === 'openai') {
-        return;
-      }
       fetcher.submit(
-        { intent: 'setProvider', provider: 'openai', api_key: openAiApiKey },
+        { intent: 'setProvider', provider: 'openai', api_key: openAiApiKey.trim() },
         { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
       );
       return;
     }
 
-    if (selectedProvider === 'bedrock') {
-      if (
-        !bearerToken &&
-        config?.provider === 'bedrock' &&
-        awsRegion === config.config.aws_region
-      ) {
-        // Nothing changed
-        return;
-      }
-      fetcher.submit(
-        {
-          intent: 'setProvider',
-          provider: 'bedrock',
-          ...(bearerToken ? { bearer_token: bearerToken } : {}),
-          aws_region: awsRegion,
-        },
-        { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
-      );
-      return;
-    }
+    fetcher.submit(
+      {
+        intent: 'setProvider',
+        provider: 'bedrock',
+        ...(bearerToken.trim() ? { bearer_token: bearerToken.trim() } : {}),
+        aws_region: awsRegion,
+      },
+      { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+    );
   }
 
   function handleTest() {
+    setLastIntent('testProvider');
     setTestResult(null);
     fetcher.submit(
       { intent: 'testProvider' },
@@ -160,7 +362,8 @@ export default function AiProviderPage() {
   }
 
   function handleRemove() {
-    setTestResult(null);
+    clearActionFeedback();
+    setLastIntent('deleteProvider');
     setApiKey('');
     setOpenAiApiKey('');
     setBearerToken('');
@@ -175,197 +378,179 @@ export default function AiProviderPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="AI Provider"
-        description="Configure your own provider key for Claude or Codex. Keys are encrypted at rest and used through the sandbox proxy."
+        description="Add your own API key to remove usage limits. You're billed directly by the provider, and camelAI adds zero markup."
       />
       <Separator />
 
-      <div className="space-y-6 max-w-lg">
+      <div className="max-w-2xl space-y-6">
         {config && (
-          <div className="rounded-lg border bg-muted/50 p-4 space-y-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">
-                  Current provider:{' '}
-                  <span className="font-semibold capitalize">{config.provider}</span>
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Key: {config.key_hint}
-                  {config.config.aws_region && ` | Region: ${config.config.aws_region}`}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Updated {new Date(config.updated_at).toLocaleDateString()}
-                </p>
+          <div className="rounded-xl border bg-muted/40 p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-medium">Current key</p>
+                  <Badge variant="outline">{PROVIDER_GUIDES[config.provider].displayName}</Badge>
+                </div>
+                <div className="space-y-1 text-xs text-muted-foreground">
+                  <p>
+                    Key: {config.key_hint}
+                    {config.config.aws_region ? ` | Region: ${config.config.aws_region}` : ''}
+                  </p>
+                  <p>Updated {new Date(config.updated_at).toLocaleDateString()}</p>
+                </div>
               </div>
+
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={handleTest} disabled={isSaving}>
-                  {isSaving && fetcherData === undefined ? 'Testing...' : 'Test'}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleTest}
+                  disabled={isSaving}
+                >
+                  {isSaving && lastIntent === 'testProvider' ? 'Testing...' : 'Test'}
                 </Button>
-                <Button variant="destructive" size="sm" onClick={handleRemove} disabled={isSaving}>
-                  Remove
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleRemove}
+                  disabled={isSaving}
+                >
+                  {isSaving && lastIntent === 'deleteProvider' ? 'Removing...' : 'Remove'}
                 </Button>
               </div>
             </div>
+
             {testResult && (
-              <p
-                className={`text-xs ${testResult.success ? 'text-green-600' : 'text-destructive'}`}
-              >
+              <p className={cn('mt-3 text-xs', testResult.success ? 'text-green-700 dark:text-green-300' : 'text-destructive')}>
                 {testResult.message}
               </p>
             )}
           </div>
         )}
 
-        <div className="space-y-4">
-          <div>
-            <Label className="text-sm font-medium">Provider</Label>
-            <p className="text-xs text-muted-foreground mb-3">
-              Choose which AI provider to use for chat. "Default" uses the built-in proxy.
+        {saveSuccessVisible && (
+          <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-3">
+            <p className="text-xs text-green-700 dark:text-green-300">
+              API key saved. Your active chats are now using your key and do not need a refresh.
             </p>
-            <RadioGroup
-              value={selectedProvider}
-              onValueChange={(v) => {
-                setSelectedProvider(v as 'default' | LlmProvider);
-                setTestResult(null);
-              }}
-              className="space-y-2"
-            >
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="default" id="default" />
-                <Label htmlFor="default" className="font-normal cursor-pointer">
-                  Default (camelAI proxy)
-                </Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="anthropic" id="anthropic" />
-                <Label htmlFor="anthropic" className="font-normal cursor-pointer">
-                  Anthropic (direct API)
-                </Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="openai" id="openai" />
-                <Label htmlFor="openai" className="font-normal cursor-pointer">
-                  OpenAI / Codex (direct API)
-                </Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="bedrock" id="bedrock" />
-                <Label htmlFor="bedrock" className="font-normal cursor-pointer">
-                  AWS Bedrock (API key)
-                </Label>
-              </div>
-            </RadioGroup>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">Choose a provider</h3>
+            <p className="text-xs text-muted-foreground">
+              Pick the option you want camelAI to use for new chat turns.
+            </p>
           </div>
 
-          {selectedProvider === 'anthropic' && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="anthropic-key">Anthropic API Key</Label>
-                <Input
-                  id="anthropic-key"
-                  type="password"
-                  placeholder={config?.provider === 'anthropic' ? config.key_hint : 'sk-ant-...'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Get your API key from{' '}
-                  <a
-                    href="https://console.anthropic.com/settings/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    console.anthropic.com
-                  </a>
-                </p>
+          <RadioGroup
+            value={selectedProvider}
+            onValueChange={(value) => {
+              clearActionFeedback();
+              setSelectedProvider(value as ProviderChoice);
+              setInstructionsOpen(false);
+            }}
+            className="space-y-3"
+          >
+            {PROVIDER_CARD_OPTIONS.map((option) => (
+              <div key={option.value} className="flex items-start gap-3">
+                <RadioGroupItem value={option.value} id={`provider-${option.value}`} className="mt-0.5" />
+                <Label
+                  htmlFor={`provider-${option.value}`}
+                  className="cursor-pointer space-y-0.5"
+                >
+                  <span className="font-medium">{option.label}</span>
+                  <p className="text-xs text-muted-foreground">{option.description}</p>
+                </Label>
               </div>
-            </div>
-          )}
+            ))}
+          </RadioGroup>
+        </div>
 
-          {selectedProvider === 'openai' && (
+        {selectedLlmProvider && selectedGuide ? (
+          <div className="space-y-4 pt-2">
             <div className="space-y-2">
-              <Label htmlFor="openai-key">OpenAI API Key</Label>
+              <Label htmlFor={`${selectedProvider}-key`}>{selectedGuide.fieldLabel}</Label>
               <Input
-                id="openai-key"
+                id={`${selectedProvider}-key`}
                 type="password"
-                placeholder={config?.provider === 'openai' ? config.key_hint : 'sk-...'}
-                value={openAiApiKey}
-                onChange={(e) => setOpenAiApiKey(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Codex chats use this key through the same sandbox proxy path as Claude.
-              </p>
-            </div>
-          )}
-
-          {selectedProvider === 'bedrock' && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="bedrock-key">Bedrock API Key</Label>
-                <Input
-                  id="bedrock-key"
-                  type="password"
-                  placeholder={
-                    config?.provider === 'bedrock' ? config.key_hint : 'Enter your Bedrock API key'
+                placeholder={
+                  configuredProvider === selectedProvider
+                    ? config?.key_hint
+                    : selectedGuide.placeholder
+                }
+                value={
+                  selectedProvider === 'anthropic'
+                    ? apiKey
+                    : selectedProvider === 'openai'
+                      ? openAiApiKey
+                      : bearerToken
+                }
+                onChange={(event) => {
+                  clearActionFeedback();
+                  const nextValue = event.target.value;
+                  if (selectedProvider === 'anthropic') {
+                    setApiKey(nextValue);
+                    return;
                   }
-                  value={bearerToken}
-                  onChange={(e) => setBearerToken(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Create a Bedrock API key in your{' '}
-                  <a
-                    href="https://console.aws.amazon.com/bedrock/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    AWS Bedrock console
-                  </a>
-                </p>
-              </div>
+                  if (selectedProvider === 'openai') {
+                    setOpenAiApiKey(nextValue);
+                    return;
+                  }
+                  setBearerToken(nextValue);
+                }}
+              />
+            </div>
+
+            <ProviderSetupInstructions
+              provider={selectedLlmProvider}
+              open={instructionsOpen}
+              onOpenChange={setInstructionsOpen}
+            />
+
+            {selectedProvider === 'bedrock' && (
               <div className="space-y-2">
                 <Label htmlFor="aws-region">AWS Region</Label>
-                <Select value={awsRegion} onValueChange={setAwsRegion}>
+                <Select
+                  value={awsRegion}
+                  onValueChange={(value) => {
+                    clearActionFeedback();
+                    setAwsRegion(value);
+                  }}
+                >
                   <SelectTrigger id="aws-region">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {AWS_REGIONS.map((r) => (
-                      <SelectItem key={r.value} value={r.value}>
-                        {r.label} ({r.value})
+                    {AWS_REGIONS.map((region) => (
+                      <SelectItem key={region.value} value={region.value}>
+                        {region.label} ({region.value})
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-            </div>
-          )}
-
-          <p className="text-xs text-muted-foreground">
-            Claude model selection is configured per thread in the web chat UI.
-          </p>
-
-          {fetcherData?.error && (
-            <p className="text-sm text-destructive">{fetcherData.error}</p>
-          )}
-
-          <div className="flex gap-2">
-            <Button
-              onClick={handleSave}
-              disabled={
-                isSaving ||
-                (selectedProvider === 'anthropic' && !apiKey && config?.provider !== 'anthropic') ||
-                (selectedProvider === 'openai' &&
-                  !openAiApiKey &&
-                  config?.provider !== 'openai') ||
-                (selectedProvider === 'bedrock' &&
-                  !bearerToken &&
-                  config?.provider !== 'bedrock')
-              }
-            >
-              {isSaving ? 'Saving...' : 'Save'}
-            </Button>
+            )}
           </div>
+        ) : null}
+
+        <p className="text-xs text-muted-foreground">
+          Model selection is configured per thread in the chat UI.
+        </p>
+
+        {fetcherData?.error && (
+          <p className="text-xs text-destructive">{fetcherData.error}</p>
+        )}
+
+        <div className="flex gap-2">
+          <Button onClick={handleSave} disabled={saveDisabled}>
+            {isSaving && lastIntent === 'setProvider'
+              ? 'Saving...'
+              : selectedProvider === 'default'
+                ? 'Use free tier'
+                : 'Save'}
+          </Button>
         </div>
       </div>
     </div>
