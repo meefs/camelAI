@@ -69,6 +69,7 @@ export interface AdminUserSummaryRow {
   org_count: number;
   is_superuser: boolean;
   is_orphaned: boolean;
+  signup_ip: string | null;
 }
 
 export interface AdminThreadListRow {
@@ -295,7 +296,8 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         created_at INTEGER,
         is_superuser INTEGER,
         is_orphaned INTEGER,
-        org_count INTEGER DEFAULT 0
+        org_count INTEGER DEFAULT 0,
+        signup_ip TEXT
       );
       CREATE TABLE IF NOT EXISTS orgs (
         id TEXT PRIMARY KEY,
@@ -452,6 +454,13 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       this.sql.exec("ALTER TABLE threads ADD COLUMN model TEXT");
     }
     this.sql.exec("UPDATE threads SET model = 'sonnet' WHERE model IS NULL OR model = ''");
+
+    const userColumns = new Set(
+      this.sql.exec<{ name: string }>('PRAGMA table_info(users)').toArray().map((col) => col.name)
+    );
+    if (!userColumns.has('signup_ip')) {
+      this.sql.exec('ALTER TABLE users ADD COLUMN signup_ip TEXT');
+    }
   }
 
   async isSignupIpBlocked(ip: string): Promise<boolean> {
@@ -509,14 +518,16 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             typeof u.org_count === 'number' && Number.isFinite(u.org_count)
               ? u.org_count
               : null;
+          const signupIp = typeof u.signup_ip === 'string' && u.signup_ip.trim().length > 0 ? u.signup_ip.trim().toLowerCase() : null;
           this.sql.exec(`
-            INSERT INTO users (id, email, name, avatar_color, avatar_content, created_at, is_superuser, is_orphaned, org_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, COALESCE((SELECT org_count FROM users WHERE id = ?), 0)))
+            INSERT INTO users (id, email, name, avatar_color, avatar_content, created_at, is_superuser, is_orphaned, org_count, signup_ip)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, COALESCE((SELECT org_count FROM users WHERE id = ?), 0)), COALESCE(?, (SELECT signup_ip FROM users WHERE id = ?)))
             ON CONFLICT(id) DO UPDATE SET
               email=excluded.email, name=excluded.name, avatar_color=excluded.avatar_color, avatar_content=excluded.avatar_content,
               is_superuser=excluded.is_superuser, is_orphaned=excluded.is_orphaned,
-              org_count=COALESCE(excluded.org_count, users.org_count)
-          `, u.id, u.email, u.name, u.avatar?.color || '', u.avatar?.content || '', u.created_at, u.is_superuser ? 1 : 0, u.is_orphaned ? 1 : 0, orgCount, u.id);
+              org_count=COALESCE(excluded.org_count, users.org_count),
+              signup_ip=COALESCE(excluded.signup_ip, users.signup_ip)
+          `, u.id, u.email, u.name, u.avatar?.color || '', u.avatar?.content || '', u.created_at, u.is_superuser ? 1 : 0, u.is_orphaned ? 1 : 0, orgCount, u.id, signupIp, u.id);
           break;
         }
         case 'user_delete':
@@ -706,6 +717,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       org_count: row.org_count ?? 0,
       is_superuser: row.is_superuser === 1,
       is_orphaned: row.is_orphaned === 1,
+      signup_ip: row.signup_ip ?? null,
     }));
   }
 
@@ -838,7 +850,8 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       ...u,
       avatar: { color: u.avatar_color, content: u.avatar_content },
       is_superuser: u.is_superuser === 1,
-      is_orphaned: u.is_orphaned === 1
+      is_orphaned: u.is_orphaned === 1,
+      signup_ip: u.signup_ip ?? null,
     }));
 
     return {
@@ -891,6 +904,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' },
       is_superuser: u.is_superuser === 1,
       is_orphaned: u.is_orphaned === 1,
+      signup_ip: u.signup_ip ?? null,
     }));
 
     const total = this.sql.exec(`SELECT COUNT(*) as count FROM users${where}`, ...params).next().value?.count || 0;
@@ -1172,7 +1186,8 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             u.created_at,
             u.org_count,
             u.is_superuser,
-            u.is_orphaned
+            u.is_orphaned,
+            u.signup_ip
           FROM org_memberships m
           INNER JOIN users u ON u.id = m.user_id
           WHERE m.org_id IN (${normalizedOrgIds.map(() => '?').join(', ')})
@@ -1192,6 +1207,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       org_count: row.org_count ?? 0,
       is_superuser: row.is_superuser === 1,
       is_orphaned: row.is_orphaned === 1,
+      signup_ip: row.signup_ip ?? null,
     }));
   }
 
