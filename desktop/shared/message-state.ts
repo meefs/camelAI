@@ -267,6 +267,14 @@ type CodexThreadItem = {
   [key: string]: unknown;
 };
 
+type CodexTodoStatus = 'pending' | 'in_progress' | 'completed';
+
+type CodexTodoItem = {
+  content: string;
+  status: CodexTodoStatus;
+  activeForm: string;
+};
+
 function isClaudeSdkEvent(event: unknown): event is SDKEvent {
   return Boolean(
     event &&
@@ -685,6 +693,38 @@ function stringifyCodexValue(value: unknown): string {
   }
 }
 
+function normalizeCodexTodoStatus(status: unknown): CodexTodoStatus {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'inProgress':
+    case 'in_progress':
+      return 'in_progress';
+    default:
+      return 'pending';
+  }
+}
+
+function buildCodexTodos(plan: unknown): CodexTodoItem[] {
+  if (!Array.isArray(plan)) {
+    return [];
+  }
+
+  return plan.map((item) => {
+    const content =
+      item && typeof item === 'object' && typeof (item as { step?: unknown }).step === 'string'
+        ? (item as { step: string }).step
+        : 'Untitled task';
+    return {
+      content,
+      status: normalizeCodexTodoStatus(
+        item && typeof item === 'object' ? (item as { status?: unknown }).status : undefined
+      ),
+      activeForm: content,
+    };
+  });
+}
+
 function joinNonEmpty(parts: Array<string | null | undefined>, separator = '\n\n'): string {
   return parts.map((part) => part?.trim()).filter(Boolean).join(separator);
 }
@@ -1051,12 +1091,24 @@ function applyCodexRuntimeEvent(
     return finalizeAssistantMessage(currentMessages, threadId, streamingMessageIds);
   }
 
-  if (event.method === 'turn/plan/updated' && typeof params.text === 'string') {
+  if (event.method === 'turn/plan/updated') {
+    const todos = buildCodexTodos(params.plan);
     return updateStreamingAssistantMessage(
       currentMessages,
       threadId,
       streamingMessageIds,
-      (blocks) => upsertThinkingBlock(blocks, 'turn:plan', params.text as string, 'Plan', 'turnPlan'),
+      (blocks) =>
+        upsertToolUseBlock(
+          blocks,
+          'turn:plan:todo',
+          'TodoWrite',
+          {
+            explanation:
+              typeof params.explanation === 'string' ? params.explanation : undefined,
+            todos,
+          },
+          'turnPlan'
+        ),
     );
   }
 

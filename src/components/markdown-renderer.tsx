@@ -15,6 +15,19 @@ interface MarkdownRendererProps {
   variant?: 'default' | 'user';
 }
 
+const CODEX_CITATION_REGEX = /cite[^]+/g;
+
+export function normalizeCodexCitationMarkers(content: string): string {
+  if (!content.includes('cite')) {
+    return content;
+  }
+
+  // Codex app-server currently leaks raw web-search citation markers into visible
+  // text without the structured metadata needed to render real links. Strip the
+  // markers so users do not see broken token artifacts like citeturn1search0.
+  return content.replace(CODEX_CITATION_REGEX, '');
+}
+
 // Inline code component - simple styled span
 function InlineCode({ children }: { children?: React.ReactNode }) {
   return (
@@ -237,15 +250,16 @@ function MarkdownRendererBase({
 }: MarkdownRendererProps) {
   // Process content for streaming - auto-close unclosed code fences
   const processedContent = useMemo(() => {
-    if (!isStreaming) return content;
+    const normalizedContent = normalizeCodexCitationMarkers(content);
+    if (!isStreaming) return normalizedContent;
 
     // Count code fences to check if one is unclosed
-    const fenceCount = (content.match(/```/g) || []).length;
+    const fenceCount = (normalizedContent.match(/```/g) || []).length;
     if (fenceCount % 2 === 1) {
       // Unclosed fence - add a closing one for better preview
-      return content + '\n```';
+      return normalizedContent + '\n```';
     }
-    return content;
+    return normalizedContent;
   }, [content, isStreaming]);
 
   const components = useMemo(() => createComponents(variant), [variant]);

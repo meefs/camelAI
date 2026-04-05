@@ -745,6 +745,45 @@ function getDefaultModelForProvider(provider) {
   return provider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL;
 }
 
+function normalizeCodexTodoStatus(status) {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'inProgress':
+    case 'in_progress':
+      return 'in_progress';
+    default:
+      return 'pending';
+  }
+}
+
+function extractCodexTodosFromRuntimeEvent(event) {
+  if (
+    !event ||
+    typeof event !== 'object' ||
+    event.method !== 'turn/plan/updated' ||
+    !event.params ||
+    typeof event.params !== 'object' ||
+    !Array.isArray(event.params.plan)
+  ) {
+    return null;
+  }
+
+  return event.params.plan.map((step) => {
+    const content =
+      step && typeof step === 'object' && typeof step.step === 'string'
+        ? step.step
+        : 'Untitled task';
+    return {
+      content,
+      status: normalizeCodexTodoStatus(
+        step && typeof step === 'object' ? step.status : undefined,
+      ),
+      activeForm: content,
+    };
+  });
+}
+
 function getCodexExecutable() {
   for (const candidate of [
     resolve('/opt/chiridion/node_modules/.bin/codex'),
@@ -1883,6 +1922,10 @@ class ChatSession {
       sessionId: this.codexSessionId,
       onEvent: (event) => {
         this.broadcast({ type: 'runtime_event', event });
+        const todos = extractCodexTodosFromRuntimeEvent(event);
+        if (Array.isArray(todos)) {
+          this.broadcast({ type: 'todo_state', todos });
+        }
       },
       onText: (delta) => {
         this.broadcast({ type: 'assistant_delta', threadId: this.threadId, text: delta });
