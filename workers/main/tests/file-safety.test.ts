@@ -44,6 +44,16 @@ describe('injectFileSafetyMessage', () => {
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
   });
 
+  it('prepends the warning for unsafe raw upload paths without attachment wrappers', () => {
+    const content = 'Please extract and deploy /mnt/user-uploads/archive-1710000000-abc123.zip';
+    expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
+  });
+
+  it('leaves safe raw upload paths unchanged', () => {
+    const content = 'Please analyze /mnt/user-uploads/data-1710000000-abc123.csv';
+    expect(injectFileSafetyMessage(content)).toBe(content);
+  });
+
   it('treats extensionless files as unsafe', () => {
     const content = withUploadRef('/mnt/user-uploads/README-1710000000-abc123');
     expect(injectFileSafetyMessage(content)).toBe(`${FILE_SAFETY_SYSTEM_MESSAGE}\n\n${content}`);
