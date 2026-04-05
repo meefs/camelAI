@@ -2083,9 +2083,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             this.stopRunnerReconnectLoop('byok_changed_close');
             this.cancelRunnerDisconnectGrace('byok_changed_close');
             this.persistRunnerSeqIfNeeded('disconnect');
-            this.finalizeRunnerDisconnect('runner_restarted');
 
             if (!shouldReconnectImmediately) {
+              this.finalizeRunnerDisconnect('runner_restarted');
               return;
             }
 
