@@ -61,7 +61,7 @@
 		"@vitest/snapshot": "^3.2.0",
 		"tailwindcss": "^4.1.13",
 		"typescript": "^5.9.2",
-		"playwright": "^1.58.0",
+		"playwright": "1.58.2",
 		"vite": "8.0.0-beta.16",
 		"vitest": "^3.2.0",
 		"wrangler": "^4.16.0"

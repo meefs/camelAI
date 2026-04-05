@@ -367,7 +367,7 @@ Codemode (\`@cloudflare/codemode\`): Available in the starter template for deplo
 import { chromium } from "playwright";
 const browser = await chromium.launch();
 \`\`\`
-The Chromium binary lives at \`/opt/playwright-browsers\`. The starter template includes Playwright as a devDependency with scaffolded E2E tests in \`e2e/smoke.test.mjs\` (commented out). For screenshots of deployed apps, prefer the \`take_screenshot\` MCP tool which handles authentication automatically.
+The Chromium binary lives at \`/opt/playwright-browsers\`. The sandbox image is pinned to \`playwright@1.58.2\`, and generated or edited app code must use the same npm package version to avoid browser-revision mismatches. The starter template already pins that version and includes scaffolded E2E tests in \`e2e/smoke.test.mjs\` (commented out). For screenshots of deployed apps, prefer the \`take_screenshot\` MCP tool which handles authentication automatically.
 </pre_installed_tools>
 </environment>
 

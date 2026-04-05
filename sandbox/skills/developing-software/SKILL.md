@@ -748,7 +748,7 @@ Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools f
 
 ## E2E Testing with Playwright
 
-The starter template includes Playwright as a devDependency and scaffolded E2E smoke tests in `e2e/smoke.test.mjs` (commented out). Chromium is pre-installed in the sandbox. Uncomment the tests, update the `APP_URL`, and run with `bun run test:e2e`. The test file includes auth cookie boilerplate for accessing private deployed apps.
+The starter template includes Playwright as a devDependency and scaffolded E2E smoke tests in `e2e/smoke.test.mjs` (commented out). Chromium is pre-installed in the sandbox, and its browser revision is pinned to `playwright@1.58.2`. Keep the app's npm package on that exact version when using the preinstalled browser binaries; do not upgrade or widen the Playwright version range unless the sandbox image is updated to match. Uncomment the tests, update the `APP_URL`, and run with `bun run test:e2e`. The test file includes auth cookie boilerplate for accessing private deployed apps.
 
 ## Troubleshooting
 
