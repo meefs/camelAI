@@ -2090,6 +2090,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             }
 
             this.runnerReconnectArmed = true;
+            this.armRunnerDisconnectGrace('byok_changed_close');
             this.ctx.waitUntil(
               this.tryRunnerReconnect('byok_changed_close').catch((err) => {
                 console.error('[ChatThreadDO] BYOK reconnect failed', err);
