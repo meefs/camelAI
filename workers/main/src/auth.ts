@@ -617,6 +617,8 @@ export class UserDO extends DurableObject<DOEnv> {
     await this.setPasswordHash(passwordHash);
     if (signupIp) {
       this.setSignupIp(signupIp);
+      // Re-dispatch with signup_ip so AdminIndexDO can index it
+      dispatchAdminEvent(this.ctx, this.env, { type: 'user_upsert', payload: { ...profile, signup_ip: signupIp } });
     }
 
     return profile;
@@ -844,6 +846,8 @@ export class UserDO extends DurableObject<DOEnv> {
     await this.linkOAuthProvider(provider, providerId);
     if (signupIp) {
       this.setSignupIp(signupIp);
+      // Re-dispatch with signup_ip so AdminIndexDO can index it
+      dispatchAdminEvent(this.ctx, this.env, { type: 'user_upsert', payload: { ...profile, signup_ip: signupIp } });
     }
 
     return profile;

@@ -304,6 +304,7 @@ export interface AdminUserSummary {
   org_count: number;
   avatar: Avatar;
   is_orphaned: boolean;
+  signup_ip: string | null;
 }
 
 export interface AdminOverview {

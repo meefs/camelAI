@@ -1,0 +1,15 @@
+{
+  "extends": "../desktop/tsconfig.json",
+  "include": [
+    "./**/*.ts",
+    "./**/*.tsx",
+    "../desktop/shared/**/*.ts",
+    "../src/components/theme-provider.tsx",
+    "../src/components/ui/**/*.tsx",
+    "../src/lib/utils.ts"
+  ],
+  "exclude": [
+    "./.local-dev/**/*",
+    "./backend/codex.ts"
+  ]
+}

@@ -1,6 +1,6 @@
 import type { ContentBlock } from "../../src/types";
 
-export type DesktopProvider = "claude" | "codex";
+export type DesktopProvider = "claude" | "codex" | "agentos";
 export type DesktopModel = string;
 export type DesktopAuthSource = "provider-account" | "api-key" | "missing";
 

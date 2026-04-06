@@ -135,6 +135,7 @@ export const UserSummarySchema = z.object({
   org_count: z.number().int(),
   is_superuser: z.boolean(),
   is_orphaned: z.boolean(),
+  signup_ip: z.string().nullable(),
 });
 
 export const OrgMembershipSchema = z.object({
