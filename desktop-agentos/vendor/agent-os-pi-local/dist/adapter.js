@@ -11,8 +11,9 @@
  */
 import { AgentSideConnection, ndJsonStream, } from "@agentclientprotocol/sdk";
 import { SessionManager, createAgentSession, createCodingTools, createFindTool, createGrepTool, createLsTool, } from "@mariozechner/pi-coding-agent";
+import { getModel } from "@mariozechner/pi-ai";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 // ── CLI argument parsing ────────────────────────────────────────────
 let appendSystemPrompt;
@@ -23,46 +24,6 @@ for (let i = 0; i < argv.length; i++) {
         i++;
     }
 }
-// ── Extension discovery ────────────────────────────────────────────
-// Manually discover and load Pi extensions from standard directories.
-// Pi's built-in jiti loader requires performance.now() which the VM's
-// V8 runtime doesn't provide, so we load extensions ourselves via
-// require() and pass them as extensionFactories.
-function discoverExtensionFactories(cwd) {
-    const factories = [];
-    const dirs = [
-        join(cwd, ".pi", "extensions"),
-        join(homedir(), ".pi", "agent", "extensions"),
-    ];
-    for (const dir of dirs) {
-        if (!existsSync(dir))
-            continue;
-        let entries;
-        try {
-            entries = readdirSync(dir);
-        }
-        catch {
-            continue;
-        }
-        for (const name of entries) {
-            if (!name.endsWith(".js") && !name.endsWith(".ts"))
-                continue;
-            const filePath = join(dir, name);
-            try {
-                // biome-ignore lint/security/noGlobalEval: needed to load extensions without jiti
-                const mod = eval(`require(${JSON.stringify(filePath)})`);
-                const factory = mod?.default ?? mod;
-                if (typeof factory === "function") {
-                    factories.push(factory);
-                }
-            }
-            catch {
-                // Skip extensions that fail to load
-            }
-        }
-    }
-    return factories;
-}
 function resolveSessionManager(cwd) {
     const sessionDir = process.env.PI_SESSION_DIR?.trim();
     if (sessionDir) {
@@ -70,6 +31,178 @@ function resolveSessionManager(cwd) {
         return SessionManager.continueRecent(cwd, sessionDir);
     }
     return SessionManager.continueRecent(cwd);
+}
+function resolveExplicitModel() {
+    const modelId = process.env.DESKTOP_MODEL?.trim();
+    if (!modelId) {
+        return undefined;
+    }
+    if (modelId.startsWith("claude-")) {
+        return getModel("anthropic", modelId);
+    }
+    if (process.env.OPENROUTER_API_KEY?.trim() && modelId.includes("/")) {
+        return getModel("openrouter", modelId);
+    }
+    return undefined;
+}
+function resolvePromptInput(input) {
+    if (!input) {
+        return undefined;
+    }
+    if (existsSync(input)) {
+        try {
+            return readFileSync(input, "utf-8");
+        }
+        catch {
+            return input;
+        }
+    }
+    return input;
+}
+function loadContextFileFromDir(dir) {
+    const candidates = ["AGENTS.md", "CLAUDE.md"];
+    for (const filename of candidates) {
+        const filePath = join(dir, filename);
+        if (!existsSync(filePath))
+            continue;
+        try {
+            return {
+                path: filePath,
+                content: readFileSync(filePath, "utf-8"),
+            };
+        }
+        catch {
+            continue;
+        }
+    }
+    return null;
+}
+function loadProjectContextFiles(cwd, agentDir) {
+    const contextFiles = [];
+    const seenPaths = new Set();
+    const globalContext = loadContextFileFromDir(agentDir);
+    if (globalContext) {
+        contextFiles.push(globalContext);
+        seenPaths.add(globalContext.path);
+    }
+    const ancestorContextFiles = [];
+    let currentDir = cwd;
+    while (true) {
+        const contextFile = loadContextFileFromDir(currentDir);
+        if (contextFile && !seenPaths.has(contextFile.path)) {
+            ancestorContextFiles.unshift(contextFile);
+            seenPaths.add(contextFile.path);
+        }
+        const parentDir = resolvePath(currentDir, "..");
+        if (parentDir === currentDir) {
+            break;
+        }
+        currentDir = parentDir;
+    }
+    contextFiles.push(...ancestorContextFiles);
+    return contextFiles;
+}
+function createHeadlessExtensionRuntime() {
+    const notInitialized = () => {
+        throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
+    };
+    const runtime = {
+        sendMessage: notInitialized,
+        sendUserMessage: notInitialized,
+        appendEntry: notInitialized,
+        setSessionName: notInitialized,
+        getSessionName: notInitialized,
+        setLabel: notInitialized,
+        getActiveTools: notInitialized,
+        getAllTools: notInitialized,
+        setActiveTools: notInitialized,
+        refreshTools: () => { },
+        getCommands: notInitialized,
+        setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
+        getThinkingLevel: notInitialized,
+        setThinkingLevel: notInitialized,
+        flagValues: new Map(),
+        pendingProviderRegistrations: [],
+        registerProvider: (name, config) => {
+            runtime.pendingProviderRegistrations.push({ name, config });
+        },
+        unregisterProvider: (name) => {
+            runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((registration) => registration.name !== name);
+        },
+    };
+    return runtime;
+}
+class HeadlessResourceLoader {
+    cwd;
+    agentDir;
+    appendSystemPromptSource;
+    extensionsResult;
+    skills = [];
+    skillDiagnostics = [];
+    prompts = [];
+    promptDiagnostics = [];
+    agentsFiles = [];
+    systemPrompt;
+    appendSystemPrompt = [];
+    pathMetadata = new Map();
+    constructor({ cwd, agentDir, appendSystemPrompt }) {
+        this.cwd = cwd;
+        this.agentDir = agentDir;
+        this.appendSystemPromptSource = appendSystemPrompt;
+        this.extensionsResult = {
+            extensions: [],
+            errors: [],
+            runtime: createHeadlessExtensionRuntime(),
+        };
+    }
+    getExtensions() {
+        return this.extensionsResult;
+    }
+    getSkills() {
+        return {
+            skills: this.skills,
+            diagnostics: this.skillDiagnostics,
+        };
+    }
+    getPrompts() {
+        return {
+            prompts: this.prompts,
+            diagnostics: this.promptDiagnostics,
+        };
+    }
+    getThemes() {
+        return {
+            themes: [],
+            diagnostics: [],
+        };
+    }
+    getAgentsFiles() {
+        return {
+            agentsFiles: this.agentsFiles,
+        };
+    }
+    getSystemPrompt() {
+        return this.systemPrompt;
+    }
+    getAppendSystemPrompt() {
+        return this.appendSystemPrompt;
+    }
+    getPathMetadata() {
+        return this.pathMetadata;
+    }
+    extendResources() {
+    }
+    async reload() {
+        this.skills = [];
+        this.skillDiagnostics = [];
+        this.prompts = [];
+        this.promptDiagnostics = [];
+        this.agentsFiles = loadProjectContextFiles(this.cwd, this.agentDir);
+        this.systemPrompt = undefined;
+        const appendPrompt = resolvePromptInput(this.appendSystemPromptSource);
+        this.appendSystemPrompt = appendPrompt ? [appendPrompt] : [];
+        this.pathMetadata = new Map();
+    }
 }
 // ── Agent implementation ────────────────────────────────────────────
 class PiSdkAgent {
@@ -104,19 +237,16 @@ class PiSdkAgent {
     }
     async newSession(params) {
         this.cwd = params.cwd;
-        // Discover extensions from standard Pi directories and load them
-        // manually (bypasses jiti which requires performance.now).
-        const extensionFactories = discoverExtensionFactories(params.cwd);
-        const { DefaultResourceLoader } = await import("@mariozechner/pi-coding-agent");
-        const resourceLoader = new DefaultResourceLoader({
+        const resourceLoader = new HeadlessResourceLoader({
             cwd: params.cwd,
+            agentDir: join(homedir(), ".pi", "agent"),
             ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
-            noExtensions: true, // skip jiti-based discovery
-            extensionFactories,
         });
         await resourceLoader.reload();
+        const explicitModel = resolveExplicitModel();
         const { session, extensionsResult } = await createAgentSession({
             cwd: params.cwd,
+            ...(explicitModel ? { model: explicitModel } : {}),
             sessionManager: resolveSessionManager(params.cwd),
             resourceLoader,
             tools: [
@@ -151,6 +281,7 @@ class PiSdkAgent {
         this.cancelRequested = false;
         this.currentToolCalls.clear();
         this.emittedAssistantText = "";
+        let promptError = null;
         // Extract text from prompt parts
         const promptParts = params.prompt ?? [];
         const text = promptParts
@@ -162,11 +293,16 @@ class PiSdkAgent {
         try {
             await this.session.prompt(text);
         }
-        catch {
-            // Prompt may throw on abort or error
+        catch (error) {
+            if (!this.cancelRequested) {
+                promptError = error;
+            }
         }
         // Flush any pending notifications before returning the response
         await this.lastEmit;
+        if (promptError) {
+            throw promptError;
+        }
         const finalText = this.session.getLastAssistantText();
         if (finalText) {
             const emittedText = this.emittedAssistantText;
