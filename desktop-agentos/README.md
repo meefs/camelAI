@@ -24,6 +24,7 @@ Current limits:
 
 ```bash
 bun install
+bun run desktop-agentos:install
 bun run desktop-agentos:dev
 bun run desktop-agentos:check
 bun run desktop-agentos:backend
@@ -36,6 +37,7 @@ bun run desktop-agentos:start
 
 Notes:
 
+- `desktop-agentos:install` performs the separate install for the AgentOS-only dependencies under `desktop-agentos/`. The root web and worker deploys intentionally do not install that dependency set.
 - `desktop-agentos:dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
 - `desktop-agentos:backend` is a smoke check for the AgentOS runtime bootstrap, not a long-lived backend server.
 - `desktop-agentos:probe-resume` runs two real turns across a full desktop-service restart and fails unless the second turn remembers the first.

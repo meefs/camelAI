@@ -13,10 +13,6 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./tests/setup.ts'],
     globals: true,
-    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
-    exclude: [
-      'tests/integration/**',
-      'tests/desktop-agentos-openrouter.test.ts',
-    ],
+    include: ['tests/desktop-agentos-openrouter.test.ts'],
   },
 });

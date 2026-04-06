@@ -68,6 +68,7 @@ playwright-report/
 *.swp
 *.swo
 sandbox/bun.lock
+desktop-agentos/bun.lock
 
 # Downloaded container session files
 *.jsonl
@@ -86,6 +87,7 @@ sandbox/create-worker/renderer-dist/
 desktop/.local/
 desktop-agentos/.local/
 desktop-agentos/.local-dev/
+desktop-agentos/node_modules/
 desktop/app-resources/
 desktop/renderer-dist/
 dist/desktop/

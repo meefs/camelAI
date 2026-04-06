@@ -56,11 +56,11 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - `../desktop-agentos/` - Experimental sibling desktop variant that reuses the Electron shell and renderer but swaps the Docker or Apple-containerized runtime for a direct AgentOS VM booted by the backend; it currently runs the AgentOS Pi adapter against a host-mounted workspace, an app-managed Pi settings home, and per-thread persisted Pi session directories so chats survive desktop/runtime restarts
 
 4. **Desktop AgentOS Prototype** (`desktop-agentos/`)
-   - Parallel experimental desktop runtime that keeps the existing Electron shell + renderer protocol but swaps the containerized sandbox path for an embedded Rivet AgentOS VM
+   - Parallel experimental desktop runtime that keeps the existing Electron shell + renderer protocol but swaps the containerized sandbox path for an embedded Rivet AgentOS VM. Its Rivet AgentOS packages now live in `desktop-agentos/package.json` so main web or worker installs do not pull that experimental dependency set.
    - `backend/` - Codex-only desktop backend that persists local threads/messages, mounts a writable host workspace into AgentOS, auto-answers ACP permission prompts, stages Pi settings plus host `~/.pi/agent/auth.json` into the app-managed Pi home, and translates AgentOS session updates into the existing desktop Codex event shape so the shared renderer can keep rendering tool calls/thinking blocks
    - `electron/` - Lightweight Electron main/preload pair for this variant; it always runs the backend over stdio and reuses the shared desktop renderer bundle/dev server
    - `scripts/dev.mjs` - Starts the shared renderer, tails the AgentOS backend log, and launches Electron against the AgentOS-backed desktop variant
-   - Current limitation: development-oriented only; it still expects the workspace checkout and root `node_modules/` to be available, and OpenAI-backed Pi sessions over AgentOS ACP still return empty responses even when Pi OAuth credentials are staged from `~/.pi/agent/auth.json`
+   - Current limitation: development-oriented only; it still expects the workspace checkout plus both root `node_modules/` and `desktop-agentos/node_modules/` to be available, and OpenAI-backed Pi sessions over AgentOS ACP still return empty responses even when Pi OAuth credentials are staged from `~/.pi/agent/auth.json`
 
 5. **Sandbox Host** (`services/sandbox-host/`)
    - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
