@@ -145,7 +145,8 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 12. Threads created from hidden system-seeded handoff flows can start with a fallback title (for example app chats use `Working on <app>`). `ChatThreadDO` upgrades both the thread title and `first_user_message` when the first non-system, non-slash user message arrives.
 13. `ChatThreadDO` scans browser and external turns for canonical `(user uploaded file to /mnt/user-uploads/...)` references, raw `/mnt/user-uploads/...` path mentions, and suspicious upload/deploy/bridge workflow cues (for example uploaded archives plus extract/deploy/init/WebSocket relay instructions), then prepends a hidden file-safety `<camelai system message>` before author attribution when anything looks unsafe.
 14. Stored-name overrides treat `Dockerfile*`, `docker-compose*`, `compose*`, `Makefile*`, and `.env*` as unsafe even when the extension itself is in the safe allowlist. This currently affects web chat and email ingress; Slack is unchanged until it starts appending upload refs.
-15. `sandbox/control-plane.mjs` appends a standing `<prohibited_activities>` section to the agent system prompt requiring hard refusals for reverse proxies/tunnels, relay or forwarding use, non-Cloudflare-Worker deployments, crypto mining, and malware or exploit work. The prompt also calls out deploy-and-bridge patterns such as retrieving a public URL, wiring `BRIDGE_URL` or `wss://.../connect`, and running init/bootstrap scripts that connect a deployed app back to another service.
+15. `sandbox/control-plane.mjs` appends a standing `<prohibited_activities>` section to the agent system prompt requiring hard refusals for reverse proxies/tunnels, relay or forwarding use, non-Cloudflare-Worker deployments, crypto mining, and malware or exploit work.
+16. Browser chat tracks a per-user `localStorage` message counter and shows a one-time `FreeTierModal` on the third authored send; if the user navigates before dismissing it, the modal reopens anywhere the count is already `>= 3` until they acknowledge it.
 
 ### Agent Teams Polling
 
@@ -235,6 +236,8 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - The web chat control plane now defaults Claude Agent SDK sessions to `sonnet` and does not configure a fallback model.
 - Org-scoped BYOK provider config (`llm_provider_config`) stores only provider-specific settings (`aws_region` for Bedrock) plus encrypted credentials. It does not store the Claude model.
 - Claude model selection (`sonnet` or `opus`) is stored per thread on the org `threads` record. The web chat welcome/composer UI can set it, qaml-backdoor thread detail can edit it, and the admin thread API exposes it on `PATCH /api/admin/threads/:id`.
+- Organization Settings → `AI Provider` is written for non-technical users: provider choice renders as plain radio rows, the header explains that BYOK removes limits with zero camelAI markup, and each provider has a collapsible step-by-step key generation guide with inline outbound console links.
+- Saving or deleting the org BYOK config now calls `OrgDO.notifyByokChanged()` for the matching recently active thread harnesses (`claude`, `codex`, or both when switching provider families); any live runner websocket closes with code `4001`, immediately clears transient streaming state, and reconnects with fresh sandbox-host BYOK headers so affected chats pick up the new key without a manual refresh.
 
 ### Virtual AI Binding
 

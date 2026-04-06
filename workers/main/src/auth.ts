@@ -10,9 +10,11 @@ import type {
   Organization,
   OrganizationExperimentalSettings,
   Workspace,
+  ChatHarness,
   LlmModel,
   OnboardingPreferences,
 } from '../../../src/types';
+import type { ChatThreadDO } from './durable-objects';
 import { WorkspaceDO } from './workspace';
 import {
   DEFAULT_LLM_MODEL,
@@ -29,6 +31,7 @@ export interface DOEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   ADMIN_INDEX: DurableObjectNamespace<import('./admin-index-do.js').AdminIndexDO>;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
@@ -3066,6 +3069,50 @@ export class OrgDO extends DurableObject<DOEnv> {
   deleteLlmProviderConfig(): boolean {
     this.sql.exec("DELETE FROM llm_provider_config WHERE id = 'active'");
     return true;
+  }
+
+  getActiveThreadIdsForByokChange(targetProviders: ChatHarness[]): string[] {
+    this.ensureThreadSchemaColumns();
+    const normalizedProviders = Array.from(
+      new Set(targetProviders.filter((provider): provider is ChatHarness => (
+        provider === 'claude' || provider === 'codex'
+      )))
+    );
+    if (normalizedProviders.length === 0) {
+      return [];
+    }
+
+    const activeSince = Date.now() - 30 * 60 * 1000;
+    const placeholders = normalizedProviders.map(() => '?').join(',');
+    return this.sql
+      .exec<{ id: string }>(
+        `SELECT id FROM threads WHERE updated_at > ? AND provider IN (${placeholders}) ORDER BY updated_at DESC`,
+        activeSince,
+        ...normalizedProviders
+      )
+      .toArray()
+      .flatMap((row) => row.id ? [row.id] : []);
+  }
+
+  async notifyByokChanged(targetProviders: ChatHarness[]): Promise<number> {
+    const threadIds = this.getActiveThreadIdsForByokChange(targetProviders);
+
+    for (let index = 0; index < threadIds.length; index += 50) {
+      const batch = threadIds.slice(index, index + 50);
+      await Promise.allSettled(
+        batch.map((threadId) => {
+          const chatThread = this.env.CHAT_THREAD.get(
+            this.env.CHAT_THREAD.idFromName(threadId)
+          ) as unknown as {
+            byokChanged(): Promise<void>;
+          };
+
+          return chatThread.byokChanged();
+        })
+      );
+    }
+
+    return threadIds.length;
   }
 
   hasLlmProviderConfig(): boolean {

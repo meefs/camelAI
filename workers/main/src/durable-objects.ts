@@ -234,6 +234,7 @@ const MAX_CHAT_EVENT_BUFFER = 500;
 const RUNNER_PING_INTERVAL_MS = 10_000;
 const RUNNER_RECONNECT_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const RUNNER_RECONNECT_GRACE_MS = 30_000;
+const RUNNER_CLOSE_CODE_BYOK_CHANGED = 4001;
 const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
 
 /**
@@ -1119,6 +1120,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.runnerSocket.close(1000, 'runner_config_changed');
       } catch {
         this.trace('refresh_runner_config_close_failed');
+      }
+    });
+  }
+
+  async byokChanged(): Promise<void> {
+    await this.withRunnerTransitionLock('byok_changed', async () => {
+      this.stopRunnerReconnectLoop('byok_changed');
+      this.cancelRunnerDisconnectGrace('byok_changed');
+      if (!this.runnerSocket) {
+        return;
+      }
+      try {
+        this.runnerSocket.close(RUNNER_CLOSE_CODE_BYOK_CHANGED, 'byok_credentials_changed');
+      } catch {
+        this.trace('byok_changed_close_failed');
       }
     });
   }
@@ -2059,6 +2075,30 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             return;
           }
 
+          if (event.code === RUNNER_CLOSE_CODE_BYOK_CHANGED) {
+            const shouldReconnectImmediately =
+              this.getChatSockets().length > 0 ||
+              this.pendingExternalTurn !== null ||
+              this.chatIsStreaming;
+            this.stopRunnerReconnectLoop('byok_changed_close');
+            this.cancelRunnerDisconnectGrace('byok_changed_close');
+            this.persistRunnerSeqIfNeeded('disconnect');
+
+            if (!shouldReconnectImmediately) {
+              this.finalizeRunnerDisconnect('runner_restarted');
+              return;
+            }
+
+            this.runnerReconnectArmed = true;
+            this.armRunnerDisconnectGrace('byok_changed_close');
+            this.ctx.waitUntil(
+              this.tryRunnerReconnect('byok_changed_close').catch((err) => {
+                console.error('[ChatThreadDO] BYOK reconnect failed', err);
+              })
+            );
+            return;
+          }
+
           if (this.getChatSockets().length > 0) {
             this.runnerReconnectArmed = true;
             this.armRunnerDisconnectGrace('runner_socket_close');
@@ -2398,6 +2438,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
+  private finalizeRunnerDisconnect(subtype: string): void {
+    this.setChatIsStreaming(false);
+    const hadTransientUsage = this.transientContextUsedPercent !== null;
+    this.transientContextUsedPercent = null;
+    this.lastMessageStartUsage = null;
+    this.usageIsPostCompaction = true;
+    if (hadTransientUsage) {
+      this.broadcastRealtime({ type: 'context_usage_state', usedPercent: this.contextUsedPercent });
+    }
+    this.pushChatEvent({
+      type: 'sdk_event',
+      event: { type: 'result', subtype },
+    });
+  }
+
   private armRunnerDisconnectGrace(source: string): void {
     this.cancelRunnerDisconnectGrace('rearm');
     this.runnerDisconnectGraceTimer = setTimeout(() => {
@@ -2410,18 +2465,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         source,
         lastRunnerSeq: this.lastRunnerSeq,
       });
-      this.setChatIsStreaming(false);
-      const hadTransientUsage = this.transientContextUsedPercent !== null;
-      this.transientContextUsedPercent = null;
-      this.lastMessageStartUsage = null;
-      this.usageIsPostCompaction = true;
-      if (hadTransientUsage) {
-        this.broadcastRealtime({ type: 'context_usage_state', usedPercent: this.contextUsedPercent });
-      }
-      this.pushChatEvent({
-        type: 'sdk_event',
-        event: { type: 'result', subtype: 'runner_disconnected' },
-      });
+      this.finalizeRunnerDisconnect('runner_disconnected');
     }, RUNNER_RECONNECT_GRACE_MS) as unknown as number;
     this.trace('runner_disconnect_grace_armed', {
       source,
