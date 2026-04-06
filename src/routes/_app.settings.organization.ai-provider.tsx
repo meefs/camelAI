@@ -315,15 +315,17 @@ export default function AiProviderPage() {
 
   function handleSave() {
     clearActionFeedback();
-    setLastIntent('setProvider');
 
     if (selectedProvider === 'default') {
+      setLastIntent('deleteProvider');
       fetcher.submit(
         { intent: 'deleteProvider' },
         { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
       );
       return;
     }
+
+    setLastIntent('setProvider');
 
     if (selectedProvider === 'anthropic') {
       fetcher.submit(
