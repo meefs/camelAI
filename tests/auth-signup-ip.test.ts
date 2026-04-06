@@ -17,9 +17,14 @@ const emailMocks = vi.hoisted(() => ({
   sendUserVerificationEmail: vi.fn(),
 }));
 
+const banMocks = vi.hoisted(() => ({
+  getBanForEmail: vi.fn(),
+}));
+
 vi.mock('@/lib/auth-do', () => authDoMocks);
 vi.mock('@/lib/sales-prompt.server', () => salesPromptMocks);
 vi.mock('@/lib/email-verification.server', () => emailMocks);
+vi.mock('@/lib/ban.server', () => banMocks);
 vi.mock('@/lib/wait-until', () => ({
   waitUntil: (promise: Promise<unknown>) => promise.catch(() => undefined),
 }));
@@ -34,7 +39,7 @@ describe('signup action IP handling', () => {
     ADMIN_INDEX: {},
     SESSIONS: {},
     EMAIL_TO_USER: {},
-    APP_KV: {},
+    APP_KV: { get: vi.fn().mockResolvedValue(null) },
     NEXTJS_ENV: 'development',
     TOKEN_SIGNING_SECRET: 'test-secret',
   };
@@ -57,6 +62,7 @@ describe('signup action IP handling', () => {
     });
     salesPromptMocks.getPromptKeyFromUrl.mockReturnValue(null);
     emailMocks.sendUserVerificationEmail.mockResolvedValue({ status: 'sent' });
+    banMocks.getBanForEmail.mockResolvedValue(null);
   });
 
   it('passes CF-Connecting-IP through to user creation', async () => {

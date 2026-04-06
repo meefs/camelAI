@@ -14,6 +14,7 @@ import {
   isEmailDomainBlockedError,
   getBlocklistFromKV,
 } from "@/lib/email-domain-blocklist";
+import { getBanForEmail } from "@/lib/ban.server";
 import { sendUserVerificationEmail } from "@/lib/email-verification.server";
 import {
   consumeSalesPrompt,
@@ -82,6 +83,14 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json(
         { error: "Email signups from this domain are not allowed" },
         { status: 400 },
+      );
+    }
+
+    const existingBan = await getBanForEmail(context, email);
+    if (existingBan) {
+      return Response.json(
+        { error: "This account has been blocked.", redirect: "/banned" },
+        { status: 403 },
       );
     }
 

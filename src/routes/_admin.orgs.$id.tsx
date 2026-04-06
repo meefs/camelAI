@@ -1,18 +1,32 @@
-import { Link, useLoaderData, redirect } from 'react-router';
-import type { Route } from './+types/_admin.orgs.$id';
-import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import * as adminDO from '@/lib/auth-do.server';
-import { adminTransferOrgOwnership, updateOrgMemberRole, getOrg, getOrgMembers, getOrgInvitations } from '@/lib/auth-do';
-import { AdminPageHeader } from '@/components/admin/admin-page-header';
-import { AddOrgMemberDialog } from '@/components/admin/add-org-member-dialog';
-import { OrgDangerZone } from '@/components/admin/org-danger-zone';
-import { OrgMemberRoleSelect } from '@/components/admin/org-member-role-select';
-import { OrgEditForm } from '@/components/admin/org-edit-form';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Link, useLoaderData, redirect } from "react-router";
+import type { Route } from "./+types/_admin.orgs.$id";
+import { requireSuperuser, getAuthEnv } from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import * as adminDO from "@/lib/auth-do.server";
+import {
+  adminTransferOrgOwnership,
+  updateOrgMemberRole,
+  getOrg,
+  getOrgMembers,
+  getOrgInvitations,
+} from "@/lib/auth-do";
+import { getOrgBanById, type BanRecord } from "../../workers/main/src/ban-list";
+import { waitUntil } from "@/lib/wait-until";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
+import { AddOrgMemberDialog } from "@/components/admin/add-org-member-dialog";
+import { OrgDangerZone } from "@/components/admin/org-danger-zone";
+import { OrgMemberRoleSelect } from "@/components/admin/org-member-role-select";
+import { OrgEditForm } from "@/components/admin/org-edit-form";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -20,13 +34,13 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { getContrastTextColor } from '@/lib/avatar';
-import { cn } from '@/lib/utils';
+} from "@/components/ui/table";
+import { getContrastTextColor } from "@/lib/avatar";
+import { cn } from "@/lib/utils";
 
-const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
 });
 
 const RECENT_THREAD_LIMIT = 10;
@@ -37,16 +51,20 @@ function formatTimestamp(value: number) {
 }
 
 const roleBadgeClasses: Record<string, string> = {
-  owner: 'border-amber-500/30 bg-amber-500/15 text-amber-700',
-  admin: 'border-blue-500/30 bg-blue-500/15 text-blue-700',
-  member: 'border-slate-500/30 bg-slate-500/10 text-slate-700',
-  viewer: 'border-muted bg-muted text-muted-foreground',
+  owner: "border-amber-500/30 bg-amber-500/15 text-amber-700",
+  admin: "border-blue-500/30 bg-blue-500/15 text-blue-700",
+  member: "border-slate-500/30 bg-slate-500/10 text-slate-700",
+  viewer: "border-muted bg-muted text-muted-foreground",
 };
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.org ? `${data.org.name} - Admin - camelAI` : 'Organization - Admin - camelAI' },
-    { name: 'description', content: 'View organization details' },
+    {
+      title: data?.org
+        ? `${data.org.name} - Admin - camelAI`
+        : "Organization - Admin - camelAI",
+    },
+    { name: "description", content: "View organization details" },
   ];
 }
 
@@ -59,7 +77,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   // Fetch org first to check existence, then fetch related data in parallel
   const org = await getOrg(authEnv, id);
   if (!org) {
-    throw redirect('/qaml-backdoor/orgs');
+    throw redirect("/qaml-backdoor/orgs");
   }
 
   const env = getEnv(context);
@@ -67,25 +85,44 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   // Fetch usage data from sandbox-host (best-effort, don't block on failure)
   const usagePromise = env.SANDBOX_HOST
     ? Promise.all([
-        env.SANDBOX_HOST.fetch(`http://sandbox/v1/usage/orgs/${encodeURIComponent(id)}/spend`).then(r => r.ok ? r.json() : null).catch(() => null),
-        env.SANDBOX_HOST.fetch(`http://sandbox/v1/usage/orgs/${encodeURIComponent(id)}/log?limit=10`).then(r => r.ok ? r.json() : null).catch(() => null),
+        env.SANDBOX_HOST.fetch(
+          `http://sandbox/v1/usage/orgs/${encodeURIComponent(id)}/spend`,
+        )
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+        env.SANDBOX_HOST.fetch(
+          `http://sandbox/v1/usage/orgs/${encodeURIComponent(id)}/log?limit=10`,
+        )
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
       ])
     : Promise.resolve([null, null]);
 
-  const [members, invitations, workspaces, recentActivity, [usageSpend, usageLog]] = await Promise.all([
+  const [
+    members,
+    invitations,
+    workspaces,
+    recentActivity,
+    [usageSpend, usageLog],
+    orgBan,
+  ] = await Promise.all([
     getOrgMembers(authEnv, id),
     getOrgInvitations(authEnv, id),
     adminDO.adminGetWorkspacesByOrg(context, id),
     adminDO.adminGetOrgRecentActivity(context, id, {
       threadLimit: RECENT_THREAD_LIMIT,
       appLimit: RECENT_APP_LIMIT,
-      includeCounts: 'cheap',
+      includeCounts: "cheap",
     }),
     usagePromise as Promise<[any, any]>,
+    getOrgBanById(getEnv(context).APP_KV, id),
   ]);
 
   const threadCountFromWorkspaces = workspaces.reduce((sum, workspace) => {
-    return sum + (Number.isFinite(workspace.thread_count) ? workspace.thread_count : 0);
+    return (
+      sum +
+      (Number.isFinite(workspace.thread_count) ? workspace.thread_count : 0)
+    );
   }, 0);
   const derivedThreadCount = Number.isFinite(threadCountFromWorkspaces)
     ? threadCountFromWorkspaces
@@ -121,6 +158,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
     memberOptions,
+    orgBan,
     usageSpend: usageSpend as {
       org_id: string;
       total_cost_usd: number;
@@ -152,65 +190,108 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   await requireSuperuser(request, context);
 
   const formData = await request.formData();
-  const intent = formData.get('intent');
+  const intent = formData.get("intent");
   const { id: orgId } = params;
   const authEnv = getAuthEnv(getEnv(context));
 
-  if (intent === 'addMember') {
-    const userId = formData.get('userId') as string;
-    const role = formData.get('role') as 'admin' | 'member';
+  if (intent === "addMember") {
+    const userId = formData.get("userId") as string;
+    const role = formData.get("role") as "admin" | "member";
     if (!userId || !role) {
-      return { error: 'User ID and role are required' };
+      return { error: "User ID and role are required" };
     }
     await adminDO.addAdminOrgMember(context, orgId, userId, role);
     return { success: true };
   }
 
-  if (intent === 'updateMemberRole') {
-    const userId = formData.get('userId') as string;
-    const role = formData.get('role') as 'admin' | 'member' | 'viewer' | 'owner';
+  if (intent === "updateMemberRole") {
+    const userId = formData.get("userId") as string;
+    const role = formData.get("role") as
+      | "admin"
+      | "member"
+      | "viewer"
+      | "owner";
     if (!userId || !role) {
-      return { error: 'User ID and role are required' };
+      return { error: "User ID and role are required" };
     }
-    await updateOrgMemberRole(authEnv, orgId, userId, role, 'system-admin');
+    await updateOrgMemberRole(authEnv, orgId, userId, role, "system-admin");
     return { success: true };
   }
 
-  if (intent === 'transferOwnership') {
-    const newOwnerId = formData.get('newOwnerId') as string;
+  if (intent === "transferOwnership") {
+    const newOwnerId = formData.get("newOwnerId") as string;
     if (!newOwnerId) {
-      return { error: 'New owner ID is required' };
+      return { error: "New owner ID is required" };
     }
-    await adminTransferOrgOwnership(authEnv, orgId, newOwnerId, 'system-admin');
+    await adminTransferOrgOwnership(authEnv, orgId, newOwnerId, "system-admin");
     return { success: true };
   }
 
-  if (intent === 'archiveOrg') {
+  if (intent === "archiveOrg") {
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-    await stub.archiveOrg('system-admin');
+    await stub.archiveOrg("system-admin");
     return { success: true };
   }
 
-  if (intent === 'hardDeleteOrg') {
+  if (intent === "banOrg") {
+    const reason = String(formData.get("reason") ?? "").trim();
+    if (!reason) {
+      return { error: "Ban reason is required" };
+    }
     try {
-      const result = await adminDO.hardDeleteAdminOrg(context, orgId, 'system-admin');
+      const job = await adminDO.startAdminOrgBanAndPurgeWithEnv(
+        getEnv(context),
+        orgId,
+        {
+          reason,
+          actorId: "system-admin",
+        },
+      );
+      waitUntil(
+        adminDO
+          .runAdminOrgBanAndPurgeWithEnv(getEnv(context), job, "system-admin")
+          .catch((error) => {
+            console.error("[admin] org ban purge failed", error);
+          }),
+      );
+      return { success: true, banStarted: true, jobId: job.id };
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error ? error.message : "Failed to ban organization",
+      };
+    }
+  }
+
+  if (intent === "hardDeleteOrg") {
+    try {
+      const result = await adminDO.hardDeleteAdminOrg(
+        context,
+        orgId,
+        "system-admin",
+      );
       return { success: true, warnings: result.warnings };
     } catch (error) {
-      return { error: error instanceof Error ? error.message : 'Failed to permanently delete organization' };
+      return {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to permanently delete organization",
+      };
     }
   }
 
-  if (intent === 'updateOrg') {
-    const name = formData.get('name') as string;
+  if (intent === "updateOrg") {
+    const name = formData.get("name") as string;
     if (!name?.trim()) {
-      return { error: 'Organization name is required' };
+      return { error: "Organization name is required" };
     }
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-    await stub.updateName(name.trim(), 'system-admin');
+    await stub.updateName(name.trim(), "system-admin");
     return { success: true };
   }
 
-  return { error: 'Unknown action' };
+  return { error: "Unknown action" };
 }
 
 export default function AdminOrgDetailPage() {
@@ -224,6 +305,7 @@ export default function AdminOrgDetailPage() {
     threadCount,
     appCount,
     memberOptions,
+    orgBan,
     usageSpend,
     usageLog,
   } = useLoaderData<typeof loader>();
@@ -231,8 +313,8 @@ export default function AdminOrgDetailPage() {
     <>
       <AdminPageHeader
         breadcrumbs={[
-          { label: 'Admin', href: '/qaml-backdoor' },
-          { label: 'Organizations', href: '/qaml-backdoor/orgs' },
+          { label: "Admin", href: "/qaml-backdoor" },
+          { label: "Organizations", href: "/qaml-backdoor/orgs" },
           { label: org.name },
         ]}
       />
@@ -243,40 +325,62 @@ export default function AdminOrgDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Organization Details</CardTitle>
-                <CardDescription>View and edit organization information</CardDescription>
+                <CardDescription>
+                  View and edit organization information
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <dl className="grid gap-4 sm:grid-cols-2">
                   <div>
-                    <dt className="text-sm font-medium text-muted-foreground">ID</dt>
+                    <dt className="text-sm font-medium text-muted-foreground">
+                      ID
+                    </dt>
                     <dd className="font-mono text-sm">{org.id}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm font-medium text-muted-foreground">Name</dt>
+                    <dt className="text-sm font-medium text-muted-foreground">
+                      Name
+                    </dt>
                     <dd className="text-sm">{org.name}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm font-medium text-muted-foreground">Billing</dt>
+                    <dt className="text-sm font-medium text-muted-foreground">
+                      Billing
+                    </dt>
                     <dd>
-                      <Badge variant={org.billing_status === 'paying' ? 'default' : 'outline'}>
-                        {org.billing_status === 'paying' ? 'Paying' : 'Free'}
+                      <Badge
+                        variant={
+                          org.billing_status === "paying"
+                            ? "default"
+                            : "outline"
+                        }
+                      >
+                        {org.billing_status === "paying" ? "Paying" : "Free"}
                       </Badge>
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-sm font-medium text-muted-foreground">Status</dt>
+                    <dt className="text-sm font-medium text-muted-foreground">
+                      Status
+                    </dt>
                     <dd>
-                      <Badge variant={org.archived ? 'secondary' : 'outline'}>
-                        {org.archived ? 'Archived' : 'Active'}
+                      <Badge variant={org.archived ? "secondary" : "outline"}>
+                        {org.archived ? "Archived" : "Active"}
                       </Badge>
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-sm font-medium text-muted-foreground">Created</dt>
-                    <dd className="text-sm">{formatTimestamp(org.created_at)}</dd>
+                    <dt className="text-sm font-medium text-muted-foreground">
+                      Created
+                    </dt>
+                    <dd className="text-sm">
+                      {formatTimestamp(org.created_at)}
+                    </dd>
                   </div>
                   <div>
-                    <dt className="text-sm font-medium text-muted-foreground">Created By</dt>
+                    <dt className="text-sm font-medium text-muted-foreground">
+                      Created By
+                    </dt>
                     <dd>
                       <Link
                         to={`/qaml-backdoor/users/${org.created_by}`}
@@ -288,13 +392,19 @@ export default function AdminOrgDetailPage() {
                   </div>
                   {org.archived && org.archived_at ? (
                     <div>
-                      <dt className="text-sm font-medium text-muted-foreground">Archived At</dt>
-                      <dd className="text-sm">{formatTimestamp(org.archived_at)}</dd>
+                      <dt className="text-sm font-medium text-muted-foreground">
+                        Archived At
+                      </dt>
+                      <dd className="text-sm">
+                        {formatTimestamp(org.archived_at)}
+                      </dd>
                     </div>
                   ) : null}
                   {org.archived && org.archived_by ? (
                     <div>
-                      <dt className="text-sm font-medium text-muted-foreground">Archived By</dt>
+                      <dt className="text-sm font-medium text-muted-foreground">
+                        Archived By
+                      </dt>
                       <dd>
                         <Link
                           to={`/qaml-backdoor/users/${org.archived_by}`}
@@ -325,7 +435,7 @@ export default function AdminOrgDetailPage() {
                 <CardDescription>
                   {usageSpend
                     ? `$${usageSpend.total_cost_usd.toFixed(2)} lifetime spend across ${usageSpend.total_requests} requests`
-                    : 'Usage tracking unavailable'}
+                    : "Usage tracking unavailable"}
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -336,14 +446,16 @@ export default function AdminOrgDetailPage() {
                         <div
                           key={w.label}
                           className={cn(
-                            'rounded-lg border p-3',
+                            "rounded-lg border p-3",
                             w.exceeded
-                              ? 'border-destructive/50 bg-destructive/5'
-                              : 'border-border',
+                              ? "border-destructive/50 bg-destructive/5"
+                              : "border-border",
                           )}
                         >
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium">{w.label} window</span>
+                            <span className="text-sm font-medium">
+                              {w.label} window
+                            </span>
                             {w.exceeded ? (
                               <Badge variant="destructive">Exceeded</Badge>
                             ) : (
@@ -351,7 +463,7 @@ export default function AdminOrgDetailPage() {
                             )}
                           </div>
                           <div className="text-lg font-semibold">
-                            ${w.spent_usd.toFixed(2)}{' '}
+                            ${w.spent_usd.toFixed(2)}{" "}
                             <span className="text-sm font-normal text-muted-foreground">
                               / ${w.limit_usd.toFixed(0)}
                             </span>
@@ -359,8 +471,8 @@ export default function AdminOrgDetailPage() {
                           <div className="mt-1.5 h-1.5 rounded-full bg-muted overflow-hidden">
                             <div
                               className={cn(
-                                'h-full rounded-full transition-all',
-                                w.exceeded ? 'bg-destructive' : 'bg-primary',
+                                "h-full rounded-full transition-all",
+                                w.exceeded ? "bg-destructive" : "bg-primary",
                               )}
                               style={{
                                 width: `${Math.min(100, (w.spent_usd / w.limit_usd) * 100)}%`,
@@ -389,10 +501,13 @@ export default function AdminOrgDetailPage() {
                             {usageLog.entries.map((entry) => (
                               <TableRow key={entry.id}>
                                 <TableCell className="font-mono text-xs">
-                                  {entry.model.replace('claude-', '').replace(/-\d{8}$/, '')}
+                                  {entry.model
+                                    .replace("claude-", "")
+                                    .replace(/-\d{8}$/, "")}
                                 </TableCell>
                                 <TableCell className="text-xs text-muted-foreground">
-                                  {entry.input_tokens.toLocaleString()} in / {entry.output_tokens.toLocaleString()} out
+                                  {entry.input_tokens.toLocaleString()} in /{" "}
+                                  {entry.output_tokens.toLocaleString()} out
                                 </TableCell>
                                 <TableCell className="font-mono text-xs">
                                   ${entry.cost_usd.toFixed(4)}
@@ -409,7 +524,8 @@ export default function AdminOrgDetailPage() {
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">
-                    Sandbox host is not reachable or usage tracking is not enabled.
+                    Sandbox host is not reachable or usage tracking is not
+                    enabled.
                   </p>
                 )}
               </CardContent>
@@ -419,7 +535,8 @@ export default function AdminOrgDetailPage() {
               <CardHeader>
                 <CardTitle>Workspaces</CardTitle>
                 <CardDescription>
-                  {workspaces.length} {workspaces.length === 1 ? 'workspace' : 'workspaces'}
+                  {workspaces.length}{" "}
+                  {workspaces.length === 1 ? "workspace" : "workspaces"}
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -448,14 +565,18 @@ export default function AdminOrgDetailPage() {
                                   content={workspace.avatar.content}
                                   style={{
                                     backgroundColor: workspace.avatar.color,
-                                    color: getContrastTextColor(workspace.avatar.color),
+                                    color: getContrastTextColor(
+                                      workspace.avatar.color,
+                                    ),
                                   }}
                                 >
                                   {workspace.avatar.content}
                                 </AvatarFallback>
                               </Avatar>
                               <div>
-                                <div className="font-medium">{workspace.name}</div>
+                                <div className="font-medium">
+                                  {workspace.name}
+                                </div>
                                 <div className="text-xs text-muted-foreground font-mono">
                                   {workspace.id.slice(0, 8)}...
                                 </div>
@@ -463,14 +584,22 @@ export default function AdminOrgDetailPage() {
                             </Link>
                           </TableCell>
                           <TableCell>
-                            <Badge variant="outline">{workspace.thread_count}</Badge>
+                            <Badge variant="outline">
+                              {workspace.thread_count}
+                            </Badge>
                           </TableCell>
                           <TableCell>
-                            <Badge variant="outline">{workspace.integration_count}</Badge>
+                            <Badge variant="outline">
+                              {workspace.integration_count}
+                            </Badge>
                           </TableCell>
                           <TableCell>
-                            <Badge variant={workspace.archived ? 'secondary' : 'outline'}>
-                              {workspace.archived ? 'Archived' : 'Active'}
+                            <Badge
+                              variant={
+                                workspace.archived ? "secondary" : "outline"
+                              }
+                            >
+                              {workspace.archived ? "Archived" : "Active"}
                             </Badge>
                           </TableCell>
                         </TableRow>
@@ -486,8 +615,8 @@ export default function AdminOrgDetailPage() {
                 <CardTitle>Recent Threads</CardTitle>
                 <CardDescription>
                   {threadCount === null
-                    ? `${recentThreads.length} recent ${recentThreads.length === 1 ? 'thread' : 'threads'}`
-                    : `${threadCount} total ${threadCount === 1 ? 'thread' : 'threads'} (showing latest ${recentThreads.length})`}
+                    ? `${recentThreads.length} recent ${recentThreads.length === 1 ? "thread" : "threads"}`
+                    : `${threadCount} total ${threadCount === 1 ? "thread" : "threads"} (showing latest ${recentThreads.length})`}
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -510,7 +639,9 @@ export default function AdminOrgDetailPage() {
                               to={`/qaml-backdoor/threads/${thread.id}`}
                               className="hover:underline"
                             >
-                              <div className="font-medium">{thread.title || 'Untitled'}</div>
+                              <div className="font-medium">
+                                {thread.title || "Untitled"}
+                              </div>
                               <div className="text-xs text-muted-foreground font-mono">
                                 {thread.id.slice(0, 8)}...
                               </div>
@@ -540,8 +671,8 @@ export default function AdminOrgDetailPage() {
                 <CardTitle>Recent Apps</CardTitle>
                 <CardDescription>
                   {appCount === null
-                    ? `${recentApps.length} recent ${recentApps.length === 1 ? 'app' : 'apps'}`
-                    : `${appCount} total ${appCount === 1 ? 'app' : 'apps'} (showing latest ${recentApps.length})`}
+                    ? `${recentApps.length} recent ${recentApps.length === 1 ? "app" : "apps"}`
+                    : `${appCount} total ${appCount === 1 ? "app" : "apps"} (showing latest ${recentApps.length})`}
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -577,8 +708,10 @@ export default function AdminOrgDetailPage() {
                             </Link>
                           </TableCell>
                           <TableCell>
-                            <Badge variant={app.is_public ? 'default' : 'secondary'}>
-                              {app.is_public ? 'Public' : 'Private'}
+                            <Badge
+                              variant={app.is_public ? "default" : "secondary"}
+                            >
+                              {app.is_public ? "Public" : "Private"}
                             </Badge>
                           </TableCell>
                           <TableCell className="text-muted-foreground">
@@ -597,7 +730,8 @@ export default function AdminOrgDetailPage() {
                 <div>
                   <CardTitle>Members</CardTitle>
                   <CardDescription>
-                    {members.length} {members.length === 1 ? 'member' : 'members'}
+                    {members.length}{" "}
+                    {members.length === 1 ? "member" : "members"}
                   </CardDescription>
                 </div>
                 <AddOrgMemberDialog orgId={org.id} />
@@ -628,7 +762,9 @@ export default function AdminOrgDetailPage() {
                                   content={member.user.avatar.content}
                                   style={{
                                     backgroundColor: member.user.avatar.color,
-                                    color: getContrastTextColor(member.user.avatar.color),
+                                    color: getContrastTextColor(
+                                      member.user.avatar.color,
+                                    ),
                                   }}
                                 >
                                   {member.user.avatar.content}
@@ -649,7 +785,9 @@ export default function AdminOrgDetailPage() {
                           <TableCell>
                             <Badge
                               variant="outline"
-                              className={cn(roleBadgeClasses[member.role] || '')}
+                              className={cn(
+                                roleBadgeClasses[member.role] || "",
+                              )}
                             >
                               {member.role}
                             </Badge>
@@ -662,7 +800,7 @@ export default function AdminOrgDetailPage() {
                               orgId={org.id}
                               userId={member.user.id}
                               currentRole={member.role}
-                              disabled={member.role === 'owner'}
+                              disabled={member.role === "owner"}
                             />
                           </TableCell>
                         </TableRow>
@@ -678,7 +816,8 @@ export default function AdminOrgDetailPage() {
                 <CardHeader>
                   <CardTitle>Pending Invitations</CardTitle>
                   <CardDescription>
-                    {invitations.length} pending {invitations.length === 1 ? 'invitation' : 'invitations'}
+                    {invitations.length} pending{" "}
+                    {invitations.length === 1 ? "invitation" : "invitations"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -716,7 +855,9 @@ export default function AdminOrgDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Audit Log</CardTitle>
-                <CardDescription>Track recent organization changes</CardDescription>
+                <CardDescription>
+                  Track recent organization changes
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <Button asChild variant="outline">
@@ -733,6 +874,7 @@ export default function AdminOrgDetailPage() {
               archived={org.archived}
               members={memberOptions}
               workspaceCount={workspaces.length}
+              orgBan={orgBan as BanRecord | null}
             />
           </div>
         </div>

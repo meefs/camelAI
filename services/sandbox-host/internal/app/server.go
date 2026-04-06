@@ -239,6 +239,18 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 	name := route.Name
 	opts := container.EnsureContainerOptions{OrgID: route.OrgID, WorkspaceID: route.WorkspaceID}
 
+	if route.Subpath == "" && req.Method == http.MethodDelete {
+		success, err := s.containers.TerminateContainer(name, "workspace_purge")
+		if err != nil {
+			return err
+		}
+		if err := s.workspaces.Delete(name); err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "terminated": success})
+		return nil
+	}
+
 	if route.Subpath == "/terminate" && req.Method == http.MethodPost {
 		success, err := s.containers.TerminateContainer(name, "explicit_terminate_route")
 		if err != nil {

@@ -1,19 +1,32 @@
-import { redirect, type AppLoadContext } from 'react-router';
-import { getEnv } from './cloudflare.server';
-import { getSignedSessionFromRequest, type SignedSessionData } from './cookies.server';
-import { createSignedSession } from '../../workers/main/src/signed-session';
-import type { Organization, OrgMembership, WorkspaceAccessLevel, WorkspaceWithAccess } from '@/types';
-import type { User } from '@/types';
-import type { OnboardingPreferences } from '@/types';
-import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspacesAcrossOrgs, listOrgWorkspaces } from './auth-do';
+import { redirect, type AppLoadContext } from "react-router";
+import { getEnv } from "./cloudflare.server";
+import {
+  getSignedSessionFromRequest,
+  type SignedSessionData,
+} from "./cookies.server";
+import { redirectIfBannedSession } from "./ban.server";
+import { createSignedSession } from "../../workers/main/src/signed-session";
+import type {
+  Organization,
+  OrgMembership,
+  WorkspaceAccessLevel,
+  WorkspaceWithAccess,
+} from "@/types";
+import type { User } from "@/types";
+import type { OnboardingPreferences } from "@/types";
+import { type AuthEnv, type SessionData, getAuthEnv } from "./auth-helpers";
+import {
+  getUserOrgs,
+  listUserWorkspacesAcrossOrgs,
+  listOrgWorkspaces,
+} from "./auth-do";
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
 const authContextCache = new WeakMap<Request, Promise<AuthContext | null>>();
 
 // Re-export AuthEnv and getAuthEnv for routes that need them
-export { getAuthEnv, type AuthEnv } from './auth-helpers';
+export { getAuthEnv, type AuthEnv } from "./auth-helpers";
 
 export type Session = SessionData;
 
@@ -57,15 +70,26 @@ export interface SessionWorkspaceAccessContext extends SessionContext {
  */
 export async function getSession(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<SessionContext | null> {
   const env = getEnv(context);
-  const signedSession = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
+  const signedSession = await getSignedSessionFromRequest(
+    request,
+    env.TOKEN_SIGNING_SECRET,
+  );
   if (!signedSession) return null;
+
+  await redirectIfBannedSession(request, context, {
+    userId: signedSession.user_id,
+    userEmail: signedSession.user_email,
+    orgId: signedSession.org_id,
+  });
 
   // Check if this session was created before a logout invalidation
   const authEnv = getAuthEnv(env);
-  const userStub = authEnv.USER.get(authEnv.USER.idFromName(signedSession.user_id));
+  const userStub = authEnv.USER.get(
+    authEnv.USER.idFromName(signedSession.user_id),
+  );
   const invalidatedAt = await userStub.getSessionInvalidatedAt();
   if (invalidatedAt && signedSession.created_at < invalidatedAt) {
     return null;
@@ -91,7 +115,7 @@ export async function getSession(
  */
 export async function requireSession(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<SessionContext> {
   const sessionContext = await getSession(request, context);
 
@@ -111,7 +135,7 @@ export async function requireSessionWorkspaceAccess(
   request: Request,
   context: AppLoadContext,
   workspaceIdOverride?: string,
-  options: { requireWrite?: boolean } = {}
+  options: { requireWrite?: boolean } = {},
 ): Promise<SessionWorkspaceAccessContext> {
   const sessionContext = await requireSession(request, context);
   const { session } = sessionContext;
@@ -120,15 +144,17 @@ export async function requireSessionWorkspaceAccess(
   const userId = session.user_id;
 
   if (!orgId) {
-    throw Response.json({ error: 'No organization selected' }, { status: 400 });
+    throw Response.json({ error: "No organization selected" }, { status: 400 });
   }
   if (!workspaceId) {
-    throw Response.json({ error: 'No workspace selected' }, { status: 400 });
+    throw Response.json({ error: "No workspace selected" }, { status: 400 });
   }
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const wsStub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId));
+  const wsStub = authEnv.WORKSPACE.get(
+    authEnv.WORKSPACE.idFromName(workspaceId),
+  );
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
 
   const [workspaceInfo, memberAccess, isMember] = await Promise.all([
@@ -137,19 +163,23 @@ export async function requireSessionWorkspaceAccess(
     orgStub.isMember(userId),
   ]);
 
-  if (!workspaceInfo || workspaceInfo.archived || workspaceInfo.org_id !== orgId) {
-    throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+  if (
+    !workspaceInfo ||
+    workspaceInfo.archived ||
+    workspaceInfo.org_id !== orgId
+  ) {
+    throw Response.json({ error: "Workspace not found" }, { status: 404 });
   }
   if (!isMember) {
-    throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+    throw Response.json({ error: "Workspace not found" }, { status: 404 });
   }
 
-  const access = memberAccess?.access_level ?? 'full';
-  if (access === 'none') {
-    throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+  const access = memberAccess?.access_level ?? "full";
+  if (access === "none") {
+    throw Response.json({ error: "Workspace not found" }, { status: 404 });
   }
-  if (options.requireWrite && access !== 'full') {
-    throw Response.json({ error: 'Forbidden' }, { status: 403 });
+  if (options.requireWrite && access !== "full") {
+    throw Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
   return {
@@ -166,14 +196,16 @@ export async function requireSessionWorkspaceAccess(
  */
 export async function getUserContext(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<UserContext | null> {
   const sessionContext = await getSession(request, context);
   if (!sessionContext) return null;
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const profile = await authEnv.USER.get(authEnv.USER.idFromName(sessionContext.session.user_id)).getProfile();
+  const profile = await authEnv.USER.get(
+    authEnv.USER.idFromName(sessionContext.session.user_id),
+  ).getProfile();
   if (!profile) return null;
 
   return {
@@ -187,7 +219,7 @@ export async function getUserContext(
  */
 export async function requireUserContext(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<UserContext> {
   const userContext = await getUserContext(request, context);
 
@@ -207,7 +239,7 @@ export async function requireUserContext(
  */
 export async function getAuthContext(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<AuthContext | null> {
   // Check cache first - returns the same promise if already in flight
   const cached = authContextCache.get(request);
@@ -226,24 +258,26 @@ export async function getAuthContext(
  */
 async function getAuthContextUncached(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<AuthContext | null> {
   const sessionContext = await getSession(request, context);
   if (!sessionContext) {
-    console.warn('[auth] getAuthContext returning null: no session');
+    console.warn("[auth] getAuthContext returning null: no session");
     return null;
   }
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const userStub = authEnv.USER.get(
-    authEnv.USER.idFromName(sessionContext.session.user_id)
+    authEnv.USER.idFromName(sessionContext.session.user_id),
   );
   const currentOrgStub = authEnv.ORG.get(
-    authEnv.ORG.idFromName(sessionContext.session.org_id)
+    authEnv.ORG.idFromName(sessionContext.session.org_id),
   );
   const currentOrgInfoPromise = currentOrgStub.getInfo();
-  const currentOrgMemberPromise = currentOrgStub.getMember(sessionContext.session.user_id);
+  const currentOrgMemberPromise = currentOrgStub.getMember(
+    sessionContext.session.user_id,
+  );
   const [authBootstrap, orgInfo, currentOrgMember] = await Promise.all([
     userStub.getAuthBootstrap(),
     currentOrgInfoPromise,
@@ -251,7 +285,7 @@ async function getAuthContextUncached(
   ]);
   const profile = authBootstrap.profile;
   if (!profile) {
-    console.warn('[auth] getAuthContext returning null: profile is null', {
+    console.warn("[auth] getAuthContext returning null: profile is null", {
       user_id: sessionContext.session.user_id,
       org_id: sessionContext.session.org_id,
       workspace_id: sessionContext.session.workspace_id,
@@ -259,7 +293,7 @@ async function getAuthContextUncached(
     return null;
   }
   if (!orgInfo) {
-    console.warn('[auth] getAuthContext returning null: orgInfo is null', {
+    console.warn("[auth] getAuthContext returning null: orgInfo is null", {
       user_id: sessionContext.session.user_id,
       org_id: sessionContext.session.org_id,
     });
@@ -271,7 +305,7 @@ async function getAuthContextUncached(
     authBootstrap.sessionInvalidatedAt &&
     sessionContext.session.created_at < authBootstrap.sessionInvalidatedAt
   ) {
-    console.warn('[auth] getAuthContext returning null: session invalidated', {
+    console.warn("[auth] getAuthContext returning null: session invalidated", {
       user_id: sessionContext.session.user_id,
       session_created_at: sessionContext.session.created_at,
       invalidated_at: authBootstrap.sessionInvalidatedAt,
@@ -291,7 +325,9 @@ async function getAuthContextUncached(
   // for the active org, reconcile it in-memory so current request permissions/UI
   // reflect the effective org role.
   if (currentOrgMember) {
-    const currentOrgIndex = orgs.findIndex((membership) => membership.org_id === currentOrg.id);
+    const currentOrgIndex = orgs.findIndex(
+      (membership) => membership.org_id === currentOrg.id,
+    );
     if (currentOrgIndex === -1) {
       orgs = [
         ...orgs,
@@ -310,7 +346,7 @@ async function getAuthContextUncached(
               ...membership,
               role: currentOrgMember.role,
             }
-          : membership
+          : membership,
       );
     }
   }
@@ -324,7 +360,7 @@ async function getAuthContextUncached(
   const allWorkspaces = await listUserWorkspacesAcrossOrgs(
     authEnv,
     sessionContext.session.user_id,
-    orgs
+    orgs,
   );
 
   // Workspaces in the current org only (for settings/management).
@@ -347,20 +383,23 @@ async function getAuthContextUncached(
 
   const currentWorkspace = sessionWorkspaceStillValid
     ? workspaces.find((ws) => ws.id === sessionWorkspaceId)!
-    : workspaces[0] ?? null;
+    : (workspaces[0] ?? null);
 
   // Re-sign session cookie if workspace changed (stale session or fallback)
   const newWorkspaceId = currentWorkspace?.id ?? null;
   let resignedSessionCookie: string | undefined;
   if (newWorkspaceId !== sessionWorkspaceId) {
-    resignedSessionCookie = await createSignedSession(env.TOKEN_SIGNING_SECRET, {
-      user_id: sessionContext.session.user_id,
-      org_id: sessionContext.session.org_id,
-      workspace_id: newWorkspaceId,
-      created_at: sessionContext.session.created_at,
-      user_name: sessionContext.session.user_name,
-      user_email: sessionContext.session.user_email,
-    });
+    resignedSessionCookie = await createSignedSession(
+      env.TOKEN_SIGNING_SECRET,
+      {
+        user_id: sessionContext.session.user_id,
+        org_id: sessionContext.session.org_id,
+        workspace_id: newWorkspaceId,
+        created_at: sessionContext.session.created_at,
+        user_name: sessionContext.session.user_name,
+        user_email: sessionContext.session.user_email,
+      },
+    );
   }
 
   return {
@@ -382,7 +421,7 @@ async function getAuthContextUncached(
  */
 export async function requireAuthContext(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<AuthContext> {
   const authContext = await getAuthContext(request, context);
 
@@ -400,12 +439,12 @@ export async function requireAuthContext(
  */
 export async function requireSuperuser(
   request: Request,
-  context: AppLoadContext
+  context: AppLoadContext,
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
 
   if (!authContext.user.is_superuser) {
-    throw redirect('/');
+    throw redirect("/");
   }
 
   return authContext;
@@ -422,12 +461,12 @@ export async function requireSuperuser(
 export async function requireOrgAdmin(
   request: Request,
   context: AppLoadContext,
-  orgId: string
+  orgId: string,
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
 
   const userOrg = authContext.orgs.find((o) => o.org_id === orgId);
-  const cachedIsAdmin = userOrg?.role === 'owner' || userOrg?.role === 'admin';
+  const cachedIsAdmin = userOrg?.role === "owner" || userOrg?.role === "admin";
 
   if (cachedIsAdmin) {
     return authContext;
@@ -440,7 +479,7 @@ export async function requireOrgAdmin(
   const effectiveIsAdmin = await orgStub.isAdmin(authContext.user.id);
 
   if (!effectiveIsAdmin) {
-    throw redirect('/');
+    throw redirect("/");
   }
 
   return authContext;
@@ -453,14 +492,16 @@ export async function requireWorkspaceAccess(
   request: Request,
   context: AppLoadContext,
   workspaceId: string,
-  requiredLevel: 'full' | 'any' = 'any'
+  requiredLevel: "full" | "any" = "any",
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
 
   // Check if workspace exists in user's accessible workspaces
-  const workspace = authContext.allWorkspaces.find((ws) => ws.id === workspaceId);
+  const workspace = authContext.allWorkspaces.find(
+    (ws) => ws.id === workspaceId,
+  );
   if (!workspace) {
-    throw redirect('/');
+    throw redirect("/");
   }
 
   // Workspace access is assumed 'full' by default during auth context load.
@@ -470,14 +511,14 @@ export async function requireWorkspaceAccess(
   const env = getEnv(context);
   const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const memberAccess = await wsStub.getMemberAccess(authContext.user.id);
-  const accessLevel = memberAccess?.access_level ?? 'full';
+  const accessLevel = memberAccess?.access_level ?? "full";
 
-  if (accessLevel === 'none') {
-    throw redirect('/');
+  if (accessLevel === "none") {
+    throw redirect("/");
   }
 
-  if (requiredLevel === 'full' && accessLevel !== 'full') {
-    throw redirect('/');
+  if (requiredLevel === "full" && accessLevel !== "full") {
+    throw redirect("/");
   }
 
   return authContext;

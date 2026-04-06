@@ -102,7 +102,7 @@ export default function AppLayout() {
       <SidebarInset className="h-svh overflow-hidden flex flex-col">
         <Outlet />
       </SidebarInset>
-      <LegacyUserBanner show={showLegacyBanner} userId={authState.user.id} />
+      <LegacyUserBanner show={showLegacyBanner} userId={authState.user?.id ?? 'legacy-user'} />
     </SidebarProvider>
   );
 }

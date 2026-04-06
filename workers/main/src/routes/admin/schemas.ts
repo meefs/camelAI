@@ -6,7 +6,7 @@
  * 2. OpenAPI 3.1 spec auto-generation (schemas are read from routes at startup)
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 // ---------------------------------------------------------------------------
 // Shared
@@ -24,7 +24,7 @@ const AvatarSchema = z.object({
 export const ParsedChatMessageSchema = z.object({
   id: z.string(),
   thread_id: z.string(),
-  role: z.enum(['user', 'assistant']),
+  role: z.enum(["user", "assistant"]),
   content: z.any(),
   created_at: z.number().int(),
   isMeta: z.boolean().optional(),
@@ -42,8 +42,8 @@ export const ParsedChatMessageSchema = z.object({
  * This accepts "true"/"1" → true, "false"/"0" → false, and rejects anything else.
  */
 const booleanQueryParam = z
-  .enum(['true', 'false', '1', '0'])
-  .transform((v) => v === 'true' || v === '1')
+  .enum(["true", "false", "1", "0"])
+  .transform((v) => v === "true" || v === "1")
   .optional();
 
 /** Base pagination params shared by all list endpoints. */
@@ -56,16 +56,22 @@ export const PaginationQuerySchema = z.object({
 export const UsersQuerySchema = PaginationQuerySchema.extend({
   is_superuser: booleanQueryParam,
   is_orphaned: booleanQueryParam,
-  sort_by: z.enum(['created_at', 'email', 'name']).optional().default('created_at'),
-  sort_dir: z.enum(['asc', 'desc']).optional().default('desc'),
+  sort_by: z
+    .enum(["created_at", "email", "name"])
+    .optional()
+    .default("created_at"),
+  sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
 });
 
 export const ThreadsQuerySchema = PaginationQuerySchema.extend({
   org_id: z.string().optional(),
   workspace_id: z.string().optional(),
   created_by: z.string().optional(),
-  sort_by: z.enum(['created_at', 'updated_at']).optional().default('updated_at'),
-  sort_dir: z.enum(['asc', 'desc']).optional().default('desc'),
+  sort_by: z
+    .enum(["created_at", "updated_at"])
+    .optional()
+    .default("updated_at"),
+  sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
 });
 
 export const OrgsQuerySchema = PaginationQuerySchema.extend({
@@ -81,16 +87,19 @@ export const OrgsQuerySchema = PaginationQuerySchema.extend({
 export const WorkspacesQuerySchema = PaginationQuerySchema.extend({
   org_id: z.string().optional(),
   archived: booleanQueryParam,
-  sort_by: z.enum(['created_at', 'name']).optional().default('created_at'),
-  sort_dir: z.enum(['asc', 'desc']).optional().default('desc'),
+  sort_by: z.enum(["created_at", "name"]).optional().default("created_at"),
+  sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
 });
 
 export const AppsQuerySchema = PaginationQuerySchema.extend({
   org_id: z.string().optional(),
   workspace_id: z.string().optional(),
   is_public: booleanQueryParam,
-  sort_by: z.enum(['created_at', 'updated_at']).optional().default('updated_at'),
-  sort_dir: z.enum(['asc', 'desc']).optional().default('desc'),
+  sort_by: z
+    .enum(["created_at", "updated_at"])
+    .optional()
+    .default("updated_at"),
+  sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
 });
 
 // ---------------------------------------------------------------------------
@@ -99,7 +108,7 @@ export const AppsQuerySchema = PaginationQuerySchema.extend({
 
 export const AddMemberBodySchema = z.object({
   user_id: z.string(),
-  role: z.enum(['admin', 'member']).optional().default('member'),
+  role: z.enum(["admin", "member"]).optional().default("member"),
 });
 
 export const BlockSignupIpBodySchema = z.object({
@@ -111,6 +120,16 @@ export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
   model: z.enum(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']).optional(),
+});
+
+export const CreateBanBodySchema = z.object({
+  reason: z.string().trim().min(1).max(1000),
+});
+
+export const BansQuerySchema = z.object({
+  scope: z.enum(["user", "org"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+  cursor: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -140,7 +159,7 @@ export const UserSummarySchema = z.object({
 
 export const OrgMembershipSchema = z.object({
   org_id: z.string(),
-  role: z.enum(['admin', 'member']),
+  role: z.enum(["admin", "member"]),
 });
 
 export const OrgSchema = z.object({
@@ -254,7 +273,7 @@ export const KvEntrySchema = z.object({
 export const KvValueSchema = z.object({
   key: z.string(),
   value: z.unknown(),
-  type: z.enum(['json', 'string']),
+  type: z.enum(["json", "string"]),
 });
 
 export const R2ObjectSummarySchema = z.object({
@@ -276,6 +295,31 @@ export const R2ObjectDetailSchema = z.object({
 export const ThreadMessagesResponseSchema = z.object({
   success: z.literal(true),
   messages: z.array(ParsedChatMessageSchema),
+});
+
+export const BanRecordSchema = z.object({
+  scope: z.enum(["user", "org"]),
+  target_id: z.string(),
+  email: z.string().nullable(),
+  org_slug: z.string().nullable(),
+  reason: z.string(),
+  created_at: z.number().int(),
+  created_by: z.string(),
+  status: z.literal("active"),
+  purge_status: z.enum(["pending", "running", "completed", "failed"]),
+  purge_job_id: z.string().nullable(),
+  purge_started_at: z.number().int().nullable(),
+  purge_completed_at: z.number().int().nullable(),
+  purge_error: z.string().nullable(),
+});
+
+export const BanStartResponseSchema = z.object({
+  ok: z.literal(true),
+  scope: z.enum(["user", "org"]),
+  target_id: z.string(),
+  ban_status: z.literal("active"),
+  purge_status: z.enum(["pending", "running", "completed", "failed"]),
+  job_id: z.string(),
 });
 
 // ---------------------------------------------------------------------------
@@ -599,11 +643,13 @@ export const OrgUsageLimitsSchema = z.object({
 });
 
 export const SetOrgLimitsBodySchema = z.object({
-  limits: z.array(z.object({
-    window_hours: z.number().positive(),
-    limit_usd: z.number().positive(),
-    label: z.string().optional(),
-  })),
+  limits: z.array(
+    z.object({
+      window_hours: z.number().positive(),
+      limit_usd: z.number().positive(),
+      label: z.string().optional(),
+    }),
+  ),
 });
 
 const UsageLogEntrySchema = z.object({

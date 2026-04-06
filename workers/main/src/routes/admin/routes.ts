@@ -23,6 +23,7 @@ import {
 import type {
   UserFilters,
   ThreadFilters,
+  OrgFilters,
   WorkspaceFilters,
   AppFilters,
   AdminOrgDirectoryRow,
@@ -50,6 +51,10 @@ import {
   UpdateThreadBodySchema,
   BlockSignupIpBodySchema,
   BlockedSignupIpSchema,
+  CreateBanBodySchema,
+  BansQuerySchema,
+  BanRecordSchema,
+  BanStartResponseSchema,
   KvEntrySchema,
   KvValueSchema,
   R2ObjectSummarySchema,
@@ -80,7 +85,7 @@ import {
   AddEmailDomainBodySchema,
   paginatedList,
   dataList,
-} from './schemas.js';
+} from "./schemas.js";
 import {
   fetchOrgUsageAnalytics,
   fetchSpamOrgIds,
@@ -101,7 +106,19 @@ import {
   getOrgStub,
   getUserStub,
   loadAdminThreadMessagesResponse,
-} from './helpers.js';
+} from "./helpers.js";
+import {
+  runAdminOrgBanAndPurgeWithEnv,
+  runAdminUserBanAndPurgeWithEnv,
+  startAdminOrgBanAndPurgeWithEnv,
+  startAdminUserBanAndPurgeWithEnv,
+} from "../../../../../src/lib/auth-do.server.js";
+import {
+  listBanRecords,
+  getOrgBanById,
+  getUserBanById,
+} from "../../ban-list.js";
+import { waitUntil } from "cloudflare:workers";
 
 type HonoEnv = { Bindings: Env };
 
@@ -116,7 +133,10 @@ async function fetchSandboxHostUsage(
 ): Promise<Response> {
   const url = `http://sandbox${path}`;
   if (!env.SANDBOX_HOST) {
-    return Response.json({ error: 'SANDBOX_HOST binding not configured' }, { status: 502 });
+    return Response.json(
+      { error: "SANDBOX_HOST binding not configured" },
+      { status: 502 },
+    );
   }
   return env.SANDBOX_HOST.fetch(url, init);
 }
@@ -270,10 +290,14 @@ export const routes = new Hono<HonoEnv>();
 // Cache-Control middleware for GET endpoints
 // ---------------------------------------------------------------------------
 
-routes.use('*', async (c, next) => {
+routes.use("*", async (c, next) => {
   await next();
-  if (c.req.method === 'GET' && c.res.status === 200 && !c.res.headers.has('Cache-Control')) {
-    c.res.headers.set('Cache-Control', 'private, max-age=30');
+  if (
+    c.req.method === "GET" &&
+    c.res.status === 200 &&
+    !c.res.headers.has("Cache-Control")
+  ) {
+    c.res.headers.set("Cache-Control", "private, max-age=30");
   }
 });
 
@@ -282,9 +306,9 @@ routes.use('*', async (c, next) => {
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/stats',
+  "/stats",
   openApi({
-    summary: 'Aggregate counts',
+    summary: "Aggregate counts",
     responses: {
       200: StatsResponseSchema,
     },
@@ -308,9 +332,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/users',
+  "/users",
   openApi({
-    summary: 'List users (paginated)',
+    summary: "List users (paginated)",
     request: {
       query: UsersQuerySchema,
     },
@@ -319,13 +343,26 @@ routes.get(
     },
   }),
   async (c) => {
-    const { limit, offset, search, is_superuser, is_orphaned, sort_by, sort_dir } = c.req.valid('query');
+    const {
+      limit,
+      offset,
+      search,
+      is_superuser,
+      is_orphaned,
+      sort_by,
+      sort_dir,
+    } = c.req.valid("query");
     const adminIndex = getAdminIndexStub(c.env);
     const filters: UserFilters = { sort_by, sort_dir };
     if (is_superuser !== undefined) filters.is_superuser = is_superuser;
     if (is_orphaned !== undefined) filters.is_orphaned = is_orphaned;
 
-    const result = await adminIndex.getUsersPaginated(offset, limit, search, filters);
+    const result = await adminIndex.getUsersPaginated(
+      offset,
+      limit,
+      search,
+      filters,
+    );
     return c.json(result);
   },
 );
@@ -335,7 +372,7 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/users/:id/orgs',
+  "/users/:id/orgs",
   openApi({
     summary: "User's org memberships",
     responses: {
@@ -343,7 +380,7 @@ routes.get(
     },
   }),
   async (c) => {
-    const userId = c.req.param('id');
+    const userId = c.req.param("id");
     const userStub = getUserStub(c.env, userId);
     const orgs = await userStub.getOrgs();
     return c.json({ data: orgs });
@@ -374,13 +411,158 @@ routes.get(
 );
 
 // ---------------------------------------------------------------------------
+// GET /bans
+// ---------------------------------------------------------------------------
+
+routes.get(
+  "/bans",
+  openApi({
+    summary: "List active bans",
+    request: { query: BansQuerySchema },
+    responses: {
+      200: z.object({
+        data: z.array(BanRecordSchema),
+        cursor: z.string().optional(),
+      }),
+    },
+  }),
+  async (c) => {
+    const query = c.req.valid("query");
+    const result = await listBanRecords(c.env.APP_KV, query);
+    return c.json({ data: result.records, cursor: result.cursor });
+  },
+);
+
+routes.get(
+  "/bans/:scope/:id",
+  openApi({
+    summary: "Get ban by scope + target id",
+    responses: {
+      200: BanRecordSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const scope = c.req.param("scope");
+    const targetId = c.req.param("id");
+    const record =
+      scope === "user"
+        ? await getUserBanById(c.env.APP_KV, targetId)
+        : scope === "org"
+          ? await getOrgBanById(c.env.APP_KV, targetId)
+          : null;
+
+    if (!record) {
+      return c.json({ error: "Ban not found" }, 404);
+    }
+    return c.json(record);
+  },
+);
+
+routes.post(
+  "/users/:id/ban",
+  openApi({
+    summary: "Ban user and purge data",
+    request: { json: CreateBanBodySchema },
+    responses: {
+      200: BanStartResponseSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const userId = c.req.param("id");
+    const body = c.req.valid("json");
+    try {
+      const job = await startAdminUserBanAndPurgeWithEnv(
+        c.env as never,
+        userId,
+        {
+          reason: body.reason,
+          actorId: "admin-api",
+        },
+      );
+      waitUntil(
+        runAdminUserBanAndPurgeWithEnv(c.env as never, job, "admin-api").catch(
+          (error) => {
+            console.error("[admin-api] user ban purge failed", {
+              userId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        ),
+      );
+      return c.json({
+        ok: true,
+        scope: "user",
+        target_id: userId,
+        ban_status: "active",
+        purge_status: "pending",
+        job_id: job.id,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json(
+        { error: message },
+        message === "User not found" ? 404 : 400,
+      );
+    }
+  },
+);
+
+routes.post(
+  "/orgs/:id/ban",
+  openApi({
+    summary: "Ban org and purge data",
+    request: { json: CreateBanBodySchema },
+    responses: {
+      200: BanStartResponseSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param("id");
+    const body = c.req.valid("json");
+    try {
+      const job = await startAdminOrgBanAndPurgeWithEnv(c.env as never, orgId, {
+        reason: body.reason,
+        actorId: "admin-api",
+      });
+      waitUntil(
+        runAdminOrgBanAndPurgeWithEnv(c.env as never, job, "admin-api").catch(
+          (error) => {
+            console.error("[admin-api] org ban purge failed", {
+              orgId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        ),
+      );
+      return c.json({
+        ok: true,
+        scope: "org",
+        target_id: orgId,
+        ban_status: "active",
+        purge_status: "pending",
+        job_id: job.id,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json(
+        { error: message },
+        message === "Organization not found" ? 404 : 400,
+      );
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // GET /orgs
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/orgs',
+  "/orgs",
   openApi({
-    summary: 'List orgs (paginated)',
+    summary: "List orgs (paginated)",
     request: {
       query: OrgsQuerySchema,
     },
@@ -447,22 +629,22 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/orgs/:id',
+  "/orgs/:id",
   openApi({
-    summary: 'Org detail with recent activity',
+    summary: "Org detail with recent activity",
     responses: {
       200: OrgDetailSchema,
       404: ErrorSchema,
     },
   }),
   async (c) => {
-    const orgId = c.req.param('id');
+    const orgId = c.req.param("id");
     const adminIndex = getAdminIndexStub(c.env);
 
     // Get org metadata (including member_count, workspace_count) from AdminIndexDO
     const orgInfo = await adminIndex.getOrgById(orgId);
     if (!orgInfo) {
-      return c.json({ error: 'Organization not found' }, 404);
+      return c.json({ error: "Organization not found" }, 404);
     }
 
     const [activity, llmProvider] = await Promise.all([
@@ -493,9 +675,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.post(
-  '/orgs/:id/members',
+  "/orgs/:id/members",
   openApi({
-    summary: 'Add member to org',
+    summary: "Add member to org",
     request: { json: AddMemberBodySchema },
     responses: {
       201: AddMemberResponseSchema,
@@ -505,25 +687,28 @@ routes.post(
   }),
   async (c) => {
     const env = c.env;
-    const orgId = c.req.param('id');
-    const body = c.req.valid('json');
+    const orgId = c.req.param("id");
+    const body = c.req.valid("json");
 
     const orgStub = getOrgStub(env, orgId);
     const orgInfo = await orgStub.getInfo();
     if (!orgInfo) {
-      return c.json({ error: 'Organization not found' }, 404);
+      return c.json({ error: "Organization not found" }, 404);
     }
 
     const userStub = getUserStub(env, body.user_id);
     const profile = await userStub.getProfile();
     if (!profile) {
-      return c.json({ error: 'User not found' }, 404);
+      return c.json({ error: "User not found" }, 404);
     }
 
-    await orgStub.addMember(body.user_id, body.role, 'admin-api');
+    await orgStub.addMember(body.user_id, body.role, "admin-api");
     await userStub.addOrg(orgId, body.role, null);
 
-    return c.json({ org_id: orgId, user_id: body.user_id, role: body.role }, 201);
+    return c.json(
+      { org_id: orgId, user_id: body.user_id, role: body.role },
+      201,
+    );
   },
 );
 
@@ -606,9 +791,9 @@ routes.delete(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/threads',
+  "/threads",
   openApi({
-    summary: 'List threads (paginated)',
+    summary: "List threads (paginated)",
     request: {
       query: ThreadsQuerySchema,
     },
@@ -617,14 +802,28 @@ routes.get(
     },
   }),
   async (c) => {
-    const { limit, offset, search, org_id, workspace_id, created_by, sort_by, sort_dir } = c.req.valid('query');
+    const {
+      limit,
+      offset,
+      search,
+      org_id,
+      workspace_id,
+      created_by,
+      sort_by,
+      sort_dir,
+    } = c.req.valid("query");
     const adminIndex = getAdminIndexStub(c.env);
     const filters: ThreadFilters = { sort_by, sort_dir };
     if (org_id) filters.org_id = org_id;
     if (workspace_id) filters.workspace_id = workspace_id;
     if (created_by) filters.created_by = created_by;
 
-    const result = await adminIndex.getThreadsPaginated(offset, limit, search, filters);
+    const result = await adminIndex.getThreadsPaginated(
+      offset,
+      limit,
+      search,
+      filters,
+    );
     return c.json(result);
   },
 );
@@ -634,9 +833,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/threads/:id/messages',
+  "/threads/:id/messages",
   openApi({
-    summary: 'Get parsed thread messages',
+    summary: "Get parsed thread messages",
     responses: {
       200: ThreadMessagesResponseSchema,
       400: ErrorSchema,
@@ -645,7 +844,7 @@ routes.get(
     },
   }),
   async (c) => {
-    return loadAdminThreadMessagesResponse(c.env, c.req.param('id'));
+    return loadAdminThreadMessagesResponse(c.env, c.req.param("id"));
   },
 );
 
@@ -654,7 +853,7 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.patch(
-  '/threads/:id',
+  "/threads/:id",
   openApi({
     summary: 'Update thread title, model, or creator',
     request: {
@@ -668,8 +867,8 @@ routes.patch(
   }),
   async (c) => {
     const env = c.env;
-    const threadId = c.req.param('id');
-    const body = c.req.valid('json');
+    const threadId = c.req.param("id");
+    const body = c.req.valid("json");
 
     if (!body.title && !body.created_by && !body.model) {
       return c.json({ error: 'At least one of title, created_by, or model is required' }, 400);
@@ -725,7 +924,7 @@ routes.patch(
       }
     }
 
-    return c.json({ error: 'Thread not found' }, 404);
+    return c.json({ error: "Thread not found" }, 404);
   },
 );
 
@@ -734,9 +933,9 @@ routes.patch(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/workspaces',
+  "/workspaces",
   openApi({
-    summary: 'List workspaces (paginated)',
+    summary: "List workspaces (paginated)",
     request: {
       query: WorkspacesQuerySchema,
     },
@@ -745,13 +944,19 @@ routes.get(
     },
   }),
   async (c) => {
-    const { limit, offset, search, org_id, archived, sort_by, sort_dir } = c.req.valid('query');
+    const { limit, offset, search, org_id, archived, sort_by, sort_dir } =
+      c.req.valid("query");
     const adminIndex = getAdminIndexStub(c.env);
     const filters: WorkspaceFilters = { sort_by, sort_dir };
     if (org_id) filters.org_id = org_id;
     if (archived !== undefined) filters.archived = archived;
 
-    const result = await adminIndex.getWorkspacesPaginated(offset, limit, search, filters);
+    const result = await adminIndex.getWorkspacesPaginated(
+      offset,
+      limit,
+      search,
+      filters,
+    );
     return c.json(result);
   },
 );
@@ -761,9 +966,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/apps',
+  "/apps",
   openApi({
-    summary: 'List apps (paginated)',
+    summary: "List apps (paginated)",
     request: {
       query: AppsQuerySchema,
     },
@@ -772,14 +977,28 @@ routes.get(
     },
   }),
   async (c) => {
-    const { limit, offset, search, org_id, workspace_id, is_public, sort_by, sort_dir } = c.req.valid('query');
+    const {
+      limit,
+      offset,
+      search,
+      org_id,
+      workspace_id,
+      is_public,
+      sort_by,
+      sort_dir,
+    } = c.req.valid("query");
     const adminIndex = getAdminIndexStub(c.env);
     const filters: AppFilters = { sort_by, sort_dir };
     if (org_id) filters.org_id = org_id;
     if (workspace_id) filters.workspace_id = workspace_id;
     if (is_public !== undefined) filters.is_public = is_public;
 
-    const result = await adminIndex.getAppsPaginated(offset, limit, search, filters);
+    const result = await adminIndex.getAppsPaginated(
+      offset,
+      limit,
+      search,
+      filters,
+    );
     return c.json(result);
   },
 );
@@ -1102,9 +1321,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/kv',
+  "/kv",
   openApi({
-    summary: 'List KV keys',
+    summary: "List KV keys",
     request: {
       query: z.object({ prefix: z.string().optional() }),
     },
@@ -1114,7 +1333,7 @@ routes.get(
   }),
   async (c) => {
     const env = c.env;
-    const { prefix } = c.req.valid('query');
+    const { prefix } = c.req.valid("query");
     const keys: Array<{ name: string; metadata?: unknown }> = [];
     let cursor: string | undefined;
 
@@ -1136,27 +1355,27 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/kv/:key',
+  "/kv/:key",
   openApi({
-    summary: 'Get KV value by key',
+    summary: "Get KV value by key",
     responses: {
       200: KvValueSchema,
       404: ErrorSchema,
     },
   }),
   async (c) => {
-    const key = c.req.param('key');
+    const key = c.req.param("key");
     const value = await c.env.EMAIL_TO_USER.get(key);
 
     if (value === null) {
-      return c.json({ error: 'Key not found' }, 404);
+      return c.json({ error: "Key not found" }, 404);
     }
 
     try {
       const parsed = JSON.parse(value);
-      return c.json({ key, value: parsed, type: 'json' as const });
+      return c.json({ key, value: parsed, type: "json" as const });
     } catch {
-      return c.json({ key, value, type: 'string' as const });
+      return c.json({ key, value, type: "string" as const });
     }
   },
 );
@@ -1166,9 +1385,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/r2',
+  "/r2",
   openApi({
-    summary: 'List R2 objects',
+    summary: "List R2 objects",
     request: {
       query: z.object({ prefix: z.string().optional() }),
     },
@@ -1178,8 +1397,13 @@ routes.get(
   }),
   async (c) => {
     const env = c.env;
-    const { prefix } = c.req.valid('query');
-    const objects: Array<{ key: string; size: number; lastModified: string; etag: string }> = [];
+    const { prefix } = c.req.valid("query");
+    const objects: Array<{
+      key: string;
+      size: number;
+      lastModified: string;
+      etag: string;
+    }> = [];
     let cursor: string | undefined;
 
     while (true) {
@@ -1205,17 +1429,20 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/orgs/:id/usage/spend',
+  "/orgs/:id/usage/spend",
   openApi({
-    summary: 'Org spend totals and rolling window status',
+    summary: "Org spend totals and rolling window status",
     responses: {
       200: OrgUsageSpendSchema,
       502: ErrorSchema,
     },
   }),
   async (c) => {
-    const orgId = c.req.param('id');
-    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/spend`);
+    const orgId = c.req.param("id");
+    const resp = await fetchSandboxHostUsage(
+      c.env,
+      `/v1/usage/orgs/${encodeURIComponent(orgId)}/spend`,
+    );
     if (!resp.ok) {
       return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
     }
@@ -1228,17 +1455,20 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/orgs/:id/usage/limits',
+  "/orgs/:id/usage/limits",
   openApi({
-    summary: 'Org effective spend limits',
+    summary: "Org effective spend limits",
     responses: {
       200: OrgUsageLimitsSchema,
       502: ErrorSchema,
     },
   }),
   async (c) => {
-    const orgId = c.req.param('id');
-    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/limits`);
+    const orgId = c.req.param("id");
+    const resp = await fetchSandboxHostUsage(
+      c.env,
+      `/v1/usage/orgs/${encodeURIComponent(orgId)}/limits`,
+    );
     if (!resp.ok) {
       return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
     }
@@ -1251,9 +1481,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.put(
-  '/orgs/:id/usage/limits',
+  "/orgs/:id/usage/limits",
   openApi({
-    summary: 'Set org spend limit overrides',
+    summary: "Set org spend limit overrides",
     request: {
       json: SetOrgLimitsBodySchema,
     },
@@ -1263,14 +1493,14 @@ routes.put(
     },
   }),
   async (c) => {
-    const orgId = c.req.param('id');
-    const body = c.req.valid('json');
+    const orgId = c.req.param("id");
+    const body = c.req.valid("json");
     const resp = await fetchSandboxHostUsage(
       c.env,
       `/v1/usage/orgs/${encodeURIComponent(orgId)}/limits`,
       {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       },
     );
@@ -1286,15 +1516,25 @@ routes.put(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/orgs/:id/usage/log',
+  "/orgs/:id/usage/log",
   openApi({
-    summary: 'Org recent usage log entries (paginated)',
+    summary: "Org recent usage log entries (paginated)",
     request: {
       query: z.object({
         limit: z.coerce.number().int().min(1).max(1000).optional(),
         cursor: z.string().optional(),
-        from: z.coerce.number().int().min(0).optional().describe('Start timestamp (ms since epoch, inclusive)'),
-        to: z.coerce.number().int().min(0).optional().describe('End timestamp (ms since epoch, exclusive)'),
+        from: z.coerce
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Start timestamp (ms since epoch, inclusive)"),
+        to: z.coerce
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("End timestamp (ms since epoch, exclusive)"),
       }),
     },
     responses: {
@@ -1303,15 +1543,18 @@ routes.get(
     },
   }),
   async (c) => {
-    const orgId = c.req.param('id');
-    const { limit, cursor, from, to } = c.req.valid('query');
+    const orgId = c.req.param("id");
+    const { limit, cursor, from, to } = c.req.valid("query");
     const params = new URLSearchParams();
-    if (limit) params.set('limit', String(limit));
-    if (cursor) params.set('cursor', cursor);
-    if (from) params.set('from', String(from));
-    if (to) params.set('to', String(to));
-    const qs = params.toString() ? `?${params}` : '';
-    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/log${qs}`);
+    if (limit) params.set("limit", String(limit));
+    if (cursor) params.set("cursor", cursor);
+    if (from) params.set("from", String(from));
+    if (to) params.set("to", String(to));
+    const qs = params.toString() ? `?${params}` : "";
+    const resp = await fetchSandboxHostUsage(
+      c.env,
+      `/v1/usage/orgs/${encodeURIComponent(orgId)}/log${qs}`,
+    );
     if (!resp.ok) {
       return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
     }
@@ -1324,13 +1567,21 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/orgs/:id/usage/log/sum',
+  "/orgs/:id/usage/log/sum",
   openApi({
-    summary: 'Sum of usage costs between dates',
+    summary: "Sum of usage costs between dates",
     request: {
       query: z.object({
-        from: z.coerce.number().int().min(0).describe('Start timestamp (ms since epoch, inclusive)'),
-        to: z.coerce.number().int().min(0).describe('End timestamp (ms since epoch, exclusive)'),
+        from: z.coerce
+          .number()
+          .int()
+          .min(0)
+          .describe("Start timestamp (ms since epoch, inclusive)"),
+        to: z.coerce
+          .number()
+          .int()
+          .min(0)
+          .describe("End timestamp (ms since epoch, exclusive)"),
       }),
     },
     responses: {
@@ -1339,10 +1590,13 @@ routes.get(
     },
   }),
   async (c) => {
-    const orgId = c.req.param('id');
-    const { from, to } = c.req.valid('query');
+    const orgId = c.req.param("id");
+    const { from, to } = c.req.valid("query");
     const params = new URLSearchParams({ from: String(from), to: String(to) });
-    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/log/sum?${params}`);
+    const resp = await fetchSandboxHostUsage(
+      c.env,
+      `/v1/usage/orgs/${encodeURIComponent(orgId)}/log/sum?${params}`,
+    );
     if (!resp.ok) {
       return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
     }
@@ -1439,9 +1693,9 @@ routes.delete(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/r2/*',
+  "/r2/*",
   openApi({
-    summary: 'R2 object head metadata',
+    summary: "R2 object head metadata",
     responses: {
       200: R2ObjectDetailSchema,
       404: ErrorSchema,
@@ -1451,17 +1705,18 @@ routes.get(
     // Extract everything after /r2/ from the full path.
     // basePath is /api/admin, so c.req.path is /api/admin/r2/some/key
     const fullPath = c.req.path;
-    const r2Prefix = '/r2/';
+    const r2Prefix = "/r2/";
     const idx = fullPath.indexOf(r2Prefix);
-    const key = idx >= 0 ? decodeURIComponent(fullPath.slice(idx + r2Prefix.length)) : '';
+    const key =
+      idx >= 0 ? decodeURIComponent(fullPath.slice(idx + r2Prefix.length)) : "";
 
     if (!key) {
-      return c.json({ error: 'Not found' }, 404);
+      return c.json({ error: "Not found" }, 404);
     }
 
     const obj = await c.env.R2_BUCKET.head(key);
     if (!obj) {
-      return c.json({ error: 'Object not found' }, 404);
+      return c.json({ error: "Object not found" }, 404);
     }
 
     return c.json({

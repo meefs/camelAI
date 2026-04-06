@@ -1,24 +1,24 @@
-'use client';
+"use client";
 
-import { useState, useEffect } from 'react';
-import { useNavigate, Link, useFetcher } from 'react-router';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { RadialGridBackground } from '@/components/ui/radial-grid-background';
-import { SlotMachinePrompt } from '@/components/ui/slot-machine-prompt';
-import { AlertCircle } from 'lucide-react';
-import { FullLogo } from '@/components/ui/logo';
-import { OAuthButtons, OAuthDivider } from '@/components/auth/oauth-buttons';
+import { useState, useEffect } from "react";
+import { useNavigate, Link, useFetcher } from "react-router";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { RadialGridBackground } from "@/components/ui/radial-grid-background";
+import { SlotMachinePrompt } from "@/components/ui/slot-machine-prompt";
+import { AlertCircle } from "lucide-react";
+import { FullLogo } from "@/components/ui/logo";
+import { OAuthButtons, OAuthDivider } from "@/components/auth/oauth-buttons";
 
 const inspirationalPrompts = [
-  'Alert me in Slack whenever someone signs up with a .edu email address',
-  'Build a feedback form that saves responses and emails me a daily summary',
-  'Send my team a weekly metrics email with Stripe revenue every Monday',
-  'Make a simple CRM for tracking investor conversations and follow-ups',
-  'Create a client portal where they upload files and I get notified in Slack',
-  'Build an internal calculator for sales reps to quote custom pricing',
+  "Alert me in Slack whenever someone signs up with a .edu email address",
+  "Build a feedback form that saves responses and emails me a daily summary",
+  "Send my team a weekly metrics email with Stripe revenue every Monday",
+  "Make a simple CRM for tracking investor conversations and follow-ups",
+  "Create a client portal where they upload files and I get notified in Slack",
+  "Build an internal calculator for sales reps to quote custom pricing",
 ];
 
 type LoginFormProps = {
@@ -29,20 +29,25 @@ type LoginFormProps = {
 export function LoginForm({ redirectTo, oauthError }: LoginFormProps) {
   const navigate = useNavigate();
   const fetcher = useFetcher();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
-  const submitting = fetcher.state !== 'idle';
+  const submitting = fetcher.state !== "idle";
   const error = fetcher.data?.error as string | undefined;
 
   const signupHref =
-    redirectTo === '/'
-      ? '/signup'
+    redirectTo === "/"
+      ? "/signup"
       : `/signup?redirect=${encodeURIComponent(redirectTo)}`;
 
   // Navigate on successful login
   useEffect(() => {
-    if (fetcher.state === 'idle' && fetcher.data && !fetcher.data.error) {
+    const redirectTarget = fetcher.data?.redirect as string | undefined;
+    if (fetcher.state === "idle" && redirectTarget) {
+      navigate(redirectTarget);
+      return;
+    }
+    if (fetcher.state === "idle" && fetcher.data && !fetcher.data.error) {
       navigate(redirectTo);
     }
   }, [fetcher.state, fetcher.data, navigate, redirectTo]);
@@ -50,9 +55,9 @@ export function LoginForm({ redirectTo, oauthError }: LoginFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     fetcher.submit(JSON.stringify({ email, password }), {
-      method: 'post',
-      action: '/api/auth/login',
-      encType: 'application/json',
+      method: "post",
+      action: "/api/auth/login",
+      encType: "application/json",
     });
   };
 
@@ -123,12 +128,12 @@ export function LoginForm({ redirectTo, oauthError }: LoginFormProps) {
                   className="w-full"
                   size="lg"
                 >
-                  {submitting ? 'Signing in...' : 'Sign in'}
+                  {submitting ? "Signing in..." : "Sign in"}
                 </Button>
               </div>
 
               <div className="text-center text-sm">
-                Don&apos;t have an account?{' '}
+                Don&apos;t have an account?{" "}
                 <Link
                   to={signupHref}
                   className="text-primary hover:underline underline-offset-4"
@@ -138,7 +143,7 @@ export function LoginForm({ redirectTo, oauthError }: LoginFormProps) {
               </div>
 
               <div className="text-center text-xs text-muted-foreground">
-                Looking for old camelAI?{' '}
+                Looking for old camelAI?{" "}
                 <a
                   href="https://app.camelai.com"
                   className="hover:underline underline-offset-4"

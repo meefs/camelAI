@@ -28,12 +28,15 @@ import {
 import { createDispatcherSession } from './worker-auth';
 import type { WorkspaceDO } from './workspace';
 import type { OrgDO } from './auth';
+import { isOrgBanned } from "./ban-list";
+
 export interface WorkspaceContainerEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   R2_BUCKET: R2Bucket;
   INTEGRATION_SECRET_KEY: string;
   SESSIONS?: KVNamespace;
+  APP_KV: KVNamespace;
 
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
@@ -53,7 +56,7 @@ interface ControlPlaneListResponse {
   success?: boolean;
   files: Array<{
     name: string;
-    type: 'file' | 'directory';
+    type: "file" | "directory";
     size: number;
     modifiedAt: string;
     relativePath: string;
@@ -128,7 +131,7 @@ export type ByokProxyCredentials =
   | { provider: 'bedrock'; bearerToken: string; region: string }
   | { provider: 'openai'; apiKey: string };
 
-const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
+const INTEGRATION_ENV_FILE_PATH = "/home/claude/.chiridion/integration.env";
 
 function toIsoTime(ms: number): string {
   return new Date(ms).toISOString();
@@ -138,7 +141,11 @@ export class WorkspaceContainer {
   private workspaceId: string;
   private orgId: string;
 
-  constructor(private env: WorkspaceContainerEnv, workspaceId: string, orgId: string) {
+  constructor(
+    private env: WorkspaceContainerEnv,
+    workspaceId: string,
+    orgId: string,
+  ) {
     this.workspaceId = workspaceId;
     this.orgId = orgId;
   }
@@ -146,12 +153,14 @@ export class WorkspaceContainer {
   // ─── Helpers ─────────────────────────────────────────────
 
   private getSandboxHostUrlOverride(): URL | null {
-    const raw = (this.env.SANDBOX_HOST_URL || '').trim();
+    const raw = (this.env.SANDBOX_HOST_URL || "").trim();
     if (!raw) return null;
     try {
       const parsed = new URL(raw);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        console.warn(`[Sandbox] ignoring SANDBOX_HOST_URL with unsupported protocol: ${parsed.protocol}`);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        console.warn(
+          `[Sandbox] ignoring SANDBOX_HOST_URL with unsupported protocol: ${parsed.protocol}`,
+        );
         return null;
       }
       return parsed;
@@ -163,9 +172,9 @@ export class WorkspaceContainer {
 
   private normalizeBaseUrl(url: URL): URL {
     const copy = new URL(url.toString());
-    copy.search = '';
-    copy.hash = '';
-    copy.pathname = copy.pathname.replace(/\/+$/, '');
+    copy.search = "";
+    copy.hash = "";
+    copy.pathname = copy.pathname.replace(/\/+$/, "");
     return copy;
   }
 
@@ -174,9 +183,10 @@ export class WorkspaceContainer {
     const sandboxBase = this.getSandboxHostUrlOverride();
     const url = sandboxBase
       ? this.normalizeBaseUrl(sandboxBase)
-      : new URL('http://sandbox');
+      : new URL("http://sandbox");
 
-    const basePath = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
+    const basePath =
+      url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
     url.pathname = `${basePath}${workspacePath}`;
 
     if (query) {
@@ -186,31 +196,44 @@ export class WorkspaceContainer {
   }
 
   private normalizeFsPath(path: string): string {
-    if (!path) return '/';
-    return path.startsWith('/') ? path : `/${path}`;
+    if (!path) return "/";
+    return path.startsWith("/") ? path : `/${path}`;
   }
 
   private joinFsPath(base: string, name: string): string {
     const normalizedBase = this.normalizeFsPath(base);
     if (!name) return normalizedBase;
-    if (normalizedBase === '/') return `/${name}`;
+    if (normalizedBase === "/") return `/${name}`;
     return `${normalizedBase}/${name}`;
   }
 
   private basenameFsPath(path: string): string {
     const normalized = this.normalizeFsPath(path);
-    if (normalized === '/') return '/';
-    const idx = normalized.lastIndexOf('/');
+    if (normalized === "/") return "/";
+    const idx = normalized.lastIndexOf("/");
     return idx < 0 ? normalized : normalized.slice(idx + 1);
   }
 
-  private async fetchSandbox(url: string, init: RequestInit = {}): Promise<Response> {
+  private async fetchSandbox(
+    url: string,
+    init: RequestInit = {},
+    options: { skipBanCheck?: boolean } = {},
+  ): Promise<Response> {
+    if (!options.skipBanCheck && this.env.APP_KV) {
+      const orgBan = await isOrgBanned(this.env.APP_KV, { orgId: this.orgId });
+      if (orgBan) {
+        throw new Error("Organization is banned");
+      }
+    }
+
     const sandboxBase = this.getSandboxHostUrlOverride();
     if (sandboxBase) {
       return fetch(url, init);
     }
     if (!this.env.SANDBOX_HOST) {
-      throw new Error('SANDBOX_HOST binding is not configured (or set SANDBOX_HOST_URL for local sandbox mode)');
+      throw new Error(
+        "SANDBOX_HOST binding is not configured (or set SANDBOX_HOST_URL for local sandbox mode)",
+      );
     }
     return this.env.SANDBOX_HOST.fetch(url, init);
   }
@@ -220,35 +243,48 @@ export class WorkspaceContainer {
    */
   private async execOnSandbox(
     args: string[],
-    options: { cwd?: string; env?: Record<string, string> } = {}
+    options: { cwd?: string; env?: Record<string, string> } = {},
   ): Promise<ControlPlaneExecResponse> {
     if (args.length === 0) {
-      return { success: false, stdout: '', stderr: 'No command provided', exitCode: 1 };
+      return {
+        success: false,
+        stdout: "",
+        stderr: "No command provided",
+        exitCode: 1,
+      };
     }
 
-    const response = await this.fetchSandbox(this.sandboxUrl('/exec'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await this.fetchSandbox(this.sandboxUrl("/exec"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cmd: args, cwd: options.cwd, env: options.env }),
     });
 
     if (!response.ok) {
       const body = await response.text();
-      return { success: false, stdout: '', stderr: body, exitCode: response.status };
+      return {
+        success: false,
+        stdout: "",
+        stderr: body,
+        exitCode: response.status,
+      };
     }
 
-    return await response.json() as ControlPlaneExecResponse;
+    return (await response.json()) as ControlPlaneExecResponse;
   }
 
-  async exec(command: string, options?: { timeout?: number; cwd?: string }): Promise<ControlPlaneExecResponse> {
-    return this.execOnSandbox(['bash', '-lc', command], { cwd: options?.cwd });
+  async exec(
+    command: string,
+    options?: { timeout?: number; cwd?: string },
+  ): Promise<ControlPlaneExecResponse> {
+    return this.execOnSandbox(["bash", "-lc", command], { cwd: options?.cwd });
   }
 
   // ─── FS Helpers ──────────────────────────────────────────
 
   private parseFsListEntries(payload: unknown): Array<{
     name: string;
-    type: 'file' | 'directory';
+    type: "file" | "directory";
     size: number;
     modifiedAt: string;
     relativePath?: string;
@@ -268,63 +304,77 @@ export class WorkspaceContainer {
 
     return rawEntries.flatMap((entry) => {
       const raw = (entry ?? {}) as Record<string, unknown>;
-      const rawPath = typeof raw.path === 'string' ? raw.path : '';
-      const rawRelativePath = typeof raw.relativePath === 'string'
-        ? raw.relativePath
-        : typeof raw.relative === 'string'
-          ? raw.relative
-          : '';
-      const rawAbsolutePath = typeof raw.absolutePath === 'string'
-        ? raw.absolutePath
-        : rawPath.startsWith('/')
-          ? rawPath
-          : '';
+      const rawPath = typeof raw.path === "string" ? raw.path : "";
+      const rawRelativePath =
+        typeof raw.relativePath === "string"
+          ? raw.relativePath
+          : typeof raw.relative === "string"
+            ? raw.relative
+            : "";
+      const rawAbsolutePath =
+        typeof raw.absolutePath === "string"
+          ? raw.absolutePath
+          : rawPath.startsWith("/")
+            ? rawPath
+            : "";
 
-      const name = typeof raw.name === 'string'
-        ? raw.name
-        : rawRelativePath
-          ? this.basenameFsPath(rawRelativePath)
-          : rawAbsolutePath
-            ? this.basenameFsPath(rawAbsolutePath)
-            : rawPath
-              ? this.basenameFsPath(rawPath)
-              : '';
+      const name =
+        typeof raw.name === "string"
+          ? raw.name
+          : rawRelativePath
+            ? this.basenameFsPath(rawRelativePath)
+            : rawAbsolutePath
+              ? this.basenameFsPath(rawAbsolutePath)
+              : rawPath
+                ? this.basenameFsPath(rawPath)
+                : "";
       const relativePath = rawRelativePath
         ? rawRelativePath
-        : rawPath && !rawPath.startsWith('/')
+        : rawPath && !rawPath.startsWith("/")
           ? rawPath
-          : '';
-      if (!name || name === '/') return [];
+          : "";
+      if (!name || name === "/") return [];
 
-      const rawType = typeof raw.type === 'string' ? raw.type.toLowerCase() : '';
-      const isDir = rawType === 'directory' || rawType === 'dir' || raw.isDir === true || raw.isDirectory === true;
-      const type: 'file' | 'directory' = isDir ? 'directory' : 'file';
-      const size = typeof raw.size === 'number' ? raw.size : 0;
-      const modifiedAt = typeof raw.modifiedAt === 'string'
-        ? raw.modifiedAt
-        : typeof raw.mtime === 'string'
-          ? raw.mtime
-          : typeof raw.updatedAt === 'string'
-            ? raw.updatedAt
-            : nowIso;
+      const rawType =
+        typeof raw.type === "string" ? raw.type.toLowerCase() : "";
+      const isDir =
+        rawType === "directory" ||
+        rawType === "dir" ||
+        raw.isDir === true ||
+        raw.isDirectory === true;
+      const type: "file" | "directory" = isDir ? "directory" : "file";
+      const size = typeof raw.size === "number" ? raw.size : 0;
+      const modifiedAt =
+        typeof raw.modifiedAt === "string"
+          ? raw.modifiedAt
+          : typeof raw.mtime === "string"
+            ? raw.mtime
+            : typeof raw.updatedAt === "string"
+              ? raw.updatedAt
+              : nowIso;
 
-      return [{
-        name,
-        type,
-        size,
-        modifiedAt,
-        ...(relativePath ? { relativePath } : {}),
-        ...(rawAbsolutePath ? { absolutePath: rawAbsolutePath } : {}),
-      }];
+      return [
+        {
+          name,
+          type,
+          size,
+          modifiedAt,
+          ...(relativePath ? { relativePath } : {}),
+          ...(rawAbsolutePath ? { absolutePath: rawAbsolutePath } : {}),
+        },
+      ];
     });
   }
 
   private isHiddenRelativePath(relativePath: string): boolean {
-    return relativePath.split('/').some((segment) => segment.startsWith('.'));
+    return relativePath.split("/").some((segment) => segment.startsWith("."));
   }
 
-  private async listFilesWithLegacyWalk(root: string, includeHidden: boolean): Promise<ControlPlaneListResponse> {
-    const files: ControlPlaneListResponse['files'] = [];
+  private async listFilesWithLegacyWalk(
+    root: string,
+    includeHidden: boolean,
+  ): Promise<ControlPlaneListResponse> {
+    const files: ControlPlaneListResponse["files"] = [];
     const queue: string[] = [root];
     const enqueued = new Set<string>([root]);
     let cursor = 0;
@@ -333,7 +383,7 @@ export class WorkspaceContainer {
 
     const processDirectory = async (current: string): Promise<string[]> => {
       const response = await this.fetchSandbox(
-        this.sandboxUrl('/fs/list', { path: current }),
+        this.sandboxUrl("/fs/list", { path: current }),
       );
 
       if (response.status === 404) {
@@ -349,7 +399,7 @@ export class WorkspaceContainer {
       const entries = this.parseFsListEntries(payload);
       const childDirectories: string[] = [];
       for (const entry of entries) {
-        if (!includeHidden && entry.name.startsWith('.')) continue;
+        if (!includeHidden && entry.name.startsWith(".")) continue;
         const absolutePath = this.joinFsPath(current, entry.name);
         const relativePath = absolutePath.startsWith(`${root}/`)
           ? absolutePath.slice(root.length + 1)
@@ -366,7 +416,7 @@ export class WorkspaceContainer {
           absolutePath,
         });
 
-        if (entry.type === 'directory') {
+        if (entry.type === "directory") {
           childDirectories.push(absolutePath);
         }
       }
@@ -412,7 +462,6 @@ export class WorkspaceContainer {
     };
   }
 
-
   /**
    * Build thread-specific env vars (integration creds + thread ID).
    * Passed to the control plane chat WebSocket init message.
@@ -427,7 +476,7 @@ export class WorkspaceContainer {
     byokProxy?: ByokProxyCredentials;
   }> {
     if (!this.workspaceId) {
-      throw new Error('WorkspaceContainer not initialized');
+      throw new Error("WorkspaceContainer not initialized");
     }
 
     console.log(
@@ -485,19 +534,23 @@ export class WorkspaceContainer {
 
       const creds = await decryptCredentials<Record<string, string>>(
         record.credentials_encrypted,
-        this.env.INTEGRATION_SECRET_KEY
+        this.env.INTEGRATION_SECRET_KEY,
       );
       const config = parseStoredLlmProviderConfig(record.config);
 
-      if (record.provider === 'anthropic') {
-        console.log(`[Sandbox] BYOK: using Anthropic via proxy for org=${this.orgId}`);
-        return { provider: 'anthropic', apiKey: creds.api_key };
+      if (record.provider === "anthropic") {
+        console.log(
+          `[Sandbox] BYOK: using Anthropic via proxy for org=${this.orgId}`,
+        );
+        return { provider: "anthropic", apiKey: creds.api_key };
       }
 
-      if (record.provider === 'bedrock') {
-        const region = config.aws_region || 'us-east-1';
-        console.log(`[Sandbox] BYOK: using Bedrock via proxy (${region}) for org=${this.orgId}`);
-        return { provider: 'bedrock', bearerToken: creds.bearer_token, region };
+      if (record.provider === "bedrock") {
+        const region = config.aws_region || "us-east-1";
+        console.log(
+          `[Sandbox] BYOK: using Bedrock via proxy (${region}) for org=${this.orgId}`,
+        );
+        return { provider: "bedrock", bearerToken: creds.bearer_token, region };
       }
 
       if (record.provider === 'openai' && provider === 'codex') {
@@ -507,7 +560,7 @@ export class WorkspaceContainer {
 
       return undefined;
     } catch (err) {
-      console.error('[Sandbox] fetchByokProxyCredentials: error:', err);
+      console.error("[Sandbox] fetchByokProxyCredentials: error:", err);
       return undefined;
     }
   }
@@ -527,7 +580,7 @@ export class WorkspaceContainer {
       );
       return { CHIRIDION_APP_SESSION: sessionId };
     } catch (err) {
-      console.error('[Sandbox] createAppAccessSession failed:', err);
+      console.error("[Sandbox] createAppAccessSession failed:", err);
       return {};
     }
   }
@@ -546,20 +599,20 @@ export class WorkspaceContainer {
   }): Promise<WebSocket> {
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
     if (!options.threadId) {
-      throw new Error('Thread ID is required for chat websocket');
+      throw new Error("Thread ID is required for chat websocket");
     }
-    const workerBaseUrl = (this.env.WORKER_BASE_URL || '').trim();
+    const workerBaseUrl = (this.env.WORKER_BASE_URL || "").trim();
     if (!workerBaseUrl) {
-      throw new Error('WORKER_BASE_URL is not configured');
+      throw new Error("WORKER_BASE_URL is not configured");
     }
 
     const headers: Record<string, string> = {
-      Upgrade: 'websocket',
-      'X-Chiridion-Thread-Id': options.threadId,
-      'X-Chiridion-Worker-Base-Url': workerBaseUrl,
+      Upgrade: "websocket",
+      "X-Chiridion-Thread-Id": options.threadId,
+      "X-Chiridion-Worker-Base-Url": workerBaseUrl,
     };
     if (options.userId) {
-      headers['X-Chiridion-User-Id'] = options.userId;
+      headers["X-Chiridion-User-Id"] = options.userId;
     }
     if (options.byokProxy?.provider === 'anthropic') {
       headers['X-Chiridion-Byok-Anthropic-Key'] = options.byokProxy.apiKey;
@@ -570,14 +623,18 @@ export class WorkspaceContainer {
       headers['X-Chiridion-Byok-OpenAI-Key'] = options.byokProxy.apiKey;
     }
 
-    const response = await this.fetchSandbox(this.sandboxUrl('/chat'), {
+    const response = await this.fetchSandbox(this.sandboxUrl("/chat"), {
       headers,
     });
 
     if (response.status !== 101 || !response.webSocket) {
       const body = await response.text();
-      console.error(`[Sandbox] connectChatWebSocket: upgrade failed status=${response.status} body=${body.slice(0, 500)}`);
-      throw new Error(`Failed to open chat websocket: ${response.status} ${body}`);
+      console.error(
+        `[Sandbox] connectChatWebSocket: upgrade failed status=${response.status} body=${body.slice(0, 500)}`,
+      );
+      throw new Error(
+        `Failed to open chat websocket: ${response.status} ${body}`,
+      );
     }
 
     console.log(`[Sandbox] connectChatWebSocket: websocket opened`);
@@ -589,26 +646,32 @@ export class WorkspaceContainer {
   /**
    * Write integration env vars to a dotenv file on the sandbox.
    */
-  private async writeIntegrationEnvFileToSandbox(envVars: Record<string, string>): Promise<boolean> {
+  private async writeIntegrationEnvFileToSandbox(
+    envVars: Record<string, string>,
+  ): Promise<boolean> {
     try {
       const lines: string[] = [];
       for (const [key, value] of Object.entries(envVars)) {
         const escaped = value
-          .replace(/\\/g, '\\\\')
+          .replace(/\\/g, "\\\\")
           .replace(/"/g, '\\"')
-          .replace(/\n/g, '\\n');
+          .replace(/\n/g, "\\n");
         lines.push(`export ${key}="${escaped}"`);
       }
-      const content = lines.join('\n') + '\n';
+      const content = lines.join("\n") + "\n";
       const result = await this.writeFile(INTEGRATION_ENV_FILE_PATH, content);
       if (!result.success) {
-        console.error(`[Sandbox] writeIntegrationEnvFileToSandbox: write failed: ${result.error}`);
+        console.error(
+          `[Sandbox] writeIntegrationEnvFileToSandbox: write failed: ${result.error}`,
+        );
         return false;
       }
-      console.log(`[Sandbox] writeIntegrationEnvFileToSandbox: wrote ${lines.length} vars to ${INTEGRATION_ENV_FILE_PATH}`);
+      console.log(
+        `[Sandbox] writeIntegrationEnvFileToSandbox: wrote ${lines.length} vars to ${INTEGRATION_ENV_FILE_PATH}`,
+      );
       return true;
     } catch (err) {
-      console.error('[Sandbox] writeIntegrationEnvFileToSandbox: error:', err);
+      console.error("[Sandbox] writeIntegrationEnvFileToSandbox: error:", err);
       return false;
     }
   }
@@ -624,7 +687,9 @@ export class WorkspaceContainer {
     let getIntegrationsMs = 0;
     let decryptAndMapMs = 0;
     try {
-      const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(workspaceId),
+      );
       const getIntegrationsStartedAt = Date.now();
       const records = await workspaceStub.getIntegrations();
       getIntegrationsMs = Date.now() - getIntegrationsStartedAt;
@@ -632,20 +697,34 @@ export class WorkspaceContainer {
 
       const decryptStartedAt = Date.now();
       for (const record of records) {
-        const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
+        const credentials = await decryptCredentials(
+          record.credentials_encrypted,
+          this.env.INTEGRATION_SECRET_KEY,
+        );
         const config = JSON.parse(record.config) as Record<string, unknown>;
-        Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
+        Object.assign(
+          integrationEnvVars,
+          mapCredentialsToEnvVars(
+            record.name,
+            record.integration_type,
+            credentials,
+            config,
+          ),
+        );
       }
       decryptAndMapMs = Date.now() - decryptStartedAt;
 
       console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`,
       );
       return { envVars: integrationEnvVars, success: true };
     } catch (e) {
-      console.error('[WorkspaceContainer] Failed to fetch integration env vars:', e);
+      console.error(
+        "[WorkspaceContainer] Failed to fetch integration env vars:",
+        e,
+      );
       console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`,
       );
       return { envVars: integrationEnvVars, success: false };
     }
@@ -656,7 +735,9 @@ export class WorkspaceContainer {
     return envVars;
   }
 
-  async pushIntegrationEnvVars(envVars: Record<string, string>): Promise<boolean> {
+  async pushIntegrationEnvVars(
+    envVars: Record<string, string>,
+  ): Promise<boolean> {
     return this.writeIntegrationEnvFileToSandbox(envVars);
   }
 
@@ -664,7 +745,7 @@ export class WorkspaceContainer {
     const { envVars, success } = await this.fetchIntegrationEnvVarsWithStatus();
     if (!success) {
       console.warn(
-        `[WorkspaceContainer] refreshIntegrationEnvVars: skipping env file write due to fetch failure workspace=${this.workspaceId}`
+        `[WorkspaceContainer] refreshIntegrationEnvVars: skipping env file write due to fetch failure workspace=${this.workspaceId}`,
       );
       return false;
     }
@@ -676,14 +757,14 @@ export class WorkspaceContainer {
   async exists(path: string): Promise<ControlPlaneExistsResponse> {
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSandbox(
-      this.sandboxUrl('/fs/exists', { path: normalizedPath }),
+      this.sandboxUrl("/fs/exists", { path: normalizedPath }),
     );
 
     if (!response.ok) {
       return { exists: false };
     }
 
-    return await response.json() as ControlPlaneExistsResponse;
+    return (await response.json()) as ControlPlaneExistsResponse;
   }
 
   /**
@@ -694,14 +775,16 @@ export class WorkspaceContainer {
   async readFileStream(path: string): Promise<Response | null> {
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSandbox(
-      this.sandboxUrl('/fs/read', { path: normalizedPath }),
+      this.sandboxUrl("/fs/read", { path: normalizedPath }),
     );
 
     if (response.status === 404) return null;
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Failed reading file ${path}: ${response.status} ${body}`);
+      throw new Error(
+        `Failed reading file ${path}: ${response.status} ${body}`,
+      );
     }
 
     return response;
@@ -710,22 +793,26 @@ export class WorkspaceContainer {
   async readFile(path: string): Promise<ControlPlaneReadResponse> {
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSandbox(
-      this.sandboxUrl('/fs/read', { path: normalizedPath }),
+      this.sandboxUrl("/fs/read", { path: normalizedPath }),
     );
 
     if (response.status === 404) {
-      return { success: false, error: 'File not found', code: 'ENOENT' };
+      return { success: false, error: "File not found", code: "ENOENT" };
     }
 
     if (!response.ok) {
       const body = await response.text();
-      return { success: false, error: body || 'Read failed', code: `HTTP_${response.status}` };
+      return {
+        success: false,
+        error: body || "Read failed",
+        code: `HTTP_${response.status}`,
+      };
     }
 
     const buffer = new Uint8Array(await response.arrayBuffer());
     const hasNul = buffer.includes(0);
     const content = hasNul
-      ? Buffer.from(buffer).toString('base64')
+      ? Buffer.from(buffer).toString("base64")
       : new TextDecoder().decode(buffer);
 
     return {
@@ -733,20 +820,22 @@ export class WorkspaceContainer {
       content,
       size: buffer.byteLength,
       isBinary: hasNul,
-      encoding: hasNul ? 'base64' : 'utf8',
+      encoding: hasNul ? "base64" : "utf8",
     };
   }
 
-  async readThreadMessagesStream(threadId: string): Promise<ControlPlaneThreadMessagesStreamResponse> {
+  async readThreadMessagesStream(
+    threadId: string,
+  ): Promise<ControlPlaneThreadMessagesStreamResponse> {
     const trimmedThreadId = threadId.trim();
     if (!trimmedThreadId) {
-      return { success: false, error: 'Thread ID is required', code: 'EINVAL' };
+      return { success: false, error: "Thread ID is required", code: "EINVAL" };
     }
 
     const response = await this.fetchSandbox(
-      this.sandboxUrl('/chat/messages', { threadId: trimmedThreadId }),
+      this.sandboxUrl("/chat/messages", { threadId: trimmedThreadId }),
       {
-        headers: { Accept: 'application/json' },
+        headers: { Accept: "application/json" },
       },
     );
 
@@ -754,7 +843,7 @@ export class WorkspaceContainer {
       const body = await response.text();
       return {
         success: false,
-        error: body || 'Read thread message stream failed',
+        error: body || "Read thread message stream failed",
         code: `HTTP_${response.status}`,
       };
     }
@@ -762,56 +851,113 @@ export class WorkspaceContainer {
     return { success: true, response };
   }
 
-  async writeFile(path: string, content: string): Promise<ControlPlaneWriteResponse> {
+  async terminateWorkspace(
+    reason = "explicit_terminate_route",
+  ): Promise<{ success: boolean; error?: string }> {
+    const response = await this.fetchSandbox(
+      this.sandboxUrl("/terminate", { reason }),
+      { method: "POST" },
+      { skipBanCheck: true },
+    );
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: (await response.text()) || "Terminate failed",
+      };
+    }
+
+    const body = (await response.json()) as { success?: boolean };
+    return { success: Boolean(body.success) };
+  }
+
+  async purgeWorkspace(
+    reason = "ban_purge",
+  ): Promise<{ success: boolean; error?: string }> {
+    const response = await this.fetchSandbox(
+      this.sandboxUrl("", { reason }),
+      { method: "DELETE" },
+      { skipBanCheck: true },
+    );
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: (await response.text()) || "Workspace purge failed",
+      };
+    }
+
+    const body = (await response.json()) as { success?: boolean };
+    return { success: Boolean(body.success) };
+  }
+
+  async writeFile(
+    path: string,
+    content: string,
+  ): Promise<ControlPlaneWriteResponse> {
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSandbox(
-      this.sandboxUrl('/fs/write', { path: normalizedPath }),
+      this.sandboxUrl("/fs/write", { path: normalizedPath }),
       {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        method: "PUT",
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
         body: content,
       },
     );
 
     if (!response.ok) {
       const body = await response.text();
-      return { success: false, error: body || 'Write failed', code: `HTTP_${response.status}` };
+      return {
+        success: false,
+        error: body || "Write failed",
+        code: `HTTP_${response.status}`,
+      };
     }
 
     return { success: true };
   }
 
-  async writeBinaryFile(path: string, base64Content: string): Promise<ControlPlaneWriteResponse> {
+  async writeBinaryFile(
+    path: string,
+    base64Content: string,
+  ): Promise<ControlPlaneWriteResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const binaryBuffer = Buffer.from(base64Content, 'base64');
+    const binaryBuffer = Buffer.from(base64Content, "base64");
     const response = await this.fetchSandbox(
-      this.sandboxUrl('/fs/write', { path: normalizedPath }),
+      this.sandboxUrl("/fs/write", { path: normalizedPath }),
       {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/octet-stream' },
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
         body: binaryBuffer,
       },
     );
 
     if (!response.ok) {
       const body = await response.text();
-      return { success: false, error: body || 'Write failed', code: `HTTP_${response.status}` };
+      return {
+        success: false,
+        error: body || "Write failed",
+        code: `HTTP_${response.status}`,
+      };
     }
 
     return { success: true };
   }
 
-  async listFiles(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<ControlPlaneListResponse> {
+  async listFiles(
+    path: string,
+    options?: { recursive?: boolean; includeHidden?: boolean },
+  ): Promise<ControlPlaneListResponse> {
     const root = this.normalizeFsPath(path);
     const recursive = options?.recursive === true;
     const includeHidden = options?.includeHidden === true;
 
     try {
       const response = await this.fetchSandbox(
-        this.sandboxUrl('/fs/list', {
+        this.sandboxUrl("/fs/list", {
           path: root,
-          recursive: recursive ? '1' : '0',
-          includeHidden: includeHidden ? '1' : '0',
+          recursive: recursive ? "1" : "0",
+          includeHidden: includeHidden ? "1" : "0",
         }),
       );
 
@@ -824,7 +970,7 @@ export class WorkspaceContainer {
         throw new Error(body || `Failed to list directory: ${response.status}`);
       }
 
-      const payload = await response.json() as { recursive?: unknown };
+      const payload = (await response.json()) as { recursive?: unknown };
       const backendRecursive = payload.recursive === true;
       if (recursive && !backendRecursive) {
         // Compatibility fallback for older sandbox-host versions.
@@ -832,27 +978,31 @@ export class WorkspaceContainer {
       }
 
       const entries = this.parseFsListEntries(payload);
-      const files: ControlPlaneListResponse['files'] = [];
+      const files: ControlPlaneListResponse["files"] = [];
       for (const entry of entries) {
-        const relativePath = (entry.relativePath || '')
-          .replace(/^\/+/, '')
-          .split('/')
+        const relativePath = (entry.relativePath || "")
+          .replace(/^\/+/, "")
+          .split("/")
           .filter(Boolean)
-          .join('/');
+          .join("/");
         const absolutePath = entry.absolutePath
           ? this.normalizeFsPath(entry.absolutePath)
           : relativePath
             ? this.joinFsPath(root, relativePath)
             : this.joinFsPath(root, entry.name);
-        const normalizedRelativePath = relativePath
-          || (absolutePath.startsWith(`${root}/`)
+        const normalizedRelativePath =
+          relativePath ||
+          (absolutePath.startsWith(`${root}/`)
             ? absolutePath.slice(root.length + 1)
             : absolutePath === root
               ? entry.name
               : this.basenameFsPath(absolutePath));
 
         if (!normalizedRelativePath) continue;
-        if (!includeHidden && this.isHiddenRelativePath(normalizedRelativePath)) {
+        if (
+          !includeHidden &&
+          this.isHiddenRelativePath(normalizedRelativePath)
+        ) {
           continue;
         }
 
@@ -884,25 +1034,35 @@ export class WorkspaceContainer {
     }
   }
 
-  async mkdir(path: string, options?: { recursive?: boolean }): Promise<ControlPlaneMkdirResponse> {
+  async mkdir(
+    path: string,
+    options?: { recursive?: boolean },
+  ): Promise<ControlPlaneMkdirResponse> {
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSandbox(
-      this.sandboxUrl('/fs/mkdir', { path: normalizedPath }),
-      { method: 'POST' },
+      this.sandboxUrl("/fs/mkdir", { path: normalizedPath }),
+      { method: "POST" },
     );
 
     if (!response.ok) {
       const body = await response.text();
-      return { success: false, error: body || 'mkdir failed', code: `HTTP_${response.status}` };
+      return {
+        success: false,
+        error: body || "mkdir failed",
+        code: `HTTP_${response.status}`,
+      };
     }
 
     return { success: true, timestamp: toIsoTime(Date.now()) };
   }
 
-  async moveFile(source: string, destination: string): Promise<ControlPlaneMoveResponse> {
-    const response = await this.fetchSandbox(this.sandboxUrl('/fs/move'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+  async moveFile(
+    source: string,
+    destination: string,
+  ): Promise<ControlPlaneMoveResponse> {
+    const response = await this.fetchSandbox(this.sandboxUrl("/fs/move"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         source: this.normalizeFsPath(source),
         dest: this.normalizeFsPath(destination),
@@ -911,16 +1071,20 @@ export class WorkspaceContainer {
 
     if (!response.ok) {
       const body = await response.text();
-      return { success: false, error: body || 'Move failed', code: `HTTP_${response.status}` };
+      return {
+        success: false,
+        error: body || "Move failed",
+        code: `HTTP_${response.status}`,
+      };
     }
 
     return { success: true, timestamp: toIsoTime(Date.now()) };
   }
 
   async deleteFile(path: string): Promise<ControlPlaneDeleteResponse> {
-    const response = await this.fetchSandbox(this.sandboxUrl('/fs/delete'), {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await this.fetchSandbox(this.sandboxUrl("/fs/delete"), {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         path: this.normalizeFsPath(path),
         recursive: true,
@@ -929,7 +1093,11 @@ export class WorkspaceContainer {
 
     if (!response.ok && response.status !== 404) {
       const body = await response.text();
-      return { success: false, error: body || 'Delete failed', code: `HTTP_${response.status}` };
+      return {
+        success: false,
+        error: body || "Delete failed",
+        code: `HTTP_${response.status}`,
+      };
     }
 
     return { success: true, timestamp: toIsoTime(Date.now()) };

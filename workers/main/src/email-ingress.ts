@@ -1,20 +1,21 @@
-import { EmailMessage } from 'cloudflare:email';
-import PostalMime from 'postal-mime';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import type { Env } from './types.js';
-import type { ExternalTurnResult } from './durable-objects.js';
-import { runExternalMessageTurn } from './helpers/external-turn.js';
-import { getOrgStub, getUserStub, getWorkspaceStub } from './helpers/stubs.js';
-import { buildWorkspaceScopedR2Key } from '../../../src/lib/workspace-r2-paths.js';
+import { EmailMessage } from "cloudflare:email";
+import PostalMime from "postal-mime";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Env } from "./types.js";
+import type { ExternalTurnResult } from "./durable-objects.js";
+import { runExternalMessageTurn } from "./helpers/external-turn.js";
+import { getOrgStub, getUserStub, getWorkspaceStub } from "./helpers/stubs.js";
+import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths.js";
 import {
   getWorkspaceEmailRoutingConfig,
   parseMailboxAddress,
   parseWorkspaceEmailAddress,
-} from '../../../src/lib/workspace-email.js';
-import type { Attachment as PostalMimeAttachment } from 'postal-mime';
+} from "../../../src/lib/workspace-email.js";
+import type { Attachment as PostalMimeAttachment } from "postal-mime";
+import { isOrgBanned } from "./ban-list.js";
 
 interface AuthorizedSender {
   userId: string;
@@ -34,93 +35,111 @@ interface ParsedEmailContent {
   attachments: PostalMimeAttachment[];
 }
 
-const EMAIL_EVENT_DEDUPE_PREFIX = 'email_event:';
+const EMAIL_EVENT_DEDUPE_PREFIX = "email_event:";
 const EMAIL_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
 const EMAIL_EVENT_DEDUPE_PROCESSING_TTL_SECONDS = 5 * 60;
-const EMAIL_EVENT_DEDUPE_PROCESSING_MAX_AGE_MS = EMAIL_EVENT_DEDUPE_PROCESSING_TTL_SECONDS * 1000;
-const EMAIL_EVENT_DEDUPE_DONE_VALUE = 'done';
-const EMAIL_EVENT_DEDUPE_LEGACY_DONE_VALUE = '1';
-const EMAIL_REPLY_REFERENCE_PREFIX = 'email_reply_ref:';
+const EMAIL_EVENT_DEDUPE_PROCESSING_MAX_AGE_MS =
+  EMAIL_EVENT_DEDUPE_PROCESSING_TTL_SECONDS * 1000;
+const EMAIL_EVENT_DEDUPE_DONE_VALUE = "done";
+const EMAIL_EVENT_DEDUPE_LEGACY_DONE_VALUE = "1";
+const EMAIL_REPLY_REFERENCE_PREFIX = "email_reply_ref:";
 const EMAIL_REPLY_REFERENCE_TTL_SECONDS = 180 * 24 * 60 * 60;
 const MAX_EMAIL_RAW_SIZE_BYTES = 2 * 1024 * 1024;
 const MAX_EMAIL_REPLY_BODY_CHARS = 50_000;
 const STRICT_MESSAGE_ID_PATTERN = /^[^\s<>@]+@(?:[^\s<>@]+|\[[^\]\r\n]+\])$/;
-const DEFAULT_ATTACHMENT_BASENAME = 'attachment';
-const DEFAULT_ATTACHMENT_CONTENT_TYPE = 'application/octet-stream';
+const DEFAULT_ATTACHMENT_BASENAME = "attachment";
+const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
 const MIME_EXTENSION_MAP: Record<string, string> = {
-  'application/json': '.json',
-  'application/pdf': '.pdf',
-  'application/xml': '.xml',
-  'application/zip': '.zip',
-  'application/x-tar': '.tar',
-  'application/gzip': '.gz',
-  'application/vnd.ms-excel': '.xls',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-  'application/msword': '.doc',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
-  'text/plain': '.txt',
-  'text/csv': '.csv',
-  'text/html': '.html',
-  'text/markdown': '.md',
-  'image/png': '.png',
-  'image/jpeg': '.jpg',
-  'image/gif': '.gif',
-  'image/webp': '.webp',
-  'image/svg+xml': '.svg',
-  'audio/mpeg': '.mp3',
-  'audio/wav': '.wav',
-  'video/mp4': '.mp4',
-  'video/webm': '.webm',
+  "application/json": ".json",
+  "application/pdf": ".pdf",
+  "application/xml": ".xml",
+  "application/zip": ".zip",
+  "application/x-tar": ".tar",
+  "application/gzip": ".gz",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+    ".docx",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+    ".pptx",
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "text/html": ".html",
+  "text/markdown": ".md",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/svg+xml": ".svg",
+  "audio/mpeg": ".mp3",
+  "audio/wav": ".wav",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
 };
 
 function sanitizeHeaderValue(value: string, maxLength = 200): string {
-  return value.replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength);
+  return value
+    .replace(/[\r\n]+/g, " ")
+    .trim()
+    .slice(0, maxLength);
 }
 
 function normalizeMessageId(rawValue: string | null): string | null {
   if (!rawValue) return null;
-  const sanitized = sanitizeHeaderValue(rawValue, 512).replace(/^<|>$/g, '').trim().toLowerCase();
+  const sanitized = sanitizeHeaderValue(rawValue, 512)
+    .replace(/^<|>$/g, "")
+    .trim()
+    .toLowerCase();
   return sanitized || null;
 }
 
 function normalizeMessageIdForHeader(rawValue: string | null): string | null {
   const normalized = normalizeMessageId(rawValue);
   if (!normalized) return null;
-  const safe = normalized.replace(/[<>\s]/g, '');
+  const safe = normalized.replace(/[<>\s]/g, "");
   if (!safe || !STRICT_MESSAGE_ID_PATTERN.test(safe)) return null;
   return `<${safe}>`;
 }
 
 function toDedupeFragment(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 160);
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .slice(0, 160);
 }
 
 function getEmailDedupeKey(workspaceId: string, messageId: string): string {
-  const workspacePart = toDedupeFragment(workspaceId) || 'ws';
-  const messagePart = toDedupeFragment(messageId) || 'msg';
+  const workspacePart = toDedupeFragment(workspaceId) || "ws";
+  const messagePart = toDedupeFragment(messageId) || "msg";
   return `${EMAIL_EVENT_DEDUPE_PREFIX}${workspacePart}:${messagePart}`;
 }
 
-function buildEmailProcessingDedupeValue(token: string, startedAt: number): string {
+function buildEmailProcessingDedupeValue(
+  token: string,
+  startedAt: number,
+): string {
   return `processing:${token}:${startedAt}`;
 }
 
 function parseEmailDedupeValue(rawValue: string | null): {
-  state: 'done' | 'processing';
+  state: "done" | "processing";
   token?: string;
   startedAt?: number;
 } | null {
   if (!rawValue) return null;
-  if (rawValue === EMAIL_EVENT_DEDUPE_DONE_VALUE || rawValue === EMAIL_EVENT_DEDUPE_LEGACY_DONE_VALUE) {
-    return { state: 'done' };
+  if (
+    rawValue === EMAIL_EVENT_DEDUPE_DONE_VALUE ||
+    rawValue === EMAIL_EVENT_DEDUPE_LEGACY_DONE_VALUE
+  ) {
+    return { state: "done" };
   }
 
-  if (!rawValue.startsWith('processing:')) {
+  if (!rawValue.startsWith("processing:")) {
     return null;
   }
 
-  const parts = rawValue.split(':');
+  const parts = rawValue.split(":");
   if (parts.length !== 3) return null;
   const token = parts[1]?.trim();
   const startedAt = Number(parts[2]);
@@ -129,46 +148,64 @@ function parseEmailDedupeValue(rawValue: string | null): {
   }
 
   return {
-    state: 'processing',
+    state: "processing",
     token,
     startedAt,
   };
 }
 
-function getEmailReplyReferenceKey(workspaceId: string, messageId: string): string {
-  const safeMessageId = messageId.toLowerCase().replace(/[^a-z0-9@._-]/g, '_').slice(0, 400);
+function getEmailReplyReferenceKey(
+  workspaceId: string,
+  messageId: string,
+): string {
+  const safeMessageId = messageId
+    .toLowerCase()
+    .replace(/[^a-z0-9@._-]/g, "_")
+    .slice(0, 400);
   return `${EMAIL_REPLY_REFERENCE_PREFIX}${workspaceId}:${safeMessageId}`;
 }
 
 function stripSubjectPrefixes(subject: string): string {
-  return subject.replace(/^(\s*(re|fw|fwd)\s*:\s*)+/i, '').trim();
+  return subject.replace(/^(\s*(re|fw|fwd)\s*:\s*)+/i, "").trim();
 }
 
 function titleFromEmail(subject: string, body: string): string {
   const subjectTitle = stripSubjectPrefixes(subject);
   if (subjectTitle) return subjectTitle.slice(0, 100);
 
-  const firstLine = body.split('\n').map((line) => line.trim()).find(Boolean) || 'Email conversation';
+  const firstLine =
+    body
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) || "Email conversation";
   return firstLine.slice(0, 100);
 }
 
 function stripHtmlTags(input: string): string {
   return input
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
-    .replace(/[ \t]+/g, ' ')
+    .replace(/[ \t]+/g, " ")
     .trim();
 }
 
-function buildUploadKey(orgId: string, workspaceId: string, filename: string): string {
-  return buildWorkspaceScopedR2Key(orgId, workspaceId, `user-uploads/${filename}`);
+function buildUploadKey(
+  orgId: string,
+  workspaceId: string,
+  filename: string,
+): string {
+  return buildWorkspaceScopedR2Key(
+    orgId,
+    workspaceId,
+    `user-uploads/${filename}`,
+  );
 }
 
 function toUploadMountPath(filename: string): string {
@@ -178,33 +215,36 @@ function toUploadMountPath(filename: string): string {
 function generateUniqueFilename(originalName: string): string {
   const timestamp = Date.now();
   const randomPart = Math.random().toString(36).substring(2, 8);
-  const ext = originalName.includes('.')
+  const ext = originalName.includes(".")
     ? originalName
-      .slice(originalName.lastIndexOf('.'))
-      .replace(/[^a-zA-Z0-9.]/g, '_')
-      .substring(0, 20)
-    : '';
-  const baseName = originalName.includes('.')
-    ? originalName.slice(0, originalName.lastIndexOf('.'))
+        .slice(originalName.lastIndexOf("."))
+        .replace(/[^a-zA-Z0-9.]/g, "_")
+        .substring(0, 20)
+    : "";
+  const baseName = originalName.includes(".")
+    ? originalName.slice(0, originalName.lastIndexOf("."))
     : originalName;
-  const sanitized = baseName
-    .replace(/[^a-zA-Z0-9_-]/g, '_')
-    .substring(0, 50);
+  const sanitized = baseName.replace(/[^a-zA-Z0-9_-]/g, "_").substring(0, 50);
   return `${sanitized || DEFAULT_ATTACHMENT_BASENAME}-${timestamp}-${randomPart}${ext}`;
 }
 
-function normalizeAttachmentName(attachment: PostalMimeAttachment, index: number): string {
-  const fromFilename = typeof attachment.filename === 'string' ? attachment.filename.trim() : '';
+function normalizeAttachmentName(
+  attachment: PostalMimeAttachment,
+  index: number,
+): string {
+  const fromFilename =
+    typeof attachment.filename === "string" ? attachment.filename.trim() : "";
   if (fromFilename) return fromFilename.slice(0, 255);
 
   const fallbackBase = `${DEFAULT_ATTACHMENT_BASENAME}-${index + 1}`;
-  const extension = MIME_EXTENSION_MAP[(attachment.mimeType || '').toLowerCase()] || '';
+  const extension =
+    MIME_EXTENSION_MAP[(attachment.mimeType || "").toLowerCase()] || "";
   return `${fallbackBase}${extension}`.slice(0, 255);
 }
 
 function decodeBase64Content(content: string): Uint8Array | null {
   try {
-    const compact = content.replace(/\s+/g, '');
+    const compact = content.replace(/\s+/g, "");
     const binary = atob(compact);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i += 1) {
@@ -217,15 +257,15 @@ function decodeBase64Content(content: string): Uint8Array | null {
 }
 
 function toAttachmentPayload(
-  attachment: PostalMimeAttachment
+  attachment: PostalMimeAttachment,
 ): { body: ArrayBuffer | Uint8Array; size: number } | null {
   if (attachment.content instanceof ArrayBuffer) {
     return { body: attachment.content, size: attachment.content.byteLength };
   }
 
-  if (typeof attachment.content !== 'string') return null;
+  if (typeof attachment.content !== "string") return null;
 
-  if (attachment.encoding === 'base64') {
+  if (attachment.encoding === "base64") {
     const decoded = decodeBase64Content(attachment.content);
     if (!decoded) return null;
     return { body: decoded, size: decoded.byteLength };
@@ -238,47 +278,59 @@ function toAttachmentPayload(
 function shouldUploadAttachment(attachment: PostalMimeAttachment): boolean {
   if (attachment.related) return false;
   if (!attachment.content) return false;
-  if (attachment.disposition === 'inline' && !attachment.filename) return false;
+  if (attachment.disposition === "inline" && !attachment.filename) return false;
   return true;
 }
 
-function appendUploadRefsToMessage(content: string, uploadPaths: string[]): string {
+function appendUploadRefsToMessage(
+  content: string,
+  uploadPaths: string[],
+): string {
   if (uploadPaths.length === 0) return content.trim();
-  const refs = uploadPaths.map((path) => `(user uploaded file to ${path})`).join('\n');
+  const refs = uploadPaths
+    .map((path) => `(user uploaded file to ${path})`)
+    .join("\n");
   const trimmed = content.trim();
   return trimmed ? `${trimmed}\n\n${refs}` : refs;
 }
 
-async function parseEmailContent(message: ForwardableEmailMessage): Promise<ParsedEmailContent> {
+async function parseEmailContent(
+  message: ForwardableEmailMessage,
+): Promise<ParsedEmailContent> {
   const rawBytes = await new Response(message.raw).arrayBuffer();
 
   try {
     const parser = new PostalMime();
-    const parsed = await parser.parse(rawBytes) as {
+    const parsed = (await parser.parse(rawBytes)) as {
       text?: string | null;
       html?: string | null;
       attachments?: PostalMimeAttachment[] | null;
     };
 
-    const text = parsed.text?.trim() || '';
+    const text = parsed.text?.trim() || "";
     if (text) {
       return {
         text,
-        attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
+        attachments: Array.isArray(parsed.attachments)
+          ? parsed.attachments
+          : [],
       };
     }
 
-    const html = parsed.html?.trim() || '';
+    const html = parsed.html?.trim() || "";
     return {
-      text: html ? stripHtmlTags(html) : '',
+      text: html ? stripHtmlTags(html) : "",
       attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
     };
   } catch {
     const raw = new TextDecoder().decode(rawBytes);
-    const normalized = raw.replace(/\r\n/g, '\n');
-    const splitIndex = normalized.indexOf('\n\n');
+    const normalized = raw.replace(/\r\n/g, "\n");
+    const splitIndex = normalized.indexOf("\n\n");
     return {
-      text: (splitIndex >= 0 ? normalized.slice(splitIndex + 2) : normalized).trim(),
+      text: (splitIndex >= 0
+        ? normalized.slice(splitIndex + 2)
+        : normalized
+      ).trim(),
       attachments: [],
     };
   }
@@ -290,7 +342,7 @@ async function uploadEmailAttachments(
     orgId: string;
     workspaceId: string;
     attachments: PostalMimeAttachment[];
-  }
+  },
 ): Promise<string[]> {
   const uploadedPaths: string[] = [];
 
@@ -302,7 +354,8 @@ async function uploadEmailAttachments(
 
     const originalName = normalizeAttachmentName(attachment, index);
     const storedFilename = generateUniqueFilename(originalName);
-    const contentType = (attachment.mimeType || '').trim() || DEFAULT_ATTACHMENT_CONTENT_TYPE;
+    const contentType =
+      (attachment.mimeType || "").trim() || DEFAULT_ATTACHMENT_CONTENT_TYPE;
     const r2Key = buildUploadKey(args.orgId, args.workspaceId, storedFilename);
 
     try {
@@ -311,12 +364,12 @@ async function uploadEmailAttachments(
         customMetadata: {
           originalName,
           uploadedAt: new Date().toISOString(),
-          source: 'email-ingress',
+          source: "email-ingress",
         },
       });
       uploadedPaths.push(toUploadMountPath(storedFilename));
     } catch (error) {
-      console.error('[email-ingress] failed to upload attachment', {
+      console.error("[email-ingress] failed to upload attachment", {
         workspaceId: args.workspaceId,
         orgId: args.orgId,
         filename: attachment.filename || null,
@@ -330,10 +383,10 @@ async function uploadEmailAttachments(
 }
 
 function stripQuotedReplyContent(text: string): string {
-  const normalized = text.replace(/\r\n/g, '\n').trim();
-  if (!normalized) return '';
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return "";
 
-  const lines = normalized.split('\n');
+  const lines = normalized.split("\n");
   const kept: string[] = [];
 
   for (const line of lines) {
@@ -341,32 +394,32 @@ function stripQuotedReplyContent(text: string): string {
     if (/^on\s.+wrote:\s*$/i.test(trimmed)) break;
     if (/^[-_]{2,}\s*original message\s*[-_]{2,}$/i.test(trimmed)) break;
     if (/^from:\s.+@.+$/i.test(trimmed) && kept.length > 0) break;
-    if (trimmed.startsWith('>') && kept.length > 0) break;
+    if (trimmed.startsWith(">") && kept.length > 0) break;
     kept.push(line);
   }
 
-  return kept.join('\n').trim();
+  return kept.join("\n").trim();
 }
 
 function escapeHtml(value: string): string {
   return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function renderMarkdownEmailHtml(markdown: string): string {
-  const content = markdown.trim() || 'Done.';
+  const content = markdown.trim() || "Done.";
 
   try {
     const renderedMarkdown = renderToStaticMarkup(
       createElement(
-        'div',
-        { className: 'markdown-body' },
-        createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, content)
-      )
+        "div",
+        { className: "markdown-body" },
+        createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, content),
+      ),
     );
 
     return `<!doctype html>
@@ -440,7 +493,10 @@ function renderMarkdownEmailHtml(markdown: string): string {
   </body>
 </html>`;
   } catch (error) {
-    console.error('[email-ingress] Failed to render markdown email body', error);
+    console.error(
+      "[email-ingress] Failed to render markdown email body",
+      error,
+    );
     return `<!doctype html>
 <html lang="en">
   <head>
@@ -455,7 +511,7 @@ function renderMarkdownEmailHtml(markdown: string): string {
 
 async function resolveWorkspaceFromEmailHandle(
   env: Env,
-  emailHandle: string
+  emailHandle: string,
 ): Promise<{ orgId: string; workspaceId: string } | null> {
   if (!env.EMAIL_HANDLE) return null;
   const stub = env.EMAIL_HANDLE.get(env.EMAIL_HANDLE.idFromName(emailHandle));
@@ -473,7 +529,7 @@ async function resolveAuthorizedSender(
   env: Env,
   workspaceId: string,
   orgId: string,
-  senderEmail: string
+  senderEmail: string,
 ): Promise<AuthorizedSender | null> {
   const userId = await env.EMAIL_TO_USER.get(`email:${senderEmail}`);
   if (!userId) return null;
@@ -490,7 +546,7 @@ async function resolveAuthorizedSender(
   ]);
 
   if (!isOrgMember) return null;
-  if ((memberAccess?.access_level ?? 'full') !== 'full') return null;
+  if ((memberAccess?.access_level ?? "full") !== "full") return null;
 
   return {
     userId,
@@ -508,7 +564,7 @@ function extractMessageIdsFromHeaderValue(rawValue: string | null): string[] {
   if (!normalized) return [];
 
   const extracted = Array.from(normalized.matchAll(/<([^>]+)>/g))
-    .map((match) => normalizeMessageId(match[1] || ''))
+    .map((match) => normalizeMessageId(match[1] || ""))
     .filter((value): value is string => Boolean(value));
 
   if (extracted.length > 0) return extracted;
@@ -520,8 +576,12 @@ function getReplyReferenceCandidates(headers: Headers): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
 
-  const inReplyTo = extractMessageIdsFromHeaderValue(headers.get('in-reply-to'));
-  const references = extractMessageIdsFromHeaderValue(headers.get('references')).reverse();
+  const inReplyTo = extractMessageIdsFromHeaderValue(
+    headers.get("in-reply-to"),
+  );
+  const references = extractMessageIdsFromHeaderValue(
+    headers.get("references"),
+  ).reverse();
 
   for (const value of [...inReplyTo, ...references]) {
     if (seen.has(value)) continue;
@@ -538,7 +598,7 @@ async function resolveThreadFromReplyHeaders(
     workspaceId: string;
     orgId: string;
     headers: Headers;
-  }
+  },
 ): Promise<EmailThreadResolution | null> {
   const references = getReplyReferenceCandidates(args.headers);
   if (references.length === 0) return null;
@@ -553,7 +613,7 @@ async function resolveThreadFromReplyHeaders(
     if (thread && thread.workspace_id === args.workspaceId) {
       return {
         threadId: thread.id,
-        title: thread.title || 'Email conversation',
+        title: thread.title || "Email conversation",
       };
     }
 
@@ -572,7 +632,7 @@ async function resolveThreadForEmail(
     subject: string;
     message: string;
     userId: string;
-  }
+  },
 ): Promise<EmailThreadResolution> {
   const fromReplyHeaders = await resolveThreadFromReplyHeaders(env, {
     workspaceId: args.workspaceId,
@@ -587,7 +647,7 @@ async function resolveThreadForEmail(
     args.workspaceId,
     title,
     args.userId,
-    args.message.slice(0, 500)
+    args.message.slice(0, 500),
   );
 
   return {
@@ -602,13 +662,15 @@ function formatReplySubject(inboundSubject: string, fallback: string): string {
     return /^re:/i.test(cleanInbound) ? cleanInbound : `Re: ${cleanInbound}`;
   }
 
-  const cleanFallback = sanitizeHeaderValue(fallback, 160) || 'camelAI conversation';
+  const cleanFallback =
+    sanitizeHeaderValue(fallback, 160) || "camelAI conversation";
   return `Re: ${cleanFallback}`;
 }
 
 function createReplyMessageId(threadId: string, domain: string): string {
-  const safeThreadId = threadId.replace(/[^a-z0-9-]/gi, '').slice(0, 64) || 'thread';
-  const safeDomain = domain.toLowerCase().replace(/[^a-z0-9.-]/g, '');
+  const safeThreadId =
+    threadId.replace(/[^a-z0-9-]/gi, "").slice(0, 64) || "thread";
+  const safeDomain = domain.toLowerCase().replace(/[^a-z0-9.-]/g, "");
   return `chiridion.${safeThreadId}.${crypto.randomUUID()}@${safeDomain}`;
 }
 
@@ -621,13 +683,16 @@ async function sendReply(
     subject: string;
     body: string;
     messageId: string;
-  }
+  },
 ): Promise<string | null> {
-  const subject = sanitizeHeaderValue(args.subject, 240) || 'Re: camelAI';
+  const subject = sanitizeHeaderValue(args.subject, 240) || "Re: camelAI";
   const fromAddress = sanitizeHeaderValue(args.fromAddress, 320);
   const toAddress = sanitizeHeaderValue(args.toAddress, 320);
   const replyToAddress = sanitizeHeaderValue(args.replyToAddress, 320);
-  const bodyText = args.body.replace(/\r\n/g, '\n').trim().slice(0, MAX_EMAIL_REPLY_BODY_CHARS);
+  const bodyText = args.body
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .slice(0, MAX_EMAIL_REPLY_BODY_CHARS);
   const bodyHtml = renderMarkdownEmailHtml(bodyText);
   const boundary = `chiridion-${crypto.randomUUID()}`;
 
@@ -635,7 +700,7 @@ async function sendReply(
     `From: camelAI <${fromAddress}>`,
     `To: ${toAddress}`,
     `Subject: ${subject}`,
-    'MIME-Version: 1.0',
+    "MIME-Version: 1.0",
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
     `Reply-To: ${replyToAddress}`,
   ];
@@ -645,49 +710,55 @@ async function sendReply(
     headers.push(`Message-ID: ${replyMessageIdHeader}`);
   }
 
-  const inReplyTo = normalizeMessageIdForHeader(inbound.headers.get('message-id'));
+  const inReplyTo = normalizeMessageIdForHeader(
+    inbound.headers.get("message-id"),
+  );
   if (inReplyTo) {
     headers.push(`In-Reply-To: ${inReplyTo}`);
   }
 
   const multipartBody = [
     `--${boundary}`,
-    'Content-Type: text/plain; charset=utf-8',
-    'Content-Transfer-Encoding: 8bit',
-    '',
-    bodyText || 'Done.',
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    bodyText || "Done.",
     `--${boundary}`,
-    'Content-Type: text/html; charset=utf-8',
-    'Content-Transfer-Encoding: 8bit',
-    '',
+    "Content-Type: text/html; charset=utf-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
     bodyHtml,
     `--${boundary}--`,
-    '',
-  ].join('\r\n');
+    "",
+  ].join("\r\n");
 
-  const raw = `${headers.join('\r\n')}\r\n\r\n${multipartBody}`;
+  const raw = `${headers.join("\r\n")}\r\n\r\n${multipartBody}`;
   await inbound.reply(new EmailMessage(fromAddress, toAddress, raw));
   return normalizeMessageId(args.messageId);
 }
 
 function outcomeToReplyText(result: ExternalTurnResult): string {
-  if (result.status === 'result') return result.reply?.trim() || 'Done.';
-  if (result.status === 'busy') {
-    return 'camelAI is still processing the previous email for this thread. Please try again in a moment.';
+  if (result.status === "result") return result.reply?.trim() || "Done.";
+  if (result.status === "busy") {
+    return "camelAI is still processing the previous email for this thread. Please try again in a moment.";
   }
-  if (result.status === 'error') return result.error || 'I could not process that email right now.';
-  return 'I could not process that email right now.';
+  if (result.status === "error")
+    return result.error || "I could not process that email right now.";
+  return "I could not process that email right now.";
 }
 
-export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessage, env: Env): Promise<void> {
+export async function handleWorkspaceEmailIngress(
+  message: ForwardableEmailMessage,
+  env: Env,
+): Promise<void> {
   if (message.rawSize > MAX_EMAIL_RAW_SIZE_BYTES) {
-    message.setReject('Email is too large. Maximum size is 2 MiB.');
+    message.setReject("Email is too large. Maximum size is 2 MiB.");
     return;
   }
 
   const routingConfig = getWorkspaceEmailRoutingConfig(env);
   if (!routingConfig) {
-    message.setReject('Workspace email routing is not configured.');
+    message.setReject("Workspace email routing is not configured.");
     return;
   }
 
@@ -695,37 +766,55 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
     expectedDomain: routingConfig.domain,
   });
   if (!parsed) {
-    message.setReject('Unknown workspace email address.');
+    message.setReject("Unknown workspace email address.");
     return;
   }
 
-  const resolved = await resolveWorkspaceFromEmailHandle(env, parsed.emailHandle);
+  const resolved = await resolveWorkspaceFromEmailHandle(
+    env,
+    parsed.emailHandle,
+  );
   if (!resolved) {
-    message.setReject('Unknown workspace email address.');
+    message.setReject("Unknown workspace email address.");
     return;
   }
 
   const recipientMailbox = parseMailboxAddress(message.to);
   if (!recipientMailbox) {
-    message.setReject('Unknown workspace email address.');
+    message.setReject("Unknown workspace email address.");
     return;
   }
   const recipientAddress = `${recipientMailbox.local}@${recipientMailbox.domain}`;
 
   const sender = parseMailboxAddress(message.from);
   if (!sender) {
-    message.setReject('Invalid sender address.');
+    message.setReject("Invalid sender address.");
     return;
   }
 
   const senderEmail = `${sender.local}@${sender.domain}`;
-  const authorizedSender = await resolveAuthorizedSender(env, resolved.workspaceId, resolved.orgId, senderEmail);
+  const authorizedSender = await resolveAuthorizedSender(
+    env,
+    resolved.workspaceId,
+    resolved.orgId,
+    senderEmail,
+  );
   if (!authorizedSender) {
-    message.setReject('Sender is not allowed for this workspace inbox.');
+    message.setReject("Sender is not allowed for this workspace inbox.");
     return;
   }
 
-  const normalizedMessageId = normalizeMessageId(message.headers.get('message-id'));
+  const orgBan = await isOrgBanned(env.APP_KV, {
+    orgId: authorizedSender.orgId,
+  });
+  if (orgBan) {
+    message.setReject("This workspace is blocked.");
+    return;
+  }
+
+  const normalizedMessageId = normalizeMessageId(
+    message.headers.get("message-id"),
+  );
   const dedupeKey = normalizedMessageId
     ? getEmailDedupeKey(resolved.workspaceId, normalizedMessageId)
     : null;
@@ -733,16 +822,19 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
   let dedupeHandled = false;
   if (dedupeKey) {
     const existing = parseEmailDedupeValue(await env.APP_KV.get(dedupeKey));
-    if (existing?.state === 'done') return;
+    if (existing?.state === "done") return;
     if (
-      existing?.state === 'processing' &&
-      typeof existing.startedAt === 'number' &&
+      existing?.state === "processing" &&
+      typeof existing.startedAt === "number" &&
       Date.now() - existing.startedAt < EMAIL_EVENT_DEDUPE_PROCESSING_MAX_AGE_MS
     ) {
       return;
     }
 
-    dedupeProcessingValue = buildEmailProcessingDedupeValue(crypto.randomUUID(), Date.now());
+    dedupeProcessingValue = buildEmailProcessingDedupeValue(
+      crypto.randomUUID(),
+      Date.now(),
+    );
     await env.APP_KV.put(dedupeKey, dedupeProcessingValue, {
       expirationTtl: EMAIL_EVENT_DEDUPE_PROCESSING_TTL_SECONDS,
     });
@@ -754,7 +846,10 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
   }
 
   try {
-    const subject = sanitizeHeaderValue(message.headers.get('subject') || '', 240);
+    const subject = sanitizeHeaderValue(
+      message.headers.get("subject") || "",
+      240,
+    );
     const parsedContent = await parseEmailContent(message);
     const messageBody = stripQuotedReplyContent(parsedContent.text);
     const uploadedAttachmentPaths = await uploadEmailAttachments(env, {
@@ -762,10 +857,13 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
       workspaceId: authorizedSender.workspaceId,
       attachments: parsedContent.attachments,
     });
-    const userMessage = appendUploadRefsToMessage((messageBody || subject).trim(), uploadedAttachmentPaths);
+    const userMessage = appendUploadRefsToMessage(
+      (messageBody || subject).trim(),
+      uploadedAttachmentPaths,
+    );
 
     if (!userMessage) {
-      message.setReject('Email message is empty.');
+      message.setReject("Email message is empty.");
       dedupeHandled = true;
       return;
     }
@@ -790,7 +888,10 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
 
     const replyText = outcomeToReplyText(turnResult);
     const replyDomain = recipientMailbox.domain;
-    const outboundMessageId = createReplyMessageId(thread.threadId, replyDomain);
+    const outboundMessageId = createReplyMessageId(
+      thread.threadId,
+      replyDomain,
+    );
 
     const sentMessageId = await sendReply(message, {
       fromAddress: recipientAddress,
@@ -805,7 +906,7 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
       await env.APP_KV.put(
         getEmailReplyReferenceKey(resolved.workspaceId, sentMessageId),
         thread.threadId,
-        { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS }
+        { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
       );
     }
 

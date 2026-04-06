@@ -121,6 +121,31 @@ func (m *Manager) Ensure(name string) (string, error) {
 	return mount.MergedDir, nil
 }
 
+func (m *Manager) Delete(name string) error {
+	mu := m.ensureLock(name)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if name == "" {
+		return errors.New("workspace name required")
+	}
+
+	workspaceDir := filepath.Join(m.cfg.WorkspacesRoot, name)
+	if err := os.RemoveAll(workspaceDir); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	delete(m.mounts, name)
+	m.mu.Unlock()
+
+	if err := m.deleteProjectQuota(name); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (m *Manager) isWorkspaceReady(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
@@ -176,6 +201,51 @@ func (m *Manager) ensureProjectQuota(workspaceName, workspaceDir string) error {
 		fmt.Sprintf("limit -p bhard=%s ihard=%s %s", m.cfg.DefaultBlockHard, m.cfg.DefaultInodeHard, projectName),
 	); err != nil {
 		return fmt.Errorf("project limit failed for %s: %w", projectName, err)
+	}
+
+	return nil
+}
+
+func (m *Manager) deleteProjectQuota(workspaceName string) error {
+	if !m.cfg.EnableProjectQuota {
+		return nil
+	}
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+
+	projectIDs, err := readProjidMap(m.cfg.ProjidFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", m.cfg.ProjidFile, err)
+	}
+	projectPaths, err := readProjectsMap(m.cfg.ProjectsFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", m.cfg.ProjectsFile, err)
+	}
+
+	projectName := projectNameForWorkspace(workspaceName)
+	projectID, ok := projectIDs[projectName]
+	if !ok {
+		return nil
+	}
+
+	delete(projectIDs, projectName)
+	delete(projectPaths, projectID)
+
+	if err := writeProjidMap(m.cfg.ProjidFile, projectIDs); err != nil {
+		return fmt.Errorf("write %s: %w", m.cfg.ProjidFile, err)
+	}
+	if err := writeProjectsMap(m.cfg.ProjectsFile, projectPaths); err != nil {
+		return fmt.Errorf("write %s: %w", m.cfg.ProjectsFile, err)
 	}
 
 	return nil

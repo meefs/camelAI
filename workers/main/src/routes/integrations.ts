@@ -3,18 +3,32 @@
  * Supports: Slack, Notion
  */
 
-import type { RouteContext } from '../types.js';
-import { createIntegrationOAuthState, validateAndConsumeIntegrationOAuthState, type IntegrationOAuthState } from '../integration-oauth-state.js';
-import { INTEGRATION_REGISTRY } from '../../../../src/lib/integration-registry.js';
-import { decryptCredentials, encryptCredentials } from '../../../../src/lib/integration-crypto.js';
-import { WorkspaceContainer } from '../workspace-container.js';
-import { requireSession } from '../helpers/auth.js';
-import type { ConnectionSetupResponse, ExternalTurnResult } from '../durable-objects.js';
-import { runExternalMessageTurn } from '../helpers/external-turn.js';
-import { getWorkspaceStub, getOrgStub } from '../helpers/stubs.js';
-import { redirect, text } from '../helpers/response.js';
-import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from '../cf-api-proxy.js';
-import type { SlackEventCallbackPayload } from '../slack-types.js';
+import type { RouteContext } from "../types.js";
+import {
+  createIntegrationOAuthState,
+  validateAndConsumeIntegrationOAuthState,
+  type IntegrationOAuthState,
+} from "../integration-oauth-state.js";
+import { INTEGRATION_REGISTRY } from "../../../../src/lib/integration-registry.js";
+import {
+  decryptCredentials,
+  encryptCredentials,
+} from "../../../../src/lib/integration-crypto.js";
+import { WorkspaceContainer } from "../workspace-container.js";
+import { requireSession } from "../helpers/auth.js";
+import type {
+  ConnectionSetupResponse,
+  ExternalTurnResult,
+} from "../durable-objects.js";
+import { runExternalMessageTurn } from "../helpers/external-turn.js";
+import { getWorkspaceStub, getOrgStub } from "../helpers/stubs.js";
+import { redirect, text } from "../helpers/response.js";
+import {
+  syncAllWorkspaceWorkerSecrets,
+  type CfApiProxyEnv,
+} from "../cf-api-proxy.js";
+import type { SlackEventCallbackPayload } from "../slack-types.js";
+import { isOrgBanned } from "../ban-list.js";
 
 // RPC interface for MCP DO callback
 interface ChiridionMcpRpc {
@@ -38,43 +52,52 @@ interface SlackCredentials {
 
 type SlackExternalTurnResponse = ExternalTurnResult;
 
-const SLACK_TEAM_INDEX_PREFIX = 'slack_team:';
-const SLACK_THREAD_MAP_PREFIX = 'slack_thread:';
-const SLACK_EVENT_DEDUPE_PREFIX = 'slack_event:';
-const SLACK_MESSAGE_DEDUPE_PREFIX = 'slack_message:';
+const SLACK_TEAM_INDEX_PREFIX = "slack_team:";
+const SLACK_THREAD_MAP_PREFIX = "slack_thread:";
+const SLACK_EVENT_DEDUPE_PREFIX = "slack_event:";
+const SLACK_MESSAGE_DEDUPE_PREFIX = "slack_message:";
 const SLACK_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
 function getSlackTeamIndexKey(teamId: string): string {
   return `${SLACK_TEAM_INDEX_PREFIX}${teamId}`;
 }
 
-function getSlackThreadMapKey(workspaceId: string, teamId: string, channelId: string, rootTs: string): string {
+function getSlackThreadMapKey(
+  workspaceId: string,
+  teamId: string,
+  channelId: string,
+  rootTs: string,
+): string {
   return `${SLACK_THREAD_MAP_PREFIX}${workspaceId}:${teamId}:${channelId}:${rootTs}`;
 }
 
 function getSlackMappingRootTs(
-  event: NonNullable<SlackEventCallbackPayload['event']>,
-  isDm: boolean
+  event: NonNullable<SlackEventCallbackPayload["event"]>,
+  isDm: boolean,
 ): string {
-  const explicitThreadTs = (event.thread_ts || '').trim();
+  const explicitThreadTs = (event.thread_ts || "").trim();
   if (explicitThreadTs) return explicitThreadTs;
-  if (isDm) return 'dm';
-  return (event.ts || '').trim();
+  if (isDm) return "dm";
+  return (event.ts || "").trim();
 }
 
-function getSlackReplyThreadTs(event: NonNullable<SlackEventCallbackPayload['event']>): string {
-  return (event.thread_ts || event.ts || '').trim();
+function getSlackReplyThreadTs(
+  event: NonNullable<SlackEventCallbackPayload["event"]>,
+): string {
+  return (event.thread_ts || event.ts || "").trim();
 }
 
-function getSlackMessageDedupeKey(payload: SlackEventCallbackPayload): string | null {
+function getSlackMessageDedupeKey(
+  payload: SlackEventCallbackPayload,
+): string | null {
   const event = payload.event;
   const teamId = payload.team_id?.trim();
   if (!event || !teamId) return null;
-  if (event.type !== 'message' && event.type !== 'app_mention') return null;
+  if (event.type !== "message" && event.type !== "app_mention") return null;
   if (event.subtype) return null;
 
-  const channelId = event.channel?.trim() || '';
-  const userId = event.user?.trim() || '';
-  const eventTs = (event.ts || '').trim();
+  const channelId = event.channel?.trim() || "";
+  const userId = event.user?.trim() || "";
+  const eventTs = (event.ts || "").trim();
   if (!channelId || !userId || !eventTs) return null;
 
   // Slack may emit both app_mention and message.* for a single @mention post.
@@ -91,9 +114,13 @@ function timingSafeEqual(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
-async function verifySlackSignature(req: Request, rawBody: string, signingSecret: string): Promise<boolean> {
-  const signature = req.headers.get('x-slack-signature') || '';
-  const timestampHeader = req.headers.get('x-slack-request-timestamp') || '';
+async function verifySlackSignature(
+  req: Request,
+  rawBody: string,
+  signingSecret: string,
+): Promise<boolean> {
+  const signature = req.headers.get("x-slack-signature") || "";
+  const timestampHeader = req.headers.get("x-slack-request-timestamp") || "";
   const timestamp = Number(timestampHeader);
 
   if (!signature || !timestampHeader || !Number.isFinite(timestamp)) {
@@ -107,38 +134,47 @@ async function verifySlackSignature(req: Request, rawBody: string, signingSecret
 
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
-    'raw',
+    "raw",
     encoder.encode(signingSecret),
-    { name: 'HMAC', hash: 'SHA-256' },
+    { name: "HMAC", hash: "SHA-256" },
     false,
-    ['sign']
+    ["sign"],
   );
 
   const base = `v0:${timestampHeader}:${rawBody}`;
-  const signed = await crypto.subtle.sign('HMAC', key, encoder.encode(base));
-  const digest = `v0=${Array.from(new Uint8Array(signed)).map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+  const signed = await crypto.subtle.sign("HMAC", key, encoder.encode(base));
+  const digest = `v0=${Array.from(new Uint8Array(signed))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("")}`;
   return timingSafeEqual(digest, signature);
 }
 
-function toSlackJsonResponse(body: Record<string, unknown>, status = 200): Response {
+function toSlackJsonResponse(
+  body: Record<string, unknown>,
+  status = 200,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
-async function loadSlackTeamInstallations(kv: KVNamespace, teamId: string): Promise<SlackTeamInstallationRecord[]> {
+async function loadSlackTeamInstallations(
+  kv: KVNamespace,
+  teamId: string,
+): Promise<SlackTeamInstallationRecord[]> {
   const raw = await kv.get(getSlackTeamIndexKey(teamId));
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as SlackTeamInstallationRecord[];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((record) => (
-      typeof record?.workspace_id === 'string' &&
-      typeof record?.org_id === 'string' &&
-      typeof record?.integration_id === 'string' &&
-      typeof record?.team_id === 'string'
-    ));
+    return parsed.filter(
+      (record) =>
+        typeof record?.workspace_id === "string" &&
+        typeof record?.org_id === "string" &&
+        typeof record?.integration_id === "string" &&
+        typeof record?.team_id === "string",
+    );
   } catch {
     return [];
   }
@@ -147,43 +183,53 @@ async function loadSlackTeamInstallations(kv: KVNamespace, teamId: string): Prom
 async function saveSlackTeamInstallations(
   kv: KVNamespace,
   teamId: string,
-  records: SlackTeamInstallationRecord[]
+  records: SlackTeamInstallationRecord[],
 ): Promise<void> {
   await kv.put(getSlackTeamIndexKey(teamId), JSON.stringify(records));
 }
 
 async function upsertSlackTeamInstallation(
   kv: KVNamespace,
-  record: SlackTeamInstallationRecord
+  record: SlackTeamInstallationRecord,
 ): Promise<void> {
   const records = await loadSlackTeamInstallations(kv, record.team_id);
-  const deduped = records.filter((candidate) => candidate.integration_id !== record.integration_id);
+  const deduped = records.filter(
+    (candidate) => candidate.integration_id !== record.integration_id,
+  );
   deduped.unshift(record);
   await saveSlackTeamInstallations(kv, record.team_id, deduped.slice(0, 20));
 }
 
 function chooseSlackInstallationCandidates(
   records: SlackTeamInstallationRecord[],
-  authorizations: Array<{ user_id?: string }> | undefined
+  authorizations: Array<{ user_id?: string }> | undefined,
 ): SlackTeamInstallationRecord[] {
   if (!authorizations || authorizations.length === 0) return records;
   const botUserIds = new Set(
     authorizations
       .map((entry) => entry.user_id)
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      .filter(
+        (value): value is string =>
+          typeof value === "string" && value.length > 0,
+      ),
   );
   if (botUserIds.size === 0) return records;
 
-  const preferred = records.filter((record) => record.bot_user_id && botUserIds.has(record.bot_user_id));
+  const preferred = records.filter(
+    (record) => record.bot_user_id && botUserIds.has(record.bot_user_id),
+  );
   if (preferred.length > 0) return preferred;
   return records;
 }
 
-function normalizeSlackMessageText(rawText: string, botUserId?: string): string {
+function normalizeSlackMessageText(
+  rawText: string,
+  botUserId?: string,
+): string {
   let text = rawText.trim();
   if (botUserId) {
-    const mention = new RegExp(`<@${botUserId}>`, 'g');
-    text = text.replace(mention, '').trim();
+    const mention = new RegExp(`<@${botUserId}>`, "g");
+    text = text.replace(mention, "").trim();
   }
   return text;
 }
@@ -192,15 +238,15 @@ async function postSlackThreadMessage(
   token: string,
   channel: string,
   threadTs: string,
-  text: string
+  text: string,
 ): Promise<void> {
   const safeText = text.trim().slice(0, 3500);
   if (!safeText) return;
-  const response = await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
+  const response = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json; charset=utf-8',
+      "Content-Type": "application/json; charset=utf-8",
     },
     body: JSON.stringify({
       channel,
@@ -209,13 +255,15 @@ async function postSlackThreadMessage(
     }),
   });
   if (!response.ok) {
-    const body = await response.text().catch(() => '');
+    const body = await response.text().catch(() => "");
     throw new Error(`chat.postMessage failed (${response.status}): ${body}`);
   }
 
-  const payload = await response.json() as { ok?: boolean; error?: string };
+  const payload = (await response.json()) as { ok?: boolean; error?: string };
   if (!payload.ok) {
-    throw new Error(`chat.postMessage error: ${payload.error || 'unknown_error'}`);
+    throw new Error(
+      `chat.postMessage error: ${payload.error || "unknown_error"}`,
+    );
   }
 }
 
@@ -224,11 +272,11 @@ async function postSlackThreadMessage(
  * Called when OAuth state contains MCP callback context.
  */
 async function completeMcpConnectionSetup(
-  env: RouteContext['env'],
+  env: RouteContext["env"],
   stateData: IntegrationOAuthState,
   integrationId: string,
   integrationType: string,
-  integrationName: string
+  integrationName: string,
 ): Promise<void> {
   if (!stateData.mcp_request_id || !stateData.mcp_do_id) {
     return; // No MCP context
@@ -251,7 +299,7 @@ async function completeMcpConnectionSetup(
       },
     });
   } catch (err) {
-    console.error('[Integration OAuth] Failed to complete MCP request:', err);
+    console.error("[Integration OAuth] Failed to complete MCP request:", err);
   }
 }
 
@@ -261,75 +309,94 @@ async function completeMcpConnectionSetup(
  */
 function sanitizeRedirectPath(input: string): string {
   // Default to /connections if empty
-  if (!input) return '/connections';
+  if (!input) return "/connections";
 
   // Must start with exactly one `/` (not `//` which is protocol-relative)
-  if (!input.startsWith('/') || input.startsWith('//')) {
-    return '/connections';
+  if (!input.startsWith("/") || input.startsWith("//")) {
+    return "/connections";
   }
 
   // Strip any query params or fragments that might contain absolute URLs
   // and reconstruct with just the pathname
   try {
-    const parsed = new URL(input, 'http://dummy');
+    const parsed = new URL(input, "http://dummy");
     // Ensure the path doesn't encode an absolute URL
-    if (parsed.pathname.includes('://') || parsed.pathname.startsWith('//')) {
-      return '/connections';
+    if (parsed.pathname.includes("://") || parsed.pathname.startsWith("//")) {
+      return "/connections";
     }
     return parsed.pathname + parsed.search;
   } catch {
-    return '/connections';
+    return "/connections";
   }
 }
 
-export async function handleSlackOAuthStart({ req, env, url }: RouteContext): Promise<Response> {
+export async function handleSlackOAuthStart({
+  req,
+  env,
+  url,
+}: RouteContext): Promise<Response> {
   const slackDef = INTEGRATION_REGISTRY.slack;
   if (!slackDef?.oauthConfig || !env.SLACK_CLIENT_ID) {
-    return text('Slack OAuth is not configured', 500);
+    return text("Slack OAuth is not configured", 500);
   }
 
   const auth = await requireSession(req, env);
-  if ('error' in auth) return redirect(`${url.origin}/login?error=unauthorized`);
+  if ("error" in auth)
+    return redirect(`${url.origin}/login?error=unauthorized`);
 
   const { session } = auth;
-  if (!session.workspace_id) return redirect(`${url.origin}/connections?error=no_workspace`);
+  if (!session.workspace_id)
+    return redirect(`${url.origin}/connections?error=no_workspace`);
 
-  const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
+  const redirectTo = sanitizeRedirectPath(
+    url.searchParams.get("redirect") || "/connections",
+  );
   const callbackUrl = `${url.origin}/api/integrations/slack/callback`;
 
   // Check for MCP callback context (from chat connection setup prompt)
-  const mcpRequestId = url.searchParams.get('mcp_request_id');
-  const mcpDoId = url.searchParams.get('mcp_do_id');
-  const mcpContext = mcpRequestId && mcpDoId ? { requestId: mcpRequestId, doId: mcpDoId } : undefined;
+  const mcpRequestId = url.searchParams.get("mcp_request_id");
+  const mcpDoId = url.searchParams.get("mcp_do_id");
+  const mcpContext =
+    mcpRequestId && mcpDoId
+      ? { requestId: mcpRequestId, doId: mcpDoId }
+      : undefined;
 
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
-    'slack',
+    "slack",
     session.workspace_id,
     session.user_id,
     redirectTo,
-    mcpContext
+    mcpContext,
   );
 
   const authUrl = new URL(slackDef.oauthConfig.authorizationUrl);
-  authUrl.searchParams.set('client_id', env.SLACK_CLIENT_ID);
-  authUrl.searchParams.set('scope', slackDef.oauthConfig.scopes.join(','));
-  authUrl.searchParams.set('redirect_uri', callbackUrl);
-  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set("client_id", env.SLACK_CLIENT_ID);
+  authUrl.searchParams.set("scope", slackDef.oauthConfig.scopes.join(","));
+  authUrl.searchParams.set("redirect_uri", callbackUrl);
+  authUrl.searchParams.set("state", state);
 
   return redirect(authUrl.toString());
 }
 
-export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext): Promise<Response> {
-  const code = url.searchParams.get('code');
-  const state = url.searchParams.get('state');
-  const error = url.searchParams.get('error');
+export async function handleSlackOAuthCallback({
+  env,
+  url,
+  ctx,
+}: RouteContext): Promise<Response> {
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
 
   if (error) return redirect(`${url.origin}/connections?error=oauth_denied`);
-  if (!code || !state) return redirect(`${url.origin}/connections?error=oauth_invalid`);
+  if (!code || !state)
+    return redirect(`${url.origin}/connections?error=oauth_invalid`);
 
-  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
-  if (!stateData || stateData.integration_type !== 'slack') {
+  const stateData = await validateAndConsumeIntegrationOAuthState(
+    env.SESSIONS,
+    state,
+  );
+  if (!stateData || stateData.integration_type !== "slack") {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
   }
 
@@ -339,9 +406,9 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
 
   try {
     const callbackUrl = `${url.origin}/api/integrations/slack/callback`;
-    const tokenRes = await fetch('https://slack.com/api/oauth.v2.access', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    const tokenRes = await fetch("https://slack.com/api/oauth.v2.access", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         client_id: env.SLACK_CLIENT_ID,
         client_secret: env.SLACK_CLIENT_SECRET,
@@ -380,7 +447,7 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
     }
 
     const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
-    if ((memberAccess?.access_level ?? 'full') !== 'full') {
+    if ((memberAccess?.access_level ?? "full") !== "full") {
       return redirect(`${url.origin}/connections?error=access_denied`);
     }
 
@@ -396,19 +463,22 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
       authed_user_id: tokenData.authed_user?.id,
     };
 
-    const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
-    const name = tokenData.team?.name || 'Slack';
+    const encrypted = await encryptCredentials(
+      credentials,
+      env.INTEGRATION_SECRET_KEY,
+    );
+    const name = tokenData.team?.name || "Slack";
     const integrationId = crypto.randomUUID();
 
     await wsStub.createIntegration(
       integrationId,
-      'slack',
+      "slack",
       name,
-      'communication',
-      'oauth2',
+      "communication",
+      "oauth2",
       JSON.stringify({}),
       encrypted,
-      stateData.user_id
+      stateData.user_id,
     );
 
     if (tokenData.team?.id) {
@@ -426,24 +496,35 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
     ctx.waitUntil(
       new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
         .refreshIntegrationEnvVars()
-        .catch(() => {})
+        .catch(() => {}),
     );
 
     // Sync secrets to all deployed workers in this workspace
     ctx.waitUntil(
-      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
-        .catch((err) => console.error('[slack-oauth] Failed to sync secrets to workers:', err))
+      syncAllWorkspaceWorkerSecrets(
+        env as unknown as CfApiProxyEnv,
+        stateData.workspace_id,
+        wsInfo.org_id,
+      ).catch((err) =>
+        console.error("[slack-oauth] Failed to sync secrets to workers:", err),
+      ),
     );
 
     // Complete MCP request if this OAuth flow was initiated from chat
     if (stateData.mcp_request_id && stateData.mcp_do_id) {
-      await completeMcpConnectionSetup(env, stateData, integrationId, 'slack', name);
+      await completeMcpConnectionSetup(
+        env,
+        stateData,
+        integrationId,
+        "slack",
+        name,
+      );
     }
 
     // Sanitize redirect URL again as defense-in-depth
     const safePath = sanitizeRedirectPath(stateData.redirect_url);
     const redirectUrl = new URL(safePath, url.origin);
-    redirectUrl.searchParams.set('success', 'slack_connected');
+    redirectUrl.searchParams.set("success", "slack_connected");
     return redirect(redirectUrl.toString());
   } catch {
     return redirect(`${url.origin}/connections?error=oauth_failed`);
@@ -451,8 +532,8 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
 }
 
 async function resolveSlackInstallationForEvent(
-  env: RouteContext['env'],
-  payload: SlackEventCallbackPayload
+  env: RouteContext["env"],
+  payload: SlackEventCallbackPayload,
 ): Promise<{
   workspaceId: string;
   orgId: string;
@@ -462,7 +543,7 @@ async function resolveSlackInstallationForEvent(
 }> {
   const teamId = payload.team_id?.trim();
   if (!teamId) {
-    throw new Error('Missing Slack team ID');
+    throw new Error("Missing Slack team ID");
   }
 
   const stored = await loadSlackTeamInstallations(env.APP_KV, teamId);
@@ -470,7 +551,10 @@ async function resolveSlackInstallationForEvent(
     throw new Error(`No Slack installation index found for team ${teamId}`);
   }
 
-  const candidates = chooseSlackInstallationCandidates(stored, payload.authorizations);
+  const candidates = chooseSlackInstallationCandidates(
+    stored,
+    payload.authorizations,
+  );
   const staleIntegrationIds = new Set<string>();
 
   for (const candidate of candidates) {
@@ -484,7 +568,7 @@ async function resolveSlackInstallationForEvent(
       staleIntegrationIds.add(candidate.integration_id);
       continue;
     }
-    if (!integration || integration.integration_type !== 'slack') {
+    if (!integration || integration.integration_type !== "slack") {
       staleIntegrationIds.add(candidate.integration_id);
       continue;
     }
@@ -493,7 +577,7 @@ async function resolveSlackInstallationForEvent(
     try {
       credentials = await decryptCredentials<SlackCredentials>(
         integration.credentials_encrypted,
-        env.INTEGRATION_SECRET_KEY
+        env.INTEGRATION_SECRET_KEY,
       );
     } catch {
       continue;
@@ -503,12 +587,16 @@ async function resolveSlackInstallationForEvent(
       continue;
     }
 
-    const token = typeof credentials.access_token === 'string' ? credentials.access_token : '';
+    const token =
+      typeof credentials.access_token === "string"
+        ? credentials.access_token
+        : "";
     if (!token) continue;
 
-    const botUserId = typeof credentials.bot_user_id === 'string'
-      ? credentials.bot_user_id
-      : candidate.bot_user_id;
+    const botUserId =
+      typeof credentials.bot_user_id === "string"
+        ? credentials.bot_user_id
+        : candidate.bot_user_id;
 
     return {
       workspaceId: candidate.workspace_id,
@@ -520,7 +608,9 @@ async function resolveSlackInstallationForEvent(
   }
 
   if (staleIntegrationIds.size > 0) {
-    const filtered = stored.filter((record) => !staleIntegrationIds.has(record.integration_id));
+    const filtered = stored.filter(
+      (record) => !staleIntegrationIds.has(record.integration_id),
+    );
     await saveSlackTeamInstallations(env.APP_KV, teamId, filtered);
   }
 
@@ -528,7 +618,7 @@ async function resolveSlackInstallationForEvent(
 }
 
 async function getOrCreateSlackThreadId(
-  env: RouteContext['env'],
+  env: RouteContext["env"],
   args: {
     workspaceId: string;
     orgId: string;
@@ -536,13 +626,13 @@ async function getOrCreateSlackThreadId(
     channelId: string;
     rootTs: string;
     initialText: string;
-  }
+  },
 ): Promise<string> {
   const mappingKey = getSlackThreadMapKey(
     args.workspaceId,
     args.teamId,
     args.channelId,
-    args.rootTs
+    args.rootTs,
   );
 
   const existing = await env.APP_KV.get(mappingKey);
@@ -551,12 +641,12 @@ async function getOrCreateSlackThreadId(
   }
 
   const orgStub = getOrgStub(env, args.orgId);
-  const title = args.initialText.trim().slice(0, 100) || 'Slack conversation';
+  const title = args.initialText.trim().slice(0, 100) || "Slack conversation";
   const thread = await orgStub.createThread(
     args.workspaceId,
     title,
-    'slack',
-    args.initialText.trim().slice(0, 500) || undefined
+    "slack",
+    args.initialText.trim().slice(0, 500) || undefined,
   );
 
   await env.APP_KV.put(mappingKey, thread.id);
@@ -567,9 +657,9 @@ async function dispatchSlackTurnOutcome(
   token: string,
   channel: string,
   threadTs: string,
-  result: SlackExternalTurnResponse
+  result: SlackExternalTurnResponse,
 ): Promise<void> {
-  if (result.status === 'result') {
+  if (result.status === "result") {
     const reply = result.reply?.trim();
     if (reply) {
       await postSlackThreadMessage(token, channel, threadTs, reply);
@@ -577,44 +667,46 @@ async function dispatchSlackTurnOutcome(
     return;
   }
 
-  if (result.status === 'busy') {
+  if (result.status === "busy") {
     await postSlackThreadMessage(
       token,
       channel,
       threadTs,
-      'Claude is still processing the previous turn for this Slack thread. Please try again in a moment.'
+      "Claude is still processing the previous turn for this Slack thread. Please try again in a moment.",
     );
     return;
   }
 
-  if (result.status === 'error') {
+  if (result.status === "error") {
     await postSlackThreadMessage(
       token,
       channel,
       threadTs,
-      result.error || 'I could not process that message right now.'
+      result.error || "I could not process that message right now.",
     );
   }
 }
 
 export async function processSlackEventCallback(
-  env: RouteContext['env'],
-  payload: SlackEventCallbackPayload
+  env: RouteContext["env"],
+  payload: SlackEventCallbackPayload,
 ): Promise<void> {
   const event = payload.event;
   if (!event) return;
-  if (event.type !== 'message' && event.type !== 'app_mention') return;
+  if (event.type !== "message" && event.type !== "app_mention") return;
   if (event.subtype) return;
 
   const installation = await resolveSlackInstallationForEvent(env, payload);
-  const channelId = event.channel?.trim() || '';
-  const userId = event.user?.trim() || '';
+  const orgBan = await isOrgBanned(env.APP_KV, { orgId: installation.orgId });
+  if (orgBan) return;
+  const channelId = event.channel?.trim() || "";
+  const userId = event.user?.trim() || "";
   if (!channelId || !userId) return;
   if (event.bot_id) return;
   if (installation.botUserId && installation.botUserId === userId) return;
 
-  const rawText = typeof event.text === 'string' ? event.text : '';
-  const isDm = event.channel_type === 'im';
+  const rawText = typeof event.text === "string" ? event.text : "";
+  const isDm = event.channel_type === "im";
   const rootTs = getSlackMappingRootTs(event, isDm);
   if (!rootTs) return;
 
@@ -622,24 +714,35 @@ export async function processSlackEventCallback(
     installation.workspaceId,
     installation.teamId,
     channelId,
-    rootTs
+    rootTs,
   );
   const mappedThreadId = await env.APP_KV.get(mappingKey);
-  const mentionsBot = installation.botUserId ? rawText.includes(`<@${installation.botUserId}>`) : false;
-  const shouldHandle = isDm || event.type === 'app_mention' || mentionsBot || Boolean(mappedThreadId);
+  const mentionsBot = installation.botUserId
+    ? rawText.includes(`<@${installation.botUserId}>`)
+    : false;
+  const shouldHandle =
+    isDm ||
+    event.type === "app_mention" ||
+    mentionsBot ||
+    Boolean(mappedThreadId);
   if (!shouldHandle) return;
 
-  const messageText = normalizeSlackMessageText(rawText, installation.botUserId);
+  const messageText = normalizeSlackMessageText(
+    rawText,
+    installation.botUserId,
+  );
   if (!messageText) return;
 
-  const threadId = mappedThreadId || await getOrCreateSlackThreadId(env, {
-    workspaceId: installation.workspaceId,
-    orgId: installation.orgId,
-    teamId: installation.teamId,
-    channelId,
-    rootTs,
-    initialText: messageText,
-  });
+  const threadId =
+    mappedThreadId ||
+    (await getOrCreateSlackThreadId(env, {
+      workspaceId: installation.workspaceId,
+      orgId: installation.orgId,
+      teamId: installation.teamId,
+      channelId,
+      rootTs,
+      initialText: messageText,
+    }));
 
   const turnResult = await runExternalMessageTurn(env, {
     threadId,
@@ -653,34 +756,50 @@ export async function processSlackEventCallback(
   const replyThreadTs = getSlackReplyThreadTs(event);
   if (!replyThreadTs) return;
 
-  await dispatchSlackTurnOutcome(installation.token, channelId, replyThreadTs, turnResult);
+  await dispatchSlackTurnOutcome(
+    installation.token,
+    channelId,
+    replyThreadTs,
+    turnResult,
+  );
 }
 
-export async function handleSlackEvents({ req, env, ctx }: RouteContext): Promise<Response> {
+export async function handleSlackEvents({
+  req,
+  env,
+  ctx,
+}: RouteContext): Promise<Response> {
   const signingSecret = env.SLACK_SIGNING_SECRET;
   if (!signingSecret) {
-    return text('Slack signing secret is not configured', 500);
+    return text("Slack signing secret is not configured", 500);
   }
 
   const rawBody = await req.text();
-  const signatureValid = await verifySlackSignature(req, rawBody, signingSecret);
+  const signatureValid = await verifySlackSignature(
+    req,
+    rawBody,
+    signingSecret,
+  );
   if (!signatureValid) {
-    return text('Invalid Slack signature', 401);
+    return text("Invalid Slack signature", 401);
   }
 
   let payload: SlackEventCallbackPayload;
   try {
     payload = JSON.parse(rawBody) as SlackEventCallbackPayload;
   } catch {
-    return text('Invalid JSON payload', 400);
+    return text("Invalid JSON payload", 400);
   }
 
-  if (payload.type === 'url_verification' && typeof payload.challenge === 'string') {
+  if (
+    payload.type === "url_verification" &&
+    typeof payload.challenge === "string"
+  ) {
     return toSlackJsonResponse({ challenge: payload.challenge });
   }
 
-  if (payload.type !== 'event_callback') {
-    return text('ok', 200);
+  if (payload.type !== "event_callback") {
+    return text("ok", 200);
   }
 
   const eventId = payload.event_id?.trim();
@@ -688,18 +807,22 @@ export async function handleSlackEvents({ req, env, ctx }: RouteContext): Promis
     const dedupeKey = `${SLACK_EVENT_DEDUPE_PREFIX}${eventId}`;
     const seen = await env.APP_KV.get(dedupeKey);
     if (seen) {
-      return text('ok', 200);
+      return text("ok", 200);
     }
-    await env.APP_KV.put(dedupeKey, '1', { expirationTtl: SLACK_EVENT_DEDUPE_TTL_SECONDS });
+    await env.APP_KV.put(dedupeKey, "1", {
+      expirationTtl: SLACK_EVENT_DEDUPE_TTL_SECONDS,
+    });
   }
 
   const messageDedupeKey = getSlackMessageDedupeKey(payload);
   if (messageDedupeKey) {
     const seenMessage = await env.APP_KV.get(messageDedupeKey);
     if (seenMessage) {
-      return text('ok', 200);
+      return text("ok", 200);
     }
-    await env.APP_KV.put(messageDedupeKey, '1', { expirationTtl: SLACK_EVENT_DEDUPE_TTL_SECONDS });
+    await env.APP_KV.put(messageDedupeKey, "1", {
+      expirationTtl: SLACK_EVENT_DEDUPE_TTL_SECONDS,
+    });
   }
 
   if (env.SLACK_EVENTS_QUEUE) {
@@ -709,77 +832,99 @@ export async function handleSlackEvents({ req, env, ctx }: RouteContext): Promis
         received_at: Date.now(),
       });
     } catch (error) {
-      console.error('[slack-events] failed to enqueue event callback', error);
+      console.error("[slack-events] failed to enqueue event callback", error);
       ctx.waitUntil(
         processSlackEventCallback(env, payload).catch((callbackError) => {
-          console.error('[slack-events] failed to process callback fallback', callbackError);
-        })
+          console.error(
+            "[slack-events] failed to process callback fallback",
+            callbackError,
+          );
+        }),
       );
     }
   } else {
     ctx.waitUntil(
       processSlackEventCallback(env, payload).catch((error) => {
-        console.error('[slack-events] failed to process callback', error);
-      })
+        console.error("[slack-events] failed to process callback", error);
+      }),
     );
   }
 
-  return text('ok', 200);
+  return text("ok", 200);
 }
 
 // =============================================================================
 // Notion OAuth
 // =============================================================================
 
-export async function handleNotionOAuthStart({ req, env, url }: RouteContext): Promise<Response> {
+export async function handleNotionOAuthStart({
+  req,
+  env,
+  url,
+}: RouteContext): Promise<Response> {
   const notionDef = INTEGRATION_REGISTRY.notion;
   if (!notionDef?.oauthConfig || !env.NOTION_CLIENT_ID) {
-    return text('Notion OAuth is not configured', 500);
+    return text("Notion OAuth is not configured", 500);
   }
 
   const auth = await requireSession(req, env);
-  if ('error' in auth) return redirect(`${url.origin}/login?error=unauthorized`);
+  if ("error" in auth)
+    return redirect(`${url.origin}/login?error=unauthorized`);
 
   const { session } = auth;
-  if (!session.workspace_id) return redirect(`${url.origin}/connections?error=no_workspace`);
+  if (!session.workspace_id)
+    return redirect(`${url.origin}/connections?error=no_workspace`);
 
-  const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
+  const redirectTo = sanitizeRedirectPath(
+    url.searchParams.get("redirect") || "/connections",
+  );
   const callbackUrl = `${url.origin}/api/integrations/notion/callback`;
 
   // Check for MCP callback context (from chat connection setup prompt)
-  const mcpRequestId = url.searchParams.get('mcp_request_id');
-  const mcpDoId = url.searchParams.get('mcp_do_id');
-  const mcpContext = mcpRequestId && mcpDoId ? { requestId: mcpRequestId, doId: mcpDoId } : undefined;
+  const mcpRequestId = url.searchParams.get("mcp_request_id");
+  const mcpDoId = url.searchParams.get("mcp_do_id");
+  const mcpContext =
+    mcpRequestId && mcpDoId
+      ? { requestId: mcpRequestId, doId: mcpDoId }
+      : undefined;
 
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
-    'notion',
+    "notion",
     session.workspace_id,
     session.user_id,
     redirectTo,
-    mcpContext
+    mcpContext,
   );
 
   const authUrl = new URL(notionDef.oauthConfig.authorizationUrl);
-  authUrl.searchParams.set('client_id', env.NOTION_CLIENT_ID);
-  authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('owner', 'user');
-  authUrl.searchParams.set('redirect_uri', callbackUrl);
-  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set("client_id", env.NOTION_CLIENT_ID);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("owner", "user");
+  authUrl.searchParams.set("redirect_uri", callbackUrl);
+  authUrl.searchParams.set("state", state);
 
   return redirect(authUrl.toString());
 }
 
-export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext): Promise<Response> {
-  const code = url.searchParams.get('code');
-  const state = url.searchParams.get('state');
-  const error = url.searchParams.get('error');
+export async function handleNotionOAuthCallback({
+  env,
+  url,
+  ctx,
+}: RouteContext): Promise<Response> {
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
 
   if (error) return redirect(`${url.origin}/connections?error=oauth_denied`);
-  if (!code || !state) return redirect(`${url.origin}/connections?error=oauth_invalid`);
+  if (!code || !state)
+    return redirect(`${url.origin}/connections?error=oauth_invalid`);
 
-  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
-  if (!stateData || stateData.integration_type !== 'notion') {
+  const stateData = await validateAndConsumeIntegrationOAuthState(
+    env.SESSIONS,
+    state,
+  );
+  if (!stateData || stateData.integration_type !== "notion") {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
   }
 
@@ -791,15 +936,17 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
     const callbackUrl = `${url.origin}/api/integrations/notion/callback`;
 
     // Notion uses Basic Auth for token exchange
-    const basicAuth = btoa(`${env.NOTION_CLIENT_ID}:${env.NOTION_CLIENT_SECRET}`);
-    const tokenRes = await fetch('https://api.notion.com/v1/oauth/token', {
-      method: 'POST',
+    const basicAuth = btoa(
+      `${env.NOTION_CLIENT_ID}:${env.NOTION_CLIENT_SECRET}`,
+    );
+    const tokenRes = await fetch("https://api.notion.com/v1/oauth/token", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         Authorization: `Basic ${basicAuth}`,
       },
       body: JSON.stringify({
-        grant_type: 'authorization_code',
+        grant_type: "authorization_code",
         code,
         redirect_uri: callbackUrl,
       }),
@@ -829,7 +976,7 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
     };
 
     if (!tokenData.access_token) {
-      console.error('[notion-oauth] Token exchange failed:', tokenData.error);
+      console.error("[notion-oauth] Token exchange failed:", tokenData.error);
       return redirect(`${url.origin}/connections?error=oauth_token_failed`);
     }
 
@@ -846,7 +993,7 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
     }
 
     const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
-    if ((memberAccess?.access_level ?? 'full') !== 'full') {
+    if ((memberAccess?.access_level ?? "full") !== "full") {
       return redirect(`${url.origin}/connections?error=access_denied`);
     }
 
@@ -868,46 +1015,60 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
       owner_user_email: tokenData.owner?.user?.person?.email,
     };
 
-    const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
-    const name = tokenData.workspace_name || 'Notion';
+    const encrypted = await encryptCredentials(
+      credentials,
+      env.INTEGRATION_SECRET_KEY,
+    );
+    const name = tokenData.workspace_name || "Notion";
     const integrationId = crypto.randomUUID();
 
     await wsStub.createIntegration(
       integrationId,
-      'notion',
+      "notion",
       name,
-      'saas',
-      'oauth2',
+      "saas",
+      "oauth2",
       JSON.stringify({}),
       encrypted,
       stateData.user_id,
-      tokenExpiresAt // Pass expiry for alarm scheduling
+      tokenExpiresAt, // Pass expiry for alarm scheduling
     );
 
     // Push secrets to running container
     ctx.waitUntil(
       new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
         .refreshIntegrationEnvVars()
-        .catch(() => {})
+        .catch(() => {}),
     );
 
     // Sync secrets to all deployed workers in this workspace
     ctx.waitUntil(
-      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
-        .catch((err) => console.error('[notion-oauth] Failed to sync secrets to workers:', err))
+      syncAllWorkspaceWorkerSecrets(
+        env as unknown as CfApiProxyEnv,
+        stateData.workspace_id,
+        wsInfo.org_id,
+      ).catch((err) =>
+        console.error("[notion-oauth] Failed to sync secrets to workers:", err),
+      ),
     );
 
     // Complete MCP request if this OAuth flow was initiated from chat
     if (stateData.mcp_request_id && stateData.mcp_do_id) {
-      await completeMcpConnectionSetup(env, stateData, integrationId, 'notion', name);
+      await completeMcpConnectionSetup(
+        env,
+        stateData,
+        integrationId,
+        "notion",
+        name,
+      );
     }
 
     const safePath = sanitizeRedirectPath(stateData.redirect_url);
     const redirectUrl = new URL(safePath, url.origin);
-    redirectUrl.searchParams.set('success', 'notion_connected');
+    redirectUrl.searchParams.set("success", "notion_connected");
     return redirect(redirectUrl.toString());
   } catch (err) {
-    console.error('[notion-oauth] OAuth flow failed:', err);
+    console.error("[notion-oauth] OAuth flow failed:", err);
     return redirect(`${url.origin}/connections?error=oauth_failed`);
   }
 }
@@ -916,55 +1077,74 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
 // Salesforce OAuth
 // =============================================================================
 
-export async function handleSalesforceOAuthStart({ req, env, url }: RouteContext): Promise<Response> {
+export async function handleSalesforceOAuthStart({
+  req,
+  env,
+  url,
+}: RouteContext): Promise<Response> {
   const salesforceDef = INTEGRATION_REGISTRY.salesforce;
   if (!salesforceDef?.oauthConfig || !env.SALESFORCE_CLIENT_ID) {
-    return text('Salesforce OAuth is not configured', 500);
+    return text("Salesforce OAuth is not configured", 500);
   }
 
   const auth = await requireSession(req, env);
-  if ('error' in auth) return redirect(`${url.origin}/login?error=unauthorized`);
+  if ("error" in auth)
+    return redirect(`${url.origin}/login?error=unauthorized`);
 
   const { session } = auth;
-  if (!session.workspace_id) return redirect(`${url.origin}/connections?error=no_workspace`);
+  if (!session.workspace_id)
+    return redirect(`${url.origin}/connections?error=no_workspace`);
 
-  const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
+  const redirectTo = sanitizeRedirectPath(
+    url.searchParams.get("redirect") || "/connections",
+  );
   const callbackUrl = `${url.origin}/api/integrations/salesforce/callback`;
 
   // Check for MCP callback context (from chat connection setup prompt)
-  const mcpRequestId = url.searchParams.get('mcp_request_id');
-  const mcpDoId = url.searchParams.get('mcp_do_id');
-  const mcpContext = mcpRequestId && mcpDoId ? { requestId: mcpRequestId, doId: mcpDoId } : undefined;
+  const mcpRequestId = url.searchParams.get("mcp_request_id");
+  const mcpDoId = url.searchParams.get("mcp_do_id");
+  const mcpContext =
+    mcpRequestId && mcpDoId
+      ? { requestId: mcpRequestId, doId: mcpDoId }
+      : undefined;
 
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
-    'salesforce',
+    "salesforce",
     session.workspace_id,
     session.user_id,
     redirectTo,
-    mcpContext
+    mcpContext,
   );
 
   const authUrl = new URL(salesforceDef.oauthConfig.authorizationUrl);
-  authUrl.searchParams.set('client_id', env.SALESFORCE_CLIENT_ID);
-  authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('scope', salesforceDef.oauthConfig.scopes.join(' '));
-  authUrl.searchParams.set('redirect_uri', callbackUrl);
-  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set("client_id", env.SALESFORCE_CLIENT_ID);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", salesforceDef.oauthConfig.scopes.join(" "));
+  authUrl.searchParams.set("redirect_uri", callbackUrl);
+  authUrl.searchParams.set("state", state);
 
   return redirect(authUrl.toString());
 }
 
-export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteContext): Promise<Response> {
-  const code = url.searchParams.get('code');
-  const state = url.searchParams.get('state');
-  const error = url.searchParams.get('error');
+export async function handleSalesforceOAuthCallback({
+  env,
+  url,
+  ctx,
+}: RouteContext): Promise<Response> {
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
 
   if (error) return redirect(`${url.origin}/connections?error=oauth_denied`);
-  if (!code || !state) return redirect(`${url.origin}/connections?error=oauth_invalid`);
+  if (!code || !state)
+    return redirect(`${url.origin}/connections?error=oauth_invalid`);
 
-  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
-  if (!stateData || stateData.integration_type !== 'salesforce') {
+  const stateData = await validateAndConsumeIntegrationOAuthState(
+    env.SESSIONS,
+    state,
+  );
+  if (!stateData || stateData.integration_type !== "salesforce") {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
   }
 
@@ -976,17 +1156,20 @@ export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteCont
     const callbackUrl = `${url.origin}/api/integrations/salesforce/callback`;
 
     // Salesforce uses form-encoded POST for token exchange
-    const tokenRes = await fetch('https://login.salesforce.com/services/oauth2/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: env.SALESFORCE_CLIENT_ID,
-        client_secret: env.SALESFORCE_CLIENT_SECRET,
-        code,
-        redirect_uri: callbackUrl,
-      }),
-    });
+    const tokenRes = await fetch(
+      "https://login.salesforce.com/services/oauth2/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: env.SALESFORCE_CLIENT_ID,
+          client_secret: env.SALESFORCE_CLIENT_SECRET,
+          code,
+          redirect_uri: callbackUrl,
+        }),
+      },
+    );
 
     const tokenData = (await tokenRes.json()) as {
       access_token?: string;
@@ -1002,7 +1185,11 @@ export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteCont
     };
 
     if (!tokenData.access_token) {
-      console.error('[salesforce-oauth] Token exchange failed:', tokenData.error, tokenData.error_description);
+      console.error(
+        "[salesforce-oauth] Token exchange failed:",
+        tokenData.error,
+        tokenData.error_description,
+      );
       return redirect(`${url.origin}/connections?error=oauth_token_failed`);
     }
 
@@ -1019,7 +1206,7 @@ export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteCont
     }
 
     const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
-    if ((memberAccess?.access_level ?? 'full') !== 'full') {
+    if ((memberAccess?.access_level ?? "full") !== "full") {
       return redirect(`${url.origin}/connections?error=access_denied`);
     }
 
@@ -1032,11 +1219,16 @@ export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteCont
       scope: tokenData.scope,
     };
 
-    const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
+    const encrypted = await encryptCredentials(
+      credentials,
+      env.INTEGRATION_SECRET_KEY,
+    );
 
     // Extract org name from instance URL (e.g., https://myorg.salesforce.com -> myorg)
-    const instanceHost = tokenData.instance_url ? new URL(tokenData.instance_url).hostname : '';
-    const orgName = instanceHost.split('.')[0] || 'Salesforce';
+    const instanceHost = tokenData.instance_url
+      ? new URL(tokenData.instance_url).hostname
+      : "";
+    const orgName = instanceHost.split(".")[0] || "Salesforce";
     const name = orgName.charAt(0).toUpperCase() + orgName.slice(1);
     const integrationId = crypto.randomUUID();
 
@@ -1045,39 +1237,53 @@ export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteCont
 
     await wsStub.createIntegration(
       integrationId,
-      'salesforce',
+      "salesforce",
       name,
-      'saas',
-      'oauth2',
+      "saas",
+      "oauth2",
       JSON.stringify(config),
       encrypted,
-      stateData.user_id
+      stateData.user_id,
     );
 
     // Push secrets to running container
     ctx.waitUntil(
       new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
         .refreshIntegrationEnvVars()
-        .catch(() => {})
+        .catch(() => {}),
     );
 
     // Sync secrets to all deployed workers in this workspace
     ctx.waitUntil(
-      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
-        .catch((err) => console.error('[salesforce-oauth] Failed to sync secrets to workers:', err))
+      syncAllWorkspaceWorkerSecrets(
+        env as unknown as CfApiProxyEnv,
+        stateData.workspace_id,
+        wsInfo.org_id,
+      ).catch((err) =>
+        console.error(
+          "[salesforce-oauth] Failed to sync secrets to workers:",
+          err,
+        ),
+      ),
     );
 
     // Complete MCP request if this OAuth flow was initiated from chat
     if (stateData.mcp_request_id && stateData.mcp_do_id) {
-      await completeMcpConnectionSetup(env, stateData, integrationId, 'salesforce', name);
+      await completeMcpConnectionSetup(
+        env,
+        stateData,
+        integrationId,
+        "salesforce",
+        name,
+      );
     }
 
     const safePath = sanitizeRedirectPath(stateData.redirect_url);
     const redirectUrl = new URL(safePath, url.origin);
-    redirectUrl.searchParams.set('success', 'salesforce_connected');
+    redirectUrl.searchParams.set("success", "salesforce_connected");
     return redirect(redirectUrl.toString());
   } catch (err) {
-    console.error('[salesforce-oauth] OAuth flow failed:', err);
+    console.error("[salesforce-oauth] OAuth flow failed:", err);
     return redirect(`${url.origin}/connections?error=oauth_failed`);
   }
 }

@@ -1,16 +1,26 @@
-"use client"
+"use client";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { ForceOrphanDialog } from "@/components/admin/force-orphan-dialog"
-import { DeleteUserDialog } from "@/components/admin/delete-user-dialog"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ForceOrphanDialog } from "@/components/admin/force-orphan-dialog";
+import { DeleteUserDialog } from "@/components/admin/delete-user-dialog";
+import { BanUserDialog } from "@/components/admin/ban-user-dialog";
+import { Badge } from "@/components/ui/badge";
+import type { BanRecord } from "../../../workers/main/src/ban-list";
 
 interface UserAdminActionsProps {
-  userId: string
-  userEmail: string
-  hasMemberships: boolean
-  isOrphaned: boolean
-  orgCount: number
+  userId: string;
+  userEmail: string;
+  hasMemberships: boolean;
+  isOrphaned: boolean;
+  orgCount: number;
+  userBan?: BanRecord | null;
 }
 
 export function UserAdminActions({
@@ -19,8 +29,9 @@ export function UserAdminActions({
   hasMemberships,
   isOrphaned,
   orgCount,
+  userBan,
 }: UserAdminActionsProps) {
-  const orphanDisabled = !hasMemberships || isOrphaned
+  const orphanDisabled = !hasMemberships || isOrphaned;
 
   return (
     <Card>
@@ -31,20 +42,36 @@ export function UserAdminActions({
       <CardContent className="space-y-4">
         <Alert variant="destructive">
           <AlertDescription>
-            Hard delete should only be used for test accounts. If you need to remove a real user&apos;s
-            access, use Force Orphan instead.
+            Ban + purge is the real abuse-handling path. Hard delete should only
+            be used for test accounts.
           </AlertDescription>
         </Alert>
+        {userBan ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">Active ban</span>
+              <Badge variant="destructive">{userBan.purge_status}</Badge>
+            </div>
+            <p className="mt-2 text-muted-foreground">{userBan.reason}</p>
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center gap-3">
+          <BanUserDialog
+            userId={userId}
+            userEmail={userEmail}
+            orgCount={orgCount}
+            disabled={Boolean(userBan)}
+          />
           <ForceOrphanDialog
             userId={userId}
             userLabel={userEmail}
-            disabled={orphanDisabled}
+            disabled={orphanDisabled || Boolean(userBan)}
           />
           <DeleteUserDialog
             userId={userId}
             userEmail={userEmail}
             orgCount={orgCount}
+            disabled={Boolean(userBan)}
           />
           {orphanDisabled ? (
             <span className="text-xs text-muted-foreground">
@@ -56,5 +83,5 @@ export function UserAdminActions({
         </div>
       </CardContent>
     </Card>
-  )
+  );
 }

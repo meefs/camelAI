@@ -57,6 +57,11 @@ export function SignupForm({
 
   // Navigate on successful signup
   useEffect(() => {
+    const redirectTarget = fetcher.data?.redirect as string | undefined;
+    if (fetcher.state === "idle" && redirectTarget) {
+      navigate(redirectTarget);
+      return;
+    }
     if (fetcher.state === "idle" && fetcher.data && !fetcher.data.error) {
       navigate(redirectTo);
     }

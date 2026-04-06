@@ -113,6 +113,20 @@ Prompts started on `camelai.com` arrive at `camelai.dev` as one-time `prompt_key
 
 After `_app.tsx` passes the auth/onboarding gates, the layout loader checks `APP_KV` for `legacy_user:{normalized_email}` and `legacy_banner_dismissed:{userId}`. Matching users who have not dismissed the notice see `LegacyUserBanner`, a fixed bottom-right collapsible card that explains the `camelai.dev` transition and links them back to `https://app.camelai.com`. In local development (`NEXTJS_ENV=development`), the loader bypasses the legacy-email lookup and treats the current user as legacy so the banner is testable without seeding Miniflare KV. The collapsed-card `X` only snoozes the banner client-side for one hour via `localStorage` (`legacy_banner_snoozed_until`), while the expanded "Got it, don't show again" CTA is the permanent dismiss path and persists `legacy_banner_dismissed:{userId}` through `POST /api/legacy-banner/dismiss`. The banner header uses an animated waving emoji (`👋`) defined in `src/styles/globals.css`. The legacy-email set is seeded out-of-band with `scripts/import-legacy-emails.ts`, which bulk-imports the CSV into `APP_KV` as `legacy_user:{normalized_email}` keys and appends the founder addresses.
 
+### Ban List + Blocked Page
+
+Spam/fraud moderation now uses durable ban tombstones in `APP_KV` that survive user/org deletion:
+
+- user bans: `ban:user:id:{userId}` and `ban:user:email:{normalizedEmail}`
+- org bans: `ban:org:id:{orgId}` and `ban:org:slug:{slug}`
+- purge jobs: `ban_purge_job:{jobId}`
+
+Ban enforcement happens before session re-use in both React Router auth (`src/lib/auth.server.ts`) and worker-side session helpers (`workers/main/src/helpers/auth.ts`). Password login/signup checks banned emails before creating a session or account, OAuth checks the normalized email before `getOrCreateUserFromOAuth()`, and stale signed sessions redirect to `/banned` with the session cookie cleared. `WorkspaceContainer` also checks org ban state before sandbox-host requests so banned orgs cannot recreate containers.
+
+### Ban + Purge Operations
+
+Superusers can start ban-and-purge flows from qaml-backdoor user/org detail pages, and Bearer-authenticated admin API clients can do the same via `POST /api/admin/users/:id/ban` and `POST /api/admin/orgs/:id/ban`. Starting a ban writes the tombstone first, invalidates active sessions, creates a `ban_purge_job`, and then runs destructive cleanup in the background. Org purge reuses `hardDeleteAdminOrg*` and now also calls sandbox-host workspace deletion so containers and host workspace directories are removed before the WorkspaceDO is wiped. User ban reuses `hardDeleteAdminUser*` and cascades org ban+purge for orgs the user still owns.
+
 ### Get Help Requests
 
 Users can open an in-app help dialog from the sidebar footer (`Get Help`, `CircleHelp` icon). The form posts to `POST /api/help` with category, severity, description, and client context (`pageUrl`, `screenSize`). The route validates with zod/Conform, returns success immediately, and uses `waitUntil()` to:
@@ -293,6 +307,7 @@ The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured r
 An OAuth 2.1-authenticated MCP server for external clients (Claude.ai, ChatGPT, etc.) at `/api/mcp/external`. Exposes workspace tools: `bash`, `list_apps`, `list_files`, `read_file`, `write_file`.
 
 **OAuth Flow:**
+
 1. Client discovers metadata via `GET /.well-known/oauth-authorization-server/api/mcp/external`
 2. Client registers dynamically via `POST /api/mcp/external/register` (RFC 7591)
 3. Authorization code flow with PKCE (`GET/POST /api/mcp/external/authorize`) — user selects workspace via consent page
@@ -300,6 +315,7 @@ An OAuth 2.1-authenticated MCP server for external clients (Claude.ai, ChatGPT, 
 5. MCP protocol traffic uses `Bearer` token auth
 
 **Key files:**
+
 - `workers/main/src/external-mcp-handler.ts` — `ExternalMcpDO` (tools)
 - `workers/main/src/external-mcp-oauth.ts` — OAuth provider (KV-backed)
 - `workers/main/src/routes/external-mcp.ts` — Route handler + consent page
@@ -357,7 +373,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Support                      | `/api/help`                                                                                                                                                              |
 | Dev tooling                  | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id`                                                                                                                       |
 | Admin troubleshooting        | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` (`messages` also supports Bearer `ADMIN_API_KEY`; `jsonl` remains session-auth only)                 |
-| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}`, `GET /api/admin/{spam/org-ids,dashboard/top-orgs,dashboard/daily-spend,dashboard/summary,dashboard/retention,dashboard/spam-summary}`, `GET /api/admin/threads/:id/messages`, and `PUT/DELETE /api/admin/signup-blocked-ips/:ip` (Bearer `ADMIN_API_KEY` auth) |
+| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2,bans}`, `GET /api/admin/{spam/org-ids,dashboard/top-orgs,dashboard/daily-spend,dashboard/summary,dashboard/retention,dashboard/spam-summary}`, `GET /api/admin/threads/:id/messages`, `POST /api/admin/{users/:id/ban,orgs/:id/ban}`, and `PUT/DELETE /api/admin/signup-blocked-ips/:ip` (Bearer `ADMIN_API_KEY` auth) |
 | Invitations                  | `/api/invitations/:orgId/:invitationId` (GET/POST)                                                                                                                       |
 | Workspace FS                 | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}`                                                                                     |
 | Workspace chat               | `/api/workspaces/:id/chat/:threadId/messages/stream`                                                                                                                     |
@@ -538,6 +554,10 @@ curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<hos
 | PUT    | `/email-domain-blocklist` | Replace full email domain blocklist (`{ domains[] }`) |
 | POST   | `/email-domain-blocklist` | Add domain to blocklist (`{ domain }`)                |
 | DELETE | `/email-domain-blocklist/:domain` | Remove domain from blocklist                  |
+| GET    | `/bans`             | List active bans (`?scope=&limit=&cursor=`)                |
+| GET    | `/bans/:scope/:id`  | Get ban by scope + target id                               |
+| POST   | `/users/:id/ban`    | Ban user and purge data (`{ reason }`)                     |
+| POST   | `/orgs/:id/ban`     | Ban org and purge data (`{ reason }`)                      |
 | GET    | `/r2`               | List R2 objects (`?prefix=` supported)                     |
 | GET    | `/r2/:key+`         | R2 object head metadata                                    |
 | GET    | `/orgs/:id/usage/spend` | Org spend totals and rolling window status              |
