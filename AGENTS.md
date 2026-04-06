@@ -229,7 +229,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - Org-scoped BYOK provider config (`llm_provider_config`) stores only provider-specific settings (`aws_region` for Bedrock) plus encrypted credentials. It does not store the Claude model.
 - Claude model selection (`sonnet` or `opus`) is stored per thread on the org `threads` record. The web chat welcome/composer UI can set it, qaml-backdoor thread detail can edit it, and the admin thread API exposes it on `PATCH /api/admin/threads/:id`.
 - Organization Settings → `AI Provider` is written for non-technical users: provider choice renders as plain radio rows, the header explains that BYOK removes limits with zero camelAI markup, and each provider has a collapsible step-by-step key generation guide with inline outbound console links.
-- Saving or deleting the org BYOK config now calls `OrgDO.notifyByokChanged()`, which fans out to recently active `ChatThreadDO`s; any live runner websocket closes with code `4001`, immediately clears transient streaming state, and reconnects with fresh sandbox-host BYOK headers so active chats pick up the new key without a manual refresh.
+- Saving or deleting the org BYOK config now calls `OrgDO.notifyByokChanged()` for the matching recently active thread harnesses (`claude`, `codex`, or both when switching provider families); any live runner websocket closes with code `4001`, immediately clears transient streaming state, and reconnects with fresh sandbox-host BYOK headers so affected chats pick up the new key without a manual refresh.
 
 ### Virtual AI Binding
 

@@ -4,11 +4,13 @@ import {
   DEFAULT_CODEX_MODEL,
   buildPublicLlmProviderConfig,
   DEFAULT_LLM_MODEL,
-  getDefaultLlmModel,
-  getDefaultThreadProvider,
-  getLlmModelOptions,
-  getProviderForModel,
-  getVisibleLlmModelOptions,
+    getDefaultLlmModel,
+    getDefaultThreadProvider,
+    getAffectedChatHarnessesForLlmProviderChange,
+    getChatHarnessesForLlmProvider,
+    getLlmModelOptions,
+    getProviderForModel,
+    getVisibleLlmModelOptions,
   parseOrganizationExperimentalSettings,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
@@ -62,6 +64,22 @@ describe('llm provider config helpers', () => {
     expect(getProviderForModel('gpt-5.4-mini', 'claude')).toBe('codex');
     expect(getProviderForModel('sonnet', 'codex')).toBe('claude');
     expect(getProviderForModel(undefined, 'claude')).toBe('claude');
+  });
+
+  it('maps org BYOK providers to the affected chat harnesses', () => {
+    expect(getChatHarnessesForLlmProvider('anthropic')).toEqual(['claude']);
+    expect(getChatHarnessesForLlmProvider('bedrock')).toEqual(['claude']);
+    expect(getChatHarnessesForLlmProvider('openai')).toEqual(['codex']);
+    expect(getChatHarnessesForLlmProvider(null)).toEqual([]);
+
+    expect(getAffectedChatHarnessesForLlmProviderChange('openai', 'anthropic')).toEqual([
+      'codex',
+      'claude',
+    ]);
+    expect(getAffectedChatHarnessesForLlmProviderChange('anthropic', 'bedrock')).toEqual([
+      'claude',
+    ]);
+    expect(getAffectedChatHarnessesForLlmProviderChange('openai', null)).toEqual(['codex']);
   });
 
   it('round-trips explicit region values', () => {

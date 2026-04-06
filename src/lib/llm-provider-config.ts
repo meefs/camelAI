@@ -95,6 +95,30 @@ export function getProviderForModel(
   return fallbackProvider;
 }
 
+export function getChatHarnessesForLlmProvider(
+  provider: string | null | undefined,
+): ChatHarness[] {
+  if (provider === 'openai') {
+    return ['codex'];
+  }
+  if (provider === 'anthropic' || provider === 'bedrock') {
+    return ['claude'];
+  }
+  return [];
+}
+
+export function getAffectedChatHarnessesForLlmProviderChange(
+  previousProvider: string | null | undefined,
+  nextProvider: string | null | undefined,
+): ChatHarness[] {
+  return Array.from(
+    new Set([
+      ...getChatHarnessesForLlmProvider(previousProvider),
+      ...getChatHarnessesForLlmProvider(nextProvider),
+    ])
+  );
+}
+
 export function getVisibleLlmModelOptions(
   provider: ChatHarness,
   experimentalSettings?: OrganizationExperimentalSettings | null,

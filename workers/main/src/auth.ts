@@ -10,6 +10,7 @@ import type {
   Organization,
   OrganizationExperimentalSettings,
   Workspace,
+  ChatHarness,
   LlmModel,
   OnboardingPreferences,
 } from '../../../src/types';
@@ -3066,31 +3067,48 @@ export class OrgDO extends DurableObject<DOEnv> {
     return true;
   }
 
-  async notifyByokChanged(): Promise<void> {
-    const activeSince = Date.now() - 30 * 60 * 1000;
-    const rows = this.sql
-      .exec<{ id: string }>(
-        'SELECT id FROM threads WHERE updated_at > ? ORDER BY updated_at DESC LIMIT 100',
-        activeSince
-      )
-      .toArray();
-
-    await Promise.allSettled(
-      rows.map((row) => {
-        const threadId = row.id;
-        if (!threadId) {
-          return Promise.resolve();
-        }
-
-        const chatThread = this.env.CHAT_THREAD.get(
-          this.env.CHAT_THREAD.idFromName(threadId)
-        ) as unknown as {
-          byokChanged(): Promise<void>;
-        };
-
-        return chatThread.byokChanged();
-      })
+  getActiveThreadIdsForByokChange(targetProviders: ChatHarness[]): string[] {
+    this.ensureThreadSchemaColumns();
+    const normalizedProviders = Array.from(
+      new Set(targetProviders.filter((provider): provider is ChatHarness => (
+        provider === 'claude' || provider === 'codex'
+      )))
     );
+    if (normalizedProviders.length === 0) {
+      return [];
+    }
+
+    const activeSince = Date.now() - 30 * 60 * 1000;
+    const placeholders = normalizedProviders.map(() => '?').join(',');
+    return this.sql
+      .exec<{ id: string }>(
+        `SELECT id FROM threads WHERE updated_at > ? AND provider IN (${placeholders}) ORDER BY updated_at DESC`,
+        activeSince,
+        ...normalizedProviders
+      )
+      .toArray()
+      .flatMap((row) => row.id ? [row.id] : []);
+  }
+
+  async notifyByokChanged(targetProviders: ChatHarness[]): Promise<number> {
+    const threadIds = this.getActiveThreadIdsForByokChange(targetProviders);
+
+    for (let index = 0; index < threadIds.length; index += 50) {
+      const batch = threadIds.slice(index, index + 50);
+      await Promise.allSettled(
+        batch.map((threadId) => {
+          const chatThread = this.env.CHAT_THREAD.get(
+            this.env.CHAT_THREAD.idFromName(threadId)
+          ) as unknown as {
+            byokChanged(): Promise<void>;
+          };
+
+          return chatThread.byokChanged();
+        })
+      );
+    }
+
+    return threadIds.length;
   }
 
   hasLlmProviderConfig(): boolean {

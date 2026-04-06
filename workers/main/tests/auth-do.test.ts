@@ -7,7 +7,7 @@
  * Run with: npm run test:workers
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createNewSession, type SessionData } from '../src/session-kv';
 import {
@@ -280,6 +280,53 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.model).toBe('opus');
+    });
+  });
+
+  describe('BYOK refresh fan-out', () => {
+    it('only targets recently active threads whose harness matches the affected provider', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'BYOK Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'BYOK Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const now = Date.now();
+      const dateNowSpy = vi.spyOn(Date, 'now');
+
+      try {
+        dateNowSpy.mockReturnValue(now - 31 * 60 * 1000);
+        await orgStub.createThread(defaultWorkspaceId, 'stale codex', userId, undefined, 'gpt-5.4', 'codex');
+
+        dateNowSpy.mockReturnValue(now);
+        await orgStub.createThread(defaultWorkspaceId, 'recent codex', userId, undefined, 'gpt-5.4', 'codex');
+        await orgStub.createThread(defaultWorkspaceId, 'recent claude', userId, undefined, 'sonnet', 'claude');
+      } finally {
+        dateNowSpy.mockRestore();
+      }
+
+      expect(await orgStub.getActiveThreadIdsForByokChange(['codex'])).toHaveLength(1);
+      expect(await orgStub.getActiveThreadIdsForByokChange(['claude'])).toHaveLength(1);
+      expect(await orgStub.getActiveThreadIdsForByokChange(['claude', 'codex'])).toHaveLength(2);
+    });
+
+    it('does not cap matching active threads at 100', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'BYOK Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Large BYOK Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      for (let index = 0; index < 101; index += 1) {
+        await orgStub.createThread(
+          defaultWorkspaceId,
+          `codex thread ${index}`,
+          userId,
+          undefined,
+          'gpt-5.4',
+          'codex'
+        );
+      }
+
+      expect(await orgStub.getActiveThreadIdsForByokChange(['codex'])).toHaveLength(101);
     });
   });
 
