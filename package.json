@@ -5,8 +5,6 @@
 	"type": "module",
 	"main": "desktop/electron/main.mjs",
 	"scripts": {
-		"postinstall": "node scripts/patch-secure-exec.mjs",
-		"patch:secure-exec": "node scripts/patch-secure-exec.mjs",
 		"dev": "react-router dev",
 		"build": "react-router build",
 		"build:cf": "react-router build",
