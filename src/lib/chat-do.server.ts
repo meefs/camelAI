@@ -16,7 +16,7 @@ import {
   normalizeLlmModel,
   THREAD_MODEL_LOCK_MESSAGE,
 } from './llm-provider-config';
-import { mergeThreadMessages, readMessagesFromResponse } from './thread-messages.server';
+import { readMessagesFromResponse } from './thread-messages.server';
 
 export interface ThreadPreviewState {
   target: PreviewTarget | null;
@@ -303,29 +303,23 @@ export async function getMessages(
   workspaceId: string
 ): Promise<Message[]> {
   const env = getEnv(context);
-  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  const persistedMessages = await threadStub.getPersistedMessages().catch(() => null);
 
   // Messages are parsed on sandbox-host from the container's Claude JSONL file.
   // threadId is the Claude session_id.
   try {
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
-    if (!wsInfo) return Array.isArray(persistedMessages) ? persistedMessages as Message[] : [];
+    if (!wsInfo) return [];
 
     const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
     const streamResult = await container.readThreadMessagesStream(threadId);
     if (!streamResult.success || !streamResult.response) {
-      return Array.isArray(persistedMessages) ? persistedMessages as Message[] : [];
+      return [];
     }
 
-    const legacyMessages = await readMessagesFromResponse(streamResult.response);
-    if (Array.isArray(persistedMessages) && persistedMessages.length > 0) {
-      return mergeThreadMessages(legacyMessages, persistedMessages as Message[]);
-    }
-    return legacyMessages;
+    return await readMessagesFromResponse(streamResult.response);
   } catch (e) {
     console.error('[getMessages] Error:', e);
-    return Array.isArray(persistedMessages) ? persistedMessages as Message[] : [];
+    return [];
   }
 }
 

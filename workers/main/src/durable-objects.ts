@@ -16,8 +16,7 @@ import {
   sanitizeGeneratedThreadTitle,
   THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
 } from '../../../src/lib/thread-title';
-import type { Message as UiMessage, LlmModel } from '../../../src/types';
-import { applyRuntimeEventToMessages } from '../../../desktop/shared/message-state';
+import type { LlmModel } from '../../../src/types';
 import { isOrgBanned } from "./ban-list";
 
 export type PreviewTarget =
@@ -516,7 +515,6 @@ const HEADER_USER_ID = "X-Chiridion-User-Id";
 
 const TRACE_CHAT_THREAD_DO = false;
 const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
-const CHAT_PERSISTED_MESSAGES_KEY = 'chatPersistedMessages';
 
 /**
  * ChatThreadDO - One per thread, holds preview state + chat websocket bridge.
@@ -556,9 +554,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private pendingExternalTurn: PendingExternalTurn | null = null;
   private titleGenerationInFlight: boolean = false;
   private codexSessionId: string | null = null;
-  private persistedMessages: UiMessage[] = [];
-  private persistedStreamingMessageIds: Record<string, string | null> = {};
-
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
   private runnerPingTimer: number | null = null;
@@ -749,17 +744,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
       if (Array.isArray(storedTodos)) {
         this.currentTodos = storedTodos;
-      }
-
-      const storedPersistedMessages = ctx.storage.kv.get<UiMessage[]>(CHAT_PERSISTED_MESSAGES_KEY);
-      if (Array.isArray(storedPersistedMessages)) {
-        this.persistedMessages = storedPersistedMessages.filter((message) => (
-          Boolean(message) &&
-          typeof message.id === 'string' &&
-          typeof message.thread_id === 'string' &&
-          (message.role === 'user' || message.role === 'assistant') &&
-          typeof message.created_at === 'number'
-        ));
       }
 
       const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
@@ -1541,7 +1525,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.emitChatError("Failed to send message to sandbox");
       return;
     }
-    this.appendPersistedUserMessage(attributedContent);
     this.setChatIsStreaming(true);
 
     this.ctx.waitUntil(
@@ -1910,7 +1893,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         error: "Failed to send message to sandbox",
       });
     } else {
-      this.appendPersistedUserMessage(attributedContent);
       this.setChatIsStreaming(true);
       this.ctx.waitUntil(
         this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
@@ -2098,48 +2080,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     return textBlocks.join("\n").trim();
-  }
-
-  private persistMessagesSnapshot(): void {
-    this.ctx.storage.kv.put(CHAT_PERSISTED_MESSAGES_KEY, this.persistedMessages);
-  }
-
-  private appendPersistedUserMessage(content: string): void {
-    const context = this.chatContext;
-    if (!context?.threadId) return;
-
-    this.persistedMessages = [
-      ...this.persistedMessages,
-      {
-        id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        thread_id: context.threadId,
-        role: 'user',
-        content,
-        created_at: Date.now(),
-      },
-    ];
-    this.persistMessagesSnapshot();
-  }
-
-  private applyPersistedRunnerEvent(
-    provider: 'claude' | 'codex',
-    event: unknown,
-  ): void {
-    const context = this.chatContext;
-    if (!context?.threadId) return;
-
-    this.persistedMessages = applyRuntimeEventToMessages(
-      this.persistedMessages,
-      context.threadId,
-      provider,
-      event,
-      this.persistedStreamingMessageIds,
-    );
-    this.persistMessagesSnapshot();
-  }
-
-  getPersistedMessages(): UiMessage[] | null {
-    return this.persistedMessages.length > 0 ? this.persistedMessages : null;
   }
 
   private async updateThreadMetadataForUserMessage(messageContent: string): Promise<void> {
@@ -2672,12 +2612,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.resolvePendingExternalTurn({ status: "result" });
       }
 
-      this.applyPersistedRunnerEvent('claude', sdkEvent);
     }
 
     if (eventType === 'runtime_event') {
       const runtimeEvent = event.event;
-      this.applyPersistedRunnerEvent('codex', runtimeEvent);
 
       const method =
         runtimeEvent && typeof runtimeEvent === 'object' && 'method' in (runtimeEvent as Record<string, unknown>)

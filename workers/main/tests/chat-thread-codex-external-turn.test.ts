@@ -21,7 +21,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.trace = vi.fn();
     fake.persistRunnerSeqIfNeeded = vi.fn();
     fake.setChatIsStreaming = vi.fn();
-    fake.applyPersistedRunnerEvent = vi.fn();
     fake.pushChatEvent = vi.fn();
     fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
 
