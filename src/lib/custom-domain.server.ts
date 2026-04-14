@@ -5,10 +5,8 @@ import {
 } from '../../workers/main/src/cf-api-proxy';
 import {
   getExpectedCustomDomainHostname,
-  isAppCustomDomainReady,
 } from './app-url';
-
-const CUSTOM_DOMAIN_REFRESH_INTERVAL_MS = 60 * 1000;
+import { shouldRefreshAppCustomDomainState } from './custom-domain-state';
 
 interface CustomDomainRefreshEnv {
   ORG: DurableObjectNamespace<any>;
@@ -30,26 +28,6 @@ interface OrgCustomDomainRpc {
   ): Promise<WorkerScript | null>;
 }
 
-function shouldRefreshWorkerScriptCustomDomain(
-  script: WorkerScript,
-  orgCustomDomain: string,
-  now: number
-): boolean {
-  if (isAppCustomDomainReady(script, orgCustomDomain)) {
-    return false;
-  }
-
-  if (script.custom_domain_hostname && script.custom_domain_hostname !== getExpectedCustomDomainHostname(script.script_name, orgCustomDomain)) {
-    return true;
-  }
-
-  if (!script.custom_domain_updated_at) {
-    return true;
-  }
-
-  return now - script.custom_domain_updated_at >= CUSTOM_DOMAIN_REFRESH_INTERVAL_MS;
-}
-
 export async function refreshWorkerScriptCustomDomainState(
   env: CustomDomainRefreshEnv,
   orgId: string,
@@ -63,7 +41,7 @@ export async function refreshWorkerScriptCustomDomainState(
     return script;
   }
 
-  if (!shouldRefreshWorkerScriptCustomDomain(script, orgCustomDomain, now)) {
+  if (!shouldRefreshAppCustomDomainState(script, orgCustomDomain, now)) {
     return script;
   }
 
