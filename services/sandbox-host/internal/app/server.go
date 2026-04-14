@@ -284,7 +284,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 	case route.Subpath == "/exec" && req.Method == http.MethodPost:
 		return s.handleExec(w, req, name, opts)
 	case route.Subpath == "/chat/messages" && req.Method == http.MethodGet:
-		return s.handleChatMessages(w, req, name, opts)
+		return s.handleChatMessages(w, req, name)
 	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
 		return s.forwardDataProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
@@ -300,7 +300,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 	}
 }
 
-func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, name string, opts container.EnsureContainerOptions) error {
+func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, name string) error {
 	threadID := strings.TrimSpace(req.URL.Query().Get("threadId"))
 	if threadID == "" {
 		errorJSON(w, "threadId query param required", http.StatusBadRequest)
@@ -370,12 +370,10 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		return nil
 	}
 
-	if _, err := s.fs.ReadInfo(name, fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", threadID)); err == nil {
-		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
-			return err
-		}
-		if messages, err := readCodexAppServerMessages(req.Context(), name, threadID, codexSessionID); err != nil {
-			log.Printf("[SandboxHost] codex message history unavailable thread=%s container=%s: %v", threadID, name, err)
+	if info, err := s.fs.ReadInfo(name, fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", threadID)); err == nil {
+		hostCodexHome := filepath.Dir(info.HostPath)
+		if messages, err := readCodexAppServerMessages(req.Context(), s.cfg.HostCodexPath, hostCodexHome, threadID, codexSessionID); err != nil {
+			log.Printf("[SandboxHost] codex message history unavailable thread=%s codexHome=%s: %v", threadID, hostCodexHome, err)
 		} else if len(messages) > 0 {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"success":  true,

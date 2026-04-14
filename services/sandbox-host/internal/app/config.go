@@ -15,6 +15,7 @@ type Config struct {
 	ListenAddr                 string
 	ProxyPort                  int
 	ProxyListenAddr            string
+	HostCodexPath              string
 	DataProxyUpstreamURL       string
 	IdleTimeout                time.Duration
 	ReadHeaderTimeout          time.Duration
@@ -71,6 +72,7 @@ func LoadConfig() Config {
 		ListenAddr:                 ":" + strconv.Itoa(controlPort),
 		ProxyPort:                  proxyPort,
 		ProxyListenAddr:            ":" + strconv.Itoa(proxyPort),
+		HostCodexPath:              envString("HOST_CODEX_PATH", "/usr/local/bin/chiridion-host-codex"),
 		DataProxyUpstreamURL:       envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
 		IdleTimeout:                time.Duration(idleSecs) * time.Second,
 		ReadHeaderTimeout:          15 * time.Second,

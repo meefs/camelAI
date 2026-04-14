@@ -8,12 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
-
-const codexAppServerPath = "/opt/chiridion/node_modules/.bin/codex"
 
 type codexRPCError struct {
 	Code    int    `json:"code"`
@@ -49,39 +48,51 @@ type codexTurn struct {
 	CompletedAt *int64            `json:"completedAt"`
 }
 
-func readCodexAppServerMessages(ctx context.Context, containerName, camelThreadID, codexSessionID string) ([]parsedChatMessage, error) {
+func readCodexAppServerMessages(ctx context.Context, codexExecutablePath, codexHome, camelThreadID, codexSessionID string) ([]parsedChatMessage, error) {
 	camelThreadID = strings.TrimSpace(camelThreadID)
 	if camelThreadID == "" {
 		return nil, errors.New("thread id is required")
 	}
 
-	codexHome := fmt.Sprintf("/home/claude/.codex/threads/%s", camelThreadID)
+	codexExecutablePath = strings.TrimSpace(codexExecutablePath)
+	if codexExecutablePath == "" {
+		return nil, errors.New("codex executable path is required")
+	}
+	if _, err := os.Stat(codexExecutablePath); err != nil {
+		return nil, fmt.Errorf("host codex executable unavailable at %s: %w", codexExecutablePath, err)
+	}
+
+	codexHome = strings.TrimSpace(codexHome)
+	if codexHome == "" {
+		return nil, errors.New("codex home path is required")
+	}
+
 	codexThreadID := strings.TrimSpace(codexSessionID)
 	if codexThreadID == "" {
 		var err error
-		codexThreadID, err = listLatestCodexThreadID(ctx, containerName, codexHome)
+		codexThreadID, err = listLatestCodexThreadID(ctx, codexExecutablePath, codexHome)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	messages, err := readCodexThreadMessages(ctx, containerName, codexHome, camelThreadID, codexThreadID)
+	messages, err := readCodexThreadMessages(ctx, codexExecutablePath, codexHome, camelThreadID, codexThreadID)
 	if err == nil || codexSessionID == "" {
 		return messages, err
 	}
 
-	fallbackThreadID, fallbackErr := listLatestCodexThreadID(ctx, containerName, codexHome)
+	fallbackThreadID, fallbackErr := listLatestCodexThreadID(ctx, codexExecutablePath, codexHome)
 	if fallbackErr != nil {
 		return nil, err
 	}
 	if fallbackThreadID == codexThreadID {
 		return nil, err
 	}
-	return readCodexThreadMessages(ctx, containerName, codexHome, camelThreadID, fallbackThreadID)
+	return readCodexThreadMessages(ctx, codexExecutablePath, codexHome, camelThreadID, fallbackThreadID)
 }
 
-func listLatestCodexThreadID(ctx context.Context, containerName, codexHome string) (string, error) {
-	raw, err := runCodexAppServerRequest(ctx, containerName, codexHome, "thread/list", map[string]any{
+func listLatestCodexThreadID(ctx context.Context, codexExecutablePath, codexHome string) (string, error) {
+	raw, err := runCodexAppServerRequest(ctx, codexExecutablePath, codexHome, "thread/list", map[string]any{
 		"limit": 1,
 	})
 	if err != nil {
@@ -98,8 +109,8 @@ func listLatestCodexThreadID(ctx context.Context, containerName, codexHome strin
 	return strings.TrimSpace(response.Data[0].ID), nil
 }
 
-func readCodexThreadMessages(ctx context.Context, containerName, codexHome, camelThreadID, codexThreadID string) ([]parsedChatMessage, error) {
-	raw, err := runCodexAppServerRequest(ctx, containerName, codexHome, "thread/read", map[string]any{
+func readCodexThreadMessages(ctx context.Context, codexExecutablePath, codexHome, camelThreadID, codexThreadID string) ([]parsedChatMessage, error) {
+	raw, err := runCodexAppServerRequest(ctx, codexExecutablePath, codexHome, "thread/read", map[string]any{
 		"threadId":     codexThreadID,
 		"includeTurns": true,
 	})
@@ -114,7 +125,7 @@ func readCodexThreadMessages(ctx context.Context, containerName, codexHome, came
 	return parseCodexThreadReadMessages(response, camelThreadID), nil
 }
 
-func runCodexAppServerRequest(ctx context.Context, containerName, codexHome, method string, params any) (json.RawMessage, error) {
+func runCodexAppServerRequest(ctx context.Context, codexExecutablePath, codexHome, method string, params any) (json.RawMessage, error) {
 	const initializeRequestID = 1
 	requestID := 2
 
@@ -134,15 +145,11 @@ func runCodexAppServerRequest(ctx context.Context, containerName, codexHome, met
 
 	cmd := exec.CommandContext(
 		timeoutCtx,
-		"docker",
-		"exec",
-		"-i",
-		"-e",
-		"CODEX_HOME="+codexHome,
-		containerName,
-		codexAppServerPath,
+		codexExecutablePath,
 		"app-server",
 	)
+	cmd.Dir = codexHome
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

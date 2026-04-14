@@ -53,6 +53,11 @@ rsync -az --delete \
   "$LOCAL_ROOT/services/sandbox-host/" \
   "$VM:$REMOTE_BUILD/services/sandbox-host/"
 
+if [[ " ${TARGETS[*]} " == *" sandbox-host "* ]]; then
+  echo "==> Installing latest host Codex on $VM..."
+  ssh "$VM" 'bash -s' < "$LOCAL_ROOT/scripts/install-host-codex.sh"
+fi
+
 for svc in "${TARGETS[@]}"; do
   pkg="$(service_pkg "$svc")"
   bin="$(service_bin "$svc")"
