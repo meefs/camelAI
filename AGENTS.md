@@ -43,32 +43,13 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - `dispatcher/` - Routes `*.camelai.app` to user workers (Workers for Platforms); auth/error redirects use environment-specific `MAIN_APP_URL`
    - `bedrock-provider/` - Standalone custom-provider worker for AI Gateway that translates Anthropic-style `/v1/messages` requests to Bedrock and converts Bedrock streaming event frames into Anthropic SSE
 
-3. **Desktop Prototype** (`desktop/`)
-   - Separate local-first macOS desktop project, intentionally not coupled to Cloudflare runtime bindings
-  - `backend/` - Desktop service + optional transport wrapper with persisted local threads/messages; it auto-starts the local runtime as an internal dependency on app boot, stages runtime auth/env into the narrow shared runtime directory before startup, probes helper-reported running runtimes with `/health` on relaunch and restarts stale ones once before proceeding, proxies both Claude and Codex chat turns into the runtime control plane, persists structured assistant transcripts (tool calls/thinking blocks) for reloads, keeps per-thread provider session ids warm, talks to the runtime helper over a persistent stdio JSON-RPC daemon for lifecycle/status commands, and routes desktop provider concerns (provider picker state, auth state, model lists, runtime env staging) through provider definitions instead of hard-coded Claude-only backend state. The AgentOS desktop prototype also surfaces Pi's OpenRouter model catalog whenever `OPENROUTER_API_KEY` or a Pi `openrouter` auth entry is present.
-   - `control-plane/` - Source for the Linux-side Node control-plane image; runtime boot now uses the published registry image instead of mounting this directory into the container, and the control plane can run either the Claude Agent SDK or `codex app-server` inside the guest depending on the selected desktop provider
-   - `electron/` - Electron shell + preload bridge; renderer talks to Electron main over IPC, staged/packageable builds load the bundled desktop service directly in-process, local development falls back to the backend child over stdio, and startup probe mode can emit JSON diagnostics for preload/backend/renderer handshake failures
-   - `renderer/` - Vite/React chat UI reusing the repo's Tailwind/shadcn primitives
-   - `runtime-helper/` - Swift executable boundary for local runtime lifecycle; supports a persistent `daemon` mode for JSON-RPC lifecycle/status commands, uses Apple containerization to start and stop the local runtime, validates the staged kernel/runtime directories, pulls the published control-plane image (`docker.io/vercantes/camelai-openwork:20260404-v5`) when needed, starts it through the image entrypoint so the control plane runs as the unprivileged `node` user, and preserves a cached root filesystem across app restarts for faster warm boots. Local desktop development can still inject a source override of the control plane and its companion Node dependencies into the guest runtime.
-   - `scripts/stage.mjs` - Stages a packaging-friendly desktop payload under `desktop/app-resources/` with a bundled desktop-service module, compiled backend binary fallback, built renderer, staged Linux kernel, and runtime helper binary
-   - `scripts/probe.mjs` - Hidden Electron startup probe for debugging desktop initialization regressions against dev or staged app paths
-   - `scripts/probe-turn.mjs` - Fast runtime-turn probe harness that waits for the local runtime and verifies a real `/turn` without Electron or backend stdio in the loop
-   - `../desktop-agentos/` - Experimental sibling desktop variant that reuses the Electron shell and renderer but swaps the Docker or Apple-containerized runtime for a direct AgentOS VM booted by the backend; it currently runs the AgentOS Pi adapter against a host-mounted workspace, an app-managed Pi settings home, and per-thread persisted Pi session directories so chats survive desktop/runtime restarts
-
-4. **Desktop AgentOS Prototype** (`desktop-agentos/`)
-   - Parallel experimental desktop runtime that keeps the existing Electron shell + renderer protocol but swaps the containerized sandbox path for an embedded Rivet AgentOS VM. Its Rivet AgentOS packages now live in `desktop-agentos/package.json` so main web or worker installs do not pull that experimental dependency set.
-   - `backend/` - Codex-only desktop backend that persists local threads/messages, mounts a writable host workspace into AgentOS, auto-answers ACP permission prompts, stages Pi settings plus host `~/.pi/agent/auth.json` into the app-managed Pi home, and translates AgentOS session updates into the existing desktop Codex event shape so the shared renderer can keep rendering tool calls/thinking blocks
-   - `electron/` - Lightweight Electron main/preload pair for this variant; it always runs the backend over stdio and reuses the shared desktop renderer bundle/dev server
-   - `scripts/dev.mjs` - Starts the shared renderer, tails the AgentOS backend log, and launches Electron against the AgentOS-backed desktop variant
-   - Current limitation: development-oriented only; it still expects the workspace checkout plus both root `node_modules/` and `desktop-agentos/node_modules/` to be available, and OpenAI-backed Pi sessions over AgentOS ACP still return empty responses even when Pi OAuth credentials are staged from `~/.pi/agent/auth.json`
-
-5. **Sandbox Host** (`services/sandbox-host/`)
+3. **Sandbox Host** (`services/sandbox-host/`)
    - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
    - Accessed via Workers VPC binding (Cloudflare Tunnel) — not exposed to public internet
    - Host FS operations on a Premium SSD v2 managed disk mounted as XFS at `/srv/sandboxes`
    - Proxies control plane traffic (health, env, chat WebSocket) to containers
 
-6. **Sandbox** (`sandbox/`)
+4. **Sandbox** (`sandbox/`)
    - `control-plane.mjs` - In-sandbox control plane server + Claude Agent SDK session runner
    - `create-worker/` - Project scaffolders (`create-worker` for starter apps, `publish` for deploying files as standalone apps)
    - `skills/` - Agent skills (data-analysis, developing-software, file-sharing, testing-debugging)
@@ -458,9 +439,6 @@ If you need caching, use `ctx.storage.kv` which is scoped per DO instance.
 ```bash
 bun run dev          # Full Cloudflare dev (recommended), default port 3001
 bun run build        # Production build → build/client/ + build/server/
-bun run desktop:dev  # Local Electron + Bun backend desktop prototype
-bun run desktop:check
-bun run desktop:runtime-helper:build
 ```
 
 ### Environment Variables

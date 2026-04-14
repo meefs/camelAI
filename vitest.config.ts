@@ -14,9 +14,6 @@ export default defineConfig({
     setupFiles: ['./tests/setup.ts'],
     globals: true,
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
-    exclude: [
-      'tests/integration/**',
-      'tests/desktop-agentos-openrouter.test.ts',
-    ],
+    exclude: ['tests/integration/**'],
   },
 });

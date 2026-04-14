@@ -311,6 +311,9 @@ export async function getLegacyClaudeSessionId(
   threadId: string
 ): Promise<string | null> {
   const env = getEnv(context);
+  if (!env || typeof env !== 'object' || !('CHAT_THREAD' in env) || !env.CHAT_THREAD) {
+    return null;
+  }
   const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
   const sessionId = await threadStub.getLegacyClaudeSessionId().catch(() => null);
   return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
@@ -321,6 +324,9 @@ export async function getCodexSessionId(
   threadId: string
 ): Promise<string | null> {
   const env = getEnv(context);
+  if (!env || typeof env !== 'object' || !('CHAT_THREAD' in env) || !env.CHAT_THREAD) {
+    return null;
+  }
   const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
   const sessionId = await threadStub.getCodexSessionId().catch(() => null);
   return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;

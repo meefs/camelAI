@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyRuntimeEventToMessages } from '../desktop/shared/message-state';
+import { applyRuntimeEventToMessages } from '@/lib/runtime-message-state';
 import type { Message } from '@/types';
 
 describe('Codex todo state integration', () => {

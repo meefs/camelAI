@@ -1,18 +1,30 @@
-import type { ContentBlock, Message, ToolResultBlock } from '../../src/types';
+import type { ChatHarness, ContentBlock, Message, ToolResultBlock } from '../types';
 import {
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
   extractToolEventMetaInfo,
   finalizeStreamingMessage,
   type SDKEvent,
-} from '../../src/lib/streaming';
-import type { DesktopMessage, DesktopProvider } from './protocol';
+} from './streaming';
 
-function toUiRole(role: DesktopMessage['role']): Message['role'] {
+type RuntimeProvider = ChatHarness | 'agentos';
+
+type RuntimeMessage = {
+  id: string;
+  threadId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string | ContentBlock[];
+  createdAt: number;
+  status: 'done' | 'streaming' | 'error';
+  isMeta?: boolean;
+  sourceToolUseID?: string;
+};
+
+function toUiRole(role: RuntimeMessage['role']): Message['role'] {
   return role === 'assistant' ? 'assistant' : 'user';
 }
 
-export function desktopMessageToUiMessage(message: DesktopMessage): Message {
+export function runtimeMessageToUiMessage(message: RuntimeMessage): Message {
   return {
     id: message.id,
     thread_id: message.threadId,
@@ -25,7 +37,7 @@ export function desktopMessageToUiMessage(message: DesktopMessage): Message {
   };
 }
 
-export function uiMessageToDesktopMessage(message: Message, previous?: DesktopMessage): DesktopMessage {
+export function uiMessageToRuntimeMessage(message: Message, previous?: RuntimeMessage): RuntimeMessage {
   return {
     id: message.id,
     threadId: message.thread_id,
@@ -42,12 +54,12 @@ export function uiMessageToDesktopMessage(message: Message, previous?: DesktopMe
   };
 }
 
-export function uiMessagesToDesktopMessages(
+export function uiMessagesToRuntimeMessages(
   messages: Message[],
-  previousMessages: DesktopMessage[] = []
-): DesktopMessage[] {
+  previousMessages: RuntimeMessage[] = []
+): RuntimeMessage[] {
   const previousById = new Map(previousMessages.map((message) => [message.id, message]));
-  return messages.map((message) => uiMessageToDesktopMessage(message, previousById.get(message.id)));
+  return messages.map((message) => uiMessageToRuntimeMessage(message, previousById.get(message.id)));
 }
 
 function getLastToolUseId(message?: Message): string | undefined {
@@ -121,7 +133,7 @@ function ensureStreamingMessage(
 
 export function mergeSnapshotMessages(
   existingMessages: Message[] | undefined,
-  snapshotMessages: DesktopMessage[],
+  snapshotMessages: RuntimeMessage[],
   threadId: string,
   streamingMessageIds: Record<string, string | null>
 ): Message[] {
@@ -131,7 +143,7 @@ export function mergeSnapshotMessages(
 
   const merged = snapshotMessages.map((message) => {
     const current = existingById.get(message.id);
-    const next = desktopMessageToUiMessage(message);
+    const next = runtimeMessageToUiMessage(message);
     if (!current) {
       return next;
     }
@@ -1543,7 +1555,7 @@ function applyCodexRuntimeEvent(
 export function applyRuntimeEventToMessages(
   currentMessages: Message[],
   threadId: string,
-  provider: DesktopProvider,
+  provider: RuntimeProvider,
   event: unknown,
   streamingMessageIds: Record<string, string | null>
 ): Message[] {

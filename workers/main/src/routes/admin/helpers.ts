@@ -34,6 +34,27 @@ type ChatThreadLookup = {
   getCodexSessionId(): Promise<string | null>;
 };
 
+async function getOptionalChatThreadSessionId(
+  env: Env,
+  threadId: string,
+  methodName: keyof ChatThreadLookup,
+): Promise<string | null> {
+  if (!('CHAT_THREAD' in env) || !env.CHAT_THREAD) {
+    return null;
+  }
+
+  const chatThread = env.CHAT_THREAD.get(
+    env.CHAT_THREAD.idFromName(threadId),
+  ) as unknown as Partial<ChatThreadLookup>;
+  const method = chatThread[methodName];
+  if (typeof method !== 'function') {
+    return null;
+  }
+
+  const sessionId = await Promise.resolve(method.call(chatThread)).catch(() => null);
+  return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
+}
+
 export function getAdminIndexStub(env: AdminIndexEnv) {
   return env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index')) as DurableObjectStub<AdminIndexDO>;
 }
@@ -79,11 +100,16 @@ export async function loadAdminThreadMessagesResponse(
     threadContext.org_id,
   );
 
-  const chatThread = env.CHAT_THREAD.get(
-    env.CHAT_THREAD.idFromName(trimmedThreadId),
-  ) as unknown as ChatThreadLookup;
-  const legacyClaudeSessionId = await chatThread.getLegacyClaudeSessionId().catch(() => null);
-  const codexSessionId = await chatThread.getCodexSessionId().catch(() => null);
+  const legacyClaudeSessionId = await getOptionalChatThreadSessionId(
+    env,
+    trimmedThreadId,
+    'getLegacyClaudeSessionId',
+  );
+  const codexSessionId = await getOptionalChatThreadSessionId(
+    env,
+    trimmedThreadId,
+    'getCodexSessionId',
+  );
   const streamResult = await container.readThreadMessagesStream(trimmedThreadId, {
     claudeSessionId: legacyClaudeSessionId,
     codexSessionId,

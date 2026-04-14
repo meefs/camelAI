@@ -78,7 +78,7 @@ import {
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from '@/lib/streaming';
-import { applyRuntimeEventToMessages } from '../../desktop/shared/message-state';
+import { applyRuntimeEventToMessages } from '@/lib/runtime-message-state';
 import { getAppUrl, getVanityDomain, getIframeDomain, buildAppLabel } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';

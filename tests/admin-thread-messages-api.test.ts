@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { WorkspaceContainer } from '../workers/main/src/workspace-container';
 
 const requireSuperuserMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
 const adminGetThreadContextByIdMock = vi.fn();
+const getLegacyClaudeSessionIdMock = vi.fn();
+const getCodexSessionIdMock = vi.fn();
 const orgGetMock = vi.fn();
 const orgIdFromNameMock = vi.fn((id: string) => id);
 const orgGetThreadMock = vi.fn();
@@ -22,10 +23,21 @@ vi.mock('@/lib/auth-do.server', () => ({
   adminGetThreadContextById: adminGetThreadContextByIdMock,
 }));
 
-const { loader } = await import('@/routes/api/admin.threads.$id.messages');
+vi.mock('@/lib/chat-do.server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/chat-do.server')>();
+  return {
+    ...actual,
+    getLegacyClaudeSessionId: getLegacyClaudeSessionIdMock,
+    getCodexSessionId: getCodexSessionIdMock,
+  };
+});
+
+let loader: typeof import('@/routes/api/admin.threads.$id.messages').loader;
+let WorkspaceContainer: typeof import('../workers/main/src/workspace-container').WorkspaceContainer;
 
 describe('GET /api/admin/threads/:id/messages', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
     vi.clearAllMocks();
     getEnvMock.mockReturnValue({});
     orgGetMock.mockReturnValue({ getThread: orgGetThreadMock });
@@ -35,6 +47,11 @@ describe('GET /api/admin/threads/:id/messages', () => {
         get: orgGetMock,
       },
     });
+    getLegacyClaudeSessionIdMock.mockResolvedValue(null);
+    getCodexSessionIdMock.mockResolvedValue(null);
+
+    ({ WorkspaceContainer } = await import('../workers/main/src/workspace-container'));
+    ({ loader } = await import('@/routes/api/admin.threads.$id.messages'));
   });
 
   it('returns auth response when superuser check fails', async () => {
@@ -106,6 +123,9 @@ describe('GET /api/admin/threads/:id/messages', () => {
       success: true,
       messages: [{ id: 'm1', role: 'user', content: 'hello', created_at: 1 }],
     });
-    expect(WorkspaceContainer.prototype.readThreadMessagesStream).toHaveBeenCalledWith('thread_123');
+    expect(WorkspaceContainer.prototype.readThreadMessagesStream).toHaveBeenCalledWith(
+      'thread_123',
+      { claudeSessionId: null, codexSessionId: null }
+    );
   });
 });

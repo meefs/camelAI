@@ -17,18 +17,6 @@ bun run dev
 This runs React Router dev with Cloudflare bindings.
 Default app URL: `http://localhost:3001` (override with `VITE_DEV_PORT`).
 
-## Desktop Prototype
-
-There is now a separate local-first desktop scaffold under [`desktop/`](./desktop).
-
-```bash
-bun run desktop:dev
-bun run desktop:check
-bun run desktop:vm-helper:build
-```
-
-The current desktop path is macOS-focused, uses Electron + a local Bun backend, reads `ANTHROPIC_API_KEY` from the environment, and does not depend on Cloudflare login or app deployment.
-
 ## Build
 
 ```bash
