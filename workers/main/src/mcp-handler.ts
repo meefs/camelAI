@@ -1610,17 +1610,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                     ssl_status: record.ssl.status,
                     error: null,
                   })) ?? currentScript;
-              } else {
-                // Hostname not found in Cloudflare — clear stale state so retry can act on it
-                currentScript =
-                  (await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                    hostname: expectedHostname,
-                    cf_hostname_id: null,
-                    status: null,
-                    ssl_status: null,
-                    error: 'Cloudflare hostname not found — use retry_custom_domain_hostnames to re-provision',
-                  })) ?? currentScript;
               }
+              // When both lookups return null we can't distinguish "truly missing"
+              // from transient CF API failures (rate limits, 5xx), so preserve
+              // existing cached state rather than clearing it incorrectly.
             } catch (err) {
               // Fall through to diagnostic state derived from cached data
             }
