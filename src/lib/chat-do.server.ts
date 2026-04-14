@@ -25,6 +25,12 @@ export interface ThreadPreviewState {
   version: number;
 }
 
+export interface RawThreadCreator {
+  created_by: string;
+  thread_count: number;
+  latest_updated_at: number;
+}
+
 // Helper to convert OrgThread to Thread
 function toThread(orgThread: OrgThread): Thread {
   return {
@@ -83,8 +89,8 @@ export async function getThreadsPaginated(
   if (!wsInfo) {
     return { items: [], total: 0, offset, limit };
   }
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const result = await orgStub.getThreadsPaginated(offset, limit, workspaceId);
+  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const result = await orgStub.getThreadsPaginated(offset, limit, workspaceId, params.createdBy);
   return {
     items: result.items.map((t) => toThread(t)),
     total: result.total,
@@ -108,14 +114,48 @@ export async function getThreadsPaginatedAllWorkspaces(
   if (!wsInfo) {
     return { items: [], total: 0, offset, limit };
   }
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const result = await orgStub.getThreadsAllWorkspacesPaginated(workspaceIds, offset, limit);
+  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const result = await orgStub.getThreadsAllWorkspacesPaginated(
+    workspaceIds,
+    offset,
+    limit,
+    params.createdBy
+  );
   return {
     items: result.items.map((t) => toThread(t)),
     total: result.total,
     offset: result.offset,
     limit: result.limit,
   };
+}
+
+export async function getThreadCreators(
+  context: AppLoadContext,
+  workspaceId: string
+): Promise<RawThreadCreator[]> {
+  const env = getEnv(context);
+  const wsInfo = await getWorkspaceInfo(env, workspaceId);
+  if (!wsInfo) {
+    return [];
+  }
+  const orgStub = getOrgStub(env, wsInfo.org_id);
+  return await orgStub.getThreadCreators(workspaceId);
+}
+
+export async function getThreadCreatorsAllWorkspaces(
+  context: AppLoadContext,
+  workspaceIds: string[]
+): Promise<RawThreadCreator[]> {
+  if (workspaceIds.length === 0) {
+    return [];
+  }
+  const env = getEnv(context);
+  const wsInfo = await getWorkspaceInfo(env, workspaceIds[0]);
+  if (!wsInfo) {
+    return [];
+  }
+  const orgStub = getOrgStub(env, wsInfo.org_id);
+  return await orgStub.getThreadCreatorsAllWorkspaces(workspaceIds);
 }
 
 export async function createThread(

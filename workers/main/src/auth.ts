@@ -2682,7 +2682,8 @@ export class OrgDO extends DurableObject<DOEnv> {
   getThreadsAllWorkspacesPaginated(
     workspaceIds: string[],
     offset = 0,
-    limit = 50
+    limit = 50,
+    createdBy?: string
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     this.ensureThreadSchemaColumns();
     const resolvedOffset = Math.max(0, Math.floor(offset));
@@ -2700,6 +2701,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     const placeholders = workspaceIds.map(() => '?').join(',');
     const whereClauses = [`workspace_id IN (${placeholders})`];
     const queryParams: (string | number)[] = [...workspaceIds];
+
+    if (createdBy) {
+      whereClauses.push('created_by = ?');
+      queryParams.push(createdBy);
+    }
 
     const whereSql = whereClauses.join(' AND ');
 
@@ -2723,6 +2729,55 @@ export class OrgDO extends DurableObject<DOEnv> {
       offset: resolvedOffset,
       limit: resolvedLimit,
     };
+  }
+
+  getThreadCreators(
+    workspaceId?: string
+  ): Array<{ created_by: string; thread_count: number; latest_updated_at: number }> {
+    this.ensureThreadSchemaColumns();
+
+    const whereClauses: string[] = [];
+    const params: string[] = [];
+
+    if (workspaceId) {
+      whereClauses.push('workspace_id = ?');
+      params.push(workspaceId);
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    return this.sql
+      .exec(
+        `SELECT created_by, COUNT(*) as thread_count, MAX(updated_at) as latest_updated_at
+         FROM threads ${whereSql}
+         GROUP BY created_by
+         ORDER BY latest_updated_at DESC`,
+        ...params
+      )
+      .toArray() as Array<{ created_by: string; thread_count: number; latest_updated_at: number }>;
+  }
+
+  getThreadCreatorsAllWorkspaces(
+    workspaceIds: string[]
+  ): Array<{ created_by: string; thread_count: number; latest_updated_at: number }> {
+    this.ensureThreadSchemaColumns();
+
+    if (workspaceIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = workspaceIds.map(() => '?').join(', ');
+
+    return this.sql
+      .exec(
+        `SELECT created_by, COUNT(*) as thread_count, MAX(updated_at) as latest_updated_at
+         FROM threads
+         WHERE workspace_id IN (${placeholders})
+         GROUP BY created_by
+         ORDER BY latest_updated_at DESC`,
+        ...workspaceIds
+      )
+      .toArray() as Array<{ created_by: string; thread_count: number; latest_updated_at: number }>;
   }
 
   /**
