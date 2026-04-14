@@ -1610,6 +1610,16 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                     ssl_status: record.ssl.status,
                     error: null,
                   })) ?? currentScript;
+              } else {
+                // Hostname not found in Cloudflare — clear stale state so retry can act on it
+                currentScript =
+                  (await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                    hostname: expectedHostname,
+                    cf_hostname_id: null,
+                    status: null,
+                    ssl_status: null,
+                    error: 'Cloudflare hostname not found — use retry_custom_domain_hostnames to re-provision',
+                  })) ?? currentScript;
               }
             } catch (err) {
               // Fall through to diagnostic state derived from cached data
@@ -1987,11 +1997,22 @@ async function resolveCnameViaDoH(hostname: string): Promise<CnameLookupResult> 
       };
     }
     const data = await resp.json() as {
+      Status?: number;
       Answer?: Array<{ type: number; data: string }>;
     };
+    // DNS Status: 0 = NOERROR, 3 = NXDOMAIN (both mean "record doesn't exist" when no CNAME answer).
+    // Anything else (2 = SERVFAIL, 5 = REFUSED, etc.) is a resolver failure.
+    const dnsStatus = data.Status ?? 0;
     // CNAME is DNS type 5
     const cname = data.Answer?.find(a => a.type === 5);
     if (!cname) {
+      if (dnsStatus !== 0 && dnsStatus !== 3) {
+        return {
+          status: 'unavailable',
+          error: `DNS resolver returned status ${dnsStatus}`,
+          http_status: null,
+        };
+      }
       return { status: 'missing' };
     }
     // Remove trailing dot from DNS response
