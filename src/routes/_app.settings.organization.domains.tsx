@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useFetcher, useLoaderData } from 'react-router';
+import { useFetcher, useLoaderData, useNavigate } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.domains';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
@@ -13,14 +13,34 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertCircle, ArrowRight, CheckCircle2, Globe2, Info, Loader2, Trash2 } from 'lucide-react';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { AlertCircle, Check, Copy, Info, Loader2, Trash2 } from 'lucide-react';
 
 export function meta() {
   return [
     { title: 'Domains - Settings - camelAI' },
     { name: 'description', content: 'Manage custom domains' },
   ];
+}
+
+interface AppDomainStatus {
+  name: string;
+  hostname: string | null;
+  status: string | null;
+  ssl_status: string | null;
+  error: string | null;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -36,13 +56,26 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
   };
 
-  const [domain, admin, dcvUuid] = await Promise.all([
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
+
+  const [domain, admin, dcvUuid, scripts] = await Promise.all([
     getOrgCustomDomain(authEnv, authContext.currentOrg.id),
     isOrgAdmin(authEnv, authContext.user.id, authContext.currentOrg.id),
     env.CF_ZONE_ID && env.CF_API_TOKEN
       ? getDcvDelegationUuid(env.CF_ZONE_ID, env.CF_API_TOKEN)
       : Promise.resolve(null),
+    orgStub.listWorkerScripts(),
   ]);
+
+  const apps: AppDomainStatus[] = domain
+    ? scripts.map((s) => ({
+        name: s.script_name,
+        hostname: s.custom_domain_hostname,
+        status: s.custom_domain_status,
+        ssl_status: s.custom_domain_ssl_status,
+        error: s.custom_domain_error,
+      }))
+    : [];
 
   return {
     org: authContext.currentOrg,
@@ -53,23 +86,132 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       fallbackOrigin: env.CF_CUSTOM_HOSTNAME_FALLBACK,
     }),
     dcvUuid,
+    apps,
+    workspaceId: authContext.currentWorkspace?.id ?? null,
   };
 }
 
-function getDomainStatusLabel(status: string | null | undefined): string {
+function StatusBadge({ status }: { status: string | null | undefined }) {
   switch (status) {
     case 'active':
-      return 'Active';
+      return <Badge variant="default" className="bg-green-600 hover:bg-green-600">Active</Badge>;
     case 'failed':
-      return 'Needs attention';
+      return <Badge variant="destructive">Needs attention</Badge>;
     default:
-      return 'Pending activation';
+      return <Badge variant="secondary">Pending activation</Badge>;
   }
 }
 
+function AppStatusIndicator({ app }: { app: AppDomainStatus }) {
+  if (!app.hostname) {
+    return (
+      <span className="flex items-center gap-1.5 text-muted-foreground">
+        <span className="size-2 rounded-full bg-muted-foreground/40" />
+        Not provisioned
+      </span>
+    );
+  }
+  if (app.status === 'active' && app.ssl_status === 'active') {
+    return (
+      <span className="flex items-center gap-1.5 text-green-600">
+        <span className="size-2 rounded-full bg-green-600" />
+        Active
+      </span>
+    );
+  }
+  if (app.status === 'failed' || app.ssl_status === 'failed') {
+    const errorText = app.error || 'Provisioning failed';
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="flex items-center gap-1.5 text-destructive cursor-help">
+            <span className="size-2 rounded-full bg-destructive" />
+            Failed
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="max-w-xs">
+          {errorText}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5 text-yellow-600">
+      <span className="size-2 rounded-full bg-yellow-500" />
+      SSL pending
+    </span>
+  );
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="ghost" size="icon" className="size-7" onClick={handleCopy}>
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="left">
+        {copied ? 'Copied!' : 'Copy'}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function DnsRecordCard({
+  label,
+  name,
+  target,
+}: {
+  label: string;
+  name: string;
+  target: string;
+}) {
+  return (
+    <div className="rounded-md border p-4 space-y-3">
+      <p className="text-sm font-medium">{label}</p>
+      <div className="space-y-2 text-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-muted-foreground w-14 inline-block">Type</span>
+            <span className="ml-3 font-mono">CNAME</span>
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0 flex-1">
+            <span className="text-muted-foreground w-14 inline-block">Name</span>
+            <span className="ml-3 font-mono break-all">{name}</span>
+          </div>
+          <CopyButton value={name} />
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0 flex-1">
+            <span className="text-muted-foreground w-14 inline-block">Target</span>
+            <span className="ml-3 font-mono break-all">{target}</span>
+          </div>
+          <CopyButton value={target} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
+
 export default function DomainsPage() {
-  const { org, domain: initialDomain, isAdmin, dnsTarget, dcvUuid } = useLoaderData<typeof loader>();
+  const { org, domain: initialDomain, isAdmin, dnsTarget, dcvUuid, apps, workspaceId } =
+    useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ domain?: unknown; success?: boolean; error?: string }>();
+  const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
+  const navigate = useNavigate();
   const [domainInput, setDomainInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [domain, setDomain] = useState(initialDomain);
@@ -95,6 +237,28 @@ export default function DomainsPage() {
     }
   }, [domain, fetcher.data, fetcher.state]);
 
+  // Handle thread creation for troubleshooting
+  useEffect(() => {
+    if (createThreadFetcher.state !== 'idle' || !createThreadFetcher.data) return;
+
+    if (createThreadFetcher.data.thread) {
+      const threadId = createThreadFetcher.data.thread.id;
+      sessionStorage.setItem(
+        PENDING_NEW_THREAD_MESSAGE_KEY,
+        JSON.stringify({
+          message: `Help me troubleshoot my custom domain setup. My base domain is ${domain?.domain ?? 'unknown'}.`,
+          threadId,
+        })
+      );
+      navigate(`/chat/${threadId}?newThread=1`);
+      return;
+    }
+
+    if (createThreadFetcher.data.error) {
+      setError(createThreadFetcher.data.error);
+    }
+  }, [createThreadFetcher.state, createThreadFetcher.data, navigate, domain?.domain]);
+
   const handleSetDomain = () => {
     const value = domainInput.trim().toLowerCase();
     if (!value) return;
@@ -115,11 +279,22 @@ export default function DomainsPage() {
     );
   };
 
+  const handleTroubleshoot = () => {
+    if (createThreadFetcher.state !== 'idle') return;
+    createThreadFetcher.submit(
+      {
+        intent: 'createThread',
+        firstMessage: 'Troubleshoot custom domain',
+      },
+      { method: 'post', action: '/chat' }
+    );
+  };
+
   return (
     <div className="space-y-6">
       <SettingsHeader
         title="Domains"
-        description="Point your own domain at camelAI so every app can live at {app-name}.your-domain."
+        description="Point your own domain at camelAI so every app lives at {app-name}.your-domain."
       />
       <Separator />
 
@@ -131,178 +306,164 @@ export default function DomainsPage() {
       )}
 
       {domain ? (
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <Globe2 className="size-4 text-muted-foreground" />
-                  <CardTitle className="text-base font-medium">Custom domain configured</CardTitle>
-                  <Badge variant="secondary">{getDomainStatusLabel(domain.status)}</Badge>
-                </div>
-                <CardDescription className="max-w-2xl">
-                  Your base domain is <span className="font-mono text-foreground">{domain.domain}</span>. Each app will
-                  eventually use <span className="font-mono text-foreground">{'{app-name}'}.{domain.domain}</span>.
-                  camelAI keeps serving the default app URL until Cloudflare reports that specific hostname and certificate
-                  as active, so customers do not get sent to a half-provisioned domain.
-                </CardDescription>
+        <div className="space-y-8">
+          {/* Domain Header */}
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-medium font-mono">{domain.domain}</h3>
+                <StatusBadge status={domain.status} />
               </div>
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                disabled={loading || !isAdmin}
-                onClick={handleRemoveDomain}
-              >
-                <Trash2 className="size-3.5" />
-                Remove
-              </Button>
-            </CardHeader>
-          </Card>
+              <p className="text-sm text-muted-foreground">
+                Apps are served at <span className="font-mono text-foreground">{'{app-name}'}.{domain.domain}</span>.
+                URLs switch from <span className="font-mono">*.camelai.app</span> once each app's hostname and SSL certificate are active.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={loading || !isAdmin}
+              onClick={handleRemoveDomain}
+            >
+              <Trash2 className="size-3.5" />
+              Remove
+            </Button>
+          </div>
 
-          <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-medium">1. Add DNS at your provider</CardTitle>
-                <CardDescription>
-                  Add both records below. The first handles routing, and the second delegates SSL certificate validation to Cloudflare.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-3">
-                  <div className="rounded-md border bg-muted/40 p-4">
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Record 1: Routing</p>
-                    <div className="mt-3 grid gap-3 font-mono text-sm sm:grid-cols-3">
-                      <div>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Host</p>
-                        <p className="mt-1 select-all">*</p>
-                      </div>
-                      <div>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Type</p>
-                        <p className="mt-1">CNAME</p>
-                      </div>
-                      <div>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Target</p>
-                        <p className="mt-1 break-all select-all">{dnsTarget}</p>
-                      </div>
-                    </div>
-                  </div>
+          <Separator />
 
-                  <div className="rounded-md border bg-muted/40 p-4">
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Record 2: SSL Validation</p>
-                    {dcvUuid ? (
-                      <div className="mt-3 grid gap-3 font-mono text-sm sm:grid-cols-3">
-                        <div>
-                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Host</p>
-                          <p className="mt-1 break-all select-all">_acme-challenge.{domain.domain}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Type</p>
-                          <p className="mt-1">CNAME</p>
-                        </div>
-                        <div>
-                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Target</p>
-                          <p className="mt-1 break-all select-all">{dcvUuid}.dcv.cloudflare.com</p>
-                        </div>
-                      </div>
-                    ) : (
-                      <Alert className="mt-3">
-                        <Info className="size-4" />
-                        <AlertDescription>
-                          Could not load the DCV delegation target right now. Reload this page before asking the customer to finish DNS setup.
-                        </AlertDescription>
-                      </Alert>
-                    )}
-                  </div>
-                </div>
+          {/* DNS Records Section */}
+          <div className="space-y-3">
+            <h3 className="text-lg font-medium">DNS Records</h3>
+            <p className="text-sm text-muted-foreground">Add both records at your DNS provider.</p>
 
+            <div className="space-y-3">
+              <DnsRecordCard
+                label="Routing"
+                name="*"
+                target={dnsTarget}
+              />
+
+              {dcvUuid ? (
+                <DnsRecordCard
+                  label="SSL Validation"
+                  name={`_acme-challenge.${domain.domain}`}
+                  target={`${dcvUuid}.dcv.cloudflare.com`}
+                />
+              ) : (
                 <Alert>
                   <Info className="size-4" />
                   <AlertDescription>
-                    If your DNS provider does not support wildcard records, you can add exact host records per app instead.
-                    Example: <span className="font-mono">signup</span> <ArrowRight className="mx-1 inline size-3" />
-                    <span className="font-mono">CNAME {dnsTarget}</span>.
+                    Could not load the DCV delegation target right now. Reload this page before configuring DNS.
                   </AlertDescription>
                 </Alert>
-              </CardContent>
-            </Card>
+              )}
+            </div>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-medium">2. What happens next</CardTitle>
-                <CardDescription>Cloudflare provisions each app hostname separately.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <div className="flex gap-3">
-                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-foreground" />
-                  <p>camelAI creates a Cloudflare custom hostname for each deployed app under this base domain.</p>
-                </div>
-                <div className="flex gap-3">
-                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-foreground" />
-                  <p>Links stay on the normal <span className="font-mono text-foreground">*.camelai.app</span> URL until that app hostname and SSL certificate are active.</p>
-                </div>
-                <div className="flex gap-3">
-                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-foreground" />
-                  <p>If either DNS record is missing or you test too early, Cloudflare may show DNS, SSL, or cross-account CNAME errors while provisioning catches up.</p>
-                </div>
-              </CardContent>
-            </Card>
+            <Alert>
+              <Info className="size-4" />
+              <AlertDescription>
+                If your DNS provider doesn't support wildcard records, add per-app CNAME records instead.
+              </AlertDescription>
+            </Alert>
           </div>
+
+          <Separator />
+
+          {/* App Status Section */}
+          <div className="space-y-3">
+            <h3 className="text-lg font-medium">App Status</h3>
+            {apps.length > 0 ? (
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>App</TableHead>
+                      <TableHead>Hostname</TableHead>
+                      <TableHead className="text-right">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {apps.map((app) => (
+                      <TableRow key={app.name}>
+                        <TableCell className="font-medium">{app.name}</TableCell>
+                        <TableCell className="font-mono text-muted-foreground">
+                          {app.hostname ?? `${app.name}.${domain.domain}`}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <AppStatusIndicator app={app} />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No apps deployed yet. Deploy an app and its custom hostname will be created automatically.
+              </p>
+            )}
+          </div>
+
+          <Separator />
+
+          {/* Need Help Section */}
+          <p className="text-sm text-muted-foreground">
+            Having trouble?{' '}
+            <button
+              type="button"
+              className="inline text-foreground underline underline-offset-4 hover:text-foreground/80 disabled:opacity-50"
+              disabled={createThreadFetcher.state !== 'idle'}
+              onClick={handleTroubleshoot}
+            >
+              {createThreadFetcher.state !== 'idle' ? 'Starting chat...' : 'Troubleshoot in chat'}
+            </button>
+            {' '}&mdash; the camelAI agent can check your DNS records, verify SSL status, and walk you through fixes.
+          </p>
         </div>
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base font-medium">Connect your domain</CardTitle>
-            <CardDescription>
-              Pick the base domain that should sit after each app name. Example:
-              <span className="ml-1 font-mono text-foreground">signup.your-domain.com</span>.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            <div className="grid gap-3 text-sm text-muted-foreground md:grid-cols-3">
-              <div className="rounded-md border bg-muted/40 p-3">
-                <p className="font-medium text-foreground">1. Add your base domain</p>
-                <p className="mt-1">Use something like <span className="font-mono text-foreground">apps.example.com</span> or <span className="font-mono text-foreground">example.com</span>.</p>
-              </div>
-              <div className="rounded-md border bg-muted/40 p-3">
-                <p className="font-medium text-foreground">2. Point DNS to camelAI</p>
-                <p className="mt-1">We’ll show the exact routing and SSL validation records after you save the domain.</p>
-              </div>
-              <div className="rounded-md border bg-muted/40 p-3">
-                <p className="font-medium text-foreground">3. Wait for activation</p>
-                <p className="mt-1">Each app hostname and certificate becomes active independently.</p>
-              </div>
-            </div>
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-lg font-medium">Connect a custom domain</h3>
+            <p className="text-sm text-muted-foreground">
+              Your apps currently use <span className="font-mono text-foreground">*.camelai.app</span> URLs.
+              Add a base domain to serve them at <span className="font-mono text-foreground">{'{app-name}'}.your-domain</span>.
+            </p>
+          </div>
 
-            <div className="flex max-w-xl gap-2">
-              <Input
-                value={domainInput}
-                onChange={(e) => setDomainInput(e.target.value)}
-                placeholder="apps.example.com"
-                className="text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleSetDomain();
-                  }
-                }}
-                disabled={!isAdmin}
-              />
-              <Button
-                type="button"
-                disabled={!domainInput.trim() || loading || !isAdmin}
-                onClick={handleSetDomain}
-              >
-                {loading ? <Loader2 className="size-4 animate-spin" /> : null}
-                Add Domain
-              </Button>
-            </div>
+          <div className="flex max-w-xl gap-2">
+            <Input
+              value={domainInput}
+              onChange={(e) => setDomainInput(e.target.value)}
+              placeholder="example.com"
+              className="text-sm"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleSetDomain();
+                }
+              }}
+              disabled={!isAdmin}
+            />
+            <Button
+              type="button"
+              disabled={!domainInput.trim() || loading || !isAdmin}
+              onClick={handleSetDomain}
+            >
+              {loading ? <Loader2 className="size-4 animate-spin" /> : null}
+              Add Domain
+            </Button>
+          </div>
 
-            {!isAdmin && (
-              <p className="text-xs text-muted-foreground">Only organization admins can manage custom domains.</p>
-            )}
-          </CardContent>
-        </Card>
+          <p className="text-xs text-muted-foreground">
+            After adding, we'll show the DNS records to configure at your DNS provider.
+          </p>
+
+          {!isAdmin && (
+            <p className="text-xs text-muted-foreground">Only organization admins can manage custom domains.</p>
+          )}
+        </div>
       )}
     </div>
   );

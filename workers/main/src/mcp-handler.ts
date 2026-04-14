@@ -2048,7 +2048,7 @@ export async function handleMcpRequest(
 
   const headers = new Headers(request.headers);
   headers.set(AUTH_HEADER_ORG_ID, proxyAuth.orgId);
-  headers.set(AUTH_HEADER_USER_ID, 'system');
+  headers.set(AUTH_HEADER_USER_ID, proxyAuth.userId ?? 'system');
   headers.set(AUTH_HEADER_WORKSPACE_ID, proxyAuth.workspaceId);
   const threadId = request.headers.get('x-chiridion-thread-id');
   if (threadId) headers.set(AUTH_HEADER_THREAD_ID, threadId);
