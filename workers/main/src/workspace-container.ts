@@ -826,7 +826,7 @@ export class WorkspaceContainer {
 
   async readThreadMessagesStream(
     threadId: string,
-    options: { claudeSessionId?: string | null } = {},
+    options: { claudeSessionId?: string | null; codexSessionId?: string | null } = {},
   ): Promise<ControlPlaneThreadMessagesStreamResponse> {
     const trimmedThreadId = threadId.trim();
     if (!trimmedThreadId) {
@@ -837,6 +837,10 @@ export class WorkspaceContainer {
     const claudeSessionId = options.claudeSessionId?.trim();
     if (claudeSessionId && claudeSessionId !== trimmedThreadId) {
       query.claudeSessionId = claudeSessionId;
+    }
+    const codexSessionId = options.codexSessionId?.trim();
+    if (codexSessionId && codexSessionId !== trimmedThreadId) {
+      query.codexSessionId = codexSessionId;
     }
 
     const response = await this.fetchSandbox(

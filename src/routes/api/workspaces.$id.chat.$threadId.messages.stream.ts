@@ -15,8 +15,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     const { container } = await requireWorkspaceAuth(request, context, workspaceId);
     const legacyClaudeSessionId = await chatDO.getLegacyClaudeSessionId(context, threadId);
+    const codexSessionId = await chatDO.getCodexSessionId(context, threadId);
     const streamResult = await container.readThreadMessagesStream(threadId, {
       claudeSessionId: legacyClaudeSessionId,
+      codexSessionId,
     });
     if (!streamResult.success || !streamResult.response) {
       const status = streamResult.code?.startsWith('HTTP_')

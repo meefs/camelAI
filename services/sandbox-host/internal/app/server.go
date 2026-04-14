@@ -317,6 +317,18 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		return nil
 	}
 
+	codexSessionID := strings.TrimSpace(req.URL.Query().Get("codexSessionId"))
+	if strings.ContainsAny(codexSessionID, `/\`) {
+		errorJSON(w, "invalid codexSessionId", http.StatusBadRequest)
+		return nil
+	}
+
+	started := time.Now()
+	s.containers.AddProxyRequest(name, "chat_messages")
+	defer func() {
+		s.containers.RemoveProxyRequest(name, "chat_messages", http.StatusOK, time.Since(started).Milliseconds())
+	}()
+
 	sessionIDs := []string{threadID}
 	if claudeSessionID != "" && claudeSessionID != threadID {
 		sessionIDs = append(sessionIDs, claudeSessionID)
@@ -356,6 +368,23 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 			"messages": messages,
 		})
 		return nil
+	}
+
+	if _, err := s.fs.ReadInfo(name, fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", threadID)); err == nil {
+		if messages, err := readCodexAppServerMessages(req.Context(), name, threadID, codexSessionID); err != nil {
+			log.Printf("[SandboxHost] codex message history unavailable thread=%s container=%s: %v", threadID, name, err)
+		} else if len(messages) > 0 {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"success":  true,
+				"messages": messages,
+			})
+			return nil
+		}
+	} else if err != nil {
+		lower := strings.ToLower(err.Error())
+		if !strings.Contains(lower, "no such file") && !strings.Contains(lower, "not exist") {
+			return s.handleFSError(w, err, "Chat messages unavailable")
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -1259,6 +1259,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
+  getCodexSessionId(): string | null {
+    const value = this.codexSessionId;
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
   async refreshRunnerConfig(): Promise<void> {
     await this.withRunnerTransitionLock('refresh_runner_config', async () => {
       this.stopRunnerReconnectLoop('refresh_runner_config');

@@ -31,6 +31,7 @@ type OrgThreadLookup = {
 };
 type ChatThreadLookup = {
   getLegacyClaudeSessionId(): Promise<string | null>;
+  getCodexSessionId(): Promise<string | null>;
 };
 
 export function getAdminIndexStub(env: AdminIndexEnv) {
@@ -82,8 +83,10 @@ export async function loadAdminThreadMessagesResponse(
     env.CHAT_THREAD.idFromName(trimmedThreadId),
   ) as unknown as ChatThreadLookup;
   const legacyClaudeSessionId = await chatThread.getLegacyClaudeSessionId().catch(() => null);
+  const codexSessionId = await chatThread.getCodexSessionId().catch(() => null);
   const streamResult = await container.readThreadMessagesStream(trimmedThreadId, {
     claudeSessionId: legacyClaudeSessionId,
+    codexSessionId,
   });
   if (!streamResult.success || !streamResult.response) {
     const status = streamResult.code?.startsWith('HTTP_')

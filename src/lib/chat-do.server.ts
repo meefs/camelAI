@@ -316,6 +316,16 @@ export async function getLegacyClaudeSessionId(
   return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
 }
 
+export async function getCodexSessionId(
+  context: AppLoadContext,
+  threadId: string
+): Promise<string | null> {
+  const env = getEnv(context);
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const sessionId = await threadStub.getCodexSessionId().catch(() => null);
+  return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
+}
+
 export async function getMessages(
   context: AppLoadContext,
   threadId: string,
@@ -332,8 +342,10 @@ export async function getMessages(
 
     const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
     const legacyClaudeSessionId = await getLegacyClaudeSessionId(context, threadId);
+    const codexSessionId = await getCodexSessionId(context, threadId);
     const streamResult = await container.readThreadMessagesStream(threadId, {
       claudeSessionId: legacyClaudeSessionId,
+      codexSessionId,
     });
     if (!streamResult.success || !streamResult.response) {
       return [];
