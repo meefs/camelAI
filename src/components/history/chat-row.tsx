@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { memo, useState, useRef, useEffect, useCallback } from 'react';
 import { MoreVertical, CheckSquare, Pencil, Trash2 } from 'lucide-react';
 import type { Thread, Workspace } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,7 @@ interface ChatRowProps {
   thread: Thread;
   isSelecting: boolean;
   isSelected: boolean;
+  hideCreator?: boolean;
   workspace?: Workspace;
   showWorkspaceBadge?: boolean;
   onToggleSelect: (id: string) => void;
@@ -73,10 +74,11 @@ function normalizeTitleInput(value: string): string {
   return value.replace(/\s+/g, ' ').replace(/^\s+/, '');
 }
 
-export function ChatRow({
+export const ChatRow = memo(function ChatRow({
   thread,
   isSelecting,
   isSelected,
+  hideCreator = false,
   workspace,
   showWorkspaceBadge = false,
   onToggleSelect,
@@ -307,7 +309,7 @@ export function ChatRow({
               </Button>
             </div>
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-              {creatorWithTooltip}
+              {!hideCreator ? creatorWithTooltip : null}
               <span>{formatRelativeTime(thread.updated_at)}</span>
             </div>
           </>
@@ -320,7 +322,7 @@ export function ChatRow({
               {workspaceBadge}
             </div>
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-              {creatorWithTooltip}
+              {!hideCreator ? creatorWithTooltip : null}
               <span>{formatRelativeTime(thread.updated_at)}</span>
             </div>
           </>
@@ -369,4 +371,6 @@ export function ChatRow({
       </div>
     </div>
   );
-}
+});
+
+ChatRow.displayName = 'ChatRow';

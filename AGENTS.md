@@ -154,6 +154,13 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 
 `getMessages()` no longer parses JSONL in the Worker runtime and no longer reads transcript snapshots from `ChatThreadDO`. Message history is loaded from sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`. The host first parses Claude JSONL from the workspace; legacy Claude threads created before thread IDs were forced into the Claude SDK can pass the old stored `claude_session_id` as `claudeSessionId`. For Codex threads, sandbox-host runs a host-managed Codex binary (`/usr/local/bin/chiridion-host-codex`, installed from the latest npm-distributed Linux tarball during `deploy:go:sandbox-host`) against the workspace-mounted per-thread `CODEX_HOME`, resolves the Codex app-server thread id via `codexSessionId` or `thread/list`, calls `thread/read` with `includeTurns`, and maps returned turns/items into the shared chat message JSON shape without requiring the guest workspace container to be running. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the sandbox-host JSON response body through.
 
+### Chat History Page
+
+- `/history` now uses URL params `scope=this-workspace|all-workspaces` and optional `createdBy=<userId>` for workspace breadth and per-creator filtering; the old `filter` param is still accepted as a fallback when parsing links.
+- Initial history page loads still come from `src/routes/_app.history.tsx`, but infinite-scroll pagination is now fulfilled by `GET /api/history`, which returns hydrated thread JSON pages without a full-page loader refresh.
+- The history loader and `/api/history` share server helpers that hydrate thread creators from `UserDO` profiles. When more than one creator has threads in the active scope, the UI renders creator tabs (`All`, `You`, plus teammates ordered by latest activity).
+- Selecting a specific creator hides redundant creator attribution in each row subtitle and leaves only the relative timestamp.
+
 ### QAML Backdoor Read-Only Thread View
 
 Superusers can open `/chat/:threadId?adminReadonly=1` from qaml-backdoor thread list/detail via **View as User** (opens in a new tab). Read-only mode:

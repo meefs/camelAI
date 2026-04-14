@@ -12,6 +12,15 @@ export interface Thread {
   creator?: User;
 }
 
+export interface ThreadCreator {
+  userId: string;
+  name: string | null;
+  email: string;
+  avatar: Avatar | null;
+  threadCount: number;
+  latestUpdatedAt: number;
+}
+
 export type PreviewTarget =
   | {
       kind: 'app';
@@ -383,6 +392,7 @@ export interface PaginationParams {
   offset?: number;
   limit?: number;
   search?: string;
+  createdBy?: string;
 }
 
 // Integration types

@@ -140,6 +140,7 @@ export default [
   route("api/onboarding/complete", "routes/api/onboarding.complete.ts"),
   route("api/legacy-banner/dismiss", "routes/api/legacy-banner.dismiss.ts"),
   route("api/help", "routes/api/help.ts"),
+  route("api/history", "routes/api/history.tsx"),
   route("api/dev/sent-emails", "routes/api/dev.sent-emails.ts"),
   route("api/dev/sent-emails/:id", "routes/api/dev.sent-emails.$id.ts"),
   route(

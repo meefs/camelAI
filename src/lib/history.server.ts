@@ -1,0 +1,145 @@
+import type { AppLoadContext } from 'react-router';
+import type { Thread, ThreadCreator, User } from '@/types';
+import type { AuthEnv } from './auth.server';
+import type { RawThreadCreator } from './chat-do.server';
+import * as chatDO from './chat-do.server';
+
+export type HistoryScope = 'this-workspace' | 'all-workspaces';
+
+interface HistoryPageQuery {
+  scope: HistoryScope;
+  workspaceId: string;
+  accessibleWorkspaceIds: string[];
+  offset?: number;
+  limit?: number;
+  createdBy?: string | null;
+}
+
+function toHydratedThread(thread: Thread, creator: User | undefined): Thread {
+  return {
+    ...thread,
+    creator,
+  };
+}
+
+async function hydrateUserProfiles(
+  authEnv: AuthEnv,
+  userIds: string[]
+): Promise<Map<string, User>> {
+  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (uniqueUserIds.length === 0) {
+    return new Map();
+  }
+
+  const profiles = await Promise.all(
+    uniqueUserIds.map(async (userId) => {
+      const profile = await authEnv.USER
+        .get(authEnv.USER.idFromName(userId))
+        .getProfile();
+      return profile ? ([userId, profile] as const) : null;
+    })
+  );
+
+  const userMap = new Map<string, User>();
+  for (const entry of profiles) {
+    if (!entry) {
+      continue;
+    }
+    userMap.set(entry[0], entry[1]);
+  }
+
+  return userMap;
+}
+
+function toThreadCreator(
+  rawCreator: RawThreadCreator,
+  creator: User | undefined
+): ThreadCreator {
+  return {
+    userId: rawCreator.created_by,
+    name: creator?.name ?? null,
+    email: creator?.email ?? rawCreator.created_by,
+    avatar: creator?.avatar ?? null,
+    threadCount: rawCreator.thread_count,
+    latestUpdatedAt: rawCreator.latest_updated_at,
+  };
+}
+
+export function getHistoryScope(searchParams: URLSearchParams): HistoryScope {
+  const rawScope = searchParams.get('scope') ?? searchParams.get('filter');
+  return rawScope === 'all-workspaces' ? 'all-workspaces' : 'this-workspace';
+}
+
+export function getHistoryCreatedBy(searchParams: URLSearchParams): string | null {
+  const createdBy = searchParams.get('createdBy')?.trim();
+  return createdBy ? createdBy : null;
+}
+
+export function buildHistoryQueryKey(
+  scope: HistoryScope,
+  scopeId: string,
+  createdBy: string | null
+): string {
+  return `${scope}:${scopeId}:${createdBy ?? 'all'}`;
+}
+
+export async function fetchHistoryThreadsPage(
+  context: AppLoadContext,
+  query: HistoryPageQuery
+) {
+  const params = {
+    offset: query.offset ?? 0,
+    limit: query.limit ?? 50,
+    createdBy: query.createdBy ?? undefined,
+  };
+
+  if (query.scope === 'all-workspaces') {
+    return await chatDO.getThreadsPaginatedAllWorkspaces(
+      context,
+      query.accessibleWorkspaceIds,
+      params
+    );
+  }
+
+  return await chatDO.getThreadsPaginated(context, query.workspaceId, params);
+}
+
+export async function fetchHistoryThreadCreators(
+  context: AppLoadContext,
+  scope: HistoryScope,
+  workspaceId: string,
+  accessibleWorkspaceIds: string[]
+): Promise<RawThreadCreator[]> {
+  if (scope === 'all-workspaces') {
+    return await chatDO.getThreadCreatorsAllWorkspaces(context, accessibleWorkspaceIds);
+  }
+
+  return await chatDO.getThreadCreators(context, workspaceId);
+}
+
+export async function hydrateHistoryThreads(
+  authEnv: AuthEnv,
+  threads: Thread[],
+  additionalUserIds: string[] = []
+): Promise<{ threads: Thread[]; userMap: Map<string, User> }> {
+  const userMap = await hydrateUserProfiles(authEnv, [
+    ...threads.map((thread) => thread.created_by),
+    ...additionalUserIds,
+  ]);
+
+  return {
+    threads: threads.map((thread) =>
+      toHydratedThread(thread, userMap.get(thread.created_by))
+    ),
+    userMap,
+  };
+}
+
+export function hydrateHistoryThreadCreators(
+  rawCreators: RawThreadCreator[],
+  userMap: Map<string, User>
+): ThreadCreator[] {
+  return rawCreators.map((rawCreator) =>
+    toThreadCreator(rawCreator, userMap.get(rawCreator.created_by))
+  );
+}

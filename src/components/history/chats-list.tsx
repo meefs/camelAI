@@ -22,6 +22,7 @@ interface ChatsListProps {
   onRenameThread: (id: string, newTitle: string) => void;
   onDeleteThread: (id: string) => void;
   onEnterSelectMode: () => void;
+  hideCreator?: boolean;
   workspaceMap?: Map<string, WorkspaceWithAccess>;
   currentWorkspaceId?: string | null;
   showWorkspaceBadges?: boolean;
@@ -76,6 +77,7 @@ export function ChatsList({
   onRenameThread,
   onDeleteThread,
   onEnterSelectMode,
+  hideCreator = false,
   workspaceMap,
   currentWorkspaceId,
   showWorkspaceBadges = false,
@@ -106,6 +108,7 @@ export function ChatsList({
               thread={thread}
               isSelecting={isSelecting}
               isSelected={selectedIds.has(thread.id)}
+              hideCreator={hideCreator}
               workspace={workspaceMap?.get(thread.workspace_id)}
               showWorkspaceBadge={
                 Boolean(
