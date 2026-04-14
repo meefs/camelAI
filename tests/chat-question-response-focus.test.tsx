@@ -284,7 +284,6 @@ describe("Chat AskUserQuestion composer focus", () => {
       socket.emitMessage({
         type: "ask_user_question",
         questionId: "question-1",
-        toolUseId: "tool-1",
         questions: [
           {
             header: "Framework",

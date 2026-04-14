@@ -3,11 +3,18 @@ import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { waitUntil } from '@/lib/wait-until';
+import type { ChatHarness } from '@/types';
 
-const ONBOARDING_SYSTEM_MESSAGE = `This user just signed up and landed in their first chat. This is their very
+function getQuestionToolName(provider: ChatHarness): string {
+  return provider === 'codex' ? 'ask_user_question' : 'AskUserQuestion';
+}
+
+function getDefaultOnboardingSystemMessage(provider: ChatHarness): string {
+  const questionToolName = getQuestionToolName(provider);
+  return `This user just signed up and landed in their first chat. This is their very
 first interaction with camelAI.
 
-Welcome them briefly (1-2 sentences), then immediately use AskUserQuestion
+Welcome them briefly (1-2 sentences), then immediately use the ${questionToolName} tool
 with these 2 questions in a single tool call:
 
 Question 1 - "What do you want to build first?"
@@ -40,6 +47,7 @@ After they answer, immediately start helping them based on their choices:
 - If they chose "Help me connect a service": walk them through the
   connections setup flow
 - Otherwise: start building their chosen project right away`;
+}
 
 const SALES_SITE_ONBOARDING_SYSTEM_MESSAGE = `This user just signed up from the camelAI sales site where they typed a
 starter prompt. This is their very first interaction with camelAI.
@@ -49,10 +57,13 @@ immediately. They already told you what they want, so skip the standard
 onboarding preference questions and dive into the work.
 
 If you need clarification, ask focused follow-up questions inline as you go.
-Do not use AskUserQuestion for onboarding in this case.`;
+Do not use AskUserQuestion or ask_user_question for onboarding in this case.`;
 
-function getOnboardingSystemMessage(salesPrompt: string | null): string {
-  return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : ONBOARDING_SYSTEM_MESSAGE;
+function getOnboardingSystemMessage(
+  salesPrompt: string | null,
+  provider: ChatHarness,
+): string {
+  return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : getDefaultOnboardingSystemMessage(provider);
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -85,7 +96,6 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
   const onboardingThreadTitle = `${firstName}'s first chat`;
-  const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
 
   if (authContext.onboarding?.completed_at) {
     // Already completed — find or recreate the onboarding thread.
@@ -116,6 +126,10 @@ export async function action({ request, context }: Route.ActionArgs) {
           chatDO.generateThreadTitle(context, existingThread.id, workspaceId, salesPrompt)
         );
       }
+      const onboardingSystemMessage = getOnboardingSystemMessage(
+        salesPrompt,
+        existingThread.provider ?? 'claude',
+      );
       return Response.json({
         success: true,
         threadId: existingThread.id,
@@ -139,6 +153,10 @@ export async function action({ request, context }: Route.ActionArgs) {
         chatDO.generateThreadTitle(context, recoveryThread.id, workspaceId, salesPrompt)
       );
     }
+    const onboardingSystemMessage = getOnboardingSystemMessage(
+      salesPrompt,
+      recoveryThread.provider ?? 'claude',
+    );
 
     return Response.json({
       success: true,
@@ -165,11 +183,15 @@ export async function action({ request, context }: Route.ActionArgs) {
       chatDO.generateThreadTitle(context, thread.id, workspaceId, salesPrompt)
     );
   }
+  const onboardingSystemMessage = getOnboardingSystemMessage(
+    salesPrompt,
+    thread.provider ?? 'claude',
+  );
 
   return Response.json({
     success: true,
     threadId: thread.id,
-    onboardingSystemMessage: getOnboardingSystemMessage(salesPrompt),
+    onboardingSystemMessage,
     salesPrompt,
     redirectTo: `/chat/${thread.id}?newThread=1`,
   });

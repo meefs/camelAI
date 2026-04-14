@@ -28,7 +28,6 @@ function makeData(
 ): AskUserQuestionData {
   return {
     questionId: "question-1",
-    toolUseId: "tool-1",
     questions,
   };
 }

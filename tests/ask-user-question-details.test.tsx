@@ -7,7 +7,7 @@ function makeTool(question: string): ToolUseBlock {
   return {
     type: 'tool_use',
     id: 'tool_ask_user_question',
-    name: 'AskUserQuestion',
+    name: 'mcp__camelai_ui__ask_user_question',
     input: {
       questions: [{ question }],
     },
@@ -23,6 +23,19 @@ function makeResult(question: string, answer: string): ToolResultBlock {
 }
 
 describe('AskUserQuestionDetails', () => {
+  it('parses JSON answers from the custom ask_user_question tool result', () => {
+    const tool = makeTool('Path?');
+    const result: ToolResultBlock = {
+      type: 'tool_result',
+      tool_use_id: 'tool_ask_user_question',
+      content: JSON.stringify({ answers: { 'Path?': '/tmp/project' } }),
+    };
+
+    render(<AskUserQuestionDetails tool={tool} result={result} />);
+
+    expect(screen.getByText('/tmp/project')).toBeInTheDocument();
+  });
+
   it('preserves literal backslash sequences in answers', () => {
     const tool = makeTool('Path?');
     const result = makeResult('Path?', 'C:\\\\new');

@@ -235,7 +235,7 @@ const RUNNER_PING_INTERVAL_MS = 10_000;
 const RUNNER_RECONNECT_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const RUNNER_RECONNECT_GRACE_MS = 30_000;
 const RUNNER_CLOSE_CODE_BYOK_CHANGED = 4001;
-const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
+const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
 
 /**
  * Last per-API-call prompt usage captured from stream_event.message_start.
@@ -1868,7 +1868,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return {
           status: "error",
           error:
-            "AskUserQuestion is unavailable in this channel and could not be auto-answered.",
+            "ask_user_question is unavailable in this channel and could not be auto-answered.",
         };
       }
       return { status: "busy" };
@@ -2015,7 +2015,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         );
       } catch (err) {
         console.error(
-          "[ChatThreadDO] failed to auto-answer pending AskUserQuestion",
+          "[ChatThreadDO] failed to auto-answer pending ask_user_question",
           {
             questionId,
             error: err instanceof Error ? err.message : String(err),
@@ -2501,7 +2501,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
             ).catch((err) => {
               console.error(
-                "[ChatThreadDO] failed to auto-answer unavailable AskUserQuestion",
+                "[ChatThreadDO] failed to auto-answer unavailable ask_user_question",
                 err,
               );
             }),
@@ -2673,7 +2673,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
           ).catch((err) => {
             console.error(
-              "[ChatThreadDO] failed to retry unavailable AskUserQuestion auto-answers",
+              "[ChatThreadDO] failed to retry unavailable ask_user_question auto-answers",
               err,
             );
           }),

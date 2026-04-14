@@ -16,7 +16,7 @@ import { McpDetails } from './details/mcp-details';
 import { SkillDetails } from './details/skill-details';
 import { TeamCreateDetails } from './details/team-create-details';
 import { AskUserQuestionDetails } from './details/ask-user-question-details';
-import { isMcpTool } from './mcp-utils';
+import { isAskUserQuestionToolName, isMcpTool } from './mcp-utils';
 
 interface ToolCallDetailsProps {
   tool?: ToolUseBlock;
@@ -30,7 +30,9 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
   const name = tool?.name;
 
   let content: ReactNode;
-  if (tool && name && isMcpTool(name)) {
+  if (tool && isAskUserQuestionToolName(name)) {
+    content = <AskUserQuestionDetails tool={tool} result={result} />;
+  } else if (tool && name && isMcpTool(name)) {
     content = <McpDetails tool={tool} result={result} />;
   } else switch (name) {
     case 'Skill':
@@ -80,9 +82,6 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
       break;
     case 'TeamCreate':
       content = <TeamCreateDetails tool={tool} result={result} />;
-      break;
-    case 'AskUserQuestion':
-      content = <AskUserQuestionDetails tool={tool} result={result} />;
       break;
     default:
       content = <GenericDetails tool={tool} result={result} />;

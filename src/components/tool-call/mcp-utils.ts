@@ -1,4 +1,6 @@
 const MCP_PREFIX = 'mcp__';
+const LEGACY_ASK_USER_QUESTION_TOOL = 'AskUserQuestion';
+const CUSTOM_ASK_USER_QUESTION_TOOL = 'ask_user_question';
 
 export function isMcpTool(name: string): boolean {
   return name.startsWith(MCP_PREFIX);
@@ -24,6 +26,13 @@ export function parseMcpToolName(name: string): McpToolParts | null {
     displayServer: titleCase(serverName),
     displayTool: toolName.replace(/_/g, ' '),
   };
+}
+
+export function isAskUserQuestionToolName(name?: string): boolean {
+  if (!name) return false;
+  if (name === LEGACY_ASK_USER_QUESTION_TOOL) return true;
+  const parts = parseMcpToolName(name);
+  return parts?.toolName === CUSTOM_ASK_USER_QUESTION_TOOL;
 }
 
 function titleCase(s: string): string {

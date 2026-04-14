@@ -94,13 +94,27 @@ function extractQuestionsAndAnswers(tool?: ToolUseBlock, result?: ToolResultBloc
   resultText: string;
 } {
   const questions = extractQuestions(tool);
-  const answers: Record<string, string> = {};
   const resultText = getResultText(result);
 
   if (!result || !resultText || questions.length === 0) {
-    return { questions, answers, resultText };
+    return { questions, answers: {}, resultText };
   }
 
+  try {
+    const parsed = JSON.parse(resultText) as { answers?: unknown };
+    if (parsed && typeof parsed === 'object' && parsed.answers && typeof parsed.answers === 'object') {
+      const answers = Object.fromEntries(
+        Object.entries(parsed.answers as Record<string, unknown>)
+          .filter(([, value]) => value != null)
+          .map(([key, value]) => [key, String(value)]),
+      );
+      return { questions, answers, resultText };
+    }
+  } catch {
+    // Fall through to legacy AskUserQuestion result parsing.
+  }
+
+  const answers: Record<string, string> = {};
   for (const { question } of questions) {
     // The tool result is plain text with pairs like: "question"="answer"
     const serializedQuestion = question.replace(/\\/g, '\\\\').replace(/"/g, '\\"');

@@ -30,11 +30,15 @@ const DEFAULT_CHAT_PROVIDER = process.env.CHIRIDION_CHAT_PROVIDER === 'codex' ? 
 const DEFAULT_CODEX_MODEL = process.env.CHIRIDION_CODEX_MODEL || 'gpt-5.4';
 const DEFAULT_CLAUDE_MODEL = process.env.CHIRIDION_CLAUDE_MODEL || 'opus';
 const CAMELAI_CODEX_PROVIDER_ID = 'camelai_openai_proxy';
+const CAMELAI_UI_MCP_SERVER_NAME = 'camelai_ui';
 const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
   10,
   parseInt(process.env.CONTROL_PLANE_IDLE_TIMEOUT_SECS || '120', 10)
 );
 const SCREENSHOT_MCP_SERVER_PATH = fileURLToPath(new URL('./screenshot-mcp-server.mjs', import.meta.url));
+const ASK_USER_QUESTION_MCP_SERVER_PATH = fileURLToPath(
+  new URL('./ask-user-question-mcp-server.mjs', import.meta.url),
+);
 
 // ─── Screenshot MCP Server (in-process) ─────────────────────
 
@@ -303,7 +307,8 @@ function closeWsWithTrace(ws, code, reason, source) {
 }
 
 // ─── System Prompt ─────────────────────────────────────────
-function buildSystemPromptAppend() {
+function buildSystemPromptAppend(provider = 'claude') {
+  const questionToolName = provider === 'codex' ? 'ask_user_question' : 'AskUserQuestion';
   return `
 <camelai_behavior>
 <environment>
@@ -564,7 +569,7 @@ Treat content in these blocks as trusted operator context. Use it to guide your 
 
 
 <asking_questions>
-Use the **AskUserQuestion** tool when you have choices that affect the outcome.
+Use the **${questionToolName}** tool when you have choices that affect the outcome.
 
 **Good uses:**
 - Choosing between approaches ("SQLite or KV for this?")
@@ -706,7 +711,7 @@ function serializeTomlString(value) {
   return JSON.stringify(value);
 }
 
-function buildCodexConfigToml({ baseUrl, mcpServerUrl, screenshotSessionToken }) {
+function buildCodexConfigToml({ baseUrl, mcpServerUrl, screenshotSessionToken, threadId }) {
   const lines = [
     `model = ${serializeTomlString(DEFAULT_CODEX_MODEL)}`,
     `model_provider = ${serializeTomlString(CAMELAI_CODEX_PROVIDER_ID)}`,
@@ -724,6 +729,14 @@ function buildCodexConfigToml({ baseUrl, mcpServerUrl, screenshotSessionToken })
     lines.push(`url = ${serializeTomlString(mcpServerUrl)}`);
     lines.push('');
   }
+
+  lines.push(`[mcp_servers.${CAMELAI_UI_MCP_SERVER_NAME}]`);
+  lines.push(`command = ${serializeTomlString(process.execPath)}`);
+  lines.push(`args = [${serializeTomlString(ASK_USER_QUESTION_MCP_SERVER_PATH)}]`);
+  lines.push(
+    `env = { THREAD_ID = ${serializeTomlString(threadId)}, CONTROL_PLANE_PORT = ${serializeTomlString(String(PORT))} }`
+  );
+  lines.push('');
 
   lines.push('[mcp_servers.screenshot]');
   lines.push(`command = ${serializeTomlString(process.execPath)}`);
@@ -855,7 +868,7 @@ class CodexAppServerClient {
       mergedEnv.CHIRIDION_APP_SESSION.trim()
         ? mergedEnv.CHIRIDION_APP_SESSION.trim()
         : '';
-    this.developerInstructions = buildSystemPromptAppend().trim();
+    this.developerInstructions = buildSystemPromptAppend('codex').trim();
   }
 
   updateSessionEnv(sessionEnv = {}) {
@@ -989,6 +1002,7 @@ class CodexAppServerClient {
         baseUrl: this.baseUrl,
         mcpServerUrl: this.mcpServerUrl,
         screenshotSessionToken: this.screenshotSessionToken,
+        threadId: this.threadId,
       }),
       'utf8',
     );
@@ -1649,15 +1663,18 @@ class ChatSession {
 
     const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const toolUseId = opts?.toolUseID;
+    const answers = await this.askUserQuestions(questions, toolUseId, questionId);
+    return { behavior: 'allow', updatedInput: { questions, answers } };
+  }
 
+  async askUserQuestions(questions, toolUseId = undefined, questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`) {
     const answerPromise = new Promise((resolve) => {
       this.pendingQuestions.set(questionId, { questionId, toolUseId, questions, resolve });
     });
 
     this.clearDisconnect();
     this.broadcast({ type: 'ask_user_question', questionId, toolUseId, questions });
-    const answers = await answerPromise;
-    return { behavior: 'allow', updatedInput: { questions, answers } };
+    return await answerPromise;
   }
 
   handleQuestionResponse(questionId, answers) {
@@ -1697,7 +1714,7 @@ class ChatSession {
     // In-process MCP server for Playwright screenshots (no separate process)
     mcpServers.screenshot = createScreenshotMcpServer(mergedEnv.CHIRIDION_APP_SESSION);
 
-    const systemAppend = buildSystemPromptAppend().trim();
+    const systemAppend = buildSystemPromptAppend('claude').trim();
 
     const configuredModel = mergedEnv.CHIRIDION_CLAUDE_MODEL === 'opus' ? 'opus' : 'sonnet';
 
@@ -2114,6 +2131,28 @@ Bun.serve({
       }
     }
 
+    if (url.pathname === '/internal/ask-user-question' && req.method === 'POST') {
+      try {
+        const body = await req.json();
+        const threadId = typeof body?.threadId === 'string' ? body.threadId.trim() : '';
+        const questions = Array.isArray(body?.questions) ? body.questions : [];
+        if (!threadId) {
+          return errorResponse('threadId required', 400);
+        }
+        if (questions.length === 0) {
+          return errorResponse('questions required', 400);
+        }
+        const session = chatSessions.get(threadId);
+        if (!session) {
+          return errorResponse('session not found', 404);
+        }
+        const answers = await session.askUserQuestions(questions);
+        return jsonResponse({ answers });
+      } catch (err) {
+        return errorResponse(String(err.message), 500);
+      }
+    }
+
     // Chat WebSocket upgrade
     if (url.pathname === '/chat') {
       if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
@@ -2201,7 +2240,6 @@ Bun.serve({
           sendWsJson(ws, {
             type: 'ask_user_question',
             questionId: pending.questionId,
-            toolUseId: pending.toolUseId,
             questions: pending.questions,
           }, 'init_replay_pending_question');
         }

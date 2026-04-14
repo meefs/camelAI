@@ -20,6 +20,15 @@ function makeAskUserQuestionTool(input: Record<string, unknown> = {}): ToolUseBl
   };
 }
 
+function makeCustomAskUserQuestionTool(input: Record<string, unknown> = {}): ToolUseBlock {
+  return {
+    type: 'tool_use',
+    id: 'tool_custom_ask_user_question',
+    name: 'mcp__camelai_ui__ask_user_question',
+    input,
+  };
+}
+
 function makeReadTool(input: Record<string, unknown> = {}): ToolUseBlock {
   return {
     type: 'tool_use',
@@ -96,6 +105,14 @@ describe('getToolSummaryParts AskUserQuestion', () => {
     const tool = makeAskUserQuestionTool();
     const summary = getToolSummaryParts(tool, undefined, false, 'complete');
     expect(summary.action).toBe('Asked a question');
+  });
+
+  it('uses the same summary copy for the custom ask_user_question MCP tool', () => {
+    const tool = makeCustomAskUserQuestionTool({
+      questions: [{ question: 'Preferred auth method?', header: 'Auth method' }],
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'complete');
+    expect(summary.action).toBe('Auth method');
   });
 });
 

@@ -33,7 +33,7 @@ export interface Question {
 
 export interface AskUserQuestionData {
   questionId: string;
-  toolUseId: string;
+  toolUseId?: string;
   questions: Question[];
 }
 
