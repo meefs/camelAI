@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCustomDomainDnsCheck,
   getCustomHostnameDnsTarget,
   getCustomHostnameFallbackOrigin,
 } from '@/lib/custom-domain-dns';
@@ -34,5 +35,63 @@ describe('custom domain DNS target helpers', () => {
         fallbackOrigin: ' custom-domains.camelai.app ',
       })
     ).toBe('custom-domains.camelai.app');
+  });
+
+  it('marks a resolved matching DNS check as ok', () => {
+    expect(
+      buildCustomDomainDnsCheck({
+        queried: 'demo-app.apps.example.com',
+        expectedTarget: 'custom-domains.camelai.app',
+        lookup: { status: 'resolved', target: 'custom-domains.camelai.app.' },
+      })
+    ).toEqual({
+      queried: 'demo-app.apps.example.com',
+      resolved_target: 'custom-domains.camelai.app',
+      expected_target: 'custom-domains.camelai.app',
+      ok: true,
+      status: 'ok',
+      error: null,
+      http_status: null,
+    });
+  });
+
+  it('marks a missing DNS record as missing rather than unavailable', () => {
+    expect(
+      buildCustomDomainDnsCheck({
+        queried: '_acme-challenge.apps.example.com',
+        expectedTarget: 'uuid.dcv.cloudflare.com',
+        lookup: { status: 'missing' },
+      })
+    ).toEqual({
+      queried: '_acme-challenge.apps.example.com',
+      resolved_target: null,
+      expected_target: 'uuid.dcv.cloudflare.com',
+      ok: false,
+      status: 'missing',
+      error: null,
+      http_status: null,
+    });
+  });
+
+  it('marks resolver failures as unavailable instead of a DNS mismatch', () => {
+    expect(
+      buildCustomDomainDnsCheck({
+        queried: 'demo-app.apps.example.com',
+        expectedTarget: 'custom-domains.camelai.app',
+        lookup: {
+          status: 'unavailable',
+          error: 'DoH query failed with HTTP 429',
+          http_status: 429,
+        },
+      })
+    ).toEqual({
+      queried: 'demo-app.apps.example.com',
+      resolved_target: null,
+      expected_target: 'custom-domains.camelai.app',
+      ok: null,
+      status: 'unavailable',
+      error: 'DoH query failed with HTTP 429',
+      http_status: 429,
+    });
   });
 });

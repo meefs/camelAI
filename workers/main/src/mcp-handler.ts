@@ -20,7 +20,17 @@ import { validateSandboxProxy } from './sandbox-auth';
 import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, findCustomHostnameByHostname, getCustomHostnameStatus, getDcvDelegationUuid, listCustomHostnamesByBaseDomain, type CfApiProxyEnv } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
 import { getExpectedCustomDomainHostname, getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
-import { getCustomHostnameDnsTarget } from '../../../src/lib/custom-domain-dns';
+import {
+  buildCustomDomainDnsCheck,
+  getCustomHostnameDnsTarget,
+  type CnameLookupResult,
+  type CustomDomainDnsCheck,
+} from '../../../src/lib/custom-domain-dns';
+import {
+  getAppCustomDomainDiagnosticState,
+  shouldRefreshAppCustomDomainState,
+  shouldRetryAppCustomDomainProvisioning,
+} from '../../../src/lib/custom-domain-state';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -1536,23 +1546,169 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
     // ── Custom Domain Tools ──────────────────────────────────────────
 
-    // Get org custom domain
+    // Get org custom domain with full diagnostic info
     this.server.tool(
       'get_custom_domain',
-      'Get the custom domain configured for this organization, if any. When a custom domain is set, all deployed apps are accessible at {app-name}.{domain}.',
+      'Get the custom domain configured for this organization with full diagnostic info: required DNS records, per-app hostname/SSL status, and live DNS resolution checks. Use this to troubleshoot custom domain issues.',
       {},
       async () => {
         this.requireAuth();
         const orgStub = this.getOrgStub();
         const domain = await orgStub.getCustomDomain();
         if (!domain) {
-          return this.textResponse({ configured: false, message: 'No custom domain configured for this organization.' });
+          return this.textResponse({ configured: false, message: 'No custom domain configured for this organization. Set one in Settings > Organization > Domains or use set_custom_domain.' });
         }
+
+        const zoneId = this.env.CF_ZONE_ID?.trim();
+        const apiToken = this.env.CF_API_TOKEN?.trim();
+
+        // Fetch the DNS target and DCV UUID for the required DNS records
+        const dnsTarget = getCustomHostnameDnsTarget({
+          cnameTarget: this.env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
+          fallbackOrigin: this.env.CF_CUSTOM_HOSTNAME_FALLBACK,
+        });
+        const dcvUuid = zoneId && apiToken ? await getDcvDelegationUuid(zoneId, apiToken) : null;
+
+        // Get per-app custom domain status
+        const scripts = await orgStub.listWorkerScripts();
+        const now = Date.now();
+
+        // Refresh stale app hostname statuses from Cloudflare before responding
+        const apps: Array<{
+          name: string;
+          hostname: string;
+          cf_hostname_id: string | null;
+          status: string | null;
+          ssl_status: string | null;
+          error: string | null;
+          updated_at: number | null;
+        }> = [];
+
+        for (const script of scripts) {
+          const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
+          let currentScript = script;
+
+          if (
+            zoneId &&
+            apiToken &&
+            shouldRefreshAppCustomDomainState(script, domain.domain, now)
+          ) {
+            try {
+              let record = null;
+              if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
+                record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
+              }
+              if (!record) {
+                record = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+              }
+              if (record) {
+                currentScript =
+                  (await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                    hostname: expectedHostname,
+                    cf_hostname_id: record.id,
+                    status: record.status,
+                    ssl_status: record.ssl.status,
+                    error: null,
+                  })) ?? currentScript;
+              }
+              // When both lookups return null we can't distinguish "truly missing"
+              // from transient CF API failures (rate limits, 5xx), so preserve
+              // existing cached state rather than clearing it incorrectly.
+            } catch (err) {
+              // Fall through to diagnostic state derived from cached data
+            }
+          }
+
+          const appState = getAppCustomDomainDiagnosticState(currentScript, domain.domain);
+          apps.push({
+            name: script.script_name,
+            hostname: appState.hostname ?? expectedHostname,
+            cf_hostname_id: appState.cf_hostname_id,
+            status: appState.status,
+            ssl_status: appState.ssl_status,
+            error: appState.error,
+            updated_at: appState.updated_at,
+          });
+        }
+
+        const activeCount = apps.filter(a => a.status === 'active' && a.ssl_status === 'active').length;
+        const missingCount = apps.filter(a => !a.status).length;
+
+        // DNS resolution checks via Cloudflare DoH
+        const dnsChecks: {
+          routing_cname: CustomDomainDnsCheck | null;
+          acme_challenge_cname: CustomDomainDnsCheck | null;
+        } = { routing_cname: null, acme_challenge_cname: null };
+
+        // Check routing CNAME using the first app as a sample
+        const sampleApp = apps[0];
+        if (sampleApp) {
+          const routingLookup = await resolveCnameViaDoH(sampleApp.hostname);
+          dnsChecks.routing_cname = buildCustomDomainDnsCheck({
+            queried: sampleApp.hostname,
+            expectedTarget: dnsTarget,
+            lookup: routingLookup,
+          });
+        }
+
+        // Check ACME challenge CNAME
+        if (dcvUuid) {
+          const acmeHost = `_acme-challenge.${domain.domain}`;
+          const expectedAcmeTarget = `${dcvUuid}.dcv.cloudflare.com`;
+          const acmeLookup = await resolveCnameViaDoH(acmeHost);
+          dnsChecks.acme_challenge_cname = buildCustomDomainDnsCheck({
+            queried: acmeHost,
+            expectedTarget: expectedAcmeTarget,
+            lookup: acmeLookup,
+          });
+        }
+
+        // Build summary message
+        const parts: string[] = [`Custom domain: *.${domain.domain}`];
+        if (apps.length === 0) {
+          parts.push('No apps deployed yet.');
+        } else {
+          parts.push(`${activeCount}/${apps.length} apps have active SSL.`);
+          if (missingCount > 0) {
+            parts.push(`${missingCount} app(s) have no Cloudflare hostname — use retry_custom_domain_hostnames to provision them.`);
+          }
+        }
+        if (dnsChecks.routing_cname?.status === 'missing') {
+          parts.push(`DNS routing CNAME missing for ${dnsChecks.routing_cname.queried}.`);
+        } else if (dnsChecks.routing_cname?.status === 'mismatch') {
+          parts.push(`DNS routing CNAME resolves to ${dnsChecks.routing_cname.resolved_target} but should point to ${dnsChecks.routing_cname.expected_target}.`);
+        } else if (dnsChecks.routing_cname?.status === 'unavailable') {
+          parts.push(`DNS routing CNAME check unavailable${dnsChecks.routing_cname.http_status ? ` (DoH HTTP ${dnsChecks.routing_cname.http_status})` : ''}.`);
+        }
+        if (dnsChecks.acme_challenge_cname?.status === 'missing') {
+          parts.push('ACME challenge CNAME missing — SSL certificates cannot be issued without this.');
+        } else if (dnsChecks.acme_challenge_cname?.status === 'mismatch') {
+          parts.push(`ACME challenge CNAME resolves to ${dnsChecks.acme_challenge_cname.resolved_target} but should point to ${dnsChecks.acme_challenge_cname.expected_target}.`);
+        } else if (dnsChecks.acme_challenge_cname?.status === 'unavailable') {
+          parts.push(`ACME challenge CNAME check unavailable${dnsChecks.acme_challenge_cname.http_status ? ` (DoH HTTP ${dnsChecks.acme_challenge_cname.http_status})` : ''}.`);
+        }
+
         return this.textResponse({
           configured: true,
           domain: domain.domain,
           status: domain.status,
-          message: `Custom domain: *.${domain.domain} — apps are accessible at {app-name}.${domain.domain}`,
+          dns: {
+            routing_record: {
+              host: `*.${domain.domain}`,
+              type: 'CNAME',
+              target: dnsTarget,
+            },
+            acme_challenge_record: dcvUuid
+              ? {
+                  host: `_acme-challenge.${domain.domain}`,
+                  type: 'CNAME',
+                  target: `${dcvUuid}.dcv.cloudflare.com`,
+                }
+              : null,
+          },
+          dns_checks: dnsChecks,
+          apps,
+          message: parts.join(' '),
         });
       }
     );
@@ -1729,6 +1885,136 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       }
     );
 
+    // Retry custom domain hostname provisioning for apps that failed or are missing
+    this.server.tool(
+      'retry_custom_domain_hostnames',
+      'Retry Cloudflare hostname provisioning for apps whose custom domain setup failed or was never created. Use after get_custom_domain shows apps with null status or errors. Lighter than remove + re-add domain.',
+      {},
+      async () => {
+        const { userId } = this.requireAuth();
+        const orgStub = this.getOrgStub();
+
+        // Require admin
+        const member = await orgStub.getMember(userId);
+        if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
+          return this.textResponse({ success: false, error: 'Only org admins can retry hostname provisioning' });
+        }
+
+        const domain = await orgStub.getCustomDomain();
+        if (!domain) {
+          return this.textResponse({ success: false, error: 'No custom domain configured' });
+        }
+
+        const zoneId = this.env.CF_ZONE_ID?.trim();
+        const apiToken = this.env.CF_API_TOKEN?.trim();
+        if (!zoneId || !apiToken) {
+          return this.textResponse({ success: false, error: 'Cloudflare API not configured' });
+        }
+
+        const scripts = await orgStub.listWorkerScripts();
+        let retried = 0;
+        let succeeded = 0;
+        const errors: Array<{ app: string; error: string }> = [];
+
+        for (const script of scripts) {
+          const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
+          if (!shouldRetryAppCustomDomainProvisioning(script, domain.domain)) continue;
+
+          retried++;
+          try {
+            let result = await createCustomHostname(zoneId, apiToken, expectedHostname);
+            if (!result) {
+              result = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+            }
+            if (result) {
+              await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                hostname: expectedHostname,
+                cf_hostname_id: result.id,
+                status: result.status,
+                ssl_status: result.ssl.status,
+                error: null,
+              });
+              succeeded++;
+            } else {
+              const msg = 'Failed to create or locate Cloudflare hostname';
+              await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                hostname: expectedHostname,
+                cf_hostname_id: null,
+                status: null,
+                ssl_status: null,
+                error: msg,
+              });
+              errors.push({ app: script.script_name, error: msg });
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+              hostname: expectedHostname,
+              error: msg,
+            });
+            errors.push({ app: script.script_name, error: msg });
+          }
+        }
+
+        return this.textResponse({
+          success: true,
+          retried,
+          succeeded,
+          errors: errors.length > 0 ? errors : undefined,
+          message: retried === 0
+            ? 'No apps need hostname retry — all are either active or still provisioning normally.'
+            : `Retried ${retried} app(s): ${succeeded} succeeded${errors.length > 0 ? `, ${errors.length} failed` : ''}. Run get_custom_domain to check updated status.`,
+        });
+      }
+    );
+
+  }
+}
+
+/**
+ * Resolve a CNAME record via Cloudflare DNS-over-HTTPS.
+ * Returns a structured result so callers can distinguish missing records
+ * from diagnostic failures like DoH outages or rate limits.
+ */
+async function resolveCnameViaDoH(hostname: string): Promise<CnameLookupResult> {
+  const url = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=CNAME`;
+  try {
+    const resp = await fetch(url, {
+      headers: { Accept: 'application/dns-json' },
+    });
+    if (!resp.ok) {
+      return {
+        status: 'unavailable',
+        error: `DoH query failed with HTTP ${resp.status}`,
+        http_status: resp.status,
+      };
+    }
+    const data = await resp.json() as {
+      Status?: number;
+      Answer?: Array<{ type: number; data: string }>;
+    };
+    // DNS Status: 0 = NOERROR, 3 = NXDOMAIN (both mean "record doesn't exist" when no CNAME answer).
+    // Anything else (2 = SERVFAIL, 5 = REFUSED, etc.) is a resolver failure.
+    const dnsStatus = data.Status ?? 0;
+    // CNAME is DNS type 5
+    const cname = data.Answer?.find(a => a.type === 5);
+    if (!cname) {
+      if (dnsStatus !== 0 && dnsStatus !== 3) {
+        return {
+          status: 'unavailable',
+          error: `DNS resolver returned status ${dnsStatus}`,
+          http_status: null,
+        };
+      }
+      return { status: 'missing' };
+    }
+    // Remove trailing dot from DNS response
+    return { status: 'resolved', target: cname.data.replace(/\.$/, '') };
+  } catch (error) {
+    return {
+      status: 'unavailable',
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
