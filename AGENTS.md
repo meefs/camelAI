@@ -256,6 +256,8 @@ Several features (onboarding first-thread, custom connection "Other") use the sa
 
 Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-create`, `mpu-uploadpart`, `mpu-complete`, `mpu-abort`.
 
+The shared `PromptInput` composer accepts attachment-only sends (completed uploads enable Enter/Send even with empty text) and auto-converts pasted plain text longer than 8,000 characters into a `pasted-text.txt` upload so large pastes flow through the existing attachment pipeline instead of raw message text.
+
 ### Computer Tab File Search
 
 - The file tree API route (`/api/workspaces/:id/fs/list`) supports `recursive` + `includeHidden` query params and returns `relativePath` for entries.

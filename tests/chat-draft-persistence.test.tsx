@@ -275,6 +275,14 @@ beforeAll(() => {
 });
 
 describe('Chat draft persistence', () => {
+  const attachmentDraft = {
+    id: 'attachment-1',
+    name: 'pasted-text.txt',
+    path: '/mnt/user-uploads/pasted-text-123.txt',
+    size: 42,
+    status: 'complete' as const,
+  };
+
   beforeEach(() => {
     mockFetcher = createFetcher();
     mockNavigate.mockReset();
@@ -392,6 +400,90 @@ describe('Chat draft persistence', () => {
     expect(JSON.parse(sessionStorage.getItem('pendingMessage:newThread') ?? '{}')).toMatchObject({
       message: 'Hello from welcome',
       threadId: 'thread-new',
+    });
+  });
+
+  it('sends an attachment-only thread draft through the websocket', async () => {
+    const user = userEvent.setup();
+
+    localStorage.setItem(
+      'draft:ws-1:thread-1',
+      JSON.stringify({
+        text: '',
+        attachments: [attachmentDraft],
+        savedAt: Date.now(),
+      }),
+    );
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+        isNewThread
+      />
+    );
+
+    expect(screen.getByTestId('thread-attachment-count')).toHaveTextContent('1');
+
+    const socket = getMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    const sentPayloadRaw = socket.send.mock.calls.at(-1)?.[0];
+    expect(typeof sentPayloadRaw).toBe('string');
+    const sentPayload = JSON.parse(String(sentPayloadRaw));
+    expect(sentPayload.content).toBe(`(user uploaded file to ${attachmentDraft.path})`);
+  });
+
+  it('creates a new thread from an attachment-only welcome draft', async () => {
+    const user = userEvent.setup();
+
+    localStorage.setItem(
+      'draft:ws-1:new',
+      JSON.stringify({
+        text: '',
+        attachments: [attachmentDraft],
+        savedAt: Date.now(),
+      }),
+    );
+
+    const { rerender } = render(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    expect(screen.getByTestId('welcome-attachment-count')).toHaveTextContent('1');
+
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(mockFetcher.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: 'createThread',
+      }),
+      { method: 'post', action: '/chat' },
+    );
+
+    mockFetcher.data = { thread: { id: 'thread-new' } };
+
+    rerender(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    await waitFor(() => {
+      expect(JSON.parse(sessionStorage.getItem('pendingMessage:newThread') ?? '{}')).toMatchObject({
+        message: `(user uploaded file to ${attachmentDraft.path})`,
+        threadId: 'thread-new',
+      });
     });
   });
 
