@@ -180,7 +180,9 @@ export function PromptInput({
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if ((value.trim() || hasCompletedAttachments) && !disabled) {
+      if (showStopButton) {
+        onStopRef.current?.();
+      } else if ((value.trim() || hasCompletedAttachments) && !disabled) {
         onSubmit();
       }
     }
