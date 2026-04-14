@@ -61,6 +61,8 @@ interface SendButtonProps {
   onClick: (e: React.MouseEvent) => void;
 }
 
+const LONG_PASTE_CHAR_THRESHOLD = 8_000;
+
 const MemoizedSendButton = memo(function MemoizedSendButton({
   showStopButton,
   isSubmitDisabled,
@@ -153,6 +155,8 @@ export function PromptInput({
   // Show stop button when assistant is running and input is empty
   const showStopButton = Boolean(isAssistantRunning && !value.trim() && onStop);
   const effectivePlaceholder = animatedPlaceholder ?? placeholder;
+  const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
+  const hasCompletedAttachments = attachments.some(a => a.status === 'complete');
 
   function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     if (!onFilesSelected || disabled) return;
@@ -161,13 +165,24 @@ export function PromptInput({
     if (files.length > 0) {
       e.preventDefault();
       onFilesSelected(files);
+      return;
+    }
+
+    const pastedText = e.clipboardData.getData('text/plain');
+    if (pastedText && pastedText.length > LONG_PASTE_CHAR_THRESHOLD) {
+      e.preventDefault();
+      onFilesSelected([
+        new File([pastedText], 'pasted-text.txt', { type: 'text/plain' }),
+      ]);
     }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (value.trim() && !disabled) {
+      if (showStopButton) {
+        onStopRef.current?.();
+      } else if ((value.trim() || hasCompletedAttachments) && !disabled) {
         onSubmit();
       }
     }
@@ -177,7 +192,7 @@ export function PromptInput({
     e.preventDefault();
     if (showStopButton) {
       onStopRef.current?.();
-    } else if (value.trim() && !disabled) {
+    } else if ((value.trim() || hasCompletedAttachments) && !disabled) {
       onSubmit();
     }
   }
@@ -237,8 +252,11 @@ export function PromptInput({
     }
   }, [disabled, onFilesSelected]);
 
-  const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
-  const isSubmitDisabled = disabled || isLoading || hasUploadingAttachments || isTranscribing || (!showStopButton && !value.trim());
+  const isSubmitDisabled = disabled
+    || isLoading
+    || hasUploadingAttachments
+    || isTranscribing
+    || (!showStopButton && !value.trim() && !hasCompletedAttachments);
   const showFileUpload = !!onFilesSelected;
 
   useEffect(() => {

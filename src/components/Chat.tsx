@@ -179,6 +179,23 @@ function isComposerVisiblyEmpty(text: string, attachments: Attachment[]): boolea
   return text.trim().length === 0 && attachments.length === 0;
 }
 
+function getCompletedAttachments(attachments: Attachment[]): Attachment[] {
+  return attachments.filter((attachment) => attachment.status === 'complete');
+}
+
+function buildMessageContent(text: string, attachments: Attachment[]): string {
+  const rawContent = text.trim();
+  const completedAttachments = getCompletedAttachments(attachments);
+  if (completedAttachments.length === 0) {
+    return rawContent;
+  }
+
+  const fileRefs = completedAttachments
+    .map((attachment) => `(user uploaded file to ${attachment.path})`)
+    .join('\n');
+  return rawContent ? `${rawContent}\n\n${fileRefs}` : fileRefs;
+}
+
 const FREE_TIER_MODAL_SEEN_PREFIX = 'freeTierModalSeen:';
 const FREE_TIER_MSG_COUNT_PREFIX = 'freeTierMsgCount:';
 
@@ -3563,9 +3580,10 @@ export default function Chat({
   function startNewChat() {
     const currentWelcomeInput = welcomeInputRef.current;
     const currentAttachments = attachmentsRef.current;
+    const hasCompletedAttachments = getCompletedAttachments(currentAttachments).length > 0;
 
     if (
-      !currentWelcomeInput.trim() ||
+      (!currentWelcomeInput.trim() && !hasCompletedAttachments) ||
       isCreatingThread ||
       !resolvedWorkspaceId ||
       createThreadFetcher.state !== 'idle'
@@ -3585,15 +3603,7 @@ export default function Chat({
     const userMessage = currentWelcomeInput.trim();
     setWelcomeInput('');
 
-    // Build message content with file references appended
-    const completedAttachments = currentAttachments.filter(a => a.status === 'complete');
-    let finalContent = userMessage;
-    if (completedAttachments.length > 0) {
-      const fileRefs = completedAttachments
-        .map(a => `(user uploaded file to ${a.path})`)
-        .join('\n');
-      finalContent = `${userMessage}\n\n${fileRefs}`;
-    }
+    const finalContent = buildMessageContent(userMessage, currentAttachments);
 
     // Clear attachments (revoke any blob URLs to avoid memory leaks)
     setAttachments(prev => {
@@ -3612,10 +3622,14 @@ export default function Chat({
     };
 
     // Submit to route action to create thread
-    createThreadFetcher.submit(
-      { intent: 'createThread', firstMessage: userMessage, model: selectedThreadModel },
-      { method: 'post', action: '/chat' }
-    );
+    const createThreadPayload: Record<string, string> = {
+      intent: 'createThread',
+      model: selectedThreadModel,
+    };
+    if (userMessage) {
+      createThreadPayload.firstMessage = userMessage;
+    }
+    createThreadFetcher.submit(createThreadPayload, { method: 'post', action: '/chat' });
   }
 
   function stopGeneration() {
@@ -3989,10 +4003,13 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
     const currentInput = inputRef.current;
     const currentAttachments = attachmentsRef.current;
+    const hasUploadingAttachments = currentAttachments.some(a => a.status === 'uploading');
+    const hasCompletedAttachments = getCompletedAttachments(currentAttachments).length > 0;
     const rawContent = (opts?.contentOverride ?? currentInput).trim();
     if (
       isLoadingMessages ||
-      !rawContent ||
+      hasUploadingAttachments ||
+      (!rawContent && !hasCompletedAttachments) ||
       !shouldShowChat ||
       !resolvedWorkspaceId ||
       !threadId
@@ -4018,16 +4035,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
 
     const shouldIncludeAttachmentRefs = !opts?.skipAttachmentRefs && !opts?.contentOverride;
-    let finalContent = rawContent;
-    if (shouldIncludeAttachmentRefs) {
-      const completedAttachments = currentAttachments.filter(a => a.status === 'complete');
-      if (completedAttachments.length > 0) {
-        const fileRefs = completedAttachments
-          .map(a => `(user uploaded file to ${a.path})`)
-          .join('\n');
-        finalContent = `${rawContent}\n\n${fileRefs}`;
-      }
-    }
+    const finalContent = shouldIncludeAttachmentRefs
+      ? buildMessageContent(rawContent, currentAttachments)
+      : rawContent;
 
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
 
