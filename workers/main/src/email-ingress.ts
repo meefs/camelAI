@@ -85,6 +85,56 @@ function sanitizeHeaderValue(value: string, maxLength = 200): string {
     .slice(0, maxLength);
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function isNonRetriableReplyError(error: unknown): boolean {
+  const normalized = getErrorMessage(error).toLowerCase();
+  return (
+    normalized.includes("original email is not repliable") ||
+    normalized.includes("exceeds reply limit")
+  );
+}
+
+function extractAuthResultStatus(
+  authResultsHeader: string,
+  label: "spf" | "dkim" | "dmarc",
+): string | null {
+  const match = authResultsHeader.match(
+    new RegExp(`(?:^|\\s|;)${label}=([a-z_+-]+)`, "i"),
+  );
+  return match?.[1]?.toLowerCase() || null;
+}
+
+function summarizeAuthResults(headers: Headers): {
+  spf: string | null;
+  dkim: string | null;
+  dmarc: string | null;
+  header: string | null;
+} {
+  const authResultsHeader = sanitizeHeaderValue(
+    headers.get("authentication-results") || "",
+    500,
+  );
+  if (!authResultsHeader) {
+    return {
+      spf: null,
+      dkim: null,
+      dmarc: null,
+      header: null,
+    };
+  }
+
+  return {
+    spf: extractAuthResultStatus(authResultsHeader, "spf"),
+    dkim: extractAuthResultStatus(authResultsHeader, "dkim"),
+    dmarc: extractAuthResultStatus(authResultsHeader, "dmarc"),
+    header: authResultsHeader,
+  };
+}
+
 function normalizeMessageId(rawValue: string | null): string | null {
   if (!rawValue) return null;
   const sanitized = sanitizeHeaderValue(rawValue, 512)
@@ -892,22 +942,44 @@ export async function handleWorkspaceEmailIngress(
       thread.threadId,
       replyDomain,
     );
+    try {
+      const sentMessageId = await sendReply(message, {
+        fromAddress: recipientAddress,
+        toAddress: senderEmail,
+        replyToAddress: recipientAddress,
+        subject: formatReplySubject(subject, thread.title),
+        body: replyText,
+        messageId: outboundMessageId,
+      });
 
-    const sentMessageId = await sendReply(message, {
-      fromAddress: recipientAddress,
-      toAddress: senderEmail,
-      replyToAddress: recipientAddress,
-      subject: formatReplySubject(subject, thread.title),
-      body: replyText,
-      messageId: outboundMessageId,
-    });
+      if (sentMessageId) {
+        await env.APP_KV.put(
+          getEmailReplyReferenceKey(resolved.workspaceId, sentMessageId),
+          thread.threadId,
+          { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+        );
+      }
+    } catch (error) {
+      if (!isNonRetriableReplyError(error)) {
+        throw error;
+      }
 
-    if (sentMessageId) {
-      await env.APP_KV.put(
-        getEmailReplyReferenceKey(resolved.workspaceId, sentMessageId),
-        thread.threadId,
-        { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
-      );
+      const authResults = summarizeAuthResults(message.headers);
+      console.warn("[email-ingress] reply skipped by Cloudflare", {
+        workspaceId: resolved.workspaceId,
+        orgId: resolved.orgId,
+        threadId: thread.threadId,
+        senderEmail,
+        recipientAddress,
+        inboundMessageId: normalizeMessageId(message.headers.get("message-id")),
+        outboundMessageId,
+        referencesCount: extractMessageIdsFromHeaderValue(
+          message.headers.get("references"),
+        ).length,
+        hasInReplyTo: Boolean(message.headers.get("in-reply-to")),
+        authResults,
+        error: getErrorMessage(error),
+      });
     }
 
     dedupeHandled = true;

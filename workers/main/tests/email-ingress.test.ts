@@ -219,4 +219,59 @@ describe('handleWorkspaceEmailIngress', () => {
     expect(message.setReject).toHaveBeenCalledWith('Sender is not allowed for this workspace inbox.');
     expect(message.reply).not.toHaveBeenCalled();
   });
+
+  it('does not retry forever when Cloudflare refuses to reply to the original email', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
+      getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+    };
+    const orgStub = {
+      isMember: vi.fn().mockResolvedValue(true),
+      getThread: vi.fn().mockResolvedValue(null),
+      createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
+      getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
+    };
+    const userStub = {
+      getProfile: vi.fn().mockResolvedValue({ name: 'Agent User' }),
+    };
+
+    getWorkspaceStubMock.mockReturnValue(workspaceStub);
+    getOrgStubMock.mockReturnValue(orgStub);
+    getUserStubMock.mockReturnValue(userStub);
+    runExternalMessageTurnMock.mockResolvedValue({ status: 'result', reply: 'Looks good.' });
+
+    const env = createMockEnv();
+    env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
+
+    const message = createMessage({
+      from: 'user@example.com',
+      to: 'swift-falcon-ridge@mail.camelai.com',
+      subject: 'Need help',
+      rawBody: 'Please reply',
+    });
+    message.reply.mockRejectedValueOnce(
+      new Error('original email is not repliable or exceeds reply limit')
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(handleWorkspaceEmailIngress(message, env)).resolves.toBeUndefined();
+
+    expect(runExternalMessageTurnMock).toHaveBeenCalledTimes(1);
+    expect(message.reply).toHaveBeenCalledTimes(1);
+    expect(env.APP_KV.put).toHaveBeenCalledWith(
+      expect.stringMatching(/^email_event:/),
+      'done',
+      expect.objectContaining({ expirationTtl: 600 })
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[email-ingress] reply skipped by Cloudflare',
+      expect.objectContaining({
+        error: 'original email is not repliable or exceeds reply limit',
+        threadId: 'thread-1',
+      })
+    );
+
+    warnSpy.mockRestore();
+  });
 });

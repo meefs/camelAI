@@ -189,8 +189,8 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 4. Follow-ups are routed to existing threads using email reply headers (`In-Reply-To` / `References`) mapped in KV (`email_reply_ref:*`)
 5. MIME attachments are uploaded to workspace-scoped R2 keys under `user-uploads/` and appended to the inbound turn as `(user uploaded file to /mnt/user-uploads/<filename>)` lines (same format as web chat uploads)
 6. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
-7. Clarifying-question tools follow the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
-8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{orgSlug}.{workspaceSlug}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
+7. Clarifying-question tools such as `AskUserQuestion` follow the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
+8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{orgSlug}.{workspaceSlug}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`). If Cloudflare rejects `message.reply()` because the original message is unrepliable or the thread exceeded the provider reply-chain limit, camelAI now logs auth/reference context, skips the outbound reply, and still marks the inbound email handled so Email Routing does not keep retrying the same turn.
 9. Email ingress no longer applies an app-level external-turn timeout; turns wait for model completion with a 30-minute safety fallback
 
 ### Sandbox Proxy Auth
