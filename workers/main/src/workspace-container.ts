@@ -826,14 +826,21 @@ export class WorkspaceContainer {
 
   async readThreadMessagesStream(
     threadId: string,
+    options: { claudeSessionId?: string | null } = {},
   ): Promise<ControlPlaneThreadMessagesStreamResponse> {
     const trimmedThreadId = threadId.trim();
     if (!trimmedThreadId) {
       return { success: false, error: "Thread ID is required", code: "EINVAL" };
     }
 
+    const query: Record<string, string> = { threadId: trimmedThreadId };
+    const claudeSessionId = options.claudeSessionId?.trim();
+    if (claudeSessionId && claudeSessionId !== trimmedThreadId) {
+      query.claudeSessionId = claudeSessionId;
+    }
+
     const response = await this.fetchSandbox(
-      this.sandboxUrl("/chat/messages", { threadId: trimmedThreadId }),
+      this.sandboxUrl("/chat/messages", query),
       {
         headers: { Accept: "application/json" },
       },

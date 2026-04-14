@@ -2,6 +2,7 @@ import type { Route } from './+types/admin.threads.$id.messages';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import * as chatDO from '@/lib/chat-do.server';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -36,7 +37,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadContext.org_id,
     );
 
-    const streamResult = await container.readThreadMessagesStream(threadId);
+    const legacyClaudeSessionId = await chatDO.getLegacyClaudeSessionId(context, threadId);
+    const streamResult = await container.readThreadMessagesStream(threadId, {
+      claudeSessionId: legacyClaudeSessionId,
+    });
     if (!streamResult.success || !streamResult.response) {
       const status = streamResult.code?.startsWith('HTTP_')
         ? Number.parseInt(streamResult.code.slice(5), 10) || 500

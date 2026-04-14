@@ -170,7 +170,7 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 
 ### Thread Message History Retrieval
 
-`getMessages()` no longer parses JSONL in the Worker runtime and no longer reads transcript snapshots from `ChatThreadDO`. Message history is loaded from sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, which currently parses Claude JSONL from the host workspace. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the sandbox-host JSON response body through. Codex history reloads are expected to be incomplete until sandbox-host learns how to read Codex app-server storage.
+`getMessages()` no longer parses JSONL in the Worker runtime and no longer reads transcript snapshots from `ChatThreadDO`. Message history is loaded from sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, which parses Claude JSONL from the host workspace. Legacy Claude threads created before thread IDs were forced into the Claude SDK can pass the old stored `claude_session_id` as `claudeSessionId`; the host still performs the file read and parsing. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the sandbox-host JSON response body through. Codex history reloads are expected to be incomplete until sandbox-host learns how to read Codex app-server storage.
 
 ### QAML Backdoor Read-Only Thread View
 

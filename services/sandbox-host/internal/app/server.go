@@ -311,42 +311,56 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		return nil
 	}
 
-	jsonlPath := fmt.Sprintf("/home/claude/.claude/projects/-home-claude/%s.jsonl", threadID)
-	info, err := s.fs.ReadInfo(name, jsonlPath)
-	if err != nil {
-		lower := strings.ToLower(err.Error())
-		if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"success":  true,
-				"messages": []parsedChatMessage{},
-			})
-			return nil
-		}
-		return s.handleFSError(w, err, "Chat messages unavailable")
+	claudeSessionID := strings.TrimSpace(req.URL.Query().Get("claudeSessionId"))
+	if strings.ContainsAny(claudeSessionID, `/\`) {
+		errorJSON(w, "invalid claudeSessionId", http.StatusBadRequest)
+		return nil
 	}
 
-	file, err := os.Open(info.HostPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"success":  true,
-				"messages": []parsedChatMessage{},
-			})
-			return nil
-		}
-		return err
+	sessionIDs := []string{threadID}
+	if claudeSessionID != "" && claudeSessionID != threadID {
+		sessionIDs = append(sessionIDs, claudeSessionID)
 	}
-	defer file.Close()
 
-	content, err := io.ReadAll(file)
-	if err != nil {
-		return err
+	for _, sessionID := range sessionIDs {
+		jsonlPath := fmt.Sprintf("/home/claude/.claude/projects/-home-claude/%s.jsonl", sessionID)
+		info, err := s.fs.ReadInfo(name, jsonlPath)
+		if err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
+				continue
+			}
+			return s.handleFSError(w, err, "Chat messages unavailable")
+		}
+
+		file, err := os.Open(info.HostPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		defer file.Close()
+
+		content, err := io.ReadAll(file)
+		if err != nil {
+			return err
+		}
+		messages := parseClaudeJSONLMessages(string(content), threadID)
+		if len(messages) == 0 {
+			continue
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":  true,
+			"messages": messages,
+		})
+		return nil
 	}
-	messages := parseClaudeJSONLMessages(string(content), threadID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":  true,
-		"messages": messages,
+		"messages": []parsedChatMessage{},
 	})
 	return nil
 }

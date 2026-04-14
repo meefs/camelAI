@@ -1244,6 +1244,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.broadcastRealtime({ type: 'thread_model_updated', model });
   }
 
+  getLegacyClaudeSessionId(): string | null {
+    try {
+      const rows = this.ctx.storage.sql
+        .exec<{ value: string }>(
+          "SELECT value FROM metadata WHERE key = ?",
+          "claude_session_id",
+        )
+        .toArray();
+      const value = rows[0]?.value;
+      return typeof value === "string" && value.trim() ? value.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
   async refreshRunnerConfig(): Promise<void> {
     await this.withRunnerTransitionLock('refresh_runner_config', async () => {
       this.stopRunnerReconnectLoop('refresh_runner_config');

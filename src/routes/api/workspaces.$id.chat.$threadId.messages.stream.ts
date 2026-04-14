@@ -1,4 +1,5 @@
 import type { Route } from './+types/workspaces.$id.chat.$threadId.messages.stream';
+import * as chatDO from '@/lib/chat-do.server';
 import { requireWorkspaceAuth } from './workspaces.utils';
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -13,7 +14,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     }
 
     const { container } = await requireWorkspaceAuth(request, context, workspaceId);
-    const streamResult = await container.readThreadMessagesStream(threadId);
+    const legacyClaudeSessionId = await chatDO.getLegacyClaudeSessionId(context, threadId);
+    const streamResult = await container.readThreadMessagesStream(threadId, {
+      claudeSessionId: legacyClaudeSessionId,
+    });
     if (!streamResult.success || !streamResult.response) {
       const status = streamResult.code?.startsWith('HTTP_')
         ? Number.parseInt(streamResult.code.slice(5), 10) || 500

@@ -29,6 +29,9 @@ type OrgThreadLookup = {
     workspace_id: string;
   } | null>;
 };
+type ChatThreadLookup = {
+  getLegacyClaudeSessionId(): Promise<string | null>;
+};
 
 export function getAdminIndexStub(env: AdminIndexEnv) {
   return env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index')) as DurableObjectStub<AdminIndexDO>;
@@ -75,7 +78,13 @@ export async function loadAdminThreadMessagesResponse(
     threadContext.org_id,
   );
 
-  const streamResult = await container.readThreadMessagesStream(trimmedThreadId);
+  const chatThread = env.CHAT_THREAD.get(
+    env.CHAT_THREAD.idFromName(trimmedThreadId),
+  ) as unknown as ChatThreadLookup;
+  const legacyClaudeSessionId = await chatThread.getLegacyClaudeSessionId().catch(() => null);
+  const streamResult = await container.readThreadMessagesStream(trimmedThreadId, {
+    claudeSessionId: legacyClaudeSessionId,
+  });
   if (!streamResult.success || !streamResult.response) {
     const status = streamResult.code?.startsWith('HTTP_')
       ? Number.parseInt(streamResult.code.slice(5), 10) || 500

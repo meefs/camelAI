@@ -1,7 +1,10 @@
 import type { Route } from './+types/admin.threads.$id.jsonl';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getThreadJsonlPathCandidates } from '@/lib/chat-do.server';
+import {
+  getLegacyClaudeSessionId,
+  getThreadJsonlPathCandidates,
+} from '@/lib/chat-do.server';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -48,7 +51,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     );
 
     let proxyResponse: Response | null = null;
-    for (const candidatePath of getThreadJsonlPathCandidates(threadId)) {
+    const legacyClaudeSessionId = await getLegacyClaudeSessionId(context, threadId);
+    for (const candidatePath of getThreadJsonlPathCandidates(threadId, legacyClaudeSessionId)) {
       proxyResponse = await container.readFileStream(candidatePath);
       if (proxyResponse) {
         break;

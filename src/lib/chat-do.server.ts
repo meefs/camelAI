@@ -289,12 +289,31 @@ export async function generateThreadTitle(
   }
 }
 
-export function getThreadJsonlPathCandidates(threadId: string): string[] {
+export function getThreadJsonlPathCandidates(
+  threadId: string,
+  legacyClaudeSessionId?: string | null
+): string[] {
   // Claude stores sessions at ~/.claude/projects/{project-path}/{session_id}.jsonl.
-  // Current sandbox project path resolves to -home-claude.
-  return [
-    `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`,
-  ];
+  // Current sandbox project path resolves to -home-claude. Legacy Claude threads
+  // may use a Claude SDK session id that differs from the camel thread id.
+  const sessionIds = [threadId];
+  const trimmedLegacySessionId = legacyClaudeSessionId?.trim();
+  if (trimmedLegacySessionId && trimmedLegacySessionId !== threadId) {
+    sessionIds.push(trimmedLegacySessionId);
+  }
+  return sessionIds.map(
+    (sessionId) => `/home/claude/.claude/projects/-home-claude/${sessionId}.jsonl`
+  );
+}
+
+export async function getLegacyClaudeSessionId(
+  context: AppLoadContext,
+  threadId: string
+): Promise<string | null> {
+  const env = getEnv(context);
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const sessionId = await threadStub.getLegacyClaudeSessionId().catch(() => null);
+  return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
 }
 
 export async function getMessages(
@@ -305,13 +324,17 @@ export async function getMessages(
   const env = getEnv(context);
 
   // Messages are parsed on sandbox-host from the container's Claude JSONL file.
-  // threadId is the Claude session_id.
+  // Newer Claude threads use threadId as the session_id; legacy threads may have
+  // a separate Claude SDK session id stored as metadata.
   try {
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];
 
     const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
-    const streamResult = await container.readThreadMessagesStream(threadId);
+    const legacyClaudeSessionId = await getLegacyClaudeSessionId(context, threadId);
+    const streamResult = await container.readThreadMessagesStream(threadId, {
+      claudeSessionId: legacyClaudeSessionId,
+    });
     if (!streamResult.success || !streamResult.response) {
       return [];
     }
