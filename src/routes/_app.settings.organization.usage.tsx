@@ -5,7 +5,7 @@ import { getEnv } from '@/lib/cloudflare.server';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import {
   Table,
   TableBody,
@@ -131,98 +131,102 @@ export default function OrganizationUsagePage() {
             </Card>
           </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Spend Windows</CardTitle>
-              <CardDescription>
-                Rolling time windows with budget caps
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {spend.windows.map((w) => (
-                  <div
-                    key={w.label}
-                    className={cn(
-                      'rounded-lg border p-4',
-                      w.exceeded ? 'border-destructive/50 bg-destructive/5' : 'border-border',
+          <Separator />
+
+          <div className="space-y-3">
+            <div>
+              <h3 className="text-lg font-medium">Spend Windows</h3>
+              <p className="text-sm text-muted-foreground">
+                Rolling time windows with budget caps.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {spend.windows.map((w) => (
+                <div
+                  key={w.label}
+                  className={cn(
+                    'rounded-lg border p-4',
+                    w.exceeded ? 'border-destructive/50 bg-destructive/5' : 'border-border',
+                  )}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium">{w.label} window</span>
+                    {w.exceeded ? (
+                      <Badge variant="destructive">Exceeded</Badge>
+                    ) : (
+                      <Badge variant="outline">OK</Badge>
                     )}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium">{w.label} window</span>
-                      {w.exceeded ? (
-                        <Badge variant="destructive">Exceeded</Badge>
-                      ) : (
-                        <Badge variant="outline">OK</Badge>
-                      )}
-                    </div>
-                    <div className="text-2xl font-semibold">
-                      ${w.spent_usd.toFixed(2)}{' '}
-                      <span className="text-sm font-normal text-muted-foreground">
-                        / ${w.limit_usd.toFixed(0)}
-                      </span>
-                    </div>
-                    <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className={cn(
-                          'h-full rounded-full transition-all',
-                          w.exceeded ? 'bg-destructive' : 'bg-primary',
-                        )}
-                        style={{
-                          width: `${Math.min(100, (w.spent_usd / w.limit_usd) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {((w.spent_usd / w.limit_usd) * 100).toFixed(1)}% used
-                    </p>
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                  <div className="text-2xl font-semibold">
+                    ${w.spent_usd.toFixed(2)}{' '}
+                    <span className="text-sm font-normal text-muted-foreground">
+                      / ${w.limit_usd.toFixed(0)}
+                    </span>
+                  </div>
+                  <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={cn(
+                        'h-full rounded-full transition-all',
+                        w.exceeded ? 'bg-destructive' : 'bg-primary',
+                      )}
+                      style={{
+                        width: `${Math.min(100, (w.spent_usd / w.limit_usd) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {((w.spent_usd / w.limit_usd) * 100).toFixed(1)}% used
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
 
           {log && log.entries.length > 0 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>Recent Requests</CardTitle>
-                <CardDescription>Last {log.entries.length} AI requests</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Model</TableHead>
-                      <TableHead>Input</TableHead>
-                      <TableHead>Output</TableHead>
-                      <TableHead>Cost</TableHead>
-                      <TableHead>Time</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {log.entries.map((entry) => (
-                      <TableRow key={entry.id}>
-                        <TableCell className="font-mono text-xs">
-                          {entry.model.replace('claude-', '').replace(/-\d{8}$/, '')}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {entry.input_tokens.toLocaleString()}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {entry.output_tokens.toLocaleString()}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          ${entry.cost_usd.toFixed(4)}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                          {dateFormatter.format(new Date(entry.created_at_ms))}
-                        </TableCell>
+            <>
+              <Separator />
+
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-lg font-medium">Recent Requests</h3>
+                  <p className="text-sm text-muted-foreground">Last {log.entries.length} AI requests.</p>
+                </div>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Model</TableHead>
+                        <TableHead>Input</TableHead>
+                        <TableHead>Output</TableHead>
+                        <TableHead>Cost</TableHead>
+                        <TableHead>Time</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
+                    </TableHeader>
+                    <TableBody>
+                      {log.entries.map((entry) => (
+                        <TableRow key={entry.id}>
+                          <TableCell className="font-mono text-xs">
+                            {entry.model.replace('claude-', '').replace(/-\d{8}$/, '')}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground">
+                            {entry.input_tokens.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground">
+                            {entry.output_tokens.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            ${entry.cost_usd.toFixed(4)}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                            {dateFormatter.format(new Date(entry.created_at_ms))}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </>
           ) : null}
         </div>
       )}

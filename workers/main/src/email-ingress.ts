@@ -931,6 +931,7 @@ export async function handleWorkspaceEmailIngress(
       threadId: thread.threadId,
       workspaceId: authorizedSender.workspaceId,
       orgId: authorizedSender.orgId,
+      userId: authorizedSender.userId,
       userName: authorizedSender.userName,
       userEmail: authorizedSender.userEmail,
       message: userMessage,

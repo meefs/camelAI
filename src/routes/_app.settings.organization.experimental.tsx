@@ -6,7 +6,6 @@ import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.serv
 import { getEnv } from '@/lib/cloudflare.server';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -74,44 +73,41 @@ export default function OrganizationExperimentalPage() {
       />
       <Separator />
 
-      <fetcher.Form method="post" className="max-w-2xl">
-        <Card>
-          <CardHeader>
-            <CardTitle>Chat Models</CardTitle>
-            <CardDescription>
-              Turn on experimental GPT models in Camel chat for this organization.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
-              <div className="space-y-1">
-                <Label htmlFor="codex-gpt-models" className="text-sm font-medium">
-                  Enable GPT-5.4 and GPT-5.4 Mini
-                </Label>
-                <p className="text-sm text-muted-foreground">
-                  Shows GPT model options in chat creation and model pickers for OpenAI-backed chats.
-                </p>
-              </div>
-              <Switch
-                id="codex-gpt-models"
-                checked={codexGptModels}
-                onCheckedChange={setCodexGptModels}
-              />
-            </div>
+      <fetcher.Form method="post" className="max-w-2xl space-y-4">
+        <div>
+          <h3 className="text-lg font-medium">Chat Models</h3>
+          <p className="text-sm text-muted-foreground">
+            Turn on experimental GPT models in Camel chat for this organization.
+          </p>
+        </div>
 
-            <input
-              type="hidden"
-              name="codex_gpt_models"
-              value={codexGptModels ? 'true' : 'false'}
-            />
+        <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+          <div className="space-y-1">
+            <Label htmlFor="codex-gpt-models" className="text-sm font-medium">
+              Enable GPT-5.4 and GPT-5.4 Mini
+            </Label>
+            <p className="text-sm text-muted-foreground">
+              Shows GPT model options in chat creation and model pickers for OpenAI-backed chats.
+            </p>
+          </div>
+          <Switch
+            id="codex-gpt-models"
+            checked={codexGptModels}
+            onCheckedChange={setCodexGptModels}
+          />
+        </div>
 
-            <div className="flex justify-end">
-              <Button type="submit" disabled={fetcher.state !== 'idle'}>
-                {fetcher.state === 'idle' ? 'Save Changes' : 'Saving...'}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <input
+          type="hidden"
+          name="codex_gpt_models"
+          value={codexGptModels ? 'true' : 'false'}
+        />
+
+        <div className="flex justify-end">
+          <Button type="submit" disabled={fetcher.state !== 'idle'}>
+            {fetcher.state === 'idle' ? 'Save Changes' : 'Saving...'}
+          </Button>
+        </div>
       </fetcher.Form>
     </div>
   );

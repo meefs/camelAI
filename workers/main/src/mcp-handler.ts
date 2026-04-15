@@ -86,7 +86,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     version: '1.0.0',
   });
 
-  // Auth context extracted from request headers (set per-connection)
+  // Auth context extracted from request headers (resolved per request)
   private orgId: string | null = null;
   private orgSlug: string | null = null;
   private userId: string | null = null;
@@ -2046,11 +2046,31 @@ export async function handleMcpRequest(
     });
   }
 
+  // Resolve auth from the currently active turn author rather than the
+  // sandbox-host proxy session, which is connection-scoped in multi-user chats.
+  let activeTurnUserId: string | null = null;
+  if (proxyAuth.threadId) {
+    try {
+      const chatThreadStub = env.CHAT_THREAD.get(
+        env.CHAT_THREAD.idFromName(proxyAuth.threadId)
+      ) as DurableObjectStub<ChatThreadDO>;
+      const resolvedUserId = await chatThreadStub.getActiveTurnUserId();
+      if (typeof resolvedUserId === 'string' && resolvedUserId.trim()) {
+        activeTurnUserId = resolvedUserId.trim();
+      }
+    } catch (error) {
+      console.warn('[MCP] Failed to resolve active turn user', {
+        threadId: proxyAuth.threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   const headers = new Headers(request.headers);
   headers.set(AUTH_HEADER_ORG_ID, proxyAuth.orgId);
-  headers.set(AUTH_HEADER_USER_ID, 'system');
+  headers.set(AUTH_HEADER_USER_ID, activeTurnUserId ?? 'system');
   headers.set(AUTH_HEADER_WORKSPACE_ID, proxyAuth.workspaceId);
-  const threadId = request.headers.get('x-chiridion-thread-id');
+  const threadId = proxyAuth.threadId ?? request.headers.get('x-chiridion-thread-id');
   if (threadId) headers.set(AUTH_HEADER_THREAD_ID, threadId);
 
   const authenticatedRequest = new Request(request.url, {
