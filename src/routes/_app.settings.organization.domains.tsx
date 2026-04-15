@@ -67,15 +67,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgStub.listWorkerScripts(),
   ]);
 
-  const apps: AppDomainStatus[] = domain
-    ? scripts.map((s) => ({
-        name: s.script_name,
-        hostname: s.custom_domain_hostname,
-        status: s.custom_domain_status,
-        ssl_status: s.custom_domain_ssl_status,
-        error: s.custom_domain_error,
-      }))
-    : [];
+  const apps: AppDomainStatus[] = scripts.map((s) => ({
+    name: s.script_name,
+    hostname: s.custom_domain_hostname,
+    status: s.custom_domain_status,
+    ssl_status: s.custom_domain_ssl_status,
+    error: s.custom_domain_error,
+  }));
 
   return {
     org: authContext.currentOrg,

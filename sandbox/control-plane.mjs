@@ -1343,6 +1343,7 @@ class ChatSession {
     this.hasTerminalResultSinceActivity = false;
     this.clients = new Set();
     this.shuttingDown = false;
+    this.activeTurnUserId = null;
     this.teamPolling = new TeamPollingController({
       threadId: this.threadId,
       trace: traceControlPlane,
@@ -1374,6 +1375,24 @@ class ChatSession {
     if (this.codexClient) {
       this.codexClient.updateSessionEnv(this.sessionEnv);
     }
+  }
+
+  normalizeTurnUserId(userId) {
+    return typeof userId === 'string' && userId.trim() ? userId.trim() : null;
+  }
+
+  setActiveTurnUserId(userId, source) {
+    const normalizedUserId = this.normalizeTurnUserId(userId);
+    if (this.activeTurnUserId === normalizedUserId) {
+      return;
+    }
+
+    this.activeTurnUserId = normalizedUserId;
+    this.broadcast({
+      type: 'active_turn_identity',
+      userId: normalizedUserId,
+      source,
+    });
   }
 
   addClient(ws) {
@@ -1620,6 +1639,7 @@ class ChatSession {
 
   shutdown() {
     this.shuttingDown = true;
+    this.setActiveTurnUserId(null, 'shutdown');
     this.teamPolling.shutdown();
     this.clearDisconnect();
     if (this.messageResolver) {
@@ -1677,11 +1697,12 @@ class ChatSession {
     return await answerPromise;
   }
 
-  handleQuestionResponse(questionId, answers) {
+  handleQuestionResponse(questionId, answers, userId = null) {
     this.markUserActivity('question_response');
     const pending = this.pendingQuestions.get(questionId);
     if (!pending) return;
     this.pendingQuestions.delete(questionId);
+    this.setActiveTurnUserId(userId, 'question_response');
     pending.resolve(answers);
     traceControlPlane('session_question_answered', {
       threadId: this.threadId,
@@ -1759,7 +1780,7 @@ class ChatSession {
           threadId: this.threadId,
           source: 'queue',
           remainingQueue: this.messageQueue.length,
-          messageLength: typeof message === 'string' ? message.length : 0,
+          messageLength: typeof message?.content === 'string' ? message.content.length : 0,
         });
       } else {
         if (this.shuttingDown) return;
@@ -1771,15 +1792,16 @@ class ChatSession {
               threadId: this.threadId,
               source: 'queue_after_shutdown',
               remainingQueue: this.messageQueue.length,
-              messageLength: typeof message === 'string' ? message.length : 0,
+              messageLength: typeof message?.content === 'string' ? message.content.length : 0,
             });
           } else {
             return;
           }
         }
       }
-      if (message === null || message === undefined) continue;
-      yield { type: 'user', message: { role: 'user', content: message } };
+      if (!message || typeof message.content !== 'string' || !message.content) continue;
+      this.setActiveTurnUserId(message.userId, 'claude_message_start');
+      yield { type: 'user', message: { role: 'user', content: message.content } };
     }
   }
 
@@ -1901,6 +1923,7 @@ class ChatSession {
           this.broadcast({ type: 'sdk_event', event });
           if (event?.type === 'result') {
             this.markTerminalResult();
+            this.setActiveTurnUserId(null, 'claude_turn_complete');
             this.teamPolling.requestPoll();
           }
 
@@ -1915,6 +1938,7 @@ class ChatSession {
         }
       } catch (error) {
         console.error(`[ControlPlane] event loop error thread=${this.threadId}:`, error);
+        this.setActiveTurnUserId(null, 'claude_turn_error');
         this.broadcast({ type: 'error', error: String(error), source: 'eventLoop' });
       } finally {
         this.activeQuery = null;
@@ -1929,11 +1953,12 @@ class ChatSession {
     })();
   }
 
-  async handleCodexMessage(trimmed) {
+  async handleCodexMessage(trimmed, userId = null) {
     if (this.activeCodexTurnPromise) {
       throw new Error('A Codex response is already streaming for this thread.');
     }
 
+    this.setActiveTurnUserId(userId, 'codex_turn_start');
     const runPromise = this.getCodexClient().runTurn({
       threadId: this.threadId,
       content: trimmed,
@@ -1969,19 +1994,21 @@ class ChatSession {
         result: result?.finalText || '',
         sessionId: result?.sessionId || this.codexSessionId || undefined,
       });
+      this.setActiveTurnUserId(null, 'codex_turn_complete');
     } catch (error) {
       this.broadcast({
         type: 'error',
         error: error instanceof Error ? error.message : String(error),
         source: 'codex_app_server',
       });
+      this.setActiveTurnUserId(null, 'codex_turn_error');
     } finally {
       this.activeCodexTurnPromise = null;
       this.scheduleDisconnectIfIdleEligible('codex_turn_complete');
     }
   }
 
-  async handleMessage(content) {
+  async handleMessage(content, userId = null) {
     if (typeof content !== 'string' || !content.trim()) return;
     traceControlPlane('session_handle_message', {
       threadId: this.threadId,
@@ -1993,7 +2020,7 @@ class ChatSession {
     this.markUserActivity('message');
 
     if (this.provider === 'codex') {
-      await this.handleCodexMessage(content.trim());
+      await this.handleCodexMessage(content.trim(), userId);
       return;
     }
 
@@ -2003,9 +2030,12 @@ class ChatSession {
     if (this.messageResolver) {
       const r = this.messageResolver;
       this.messageResolver = null;
-      r(content.trim());
+      r({ content: content.trim(), userId: this.normalizeTurnUserId(userId) });
     } else {
-      this.messageQueue.push(content.trim());
+      this.messageQueue.push({
+        content: content.trim(),
+        userId: this.normalizeTurnUserId(userId),
+      });
       traceControlPlane('session_queue_message', {
         threadId: this.threadId,
         queueLength: this.messageQueue.length,
@@ -2275,7 +2305,7 @@ Bun.serve({
       }
 
       if (msg.type === 'message') {
-        session.handleMessage(msg.content).catch((err) => {
+        session.handleMessage(msg.content, msg.userId).catch((err) => {
           session.broadcast({ type: 'error', error: String(err), source: 'handleMessage' });
         });
         return;
@@ -2288,7 +2318,7 @@ Bun.serve({
 
       if (msg.type === 'question_response') {
         if (msg.questionId && msg.answers) {
-          session.handleQuestionResponse(msg.questionId, msg.answers);
+          session.handleQuestionResponse(msg.questionId, msg.answers, msg.userId);
         }
         return;
       }

@@ -18,7 +18,7 @@
 
 ## MCP Permission Fix (already applied)
 
-The `retry_custom_domain_hostnames` tool requires org admin permissions. `handleMcpRequest` was hardcoding `userId` to `"system"` instead of forwarding the actual user ID from the sandbox proxy headers. Fixed in `workers/main/src/mcp-handler.ts` line 2051: `proxyAuth.userId ?? 'system'`. This also fixes `set_custom_domain` and `remove_custom_domain` which have the same admin check.
+The `retry_custom_domain_hostnames` tool requires org admin permissions. The final fix does not trust the sandbox proxy's cached `userId`, because that value is connection-scoped and can be stale in multi-user threads. Instead, the control plane reports the currently active turn author to `ChatThreadDO`, and `handleMcpRequest` resolves MCP auth from that turn-scoped user before dispatching the request. This also fixes `set_custom_domain` and `remove_custom_domain`, which use the same admin check.
 
 ---
 

@@ -202,6 +202,7 @@ export interface ExternalMessageRequest {
   threadId?: string;
   workspaceId?: string;
   orgId?: string;
+  userId?: string | null;
   userName?: string | null;
   userEmail?: string | null;
   message?: string;
@@ -229,6 +230,7 @@ const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_NEXT_EVENT_ID_KEY = "chatNextEventId";
 const CHAT_RUNNER_LAST_SEQ_KEY = "chatRunnerLastSeq";
 const CHAT_RUNNER_IDLE_DISCONNECT_KEY = "chatRunnerIdleDisconnect";
+const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const RUNNER_PING_INTERVAL_MS = 10_000;
@@ -554,6 +556,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private pendingExternalTurn: PendingExternalTurn | null = null;
   private titleGenerationInFlight: boolean = false;
   private codexSessionId: string | null = null;
+  private activeTurnUserId: string | null = null;
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
   private runnerPingTimer: number | null = null;
@@ -791,6 +794,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       if (storedIdleDisconnect === true) {
         this.runnerIntentionalIdleDisconnect = true;
+      }
+
+      const storedActiveTurnUserId = ctx.storage.kv.get<string>(
+        CHAT_ACTIVE_TURN_USER_ID_KEY,
+      );
+      if (
+        typeof storedActiveTurnUserId === "string" &&
+        storedActiveTurnUserId.trim()
+      ) {
+        this.activeTurnUserId = storedActiveTurnUserId.trim();
       }
 
       const storedCodexSessionId = ctx.storage.kv.get<string>(CHAT_CODEX_SESSION_ID_KEY);
@@ -1046,6 +1059,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       if (data.type === "question_response") {
         await this.handleQuestionResponse(
+          ws,
           data as unknown as ChatClientQuestionResponse,
         );
         return;
@@ -1262,6 +1276,29 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   getCodexSessionId(): string | null {
     const value = this.codexSessionId;
     return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  getActiveTurnUserId(): string | null {
+    return this.activeTurnUserId;
+  }
+
+  private setActiveTurnUserId(userId: string | null | undefined): void {
+    const normalizedUserId =
+      typeof userId === "string" && userId.trim() ? userId.trim() : null;
+    if (this.activeTurnUserId === normalizedUserId) {
+      return;
+    }
+
+    this.activeTurnUserId = normalizedUserId;
+    if (normalizedUserId) {
+      this.ctx.storage.kv.put(CHAT_ACTIVE_TURN_USER_ID_KEY, normalizedUserId);
+    } else {
+      this.ctx.storage.kv.delete(CHAT_ACTIVE_TURN_USER_ID_KEY);
+    }
+
+    this.trace("active_turn_user_updated", {
+      userIdPresent: Boolean(normalizedUserId),
+    });
   }
 
   async refreshRunnerConfig(): Promise<void> {
@@ -1534,12 +1571,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       attributedLength: attributedContent.length,
     });
 
+    const authorUserId =
+      this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
     this.markRunnerActivity("chat_message");
     await this.ensureRunnerConnected();
     if (
       !(await this.sendRunnerCommandWithReconnect({
         type: "message",
         content: attributedContent,
+        userId: authorUserId ?? undefined,
       }))
     ) {
       this.emitChatError("Failed to send message to sandbox");
@@ -1561,6 +1601,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async handleQuestionResponse(
+    ws: WebSocket,
     data: ChatClientQuestionResponse,
   ): Promise<void> {
     this.trace("handle_question_response", {
@@ -1573,11 +1614,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     this.markRunnerActivity("question_response");
+    const answeringUserId =
+      this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
     if (
       !(await this.sendRunnerCommandWithReconnect({
         type: "question_response",
         questionId: data.questionId,
         answers: data.answers,
+        userId: answeringUserId ?? undefined,
       }))
     ) {
       this.emitChatError("Sandbox is not connected");
@@ -1906,6 +1950,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       !(await this.sendRunnerCommandWithReconnect({
         type: "message",
         content: attributedContent,
+        userId:
+          typeof body.userId === "string" && body.userId.trim()
+            ? body.userId.trim()
+            : undefined,
       }))
     ) {
       this.resolvePendingExternalTurn({
@@ -2452,6 +2500,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         `[ChatThreadDO] runner error: ${JSON.stringify({ error: event.error, source: event.source }).slice(0, 500)}`,
       );
       this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
       this.resolvePendingExternalTurn({
         status: "error",
         error: typeof event.error === "string" ? event.error : "Runner error",
@@ -2474,6 +2523,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.currentTodos = todos;
         this.ctx.storage.kv.put(CHAT_TODOS_KEY, todos);
       }
+    }
+
+    if (eventType === "active_turn_identity") {
+      this.setActiveTurnUserId(
+        typeof event.userId === "string" ? event.userId : null,
+      );
+      return;
     }
 
     if (eventType === "ask_user_question") {
@@ -2628,6 +2684,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         // streaming start. Clearing server-side on result races the client
         // and destroys persistence before reconnecting clients can replay.
         this.setChatIsStreaming(false);
+        this.setActiveTurnUserId(null);
         this.persistRunnerSeqIfNeeded("result");
         this.resolvePendingExternalTurn({ status: "result" });
       }
@@ -2644,12 +2701,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       if (method === 'turn/completed') {
         this.setChatIsStreaming(false);
+        this.setActiveTurnUserId(null);
         this.persistRunnerSeqIfNeeded('result');
       }
     }
 
     if (eventType === 'result') {
       this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
       const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
       if (sessionId) {
         this.codexSessionId = sessionId;
