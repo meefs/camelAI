@@ -1285,7 +1285,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private setActiveTurnUserId(userId: string | null | undefined): void {
     const normalizedUserId =
       typeof userId === "string" && userId.trim() ? userId.trim() : null;
-    if (this.activeTurnUserId === normalizedUserId) {
+    const currentUserId = this.activeTurnUserId ?? null;
+    if (currentUserId === normalizedUserId) {
       return;
     }
 
@@ -1293,7 +1294,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (normalizedUserId) {
       this.ctx.storage.kv.put(CHAT_ACTIVE_TURN_USER_ID_KEY, normalizedUserId);
     } else {
-      this.ctx.storage.kv.delete(CHAT_ACTIVE_TURN_USER_ID_KEY);
+      const kvStore = this.ctx.storage.kv as {
+        put: (key: string, value: string) => unknown;
+        delete?: (key: string) => unknown;
+      };
+      if (typeof kvStore.delete === "function") {
+        kvStore.delete(CHAT_ACTIVE_TURN_USER_ID_KEY);
+      } else {
+        kvStore.put(CHAT_ACTIVE_TURN_USER_ID_KEY, "");
+      }
     }
 
     this.trace("active_turn_user_updated", {

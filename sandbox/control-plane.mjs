@@ -1702,7 +1702,9 @@ class ChatSession {
     const pending = this.pendingQuestions.get(questionId);
     if (!pending) return;
     this.pendingQuestions.delete(questionId);
-    this.setActiveTurnUserId(userId, 'question_response');
+    if (this.normalizeTurnUserId(userId) !== null) {
+      this.setActiveTurnUserId(userId, 'question_response');
+    }
     pending.resolve(answers);
     traceControlPlane('session_question_answered', {
       threadId: this.threadId,
