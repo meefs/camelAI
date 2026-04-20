@@ -203,6 +203,15 @@ export const OrgDetailSchema = z.object({
   appCount: z.number().int().nullable(),
 });
 
+export const UpdateOrgModelAccessBodySchema = z.object({
+  claude_proxy_models: z.boolean(),
+});
+
+export const OrgModelAccessSchema = z.object({
+  org_id: z.string(),
+  claude_proxy_models: z.boolean(),
+});
+
 export const ThreadSchema = z.object({
   id: z.string(),
   title: z.string().nullable().optional(),

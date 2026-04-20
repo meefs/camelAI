@@ -43,11 +43,13 @@ import {
   UserSummarySchema,
   OrgMembershipSchema,
   OrgDetailSchema,
+  OrgModelAccessSchema,
   ThreadSchema,
   WorkspaceSchema,
   AppSchema,
   AddMemberBodySchema,
   AddMemberResponseSchema,
+  UpdateOrgModelAccessBodySchema,
   UpdateThreadBodySchema,
   BlockSignupIpBodySchema,
   BlockedSignupIpSchema,
@@ -666,6 +668,42 @@ routes.get(
       apps: activity.apps,
       threadCount: activity.threadCount,
       appCount: activity.appCount,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PUT /orgs/:id/model-access
+// ---------------------------------------------------------------------------
+
+routes.put(
+  "/orgs/:id/model-access",
+  openApi({
+    summary: "Update org model access",
+    request: {
+      json: UpdateOrgModelAccessBodySchema,
+    },
+    responses: {
+      200: OrgModelAccessSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param("id");
+    const body = c.req.valid("json");
+    const orgStub = getOrgStub(c.env, orgId);
+    const orgInfo = await orgStub.getInfo();
+    if (!orgInfo) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    const settings = await orgStub.setExperimentalSettings({
+      claude_proxy_models: body.claude_proxy_models,
+    });
+
+    return c.json({
+      org_id: orgId,
+      claude_proxy_models: settings.claude_proxy_models,
     });
   },
 );

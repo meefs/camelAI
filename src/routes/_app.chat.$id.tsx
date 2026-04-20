@@ -3,14 +3,19 @@ import { redirect, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext, requireSuperuser, requireSessionWorkspaceAccess, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getDefaultLlmModel, isLlmModel, THREAD_MODEL_LOCK_MESSAGE } from '@/lib/llm-provider-config';
+import {
+  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+  getDefaultLlmModel,
+  isLlmModel,
+  THREAD_MODEL_LOCK_MESSAGE,
+} from '@/lib/llm-provider-config';
 import { getOrg, getWorkerScript } from '@/lib/auth-do';
 import * as authDO from '@/lib/auth-do.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { ChatHarness, LlmModel, Message, OrganizationExperimentalSettings, PreviewTarget } from '@/types';
+import type { ChatHarness, LlmModel, Message, PreviewTarget } from '@/types';
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || 'Chat';
@@ -52,7 +57,7 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
               ? parsed.threadModel
               : getDefaultLlmModel(threadProvider),
             threadProvider,
-            experimentalSettings: { codex_gpt_models: false } satisfies OrganizationExperimentalSettings,
+            experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
@@ -209,7 +214,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadTitle: thread?.title ?? threadContext.title ?? null,
       threadModel: thread?.model ?? ((threadContext.model as LlmModel | undefined) ?? getDefaultLlmModel((thread?.provider ?? (threadContext.provider as ChatHarness | undefined) ?? 'claude'))),
       threadProvider: thread?.provider ?? ((threadContext.provider as ChatHarness | undefined) ?? 'claude'),
-      experimentalSettings: { codex_gpt_models: false } satisfies OrganizationExperimentalSettings,
+      experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       isNewThread: false,
       hostname,
       orgSlug: org?.slug,
@@ -227,7 +232,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadTitle: null,
       threadModel: getDefaultLlmModel('claude'),
       threadProvider: 'claude' as const,
-      experimentalSettings: { codex_gpt_models: false } satisfies OrganizationExperimentalSettings,
+      experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       isNewThread: false,
       hostname: undefined,
       readOnly: false,
@@ -241,10 +246,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
     : null;
   const experimentalSettings = typeof orgStub?.getExperimentalSettings === 'function'
-    ? await orgStub.getExperimentalSettings().catch(() => ({
-        codex_gpt_models: false,
-      }))
-    : ({ codex_gpt_models: false } satisfies OrganizationExperimentalSettings);
+    ? await orgStub.getExperimentalSettings().catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS)
+    : DEFAULT_ORG_EXPERIMENTAL_SETTINGS;
 
   // Even for newly created threads, load the persisted thread record so the UI
   // reflects the actual saved model instead of the Sonnet default.

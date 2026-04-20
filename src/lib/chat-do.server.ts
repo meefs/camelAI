@@ -11,6 +11,7 @@ import { WorkspaceDO } from '../../workers/main/src/workspace';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import type { LlmModel } from '@/types';
 import {
+  isLlmModelAllowedForNewThread,
   getDefaultThreadProvider,
   getProviderForModel,
   normalizeLlmModel,
@@ -173,10 +174,18 @@ export async function createThread(
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const llmProviderConfig = await orgStub.getLlmProviderConfig();
+  const experimentalSettings = await orgStub.getExperimentalSettings();
   const defaultProvider = getDefaultThreadProvider(
     llmProviderConfig?.provider,
-    await orgStub.getExperimentalSettings(),
+    experimentalSettings,
   );
+  if (model !== undefined && !isLlmModelAllowedForNewThread(
+    model,
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  )) {
+    throw new Error('Invalid thread model');
+  }
   const provider = getProviderForModel(model, defaultProvider);
   const normalizedModel = normalizeLlmModel(model, provider);
   const thread = await orgStub.createThread(

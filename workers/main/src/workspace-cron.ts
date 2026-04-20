@@ -3,6 +3,10 @@ import type { OrgDO, OrgThread } from './auth';
 import type { ChatThreadDO, ExternalMessageRequest, ExternalTurnResult } from './durable-objects';
 import { getNextCronRunAt, parseCronExpression } from './cron-schedule';
 import type { WorkspaceDO } from './workspace';
+import {
+  getDefaultLlmModel,
+  getDefaultThreadProvider,
+} from '../../../src/lib/llm-provider-config';
 
 const DEFAULT_EXTERNAL_MESSAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_DUE_JOBS_PER_ALARM = 20;
@@ -266,11 +270,18 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     createdBy: string
   ): Promise<string> {
     const orgStub = this.getOrgStub(workspace.org_id);
+    const [llmProviderConfig, experimentalSettings] = await Promise.all([
+      orgStub.getLlmProviderConfig(),
+      orgStub.getExperimentalSettings(),
+    ]);
+    const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
     const created = await orgStub.createThread(
       workspace.id,
       `Scheduled: ${name}`,
       createdBy || 'system',
-      prompt.slice(0, 500)
+      prompt.slice(0, 500),
+      getDefaultLlmModel(provider),
+      provider
     ) as OrgThread;
     return created.id;
   }
@@ -285,11 +296,18 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       return prompt.thread_id;
     }
 
+    const [llmProviderConfig, experimentalSettings] = await Promise.all([
+      orgStub.getLlmProviderConfig(),
+      orgStub.getExperimentalSettings(),
+    ]);
+    const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
     const created = await orgStub.createThread(
       workspace.id,
       `Scheduled: ${prompt.name}`,
       'system',
-      prompt.prompt.slice(0, 500)
+      prompt.prompt.slice(0, 500),
+      getDefaultLlmModel(provider),
+      provider
     ) as OrgThread;
 
     this.sql.exec(

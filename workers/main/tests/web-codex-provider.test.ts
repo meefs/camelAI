@@ -35,8 +35,6 @@ describe('web Codex provider wiring', () => {
       stringifyStoredLlmProviderConfig({}),
       userId
     );
-    await orgStub.setExperimentalSettings({ codex_gpt_models: true });
-
     const thread = await createThread(
       buildContext(testEnv) as never,
       defaultWorkspaceId,
@@ -46,6 +44,49 @@ describe('web Codex provider wiring', () => {
     );
 
     expect(thread.provider).toBe('codex');
+  });
+
+  it('creates standard proxy web threads on codex and rejects Claude without special access', async () => {
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Proxy Codex User');
+    const { defaultWorkspaceId } = await createOrg(testEnv, 'Proxy Codex Org', userId);
+
+    const thread = await createThread(
+      buildContext(testEnv) as never,
+      defaultWorkspaceId,
+      'Proxy Codex thread',
+      userId,
+      'Reply with pong'
+    );
+
+    expect(thread.provider).toBe('codex');
+    expect(thread.model).toBe('gpt-5.4');
+    await expect(createThread(
+      buildContext(testEnv) as never,
+      defaultWorkspaceId,
+      'Blocked Claude thread',
+      userId,
+      'Reply with pong',
+      'sonnet'
+    )).rejects.toThrow('Invalid thread model');
+  });
+
+  it('allows Claude proxy threads for orgs with special access', async () => {
+    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Claude Proxy User');
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Claude Proxy Org', userId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.setExperimentalSettings({ claude_proxy_models: true });
+
+    const thread = await createThread(
+      buildContext(testEnv) as never,
+      defaultWorkspaceId,
+      'Claude proxy thread',
+      userId,
+      'Reply with pong',
+      'sonnet'
+    );
+
+    expect(thread.provider).toBe('claude');
+    expect(thread.model).toBe('sonnet');
   });
 
   it('builds codex runner env with the OpenAI BYOK proxy when the org uses OpenAI', async () => {

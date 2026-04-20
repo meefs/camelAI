@@ -10,6 +10,7 @@ import type {
   Message,
   ContentBlock,
   LlmModel,
+  LlmProvider,
   Thread,
   ToolResultBlock,
   ToolUseBlock,
@@ -105,6 +106,7 @@ interface ChatProps {
   threadTitle?: string | null;
   threadModel?: LlmModel | null;
   threadProvider?: ChatHarness | null;
+  llmProvider?: LlmProvider | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
@@ -955,6 +957,7 @@ export default function Chat({
   threadTitle,
   threadModel,
   threadProvider,
+  llmProvider,
   experimentalSettings,
   initialPreviewTarget,
   initialPreviewTabs,
@@ -1282,9 +1285,9 @@ export default function Chat({
       resolvedThreadProvider,
       experimentalSettings,
       threadModel ?? getDefaultLlmModel(resolvedThreadProvider),
-      { allowModelFamilySwitch: !threadId },
+      { allowModelFamilySwitch: !threadId, orgProvider: llmProvider },
     ),
-    [resolvedThreadProvider, experimentalSettings, threadId, threadModel]
+    [resolvedThreadProvider, experimentalSettings, llmProvider, threadId, threadModel]
   );
 
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? '');

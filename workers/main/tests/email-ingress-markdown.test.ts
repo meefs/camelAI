@@ -122,6 +122,8 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
     mockGetOrgStub.mockReturnValue({
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       createThread: vi.fn().mockResolvedValue({
         id: 'thread-1',
         title: 'Build something',

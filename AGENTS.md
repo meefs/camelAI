@@ -36,7 +36,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - WebSocket client for real-time streaming
    - Tailwind CSS v4 + shadcn/ui components
    - Cloudflare Workers SSR via `@cloudflare/vite-plugin`
-   - Organization settings include an Experimental page; the `codex_gpt_models` org flag controls whether GPT model options appear in Camel chat for new OpenAI-backed threads, while existing GPT threads still render their locked model
+   - New chat model access is provider-scoped: Anthropic/AWS Bedrock BYOK shows Claude models, OpenAI BYOK shows GPT/Codex models, and the camelAI proxy defaults to GPT/Codex models. Superusers can grant `claude_proxy_models` special access from qaml-backdoor org detail; existing Claude threads keep their locked model and remain usable.
 
 2. **Workers** (`workers/`)
    - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP, admin CLI API)
@@ -175,6 +175,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 
 - **Recent Threads**: latest 10 by `updated_at` (newest first)
 - **Recent Apps**: latest 10 by `updated_at` (newest first)
+- **Model Access**: superusers can grant or remove `claude_proxy_models` for orgs on the camelAI proxy; Bearer admin API clients can set the same flag via `PUT /api/admin/orgs/:id/model-access`
 - Counts are shown only when cheap to derive (no heavy count queries on page load)
 
 ### Slack Chat Ingress

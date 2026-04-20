@@ -1,4 +1,4 @@
-import { Link, useLoaderData, redirect } from "react-router";
+import { Form, Link, useLoaderData, redirect } from "react-router";
 import type { Route } from "./+types/_admin.orgs.$id";
 import { requireSuperuser, getAuthEnv } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -103,6 +103,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     invitations,
     workspaces,
     recentActivity,
+    experimentalSettings,
     [usageSpend, usageLog],
     orgBan,
   ] = await Promise.all([
@@ -114,6 +115,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       appLimit: RECENT_APP_LIMIT,
       includeCounts: "cheap",
     }),
+    authEnv.ORG.get(authEnv.ORG.idFromName(id)).getExperimentalSettings(),
     usagePromise as Promise<[any, any]>,
     getOrgBanById(getEnv(context).APP_KV, id),
   ]);
@@ -157,6 +159,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     recentApps: recentActivity.apps,
     threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
+    experimentalSettings,
     memberOptions,
     orgBan,
     usageSpend: usageSpend as {
@@ -291,6 +294,14 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return { success: true };
   }
 
+  if (intent === "updateExperimentalSettings") {
+    const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+    await stub.setExperimentalSettings({
+      claude_proxy_models: formData.get("claude_proxy_models") === "true",
+    });
+    return { success: true };
+  }
+
   return { error: "Unknown action" };
 }
 
@@ -304,6 +315,7 @@ export default function AdminOrgDetailPage() {
     recentApps,
     threadCount,
     appCount,
+    experimentalSettings,
     memberOptions,
     orgBan,
     usageSpend,
@@ -528,6 +540,47 @@ export default function AdminOrgDetailPage() {
                     enabled.
                   </p>
                 )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Model Access</CardTitle>
+                <CardDescription>
+                  Controls model choices for new chats on the camelAI proxy.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium">Claude proxy access</p>
+                      <Badge variant={experimentalSettings.claude_proxy_models ? "default" : "outline"}>
+                        {experimentalSettings.claude_proxy_models ? "Allowed" : "Standard"}
+                      </Badge>
+                    </div>
+                    <p className="max-w-xl text-sm text-muted-foreground">
+                      Standard proxy orgs can create new Codex threads only. BYOK Anthropic or Bedrock
+                      still enables Claude, and existing Claude threads remain usable.
+                    </p>
+                  </div>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="updateExperimentalSettings" />
+                    <input
+                      type="hidden"
+                      name="claude_proxy_models"
+                      value={experimentalSettings.claude_proxy_models ? "false" : "true"}
+                    />
+                    <Button
+                      type="submit"
+                      variant={experimentalSettings.claude_proxy_models ? "outline" : "default"}
+                    >
+                      {experimentalSettings.claude_proxy_models
+                        ? "Remove Claude Access"
+                        : "Allow Claude Access"}
+                    </Button>
+                  </Form>
+                </div>
               </CardContent>
             </Card>
 

@@ -74,17 +74,17 @@ const PROVIDER_CARD_OPTIONS: Array<{
   {
     value: 'default',
     label: 'Default (free tier)',
-    description: 'Free with usage limits ($25/5hrs, $100/7days)',
+    description: 'Codex with usage limits ($25/5hrs, $100/7days)',
   },
   {
     value: 'anthropic',
-    label: 'Anthropic (recommended)',
+    label: 'Anthropic',
     description: 'Direct access to Claude models',
   },
   {
     value: 'openai',
     label: 'OpenAI',
-    description: 'For Codex-powered threads',
+    description: 'Direct access to GPT models',
   },
   {
     value: 'bedrock',
@@ -442,7 +442,7 @@ export default function AiProviderPage() {
           <div className="space-y-1">
             <h3 className="text-sm font-medium">Choose a provider</h3>
             <p className="text-xs text-muted-foreground">
-              Pick the option you want camelAI to use for new chat turns.
+              Pick the option you want camelAI to use for new chat threads.
             </p>
           </div>
 

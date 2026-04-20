@@ -7,16 +7,16 @@ import { waitUntil } from '@/lib/wait-until';
 import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
 import {
+  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getDefaultThreadProvider,
-  getProviderForModel,
-  isLlmModel,
+  isLlmModelAllowedForNewThread,
 } from '@/lib/llm-provider-config';
 import * as chatDO from '@/lib/chat-do.server';
 import { consumeSalesPrompt, getPromptKeyFromUrl } from '@/lib/sales-prompt.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { ChatHarness, Integration, LlmModel, Thread, WorkerScriptWithCreator } from '@/types';
+import type { ChatHarness, Integration, LlmModel, LlmProvider, Thread, WorkerScriptWithCreator } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 
 /**
@@ -152,8 +152,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ? await orgStub.getLlmProviderConfig().catch(() => null)
     : null;
   const experimentalSettings = typeof orgStub?.getExperimentalSettings === 'function'
-    ? await orgStub.getExperimentalSettings().catch(() => ({ codex_gpt_models: false }))
-    : { codex_gpt_models: false };
+    ? await orgStub.getExperimentalSettings().catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS)
+    : DEFAULT_ORG_EXPERIMENTAL_SETTINGS;
   const threadProvider: ChatHarness = getDefaultThreadProvider(
     llmProviderConfig?.provider,
     experimentalSettings,
@@ -162,6 +162,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return {
     workspaceId: workspaceId ?? null,
     threadProvider,
+    llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     experimentalSettings,
     hostname,
     userId,
@@ -191,18 +192,16 @@ export async function action({ request, context }: Route.ActionArgs) {
       const initialTitle = formData.get('initialTitle') as string | null;
       const firstMessage = formData.get('firstMessage') as string | null;
       const previewAppsRaw = formData.get('previewApps') as string | null;
-      const model = formData.get('model');
+      const rawModel = formData.get('model');
+      const model = typeof rawModel === 'string' ? rawModel : null;
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       const llmProviderConfig = await orgStub.getLlmProviderConfig();
-      const defaultThreadProvider: ChatHarness = getDefaultThreadProvider(
+      const experimentalSettings = await orgStub.getExperimentalSettings();
+      if (model !== null && !isLlmModelAllowedForNewThread(
+        model,
         llmProviderConfig?.provider,
-        await orgStub.getExperimentalSettings(),
-      );
-      const threadProvider: ChatHarness = getProviderForModel(
-        model as LlmModel | null | undefined,
-        defaultThreadProvider,
-      );
-      if (model !== null && !isLlmModel(model, threadProvider)) {
+        experimentalSettings,
+      )) {
         return Response.json({ error: 'Invalid thread model' }, { status: 400 });
       }
 
@@ -255,6 +254,7 @@ export default function NewChatPage() {
   const {
     workspaceId,
     threadProvider,
+    llmProvider,
     hostname,
     userId,
     userName,
@@ -295,6 +295,7 @@ export default function NewChatPage() {
         renderedAt,
       }}
       experimentalSettings={experimentalSettings}
+      llmProvider={llmProvider}
       threadModel={getDefaultLlmModel(threadProvider)}
       initialWelcomeInput={salesPrompt}
     />

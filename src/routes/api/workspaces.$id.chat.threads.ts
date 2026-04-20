@@ -4,9 +4,11 @@ import { requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
-import { getDefaultThreadProvider, getProviderForModel, isLlmModel } from '@/lib/llm-provider-config';
+import {
+  isLlmModelAllowedForNewThread,
+} from '@/lib/llm-provider-config';
 import * as chatDO from '@/lib/chat-do.server';
-import type { ChatHarness, LlmModel } from '@/types';
+import type { LlmModel } from '@/types';
 
 /**
  * Lightweight thread creation endpoint that validates workspace access
@@ -39,13 +41,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const authEnv = getAuthEnv(env);
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
   const llmProviderConfig = await orgStub.getLlmProviderConfig();
-  const defaultThreadProvider: ChatHarness = getDefaultThreadProvider(
-    llmProviderConfig?.provider,
-    await orgStub.getExperimentalSettings(),
-  );
-  const threadProvider: ChatHarness = getProviderForModel(body.model, defaultThreadProvider);
+  const experimentalSettings = await orgStub.getExperimentalSettings();
 
-  if (body.model !== undefined && !isLlmModel(body.model, threadProvider)) {
+  if (body.model !== undefined && !isLlmModelAllowedForNewThread(
+    body.model,
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  )) {
     return Response.json({ error: 'Invalid thread model' }, { status: 400 });
   }
 

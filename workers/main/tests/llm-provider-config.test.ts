@@ -4,13 +4,15 @@ import {
   DEFAULT_CODEX_MODEL,
   buildPublicLlmProviderConfig,
   DEFAULT_LLM_MODEL,
-    getDefaultLlmModel,
-    getDefaultThreadProvider,
-    getAffectedChatHarnessesForLlmProviderChange,
-    getChatHarnessesForLlmProvider,
-    getLlmModelOptions,
-    getProviderForModel,
-    getVisibleLlmModelOptions,
+  getDefaultLlmModel,
+  getDefaultThreadProvider,
+  getAffectedChatHarnessesForLlmProviderChange,
+  getAllowedChatHarnessesForNewThread,
+  getChatHarnessesForLlmProvider,
+  getLlmModelOptions,
+  getProviderForModel,
+  getVisibleLlmModelOptions,
+  isLlmModelAllowedForNewThread,
   parseOrganizationExperimentalSettings,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
@@ -31,32 +33,65 @@ describe('llm provider config helpers', () => {
     expect(getLlmModelOptions('codex').map((option) => option.value)).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
   });
 
-  it('guards Codex GPT models behind the org experimental setting for new chats', () => {
-    expect(parseOrganizationExperimentalSettings(null)).toEqual({ codex_gpt_models: false });
-    expect(getDefaultThreadProvider('openai', { codex_gpt_models: false })).toBe('claude');
-    expect(getDefaultThreadProvider('openai', { codex_gpt_models: true })).toBe('codex');
-    expect(getVisibleLlmModelOptions('codex', { codex_gpt_models: false })).toEqual([]);
-    expect(getVisibleLlmModelOptions('codex', { codex_gpt_models: true }).map((option) => option.value)).toEqual([
+  it('makes Codex the default for OpenAI BYOK and standard proxy orgs', () => {
+    expect(parseOrganizationExperimentalSettings(null)).toEqual({
+      claude_proxy_models: false,
+    });
+    expect(getDefaultThreadProvider('openai', { claude_proxy_models: false })).toBe('codex');
+    expect(getDefaultThreadProvider(null, { claude_proxy_models: false })).toBe('codex');
+    expect(getDefaultThreadProvider('anthropic', { claude_proxy_models: false })).toBe('claude');
+    expect(getDefaultThreadProvider('bedrock', { claude_proxy_models: false })).toBe('claude');
+    expect(getVisibleLlmModelOptions('codex', { claude_proxy_models: false }).map((option) => option.value)).toEqual([
       'gpt-5.4',
       'gpt-5.4-mini',
     ]);
   });
 
-  it('shows both Claude and GPT options for new chats when the experimental flag is on', () => {
+  it('shows only policy-allowed model families for new chats', () => {
+    expect(
+      getVisibleLlmModelOptions(
+        'codex',
+        { claude_proxy_models: true },
+        undefined,
+        { allowModelFamilySwitch: true, orgProvider: null },
+      ).map((option) => option.value)
+    ).toEqual(['gpt-5.4', 'gpt-5.4-mini', 'sonnet', 'opus']);
+    expect(
+      getVisibleLlmModelOptions(
+        'codex',
+        { claude_proxy_models: true },
+        undefined,
+        { allowModelFamilySwitch: true, orgProvider: 'openai' },
+      ).map((option) => option.value)
+    ).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
     expect(
       getVisibleLlmModelOptions(
         'claude',
-        { codex_gpt_models: true },
+        { claude_proxy_models: false },
         undefined,
-        { allowModelFamilySwitch: true },
+        { allowModelFamilySwitch: true, orgProvider: 'anthropic' },
       ).map((option) => option.value)
-    ).toEqual(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']);
+    ).toEqual(['sonnet', 'opus']);
   });
 
-  it('keeps the current GPT model visible for existing locked threads when the flag is off', () => {
+  it('keeps the current model visible for existing locked threads regardless of new-chat policy', () => {
     expect(
-      getVisibleLlmModelOptions('codex', { codex_gpt_models: false }, 'gpt-5.4-mini').map((option) => option.value)
-    ).toEqual(['gpt-5.4-mini']);
+      getVisibleLlmModelOptions('codex', { claude_proxy_models: false }, 'gpt-5.4-mini').map((option) => option.value)
+    ).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+    expect(
+      getVisibleLlmModelOptions('claude', { claude_proxy_models: false }, 'sonnet').map((option) => option.value)
+    ).toEqual(['sonnet', 'opus']);
+  });
+
+  it('validates new thread models against BYOK and proxy policy', () => {
+    expect(getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: false })).toEqual(['codex']);
+    expect(getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: true })).toEqual(['codex', 'claude']);
+    expect(isLlmModelAllowedForNewThread('gpt-5.4', null, { claude_proxy_models: false })).toBe(true);
+    expect(isLlmModelAllowedForNewThread('sonnet', null, { claude_proxy_models: false })).toBe(false);
+    expect(isLlmModelAllowedForNewThread('sonnet', 'anthropic', { claude_proxy_models: false })).toBe(true);
+    expect(isLlmModelAllowedForNewThread('gpt-5.4', 'anthropic', { claude_proxy_models: false })).toBe(false);
+    expect(isLlmModelAllowedForNewThread('gpt-5.4', 'openai', { claude_proxy_models: true })).toBe(true);
+    expect(isLlmModelAllowedForNewThread('sonnet', 'openai', { claude_proxy_models: true })).toBe(false);
   });
 
   it('infers the thread provider from the selected model', () => {

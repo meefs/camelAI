@@ -34,14 +34,14 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
-}> = CLAUDE_LLM_MODEL_OPTIONS;
+}> = CODEX_LLM_MODEL_OPTIONS;
 
 export interface LlmProviderStoredConfig {
   aws_region?: string;
 }
 
 export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings = {
-  codex_gpt_models: false,
+  claude_proxy_models: false,
 };
 
 export function parseOrganizationExperimentalSettings(raw: unknown): OrganizationExperimentalSettings {
@@ -51,23 +51,36 @@ export function parseOrganizationExperimentalSettings(raw: unknown): Organizatio
 
   const settings = raw as Record<string, unknown>;
   return {
-    codex_gpt_models: settings.codex_gpt_models === true,
+    claude_proxy_models: settings.claude_proxy_models === true,
   };
 }
 
-export function isExperimentalCodexModelsEnabled(
+export function isClaudeProxyModelsEnabled(
   settings: OrganizationExperimentalSettings | null | undefined,
 ): boolean {
-  return Boolean(settings?.codex_gpt_models);
+  return Boolean(settings?.claude_proxy_models);
+}
+
+export function getAllowedChatHarnessesForNewThread(
+  orgProvider: string | null | undefined,
+  experimentalSettings?: OrganizationExperimentalSettings | null,
+): ChatHarness[] {
+  if (orgProvider === 'anthropic' || orgProvider === 'bedrock') {
+    return ['claude'];
+  }
+  if (orgProvider === 'openai') {
+    return ['codex'];
+  }
+  return isClaudeProxyModelsEnabled(experimentalSettings)
+    ? ['codex', 'claude']
+    : ['codex'];
 }
 
 export function getDefaultThreadProvider(
   orgProvider: string | null | undefined,
   experimentalSettings?: OrganizationExperimentalSettings | null,
 ): ChatHarness {
-  return orgProvider === 'openai' && isExperimentalCodexModelsEnabled(experimentalSettings)
-    ? 'codex'
-    : 'claude';
+  return getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings)[0] ?? 'codex';
 }
 
 export function getDefaultLlmModel(provider: ChatHarness): LlmModel {
@@ -125,18 +138,19 @@ export function getVisibleLlmModelOptions(
   includeModel?: LlmModel | null,
   options?: {
     allowModelFamilySwitch?: boolean;
+    orgProvider?: string | null;
   },
 ): ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
 }> {
-  const codexModelsEnabled = isExperimentalCodexModelsEnabled(experimentalSettings);
-  const baseOptions = options?.allowModelFamilySwitch && codexModelsEnabled
-    ? [...CLAUDE_LLM_MODEL_OPTIONS, ...CODEX_LLM_MODEL_OPTIONS]
-    : provider === 'codex'
-      ? (codexModelsEnabled ? CODEX_LLM_MODEL_OPTIONS : [])
-      : CLAUDE_LLM_MODEL_OPTIONS;
+  const visibleHarnesses = options?.allowModelFamilySwitch
+    ? getAllowedChatHarnessesForNewThread(options.orgProvider, experimentalSettings)
+    : [provider];
+  const baseOptions = visibleHarnesses.flatMap((visibleProvider) => (
+    visibleProvider === 'codex' ? CODEX_LLM_MODEL_OPTIONS : CLAUDE_LLM_MODEL_OPTIONS
+  ));
 
   if (!includeModel || baseOptions.some((option) => option.value === includeModel)) {
     return baseOptions;
@@ -146,6 +160,16 @@ export function getVisibleLlmModelOptions(
     .find((option) => option.value === includeModel);
 
   return fallbackOption ? [fallbackOption, ...baseOptions] : baseOptions;
+}
+
+export function isLlmModelAllowedForNewThread(
+  value: unknown,
+  orgProvider: string | null | undefined,
+  experimentalSettings?: OrganizationExperimentalSettings | null,
+): value is LlmModel {
+  if (!isLlmModel(value)) return false;
+  const provider = getProviderForModel(value);
+  return getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings).includes(provider);
 }
 
 export function isLlmModel(value: unknown, provider?: ChatHarness): value is LlmModel {

@@ -14,6 +14,10 @@ import {
   decryptCredentials,
   encryptCredentials,
 } from "../../../../src/lib/integration-crypto.js";
+import {
+  getDefaultLlmModel,
+  getDefaultThreadProvider,
+} from "../../../../src/lib/llm-provider-config.js";
 import { WorkspaceContainer } from "../workspace-container.js";
 import { requireSession } from "../helpers/auth.js";
 import type {
@@ -642,11 +646,18 @@ async function getOrCreateSlackThreadId(
 
   const orgStub = getOrgStub(env, args.orgId);
   const title = args.initialText.trim().slice(0, 100) || "Slack conversation";
+  const [llmProviderConfig, experimentalSettings] = await Promise.all([
+    orgStub.getLlmProviderConfig(),
+    orgStub.getExperimentalSettings(),
+  ]);
+  const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
   const thread = await orgStub.createThread(
     args.workspaceId,
     title,
     "slack",
     args.initialText.trim().slice(0, 500) || undefined,
+    getDefaultLlmModel(provider),
+    provider,
   );
 
   await env.APP_KV.put(mappingKey, thread.id);

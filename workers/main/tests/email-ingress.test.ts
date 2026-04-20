@@ -124,6 +124,8 @@ describe('handleWorkspaceEmailIngress', () => {
     const orgStub = {
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Quarterly report' }),
       getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };
@@ -228,6 +230,8 @@ describe('handleWorkspaceEmailIngress', () => {
     const orgStub = {
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
       getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };

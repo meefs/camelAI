@@ -14,6 +14,10 @@ import {
   parseMailboxAddress,
   parseWorkspaceEmailAddress,
 } from "../../../src/lib/workspace-email.js";
+import {
+  getDefaultLlmModel,
+  getDefaultThreadProvider,
+} from "../../../src/lib/llm-provider-config.js";
 import type { Attachment as PostalMimeAttachment } from "postal-mime";
 import { isOrgBanned } from "./ban-list.js";
 
@@ -693,11 +697,18 @@ async function resolveThreadForEmail(
 
   const orgStub = getOrgStub(env, args.orgId);
   const title = titleFromEmail(args.subject, args.message);
+  const [llmProviderConfig, experimentalSettings] = await Promise.all([
+    orgStub.getLlmProviderConfig(),
+    orgStub.getExperimentalSettings(),
+  ]);
+  const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
   const created = await orgStub.createThread(
     args.workspaceId,
     title,
     args.userId,
     args.message.slice(0, 500),
+    getDefaultLlmModel(provider),
+    provider,
   );
 
   return {

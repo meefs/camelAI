@@ -478,7 +478,8 @@ export type ChatHarness = 'claude' | 'codex';
 export type LlmProvider = 'anthropic' | 'bedrock' | 'openai';
 export type LlmModel = 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini';
 export interface OrganizationExperimentalSettings {
-  codex_gpt_models: boolean;
+  /** Internal allowlist for creating new Claude threads on the camelAI proxy. */
+  claude_proxy_models: boolean;
 }
 
 export interface LlmProviderConfigPublic {
