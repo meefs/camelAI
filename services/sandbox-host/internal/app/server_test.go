@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiridion/sandbox-host/internal/container"
 	"github.com/chiridion/sandbox-host/internal/state"
 )
 
@@ -272,6 +273,57 @@ func TestForwardDataProxyRequest(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != `{"recordset":[{"value":1}]}` {
 		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+func TestShouldUseGatewayOpenAIResponses(t *testing.T) {
+	if !shouldUseGatewayOpenAIResponses("/responses", "gpt-5.4") {
+		t.Fatal("expected gpt-* responses traffic to use openai provider")
+	}
+	if !shouldUseGatewayOpenAIResponses("/responses", "GPT-5.4-mini") {
+		t.Fatal("expected case-insensitive gpt-* detection")
+	}
+	if shouldUseGatewayOpenAIResponses("/chat/completions", "gpt-5.4") {
+		t.Fatal("did not expect chat completions to use openai responses provider")
+	}
+	if shouldUseGatewayOpenAIResponses("/responses", "dynamic/auto") {
+		t.Fatal("did not expect dynamic aliases to use openai responses provider")
+	}
+	if shouldUseGatewayOpenAIResponses("/responses", "anthropic/claude-sonnet-4.6") {
+		t.Fatal("did not expect non-OpenAI model IDs to use openai responses provider")
+	}
+}
+
+func TestForwardOpenAIToAIGatewayUsesOpenAIResponsesForGPTModels(t *testing.T) {
+	var capturedPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"response","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			AIGatewayBaseURL: upstream.URL,
+			AIGatewayToken:   "test-token",
+		},
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+	}
+
+	body := `{"model":"gpt-5.4","input":"hi"}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.forwardOpenAIToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"}, testThreadContext(), testCaller(), "test-req-openai-responses", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/openai/responses" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openai/responses")
 	}
 }
 

@@ -1662,7 +1662,8 @@ func (s *Server) forwardOpenAIToAIGateway(
 	requestID string,
 	startedAt time.Time,
 ) {
-	// Map /api/openai/v1/* -> {gateway}/{provider}/* where provider is "compat" or "openrouter"
+	// Map /api/openai/v1/* -> {gateway}/{provider}/* where provider is
+	// "compat", "openrouter", or "openai" for dedicated Responses API routing.
 	openaiPath := strings.TrimPrefix(proxy.UpstreamPath, "/api/openai")
 	normalizedPath, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
 	if !ok {
@@ -1690,7 +1691,9 @@ func (s *Server) forwardOpenAIToAIGateway(
 						bodyJSON["model"] = resolved
 						rawBody, _ = json.Marshal(bodyJSON)
 					}
-					if isOpenRouterModel(resolved) {
+					if shouldUseGatewayOpenAIResponses(normalizedPath, model) {
+						gatewayProvider = "openai"
+					} else if isOpenRouterModel(resolved) {
 						gatewayProvider = "openrouter"
 					}
 				}
@@ -1990,6 +1993,15 @@ func resolveGatewayModel(model string) string {
 // Cloudflare compat endpoint (/compat/).
 func isOpenRouterModel(resolvedModel string) bool {
 	return !strings.HasPrefix(resolvedModel, "dynamic/")
+}
+
+func shouldUseGatewayOpenAIResponses(normalizedPath string, model string) bool {
+	if normalizedPath != "/responses" {
+		return false
+	}
+
+	trimmedModel := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(trimmedModel, "gpt-")
 }
 
 func (s *Server) findActiveProxyThreadByThreadID(threadID string, now time.Time) (threadKey string, containerName string, ok bool) {
