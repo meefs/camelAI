@@ -547,21 +547,28 @@ export default function AdminOrgDetailPage() {
               <CardHeader>
                 <CardTitle>Model Access</CardTitle>
                 <CardDescription>
-                  Controls model choices for new chats on the camelAI proxy.
+                  Temporary April 2026 flag for default free-tier orgs on the
+                  camelAI proxy. By default, proxy users get Codex only; enable
+                  this to temporarily allow new Claude chats.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium">Claude proxy access</p>
+                      <p className="text-sm font-medium">
+                        Temporary Claude proxy access flag
+                      </p>
                       <Badge variant={experimentalSettings.claude_proxy_models ? "default" : "outline"}>
                         {experimentalSettings.claude_proxy_models ? "Allowed" : "Standard"}
                       </Badge>
                     </div>
                     <p className="max-w-xl text-sm text-muted-foreground">
-                      Standard proxy orgs can create new Codex threads only. BYOK Anthropic or Bedrock
-                      still enables Claude, and existing Claude threads remain usable.
+                      Implemented in April 2026 as a temporary override. Default
+                      free-tier proxy orgs can create new Codex threads only.
+                      Turn this on only when we want to temporarily grant Claude
+                      access on the proxy. BYOK Anthropic or Bedrock still
+                      enables Claude, and existing Claude threads remain usable.
                     </p>
                   </div>
                   <Form method="post">
