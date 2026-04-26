@@ -43,20 +43,17 @@ export function CodePreview({
       ? language
       : 'text';
 
-    try {
-      const html = codeToHtml(code, {
-        lang,
-        themes: SHIKI_DEFAULT_THEMES,
-        defaultColor: false,
+    codeToHtml(code, {
+      lang,
+      themes: SHIKI_DEFAULT_THEMES,
+      defaultColor: false,
+    })
+      .then((html) => {
+        if (isActive) setHighlightedCode(html);
+      })
+      .catch(() => {
+        if (isActive) setHighlightedCode(null);
       });
-      if (isActive) {
-        setHighlightedCode(html);
-      }
-    } catch {
-      if (isActive) {
-        setHighlightedCode(null);
-      }
-    }
 
     return () => {
       isActive = false;

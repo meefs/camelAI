@@ -67,20 +67,17 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
     const lang = language && SUPPORTED_LANGUAGES.has(language)
       ? language
       : 'text';
-    try {
-      const html = codeToHtml(codeString, {
-        lang,
-        themes: SHIKI_DEFAULT_THEMES,
-        defaultColor: false,
+    codeToHtml(codeString, {
+      lang,
+      themes: SHIKI_DEFAULT_THEMES,
+      defaultColor: false,
+    })
+      .then((html) => {
+        if (isActive) setHighlightedCode(html);
+      })
+      .catch(() => {
+        if (isActive) setHighlightedCode(null);
       });
-      if (isActive) {
-        setHighlightedCode(html);
-      }
-    } catch {
-      if (isActive) {
-        setHighlightedCode(null);
-      }
-    }
 
     return () => {
       isActive = false;

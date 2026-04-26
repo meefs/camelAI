@@ -1,4 +1,4 @@
-import puppeteer, { type Page } from '@cloudflare/puppeteer';
+import type { Browser, Page } from '@cloudflare/puppeteer';
 import { createScreenshotToken } from './worker-auth.js';
 import type { OrgDO } from './auth.js';
 
@@ -143,10 +143,11 @@ export async function captureScreenshot(
 
   const targetUrl = buildTargetUrl(job);
 
-  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  let browser: Browser | null = null;
   let page: Page | null = null;
 
   try {
+    const { default: puppeteer } = await import('@cloudflare/puppeteer');
     browser = await puppeteer.launch(env.BROWSER);
     page = await browser.newPage();
     await page.setViewport(VIEWPORT);
@@ -304,12 +305,13 @@ export async function captureScreenshotRaw(
     ? `https://${scriptName}${isNewStyleOrgSlug(orgSlug) ? '-' : '--'}${orgSlug}.${suffix}`
     : `https://${scriptName}.${suffix}`;
 
-  let puppeteerBrowser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  let puppeteerBrowser: Browser | null = null;
   let page: Page | null = null;
 
   try {
     const image = await withTimeout(
       async () => {
+        const { default: puppeteer } = await import('@cloudflare/puppeteer');
         puppeteerBrowser = await puppeteer.launch(browser);
         page = await puppeteerBrowser.newPage();
         await page.setViewport(VIEWPORT);

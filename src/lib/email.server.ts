@@ -1,10 +1,5 @@
 import type { CloudflareEnv } from './cloudflare.server';
-import { render, toPlainText } from '@react-email/render';
-import { createElement } from 'react';
-import { OrgInvitationEmailTemplate } from './email/templates/org-invitation-email';
-import { EmailVerificationEmailTemplate } from './email/templates/email-verification-email';
-import { HelpConfirmationEmailTemplate } from './email/templates/help-confirmation-email';
-import { HelpSupportEmailTemplate } from './email/templates/help-support-email';
+import type { ReactElement } from 'react';
 import { sendEmail as sendResendEmail } from './resend.server';
 import {
   recordDevEmailOutboxEntry,
@@ -146,6 +141,13 @@ function supportSeverityTag(severity: string): string {
   return 'Low';
 }
 
+async function renderEmailElement(element: ReactElement): Promise<{ htmlBody: string; textBody: string }> {
+  const { render, toPlainText } = await import('@react-email/render');
+  const htmlBody = await render(element);
+  const textBody = toPlainText(htmlBody);
+  return { htmlBody, textBody };
+}
+
 async function finalizeEmailDelivery(
   env: EmailEnvBindings,
   email: {
@@ -267,8 +269,11 @@ export async function sendOrgInvitationEmail({
   const expiration = formatExpiration(expiresAt);
   const displayRole = roleLabel(role);
 
-  // Render email content
-  const htmlBody = await render(
+  const [{ createElement }, { OrgInvitationEmailTemplate }] = await Promise.all([
+    import('react'),
+    import('./email/templates/org-invitation-email'),
+  ]);
+  const { htmlBody, textBody } = await renderEmailElement(
     createElement(OrgInvitationEmailTemplate, {
       orgName,
       inviterName: inviter,
@@ -277,7 +282,6 @@ export async function sendOrgInvitationEmail({
       expirationLabel: expiration,
     })
   );
-  const textBody = toPlainText(htmlBody);
 
   return deliverEmail({
     env,
@@ -298,13 +302,16 @@ export async function sendEmailVerificationEmail({
   const subject = sanitizeHeaderValue('Verify your email for camelAI');
   const expiration = formatExpiration(expiresAt);
 
-  const htmlBody = await render(
+  const [{ createElement }, { EmailVerificationEmailTemplate }] = await Promise.all([
+    import('react'),
+    import('./email/templates/email-verification-email'),
+  ]);
+  const { htmlBody, textBody } = await renderEmailElement(
     createElement(EmailVerificationEmailTemplate, {
       verificationUrl,
       expirationLabel: expiration,
     })
   );
-  const textBody = toPlainText(htmlBody);
 
   return deliverEmail({
     env,
@@ -335,7 +342,11 @@ export async function sendHelpConfirmationEmail({
   );
   const normalizedDescription = truncateWithEllipsis(description.trim(), 500);
 
-  const htmlBody = await render(
+  const [{ createElement }, { HelpConfirmationEmailTemplate }] = await Promise.all([
+    import('react'),
+    import('./email/templates/help-confirmation-email'),
+  ]);
+  const { htmlBody, textBody } = await renderEmailElement(
     createElement(HelpConfirmationEmailTemplate, {
       firstName: normalizedFirstName,
       userEmail,
@@ -344,7 +355,6 @@ export async function sendHelpConfirmationEmail({
       description: normalizedDescription,
     })
   );
-  const textBody = toPlainText(htmlBody);
 
   return deliverEmail({
     env,
@@ -388,7 +398,11 @@ export async function sendHelpSupportEmail({
     `[${severityTag}] [${categoryTag}] ${normalizedSubjectText} - ${userDisplayName} (${orgSlug})`
   );
 
-  const htmlBody = await render(
+  const [{ createElement }, { HelpSupportEmailTemplate }] = await Promise.all([
+    import('react'),
+    import('./email/templates/help-support-email'),
+  ]);
+  const { htmlBody, textBody } = await renderEmailElement(
     createElement(HelpSupportEmailTemplate, {
       userName,
       userEmail,
@@ -410,7 +424,6 @@ export async function sendHelpSupportEmail({
       referer,
     })
   );
-  const textBody = toPlainText(htmlBody);
 
   return deliverEmail({
     env,

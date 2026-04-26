@@ -1,9 +1,5 @@
 import { EmailMessage } from "cloudflare:email";
 import PostalMime from "postal-mime";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { Env } from "./types.js";
 import type { ExternalTurnResult } from "./durable-objects.js";
 import { runExternalMessageTurn } from "./helpers/external-turn.js";
@@ -464,10 +460,17 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function renderMarkdownEmailHtml(markdown: string): string {
+async function renderMarkdownEmailHtml(markdown: string): Promise<string> {
   const content = markdown.trim() || "Done.";
 
   try {
+    const [{ createElement }, { renderToStaticMarkup }, { default: ReactMarkdown }, { default: remarkGfm }] =
+      await Promise.all([
+        import("react"),
+        import("react-dom/server"),
+        import("react-markdown"),
+        import("remark-gfm"),
+      ]);
     const renderedMarkdown = renderToStaticMarkup(
       createElement(
         "div",
@@ -754,7 +757,7 @@ async function sendReply(
     .replace(/\r\n/g, "\n")
     .trim()
     .slice(0, MAX_EMAIL_REPLY_BODY_CHARS);
-  const bodyHtml = renderMarkdownEmailHtml(bodyText);
+  const bodyHtml = await renderMarkdownEmailHtml(bodyText);
   const boundary = `chiridion-${crypto.randomUUID()}`;
 
   const headers: string[] = [
