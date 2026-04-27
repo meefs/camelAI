@@ -719,6 +719,127 @@ describe('admin API metrics routes', () => {
     expect(sandboxFetch).toHaveBeenCalledOnce();
   });
 
+  it('filters orgs with large spam exclusion lists without exceeding sqlite variable limits', async () => {
+    const adminIndexName = `admin_index_large_spam_filter_${crypto.randomUUID()}`;
+    const spamOrgIds = Array.from({ length: 1_200 }, (_, index) => `spam-org-${index}`);
+    const sandboxFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(input.toString());
+      expect(url.pathname).toBe('/v1/usage/analytics/spam-org-ids');
+      return Response.json({ org_ids: spamOrgIds, count: spamOrgIds.length });
+    });
+    const isolatedEnv = createIsolatedAdminApiEnv(adminIndexName, sandboxFetch);
+    const adminIndex = testEnv.ADMIN_INDEX.get(
+      testEnv.ADMIN_INDEX.idFromName(adminIndexName),
+    );
+    const now = Date.now();
+    const userId = crypto.randomUUID();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const threadId = crypto.randomUUID();
+    const scriptName = `large-spam-app-${crypto.randomUUID().slice(0, 8)}`;
+    const appId = `${orgId}:${scriptName}`;
+
+    await adminIndex.handleEvent({
+      type: 'user_upsert',
+      payload: {
+        id: userId,
+        email: `large-spam-filter-${crypto.randomUUID()}@example.com`,
+        name: 'Large Spam Filter User',
+        avatar: { color: '#334455', content: 'S' },
+        created_at: now,
+        is_superuser: false,
+        is_orphaned: false,
+        org_count: 1,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'org_upsert',
+      payload: {
+        id: orgId,
+        name: 'Large Spam Filter Org',
+        slug: `large-spam-filter-${crypto.randomUUID().slice(0, 8)}`,
+        created_at: now,
+        archived: false,
+        billing_status: null,
+        created_by: userId,
+        member_count: 1,
+        workspace_count: 0,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'org_membership_upsert',
+      payload: {
+        org_id: orgId,
+        user_id: userId,
+        role: 'admin',
+        joined_at: now,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'thread_upsert',
+      payload: {
+        id: threadId,
+        title: 'Large Spam Filter Thread',
+        org_id: orgId,
+        workspace_id: workspaceId,
+        created_at: now + 1,
+        updated_at: now + 1,
+        created_by: userId,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'app_upsert',
+      payload: {
+        app_id: appId,
+        script_name: scriptName,
+        org_id: orgId,
+        workspace_id: workspaceId,
+        created_by: userId,
+        created_at: now + 2,
+        updated_at: now + 2,
+        is_public: false,
+        preview_status: null,
+        preview_error: null,
+      },
+    });
+
+    const response = await callAdminApi(
+      new Request('http://example/api/admin/orgs?exclude_spam=true&exclude_internal_domains=camelai.com', {
+        headers: { Authorization: 'Bearer test-admin-api-key' },
+      }),
+      sandboxFetch,
+      isolatedEnv,
+    );
+
+    expect(response?.status).toBe(200);
+    await expect(response!.json()).resolves.toEqual({
+      items: [
+        expect.objectContaining({
+          id: orgId,
+          name: 'Large Spam Filter Org',
+        }),
+      ],
+      total: 1,
+      offset: 0,
+      limit: 50,
+    });
+    expect(sandboxFetch).toHaveBeenCalledOnce();
+
+    const largeOrgIdLookup = [...spamOrgIds, orgId];
+    await expect(adminIndex.getOrgDirectoryByIds(largeOrgIdLookup)).resolves.toEqual([
+      expect.objectContaining({ id: orgId }),
+    ]);
+    await expect(adminIndex.getUsersByOrgIds(largeOrgIdLookup)).resolves.toEqual([
+      expect.objectContaining({ id: userId }),
+    ]);
+    await expect(adminIndex.getThreadsByOrgIds(largeOrgIdLookup)).resolves.toEqual([
+      expect.objectContaining({ id: threadId }),
+    ]);
+    await expect(adminIndex.getAppsByOrgIds(largeOrgIdLookup)).resolves.toEqual([
+      expect.objectContaining({ app_id: appId }),
+    ]);
+  });
+
   it('filters orgs by slug search and returns additive usage enrichment', async () => {
     const { userId: externalUserId } = await createUser(
       testEnv,
