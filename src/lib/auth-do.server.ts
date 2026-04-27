@@ -782,7 +782,15 @@ export async function adminGetThreadWithMessages(
   context: AppLoadContext,
   threadId: string,
 ): Promise<{
-  thread: { id: string; title: string; model: Thread['model']; created_by: string; created_at: number; updated_at: number };
+  thread: {
+    id: string;
+    title: string;
+    provider: Thread['provider'];
+    model: Thread['model'];
+    created_by: string;
+    created_at: number;
+    updated_at: number;
+  };
   messages: Message[];
   org_id: string;
   workspace_id: string;
@@ -812,6 +820,7 @@ export async function adminGetThreadWithMessages(
     thread: {
       id: thread.id,
       title: thread.title || 'Untitled',
+      provider: thread.provider ?? 'claude',
       model: thread.model,
       created_by: thread.created_by,
       created_at: thread.created_at,

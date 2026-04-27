@@ -2,9 +2,11 @@ import type { Route } from './+types/admin.threads.$id.jsonl';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import {
+  getCodexSessionId,
   getLegacyClaudeSessionId,
   getThreadJsonlPathCandidates,
 } from '@/lib/chat-do.server';
+import { readMessagesFromResponse } from '@/lib/thread-messages.server';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -13,6 +15,13 @@ import {
 function sanitizeFilename(value: string): string {
   const sanitized = value.replace(/[^a-zA-Z0-9._-]/g, '_');
   return sanitized || 'thread';
+}
+
+function messagesToJsonl(messages: unknown[]): string {
+  if (messages.length === 0) {
+    return '';
+  }
+  return `${messages.map((message) => JSON.stringify(message)).join('\n')}\n`;
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -59,12 +68,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       }
     }
 
-    if (!proxyResponse) {
-      return Response.json({ error: 'Thread JSONL file not found' }, { status: 404 });
-    }
-
     const filename = `${sanitizeFilename(threadId)}.jsonl`;
-    const contentLength = proxyResponse.headers.get('Content-Length');
     const headers: Record<string, string> = {
       'Content-Type': 'application/x-ndjson; charset=utf-8',
       'Content-Disposition': `attachment; filename="${filename}"`,
@@ -72,11 +76,31 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       'X-Content-Type-Options': 'nosniff',
     };
 
-    if (contentLength) {
-      headers['Content-Length'] = contentLength;
+    if (proxyResponse) {
+      const contentLength = proxyResponse.headers.get('Content-Length');
+      if (contentLength) {
+        headers['Content-Length'] = contentLength;
+      }
+      return new Response(proxyResponse.body, { headers });
     }
 
-    return new Response(proxyResponse.body, { headers });
+    const codexSessionId = await getCodexSessionId(context, threadId);
+    const streamResult = await container.readThreadMessagesStream(threadId, {
+      claudeSessionId: legacyClaudeSessionId,
+      codexSessionId,
+    });
+    if (!streamResult.success || !streamResult.response) {
+      const status = streamResult.code?.startsWith('HTTP_')
+        ? Number.parseInt(streamResult.code.slice(5), 10) || 500
+        : 500;
+      return Response.json(
+        { error: streamResult.error || 'Failed to load thread messages' },
+        { status },
+      );
+    }
+
+    const messages = await readMessagesFromResponse(streamResult.response);
+    return new Response(messagesToJsonl(messages), { headers });
   } catch (error) {
     if (error instanceof Response) {
       return error;
