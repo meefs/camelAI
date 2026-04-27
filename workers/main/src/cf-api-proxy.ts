@@ -817,9 +817,27 @@ export interface CfCustomHostname {
     status: string;
     method: string;
     type: string;
+    dcv_delegation_record?: CfCustomHostnameDcvRecord;
+    dcv_delegation_records?: CfCustomHostnameDcvRecord[];
+    validation_records?: CfCustomHostnameDcvRecord[];
   };
   status: string;
   created_at: string;
+}
+
+export interface CfCustomHostnameDcvRecord {
+  cname?: string;
+  cname_target?: string;
+  name?: string;
+  target?: string;
+  value?: string;
+  type?: string;
+  status?: string;
+}
+
+export interface CustomHostnameDcvRecord {
+  cname: string;
+  cname_target: string;
 }
 
 const CUSTOM_HOSTNAME_SSL_SETTINGS = {
@@ -827,6 +845,29 @@ const CUSTOM_HOSTNAME_SSL_SETTINGS = {
   type: 'dv',
   wildcard: false,
 } as const;
+
+export function extractCustomHostnameDcvRecord(
+  record: CfCustomHostname | null | undefined
+): CustomHostnameDcvRecord | null {
+  const candidates = [
+    ...(record?.ssl.dcv_delegation_records ?? []),
+    ...(record?.ssl.validation_records ?? []),
+    ...(record?.ssl.dcv_delegation_record ? [record.ssl.dcv_delegation_record] : []),
+  ];
+
+  for (const candidate of candidates) {
+    const cname = candidate.cname ?? candidate.name;
+    const cnameTarget = candidate.cname_target ?? candidate.target ?? candidate.value;
+    if (cname && cnameTarget) {
+      return {
+        cname,
+        cname_target: cnameTarget.replace(/\.$/, ''),
+      };
+    }
+  }
+
+  return null;
+}
 
 export async function createCustomHostname(
   zoneId: string,

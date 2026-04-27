@@ -49,7 +49,17 @@ function cfHostnameResponse(scriptName: string) {
     result: {
       id: `cf-${scriptName}`,
       hostname: `${scriptName}.apps.example.com`,
-      ssl: { status: 'pending_validation', method: 'txt', type: 'dv' },
+      ssl: {
+        status: 'pending_validation',
+        method: 'txt',
+        type: 'dv',
+        dcv_delegation_records: [
+          {
+            cname: `_acme-challenge.${scriptName}.apps.example.com`,
+            cname_target: `${scriptName}-token.dcv.cloudflare.com`,
+          },
+        ],
+      },
       status: 'pending',
       created_at: '2026-04-27T00:00:00Z',
     },
@@ -104,6 +114,10 @@ describe('admin API custom domain refresh route', () => {
           cf_hostname_id: 'cf-pending-app',
           status: 'pending',
           ssl_status: 'pending_validation',
+          dcv_record: {
+            cname: '_acme-challenge.pending-app.apps.example.com',
+            cname_target: 'pending-app-token.dcv.cloudflare.com',
+          },
         }),
         expect.objectContaining({
           script_name: 'active-app',

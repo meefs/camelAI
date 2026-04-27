@@ -6,7 +6,12 @@ import { getEnv } from '@/lib/cloudflare.server';
 import type { AuthEnv } from '@/lib/auth-helpers';
 import { getOrgCustomDomain, isOrgAdmin } from '@/lib/auth-do';
 import { getCustomHostnameDnsTarget } from '@/lib/custom-domain-dns';
-import { getDcvDelegationUuid } from '../../workers/main/src/cf-api-proxy';
+import {
+  extractCustomHostnameDcvRecord,
+  findCustomHostnameByHostname,
+  getCustomHostnameStatus,
+  type CustomHostnameDcvRecord,
+} from '../../workers/main/src/cf-api-proxy';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { Button } from '@/components/ui/button';
@@ -43,6 +48,35 @@ interface AppDomainStatus {
   error: string | null;
 }
 
+async function getAuthoritativeDcvRecord(options: {
+  zoneId?: string | null;
+  apiToken?: string | null;
+  domain: string | null;
+  scripts: Array<{
+    script_name: string;
+    custom_domain_hostname: string | null;
+    custom_domain_cf_hostname_id: string | null;
+  }>;
+}): Promise<CustomHostnameDcvRecord | null> {
+  const zoneId = options.zoneId?.trim();
+  const apiToken = options.apiToken?.trim();
+  if (!zoneId || !apiToken || !options.domain) return null;
+
+  for (const script of options.scripts) {
+    const expectedHostname = `${script.script_name}.${options.domain}`;
+    let record = null;
+    if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
+      record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
+    }
+    record ??= await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+
+    const dcvRecord = extractCustomHostnameDcvRecord(record);
+    if (dcvRecord) return dcvRecord;
+  }
+
+  return null;
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
@@ -58,14 +92,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
 
-  const [domain, admin, dcvUuid, scripts] = await Promise.all([
+  const [domain, admin, scripts] = await Promise.all([
     getOrgCustomDomain(authEnv, authContext.currentOrg.id),
     isOrgAdmin(authEnv, authContext.user.id, authContext.currentOrg.id),
-    env.CF_ZONE_ID && env.CF_API_TOKEN
-      ? getDcvDelegationUuid(env.CF_ZONE_ID, env.CF_API_TOKEN)
-      : Promise.resolve(null),
     orgStub.listWorkerScripts(),
   ]);
+
+  const dcvRecord = await getAuthoritativeDcvRecord({
+    zoneId: env.CF_ZONE_ID,
+    apiToken: env.CF_API_TOKEN,
+    domain: domain?.domain ?? null,
+    scripts,
+  });
 
   const apps: AppDomainStatus[] = scripts.map((s) => ({
     name: s.script_name,
@@ -83,7 +121,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       cnameTarget: env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
       fallbackOrigin: env.CF_CUSTOM_HOSTNAME_FALLBACK,
     }),
-    dcvUuid,
+    dcvRecord,
     apps,
     workspaceId: authContext.currentWorkspace?.id ?? null,
   };
@@ -205,7 +243,7 @@ function DnsRecordCard({
 const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
 
 export default function DomainsPage() {
-  const { org, domain: initialDomain, isAdmin, dnsTarget, dcvUuid, apps, workspaceId } =
+  const { org, domain: initialDomain, isAdmin, dnsTarget, dcvRecord, apps, workspaceId } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ domain?: unknown; success?: boolean; error?: string }>();
   const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
@@ -343,11 +381,11 @@ export default function DomainsPage() {
                 target={dnsTarget}
               />
 
-              {dcvUuid ? (
+              {dcvRecord ? (
                 <DnsRecordCard
                   label="SSL Validation"
-                  name={`_acme-challenge.${domain.domain}`}
-                  target={`${dcvUuid}.dcv.cloudflare.com`}
+                  name={dcvRecord.cname}
+                  target={dcvRecord.cname_target}
                 />
               ) : (
                 <Alert>

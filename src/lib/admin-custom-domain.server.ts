@@ -1,6 +1,10 @@
 import type { WorkerScript } from '../types';
 import { getExpectedCustomDomainHostname, isAppCustomDomainReady } from './app-url';
-import { createOrRefreshCustomHostname } from '../../workers/main/src/cf-api-proxy';
+import {
+  createOrRefreshCustomHostname,
+  extractCustomHostnameDcvRecord,
+  type CustomHostnameDcvRecord,
+} from '../../workers/main/src/cf-api-proxy';
 
 interface CustomDomainAdminEnv {
   ORG: {
@@ -35,6 +39,7 @@ export interface AdminCustomDomainRefreshAppResult {
   cf_hostname_id: string | null;
   status: string | null;
   ssl_status: string | null;
+  dcv_record: CustomHostnameDcvRecord | null;
   error: string | null;
 }
 
@@ -103,6 +108,7 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
         cf_hostname_id: script.custom_domain_cf_hostname_id,
         status: script.custom_domain_status,
         ssl_status: script.custom_domain_ssl_status,
+        dcv_record: null,
         error: null,
       });
       continue;
@@ -129,6 +135,7 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
           cf_hostname_id: null,
           status: null,
           ssl_status: null,
+          dcv_record: null,
           error,
         });
         continue;
@@ -150,6 +157,7 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
         cf_hostname_id: record.id,
         status: record.status,
         ssl_status: record.ssl.status,
+        dcv_record: extractCustomHostnameDcvRecord(record),
         error: null,
       });
     } catch (error) {
@@ -167,6 +175,7 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
         cf_hostname_id: script.custom_domain_cf_hostname_id,
         status: script.custom_domain_status,
         ssl_status: script.custom_domain_ssl_status,
+        dcv_record: null,
         error: message,
       });
     }

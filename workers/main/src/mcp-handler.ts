@@ -17,7 +17,18 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
-import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createOrRefreshCustomHostname, deleteCustomHostname, findCustomHostnameByHostname, getCustomHostnameStatus, getDcvDelegationUuid, listCustomHostnamesByBaseDomain, type CfApiProxyEnv } from './cf-api-proxy';
+import {
+  getEnvPrefix,
+  syncAllWorkspaceWorkerSecrets,
+  createOrRefreshCustomHostname,
+  deleteCustomHostname,
+  extractCustomHostnameDcvRecord,
+  findCustomHostnameByHostname,
+  getCustomHostnameStatus,
+  listCustomHostnamesByBaseDomain,
+  type CfApiProxyEnv,
+  type CustomHostnameDcvRecord,
+} from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
 import { getExpectedCustomDomainHostname, getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
 import {
@@ -1562,16 +1573,17 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         const zoneId = this.env.CF_ZONE_ID?.trim();
         const apiToken = this.env.CF_API_TOKEN?.trim();
 
-        // Fetch the DNS target and DCV UUID for the required DNS records
+        // Fetch the routing target; the SSL validation record comes from the
+        // actual Cloudflare custom hostname response below.
         const dnsTarget = getCustomHostnameDnsTarget({
           cnameTarget: this.env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
           fallbackOrigin: this.env.CF_CUSTOM_HOSTNAME_FALLBACK,
         });
-        const dcvUuid = zoneId && apiToken ? await getDcvDelegationUuid(zoneId, apiToken) : null;
 
         // Get per-app custom domain status
         const scripts = await orgStub.listWorkerScripts();
         const now = Date.now();
+        let dcvRecord: CustomHostnameDcvRecord | null = null;
 
         // Refresh stale app hostname statuses from Cloudflare before responding
         const apps: Array<{
@@ -1602,6 +1614,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                 record = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
               }
               if (record) {
+                dcvRecord ??= extractCustomHostnameDcvRecord(record);
                 currentScript =
                   (await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                     hostname: expectedHostname,
@@ -1631,6 +1644,23 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           });
         }
 
+        if (!dcvRecord && zoneId && apiToken) {
+          for (const script of scripts) {
+            const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
+            try {
+              let record = null;
+              if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
+                record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
+              }
+              record ??= await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+              dcvRecord = extractCustomHostnameDcvRecord(record);
+              if (dcvRecord) break;
+            } catch {
+              // Keep diagnostics available even when Cloudflare lookup fails.
+            }
+          }
+        }
+
         const activeCount = apps.filter(a => a.status === 'active' && a.ssl_status === 'active').length;
         const missingCount = apps.filter(a => !a.status).length;
 
@@ -1652,13 +1682,11 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         }
 
         // Check ACME challenge CNAME
-        if (dcvUuid) {
-          const acmeHost = `_acme-challenge.${domain.domain}`;
-          const expectedAcmeTarget = `${dcvUuid}.dcv.cloudflare.com`;
-          const acmeLookup = await resolveCnameViaDoH(acmeHost);
+        if (dcvRecord) {
+          const acmeLookup = await resolveCnameViaDoH(dcvRecord.cname);
           dnsChecks.acme_challenge_cname = buildCustomDomainDnsCheck({
-            queried: acmeHost,
-            expectedTarget: expectedAcmeTarget,
+            queried: dcvRecord.cname,
+            expectedTarget: dcvRecord.cname_target,
             lookup: acmeLookup,
           });
         }
@@ -1698,11 +1726,11 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               type: 'CNAME',
               target: dnsTarget,
             },
-            acme_challenge_record: dcvUuid
+            acme_challenge_record: dcvRecord
               ? {
-                  host: `_acme-challenge.${domain.domain}`,
+                  host: dcvRecord.cname,
                   type: 'CNAME',
-                  target: `${dcvUuid}.dcv.cloudflare.com`,
+                  target: dcvRecord.cname_target,
                 }
               : null,
           },
@@ -1774,14 +1802,9 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           }
         }
 
-        // Fetch DCV delegation UUID for SSL validation instructions
-        const dcvUuid = zoneId && apiToken ? await getDcvDelegationUuid(zoneId, apiToken) : null;
-        const dcvRecord = dcvUuid
-          ? `_acme-challenge.${domain} CNAME ${dcvUuid}.dcv.cloudflare.com`
-          : `_acme-challenge.${domain} CNAME {uuid}.dcv.cloudflare.com (check Settings > Domains for the exact value)`;
-
         // Backfill CF hostnames for existing apps
         await orgStub.clearWorkerScriptCustomDomains();
+        let dcvRecord: CustomHostnameDcvRecord | null = null;
         if (zoneId && apiToken) {
           const scripts = await orgStub.listWorkerScripts();
           let created = 0;
@@ -1797,6 +1820,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                   ssl_status: result.ssl.status,
                   error: null,
                 });
+                dcvRecord ??= extractCustomHostnameDcvRecord(result);
                 created++;
               } else {
                 await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
@@ -1817,8 +1841,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             hostnames_created: created,
             total_apps: scripts.length,
             dns_target: dnsTarget,
-            dcv_record: dcvRecord,
-            message: `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Add both DNS records: (1) *.${domain} CNAME ${dnsTarget} and (2) ${dcvRecord}`,
+            dcv_record: dcvRecord
+              ? `${dcvRecord.cname} CNAME ${dcvRecord.cname_target}`
+              : null,
+            message: dcvRecord
+              ? `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Add both DNS records: (1) *.${domain} CNAME ${dnsTarget} and (2) ${dcvRecord.cname} CNAME ${dcvRecord.cname_target}`
+              : `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Add the routing record: *.${domain} CNAME ${dnsTarget}. Run get_custom_domain after a hostname is provisioned to get the exact SSL validation record.`,
           });
         }
 
@@ -1826,8 +1854,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           success: true,
           domain,
           dns_target: dnsTarget,
-          dcv_record: dcvRecord,
-          message: `Custom domain set to ${domain}. Add both DNS records: (1) *.${domain} CNAME ${dnsTarget} and (2) ${dcvRecord}`,
+          dcv_record: null,
+          message: `Custom domain set to ${domain}. Add the routing record: *.${domain} CNAME ${dnsTarget}. Run get_custom_domain after a hostname is provisioned to get the exact SSL validation record.`,
         });
       }
     );

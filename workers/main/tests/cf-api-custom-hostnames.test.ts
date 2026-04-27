@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createOrRefreshCustomHostname } from '../src/cf-api-proxy';
+import {
+  createOrRefreshCustomHostname,
+  extractCustomHostnameDcvRecord,
+} from '../src/cf-api-proxy';
 
 function cfResponse(result: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify({ success: true, result }), {
@@ -74,5 +77,55 @@ describe('createOrRefreshCustomHostname', () => {
       ssl: { method: 'txt', type: 'dv', wildcard: false },
     });
     consoleWarn.mockRestore();
+  });
+});
+
+describe('extractCustomHostnameDcvRecord', () => {
+  it('uses Cloudflare custom hostname DCV delegation records', () => {
+    expect(
+      extractCustomHostnameDcvRecord({
+        id: 'hostname-1',
+        hostname: 'demo.apps.example.com',
+        ssl: {
+          status: 'pending_validation',
+          method: 'txt',
+          type: 'dv',
+          dcv_delegation_records: [
+            {
+              cname: '_acme-challenge.demo.apps.example.com',
+              cname_target: 'fresh-token.dcv.cloudflare.com.',
+            },
+          ],
+        },
+        status: 'pending',
+        created_at: '2026-04-27T00:00:00Z',
+      })
+    ).toEqual({
+      cname: '_acme-challenge.demo.apps.example.com',
+      cname_target: 'fresh-token.dcv.cloudflare.com',
+    });
+  });
+
+  it('supports the legacy singular value shape', () => {
+    expect(
+      extractCustomHostnameDcvRecord({
+        id: 'hostname-1',
+        hostname: 'demo.apps.example.com',
+        ssl: {
+          status: 'pending_validation',
+          method: 'txt',
+          type: 'dv',
+          dcv_delegation_record: {
+            cname: '_acme-challenge.demo.apps.example.com',
+            value: 'legacy-token.dcv.cloudflare.com',
+          },
+        },
+        status: 'pending',
+        created_at: '2026-04-27T00:00:00Z',
+      })
+    ).toEqual({
+      cname: '_acme-challenge.demo.apps.example.com',
+      cname_target: 'legacy-token.dcv.cloudflare.com',
+    });
   });
 });
