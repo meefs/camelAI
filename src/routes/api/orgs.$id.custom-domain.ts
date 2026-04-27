@@ -99,7 +99,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   const apiToken = env.CF_API_TOKEN?.trim();
 
   if (intent === 'set') {
-    const hostname = normalizeHostname(formData.get('domain') ?? formData.get('hostname'));
+    const hostname = normalizeHostname(formData.get('hostname') ?? formData.get('domain'));
     if (!isValidCustomHostname(hostname)) {
       return Response.json(
         { error: 'Enter one exact hostname, like example.com or app.example.com. Wildcards are not supported.' },
@@ -115,7 +115,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     );
     if (conflictingScript) {
       return Response.json(
-        { error: `That custom domain is already assigned to ${conflictingScript.script_name}` },
+        { error: `That hostname is already assigned to ${conflictingScript.script_name}` },
         { status: 409 }
       );
     }

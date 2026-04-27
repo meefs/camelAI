@@ -1656,12 +1656,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     // Set exact app custom domain
     this.server.tool(
       'set_custom_domain',
-      'Set one exact custom domain for one deployed app (admin only). Wildcards are not supported.',
+      'Set one exact custom hostname for one deployed app (admin only). The user chooses the hostname; camelAI provides the DNS target. Wildcards are not supported.',
       {
         app_name: z.string().min(1).describe('The deployed app name.'),
-        domain: z.string().min(3).describe('The exact hostname, e.g. "example.com" or "app.example.com".'),
+        hostname: z.string().min(3).describe('The exact hostname the user wants to use, e.g. "example.com" or "app.example.com".'),
       },
-      async ({ app_name: appName, domain: rawDomain }) => {
+      async ({ app_name: appName, hostname: rawHostname }) => {
         const { userId } = this.requireAuth();
         const orgStub = this.getOrgStub();
 
@@ -1670,7 +1670,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ success: false, error: 'Only org admins can manage custom domains' });
         }
 
-        const domain = rawDomain.trim().toLowerCase().replace(/\.$/, '');
+        const hostname = rawHostname.trim().toLowerCase().replace(/\.$/, '');
         const script = await orgStub.getWorkerScript(appName);
         if (!script) {
           return this.textResponse({ success: false, error: 'App not found' });
@@ -1679,22 +1679,22 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         const conflictingScript = scripts.find(
           (candidate) =>
             candidate.script_name !== appName &&
-            candidate.custom_domain_hostname === domain
+            candidate.custom_domain_hostname === hostname
         );
         if (conflictingScript) {
           return this.textResponse({
             success: false,
-            error: `That custom domain is already assigned to ${conflictingScript.script_name}`,
+            error: `That hostname is already assigned to ${conflictingScript.script_name}`,
           });
         }
 
         if (
-          domain.includes('*') ||
-          !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain)
+          hostname.includes('*') ||
+          !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(hostname)
         ) {
           return this.textResponse({ success: false, error: 'Invalid exact hostname. Wildcards are not supported.' });
         }
-        if (domain.endsWith('.camelai.app') || domain.endsWith('.camelai.dev')) {
+        if (hostname.endsWith('.camelai.app') || hostname.endsWith('.camelai.dev')) {
           return this.textResponse({ success: false, error: 'Cannot use camelAI domains as custom domains' });
         }
 
@@ -1709,10 +1709,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         });
 
         try {
-          const record = await createOrRefreshCustomHostname(zoneId, apiToken, domain);
+          const record = await createOrRefreshCustomHostname(zoneId, apiToken, hostname);
           if (!record) {
             await orgStub.updateWorkerScriptCustomDomain(appName, {
-              hostname: domain,
+              hostname,
               error: 'Failed to create or locate Cloudflare custom hostname',
             });
             return this.textResponse({ success: false, error: 'Failed to create or locate Cloudflare custom hostname' });
@@ -1723,7 +1723,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           }
 
           await orgStub.updateWorkerScriptCustomDomain(appName, {
-            hostname: domain,
+            hostname,
             cf_hostname_id: record.id,
             status: record.status,
             ssl_status: record.ssl.status,
@@ -1732,7 +1732,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await orgStub.updateWorkerScriptCustomDomain(appName, {
-            hostname: domain,
+            hostname,
             error: message,
           });
           return this.textResponse({ success: false, error: message });
@@ -1741,10 +1741,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         return this.textResponse({
           success: true,
           app: appName,
-          domain,
+          hostname,
           dns_target: dnsTarget,
-          routing_record: `${domain} CNAME ${dnsTarget}`,
-          message: `Custom domain set for ${appName}. Add ${domain} CNAME ${dnsTarget}.`,
+          routing_record: `${hostname} CNAME ${dnsTarget}`,
+          message: `Custom hostname set for ${appName}. Add ${hostname} CNAME ${dnsTarget}.`,
         });
       }
     );

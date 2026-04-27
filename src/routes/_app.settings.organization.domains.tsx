@@ -192,7 +192,7 @@ function AppDomainRow({
     if (!value) return;
     setError(null);
     fetcher.submit(
-      { intent: 'set', scriptName: app.name, domain: value },
+      { intent: 'set', scriptName: app.name, hostname: value },
       { method: 'POST', action: `/api/orgs/${orgId}/custom-domain` }
     );
   };
@@ -240,7 +240,7 @@ function AppDomainRow({
                 size="icon-sm"
                 disabled={!isAdmin || loading}
                 onClick={submitRemove}
-                aria-label={`Remove custom domain for ${app.name}`}
+                aria-label={`Remove custom hostname for ${app.name}`}
               >
                 <Trash2 className="size-4 text-destructive" />
               </Button>
@@ -257,7 +257,7 @@ function AppDomainRow({
       <TableCell className="align-top">
         {app.hostname ? (
           <div className="space-y-2 rounded-md border p-3">
-            <DnsRecordLine label="Routing CNAME" name={app.hostname} target={dnsTarget} />
+            <DnsRecordLine label="DNS target" name={app.hostname} target={dnsTarget} />
           </div>
         ) : (
           <span className="text-sm text-muted-foreground">Add a hostname to see DNS records.</span>
@@ -281,14 +281,14 @@ export default function DomainsPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="Domains"
-        description="Assign one exact custom domain to each deployed app."
+        description="Choose one hostname for each deployed app. camelAI provides the DNS target."
       />
       <Separator />
 
       <Alert>
         <Info className="size-4" />
         <AlertDescription>
-          Wildcard domains are no longer supported. Configure an apex domain such as example.com or a single hostname such as app.example.com for each app.
+          Wildcard domains are no longer supported. Enter the hostname you want to use, such as example.com or app.example.com, then point it to the generated camelAI target.
         </AlertDescription>
       </Alert>
 
@@ -305,7 +305,7 @@ export default function DomainsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>App</TableHead>
-                <TableHead>Custom domain</TableHead>
+                <TableHead>Hostname</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>DNS records</TableHead>
               </TableRow>
@@ -326,7 +326,7 @@ export default function DomainsPage() {
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">
-          No apps deployed yet. Deploy an app, then assign an exact custom domain here.
+          No apps deployed yet. Deploy an app, then assign an exact hostname here.
         </p>
       )}
     </div>
