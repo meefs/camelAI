@@ -1,156 +1,109 @@
 ---
 name: custom-domain-troubleshooting
-description: Diagnoses and resolves custom domain issues including SSL errors, pending activation, and DNS misconfigurations. Use when users report ERR_SSL_VERSION_OR_CIPHER_MISMATCH, DNS errors, apps not loading on their custom domain, or ask about custom domain setup.
+description: Diagnoses and resolves custom domain issues including SSL errors, pending activation, DNS misconfigurations, 522s, and apps not loading on their custom domain. Use when users ask about custom domain setup or troubleshooting.
 ---
 
 # Custom Domain Troubleshooting
 
-Custom domains let an org serve all their deployed apps under a single base domain. Instead of `https://{app-name}-{org-slug}.camelai.app`, apps become `https://{app-name}.{base-domain}`.
+camelAI custom domains are configured per deployed app. Each app can have one exact custom hostname, such as `www.example.com`, `app.example.com`, or `example.com`.
 
 ## How It Works
 
-- **Wildcard subdomain model**: one base domain, every app gets a subdomain under it.
-- `apps.acme.com` as a base domain gives `signup.apps.acme.com`, `dashboard.apps.acme.com`, etc.
-- The subdomain always matches the app name. There is no way to map a custom subdomain to a different app.
-- One domain per org. Setting a new one replaces the old one.
-- You **cannot** serve an app at the base domain itself (no subdomain prefix).
+- Users choose the exact hostname they want for a specific app.
+- Wildcards are not supported.
+- A hostname can only be assigned to one app at a time.
+- Apex/root domains are allowed if the user's DNS provider supports CNAME-like flattening/ALIAS/ANAME at the apex.
+- camelAI provides the DNS target. Users should not invent their own target.
+- Cloudflare provisions one custom hostname certificate per exact hostname.
+- SSL validation uses HTTP validation through Cloudflare for SaaS. Do not ask users to add `_acme-challenge` or other DCV records.
 
-## Required DNS Records
+## Required DNS Record
 
-Two DNS records must be added at the user's DNS provider:
+There is one DNS record per custom hostname:
 
-### Record 1: Routing CNAME
+| Field  | Value |
+|--------|-------|
+| Host   | The exact hostname the user chose, for example `www.example.com` or `app.example.com` |
+| Type   | `CNAME` |
+| Target | Shown by `get_custom_domain` as `dns_target`, normally `custom-domains.camelai.app` |
 
-Routes all app traffic to camelAI's dispatcher.
+For apex/root domains like `example.com`, many DNS providers do not allow a normal CNAME at the root. In that case tell the user to use the provider's CNAME flattening, ALIAS, or ANAME feature pointing to the same `dns_target`. If their provider has no apex aliasing feature, they should use a subdomain such as `www.example.com`.
 
-| Field  | Value                              |
-|--------|------------------------------------|
-| Host   | `*` (wildcard, relative to base)   |
-| Type   | CNAME                              |
-| Target | Shown by `get_custom_domain` → `dns.routing_record.target` |
+## When the Custom Domain URL Works
 
-If the user's provider doesn't support wildcard CNAMEs, they can create individual records per app: `{app-name}` CNAME `{target}`.
+The custom domain should work when all of these are true:
 
-### Record 2: ACME Challenge CNAME (SSL Validation)
+1. The app has a custom `hostname` configured.
+2. The hostname's DNS resolves to the `dns_target`.
+3. The Cloudflare hostname `status` is `active`.
+4. The Cloudflare `ssl_status` is `active`.
 
-Delegates SSL certificate issuance to Cloudflare.
-
-| Field  | Value                                                   |
-|--------|---------------------------------------------------------|
-| Host   | `_acme-challenge.{base-domain}`                         |
-| Type   | CNAME                                                   |
-| Target | Shown by `get_custom_domain` → `dns.acme_challenge_record.target` |
-
-This is a **single** record at the base domain level. It covers certificate validation for all app subdomains via Cloudflare's DCV delegation.
-
-## When the Custom Domain URL Appears
-
-The custom domain URL for an app only appears when **all** of these are true:
-
-1. The org has a custom domain configured
-2. The app's hostname matches `{app-name}.{base-domain}`
-3. The app's `status` is `active`
-4. The app's `ssl_status` is `active`
-
-Until then, the app uses its default `*.camelai.app` URL.
+Until then, the app still works on its default `*.camelai.app` URL.
 
 ## Diagnostic Workflow
 
 ### Step 1: Call `get_custom_domain`
 
-This returns everything needed for diagnosis:
+This returns:
 
-- `dns.routing_record` / `dns.acme_challenge_record` — the exact records the user needs
-- `dns_checks.routing_cname` / `dns_checks.acme_challenge_cname` — live DNS resolution results
-- Each DNS check has `status = "ok" | "mismatch" | "missing" | "unavailable"`
-- `ok: null` means the DNS diagnostic failed, not that the user's DNS is wrong
-- `apps[]` — per-app `status`, `ssl_status`, and `error`
+- `dns_target` — the target all custom hostnames should point to
+- `apps[]` — each app's configured hostname, Cloudflare hostname status, SSL status, error, and DNS check
+- `apps[].dns_checks.routing_cname` — live DNS resolution for that exact app hostname
+
+Each DNS check has `status = "ok" | "mismatch" | "missing" | "unavailable"`. `unavailable` means the diagnostic check failed; do not claim the user's DNS is wrong based only on that.
 
 ### Step 2: Follow the Decision Tree
 
 ```
-Is domain configured?
-├─ No → Guide user to Settings > Organization > Domains, or use set_custom_domain
+Does the app have a custom hostname?
+├─ No → Ask which exact hostname they want for which deployed app, then use set_custom_domain.
 └─ Yes
-   ├─ dns_checks.routing_cname.status = "unavailable"?
-   │  └─ Automatic DNS check failed. Do not say the user's DNS is wrong.
-   │     Tell them the expected record from dns.routing_record and ask them to verify it manually, then retry.
-   │
    ├─ dns_checks.routing_cname.status = "missing" | "mismatch"?
-   │  └─ "Add or fix the CNAME record: *.{domain} → {target}"
-   │     Tell the user the exact host and target from dns.routing_record
+   │  └─ Tell them the exact record to add or fix:
+   │     {hostname} CNAME {dns_target}
    │
-   ├─ dns_checks.acme_challenge_cname.status = "unavailable"?
-   │  └─ Automatic DNS check failed. Do not claim the ACME record is missing.
-   │     Tell them the expected record from dns.acme_challenge_record and ask them to verify it manually, then retry.
+   ├─ dns_checks.routing_cname.status = "unavailable"?
+   │  └─ Show the expected record and ask them to verify it manually at their DNS provider.
    │
-   ├─ dns_checks.acme_challenge_cname.status = "missing" | "mismatch"?
-   │  └─ "Add a CNAME record: _acme-challenge.{domain} → {target}"
-   │     Tell the user the exact host and target from dns.acme_challenge_record
-   │     This is the #1 cause of SSL errors.
+   ├─ status != "active" or ssl_status != "active"?
+   │  ├─ If recently configured → wait a few minutes, then recheck.
+   │  ├─ If stuck for a while → use retry_custom_domain_hostnames.
+   │  └─ If still stuck → inspect the app error from get_custom_domain.
    │
-   ├─ dns_checks both status = "ok", but apps have ssl_status != "active"?
-   │  ├─ ssl_status = "pending_validation" for < 1 hour → Still provisioning, wait
-   │  ├─ ssl_status = "pending_validation" for > 1 hour → Check CAA records (see below)
-   │  └─ ssl_status = "failed" → Try retry_custom_domain_hostnames
-   │
-   ├─ Apps have null status (no Cloudflare hostname)?
-   │  └─ Backfill failed. Call retry_custom_domain_hostnames to provision them.
-   │
-   └─ Apps have status = "active" AND ssl_status = "active"?
-      └─ Working! The custom domain URL should appear. Ask user to hard-refresh.
+   └─ status = "active" and ssl_status = "active" and DNS check is ok?
+      └─ The custom domain should work. If the user still sees an error, ask for the exact browser error/status code.
 ```
 
-### Step 3: Give the User the Specific Fix
+### Step 3: Give the Specific Fix
 
-Always provide the **exact DNS record** values from `get_custom_domain`. Don't make users look them up in settings.
+Always provide the exact DNS record values from `get_custom_domain` or `set_custom_domain`. Do not tell users to add wildcard records. Do not tell users to add `_acme-challenge` records.
 
 ## Common Errors and Fixes
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` | ACME challenge CNAME missing → no SSL cert | Add `_acme-challenge` CNAME |
-| `DNS_PROBE_FINISHED_NXDOMAIN` | Routing CNAME missing → DNS doesn't resolve | Add wildcard CNAME |
-| Error 1014 (CNAME Cross-User Banned) | Domain is on Cloudflare, CNAME is proxied (orange cloud) | Set CNAME to DNS-only (gray cloud) |
-| `ssl_status: "pending_validation"` for hours | ACME CNAME wrong, not propagated, or CAA records blocking | Verify ACME target; check CAA records |
-| Some apps work, others don't | Per-app provisioning; some hostnames may have failed | Check each app's status; use retry tool |
-| App works on `*.camelai.app` but not custom domain | Per-app hostname not yet active | Wait for provisioning or retry |
-
-## CAA Records
-
-If the domain has CAA DNS records, they must allow Cloudflare's certificate authorities:
-
-```
-CAA 0 issue "comodoca.com"
-CAA 0 issue "digicert.com"
-CAA 0 issue "letsencrypt.org"
-CAA 0 issue "pki.goog"
-```
-
-Most domains don't have CAA records (which means all CAs are allowed). But if they do and the list doesn't include Cloudflare's CAs, SSL provisioning will silently fail.
+| Error | Likely cause | Fix |
+|-------|--------------|-----|
+| `DNS_PROBE_FINISHED_NXDOMAIN` | Hostname DNS is missing | Add `{hostname} CNAME {dns_target}` |
+| Browser shows SSL/certificate error | Cloudflare SSL is not active yet or hostname does not resolve to the target | Run `get_custom_domain`; fix DNS or retry provisioning |
+| `ssl_status: "pending_validation"` for more than a few minutes | DNS not pointed at the target, or Cloudflare validation is stuck | Verify DNS, then use `retry_custom_domain_hostnames` |
+| Error 1014 | Customer domain is on Cloudflare and CNAME is proxied in a conflicting way | Set the CNAME to DNS-only if needed, then retry |
+| HTTP 522 | Request reached Cloudflare edge but did not reach the dispatcher/origin path | Check DNS target and escalate if DNS and SSL are active |
+| App works on `*.camelai.app` but not custom domain | Custom hostname not fully active or DNS mismatch | Check that app's `status`, `ssl_status`, and DNS check |
 
 ## DNS Provider Notes
 
-- **Namecheap**: Wildcard host is `*.` for apex domain, `*.subdomain` for subdomain base domains.
-- **Cloudflare**: CNAME **must** be DNS-only (gray cloud icon), **not** Proxied (orange cloud). Proxied CNAMEs cause Error 1014 cross-account conflicts.
-- **GoDaddy / Route53 / Google Domains**: Standard wildcard CNAME support. No special notes.
-- **Providers without wildcard CNAME support**: Create individual CNAME records per app instead.
+- **Cloudflare DNS**: For subdomains, use a CNAME to the target. If proxied mode causes 1014 or validation issues, switch the record to DNS-only.
+- **Apex/root domains**: Use CNAME flattening, ALIAS, or ANAME if the provider supports it. Otherwise use a subdomain like `www`.
+- **Namecheap / GoDaddy / Route53 / Google Domains**: Use a normal CNAME for subdomains. For apex domains, use the provider's apex aliasing feature if available.
 
 ## Available Tools
 
 | Tool | Purpose |
 |------|---------|
-| `get_custom_domain` | Full diagnostic: DNS records, live DNS checks, per-app SSL status |
-| `set_custom_domain` | Set or change the custom domain (admin only) |
-| `remove_custom_domain` | Remove custom domain, revert to *.camelai.app URLs |
-| `retry_custom_domain_hostnames` | Re-provision failed/missing Cloudflare hostnames without removing the domain |
+| `get_custom_domain` | Full diagnostic: DNS target, live DNS checks, per-app hostname/SSL status |
+| `set_custom_domain` | Set or change one exact custom hostname for one app, admin only |
+| `remove_custom_domain` | Remove the custom hostname from one app |
+| `retry_custom_domain_hostnames` | Re-provision failed or stuck Cloudflare hostnames |
 
 ## Escalation
 
-If `retry_custom_domain_hostnames` doesn't resolve the issue and DNS checks pass, advise the user to:
-
-1. Remove the domain (Settings or `remove_custom_domain`)
-2. Re-add it (this does a full clean wipe and re-provision)
-3. Wait 10-15 minutes, then check status again
-
-If that still doesn't work, the user should contact support with the output of `get_custom_domain`.
+If DNS points to `dns_target`, Cloudflare status and SSL are active, and the domain still fails, ask the user for the exact hostname and error code. Include the `get_custom_domain` output when escalating.

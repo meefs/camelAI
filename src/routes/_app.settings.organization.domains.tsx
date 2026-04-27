@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useFetcher, useLoaderData, useRevalidator } from 'react-router';
+import { useFetcher, useLoaderData, useNavigate, useRevalidator } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.domains';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
@@ -26,7 +26,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { AlertCircle, Check, Copy, Info, Loader2, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, Copy, Loader2, MessageSquare, Trash2 } from 'lucide-react';
 
 export function meta() {
   return [
@@ -85,6 +85,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       cnameTarget: env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
       fallbackOrigin: env.CF_CUSTOM_HOSTNAME_FALLBACK,
     }),
+    workspaceId: authContext.currentWorkspace?.id ?? null,
     apps,
   };
 }
@@ -137,6 +138,12 @@ function DnsRecordLine({
   return (
     <div className="space-y-1.5 text-xs">
       <p className="font-medium">{label}</p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <span className="text-muted-foreground">Type</span>
+          <span className="ml-2 font-mono">CNAME</span>
+        </div>
+      </div>
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <span className="text-muted-foreground">Name</span>
@@ -214,7 +221,7 @@ function AppDomainRow({
             <Input
               value={hostname}
               onChange={(event) => setHostname(event.target.value)}
-              placeholder="example.com"
+              placeholder="www.example.com or example.com"
               className="h-9 min-w-56 font-mono text-xs"
               disabled={!isAdmin || loading}
               onKeyDown={(event) => {
@@ -257,10 +264,10 @@ function AppDomainRow({
       <TableCell className="align-top">
         {app.hostname ? (
           <div className="space-y-2 rounded-md border p-3">
-            <DnsRecordLine label="DNS target" name={app.hostname} target={dnsTarget} />
+            <DnsRecordLine label="Create this DNS record" name={app.hostname} target={dnsTarget} />
           </div>
         ) : (
-          <span className="text-sm text-muted-foreground">Add a hostname to see DNS records.</span>
+          <span className="text-sm text-muted-foreground">Add a hostname to see its DNS record.</span>
         )}
       </TableCell>
     </TableRow>
@@ -268,8 +275,17 @@ function AppDomainRow({
 }
 
 export default function DomainsPage() {
-  const { org, isAdmin, dnsTarget, apps } = useLoaderData<typeof loader>();
+  const { org, isAdmin, dnsTarget, workspaceId, apps } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
+  const navigate = useNavigate();
+  const chatFetcher = useFetcher<{
+    thread?: { id: string; model?: string | null; provider?: string | null };
+    error?: string;
+  }>();
+  const chatLoading = chatFetcher.state !== 'idle';
+  const chatPrompt =
+    '<camelai system message>The user clicked the custom-domain setup CTA from organization settings. Use the custom domain MCP tools to inspect or configure the domain when possible.</camelai system message>\n\nHelp me set up a custom domain.';
+  const chatTitle = 'Set up custom domain';
 
   const handleSuccess = () => {
     if (revalidator.state === 'idle') {
@@ -277,20 +293,85 @@ export default function DomainsPage() {
     }
   };
 
+  useEffect(() => {
+    if (chatFetcher.state !== 'idle' || !chatFetcher.data) return;
+    if (!chatFetcher.data.thread) return;
+
+    const threadId = chatFetcher.data.thread.id;
+    sessionStorage.setItem(
+      'pendingMessage:newThread',
+      JSON.stringify({
+        message: chatPrompt,
+        threadId,
+        threadTitle: chatTitle,
+        threadModel: chatFetcher.data.thread.model,
+        threadProvider: chatFetcher.data.thread.provider,
+        workspaceId,
+        orgSlug: org.slug,
+      })
+    );
+    navigate(`/chat/${threadId}?newThread=1`);
+  }, [chatFetcher.state, chatFetcher.data, chatPrompt, workspaceId, org.slug, navigate]);
+
+  const startCustomDomainChat = () => {
+    if (chatLoading || !workspaceId) return;
+    chatFetcher.submit(
+      {
+        intent: 'createThread',
+        initialTitle: chatTitle,
+      },
+      { method: 'post', action: '/chat' }
+    );
+  };
+
   return (
     <div className="space-y-6">
       <SettingsHeader
         title="Domains"
-        description="Choose one hostname for each deployed app. camelAI provides the DNS target."
+        description="Assign an exact hostname to each deployed app, then point that hostname at camelAI."
       />
       <Separator />
 
-      <Alert>
-        <Info className="size-4" />
-        <AlertDescription>
-          Wildcard domains are no longer supported. Enter the hostname you want to use, such as example.com or app.example.com, then point it to the generated camelAI target.
-        </AlertDescription>
-      </Alert>
+      <section className="space-y-3">
+        <div className="space-y-1">
+          <h2 className="text-sm font-medium">Setup</h2>
+          <p className="text-sm text-muted-foreground">
+            Enter the hostname you want for an app, save it, then create the DNS record
+            shown in that app's row. For root domains like example.com, use your DNS
+            provider's CNAME flattening, ALIAS, or ANAME option if plain CNAME records
+            are not allowed.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            You can also ask Camel to set up or troubleshoot a custom domain for one
+            of your apps.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={startCustomDomainChat}
+            disabled={chatLoading || !workspaceId}
+          >
+            {chatLoading ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <MessageSquare className="size-3.5" />
+            )}
+            Start chat with Camel
+          </Button>
+          {chatFetcher.data?.error ? (
+            <p className="text-xs text-destructive">{chatFetcher.data.error}</p>
+          ) : null}
+        </div>
+        <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <span className="text-muted-foreground">DNS target</span>
+            <span className="ml-2 font-mono break-all">{dnsTarget}</span>
+          </div>
+          <CopyButton value={dnsTarget} />
+        </div>
+      </section>
 
       {!isAdmin ? (
         <Alert variant="destructive">
@@ -307,7 +388,7 @@ export default function DomainsPage() {
                 <TableHead>App</TableHead>
                 <TableHead>Hostname</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>DNS records</TableHead>
+                <TableHead>DNS record</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
