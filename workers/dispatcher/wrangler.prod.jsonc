@@ -11,6 +11,9 @@
 		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
 	},
 	"routes": [
+		// Cloudflare for SaaS custom hostnames enter the zone under the customer
+		// hostname, so a zone-wide route is required for grey-cloud CNAMEs.
+		{ "pattern": "*/*", "zone_name": "camelai.app" },
 		// Matches both legacy (script.apps) and new (script.org-slug.apps)
 		{ "pattern": "*.apps.camelai.dev/*", "zone_name": "camelai.dev" },
 		{ "pattern": "*.camelai.app/*", "zone_name": "camelai.app" },
