@@ -75,6 +75,7 @@ type TeamTableRow =
   | { type: "invitation"; invitation: TeamInvitation }
 
 interface TeamTableProps {
+  orgId: string
   currentUserId: string
   canManageMembers: boolean
   members: MemberWithAccess[]
@@ -87,6 +88,7 @@ function formatDate(value: number) {
 }
 
 export function TeamTable({
+  orgId,
   currentUserId,
   canManageMembers,
   members,
@@ -153,6 +155,19 @@ export function TeamTable({
       { intent: "deleteInvitation", invitationId },
       { method: "POST" }
     )
+  }
+
+  const handleCopyInviteLink = async (invitationId: string) => {
+    const baseUrl = typeof window !== "undefined" ? window.location.origin : ""
+    const inviteUrl = `${baseUrl}/invitations/${orgId}/${invitationId}`
+    try {
+      await navigator.clipboard.writeText(inviteUrl)
+      toast.success("Invite link copied")
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to copy invite link"
+      )
+    }
   }
 
   const handleRoleChange = (userId: string, role: OrgRole) => {
@@ -442,6 +457,14 @@ export function TeamTable({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="min-w-[180px]">
                           <DropdownMenuItem
+                            onClick={() => {
+                              void handleCopyInviteLink(invitation.id)
+                            }}
+                            className="whitespace-nowrap"
+                          >
+                            Copy invite link
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
                             onClick={() => handleCancelInvite(invitation.id)}
                             className="whitespace-nowrap"
                           >
@@ -616,13 +639,24 @@ export function TeamTable({
                   />
                 </div>
                 {canManageMembers ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleCancelInvite(invitation.id)}
-                  >
-                    Cancel invitation
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void handleCopyInviteLink(invitation.id)
+                      }}
+                    >
+                      Copy invite link
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleCancelInvite(invitation.id)}
+                    >
+                      Cancel invitation
+                    </Button>
+                  </div>
                 ) : null}
               </CardContent>
             </Card>
