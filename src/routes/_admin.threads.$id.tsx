@@ -107,6 +107,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 
   const { id } = params;
+  const authEnv = getAuthEnv(getEnv(context));
 
   const result = await authDO.adminGetThreadWithMessages(context, id);
   if (!result) {
