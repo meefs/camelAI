@@ -1,6 +1,7 @@
 import { getExpectedCustomDomainHostname, isAppCustomDomainReady } from './app-url';
 
 export const CUSTOM_DOMAIN_REFRESH_INTERVAL_MS = 60 * 1000;
+export const CUSTOM_DOMAIN_PENDING_RETRY_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface AppCustomDomainBaseState {
   script_name: string;
@@ -49,7 +50,9 @@ export function shouldRefreshAppCustomDomainState(
 
 export function shouldRetryAppCustomDomainProvisioning(
   app: AppCustomDomainProvisioningState,
-  orgCustomDomain: string | null | undefined
+  orgCustomDomain: string | null | undefined,
+  now = Date.now(),
+  pendingRetryAfterMs = CUSTOM_DOMAIN_PENDING_RETRY_AFTER_MS
 ): boolean {
   if (!orgCustomDomain || isAppCustomDomainReady(app, orgCustomDomain)) {
     return false;
@@ -64,8 +67,13 @@ export function shouldRetryAppCustomDomainProvisioning(
     !!app.custom_domain_error ||
     !app.custom_domain_status ||
     !app.custom_domain_ssl_status ||
+    app.custom_domain_status === 'deleted' ||
     app.custom_domain_status === 'failed' ||
-    app.custom_domain_ssl_status === 'failed'
+    app.custom_domain_status === 'moved' ||
+    app.custom_domain_ssl_status === 'expired' ||
+    app.custom_domain_ssl_status === 'failed' ||
+    (!!app.custom_domain_updated_at &&
+      now - app.custom_domain_updated_at >= pendingRetryAfterMs)
   );
 }
 

@@ -10,9 +10,8 @@ import {
   removeOrgCustomDomain,
 } from '@/lib/auth-do';
 import {
-  createCustomHostname,
+  createOrRefreshCustomHostname,
   deleteCustomHostname,
-  findCustomHostnameByHostname,
   listCustomHostnamesByBaseDomain,
 } from '../../../workers/main/src/cf-api-proxy';
 
@@ -96,7 +95,10 @@ export async function action({ request, params, context }: Route.ActionArgs) {
             await orgStub.clearWorkerScriptCustomDomains();
 
             if (oldDomain && oldDomain !== domain) {
-              await cleanupCustomHostnames(zoneId, apiToken, oldDomain);
+              await cleanupCustomHostnames(zoneId, apiToken, oldDomain, async () => {
+                const current = await orgStub.getCustomDomain();
+                return current?.domain !== oldDomain;
+              });
             }
 
             const scripts = await orgStub.listWorkerScripts();
@@ -104,10 +106,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
               const appHostname = `${script.script_name}.${domain}`;
               try {
                 // Use the zone's configured fallback origin for normal app hostnames.
-                let result = await createCustomHostname(zoneId, apiToken, appHostname);
-                if (!result) {
-                  result = await findCustomHostnameByHostname(zoneId, apiToken, appHostname);
-                }
+                const result = await createOrRefreshCustomHostname(zoneId, apiToken, appHostname);
                 if (result) {
                   await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                     hostname: appHostname,
@@ -168,8 +167,12 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     const zoneId = env.CF_ZONE_ID;
     const apiToken = env.CF_API_TOKEN?.trim();
     if (zoneId && apiToken) {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       waitUntil(
-        cleanupCustomHostnames(zoneId, apiToken, existing.domain)
+        cleanupCustomHostnames(zoneId, apiToken, existing.domain, async () => {
+          const current = await orgStub.getCustomDomain();
+          return current?.domain !== existing.domain;
+        })
           .catch(err => console.error('[custom-domains] cleanup failed:', err))
       );
     }
@@ -187,10 +190,15 @@ export async function action({ request, params, context }: Route.ActionArgs) {
 async function cleanupCustomHostnames(
   zoneId: string,
   apiToken: string,
-  baseDomain: string
+  baseDomain: string,
+  shouldContinue?: () => Promise<boolean>
 ): Promise<void> {
   const hostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, baseDomain);
   for (const hostname of hostnames) {
+    if (shouldContinue && !(await shouldContinue())) {
+      console.log(`[custom-domains] cleanup: skipped ${baseDomain}; domain was reconfigured`);
+      return;
+    }
     await deleteCustomHostname(zoneId, apiToken, hostname.id).catch(err =>
       console.error(`[custom-domains] cleanup: failed to delete ${hostname.hostname}:`, err)
     );

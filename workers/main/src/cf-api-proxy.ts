@@ -822,6 +822,12 @@ export interface CfCustomHostname {
   created_at: string;
 }
 
+const CUSTOM_HOSTNAME_SSL_SETTINGS = {
+  method: 'txt',
+  type: 'dv',
+  wildcard: false,
+} as const;
+
 export async function createCustomHostname(
   zoneId: string,
   apiToken: string,
@@ -835,7 +841,7 @@ export async function createCustomHostname(
   };
   const body: Record<string, unknown> = {
     hostname,
-    ssl: { method: 'txt', type: 'dv', wildcard: false },
+    ssl: CUSTOM_HOSTNAME_SSL_SETTINGS,
   };
   if (customOriginServer) {
     body.custom_origin_server = customOriginServer;
@@ -849,6 +855,55 @@ export async function createCustomHostname(
     },
     `create custom hostname ${hostname}`
   );
+}
+
+export async function refreshCustomHostnameValidation(
+  zoneId: string,
+  apiToken: string,
+  hostnameId: string,
+  customOriginServer?: string
+): Promise<CfCustomHostname | null> {
+  const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames/${encodeURIComponent(hostnameId)}`;
+  const headers = {
+    Authorization: `Bearer ${apiToken}`,
+    'Content-Type': 'application/json',
+  };
+  const body: Record<string, unknown> = {
+    ssl: CUSTOM_HOSTNAME_SSL_SETTINGS,
+  };
+  if (customOriginServer) {
+    body.custom_origin_server = customOriginServer;
+  }
+  return callCloudflareApi<CfCustomHostname>(
+    url,
+    {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(body),
+    },
+    `refresh custom hostname validation ${hostnameId}`
+  );
+}
+
+export async function createOrRefreshCustomHostname(
+  zoneId: string,
+  apiToken: string,
+  hostname: string,
+  customOriginServer?: string
+): Promise<CfCustomHostname | null> {
+  const created = await createCustomHostname(zoneId, apiToken, hostname, customOriginServer);
+  if (created) {
+    return created;
+  }
+
+  const existing = await findCustomHostnameByHostname(zoneId, apiToken, hostname);
+  if (!existing) {
+    return null;
+  }
+
+  return (
+    await refreshCustomHostnameValidation(zoneId, apiToken, existing.id, customOriginServer)
+  ) ?? existing;
 }
 
 export async function getCustomHostnameStatus(

@@ -80,8 +80,41 @@ describe('custom domain state helpers', () => {
       custom_domain_status: 'pending',
       custom_domain_ssl_status: 'pending_validation',
       custom_domain_error: null,
+      custom_domain_updated_at: 10_000,
     });
 
-    expect(shouldRetryAppCustomDomainProvisioning(script, 'apps.example.com')).toBe(false);
+    expect(shouldRetryAppCustomDomainProvisioning(script, 'apps.example.com', 20_000)).toBe(false);
+  });
+
+  it('retries a matching hostname when pending validation is old enough for DCV tokens to expire', () => {
+    const script = makeScript({
+      custom_domain_hostname: 'demo-app.apps.example.com',
+      custom_domain_cf_hostname_id: 'hostname-id',
+      custom_domain_status: 'pending',
+      custom_domain_ssl_status: 'pending_validation',
+      custom_domain_error: null,
+      custom_domain_updated_at: 10_000,
+    });
+
+    expect(
+      shouldRetryAppCustomDomainProvisioning(
+        script,
+        'apps.example.com',
+        10_000 + 7 * 24 * 60 * 60 * 1000
+      )
+    ).toBe(true);
+  });
+
+  it('retries hostnames in terminal Cloudflare custom hostname states', () => {
+    const script = makeScript({
+      custom_domain_hostname: 'demo-app.apps.example.com',
+      custom_domain_cf_hostname_id: 'hostname-id',
+      custom_domain_status: 'moved',
+      custom_domain_ssl_status: 'pending_validation',
+      custom_domain_error: null,
+      custom_domain_updated_at: 10_000,
+    });
+
+    expect(shouldRetryAppCustomDomainProvisioning(script, 'apps.example.com', 20_000)).toBe(true);
   });
 });

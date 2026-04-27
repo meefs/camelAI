@@ -17,7 +17,7 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
-import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createCustomHostname, deleteCustomHostname, findCustomHostnameByHostname, getCustomHostnameStatus, getDcvDelegationUuid, listCustomHostnamesByBaseDomain, type CfApiProxyEnv } from './cf-api-proxy';
+import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, createOrRefreshCustomHostname, deleteCustomHostname, findCustomHostnameByHostname, getCustomHostnameStatus, getDcvDelegationUuid, listCustomHostnamesByBaseDomain, type CfApiProxyEnv } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
 import { getExpectedCustomDomainHostname, getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
 import {
@@ -1788,10 +1788,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           for (const script of scripts) {
             const appHostname = `${script.script_name}.${domain}`;
             try {
-              let result = await createCustomHostname(zoneId, apiToken, appHostname);
-              if (!result) {
-                result = await findCustomHostnameByHostname(zoneId, apiToken, appHostname);
-              }
+              const result = await createOrRefreshCustomHostname(zoneId, apiToken, appHostname);
               if (result) {
                 await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                   hostname: appHostname,
@@ -1922,10 +1919,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
           retried++;
           try {
-            let result = await createCustomHostname(zoneId, apiToken, expectedHostname);
-            if (!result) {
-              result = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
-            }
+            const result = await createOrRefreshCustomHostname(zoneId, apiToken, expectedHostname);
             if (result) {
               await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                 hostname: expectedHostname,

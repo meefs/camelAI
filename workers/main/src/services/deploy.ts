@@ -5,7 +5,7 @@
 import { type Env } from '../types.js';
 import type { DeploySideEffectsInfo } from '../cf-api-proxy.js';
 import type { AppScreenshotJob } from '../screenshot-queue.js';
-import { resolveEnvPrefix, createCustomHostname, findCustomHostnameByHostname } from '../cf-api-proxy.js';
+import { resolveEnvPrefix, createOrRefreshCustomHostname } from '../cf-api-proxy.js';
 import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
@@ -27,10 +27,7 @@ async function syncScriptCustomHostname(
 
   try {
     // Normal app hostnames should use Cloudflare's default fallback origin.
-    let result = await createCustomHostname(zoneId, apiToken, hostname);
-    if (!result) {
-      result = await findCustomHostnameByHostname(zoneId, apiToken, hostname);
-    }
+    const result = await createOrRefreshCustomHostname(zoneId, apiToken, hostname);
 
     if (!result) {
       await orgStub.updateWorkerScriptCustomDomain(scriptName, {
