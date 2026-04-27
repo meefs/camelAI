@@ -506,6 +506,44 @@ describe('OAuth Token Refresh', () => {
       expect(retryDelayMs).toBeGreaterThanOrEqual(TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS - 20 * 1000);
       expect(retryDelayMs).toBeLessThanOrEqual(TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS + 40 * 1000);
     });
+
+    it('disables refresh scheduling when a Notion integration has no refresh token', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Missing Refresh Owner');
+      const { org } = await createOrg(testEnv, 'Missing Refresh Org', userId);
+      const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+      const workspace = workspaces[0];
+      expect(workspace).toBeDefined();
+
+      const tokenExpiresAt = Date.now() + 60 * 1000; // within alarm batch window
+      const integrationId = await createOAuthIntegration(workspace.id, userId, 'notion', tokenExpiresAt, {
+        access_token: 'soon-token',
+        expires_at: tokenExpiresAt,
+      });
+
+      const id = testEnv.WORKSPACE.idFromName(workspace.id);
+      const stub = testEnv.WORKSPACE.get(id);
+
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+        };
+
+        const fetchSpy = vi.spyOn(globalThis, 'fetch');
+        try {
+          await target.alarm();
+          expect(fetchSpy).not.toHaveBeenCalled();
+        } finally {
+          fetchSpy.mockRestore();
+        }
+      });
+
+      const updated = await getIntegrationRecord(workspace.id, integrationId);
+      expect(updated?.token_expires_at).toBeNull();
+
+      const alarmTime = await getAlarmTime(workspace.id);
+      expect(alarmTime).toBeNull();
+    });
   });
 
   describe('Token expiry storage', () => {

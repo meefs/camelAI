@@ -1077,8 +1077,9 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       case 'notion': {
         const refreshToken = credentials.refresh_token as string | undefined;
         if (!refreshToken) {
-          console.warn(`[WorkspaceDO] No refresh token for Notion integration ${integration.id}`);
-          return;
+          throw new PermanentRefreshError(
+            `No refresh token for Notion integration ${integration.id}`
+          );
         }
         ({ credentials: newCredentials, expiresAt: newExpiresAt } = await this.refreshNotionToken(refreshToken));
         break;
