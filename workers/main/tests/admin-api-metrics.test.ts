@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { handleAdminApi } from '../src/routes/admin/index';
 import type { Env as WorkerEnv } from '../src/types';
 import { createOrg, createUser, type TestEnv } from './test-helpers';
@@ -452,10 +452,11 @@ async function waitForAdminIndexSpamSummary(orgIds: string[], expected: {
 async function callAdminApi(
   request: Request,
   sandboxFetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+  envOverride?: WorkerEnv,
 ) {
   return handleAdminApi({
     req: request,
-    env: {
+    env: envOverride ?? {
       ...testEnv,
       ADMIN_API_KEY: 'test-admin-api-key',
       SANDBOX_HOST: { fetch: sandboxFetch },
@@ -466,7 +467,237 @@ async function callAdminApi(
   });
 }
 
+function createIsolatedAdminApiEnv(
+  adminIndexName: string,
+  sandboxFetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+) {
+  return {
+    ...testEnv,
+    ADMIN_API_KEY: 'test-admin-api-key',
+    ADMIN_INDEX: {
+      idFromName: () => testEnv.ADMIN_INDEX.idFromName(adminIndexName),
+      get: (id: DurableObjectId, options?: DurableObjectGetOptions) =>
+        testEnv.ADMIN_INDEX.get(id, options),
+    },
+    SANDBOX_HOST: { fetch: sandboxFetch },
+  } as unknown as WorkerEnv;
+}
+
 describe('admin API metrics routes', () => {
+  it('migrates legacy counter columns used by dashboard API endpoints', async () => {
+    const adminIndexName = `admin_index_legacy_counters_${crypto.randomUUID()}`;
+    const sandboxFetch = vi.fn(async () => Response.json({ org_ids: [], count: 0 }));
+    const isolatedEnv = createIsolatedAdminApiEnv(adminIndexName, sandboxFetch);
+    const adminIndex = testEnv.ADMIN_INDEX.get(
+      testEnv.ADMIN_INDEX.idFromName(adminIndexName),
+    );
+    const now = Date.now();
+    const selectedDate = new Date(now).toISOString().slice(0, 10);
+    const userId = crypto.randomUUID();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const adminRequest = (path: string) =>
+      new Request(`http://example/api/admin${path}`, {
+        headers: { Authorization: 'Bearer test-admin-api-key' },
+      });
+
+    await adminIndex.handleEvent({
+      type: 'user_upsert',
+      payload: {
+        id: userId,
+        email: `legacy-workspace-${crypto.randomUUID()}@example.com`,
+        name: 'Legacy Workspace User',
+        avatar: { color: '#123456', content: 'L' },
+        created_at: now,
+        is_superuser: false,
+        is_orphaned: false,
+        org_count: 1,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'org_upsert',
+      payload: {
+        id: orgId,
+        name: 'Legacy Workspace Org',
+        slug: `legacy-workspace-${crypto.randomUUID().slice(0, 8)}`,
+        created_at: now,
+        archived: false,
+        billing_status: null,
+        created_by: userId,
+        member_count: 1,
+        workspace_count: 1,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'org_membership_upsert',
+      payload: {
+        org_id: orgId,
+        user_id: userId,
+        role: 'admin',
+        joined_at: now,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'workspace_upsert',
+      payload: {
+        id: workspaceId,
+        name: 'Legacy Workspace',
+        org_id: orgId,
+        description: null,
+        avatar: { color: '#654321', content: 'W' },
+        created_at: now,
+        created_by: userId,
+        archived: false,
+        archived_at: null,
+        archived_by: null,
+        compute_tier: 'standard',
+        integration_count: 3,
+      },
+    });
+    await adminIndex.handleEvent({
+      type: 'thread_upsert',
+      payload: {
+        id: crypto.randomUUID(),
+        title: 'Legacy Thread',
+        org_id: orgId,
+        workspace_id: workspaceId,
+        created_at: now + 1,
+        updated_at: now + 1,
+        created_by: userId,
+      },
+    });
+
+    const migratedColumns = await runInDurableObject(adminIndex, async (instance: any) => {
+      const sql = instance.ctx.storage.sql;
+      sql.exec(`
+        CREATE TABLE orgs_legacy (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          slug TEXT,
+          created_at INTEGER,
+          archived INTEGER,
+          billing_status TEXT,
+          created_by TEXT
+        );
+        INSERT INTO orgs_legacy (
+          id,
+          name,
+          slug,
+          created_at,
+          archived,
+          billing_status,
+          created_by
+        )
+        SELECT
+          id,
+          name,
+          slug,
+          created_at,
+          archived,
+          billing_status,
+          created_by
+        FROM orgs;
+        DROP TABLE orgs;
+        ALTER TABLE orgs_legacy RENAME TO orgs;
+
+        CREATE TABLE workspaces_legacy (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          org_id TEXT,
+          description TEXT,
+          avatar_color TEXT,
+          avatar_content TEXT,
+          created_at INTEGER,
+          created_by TEXT,
+          archived INTEGER,
+          archived_at INTEGER,
+          archived_by TEXT,
+          compute_tier TEXT
+        );
+        INSERT INTO workspaces_legacy (
+          id,
+          name,
+          org_id,
+          description,
+          avatar_color,
+          avatar_content,
+          created_at,
+          created_by,
+          archived,
+          archived_at,
+          archived_by,
+          compute_tier
+        )
+        SELECT
+          id,
+          name,
+          org_id,
+          description,
+          avatar_color,
+          avatar_content,
+          created_at,
+          created_by,
+          archived,
+          archived_at,
+          archived_by,
+          compute_tier
+        FROM workspaces;
+        DROP TABLE workspaces;
+        ALTER TABLE workspaces_legacy RENAME TO workspaces;
+      `);
+      instance.migrate();
+      return {
+        orgs: sql.exec<{ name: string }>('PRAGMA table_info(orgs)')
+          .toArray()
+          .map((column) => column.name),
+        workspaces: sql.exec<{ name: string }>('PRAGMA table_info(workspaces)')
+          .toArray()
+          .map((column) => column.name),
+      };
+    });
+
+    expect(migratedColumns.orgs).toContain('member_count');
+    expect(migratedColumns.orgs).toContain('workspace_count');
+    expect(migratedColumns.workspaces).toContain('thread_count');
+    expect(migratedColumns.workspaces).toContain('integration_count');
+
+    const statsResponse = await callAdminApi(adminRequest('/stats'), sandboxFetch, isolatedEnv);
+    expect(statsResponse?.status).toBe(200);
+    const stats = await statsResponse!.json() as {
+      total_workspaces: number;
+      total_memberships: number;
+      total_integrations: number;
+    };
+    expect(stats.total_workspaces).toBe(1);
+    expect(stats.total_memberships).toBe(1);
+    expect(stats.total_integrations).toBe(0);
+
+    const workspacesResponse = await callAdminApi(adminRequest('/workspaces?limit=10'), sandboxFetch, isolatedEnv);
+    expect(workspacesResponse?.status).toBe(200);
+    const workspaces = await workspacesResponse!.json() as {
+      items: Array<{ id: string; thread_count: number; integration_count: number }>;
+    };
+    expect(workspaces.items).toEqual([
+      expect.objectContaining({
+        id: workspaceId,
+        thread_count: 1,
+        integration_count: 0,
+      }),
+    ]);
+
+    const summaryResponse = await callAdminApi(
+      adminRequest(`/dashboard/summary?date=${selectedDate}&exclude_spam=false`),
+      sandboxFetch,
+      isolatedEnv,
+    );
+    expect(summaryResponse?.status).toBe(200);
+    const summary = await summaryResponse!.json() as {
+      kpis: { total_workspaces: number; total_users: number };
+    };
+    expect(summary.kpis.total_workspaces).toBe(1);
+    expect(summary.kpis.total_users).toBe(1);
+  });
+
   it('serves spam org ids via a single analytics lookup', async () => {
     const sandboxFetch = vi.fn(async (input: string | URL | Request) => {
       const url = input instanceof Request ? new URL(input.url) : new URL(input.toString());

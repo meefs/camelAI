@@ -424,6 +424,30 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     if (!orgColumns.has('slug')) {
       this.sql.exec('ALTER TABLE orgs ADD COLUMN slug TEXT');
     }
+    if (!orgColumns.has('member_count')) {
+      this.sql.exec('ALTER TABLE orgs ADD COLUMN member_count INTEGER DEFAULT 0');
+      this.sql.exec(`
+        UPDATE orgs
+        SET member_count = (
+          SELECT COUNT(*)
+          FROM org_memberships
+          WHERE org_memberships.org_id = orgs.id
+        )
+      `);
+    }
+    if (!orgColumns.has('workspace_count')) {
+      this.sql.exec('ALTER TABLE orgs ADD COLUMN workspace_count INTEGER DEFAULT 0');
+      this.sql.exec(`
+        UPDATE orgs
+        SET workspace_count = (
+          SELECT COUNT(*)
+          FROM workspaces
+          WHERE workspaces.org_id = orgs.id
+        )
+      `);
+    }
+    this.sql.exec('UPDATE orgs SET member_count = 0 WHERE member_count IS NULL');
+    this.sql.exec('UPDATE orgs SET workspace_count = 0 WHERE workspace_count IS NULL');
 
     if (!workspaceColumns.has('description')) {
       this.sql.exec('ALTER TABLE workspaces ADD COLUMN description TEXT');
@@ -446,6 +470,21 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     if (!workspaceColumns.has('compute_tier')) {
       this.sql.exec("ALTER TABLE workspaces ADD COLUMN compute_tier TEXT DEFAULT 'standard'");
     }
+    if (!workspaceColumns.has('thread_count')) {
+      this.sql.exec('ALTER TABLE workspaces ADD COLUMN thread_count INTEGER DEFAULT 0');
+      this.sql.exec(`
+        UPDATE workspaces
+        SET thread_count = (
+          SELECT COUNT(*)
+          FROM threads
+          WHERE threads.workspace_id = workspaces.id
+        )
+      `);
+    }
+    if (!workspaceColumns.has('integration_count')) {
+      this.sql.exec('ALTER TABLE workspaces ADD COLUMN integration_count INTEGER DEFAULT 0');
+    }
+    this.sql.exec('UPDATE workspaces SET integration_count = 0 WHERE integration_count IS NULL');
 
     const threadColumns = new Set(
       this.sql.exec<{ name: string }>('PRAGMA table_info(threads)').toArray().map((col) => col.name)
