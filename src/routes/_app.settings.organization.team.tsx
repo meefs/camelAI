@@ -187,6 +187,7 @@ export default function TeamPage() {
       />
       <Separator />
       <TeamTable
+        orgId={org.id}
         currentUserId={currentUserId}
         canManageMembers={canManageMembers}
         members={members}
