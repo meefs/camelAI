@@ -1,4 +1,4 @@
-import { getExpectedCustomDomainHostname, isAppCustomDomainReady } from './app-url';
+import { isAppCustomDomainReady } from './app-url';
 
 export const CUSTOM_DOMAIN_REFRESH_INTERVAL_MS = 60 * 1000;
 export const CUSTOM_DOMAIN_PENDING_RETRY_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -23,8 +23,9 @@ export function hasExpectedCustomDomainHostname(
   app: Pick<AppCustomDomainBaseState, 'script_name' | 'custom_domain_hostname'>,
   orgCustomDomain: string | null | undefined
 ): boolean {
-  if (!orgCustomDomain) return false;
-  return app.custom_domain_hostname === getExpectedCustomDomainHostname(app.script_name, orgCustomDomain);
+  void app;
+  void orgCustomDomain;
+  return true;
 }
 
 export function shouldRefreshAppCustomDomainState(
@@ -33,12 +34,9 @@ export function shouldRefreshAppCustomDomainState(
   now: number,
   refreshIntervalMs = CUSTOM_DOMAIN_REFRESH_INTERVAL_MS
 ): boolean {
-  if (!orgCustomDomain || isAppCustomDomainReady(app, orgCustomDomain)) {
+  void orgCustomDomain;
+  if (!app.custom_domain_hostname || isAppCustomDomainReady(app)) {
     return false;
-  }
-
-  if (app.custom_domain_hostname && !hasExpectedCustomDomainHostname(app, orgCustomDomain)) {
-    return true;
   }
 
   if (!app.custom_domain_updated_at) {
@@ -54,12 +52,9 @@ export function shouldRetryAppCustomDomainProvisioning(
   now = Date.now(),
   pendingRetryAfterMs = CUSTOM_DOMAIN_PENDING_RETRY_AFTER_MS
 ): boolean {
-  if (!orgCustomDomain || isAppCustomDomainReady(app, orgCustomDomain)) {
+  void orgCustomDomain;
+  if (!app.custom_domain_hostname || isAppCustomDomainReady(app)) {
     return false;
-  }
-
-  if (!hasExpectedCustomDomainHostname(app, orgCustomDomain)) {
-    return true;
   }
 
   return (
@@ -90,7 +85,8 @@ export function getAppCustomDomainDiagnosticState(
   error: string | null;
   updated_at: number | null;
 } {
-  if (!orgCustomDomain) {
+  void orgCustomDomain;
+  if (!app.custom_domain_hostname) {
     return {
       hostname: app.custom_domain_hostname ?? null,
       cf_hostname_id: app.custom_domain_cf_hostname_id ?? null,
@@ -101,20 +97,8 @@ export function getAppCustomDomainDiagnosticState(
     };
   }
 
-  const expectedHostname = getExpectedCustomDomainHostname(app.script_name, orgCustomDomain);
-  if (!hasExpectedCustomDomainHostname(app, orgCustomDomain)) {
-    return {
-      hostname: expectedHostname,
-      cf_hostname_id: null,
-      status: null,
-      ssl_status: null,
-      error: null,
-      updated_at: null,
-    };
-  }
-
   return {
-    hostname: expectedHostname,
+    hostname: app.custom_domain_hostname,
     cf_hostname_id: app.custom_domain_cf_hostname_id ?? null,
     status: app.custom_domain_status ?? null,
     ssl_status: app.custom_domain_ssl_status ?? null,

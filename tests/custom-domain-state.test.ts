@@ -30,47 +30,47 @@ function makeScript(overrides: Partial<WorkerScript> = {}): WorkerScript {
 }
 
 describe('custom domain state helpers', () => {
-  it('refreshes immediately when the stored hostname belongs to an old domain', () => {
+  it('refreshes configured hostnames after the refresh interval', () => {
     const now = 120_000;
     const script = makeScript({
-      custom_domain_hostname: 'demo-app.apps.old-example.com',
+      custom_domain_hostname: 'demo-app.apps.example.com',
       custom_domain_status: 'pending',
       custom_domain_ssl_status: 'pending_validation',
-      custom_domain_updated_at: now - 1_000,
+      custom_domain_updated_at: now - 61_000,
     });
 
-    expect(shouldRefreshAppCustomDomainState(script, 'apps.example.com', now)).toBe(true);
+    expect(shouldRefreshAppCustomDomainState(script, null, now)).toBe(true);
   });
 
-  it('clears stale cached state when reporting a mismatched hostname', () => {
+  it('reports cached state for an exact configured hostname', () => {
     const script = makeScript({
-      custom_domain_hostname: 'demo-app.apps.old-example.com',
-      custom_domain_cf_hostname_id: 'old-hostname-id',
+      custom_domain_hostname: 'example.com',
+      custom_domain_cf_hostname_id: 'hostname-id',
       custom_domain_status: 'active',
       custom_domain_ssl_status: 'active',
-      custom_domain_error: 'old error',
+      custom_domain_error: null,
       custom_domain_updated_at: 1234,
     });
 
-    expect(getAppCustomDomainDiagnosticState(script, 'apps.example.com')).toEqual({
-      hostname: 'demo-app.apps.example.com',
-      cf_hostname_id: null,
-      status: null,
-      ssl_status: null,
+    expect(getAppCustomDomainDiagnosticState(script, null)).toEqual({
+      hostname: 'example.com',
+      cf_hostname_id: 'hostname-id',
+      status: 'active',
+      ssl_status: 'active',
       error: null,
-      updated_at: null,
+      updated_at: 1234,
     });
   });
 
-  it('retries provisioning when the stored hostname belongs to an old domain', () => {
+  it('does not retry an app with no configured exact hostname', () => {
     const script = makeScript({
-      custom_domain_hostname: 'demo-app.apps.old-example.com',
-      custom_domain_cf_hostname_id: 'old-hostname-id',
+      custom_domain_hostname: null,
+      custom_domain_cf_hostname_id: null,
       custom_domain_status: 'pending',
       custom_domain_ssl_status: 'pending_validation',
     });
 
-    expect(shouldRetryAppCustomDomainProvisioning(script, 'apps.example.com')).toBe(true);
+    expect(shouldRetryAppCustomDomainProvisioning(script, null)).toBe(false);
   });
 
   it('does not retry a matching hostname that is still provisioning normally', () => {
@@ -86,7 +86,7 @@ describe('custom domain state helpers', () => {
     expect(shouldRetryAppCustomDomainProvisioning(script, 'apps.example.com', 20_000)).toBe(false);
   });
 
-  it('retries a matching hostname when pending validation is old enough for DCV tokens to expire', () => {
+  it('retries a matching hostname when pending validation is old', () => {
     const script = makeScript({
       custom_domain_hostname: 'demo-app.apps.example.com',
       custom_domain_cf_hostname_id: 'hostname-id',

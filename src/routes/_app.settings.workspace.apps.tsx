@@ -7,7 +7,6 @@ import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getWorkerScript,
   deleteWorkerScript,
-  getOrgCustomDomain,
 } from '@/lib/auth-do';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import { Separator } from '@/components/ui/separator';
@@ -143,16 +142,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   // Fetch all scripts from OrgDO
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
-  const [scripts, customDomain] = await Promise.all([
-    orgStub.listWorkerScripts(),
-    getOrgCustomDomain(authEnv, authContext.currentOrg.id),
-  ]);
-  const orgCustomDomain = customDomain?.domain ?? null;
+  const scripts = await orgStub.listWorkerScripts();
   const refreshedScripts = await refreshWorkerScriptCustomDomainStates(
     env,
     authContext.currentOrg.id,
     scripts,
-    orgCustomDomain
+    null
   );
 
   // Filter based on scope
@@ -188,7 +183,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     };
   });
 
-  return { apps, hasWorkspace: true, filter, orgSlug, orgCustomDomain };
+  return { apps, hasWorkspace: true, filter, orgSlug, orgCustomDomain: null };
 }
 
 export default function WorkspaceAppsPage() {

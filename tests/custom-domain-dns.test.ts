@@ -58,14 +58,14 @@ describe('custom domain DNS target helpers', () => {
   it('marks a missing DNS record as missing rather than unavailable', () => {
     expect(
       buildCustomDomainDnsCheck({
-        queried: '_acme-challenge.apps.example.com',
-        expectedTarget: 'uuid.dcv.cloudflare.com',
+        queried: 'app.example.com',
+        expectedTarget: 'custom-domains.camelai.app',
         lookup: { status: 'missing' },
       })
     ).toEqual({
-      queried: '_acme-challenge.apps.example.com',
+      queried: 'app.example.com',
       resolved_target: null,
-      expected_target: 'uuid.dcv.cloudflare.com',
+      expected_target: 'custom-domains.camelai.app',
       ok: false,
       status: 'missing',
       error: null,

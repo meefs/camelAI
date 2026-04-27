@@ -300,8 +300,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 // Create Set-Cookie header for session
 function createSessionCookie(sessionId: string, hostname: string, cookieDomain?: string): string {
   // Get domain for cookie (e.g., .camelai.app to cover all subdomains)
-  // For custom domains, the caller provides the base domain directly so
-  // the cookie covers all app subdomains (avoids public suffix issues).
+  // For custom domains, the caller provides the exact hostname.
   let domain: string;
   if (cookieDomain) {
     domain = `.${cookieDomain}`;
@@ -343,40 +342,32 @@ function isSameSiteRequest(hostname: string): boolean {
 const AUTH_CALLBACK_PATH = '/__chiridion_auth/callback';
 
 /**
- * Resolve a custom domain hostname to a worker route.
- * For "my-app.apps.example.com", extracts scriptName="my-app" and looks up
- * "apps.example.com" in KV as custom_domain_zone:apps.example.com.
- * Tries progressively longer base domains (2-label, 3-label, etc.).
+ * Resolve an exact custom domain hostname to a worker route.
  */
 async function resolveCustomDomainRoute(
   env: Env,
   hostname: string
-): Promise<{ scriptName: string; orgSlug: string; dispatchScriptName: string; baseDomain: string } | null> {
-  const labels = hostname.split('.');
-  // Need at least 3 labels: script.base.tld
-  if (labels.length < 3) return null;
+): Promise<{ scriptName: string; orgSlug: string; dispatchScriptName: string; cookieDomain: string } | null> {
+  const kvData = await env.APP_KV.get(`custom_domain_host:${hostname}`);
+  if (!kvData) return null;
 
-  const scriptName = labels[0]!;
-
-  // Try base domains from longest to shortest (most-specific wins)
-  for (let suffixLen = labels.length - 1; suffixLen >= 2; suffixLen--) {
-    const baseDomain = labels.slice(labels.length - suffixLen).join('.');
-    // Skip if baseDomain would consume the entire hostname (no subdomain left)
-    if (suffixLen >= labels.length) break;
-
-    const kvData = await env.APP_KV.get(`custom_domain_zone:${baseDomain}`);
-    if (kvData) {
-      try {
-        const { org_slug } = JSON.parse(kvData) as { org_id: string; org_slug: string };
-        const dispatchScriptName = `${scriptName}--${org_slug}`;
-        console.log(`[dispatcher] Custom domain route: ${hostname} -> ${dispatchScriptName} (zone: ${baseDomain})`);
-        return { scriptName, orgSlug: org_slug, dispatchScriptName, baseDomain };
-      } catch (e) {
-        console.error(`[dispatcher] Error parsing custom domain zone data for ${baseDomain}:`, e);
-      }
-    }
+  try {
+    const data = JSON.parse(kvData) as {
+      org_slug: string;
+      script_name: string;
+      dispatch_script_name?: string;
+    };
+    const dispatchScriptName = data.dispatch_script_name ?? `${data.script_name}--${data.org_slug}`;
+    console.log(`[dispatcher] Custom domain route: ${hostname} -> ${dispatchScriptName}`);
+    return {
+      scriptName: data.script_name,
+      orgSlug: data.org_slug,
+      dispatchScriptName,
+      cookieDomain: hostname,
+    };
+  } catch (e) {
+    console.error(`[dispatcher] Error parsing custom domain host data for ${hostname}:`, e);
   }
-
   return null;
 }
 
@@ -400,12 +391,12 @@ export default {
     }
 
     // Not a known *.camelai.app or *.apps.camelai.dev hostname — try custom domain zone lookup
-    // Parse subdomain as script name, look up base domain in KV
+    // Look up exact custom hostname in KV
     const customDomainRoute = await resolveCustomDomainRoute(env, hostname);
     if (customDomainRoute) {
-      const { scriptName, orgSlug, dispatchScriptName, baseDomain } = customDomainRoute;
+      const { scriptName, orgSlug, dispatchScriptName, cookieDomain } = customDomainRoute;
       if (url.pathname === AUTH_CALLBACK_PATH) {
-        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName, undefined, baseDomain);
+        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName, undefined, cookieDomain);
       }
       return handleWorkerRequest(request, env, scriptName, orgSlug, dispatchScriptName);
     }

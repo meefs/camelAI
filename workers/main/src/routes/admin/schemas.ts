@@ -223,10 +223,6 @@ const RefreshOrgCustomDomainAppSchema = z.object({
   cf_hostname_id: z.string().nullable(),
   status: z.string().nullable(),
   ssl_status: z.string().nullable(),
-  dcv_record: z.object({
-    cname: z.string(),
-    cname_target: z.string(),
-  }).nullable(),
   error: z.string().nullable(),
 });
 

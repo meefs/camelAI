@@ -22,15 +22,12 @@ import {
   syncAllWorkspaceWorkerSecrets,
   createOrRefreshCustomHostname,
   deleteCustomHostname,
-  extractCustomHostnameDcvRecord,
   findCustomHostnameByHostname,
   getCustomHostnameStatus,
-  listCustomHostnamesByBaseDomain,
   type CfApiProxyEnv,
-  type CustomHostnameDcvRecord,
 } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
-import { getExpectedCustomDomainHostname, getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
+import { getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
 import {
   buildCustomDomainDnsCheck,
   getCustomHostnameDnsTarget,
@@ -318,16 +315,15 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
   }
 
   private async refreshScriptCustomDomainState(
-    script: WorkerScript,
-    orgCustomDomain: string | null | undefined
+    script: WorkerScript
   ): Promise<WorkerScript> {
     const zoneId = this.env.CF_ZONE_ID?.trim();
     const apiToken = this.env.CF_API_TOKEN?.trim();
-    if (!orgCustomDomain || !zoneId || !apiToken || isAppCustomDomainReady(script, orgCustomDomain)) {
+    if (!script.custom_domain_hostname || !zoneId || !apiToken || isAppCustomDomainReady(script)) {
       return script;
     }
 
-    const expectedHostname = getExpectedCustomDomainHostname(script.script_name, orgCustomDomain);
+    const expectedHostname = script.custom_domain_hostname;
     let record = null;
 
     if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
@@ -335,7 +331,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     }
 
     if (!record) {
-      record = await findCustomHostnameByHostname(zoneId, apiToken, orgCustomDomain);
+      record = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
     }
 
     if (!record) {
@@ -343,12 +339,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     }
 
     const orgStub = this.getOrgStub();
-    await orgStub.updateCustomDomainStatus(
-      orgCustomDomain,
-      record.status === 'active' ? 'active' : 'pending',
-      record.ssl.status,
-      record.id
-    );
     return (
       await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
         hostname: expectedHostname,
@@ -366,15 +356,9 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
    */
   private async getAppUrl(script: WorkerScript): Promise<string> {
     let refreshedScript = script;
-    let orgCustomDomain: string | null = null;
     let appHostname = 'camelai.dev';
     try {
-      const orgStub = this.getOrgStub();
-      const customDomain = await orgStub.getCustomDomain();
-      orgCustomDomain = customDomain?.domain ?? null;
-      if (orgCustomDomain) {
-        refreshedScript = await this.refreshScriptCustomDomainState(script, orgCustomDomain);
-      }
+      refreshedScript = await this.refreshScriptCustomDomainState(script);
     } catch {}
 
     if (this.env.WORKER_BASE_URL) {
@@ -387,7 +371,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     return getPreferredAppUrl(refreshedScript, {
       hostname: appHostname,
       orgSlug: orgSlug ?? undefined,
-      orgCustomDomain,
+      orgCustomDomain: null,
     });
   }
 
@@ -1563,423 +1547,258 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
     // ── Custom Domain Tools ──────────────────────────────────────────
 
-    // Get org custom domain with full diagnostic info
+    // Get exact custom domains with diagnostic info
     this.server.tool(
       'get_custom_domain',
-      'Get the custom domain configured for this organization with full diagnostic info: required DNS records, per-app hostname/SSL status, and live DNS resolution checks. Use this to troubleshoot custom domain issues.',
+      'Get exact custom domains configured for this organization with required DNS records, per-app hostname/SSL status, and live DNS resolution checks. Use this to troubleshoot custom domain issues.',
       {},
       async () => {
         this.requireAuth();
         const orgStub = this.getOrgStub();
-        const domain = await orgStub.getCustomDomain();
-        if (!domain) {
-          return this.textResponse({ configured: false, message: 'No custom domain configured for this organization. Set one in Settings > Organization > Domains or use set_custom_domain.' });
-        }
-
         const zoneId = this.env.CF_ZONE_ID?.trim();
         const apiToken = this.env.CF_API_TOKEN?.trim();
-
-        // Fetch the routing target; the SSL validation record comes from the
-        // actual Cloudflare custom hostname response below.
         const dnsTarget = getCustomHostnameDnsTarget({
           cnameTarget: this.env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
           fallbackOrigin: this.env.CF_CUSTOM_HOSTNAME_FALLBACK,
         });
-
-        // Get per-app custom domain status
         const scripts = await orgStub.listWorkerScripts();
         const now = Date.now();
-        let dcvRecord: CustomHostnameDcvRecord | null = null;
-        if (zoneId && apiToken) {
-          try {
-            let record = null;
-            if (domain.cf_hostname_id) {
-              record = await getCustomHostnameStatus(zoneId, apiToken, domain.cf_hostname_id);
-            }
-            record ??= await findCustomHostnameByHostname(zoneId, apiToken, domain.domain);
-            if (record) {
-              dcvRecord = extractCustomHostnameDcvRecord(record);
-              await orgStub.updateCustomDomainStatus(
-                domain.domain,
-                record.status === 'active' ? 'active' : 'pending',
-                record.ssl.status,
-                record.id
-              );
-            }
-          } catch {
-            // Keep diagnostics available even when Cloudflare lookup fails.
-          }
-        }
-
-        // Refresh stale app hostname statuses from Cloudflare before responding
         const apps: Array<{
           name: string;
-          hostname: string;
+          hostname: string | null;
           cf_hostname_id: string | null;
           status: string | null;
           ssl_status: string | null;
           error: string | null;
           updated_at: number | null;
+          dns_checks: {
+            routing_cname: CustomDomainDnsCheck | null;
+          };
         }> = [];
 
         for (const script of scripts) {
-          const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
           let currentScript = script;
 
           if (
             zoneId &&
             apiToken &&
-            shouldRefreshAppCustomDomainState(script, domain.domain, now)
+            shouldRefreshAppCustomDomainState(script, null, now) &&
+            script.custom_domain_hostname
           ) {
             try {
               let record = null;
-              if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
+              if (script.custom_domain_cf_hostname_id) {
                 record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
               }
               if (!record) {
-                record = await findCustomHostnameByHostname(zoneId, apiToken, domain.domain);
+                record = await findCustomHostnameByHostname(zoneId, apiToken, script.custom_domain_hostname);
               }
               if (record) {
-                dcvRecord ??= extractCustomHostnameDcvRecord(record);
-                await orgStub.updateCustomDomainStatus(
-                  domain.domain,
-                  record.status === 'active' ? 'active' : 'pending',
-                  record.ssl.status,
-                  record.id
-                );
                 currentScript =
                   (await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                    hostname: expectedHostname,
+                    hostname: script.custom_domain_hostname,
                     cf_hostname_id: record.id,
                     status: record.status,
                     ssl_status: record.ssl.status,
                     error: null,
                   })) ?? currentScript;
               }
-              // When both lookups return null we can't distinguish "truly missing"
-              // from transient CF API failures (rate limits, 5xx), so preserve
-              // existing cached state rather than clearing it incorrectly.
             } catch (err) {
               // Fall through to diagnostic state derived from cached data
             }
           }
 
-          const appState = getAppCustomDomainDiagnosticState(currentScript, domain.domain);
+          const appState = getAppCustomDomainDiagnosticState(currentScript, null);
+          const dnsChecks = {
+            routing_cname: null as CustomDomainDnsCheck | null,
+          };
+          if (appState.hostname) {
+            dnsChecks.routing_cname = buildCustomDomainDnsCheck({
+              queried: appState.hostname,
+              expectedTarget: dnsTarget,
+              lookup: await resolveCnameViaDoH(appState.hostname),
+            });
+          }
+
           apps.push({
             name: script.script_name,
-            hostname: appState.hostname ?? expectedHostname,
+            hostname: appState.hostname,
             cf_hostname_id: appState.cf_hostname_id,
             status: appState.status,
             ssl_status: appState.ssl_status,
             error: appState.error,
             updated_at: appState.updated_at,
+            dns_checks: dnsChecks,
           });
         }
 
-        if (!dcvRecord && zoneId && apiToken) {
-          for (const script of scripts) {
-            const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
-            try {
-              let record = null;
-              if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
-                record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
-              }
-              record ??= await findCustomHostnameByHostname(zoneId, apiToken, domain.domain);
-              dcvRecord = extractCustomHostnameDcvRecord(record);
-              if (dcvRecord) break;
-            } catch {
-              // Keep diagnostics available even when Cloudflare lookup fails.
-            }
-          }
+        const configuredApps = apps.filter((app) => app.hostname);
+        const activeCount = configuredApps.filter(a => a.status === 'active' && a.ssl_status === 'active').length;
+        const parts: string[] = [];
+        if (configuredApps.length === 0) {
+          parts.push('No exact custom domains configured.');
+        } else {
+          parts.push(`${activeCount}/${configuredApps.length} configured custom domains have active SSL.`);
         }
-
-        const activeCount = apps.filter(a => a.status === 'active' && a.ssl_status === 'active').length;
-        const missingCount = apps.filter(a => !a.status).length;
-
-        // DNS resolution checks via Cloudflare DoH
-        const dnsChecks: {
-          routing_cname: CustomDomainDnsCheck | null;
-          acme_challenge_cname: CustomDomainDnsCheck | null;
-        } = { routing_cname: null, acme_challenge_cname: null };
-
-        // Check routing CNAME using the first app as a sample
-        const sampleApp = apps[0];
-        if (sampleApp) {
-          const routingLookup = await resolveCnameViaDoH(sampleApp.hostname);
-          dnsChecks.routing_cname = buildCustomDomainDnsCheck({
-            queried: sampleApp.hostname,
-            expectedTarget: dnsTarget,
-            lookup: routingLookup,
-          });
-        }
-
-        // Check ACME challenge CNAME
-        if (dcvRecord) {
-          const acmeLookup = await resolveCnameViaDoH(dcvRecord.cname);
-          dnsChecks.acme_challenge_cname = buildCustomDomainDnsCheck({
-            queried: dcvRecord.cname,
-            expectedTarget: dcvRecord.cname_target,
-            lookup: acmeLookup,
-          });
-        }
-
-        // Build summary message
-        const parts: string[] = [`Custom domain: *.${domain.domain}`];
         if (apps.length === 0) {
           parts.push('No apps deployed yet.');
-        } else {
-          parts.push(`${activeCount}/${apps.length} apps have active SSL.`);
-          if (missingCount > 0) {
-            parts.push(`${missingCount} app(s) have no Cloudflare hostname — use retry_custom_domain_hostnames to provision them.`);
-          }
-        }
-        if (dnsChecks.routing_cname?.status === 'missing') {
-          parts.push(`DNS routing CNAME missing for ${dnsChecks.routing_cname.queried}.`);
-        } else if (dnsChecks.routing_cname?.status === 'mismatch') {
-          parts.push(`DNS routing CNAME resolves to ${dnsChecks.routing_cname.resolved_target} but should point to ${dnsChecks.routing_cname.expected_target}.`);
-        } else if (dnsChecks.routing_cname?.status === 'unavailable') {
-          parts.push(`DNS routing CNAME check unavailable${dnsChecks.routing_cname.http_status ? ` (DoH HTTP ${dnsChecks.routing_cname.http_status})` : ''}.`);
-        }
-        if (dnsChecks.acme_challenge_cname?.status === 'missing') {
-          parts.push('ACME challenge CNAME missing — SSL certificates cannot be issued without this.');
-        } else if (dnsChecks.acme_challenge_cname?.status === 'mismatch') {
-          parts.push(`ACME challenge CNAME resolves to ${dnsChecks.acme_challenge_cname.resolved_target} but should point to ${dnsChecks.acme_challenge_cname.expected_target}.`);
-        } else if (dnsChecks.acme_challenge_cname?.status === 'unavailable') {
-          parts.push(`ACME challenge CNAME check unavailable${dnsChecks.acme_challenge_cname.http_status ? ` (DoH HTTP ${dnsChecks.acme_challenge_cname.http_status})` : ''}.`);
         }
 
         return this.textResponse({
-          configured: true,
-          domain: domain.domain,
-          status: domain.status,
-          dns: {
-            routing_record: {
-              host: `*.${domain.domain}`,
-              type: 'CNAME',
-              target: dnsTarget,
-            },
-            acme_challenge_record: dcvRecord
-              ? {
-                  host: dcvRecord.cname,
-                  type: 'CNAME',
-                  target: dcvRecord.cname_target,
-                }
-              : null,
-          },
-          dns_checks: dnsChecks,
+          configured: configuredApps.length > 0,
+          dns_target: dnsTarget,
           apps,
           message: parts.join(' '),
         });
       }
     );
 
-    // Set org custom domain
+    // Set exact app custom domain
     this.server.tool(
       'set_custom_domain',
-      'Set a custom domain for the organization (admin only). All deployed apps will be accessible at {app-name}.{domain}. Recommend a wildcard routing CNAME for all apps, though exact per-app CNAME records also work. SSL validation also requires an _acme-challenge CNAME, and the exact target is returned in the response.',
+      'Set one exact custom domain for one deployed app (admin only). Wildcards are not supported.',
       {
-        domain: z.string().min(3).describe('The base domain (e.g., "apps.example.com"). All apps will be subdomains of this.'),
+        app_name: z.string().min(1).describe('The deployed app name.'),
+        domain: z.string().min(3).describe('The exact hostname, e.g. "example.com" or "app.example.com".'),
       },
-      async ({ domain: rawDomain }) => {
-        const { orgId, userId } = this.requireAuth();
+      async ({ app_name: appName, domain: rawDomain }) => {
+        const { userId } = this.requireAuth();
         const orgStub = this.getOrgStub();
 
-        // Require admin
         const member = await orgStub.getMember(userId);
         if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
           return this.textResponse({ success: false, error: 'Only org admins can manage custom domains' });
         }
 
-        const domain = rawDomain.trim().toLowerCase();
+        const domain = rawDomain.trim().toLowerCase().replace(/\.$/, '');
+        const script = await orgStub.getWorkerScript(appName);
+        if (!script) {
+          return this.textResponse({ success: false, error: 'App not found' });
+        }
+        const scripts = await orgStub.listWorkerScripts();
+        const conflictingScript = scripts.find(
+          (candidate) =>
+            candidate.script_name !== appName &&
+            candidate.custom_domain_hostname === domain
+        );
+        if (conflictingScript) {
+          return this.textResponse({
+            success: false,
+            error: `That custom domain is already assigned to ${conflictingScript.script_name}`,
+          });
+        }
 
-        // Validate
-        if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
-          return this.textResponse({ success: false, error: 'Invalid domain format' });
+        if (
+          domain.includes('*') ||
+          !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain)
+        ) {
+          return this.textResponse({ success: false, error: 'Invalid exact hostname. Wildcards are not supported.' });
         }
         if (domain.endsWith('.camelai.app') || domain.endsWith('.camelai.dev')) {
           return this.textResponse({ success: false, error: 'Cannot use camelAI domains as custom domains' });
         }
 
-        // Remove old KV entry if switching domains
-        const existing = await orgStub.getCustomDomain();
-        const oldDomain = existing?.domain;
-
-        await orgStub.setCustomDomain(domain, userId);
-
-        const zoneId = this.env.CF_ZONE_ID;
+        const zoneId = this.env.CF_ZONE_ID?.trim();
         const apiToken = this.env.CF_API_TOKEN?.trim();
+        if (!zoneId || !apiToken) {
+          return this.textResponse({ success: false, error: 'Cloudflare API not configured' });
+        }
         const dnsTarget = getCustomHostnameDnsTarget({
           cnameTarget: this.env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
           fallbackOrigin: this.env.CF_CUSTOM_HOSTNAME_FALLBACK,
         });
 
-        // Write KV index for dispatcher
-        const orgInfo = await orgStub.getInfo();
-        const orgSlug = orgInfo?.slug;
-        if (orgSlug) {
-          await this.env.APP_KV.put(
-            `custom_domain_zone:${domain}`,
-            JSON.stringify({ org_id: orgId, org_slug: orgSlug })
-          );
-        }
-        if (oldDomain && oldDomain !== domain) {
-          await this.env.APP_KV.delete(`custom_domain_zone:${oldDomain}`);
-
-          // Clean up old CF hostnames
-          if (zoneId && apiToken) {
-            const oldHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, oldDomain);
-            for (const h of oldHostnames) {
-              await deleteCustomHostname(zoneId, apiToken, h.id).catch(() => {});
-            }
-          }
-        }
-
-        // Backfill CF hostnames for existing apps
-        await orgStub.clearWorkerScriptCustomDomains();
-        let dcvRecord: CustomHostnameDcvRecord | null = null;
-        if (zoneId && apiToken) {
-          const scripts = await orgStub.listWorkerScripts();
-          let created = 0;
-          try {
-            const result = await createOrRefreshCustomHostname(zoneId, apiToken, domain, {
-              wildcard: true,
+        try {
+          const record = await createOrRefreshCustomHostname(zoneId, apiToken, domain);
+          if (!record) {
+            await orgStub.updateWorkerScriptCustomDomain(appName, {
+              hostname: domain,
+              error: 'Failed to create or locate Cloudflare custom hostname',
             });
-            if (result) {
-              await orgStub.updateCustomDomainStatus(
-                domain,
-                result.status === 'active' ? 'active' : 'pending',
-                result.ssl.status,
-                result.id
-              );
-              const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain);
-              for (const hostname of staleHostnames) {
-                if (hostname.id !== result.id) {
-                  await deleteCustomHostname(zoneId, apiToken, hostname.id);
-                }
-              }
-              dcvRecord ??= extractCustomHostnameDcvRecord(result);
-              for (const script of scripts) {
-                const appHostname = `${script.script_name}.${domain}`;
-                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                  hostname: appHostname,
-                  cf_hostname_id: result.id,
-                  status: result.status,
-                  ssl_status: result.ssl.status,
-                  error: null,
-                });
-              }
-              created = scripts.length;
-            } else {
-              for (const script of scripts) {
-                const appHostname = `${script.script_name}.${domain}`;
-                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                  hostname: appHostname,
-                  error: 'Failed to create or locate Cloudflare wildcard custom hostname',
-                });
-              }
-            }
-          } catch (err) {
-            for (const script of scripts) {
-              const appHostname = `${script.script_name}.${domain}`;
-              await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                hostname: appHostname,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
+            return this.textResponse({ success: false, error: 'Failed to create or locate Cloudflare custom hostname' });
           }
-          return this.textResponse({
-            success: true,
-            domain,
-            hostnames_created: created,
-            total_apps: scripts.length,
-            dns_target: dnsTarget,
-            dcv_record: dcvRecord
-              ? `${dcvRecord.cname} CNAME ${dcvRecord.cname_target}`
-              : null,
-            message: dcvRecord
-              ? `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Add both DNS records: (1) *.${domain} CNAME ${dnsTarget} and (2) ${dcvRecord.cname} CNAME ${dcvRecord.cname_target}`
-              : `Custom domain set to ${domain}. Created SSL certificates for ${created}/${scripts.length} apps. Add the routing record: *.${domain} CNAME ${dnsTarget}. Run get_custom_domain after a hostname is provisioned to get the exact SSL validation record.`,
+
+          if (script.custom_domain_cf_hostname_id && script.custom_domain_cf_hostname_id !== record.id) {
+            await deleteCustomHostname(zoneId, apiToken, script.custom_domain_cf_hostname_id).catch(() => {});
+          }
+
+          await orgStub.updateWorkerScriptCustomDomain(appName, {
+            hostname: domain,
+            cf_hostname_id: record.id,
+            status: record.status,
+            ssl_status: record.ssl.status,
+            error: null,
           });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await orgStub.updateWorkerScriptCustomDomain(appName, {
+            hostname: domain,
+            error: message,
+          });
+          return this.textResponse({ success: false, error: message });
         }
 
         return this.textResponse({
           success: true,
+          app: appName,
           domain,
           dns_target: dnsTarget,
-          dcv_record: null,
-          message: `Custom domain set to ${domain}. Add the routing record: *.${domain} CNAME ${dnsTarget}. Run get_custom_domain after a hostname is provisioned to get the exact SSL validation record.`,
+          routing_record: `${domain} CNAME ${dnsTarget}`,
+          message: `Custom domain set for ${appName}. Add ${domain} CNAME ${dnsTarget}.`,
         });
       }
     );
 
-    // Remove org custom domain
+    // Remove exact app custom domain
     this.server.tool(
       'remove_custom_domain',
-      'Remove the custom domain from this organization (admin only). Apps will revert to their default *.camelai.app URLs.',
-      {},
-      async () => {
+      'Remove the exact custom domain from one app (admin only).',
+      {
+        app_name: z.string().min(1).describe('The deployed app name.'),
+      },
+      async ({ app_name: appName }) => {
         const { userId } = this.requireAuth();
         const orgStub = this.getOrgStub();
 
-        // Require admin
         const member = await orgStub.getMember(userId);
         if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
           return this.textResponse({ success: false, error: 'Only org admins can manage custom domains' });
         }
 
-        const existing = await orgStub.getCustomDomain();
-        if (!existing) {
-          return this.textResponse({ success: false, error: 'No custom domain configured' });
+        const script = await orgStub.getWorkerScript(appName);
+        if (!script?.custom_domain_hostname) {
+          return this.textResponse({ success: false, error: 'No custom domain configured for this app' });
         }
 
-        const removedDomain = existing.domain;
-        await orgStub.removeCustomDomain(userId);
-        await orgStub.clearWorkerScriptCustomDomains();
-        await this.env.APP_KV.delete(`custom_domain_zone:${removedDomain}`);
-
-        // Clean up CF hostnames in the background
-        const zoneId = this.env.CF_ZONE_ID;
+        const removedDomain = script.custom_domain_hostname;
+        const zoneId = this.env.CF_ZONE_ID?.trim();
         const apiToken = this.env.CF_API_TOKEN?.trim();
-        if (zoneId && apiToken) {
-          const hostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, removedDomain);
-          let deleted = 0;
-          for (const h of hostnames) {
-            if (await deleteCustomHostname(zoneId, apiToken, h.id)) deleted++;
-          }
-          return this.textResponse({
-            success: true,
-            removed_domain: removedDomain,
-            hostnames_deleted: deleted,
-            message: `Custom domain ${removedDomain} removed. Deleted ${deleted} SSL certificates. Apps are now only accessible at their *.camelai.app URLs.`,
-          });
+        if (zoneId && apiToken && script.custom_domain_cf_hostname_id) {
+          await deleteCustomHostname(zoneId, apiToken, script.custom_domain_cf_hostname_id).catch(() => {});
         }
+        await orgStub.clearWorkerScriptCustomDomain(appName);
 
         return this.textResponse({
           success: true,
+          app: appName,
           removed_domain: removedDomain,
-          message: `Custom domain ${removedDomain} removed. Apps are now only accessible at their *.camelai.app URLs.`,
+          message: `Custom domain ${removedDomain} removed from ${appName}.`,
         });
       }
     );
 
-    // Retry custom domain hostname provisioning for apps that failed or are missing
+    // Retry custom domain hostname provisioning for configured exact app domains
     this.server.tool(
       'retry_custom_domain_hostnames',
-      'Retry Cloudflare hostname provisioning for apps whose custom domain setup failed or was never created. Use after get_custom_domain shows apps with null status or errors. Lighter than remove + re-add domain.',
+      'Retry Cloudflare hostname provisioning for apps with configured exact custom domains whose SSL or hostname setup is not active.',
       {},
       async () => {
         const { userId } = this.requireAuth();
         const orgStub = this.getOrgStub();
 
-        // Require admin
         const member = await orgStub.getMember(userId);
         if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
           return this.textResponse({ success: false, error: 'Only org admins can retry hostname provisioning' });
-        }
-
-        const domain = await orgStub.getCustomDomain();
-        if (!domain) {
-          return this.textResponse({ success: false, error: 'No custom domain configured' });
         }
 
         const zoneId = this.env.CF_ZONE_ID?.trim();
@@ -1990,46 +1809,19 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
         const scripts = await orgStub.listWorkerScripts();
         const scriptsToSync = scripts.filter((script) =>
-          shouldRetryAppCustomDomainProvisioning(script, domain.domain)
+          shouldRetryAppCustomDomainProvisioning(script, null)
         );
         let retried = scriptsToSync.length;
         let succeeded = 0;
         const errors: Array<{ app: string; error: string }> = [];
 
-        if (retried > 0) {
-          let result = null;
-          try {
-            result = await createOrRefreshCustomHostname(zoneId, apiToken, domain.domain, {
-              wildcard: true,
-            });
-            if (result) {
-              await orgStub.updateCustomDomainStatus(
-                domain.domain,
-                result.status === 'active' ? 'active' : 'pending',
-                result.ssl.status,
-                result.id
-              );
-              const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain.domain);
-              for (const hostname of staleHostnames) {
-                if (hostname.id !== result.id) {
-                  await deleteCustomHostname(zoneId, apiToken, hostname.id);
-                }
-              }
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            for (const script of scriptsToSync) {
-              errors.push({ app: script.script_name, error: msg });
-            }
-          }
-
-          for (const script of scriptsToSync) {
-            const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
-
+        for (const script of scriptsToSync) {
+          if (!script.custom_domain_hostname) continue;
             try {
+              const result = await createOrRefreshCustomHostname(zoneId, apiToken, script.custom_domain_hostname);
               if (result) {
                 await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                  hostname: expectedHostname,
+                  hostname: script.custom_domain_hostname,
                   cf_hostname_id: result.id,
                   status: result.status,
                   ssl_status: result.ssl.status,
@@ -2037,9 +1829,9 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                 });
                 succeeded++;
               } else {
-                const msg = 'Failed to create or locate Cloudflare wildcard hostname';
+                const msg = 'Failed to create or locate Cloudflare hostname';
                 await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                  hostname: expectedHostname,
+                  hostname: script.custom_domain_hostname,
                   cf_hostname_id: null,
                   status: null,
                   ssl_status: null,
@@ -2052,12 +1844,11 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                hostname: expectedHostname,
+                hostname: script.custom_domain_hostname,
                 error: msg,
               });
               errors.push({ app: script.script_name, error: msg });
             }
-          }
         }
 
         return this.textResponse({

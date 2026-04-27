@@ -1,18 +1,11 @@
-import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/orgs.$id.custom-domain';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import type { AuthEnv } from '@/lib/auth-helpers';
-import { isOrgAdmin } from '@/lib/auth-do';
-import {
-  getOrgCustomDomain,
-  setOrgCustomDomain,
-  removeOrgCustomDomain,
-} from '@/lib/auth-do';
+import { getWorkerScript, isOrgAdmin } from '@/lib/auth-do';
 import {
   createOrRefreshCustomHostname,
   deleteCustomHostname,
-  listCustomHostnamesByBaseDomain,
 } from '../../../workers/main/src/cf-api-proxy';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -27,7 +20,27 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
   };
 }
 
-// GET - Return the org's custom domain (or null)
+function normalizeHostname(value: FormDataEntryValue | null): string {
+  return String(value ?? '').trim().toLowerCase().replace(/\.$/, '');
+}
+
+function isValidCustomHostname(hostname: string): boolean {
+  if (
+    !hostname ||
+    hostname.length > 253 ||
+    hostname.includes('*') ||
+    hostname.startsWith('.') ||
+    hostname.endsWith('.') ||
+    hostname.endsWith('.camelai.app') ||
+    hostname.endsWith('.camelai.dev')
+  ) {
+    return false;
+  }
+
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(hostname);
+}
+
+// GET - Return exact custom domains configured on the org's apps.
 export async function loader({ request, params, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
@@ -38,11 +51,22 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
     return Response.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const domain = await getOrgCustomDomain(authEnv, orgId);
-  return Response.json({ domain });
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const scripts = await orgStub.listWorkerScripts();
+  return Response.json({
+    domains: scripts
+      .filter((script) => script.custom_domain_hostname)
+      .map((script) => ({
+        script_name: script.script_name,
+        hostname: script.custom_domain_hostname,
+        status: script.custom_domain_status,
+        ssl_status: script.custom_domain_ssl_status,
+        error: script.custom_domain_error,
+      })),
+  });
 }
 
-// POST - set or remove
+// POST - set or remove an exact custom hostname for one app.
 export async function action({ request, params, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
@@ -53,175 +77,104 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     return Response.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  // Require admin
   const admin = await isOrgAdmin(authEnv, authContext.user.id, orgId);
   if (!admin) {
     return Response.json({ error: 'Only admins can manage custom domains' }, { status: 403 });
   }
 
   const formData = await request.formData();
-  const intent = formData.get('intent') as string;
+  const intent = String(formData.get('intent') ?? '');
+  const scriptName = String(formData.get('scriptName') ?? '').trim();
+  if (!scriptName) {
+    return Response.json({ error: 'App is required' }, { status: 400 });
+  }
+
+  const script = await getWorkerScript(authEnv, orgId, scriptName);
+  if (!script) {
+    return Response.json({ error: 'App not found' }, { status: 404 });
+  }
+
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const zoneId = env.CF_ZONE_ID?.trim();
+  const apiToken = env.CF_API_TOKEN?.trim();
 
   if (intent === 'set') {
-    const domain = (formData.get('domain') as string)?.trim().toLowerCase();
-    if (!domain) {
-      return Response.json({ error: 'Domain is required' }, { status: 400 });
+    const hostname = normalizeHostname(formData.get('domain') ?? formData.get('hostname'));
+    if (!isValidCustomHostname(hostname)) {
+      return Response.json(
+        { error: 'Enter one exact hostname, like example.com or app.example.com. Wildcards are not supported.' },
+        { status: 400 }
+      );
     }
 
-    // Basic domain validation (must be a valid base domain, e.g., apps.example.com)
-    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
-      return Response.json({ error: 'Invalid domain format' }, { status: 400 });
+    const scripts = await orgStub.listWorkerScripts();
+    const conflictingScript = scripts.find(
+      (candidate) =>
+        candidate.script_name !== scriptName &&
+        candidate.custom_domain_hostname === hostname
+    );
+    if (conflictingScript) {
+      return Response.json(
+        { error: `That custom domain is already assigned to ${conflictingScript.script_name}` },
+        { status: 409 }
+      );
     }
 
-    // Reject our own domains
-    if (domain.endsWith('.camelai.app') || domain.endsWith('.camelai.dev')) {
-      return Response.json({ error: 'Cannot use camelAI domains as custom domains' }, { status: 400 });
+    if (!zoneId || !apiToken) {
+      return Response.json({ error: 'Cloudflare API is not configured' }, { status: 500 });
     }
 
     try {
-      const existing = await getOrgCustomDomain(authEnv, orgId);
-      const oldDomain = existing?.domain;
-      const customDomain = await setOrgCustomDomain(
-        authEnv, orgId, domain, authContext.user.id
-      );
-
-      // Backfill: create CF hostnames for all existing deployed apps
-      const zoneId = env.CF_ZONE_ID;
-      const apiToken = env.CF_API_TOKEN?.trim();
-      if (zoneId && apiToken) {
-        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-        waitUntil(
-          (async () => {
-            await orgStub.clearWorkerScriptCustomDomains();
-
-            if (oldDomain && oldDomain !== domain) {
-              await cleanupCustomHostnames(zoneId, apiToken, oldDomain, async () => {
-                const current = await orgStub.getCustomDomain();
-                return current?.domain !== oldDomain;
-              });
-            }
-
-            try {
-              const result = await createOrRefreshCustomHostname(zoneId, apiToken, domain, {
-                wildcard: true,
-              });
-              const scripts = await orgStub.listWorkerScripts();
-              if (result) {
-                await orgStub.updateCustomDomainStatus(
-                  domain,
-                  result.status === 'active' ? 'active' : 'pending',
-                  result.ssl.status,
-                  result.id
-                );
-                const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain);
-                for (const hostname of staleHostnames) {
-                  if (hostname.id !== result.id) {
-                    await deleteCustomHostname(zoneId, apiToken, hostname.id);
-                  }
-                }
-                for (const script of scripts) {
-                  const appHostname = `${script.script_name}.${domain}`;
-                  await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                    hostname: appHostname,
-                    cf_hostname_id: result.id,
-                    status: result.status,
-                    ssl_status: result.ssl.status,
-                    error: null,
-                  });
-                }
-                console.log(`[custom-domains] backfill: synced wildcard hostname ${domain} status=${result.status}`);
-              } else {
-                for (const script of scripts) {
-                  const appHostname = `${script.script_name}.${domain}`;
-                  await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                    hostname: appHostname,
-                    error: 'Failed to create or locate Cloudflare wildcard custom hostname',
-                  });
-                }
-                console.error(`[custom-domains] backfill: missing wildcard hostname after create ${domain}`);
-              }
-            } catch (err) {
-              const scripts = await orgStub.listWorkerScripts();
-              for (const script of scripts) {
-                const appHostname = `${script.script_name}.${domain}`;
-                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                  hostname: appHostname,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              }
-              console.error(`[custom-domains] backfill: failed for wildcard ${domain}:`, err);
-            }
-          })().catch(err => console.error('[custom-domains] backfill failed:', err))
-        );
-      } else {
-        waitUntil(
-          authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
-            .clearWorkerScriptCustomDomains()
-            .catch(err => console.error('[custom-domains] clear state failed:', err))
+      const record = await createOrRefreshCustomHostname(zoneId, apiToken, hostname);
+      if (!record) {
+        await orgStub.updateWorkerScriptCustomDomain(scriptName, {
+          hostname,
+          error: 'Failed to create or locate Cloudflare custom hostname',
+        });
+        return Response.json(
+          { error: 'Failed to create or locate Cloudflare custom hostname' },
+          { status: 502 }
         );
       }
 
-      return Response.json({ domain: customDomain });
+      if (
+        script.custom_domain_cf_hostname_id &&
+        script.custom_domain_cf_hostname_id !== record.id
+      ) {
+        await deleteCustomHostname(zoneId, apiToken, script.custom_domain_cf_hostname_id).catch(() => {});
+      }
+
+      const updated = await orgStub.updateWorkerScriptCustomDomain(scriptName, {
+        hostname,
+        cf_hostname_id: record.id,
+        status: record.status,
+        ssl_status: record.ssl.status,
+        error: null,
+        updated_at: Date.now(),
+      });
+
+      return Response.json({
+        success: true,
+        app: updated,
+      });
     } catch (err) {
-      return Response.json(
-        { error: err instanceof Error ? err.message : 'Failed to set domain' },
-        { status: 400 }
-      );
+      const message = err instanceof Error ? err.message : 'Failed to set custom domain';
+      await orgStub.updateWorkerScriptCustomDomain(scriptName, {
+        hostname,
+        error: message,
+        updated_at: Date.now(),
+      });
+      return Response.json({ error: message }, { status: 502 });
     }
   }
 
   if (intent === 'remove') {
-    const existing = await getOrgCustomDomain(authEnv, orgId);
-    if (!existing) {
-      return Response.json({ error: 'No custom domain configured' }, { status: 404 });
+    if (zoneId && apiToken && script.custom_domain_cf_hostname_id) {
+      await deleteCustomHostname(zoneId, apiToken, script.custom_domain_cf_hostname_id).catch(() => {});
     }
-
-    await removeOrgCustomDomain(authEnv, orgId, authContext.user.id);
-    waitUntil(
-      authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
-        .clearWorkerScriptCustomDomains()
-        .catch(err => console.error('[custom-domains] clear state failed:', err))
-    );
-
-    // Clean up all per-app CF hostnames for this domain in the background
-    const zoneId = env.CF_ZONE_ID;
-    const apiToken = env.CF_API_TOKEN?.trim();
-    if (zoneId && apiToken) {
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-      waitUntil(
-        cleanupCustomHostnames(zoneId, apiToken, existing.domain, async () => {
-          const current = await orgStub.getCustomDomain();
-          return current?.domain !== existing.domain;
-        })
-          .catch(err => console.error('[custom-domains] cleanup failed:', err))
-      );
-    }
-
+    await orgStub.clearWorkerScriptCustomDomain(scriptName);
     return Response.json({ success: true });
   }
 
   return Response.json({ error: 'Unknown intent' }, { status: 400 });
-}
-
-/**
- * Delete all CF custom hostnames matching *.{baseDomain} by searching
- * the CF API for hostnames ending with the base domain.
- */
-async function cleanupCustomHostnames(
-  zoneId: string,
-  apiToken: string,
-  baseDomain: string,
-  shouldContinue?: () => Promise<boolean>
-): Promise<void> {
-  const hostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, baseDomain);
-  for (const hostname of hostnames) {
-    if (shouldContinue && !(await shouldContinue())) {
-      console.log(`[custom-domains] cleanup: skipped ${baseDomain}; domain was reconfigured`);
-      return;
-    }
-    await deleteCustomHostname(zoneId, apiToken, hostname.id).catch(err =>
-      console.error(`[custom-domains] cleanup: failed to delete ${hostname.hostname}:`, err)
-    );
-    console.log(`[custom-domains] cleanup: deleted ${hostname.hostname}`);
-  }
 }

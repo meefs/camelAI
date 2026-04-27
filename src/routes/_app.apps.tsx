@@ -7,7 +7,6 @@ import {
   setWorkerScriptPublic,
   deleteWorkerScript,
   getWorkerScript,
-  getOrgCustomDomain,
 } from '@/lib/auth-do';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import * as chatDO from '@/lib/chat-do.server';
@@ -163,16 +162,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const workspaceId = authContext.currentWorkspace?.id;
   let apps: WorkerScriptWithCreator[] = [];
 
-  const [scripts, orgCustomDomainRecord] = await Promise.all([
-    authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id)).listWorkerScripts(),
-    getOrgCustomDomain(authEnv, authContext.currentOrg.id),
-  ]);
-  const orgCustomDomain = orgCustomDomainRecord?.domain ?? null;
+  const scripts = await authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id)).listWorkerScripts();
   const refreshedScripts = await refreshWorkerScriptCustomDomainStates(
     env,
     authContext.currentOrg.id,
     scripts,
-    orgCustomDomain
+    null
   );
 
   // Filter based on filter param
@@ -232,7 +227,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     hostname,
     renderedAt,
     hasWorkspace: Boolean(workspaceId),
-    orgCustomDomain,
+    orgCustomDomain: null,
   };
 }
 

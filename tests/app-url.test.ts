@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  getExpectedCustomDomainHostname,
   getPreferredAppUrl,
   isAppCustomDomainReady,
 } from '@/lib/app-url';
@@ -64,20 +63,19 @@ describe('app URL selection', () => {
     ).toBe('https://demo-app-abc123.camelai.app');
   });
 
-  it('falls back when the stored hostname belongs to an old custom domain', () => {
+  it('uses an active exact apex custom domain', () => {
     const script = makeScript({
-      custom_domain_hostname: getExpectedCustomDomainHostname('demo-app', 'apps.old-example.com'),
+      custom_domain_hostname: 'example.com',
       custom_domain_status: 'active',
       custom_domain_ssl_status: 'active',
     });
 
-    expect(isAppCustomDomainReady(script, 'apps.example.com')).toBe(false);
+    expect(isAppCustomDomainReady(script)).toBe(true);
     expect(
       getPreferredAppUrl(script, {
         hostname: 'camelai.dev',
         orgSlug: 'abc123',
-        orgCustomDomain: 'apps.example.com',
       })
-    ).toBe('https://demo-app-abc123.camelai.app');
+    ).toBe('https://example.com');
   });
 });

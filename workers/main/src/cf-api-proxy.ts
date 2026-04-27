@@ -817,27 +817,9 @@ export interface CfCustomHostname {
     status: string;
     method: string;
     type: string;
-    dcv_delegation_record?: CfCustomHostnameDcvRecord;
-    dcv_delegation_records?: CfCustomHostnameDcvRecord[];
-    validation_records?: CfCustomHostnameDcvRecord[];
   };
   status: string;
   created_at: string;
-}
-
-export interface CfCustomHostnameDcvRecord {
-  cname?: string;
-  cname_target?: string;
-  name?: string;
-  target?: string;
-  value?: string;
-  type?: string;
-  status?: string;
-}
-
-export interface CustomHostnameDcvRecord {
-  cname: string;
-  cname_target: string;
 }
 
 const CUSTOM_HOSTNAME_SSL_SETTINGS = {
@@ -848,37 +830,10 @@ const CUSTOM_HOSTNAME_SSL_SETTINGS = {
 
 interface CustomHostnameOptions {
   customOriginServer?: string;
-  wildcard?: boolean;
 }
 
-function buildCustomHostnameSslSettings(options: CustomHostnameOptions = {}) {
-  return {
-    ...CUSTOM_HOSTNAME_SSL_SETTINGS,
-    wildcard: options.wildcard ?? CUSTOM_HOSTNAME_SSL_SETTINGS.wildcard,
-  };
-}
-
-export function extractCustomHostnameDcvRecord(
-  record: CfCustomHostname | null | undefined
-): CustomHostnameDcvRecord | null {
-  const candidates = [
-    ...(record?.ssl.dcv_delegation_records ?? []),
-    ...(record?.ssl.validation_records ?? []),
-    ...(record?.ssl.dcv_delegation_record ? [record.ssl.dcv_delegation_record] : []),
-  ];
-
-  for (const candidate of candidates) {
-    const cname = candidate.cname ?? candidate.name;
-    const cnameTarget = candidate.cname_target ?? candidate.target ?? candidate.value;
-    if (cname && cnameTarget) {
-      return {
-        cname,
-        cname_target: cnameTarget.replace(/\.$/, ''),
-      };
-    }
-  }
-
-  return null;
+function buildCustomHostnameSslSettings() {
+  return CUSTOM_HOSTNAME_SSL_SETTINGS;
 }
 
 export async function createCustomHostname(
@@ -896,7 +851,7 @@ export async function createCustomHostname(
   };
   const body: Record<string, unknown> = {
     hostname,
-    ssl: buildCustomHostnameSslSettings(normalizedOptions),
+    ssl: buildCustomHostnameSslSettings(),
   };
   if (normalizedOptions.customOriginServer) {
     body.custom_origin_server = normalizedOptions.customOriginServer;
@@ -926,7 +881,7 @@ export async function refreshCustomHostnameValidation(
     'Content-Type': 'application/json',
   };
   const body: Record<string, unknown> = {
-    ssl: buildCustomHostnameSslSettings(normalizedOptions),
+    ssl: buildCustomHostnameSslSettings(),
   };
   if (normalizedOptions.customOriginServer) {
     body.custom_origin_server = normalizedOptions.customOriginServer;
@@ -1002,24 +957,6 @@ export async function deleteCustomHostname(
   }
 }
 
-export async function getDcvDelegationUuid(
-  zoneId: string,
-  apiToken: string
-): Promise<string | null> {
-  const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/dcv_delegation/uuid`;
-  try {
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiToken}` },
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json() as { result?: { uuid: string } };
-    return data.result?.uuid ?? null;
-  } catch (err) {
-    console.error('[cf-api] get DCV delegation UUID error', err);
-    return null;
-  }
-}
-
 export async function listCustomHostnames(
   zoneId: string,
   apiToken: string,
@@ -1051,17 +988,6 @@ export async function findCustomHostnameByHostname(
   const normalizedHostname = hostname.trim().toLowerCase();
   const hostnames = await listCustomHostnames(zoneId, apiToken, normalizedHostname);
   return hostnames.find((entry) => entry.hostname.trim().toLowerCase() === normalizedHostname) ?? null;
-}
-
-export async function listCustomHostnamesByBaseDomain(
-  zoneId: string,
-  apiToken: string,
-  baseDomain: string
-): Promise<CfCustomHostname[]> {
-  const normalizedBaseDomain = baseDomain.trim().toLowerCase();
-  const suffix = `.${normalizedBaseDomain}`;
-  const hostnames = await listCustomHostnames(zoneId, apiToken, normalizedBaseDomain);
-  return hostnames.filter((entry) => entry.hostname.trim().toLowerCase().endsWith(suffix));
 }
 
 /**

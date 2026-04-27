@@ -6,9 +6,6 @@ import { type Env } from '../types.js';
 import type { DeploySideEffectsInfo } from '../cf-api-proxy.js';
 import type { AppScreenshotJob } from '../screenshot-queue.js';
 import {
-  createOrRefreshCustomHostname,
-  deleteCustomHostname,
-  listCustomHostnamesByBaseDomain,
   resolveEnvPrefix,
 } from '../cf-api-proxy.js';
 import { createScreenshotToken } from '../worker-auth.js';
@@ -18,68 +15,6 @@ import { getOrgStub } from '../helpers/stubs.js';
 const SCRIPT_PREFIX = 'script:';
 // Legacy KV key prefix (for backwards compatibility and legacy URL redirect)
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
-
-async function syncScriptCustomHostname(
-  env: Env,
-  orgStub: ReturnType<typeof getOrgStub>,
-  scriptName: string,
-  domain: string,
-  deployTs: number
-): Promise<void> {
-  const zoneId = env.CF_ZONE_ID?.trim();
-  const apiToken = env.CF_API_TOKEN?.trim();
-  if (!zoneId || !apiToken) return;
-
-  const appHostname = `${scriptName}.${domain}`;
-
-  try {
-    const result = await createOrRefreshCustomHostname(zoneId, apiToken, domain, {
-      wildcard: true,
-    });
-
-    if (!result) {
-      await orgStub.updateWorkerScriptCustomDomain(scriptName, {
-        hostname: appHostname,
-        error: 'Failed to create or locate Cloudflare custom hostname',
-        updated_at: Date.now(),
-        deploy_ts: deployTs,
-      });
-      console.warn(`[deploy] failed to create wildcard custom hostname ${domain}`);
-      return;
-    }
-
-    await orgStub.updateCustomDomainStatus(
-      domain,
-      result.status === 'active' ? 'active' : 'pending',
-      result.ssl.status,
-      result.id
-    );
-    const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain);
-    for (const hostname of staleHostnames) {
-      if (hostname.id !== result.id) {
-        await deleteCustomHostname(zoneId, apiToken, hostname.id);
-      }
-    }
-    await orgStub.updateWorkerScriptCustomDomain(scriptName, {
-      hostname: appHostname,
-      cf_hostname_id: result.id,
-      status: result.status,
-      ssl_status: result.ssl.status,
-      error: null,
-      updated_at: Date.now(),
-      deploy_ts: deployTs,
-    });
-    console.log(`[deploy] wildcard custom hostname ${domain} status=${result.status} ssl=${result.ssl.status}`);
-  } catch (err) {
-    await orgStub.updateWorkerScriptCustomDomain(scriptName, {
-      hostname: appHostname,
-      error: err instanceof Error ? err.message : String(err),
-      updated_at: Date.now(),
-      deploy_ts: deployTs,
-    });
-    console.error('[deploy] error creating custom hostname:', err);
-  }
-}
 
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
   const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, configPath } = info;
@@ -104,19 +39,6 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     `${SCRIPT_PREFIX}${dispatchScriptName}`,
     JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public })
   );
-
-  // Create per-app CF custom hostname if org has a custom domain configured
-  try {
-    const customDomain = orgStub.getCustomDomain();
-    if (customDomain) {
-      const domain = (await customDomain)?.domain;
-      if (domain) {
-        await syncScriptCustomHostname(env, orgStub, scriptName, domain, script.updated_at);
-      }
-    }
-  } catch (err) {
-    console.error('[deploy] error syncing custom hostname state:', err);
-  }
 
   // Also write legacy format for legacy URL redirect support.
   // When someone uses a legacy URL (script.camelai.app), the dispatcher can

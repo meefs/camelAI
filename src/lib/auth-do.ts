@@ -23,7 +23,7 @@ import {
   type SessionData,
   type ApiTokenData,
 } from './auth-helpers';
-import type { UserOrg, CustomDomain, CustomDomainStatus } from '../../workers/main/src/auth';
+import type { UserOrg } from '../../workers/main/src/auth';
 
 interface GetUserOrgsOptions {
   preloadedOrgInfoById?: Map<string, Promise<Organization | null> | Organization | null>;
@@ -1004,7 +1004,6 @@ export interface WorkerScriptAccess {
 // KV key prefixes
 const SCRIPT_PREFIX = 'script:';
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
-const CUSTOM_DOMAIN_ZONE_PREFIX = 'custom_domain_zone:';
 
 /**
  * Get worker access info by dispatch script name.
@@ -1131,59 +1130,4 @@ export async function setWorkerScriptPublic(
     );
   }
   return script;
-}
-
-// ── Custom Domains (org-scoped wildcard) ─────────────────────────────
-
-export async function setOrgCustomDomain(
-  env: AuthEnv,
-  orgId: string,
-  domain: string,
-  actorId: string,
-): Promise<CustomDomain> {
-  const stub = env.ORG.get(env.ORG.idFromName(orgId));
-
-  // Capture old domain for KV cleanup after successful commit
-  const existing = await stub.getCustomDomain();
-  const oldDomain = existing?.domain;
-
-  const customDomain = await stub.setCustomDomain(domain, actorId);
-
-  // Write new KV index, then clean up old one
-  const orgInfo = await stub.getInfo();
-  const orgSlug = orgInfo?.slug;
-  if (orgSlug) {
-    await env.APP_KV.put(
-      `${CUSTOM_DOMAIN_ZONE_PREFIX}${domain}`,
-      JSON.stringify({ org_id: orgId, org_slug: orgSlug })
-    );
-  }
-
-  // Only delete old KV entry after new one is committed
-  if (oldDomain && oldDomain !== domain) {
-    await env.APP_KV.delete(`${CUSTOM_DOMAIN_ZONE_PREFIX}${oldDomain}`);
-  }
-
-  return customDomain;
-}
-
-export async function removeOrgCustomDomain(
-  env: AuthEnv,
-  orgId: string,
-  actorId: string
-): Promise<CustomDomain | null> {
-  const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  const removed = await stub.removeCustomDomain(actorId);
-  if (removed) {
-    await env.APP_KV.delete(`${CUSTOM_DOMAIN_ZONE_PREFIX}${removed.domain}`);
-  }
-  return removed;
-}
-
-export async function getOrgCustomDomain(
-  env: AuthEnv,
-  orgId: string
-): Promise<CustomDomain | null> {
-  const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  return stub.getCustomDomain();
 }

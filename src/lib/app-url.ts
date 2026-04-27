@@ -107,11 +107,10 @@ export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: strin
 }
 
 /**
- * Get the custom domain URL for a deployed app when the org has a wildcard domain configured.
- * e.g., getCustomDomainAppUrl("my-app", "apps.example.com") -> "https://my-app.apps.example.com"
+ * Get the custom domain URL for a deployed app when the app has an exact custom hostname.
  */
-export function getCustomDomainAppUrl(scriptName: string, orgCustomDomain: string): string {
-  return `https://${scriptName}.${orgCustomDomain}`;
+export function getCustomDomainAppUrl(customHostname: string): string {
+  return `https://${customHostname}`;
 }
 
 type AppCustomDomainState = Pick<
@@ -122,18 +121,14 @@ type AppCustomDomainState = Pick<
   | 'custom_domain_ssl_status'
 >;
 
-export function getExpectedCustomDomainHostname(scriptName: string, orgCustomDomain: string): string {
-  return `${scriptName}.${orgCustomDomain}`;
-}
-
 export function isAppCustomDomainReady(
   app: AppCustomDomainState,
-  orgCustomDomain: string | null | undefined
+  orgCustomDomain?: string | null
 ): boolean {
-  if (!orgCustomDomain) return false;
+  void orgCustomDomain;
 
   return (
-    app.custom_domain_hostname === getExpectedCustomDomainHostname(app.script_name, orgCustomDomain) &&
+    !!app.custom_domain_hostname &&
     app.custom_domain_status === 'active' &&
     app.custom_domain_ssl_status === 'active'
   );
@@ -149,7 +144,7 @@ export function getPreferredAppUrl(
 ): string {
   const { hostname, orgSlug, orgCustomDomain } = options;
   if (isAppCustomDomainReady(app, orgCustomDomain)) {
-    return getCustomDomainAppUrl(app.script_name, orgCustomDomain!);
+    return getCustomDomainAppUrl(app.custom_domain_hostname!);
   }
   return getAppUrl(app.script_name, hostname, orgSlug);
 }

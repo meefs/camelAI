@@ -118,7 +118,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspaces,
     recentActivity,
     experimentalSettings,
-    customDomain,
     customDomainApps,
     [usageSpend, usageLog],
     orgBan,
@@ -132,7 +131,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       includeCounts: "cheap",
     }),
     orgStub.getExperimentalSettings(),
-    orgStub.getCustomDomain(),
     orgStub.listWorkerScripts(),
     usagePromise as Promise<[any, any]>,
     getOrgBanById(getEnv(context).APP_KV, id),
@@ -178,7 +176,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
     experimentalSettings,
-    customDomain,
     customDomainApps,
     memberOptions,
     orgBan,
@@ -355,10 +352,8 @@ function customDomainStatusVariant(status: string | null | undefined) {
 }
 
 function AdminCustomDomainCard({
-  customDomain,
   apps,
 }: {
-  customDomain: { domain: string; status: string; ssl_status: string | null } | null;
   apps: Array<{
     script_name: string;
     custom_domain_hostname: string | null;
@@ -385,13 +380,12 @@ function AdminCustomDomainCard({
     }
   }, [fetcher.state, fetcher.data]);
 
-  const pendingApps = customDomain
-    ? apps.filter(
-        (app) =>
-          app.custom_domain_status !== "active" ||
-          app.custom_domain_ssl_status !== "active",
-      )
-    : [];
+  const configuredApps = apps.filter((app) => app.custom_domain_hostname);
+  const pendingApps = configuredApps.filter(
+    (app) =>
+      app.custom_domain_status !== "active" ||
+      app.custom_domain_ssl_status !== "active",
+  );
 
   return (
     <Card>
@@ -403,7 +397,7 @@ function AdminCustomDomainCard({
             pending SSL.
           </CardDescription>
         </div>
-        {customDomain ? (
+        {configuredApps.length > 0 ? (
           <fetcher.Form method="post">
             <input type="hidden" name="intent" value="refreshCustomDomain" />
             <input type="hidden" name="includeActive" value="false" />
@@ -415,7 +409,7 @@ function AdminCustomDomainCard({
         ) : null}
       </CardHeader>
       <CardContent>
-        {!customDomain ? (
+        {configuredApps.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No custom domain configured for this organization.
           </p>
@@ -424,19 +418,9 @@ function AdminCustomDomainCard({
             <dl className="grid gap-4 sm:grid-cols-3">
               <div>
                 <dt className="text-sm font-medium text-muted-foreground">
-                  Domain
+                  Configured Apps
                 </dt>
-                <dd className="font-mono text-sm">{customDomain.domain}</dd>
-              </div>
-              <div>
-                <dt className="text-sm font-medium text-muted-foreground">
-                  Org Status
-                </dt>
-                <dd>
-                  <Badge variant={customDomainStatusVariant(customDomain.status)}>
-                    {customDomain.status}
-                  </Badge>
-                </dd>
+                <dd className="text-sm">{configuredApps.length}</dd>
               </div>
               <div>
                 <dt className="text-sm font-medium text-muted-foreground">
@@ -446,63 +430,56 @@ function AdminCustomDomainCard({
               </div>
             </dl>
 
-            {apps.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No deployed apps have been registered for this org.
-              </p>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>App</TableHead>
-                    <TableHead>Hostname</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Updated</TableHead>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>App</TableHead>
+                  <TableHead>Hostname</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Updated</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {configuredApps.map((app) => (
+                  <TableRow key={app.script_name}>
+                    <TableCell className="font-mono text-xs">
+                      {app.script_name}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {app.custom_domain_hostname}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge
+                          variant={customDomainStatusVariant(
+                            app.custom_domain_status,
+                          )}
+                        >
+                          {app.custom_domain_status ?? "missing"}
+                        </Badge>
+                        <Badge
+                          variant={customDomainStatusVariant(
+                            app.custom_domain_ssl_status,
+                          )}
+                        >
+                          SSL {app.custom_domain_ssl_status ?? "missing"}
+                        </Badge>
+                      </div>
+                      {app.custom_domain_error ? (
+                        <p className="mt-1 max-w-md text-xs text-destructive">
+                          {app.custom_domain_error}
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {app.custom_domain_updated_at
+                        ? formatTimestamp(app.custom_domain_updated_at)
+                        : "Never"}
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {apps.map((app) => (
-                    <TableRow key={app.script_name}>
-                      <TableCell className="font-mono text-xs">
-                        {app.script_name}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {app.custom_domain_hostname ??
-                          `${app.script_name}.${customDomain.domain}`}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Badge
-                            variant={customDomainStatusVariant(
-                              app.custom_domain_status,
-                            )}
-                          >
-                            {app.custom_domain_status ?? "missing"}
-                          </Badge>
-                          <Badge
-                            variant={customDomainStatusVariant(
-                              app.custom_domain_ssl_status,
-                            )}
-                          >
-                            SSL {app.custom_domain_ssl_status ?? "missing"}
-                          </Badge>
-                        </div>
-                        {app.custom_domain_error ? (
-                          <p className="mt-1 max-w-md text-xs text-destructive">
-                            {app.custom_domain_error}
-                          </p>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {app.custom_domain_updated_at
-                          ? formatTimestamp(app.custom_domain_updated_at)
-                          : "Never"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+                ))}
+              </TableBody>
+            </Table>
           </div>
         )}
       </CardContent>
@@ -521,7 +498,6 @@ export default function AdminOrgDetailPage() {
     threadCount,
     appCount,
     experimentalSettings,
-    customDomain,
     customDomainApps,
     memberOptions,
     orgBan,
@@ -798,7 +774,6 @@ export default function AdminOrgDetailPage() {
             </Card>
 
             <AdminCustomDomainCard
-              customDomain={customDomain}
               apps={customDomainApps}
             />
 

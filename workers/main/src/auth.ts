@@ -52,6 +52,7 @@ function isSuperuserEmail(email: string | null): boolean {
 
 const ORG_INDEX_PREFIX = 'org_index:';
 const ORG_SLUG_KV_PREFIX = 'org_slug:';
+const CUSTOM_DOMAIN_HOST_PREFIX = 'custom_domain_host:';
 
 async function hashOrgSlug(orgId: string): Promise<string> {
   const data = new TextEncoder().encode(orgId);
@@ -1365,7 +1366,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     if (version < 19) {
-      // V19: Org-scoped wildcard custom domain (one per org)
+      // V19: Legacy org-scoped custom domain table.
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS custom_domains (
           domain TEXT PRIMARY KEY,
@@ -2279,12 +2280,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       return existing;
     }
 
+    const nextHostname = input.hostname?.trim().toLowerCase() ?? null;
+
     this.sql.exec(
       `UPDATE worker_scripts
        SET custom_domain_hostname = ?, custom_domain_cf_hostname_id = ?, custom_domain_status = ?,
            custom_domain_ssl_status = ?, custom_domain_error = ?, custom_domain_updated_at = ?
        WHERE script_name = ?`,
-      input.hostname,
+      nextHostname,
       input.cf_hostname_id ?? null,
       input.status ?? null,
       input.ssl_status ?? null,
@@ -2295,12 +2298,65 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     const script = await this.getWorkerScript(scriptName);
     const info = await this.getInfo();
+    if (info && script) {
+      if (existing.custom_domain_hostname && existing.custom_domain_hostname !== nextHostname) {
+        await this.env.APP_KV.delete(
+          `${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`
+        );
+      }
+      if (nextHostname) {
+        await this.env.APP_KV.put(
+          `${CUSTOM_DOMAIN_HOST_PREFIX}${nextHostname}`,
+          JSON.stringify({
+            org_id: info.id,
+            org_slug: info.slug,
+            script_name: scriptName,
+            dispatch_script_name: `${scriptName}--${info.slug}`,
+          })
+        );
+      }
+      dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
+    }
+    return script;
+  }
+
+  async clearWorkerScriptCustomDomain(scriptName: string): Promise<WorkerScript | null> {
+    const existing = await this.getWorkerScript(scriptName);
+    if (!existing) return null;
+    if (!this.workerScriptsHasPreviewColumns) {
+      return existing;
+    }
+
+    this.sql.exec(
+      `UPDATE worker_scripts
+       SET custom_domain_hostname = NULL,
+           custom_domain_cf_hostname_id = NULL,
+           custom_domain_status = NULL,
+           custom_domain_ssl_status = NULL,
+           custom_domain_error = NULL,
+           custom_domain_updated_at = NULL
+       WHERE script_name = ?`,
+      scriptName
+    );
+
+    if (existing.custom_domain_hostname) {
+      await this.env.APP_KV.delete(
+        `${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`
+      );
+    }
+
+    const script = await this.getWorkerScript(scriptName);
+    const info = await this.getInfo();
     if (info && script) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
     return script;
   }
 
   async clearWorkerScriptCustomDomains(): Promise<void> {
     if (!this.workerScriptsHasPreviewColumns) return;
+
+    const customHostnames = (await this.listWorkerScripts())
+      .map((script) => script.custom_domain_hostname)
+      .filter((hostname): hostname is string => Boolean(hostname));
 
     this.sql.exec(
       `UPDATE worker_scripts
@@ -2311,11 +2367,19 @@ export class OrgDO extends DurableObject<DOEnv> {
            custom_domain_error = NULL,
            custom_domain_updated_at = NULL`
     );
+    await Promise.all(
+      customHostnames.map((hostname) =>
+        this.env.APP_KV.delete(`${CUSTOM_DOMAIN_HOST_PREFIX}${hostname}`)
+      )
+    );
   }
 
   async deleteWorkerScript(scriptName: string, actorId: string): Promise<boolean> {
     const existing = await this.getWorkerScript(scriptName);
     if (!existing) return false;
+    if (existing.custom_domain_hostname) {
+      await this.env.APP_KV.delete(`${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`);
+    }
     this.sql.exec('DELETE FROM worker_scripts WHERE script_name = ?', scriptName);
     this.log('worker_script_deleted', actorId, scriptName, { workspace_id: existing.workspace_id });
     const info = await this.getInfo();
@@ -2326,7 +2390,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     return true;
   }
 
-  // ── Custom Domains (org-scoped wildcard) ────────────────────────────
+  // ── Legacy Org Custom Domains ───────────────────────────────────────
 
   async setCustomDomain(
     domain: string,

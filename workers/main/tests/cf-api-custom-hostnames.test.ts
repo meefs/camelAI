@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createOrRefreshCustomHostname,
-  extractCustomHostnameDcvRecord,
 } from '../src/cf-api-proxy';
 
 function cfResponse(result: unknown, init?: ResponseInit) {
@@ -79,77 +78,4 @@ describe('createOrRefreshCustomHostname', () => {
     consoleWarn.mockRestore();
   });
 
-  it('creates wildcard custom hostnames when requested', async () => {
-    const created = {
-      id: 'hostname-1',
-      hostname: 'apps.example.com',
-      ssl: { status: 'pending_validation', method: 'txt', type: 'dv' },
-      status: 'pending',
-      created_at: '2026-04-27T00:00:00Z',
-    };
-    const fetchMock = vi.fn().mockResolvedValueOnce(cfResponse(created));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await expect(
-      createOrRefreshCustomHostname('zone-1', 'token-1', 'apps.example.com', {
-        wildcard: true,
-      })
-    ).resolves.toEqual(created);
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      hostname: 'apps.example.com',
-      ssl: { method: 'txt', type: 'dv', wildcard: true },
-    });
-  });
-});
-
-describe('extractCustomHostnameDcvRecord', () => {
-  it('uses Cloudflare custom hostname DCV delegation records', () => {
-    expect(
-      extractCustomHostnameDcvRecord({
-        id: 'hostname-1',
-        hostname: 'demo.apps.example.com',
-        ssl: {
-          status: 'pending_validation',
-          method: 'txt',
-          type: 'dv',
-          dcv_delegation_records: [
-            {
-              cname: '_acme-challenge.demo.apps.example.com',
-              cname_target: 'fresh-token.dcv.cloudflare.com.',
-            },
-          ],
-        },
-        status: 'pending',
-        created_at: '2026-04-27T00:00:00Z',
-      })
-    ).toEqual({
-      cname: '_acme-challenge.demo.apps.example.com',
-      cname_target: 'fresh-token.dcv.cloudflare.com',
-    });
-  });
-
-  it('supports the legacy singular value shape', () => {
-    expect(
-      extractCustomHostnameDcvRecord({
-        id: 'hostname-1',
-        hostname: 'demo.apps.example.com',
-        ssl: {
-          status: 'pending_validation',
-          method: 'txt',
-          type: 'dv',
-          dcv_delegation_record: {
-            cname: '_acme-challenge.demo.apps.example.com',
-            value: 'legacy-token.dcv.cloudflare.com',
-          },
-        },
-        status: 'pending',
-        created_at: '2026-04-27T00:00:00Z',
-      })
-    ).toEqual({
-      cname: '_acme-challenge.demo.apps.example.com',
-      cname_target: 'legacy-token.dcv.cloudflare.com',
-    });
-  });
 });
