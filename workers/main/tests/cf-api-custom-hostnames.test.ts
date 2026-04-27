@@ -27,7 +27,7 @@ describe('createOrRefreshCustomHostname', () => {
     const created = {
       id: 'hostname-1',
       hostname: 'demo.apps.example.com',
-      ssl: { status: 'pending_validation', method: 'txt', type: 'dv' },
+      ssl: { status: 'pending_validation', method: 'http', type: 'dv' },
       status: 'pending',
       created_at: '2026-04-27T00:00:00Z',
     };
@@ -41,7 +41,7 @@ describe('createOrRefreshCustomHostname', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       hostname: 'demo.apps.example.com',
-      ssl: { method: 'txt', type: 'dv', wildcard: false },
+      ssl: { method: 'http', type: 'dv', wildcard: false },
     });
   });
 
@@ -50,13 +50,13 @@ describe('createOrRefreshCustomHostname', () => {
     const existing = {
       id: 'hostname-1',
       hostname: 'demo.apps.example.com',
-      ssl: { status: 'expired', method: 'txt', type: 'dv' },
+      ssl: { status: 'expired', method: 'http', type: 'dv' },
       status: 'moved',
       created_at: '2026-04-20T00:00:00Z',
     };
     const refreshed = {
       ...existing,
-      ssl: { status: 'pending_validation', method: 'txt', type: 'dv' },
+      ssl: { status: 'pending_validation', method: 'http', type: 'dv' },
       status: 'pending',
     };
     const fetchMock = vi
@@ -73,7 +73,7 @@ describe('createOrRefreshCustomHostname', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[2][1].method).toBe('PATCH');
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
-      ssl: { method: 'txt', type: 'dv', wildcard: false },
+      ssl: { method: 'http', type: 'dv', wildcard: false },
     });
     consoleWarn.mockRestore();
   });

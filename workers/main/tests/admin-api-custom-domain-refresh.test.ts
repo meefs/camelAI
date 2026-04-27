@@ -51,7 +51,7 @@ function cfHostnameResponse(domain: string) {
       hostname: domain,
       ssl: {
         status: 'pending_validation',
-        method: 'txt',
+        method: 'http',
         type: 'dv',
       },
       status: 'pending',

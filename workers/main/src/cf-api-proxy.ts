@@ -823,7 +823,7 @@ export interface CfCustomHostname {
 }
 
 const CUSTOM_HOSTNAME_SSL_SETTINGS = {
-  method: 'txt',
+  method: 'http',
   type: 'dv',
   wildcard: false,
 } as const;
