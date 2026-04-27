@@ -127,6 +127,12 @@ const WORKSPACE_SORT_COLS: Record<string, string> = { created_at: 'w.created_at'
 const APP_SORT_COLS: Record<string, string> = { created_at: 'a.created_at', updated_at: 'a.updated_at' };
 const ORG_MEMBERSHIP_SYNC_CONCURRENCY = 8;
 
+function normalizeSqlStringList(values: string[] | undefined): string[] {
+  return Array.from(
+    new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
+  );
+}
+
 export type AdminEventType =
   | { type: 'user_upsert'; payload: any }
   | { type: 'user_delete'; payload: { id: string } }
@@ -250,10 +256,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             COUNT(m.user_id) AS indexed_count
           FROM orgs o
           LEFT JOIN org_memberships m ON m.org_id = o.id
-          WHERE o.id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          WHERE o.id IN (SELECT value FROM json_each(?))
           GROUP BY o.id, o.member_count
         `,
-        ...normalizedOrgIds,
+        JSON.stringify(normalizedOrgIds),
       ),
     ) as Array<{
       org_id: string;
@@ -1087,19 +1093,32 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       conditions.push('o.archived = ?');
       params.push(filters.archived ? 1 : 0);
     }
-    if (filters?.exclude_org_ids && filters.exclude_org_ids.length > 0) {
-      conditions.push(`o.id NOT IN (${filters.exclude_org_ids.map(() => '?').join(', ')})`);
-      params.push(...filters.exclude_org_ids);
+    const excludedOrgIds = normalizeSqlStringList(filters?.exclude_org_ids);
+    if (excludedOrgIds.length > 0) {
+      conditions.push(`
+        NOT EXISTS (
+          SELECT 1
+          FROM json_each(?) excluded_org_ids
+          WHERE excluded_org_ids.value = o.id
+        )
+      `);
+      params.push(JSON.stringify(excludedOrgIds));
     }
-    if (filters?.exclude_creator_domains && filters.exclude_creator_domains.length > 0) {
+    const excludedCreatorDomains = normalizeSqlStringList(filters?.exclude_creator_domains)
+      .map((domain) => domain.toLowerCase());
+    if (excludedCreatorDomains.length > 0) {
       conditions.push(`
         (
           u.email IS NULL
           OR INSTR(u.email, '@') <= 0
-          OR LOWER(SUBSTR(u.email, INSTR(u.email, '@') + 1)) NOT IN (${filters.exclude_creator_domains.map(() => '?').join(', ')})
+          OR NOT EXISTS (
+            SELECT 1
+            FROM json_each(?) excluded_creator_domains
+            WHERE excluded_creator_domains.value = LOWER(SUBSTR(u.email, INSTR(u.email, '@') + 1))
+          )
         )
       `);
-      params.push(...filters.exclude_creator_domains);
+      params.push(JSON.stringify(excludedCreatorDomains));
     }
 
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
@@ -1185,10 +1204,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             FROM org_memberships
             GROUP BY org_id
           ) m ON m.org_id = o.id
-          WHERE o.id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          WHERE o.id IN (SELECT value FROM json_each(?))
           ORDER BY o.created_at DESC, o.id ASC
         `,
-        ...normalizedOrgIds,
+        JSON.stringify(normalizedOrgIds),
       ),
     ).map((row: any) => ({
       ...row,
@@ -1229,10 +1248,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
             u.signup_ip
           FROM org_memberships m
           INNER JOIN users u ON u.id = m.user_id
-          WHERE m.org_id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          WHERE m.org_id IN (SELECT value FROM json_each(?))
           ORDER BY u.created_at DESC, u.id ASC
         `,
-        ...normalizedOrgIds,
+        JSON.stringify(normalizedOrgIds),
       ),
     ).map((row: any) => ({
       id: row.id,
@@ -1276,10 +1295,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
           FROM threads t
           LEFT JOIN orgs o ON t.org_id = o.id
           LEFT JOIN workspaces w ON t.workspace_id = w.id
-          WHERE t.org_id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          WHERE t.org_id IN (SELECT value FROM json_each(?))
           ORDER BY t.created_at DESC, t.id ASC
         `,
-        ...normalizedOrgIds,
+        JSON.stringify(normalizedOrgIds),
       ),
     ).map((row: any) => ({
       ...row,
@@ -1324,10 +1343,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
           LEFT JOIN orgs o ON a.org_id = o.id
           LEFT JOIN workspaces w ON a.workspace_id = w.id
           LEFT JOIN users u ON a.created_by = u.id
-          WHERE a.org_id IN (${normalizedOrgIds.map(() => '?').join(', ')})
+          WHERE a.org_id IN (SELECT value FROM json_each(?))
           ORDER BY a.created_at DESC, a.app_id ASC
         `,
-        ...normalizedOrgIds,
+        JSON.stringify(normalizedOrgIds),
       ),
     ).map((row: any) => ({
       ...row,
