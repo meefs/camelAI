@@ -547,9 +547,9 @@ export default function AdminOrgDetailPage() {
               <CardHeader>
                 <CardTitle>Model Access</CardTitle>
                 <CardDescription>
-                  Temporary April 2026 flag for default free-tier orgs on the
-                  camelAI proxy. By default, proxy users get Codex only; enable
-                  this to temporarily allow new Claude chats.
+                  Legacy April 2026 flag for default free-tier orgs on the
+                  camelAI proxy. It is still stored for compatibility but no
+                  longer gates new chat model access.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -557,18 +557,17 @@ export default function AdminOrgDetailPage() {
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-medium">
-                        Temporary Claude proxy access flag
+                        Legacy proxy model-access flag
                       </p>
                       <Badge variant={experimentalSettings.claude_proxy_models ? "default" : "outline"}>
                         {experimentalSettings.claude_proxy_models ? "Allowed" : "Standard"}
                       </Badge>
                     </div>
                     <p className="max-w-xl text-sm text-muted-foreground">
-                      Implemented in April 2026 as a temporary override. Default
-                      free-tier proxy orgs can create new Codex threads only.
-                      Turn this on only when we want to temporarily grant Claude
-                      access on the proxy. BYOK Anthropic or Bedrock still
-                      enables Claude, and existing Claude threads remain usable.
+                      Implemented in April 2026 as a temporary override. New
+                      proxy chats now show Claude by default without checking
+                      this flag, while BYOK orgs remain scoped to their selected
+                      provider. This control remains for admin/API compatibility.
                     </p>
                   </div>
                   <Form method="post">
@@ -583,8 +582,8 @@ export default function AdminOrgDetailPage() {
                       variant={experimentalSettings.claude_proxy_models ? "outline" : "default"}
                     >
                       {experimentalSettings.claude_proxy_models
-                        ? "Remove Claude Access"
-                        : "Allow Claude Access"}
+                        ? "Disable Legacy Flag"
+                        : "Enable Legacy Flag"}
                     </Button>
                   </Form>
                 </div>

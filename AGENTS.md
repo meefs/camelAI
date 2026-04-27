@@ -36,7 +36,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - WebSocket client for real-time streaming
    - Tailwind CSS v4 + shadcn/ui components
    - Cloudflare Workers SSR via `@cloudflare/vite-plugin`
-   - New chat model access is provider-scoped: Anthropic/AWS Bedrock BYOK shows Claude models, OpenAI BYOK shows GPT/Codex models, and the camelAI proxy defaults to GPT/Codex models. Superusers can grant `claude_proxy_models` special access from qaml-backdoor org detail; existing Claude threads keep their locked model and remain usable.
+   - New chat model access is provider-scoped for BYOK orgs: Anthropic/AWS Bedrock BYOK shows Claude models, and OpenAI BYOK shows GPT/Codex models. Orgs on the default camelAI proxy see Claude by default with GPT/Codex still available; this proxy availability no longer depends on the `claude_proxy_models` flag. Existing GPT/Codex threads keep their locked model and remain usable.
 
 2. **Workers** (`workers/`)
    - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP, admin CLI API)
@@ -131,7 +131,7 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 3. `control-plane.mjs` selects the thread harness: Claude threads use Claude SDK `query()`, while Codex threads run a warm per-thread `codex app-server` over stdio against the sandbox OpenAI proxy
 4. On reconnects, `ChatThreadDO` sends `lastSeq`, replays missed events, dedupes, resumes streaming
 5. Browser user messages are author-attributed inside `ChatThreadDO` by serializing each WebSocket's `{ userId, userName, userEmail }` as a socket attachment on upgrade and reading that attachment when the socket sends `type: "message"`. The control plane also echoes the currently active turn author back to `ChatThreadDO`, and MCP admin checks resolve against that turn-scoped `userId` instead of the sandbox proxy's connection-scoped header. This keeps multiplayer threads from reusing a thread-global author identity across collaborators.
-6. Threads persist their harness on the org `threads` table (`provider = claude|codex`), and new web threads default to `codex` when the org AI provider is set to OpenAI
+6. Threads persist their harness on the org `threads` table (`provider = claude|codex`), and new web threads default to `claude`; Codex/GPT threads continue to run through the Codex harness when a thread is explicitly created or already stored with `provider = codex`
 7. Claude SDK still stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`. `ChatThreadDO` does not persist full transcript snapshots; message history reloads go through sandbox-host storage.
 8. `Chat.tsx` discloses compaction progress in-flight: `CompactingIndicator` turns on for manual `/compact` and auto-compaction (`system/status` with `status: "compacting"`, plus `stream_event/content_block_start(type=compaction)` fallback) and clears on summary capture, `status: null`, turn `result`/`error`, reconnect reset, or reconnect-exhausted close.
 9. `ChatThreadDO` computes context usage from `stream_event.message_start` usage and now broadcasts live `context_usage_state` updates during a turn when a model-scoped `contextWindow` cache is available (`chatContextWindowByModel`, persisted in DO KV). On `result`, it computes and persists the canonical value (`chatContextUsedPercent`) and replays `transientContextUsedPercent ?? contextUsedPercent` on chat init so reconnects can resume from the freshest value. The composer `ContextIndicator` (left toolbar, after Mic) appears when usage is `>= 50%`, shows `"XX% used"`, and can trigger `/compact` without mutating unsent draft text.
@@ -175,7 +175,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 
 - **Recent Threads**: latest 10 by `updated_at` (newest first)
 - **Recent Apps**: latest 10 by `updated_at` (newest first)
-- **Model Access**: superusers can grant or remove `claude_proxy_models` for orgs on the camelAI proxy; Bearer admin API clients can set the same flag via `PUT /api/admin/orgs/:id/model-access`
+- **Model Access**: superusers can still update the legacy `claude_proxy_models` flag for orgs on the camelAI proxy; Bearer admin API clients can set the same flag via `PUT /api/admin/orgs/:id/model-access`, but new-chat proxy model availability no longer depends on it
 - Counts are shown only when cheap to derive (no heavy count queries on page load)
 
 ### Slack Chat Ingress

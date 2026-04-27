@@ -33,12 +33,12 @@ describe('llm provider config helpers', () => {
     expect(getLlmModelOptions('codex').map((option) => option.value)).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
   });
 
-  it('makes Codex the default for OpenAI BYOK and standard proxy orgs', () => {
+  it('keeps BYOK provider-scoped and defaults proxy orgs to Claude', () => {
     expect(parseOrganizationExperimentalSettings(null)).toEqual({
       claude_proxy_models: false,
     });
     expect(getDefaultThreadProvider('openai', { claude_proxy_models: false })).toBe('codex');
-    expect(getDefaultThreadProvider(null, { claude_proxy_models: false })).toBe('codex');
+    expect(getDefaultThreadProvider(null, { claude_proxy_models: false })).toBe('claude');
     expect(getDefaultThreadProvider('anthropic', { claude_proxy_models: false })).toBe('claude');
     expect(getDefaultThreadProvider('bedrock', { claude_proxy_models: false })).toBe('claude');
     expect(getVisibleLlmModelOptions('codex', { claude_proxy_models: false }).map((option) => option.value)).toEqual([
@@ -55,7 +55,7 @@ describe('llm provider config helpers', () => {
         undefined,
         { allowModelFamilySwitch: true, orgProvider: null },
       ).map((option) => option.value)
-    ).toEqual(['gpt-5.4', 'gpt-5.4-mini', 'sonnet', 'opus']);
+    ).toEqual(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']);
     expect(
       getVisibleLlmModelOptions(
         'codex',
@@ -84,10 +84,10 @@ describe('llm provider config helpers', () => {
   });
 
   it('validates new thread models against BYOK and proxy policy', () => {
-    expect(getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: false })).toEqual(['codex']);
-    expect(getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: true })).toEqual(['codex', 'claude']);
+    expect(getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: false })).toEqual(['claude', 'codex']);
+    expect(getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: true })).toEqual(['claude', 'codex']);
     expect(isLlmModelAllowedForNewThread('gpt-5.4', null, { claude_proxy_models: false })).toBe(true);
-    expect(isLlmModelAllowedForNewThread('sonnet', null, { claude_proxy_models: false })).toBe(false);
+    expect(isLlmModelAllowedForNewThread('sonnet', null, { claude_proxy_models: false })).toBe(true);
     expect(isLlmModelAllowedForNewThread('sonnet', 'anthropic', { claude_proxy_models: false })).toBe(true);
     expect(isLlmModelAllowedForNewThread('gpt-5.4', 'anthropic', { claude_proxy_models: false })).toBe(false);
     expect(isLlmModelAllowedForNewThread('gpt-5.4', 'openai', { claude_proxy_models: true })).toBe(true);

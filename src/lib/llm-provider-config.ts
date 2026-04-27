@@ -34,7 +34,7 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
-}> = CODEX_LLM_MODEL_OPTIONS;
+}> = CLAUDE_LLM_MODEL_OPTIONS;
 
 export interface LlmProviderStoredConfig {
   aws_region?: string;
@@ -71,16 +71,14 @@ export function getAllowedChatHarnessesForNewThread(
   if (orgProvider === 'openai') {
     return ['codex'];
   }
-  return isClaudeProxyModelsEnabled(experimentalSettings)
-    ? ['codex', 'claude']
-    : ['codex'];
+  return ['claude', 'codex'];
 }
 
 export function getDefaultThreadProvider(
   orgProvider: string | null | undefined,
   experimentalSettings?: OrganizationExperimentalSettings | null,
 ): ChatHarness {
-  return getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings)[0] ?? 'codex';
+  return getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings)[0] ?? 'claude';
 }
 
 export function getDefaultLlmModel(provider: ChatHarness): LlmModel {

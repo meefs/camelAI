@@ -32,13 +32,13 @@ export default function OrganizationExperimentalPage() {
           <CardHeader>
             <CardTitle>Chat Models</CardTitle>
             <CardDescription>
-              Codex and GPT models are now available without an experimental flag.
+              Claude and GPT models are available on the default camelAI proxy without an experimental flag.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              Claude on the camelAI proxy is limited to organizations with special access.
-              Anthropic and AWS Bedrock keys still enable Claude models through AI Provider settings.
+              BYOK organizations remain provider-scoped: Anthropic and AWS Bedrock keys show Claude models,
+              while OpenAI keys show GPT/Codex models.
             </p>
           </CardContent>
         </Card>

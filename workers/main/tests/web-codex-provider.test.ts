@@ -20,7 +20,7 @@ describe('web Codex provider wiring', () => {
 
   const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 
-  it('creates new web threads on the codex harness when the org provider is OpenAI', async () => {
+  it('keeps new web threads on the Codex harness when the org provider is OpenAI', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Codex User');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Codex Org', userId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
@@ -46,7 +46,7 @@ describe('web Codex provider wiring', () => {
     expect(thread.provider).toBe('codex');
   });
 
-  it('creates standard proxy web threads on codex and rejects Claude without special access', async () => {
+  it('creates standard proxy web threads on Claude and still allows explicit Codex', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Proxy Codex User');
     const { defaultWorkspaceId } = await createOrg(testEnv, 'Proxy Codex Org', userId);
 
@@ -58,19 +58,22 @@ describe('web Codex provider wiring', () => {
       'Reply with pong'
     );
 
-    expect(thread.provider).toBe('codex');
-    expect(thread.model).toBe('gpt-5.4');
-    await expect(createThread(
+    expect(thread.provider).toBe('claude');
+    expect(thread.model).toBe('sonnet');
+    const codexThread = await createThread(
       buildContext(testEnv) as never,
       defaultWorkspaceId,
-      'Blocked Claude thread',
+      'Explicit Codex thread',
       userId,
       'Reply with pong',
-      'sonnet'
-    )).rejects.toThrow('Invalid thread model');
+      'gpt-5.4'
+    );
+
+    expect(codexThread.provider).toBe('codex');
+    expect(codexThread.model).toBe('gpt-5.4');
   });
 
-  it('allows Claude proxy threads for orgs with special access', async () => {
+  it('does not require the proxy model-access flag for Claude defaults', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Claude Proxy User');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Claude Proxy Org', userId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
@@ -79,10 +82,9 @@ describe('web Codex provider wiring', () => {
     const thread = await createThread(
       buildContext(testEnv) as never,
       defaultWorkspaceId,
-      'Claude proxy thread',
+      'Claude default thread',
       userId,
-      'Reply with pong',
-      'sonnet'
+      'Reply with pong'
     );
 
     expect(thread.provider).toBe('claude');
