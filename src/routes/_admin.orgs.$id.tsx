@@ -1,4 +1,6 @@
-import { Form, Link, useLoaderData, redirect } from "react-router";
+import { Form, Link, useFetcher, useLoaderData, redirect } from "react-router";
+import { useEffect } from "react";
+import { toast } from "sonner";
 import type { Route } from "./+types/_admin.orgs.$id";
 import { requireSuperuser, getAuthEnv } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -12,6 +14,10 @@ import {
 } from "@/lib/auth-do";
 import { getOrgBanById, type BanRecord } from "../../workers/main/src/ban-list";
 import { waitUntil } from "@/lib/wait-until";
+import {
+  refreshOrgCustomDomainHostnamesForAdmin,
+  type AdminCustomDomainRefreshResult,
+} from "@/lib/admin-custom-domain.server";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { AddOrgMemberDialog } from "@/components/admin/add-org-member-dialog";
 import { OrgDangerZone } from "@/components/admin/org-danger-zone";
@@ -37,6 +43,7 @@ import {
 } from "@/components/ui/table";
 import { getContrastTextColor } from "@/lib/avatar";
 import { cn } from "@/lib/utils";
+import { RefreshCw } from "lucide-react";
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -45,6 +52,12 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 
 const RECENT_THREAD_LIMIT = 10;
 const RECENT_APP_LIMIT = 10;
+
+type AdminOrgActionResult = {
+  success?: boolean;
+  error?: string;
+  customDomainRefresh?: AdminCustomDomainRefreshResult;
+};
 
 function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value));
@@ -81,6 +94,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   }
 
   const env = getEnv(context);
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(id));
 
   // Fetch usage data from sandbox-host (best-effort, don't block on failure)
   const usagePromise = env.SANDBOX_HOST
@@ -104,6 +118,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspaces,
     recentActivity,
     experimentalSettings,
+    customDomain,
+    customDomainApps,
     [usageSpend, usageLog],
     orgBan,
   ] = await Promise.all([
@@ -115,7 +131,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       appLimit: RECENT_APP_LIMIT,
       includeCounts: "cheap",
     }),
-    authEnv.ORG.get(authEnv.ORG.idFromName(id)).getExperimentalSettings(),
+    orgStub.getExperimentalSettings(),
+    orgStub.getCustomDomain(),
+    orgStub.listWorkerScripts(),
     usagePromise as Promise<[any, any]>,
     getOrgBanById(getEnv(context).APP_KV, id),
   ]);
@@ -160,6 +178,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
     experimentalSettings,
+    customDomain,
+    customDomainApps,
     memberOptions,
     orgBan,
     usageSpend: usageSpend as {
@@ -302,7 +322,192 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return { success: true };
   }
 
+  if (intent === "refreshCustomDomain") {
+    try {
+      const result = await refreshOrgCustomDomainHostnamesForAdmin(
+        getEnv(context),
+        orgId,
+        {
+          includeActive: formData.get("includeActive") === "true",
+        },
+      );
+      if (!result) {
+        return { error: "Organization not found" };
+      }
+      return { success: true, customDomainRefresh: result };
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to refresh custom domain hostnames",
+      };
+    }
+  }
+
   return { error: "Unknown action" };
+}
+
+function customDomainStatusVariant(status: string | null | undefined) {
+  if (status === "active") return "default";
+  if (status === "failed" || status === "expired") return "destructive";
+  return "outline";
+}
+
+function AdminCustomDomainCard({
+  customDomain,
+  apps,
+}: {
+  customDomain: { domain: string; status: string; ssl_status: string | null } | null;
+  apps: Array<{
+    script_name: string;
+    custom_domain_hostname: string | null;
+    custom_domain_status: string | null;
+    custom_domain_ssl_status: string | null;
+    custom_domain_error: string | null;
+    custom_domain_updated_at: number | null;
+  }>;
+}) {
+  const fetcher = useFetcher<AdminOrgActionResult>();
+  const loading = fetcher.state !== "idle";
+
+  useEffect(() => {
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+    if (fetcher.data.error) {
+      toast.error(fetcher.data.error);
+      return;
+    }
+    const result = fetcher.data.customDomainRefresh;
+    if (result) {
+      toast.success(
+        `Custom domain refresh completed for ${result.refreshed}/${result.attempted} attempted apps`,
+      );
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  const pendingApps = customDomain
+    ? apps.filter(
+        (app) =>
+          app.custom_domain_status !== "active" ||
+          app.custom_domain_ssl_status !== "active",
+      )
+    : [];
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle>Custom Domain</CardTitle>
+          <CardDescription>
+            Refresh Cloudflare custom hostname validation for apps stuck in
+            pending SSL.
+          </CardDescription>
+        </div>
+        {customDomain ? (
+          <fetcher.Form method="post">
+            <input type="hidden" name="intent" value="refreshCustomDomain" />
+            <input type="hidden" name="includeActive" value="false" />
+            <Button type="submit" variant="outline" size="sm" disabled={loading}>
+              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+              {loading ? "Refreshing" : "Refresh Pending SSL"}
+            </Button>
+          </fetcher.Form>
+        ) : null}
+      </CardHeader>
+      <CardContent>
+        {!customDomain ? (
+          <p className="text-sm text-muted-foreground">
+            No custom domain configured for this organization.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <dl className="grid gap-4 sm:grid-cols-3">
+              <div>
+                <dt className="text-sm font-medium text-muted-foreground">
+                  Domain
+                </dt>
+                <dd className="font-mono text-sm">{customDomain.domain}</dd>
+              </div>
+              <div>
+                <dt className="text-sm font-medium text-muted-foreground">
+                  Org Status
+                </dt>
+                <dd>
+                  <Badge variant={customDomainStatusVariant(customDomain.status)}>
+                    {customDomain.status}
+                  </Badge>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-sm font-medium text-muted-foreground">
+                  Apps Needing SSL
+                </dt>
+                <dd className="text-sm">{pendingApps.length}</dd>
+              </div>
+            </dl>
+
+            {apps.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No deployed apps have been registered for this org.
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>App</TableHead>
+                    <TableHead>Hostname</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Updated</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {apps.map((app) => (
+                    <TableRow key={app.script_name}>
+                      <TableCell className="font-mono text-xs">
+                        {app.script_name}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {app.custom_domain_hostname ??
+                          `${app.script_name}.${customDomain.domain}`}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            variant={customDomainStatusVariant(
+                              app.custom_domain_status,
+                            )}
+                          >
+                            {app.custom_domain_status ?? "missing"}
+                          </Badge>
+                          <Badge
+                            variant={customDomainStatusVariant(
+                              app.custom_domain_ssl_status,
+                            )}
+                          >
+                            SSL {app.custom_domain_ssl_status ?? "missing"}
+                          </Badge>
+                        </div>
+                        {app.custom_domain_error ? (
+                          <p className="mt-1 max-w-md text-xs text-destructive">
+                            {app.custom_domain_error}
+                          </p>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {app.custom_domain_updated_at
+                          ? formatTimestamp(app.custom_domain_updated_at)
+                          : "Never"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function AdminOrgDetailPage() {
@@ -316,6 +521,8 @@ export default function AdminOrgDetailPage() {
     threadCount,
     appCount,
     experimentalSettings,
+    customDomain,
+    customDomainApps,
     memberOptions,
     orgBan,
     usageSpend,
@@ -589,6 +796,11 @@ export default function AdminOrgDetailPage() {
                 </div>
               </CardContent>
             </Card>
+
+            <AdminCustomDomainCard
+              customDomain={customDomain}
+              apps={customDomainApps}
+            />
 
             <Card>
               <CardHeader>

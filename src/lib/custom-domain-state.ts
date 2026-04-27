@@ -67,6 +67,8 @@ export function shouldRetryAppCustomDomainProvisioning(
     !!app.custom_domain_error ||
     !app.custom_domain_status ||
     !app.custom_domain_ssl_status ||
+    (app.custom_domain_status === 'active' &&
+      app.custom_domain_ssl_status !== 'active') ||
     app.custom_domain_status === 'deleted' ||
     app.custom_domain_status === 'failed' ||
     app.custom_domain_status === 'moved' ||

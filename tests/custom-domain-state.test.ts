@@ -105,6 +105,19 @@ describe('custom domain state helpers', () => {
     ).toBe(true);
   });
 
+  it('retries a matching hostname when hostname validation is active but SSL validation is still pending', () => {
+    const script = makeScript({
+      custom_domain_hostname: 'demo-app.apps.example.com',
+      custom_domain_cf_hostname_id: 'hostname-id',
+      custom_domain_status: 'active',
+      custom_domain_ssl_status: 'pending_validation',
+      custom_domain_error: null,
+      custom_domain_updated_at: 20_000,
+    });
+
+    expect(shouldRetryAppCustomDomainProvisioning(script, 'apps.example.com', 30_000)).toBe(true);
+  });
+
   it('retries hostnames in terminal Cloudflare custom hostname states', () => {
     const script = makeScript({
       custom_domain_hostname: 'demo-app.apps.example.com',

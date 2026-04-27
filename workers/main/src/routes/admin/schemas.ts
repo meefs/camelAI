@@ -212,6 +212,31 @@ export const OrgModelAccessSchema = z.object({
   claude_proxy_models: z.boolean(),
 });
 
+export const RefreshOrgCustomDomainBodySchema = z.object({
+  include_active: z.boolean().optional().default(false),
+});
+
+const RefreshOrgCustomDomainAppSchema = z.object({
+  script_name: z.string(),
+  hostname: z.string(),
+  action: z.enum(['skipped_active', 'refreshed', 'failed']),
+  cf_hostname_id: z.string().nullable(),
+  status: z.string().nullable(),
+  ssl_status: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
+export const RefreshOrgCustomDomainResponseSchema = z.object({
+  org_id: z.string(),
+  domain: z.string().nullable(),
+  total_apps: z.number().int(),
+  attempted: z.number().int(),
+  refreshed: z.number().int(),
+  failed: z.number().int(),
+  skipped_active: z.number().int(),
+  apps: z.array(RefreshOrgCustomDomainAppSchema),
+});
+
 export const ThreadSchema = z.object({
   id: z.string(),
   title: z.string().nullable().optional(),

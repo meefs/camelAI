@@ -49,6 +49,8 @@ import {
   AppSchema,
   AddMemberBodySchema,
   AddMemberResponseSchema,
+  RefreshOrgCustomDomainBodySchema,
+  RefreshOrgCustomDomainResponseSchema,
   UpdateOrgModelAccessBodySchema,
   UpdateThreadBodySchema,
   BlockSignupIpBodySchema,
@@ -121,6 +123,7 @@ import {
   getUserBanById,
 } from "../../ban-list.js";
 import { waitUntil } from "cloudflare:workers";
+import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
 
 type HonoEnv = { Bindings: Env };
 
@@ -705,6 +708,49 @@ routes.put(
       org_id: orgId,
       claude_proxy_models: settings.claude_proxy_models,
     });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /orgs/:id/custom-domain/refresh
+// ---------------------------------------------------------------------------
+
+routes.post(
+  "/orgs/:id/custom-domain/refresh",
+  openApi({
+    summary: "Refresh Cloudflare custom hostname validation for an org custom domain",
+    request: {
+      json: RefreshOrgCustomDomainBodySchema,
+    },
+    responses: {
+      200: RefreshOrgCustomDomainResponseSchema,
+      404: ErrorSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param("id");
+    const body = c.req.valid("json");
+
+    try {
+      const result = await refreshOrgCustomDomainHostnamesForAdmin(c.env, orgId, {
+        includeActive: body.include_active,
+      });
+      if (!result) {
+        return c.json({ error: "Organization not found" }, 404);
+      }
+      return c.json(result);
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to refresh custom domain hostnames",
+        },
+        502,
+      );
+    }
   },
 );
 
