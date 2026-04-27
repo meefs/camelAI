@@ -78,6 +78,30 @@ describe('createOrRefreshCustomHostname', () => {
     });
     consoleWarn.mockRestore();
   });
+
+  it('creates wildcard custom hostnames when requested', async () => {
+    const created = {
+      id: 'hostname-1',
+      hostname: 'apps.example.com',
+      ssl: { status: 'pending_validation', method: 'txt', type: 'dv' },
+      status: 'pending',
+      created_at: '2026-04-27T00:00:00Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(cfResponse(created));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      createOrRefreshCustomHostname('zone-1', 'token-1', 'apps.example.com', {
+        wildcard: true,
+      })
+    ).resolves.toEqual(created);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      hostname: 'apps.example.com',
+      ssl: { method: 'txt', type: 'dv', wildcard: true },
+    });
+  });
 });
 
 describe('extractCustomHostnameDcvRecord', () => {

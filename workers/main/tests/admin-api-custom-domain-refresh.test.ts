@@ -43,20 +43,20 @@ async function adminRequest(path: string, body: unknown): Promise<Response> {
   return response;
 }
 
-function cfHostnameResponse(scriptName: string) {
+function cfHostnameResponse(domain: string) {
   return Response.json({
     success: true,
     result: {
-      id: `cf-${scriptName}`,
-      hostname: `${scriptName}.apps.example.com`,
+      id: `cf-${domain}`,
+      hostname: domain,
       ssl: {
         status: 'pending_validation',
         method: 'txt',
         type: 'dv',
         dcv_delegation_records: [
           {
-            cname: `_acme-challenge.${scriptName}.apps.example.com`,
-            cname_target: `${scriptName}-token.dcv.cloudflare.com`,
+            cname: `_acme-challenge.${domain}`,
+            cname_target: `${domain}.wildcard-token.dcv.cloudflare.com`,
           },
         ],
       },
@@ -87,10 +87,18 @@ describe('admin API custom domain refresh route', () => {
       .fn()
       .mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
         const request = input instanceof Request ? input : new Request(input, init);
+        if (request.method === 'GET') {
+          return Response.json({
+            success: true,
+            result: [],
+            result_info: { total_pages: 1 },
+          });
+        }
         expect(request.method).toBe('POST');
-        const body = await request.json() as { hostname: string };
-        expect(body.hostname).toBe('pending-app.apps.example.com');
-        return cfHostnameResponse('pending-app');
+        const body = await request.json() as { hostname: string; ssl: { wildcard: boolean } };
+        expect(body.hostname).toBe('apps.example.com');
+        expect(body.ssl.wildcard).toBe(true);
+        return cfHostnameResponse('apps.example.com');
       });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -103,37 +111,40 @@ describe('admin API custom domain refresh route', () => {
       org_id: org.id,
       domain: 'apps.example.com',
       total_apps: 2,
-      attempted: 1,
-      refreshed: 1,
+      attempted: 2,
+      refreshed: 2,
       failed: 0,
-      skipped_active: 1,
+      skipped_active: 0,
       apps: expect.arrayContaining([
         expect.objectContaining({
           script_name: 'pending-app',
           action: 'refreshed',
-          cf_hostname_id: 'cf-pending-app',
+          cf_hostname_id: 'cf-apps.example.com',
           status: 'pending',
           ssl_status: 'pending_validation',
           dcv_record: {
-            cname: '_acme-challenge.pending-app.apps.example.com',
-            cname_target: 'pending-app-token.dcv.cloudflare.com',
+            cname: '_acme-challenge.apps.example.com',
+            cname_target: 'apps.example.com.wildcard-token.dcv.cloudflare.com',
           },
         }),
         expect.objectContaining({
           script_name: 'active-app',
-          action: 'skipped_active',
+          action: 'refreshed',
+          cf_hostname_id: 'cf-apps.example.com',
+          status: 'pending',
+          ssl_status: 'pending_validation',
         }),
       ]),
     });
 
     await expect(orgStub.getWorkerScript('pending-app')).resolves.toMatchObject({
       custom_domain_hostname: 'pending-app.apps.example.com',
-      custom_domain_cf_hostname_id: 'cf-pending-app',
+      custom_domain_cf_hostname_id: 'cf-apps.example.com',
       custom_domain_status: 'pending',
       custom_domain_ssl_status: 'pending_validation',
       custom_domain_error: null,
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('returns 404 for unknown orgs', async () => {

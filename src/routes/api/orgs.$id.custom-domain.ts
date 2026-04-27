@@ -101,13 +101,26 @@ export async function action({ request, params, context }: Route.ActionArgs) {
               });
             }
 
-            const scripts = await orgStub.listWorkerScripts();
-            for (const script of scripts) {
-              const appHostname = `${script.script_name}.${domain}`;
-              try {
-                // Use the zone's configured fallback origin for normal app hostnames.
-                const result = await createOrRefreshCustomHostname(zoneId, apiToken, appHostname);
-                if (result) {
+            try {
+              const result = await createOrRefreshCustomHostname(zoneId, apiToken, domain, {
+                wildcard: true,
+              });
+              const scripts = await orgStub.listWorkerScripts();
+              if (result) {
+                await orgStub.updateCustomDomainStatus(
+                  domain,
+                  result.status === 'active' ? 'active' : 'pending',
+                  result.ssl.status,
+                  result.id
+                );
+                const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain);
+                for (const hostname of staleHostnames) {
+                  if (hostname.id !== result.id) {
+                    await deleteCustomHostname(zoneId, apiToken, hostname.id);
+                  }
+                }
+                for (const script of scripts) {
+                  const appHostname = `${script.script_name}.${domain}`;
                   await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                     hostname: appHostname,
                     cf_hostname_id: result.id,
@@ -115,21 +128,28 @@ export async function action({ request, params, context }: Route.ActionArgs) {
                     ssl_status: result.ssl.status,
                     error: null,
                   });
-                  console.log(`[custom-domains] backfill: synced hostname ${appHostname} status=${result.status}`);
-                } else {
+                }
+                console.log(`[custom-domains] backfill: synced wildcard hostname ${domain} status=${result.status}`);
+              } else {
+                for (const script of scripts) {
+                  const appHostname = `${script.script_name}.${domain}`;
                   await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                     hostname: appHostname,
-                    error: 'Failed to create or locate Cloudflare custom hostname',
+                    error: 'Failed to create or locate Cloudflare wildcard custom hostname',
                   });
-                  console.error(`[custom-domains] backfill: missing hostname after create ${appHostname}`);
                 }
-              } catch (err) {
+                console.error(`[custom-domains] backfill: missing wildcard hostname after create ${domain}`);
+              }
+            } catch (err) {
+              const scripts = await orgStub.listWorkerScripts();
+              for (const script of scripts) {
+                const appHostname = `${script.script_name}.${domain}`;
                 await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                   hostname: appHostname,
                   error: err instanceof Error ? err.message : String(err),
                 });
-                console.error(`[custom-domains] backfill: failed for ${appHostname}:`, err);
               }
+              console.error(`[custom-domains] backfill: failed for wildcard ${domain}:`, err);
             }
           })().catch(err => console.error('[custom-domains] backfill failed:', err))
         );

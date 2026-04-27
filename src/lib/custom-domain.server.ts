@@ -15,6 +15,12 @@ interface CustomDomainRefreshEnv {
 }
 
 interface OrgCustomDomainRpc {
+  updateCustomDomainStatus(
+    domain: string,
+    status: 'pending' | 'active' | 'failed',
+    sslStatus?: string | null,
+    cfHostnameId?: string
+  ): Promise<unknown>;
   updateWorkerScriptCustomDomain(
     scriptName: string,
     input: {
@@ -54,7 +60,7 @@ export async function refreshWorkerScriptCustomDomainState(
     }
 
     if (!record) {
-      record = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+      record = await findCustomHostnameByHostname(zoneId, apiToken, orgCustomDomain);
     }
 
     if (!record) {
@@ -66,6 +72,12 @@ export async function refreshWorkerScriptCustomDomainState(
       get(id: DurableObjectId): OrgCustomDomainRpc;
     };
     const orgStub = orgNamespace.get(orgNamespace.idFromName(orgId));
+    await orgStub.updateCustomDomainStatus(
+      orgCustomDomain,
+      record.status === 'active' ? 'active' : 'pending',
+      record.ssl.status,
+      record.id
+    );
     return (
       await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
         hostname: expectedHostname,

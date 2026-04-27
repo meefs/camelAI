@@ -51,30 +51,22 @@ interface AppDomainStatus {
 async function getAuthoritativeDcvRecord(options: {
   zoneId?: string | null;
   apiToken?: string | null;
-  domain: string | null;
-  scripts: Array<{
-    script_name: string;
-    custom_domain_hostname: string | null;
-    custom_domain_cf_hostname_id: string | null;
-  }>;
+  domain: {
+    domain: string;
+    cf_hostname_id: string | null;
+  } | null;
 }): Promise<CustomHostnameDcvRecord | null> {
   const zoneId = options.zoneId?.trim();
   const apiToken = options.apiToken?.trim();
   if (!zoneId || !apiToken || !options.domain) return null;
 
-  for (const script of options.scripts) {
-    const expectedHostname = `${script.script_name}.${options.domain}`;
-    let record = null;
-    if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
-      record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
-    }
-    record ??= await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
-
-    const dcvRecord = extractCustomHostnameDcvRecord(record);
-    if (dcvRecord) return dcvRecord;
+  let record = null;
+  if (options.domain.cf_hostname_id) {
+    record = await getCustomHostnameStatus(zoneId, apiToken, options.domain.cf_hostname_id);
   }
+  record ??= await findCustomHostnameByHostname(zoneId, apiToken, options.domain.domain);
 
-  return null;
+  return extractCustomHostnameDcvRecord(record);
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -101,8 +93,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const dcvRecord = await getAuthoritativeDcvRecord({
     zoneId: env.CF_ZONE_ID,
     apiToken: env.CF_API_TOKEN,
-    domain: domain?.domain ?? null,
-    scripts,
+    domain,
   });
 
   const apps: AppDomainStatus[] = scripts.map((s) => ({

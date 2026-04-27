@@ -2,7 +2,9 @@ import type { WorkerScript } from '../types';
 import { getExpectedCustomDomainHostname, isAppCustomDomainReady } from './app-url';
 import {
   createOrRefreshCustomHostname,
+  deleteCustomHostname,
   extractCustomHostnameDcvRecord,
+  listCustomHostnamesByBaseDomain,
   type CustomHostnameDcvRecord,
 } from '../../workers/main/src/cf-api-proxy';
 
@@ -17,8 +19,19 @@ interface CustomDomainAdminEnv {
 
 interface CustomDomainAdminOrgStub {
   getInfo(): Promise<{ id: string } | null>;
-  getCustomDomain(): Promise<{ domain: string } | null>;
+  getCustomDomain(): Promise<{
+    domain: string;
+    cf_hostname_id: string | null;
+    status: string | null;
+    ssl_status: string | null;
+  } | null>;
   listWorkerScripts(): Promise<WorkerScript[]>;
+  updateCustomDomainStatus(
+    domain: string,
+    status: 'pending' | 'active' | 'failed',
+    sslStatus?: string | null,
+    cfHostnameId?: string
+  ): Promise<unknown>;
   updateWorkerScriptCustomDomain(
     scriptName: string,
     input: {
@@ -86,6 +99,11 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
   }
 
   const scripts = await orgStub.listWorkerScripts();
+  const orgReady =
+    customDomain.status === 'active' && customDomain.ssl_status === 'active';
+  const appsReady = scripts.every((script) =>
+    isAppCustomDomainReady(script, customDomain.domain)
+  );
   const result: AdminCustomDomainRefreshResult = {
     org_id: orgId,
     domain: customDomain.domain,
@@ -97,9 +115,54 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
     apps: [],
   };
 
+  let record = null;
+  let recordError: string | null = null;
+  const shouldRefreshWildcard = options.includeActive || !orgReady;
+  if (shouldRefreshWildcard) {
+    try {
+      record = await createOrRefreshCustomHostname(zoneId, apiToken, customDomain.domain, {
+        wildcard: true,
+      });
+      if (!record) {
+        recordError = 'Failed to create or refresh Cloudflare wildcard custom hostname';
+      } else {
+        await orgStub.updateCustomDomainStatus(
+          customDomain.domain,
+          record.status === 'active' ? 'active' : 'pending',
+          record.ssl.status,
+          record.id
+        );
+        const staleHostnames = await listCustomHostnamesByBaseDomain(
+          zoneId,
+          apiToken,
+          customDomain.domain
+        );
+        for (const hostname of staleHostnames) {
+          if (hostname.id !== record.id) {
+            await deleteCustomHostname(zoneId, apiToken, hostname.id);
+          }
+        }
+      }
+    } catch (error) {
+      recordError = error instanceof Error ? error.message : String(error);
+    }
+  } else if (customDomain.cf_hostname_id) {
+    record = {
+      id: customDomain.cf_hostname_id,
+      hostname: customDomain.domain,
+      status: customDomain.status ?? 'active',
+      ssl: {
+        status: customDomain.ssl_status ?? 'active',
+        method: 'txt',
+        type: 'dv',
+      },
+      created_at: '',
+    };
+  }
+
   for (const script of scripts) {
     const hostname = getExpectedCustomDomainHostname(script.script_name, customDomain.domain);
-    if (!options.includeActive && isAppCustomDomainReady(script, customDomain.domain)) {
+    if (!options.includeActive && orgReady && appsReady && isAppCustomDomainReady(script, customDomain.domain)) {
       result.skipped_active += 1;
       result.apps.push({
         script_name: script.script_name,
@@ -115,10 +178,9 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
     }
 
     result.attempted += 1;
-    try {
-      const record = await createOrRefreshCustomHostname(zoneId, apiToken, hostname);
-      if (!record) {
-        const error = 'Failed to create or refresh Cloudflare custom hostname';
+    if (!record) {
+      const error = recordError ?? 'Failed to create or refresh Cloudflare wildcard custom hostname';
+      try {
         await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
           hostname,
           cf_hostname_id: null,
@@ -127,20 +189,22 @@ export async function refreshOrgCustomDomainHostnamesForAdmin(
           error,
           updated_at: Date.now(),
         });
-        result.failed += 1;
-        result.apps.push({
-          script_name: script.script_name,
-          hostname,
-          action: 'failed',
-          cf_hostname_id: null,
-          status: null,
-          ssl_status: null,
-          dcv_record: null,
-          error,
-        });
-        continue;
-      }
+      } catch {}
+      result.failed += 1;
+      result.apps.push({
+        script_name: script.script_name,
+        hostname,
+        action: 'failed',
+        cf_hostname_id: null,
+        status: null,
+        ssl_status: null,
+        dcv_record: null,
+        error,
+      });
+      continue;
+    }
 
+    try {
       await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
         hostname,
         cf_hostname_id: record.id,

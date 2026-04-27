@@ -846,6 +846,18 @@ const CUSTOM_HOSTNAME_SSL_SETTINGS = {
   wildcard: false,
 } as const;
 
+interface CustomHostnameOptions {
+  customOriginServer?: string;
+  wildcard?: boolean;
+}
+
+function buildCustomHostnameSslSettings(options: CustomHostnameOptions = {}) {
+  return {
+    ...CUSTOM_HOSTNAME_SSL_SETTINGS,
+    wildcard: options.wildcard ?? CUSTOM_HOSTNAME_SSL_SETTINGS.wildcard,
+  };
+}
+
 export function extractCustomHostnameDcvRecord(
   record: CfCustomHostname | null | undefined
 ): CustomHostnameDcvRecord | null {
@@ -873,8 +885,10 @@ export async function createCustomHostname(
   zoneId: string,
   apiToken: string,
   hostname: string,
-  customOriginServer?: string
+  options: CustomHostnameOptions | string = {}
 ): Promise<CfCustomHostname | null> {
+  const normalizedOptions =
+    typeof options === 'string' ? { customOriginServer: options } : options;
   const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames`;
   const headers = {
     Authorization: `Bearer ${apiToken}`,
@@ -882,10 +896,10 @@ export async function createCustomHostname(
   };
   const body: Record<string, unknown> = {
     hostname,
-    ssl: CUSTOM_HOSTNAME_SSL_SETTINGS,
+    ssl: buildCustomHostnameSslSettings(normalizedOptions),
   };
-  if (customOriginServer) {
-    body.custom_origin_server = customOriginServer;
+  if (normalizedOptions.customOriginServer) {
+    body.custom_origin_server = normalizedOptions.customOriginServer;
   }
   return callCloudflareApi<CfCustomHostname>(
     url,
@@ -902,18 +916,20 @@ export async function refreshCustomHostnameValidation(
   zoneId: string,
   apiToken: string,
   hostnameId: string,
-  customOriginServer?: string
+  options: CustomHostnameOptions | string = {}
 ): Promise<CfCustomHostname | null> {
+  const normalizedOptions =
+    typeof options === 'string' ? { customOriginServer: options } : options;
   const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames/${encodeURIComponent(hostnameId)}`;
   const headers = {
     Authorization: `Bearer ${apiToken}`,
     'Content-Type': 'application/json',
   };
   const body: Record<string, unknown> = {
-    ssl: CUSTOM_HOSTNAME_SSL_SETTINGS,
+    ssl: buildCustomHostnameSslSettings(normalizedOptions),
   };
-  if (customOriginServer) {
-    body.custom_origin_server = customOriginServer;
+  if (normalizedOptions.customOriginServer) {
+    body.custom_origin_server = normalizedOptions.customOriginServer;
   }
   return callCloudflareApi<CfCustomHostname>(
     url,
@@ -930,9 +946,9 @@ export async function createOrRefreshCustomHostname(
   zoneId: string,
   apiToken: string,
   hostname: string,
-  customOriginServer?: string
+  options: CustomHostnameOptions | string = {}
 ): Promise<CfCustomHostname | null> {
-  const created = await createCustomHostname(zoneId, apiToken, hostname, customOriginServer);
+  const created = await createCustomHostname(zoneId, apiToken, hostname, options);
   if (created) {
     return created;
   }
@@ -943,7 +959,7 @@ export async function createOrRefreshCustomHostname(
   }
 
   return (
-    await refreshCustomHostnameValidation(zoneId, apiToken, existing.id, customOriginServer)
+    await refreshCustomHostnameValidation(zoneId, apiToken, existing.id, options)
   ) ?? existing;
 }
 

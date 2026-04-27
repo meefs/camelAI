@@ -5,7 +5,12 @@
 import { type Env } from '../types.js';
 import type { DeploySideEffectsInfo } from '../cf-api-proxy.js';
 import type { AppScreenshotJob } from '../screenshot-queue.js';
-import { resolveEnvPrefix, createOrRefreshCustomHostname } from '../cf-api-proxy.js';
+import {
+  createOrRefreshCustomHostname,
+  deleteCustomHostname,
+  listCustomHostnamesByBaseDomain,
+  resolveEnvPrefix,
+} from '../cf-api-proxy.js';
 import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
@@ -18,30 +23,45 @@ async function syncScriptCustomHostname(
   env: Env,
   orgStub: ReturnType<typeof getOrgStub>,
   scriptName: string,
-  hostname: string,
+  domain: string,
   deployTs: number
 ): Promise<void> {
   const zoneId = env.CF_ZONE_ID?.trim();
   const apiToken = env.CF_API_TOKEN?.trim();
   if (!zoneId || !apiToken) return;
 
+  const appHostname = `${scriptName}.${domain}`;
+
   try {
-    // Normal app hostnames should use Cloudflare's default fallback origin.
-    const result = await createOrRefreshCustomHostname(zoneId, apiToken, hostname);
+    const result = await createOrRefreshCustomHostname(zoneId, apiToken, domain, {
+      wildcard: true,
+    });
 
     if (!result) {
       await orgStub.updateWorkerScriptCustomDomain(scriptName, {
-        hostname,
+        hostname: appHostname,
         error: 'Failed to create or locate Cloudflare custom hostname',
         updated_at: Date.now(),
         deploy_ts: deployTs,
       });
-      console.warn(`[deploy] failed to create custom hostname ${hostname}`);
+      console.warn(`[deploy] failed to create wildcard custom hostname ${domain}`);
       return;
     }
 
+    await orgStub.updateCustomDomainStatus(
+      domain,
+      result.status === 'active' ? 'active' : 'pending',
+      result.ssl.status,
+      result.id
+    );
+    const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain);
+    for (const hostname of staleHostnames) {
+      if (hostname.id !== result.id) {
+        await deleteCustomHostname(zoneId, apiToken, hostname.id);
+      }
+    }
     await orgStub.updateWorkerScriptCustomDomain(scriptName, {
-      hostname,
+      hostname: appHostname,
       cf_hostname_id: result.id,
       status: result.status,
       ssl_status: result.ssl.status,
@@ -49,10 +69,10 @@ async function syncScriptCustomHostname(
       updated_at: Date.now(),
       deploy_ts: deployTs,
     });
-    console.log(`[deploy] custom hostname ${hostname} status=${result.status} ssl=${result.ssl.status}`);
+    console.log(`[deploy] wildcard custom hostname ${domain} status=${result.status} ssl=${result.ssl.status}`);
   } catch (err) {
     await orgStub.updateWorkerScriptCustomDomain(scriptName, {
-      hostname,
+      hostname: appHostname,
       error: err instanceof Error ? err.message : String(err),
       updated_at: Date.now(),
       deploy_ts: deployTs,
@@ -91,8 +111,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     if (customDomain) {
       const domain = (await customDomain)?.domain;
       if (domain) {
-        const appHostname = `${scriptName}.${domain}`;
-        await syncScriptCustomHostname(env, orgStub, scriptName, appHostname, script.updated_at);
+        await syncScriptCustomHostname(env, orgStub, scriptName, domain, script.updated_at);
       }
     }
   } catch (err) {

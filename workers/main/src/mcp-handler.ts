@@ -335,7 +335,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     }
 
     if (!record) {
-      record = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+      record = await findCustomHostnameByHostname(zoneId, apiToken, orgCustomDomain);
     }
 
     if (!record) {
@@ -343,6 +343,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     }
 
     const orgStub = this.getOrgStub();
+    await orgStub.updateCustomDomainStatus(
+      orgCustomDomain,
+      record.status === 'active' ? 'active' : 'pending',
+      record.ssl.status,
+      record.id
+    );
     return (
       await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
         hostname: expectedHostname,
@@ -1584,6 +1590,26 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         const scripts = await orgStub.listWorkerScripts();
         const now = Date.now();
         let dcvRecord: CustomHostnameDcvRecord | null = null;
+        if (zoneId && apiToken) {
+          try {
+            let record = null;
+            if (domain.cf_hostname_id) {
+              record = await getCustomHostnameStatus(zoneId, apiToken, domain.cf_hostname_id);
+            }
+            record ??= await findCustomHostnameByHostname(zoneId, apiToken, domain.domain);
+            if (record) {
+              dcvRecord = extractCustomHostnameDcvRecord(record);
+              await orgStub.updateCustomDomainStatus(
+                domain.domain,
+                record.status === 'active' ? 'active' : 'pending',
+                record.ssl.status,
+                record.id
+              );
+            }
+          } catch {
+            // Keep diagnostics available even when Cloudflare lookup fails.
+          }
+        }
 
         // Refresh stale app hostname statuses from Cloudflare before responding
         const apps: Array<{
@@ -1611,10 +1637,16 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                 record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
               }
               if (!record) {
-                record = await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+                record = await findCustomHostnameByHostname(zoneId, apiToken, domain.domain);
               }
               if (record) {
                 dcvRecord ??= extractCustomHostnameDcvRecord(record);
+                await orgStub.updateCustomDomainStatus(
+                  domain.domain,
+                  record.status === 'active' ? 'active' : 'pending',
+                  record.ssl.status,
+                  record.id
+                );
                 currentScript =
                   (await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                     hostname: expectedHostname,
@@ -1652,7 +1684,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               if (script.custom_domain_cf_hostname_id && script.custom_domain_hostname === expectedHostname) {
                 record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
               }
-              record ??= await findCustomHostnameByHostname(zoneId, apiToken, expectedHostname);
+              record ??= await findCustomHostnameByHostname(zoneId, apiToken, domain.domain);
               dcvRecord = extractCustomHostnameDcvRecord(record);
               if (dcvRecord) break;
             } catch {
@@ -1808,11 +1840,26 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         if (zoneId && apiToken) {
           const scripts = await orgStub.listWorkerScripts();
           let created = 0;
-          for (const script of scripts) {
-            const appHostname = `${script.script_name}.${domain}`;
-            try {
-              const result = await createOrRefreshCustomHostname(zoneId, apiToken, appHostname);
-              if (result) {
+          try {
+            const result = await createOrRefreshCustomHostname(zoneId, apiToken, domain, {
+              wildcard: true,
+            });
+            if (result) {
+              await orgStub.updateCustomDomainStatus(
+                domain,
+                result.status === 'active' ? 'active' : 'pending',
+                result.ssl.status,
+                result.id
+              );
+              const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain);
+              for (const hostname of staleHostnames) {
+                if (hostname.id !== result.id) {
+                  await deleteCustomHostname(zoneId, apiToken, hostname.id);
+                }
+              }
+              dcvRecord ??= extractCustomHostnameDcvRecord(result);
+              for (const script of scripts) {
+                const appHostname = `${script.script_name}.${domain}`;
                 await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                   hostname: appHostname,
                   cf_hostname_id: result.id,
@@ -1820,15 +1867,20 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                   ssl_status: result.ssl.status,
                   error: null,
                 });
-                dcvRecord ??= extractCustomHostnameDcvRecord(result);
-                created++;
-              } else {
+              }
+              created = scripts.length;
+            } else {
+              for (const script of scripts) {
+                const appHostname = `${script.script_name}.${domain}`;
                 await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                   hostname: appHostname,
-                  error: 'Failed to create or locate Cloudflare custom hostname',
+                  error: 'Failed to create or locate Cloudflare wildcard custom hostname',
                 });
               }
-            } catch (err) {
+            }
+          } catch (err) {
+            for (const script of scripts) {
+              const appHostname = `${script.script_name}.${domain}`;
               await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                 hostname: appHostname,
                 error: err instanceof Error ? err.message : String(err),
@@ -1937,44 +1989,74 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         }
 
         const scripts = await orgStub.listWorkerScripts();
-        let retried = 0;
+        const scriptsToSync = scripts.filter((script) =>
+          shouldRetryAppCustomDomainProvisioning(script, domain.domain)
+        );
+        let retried = scriptsToSync.length;
         let succeeded = 0;
         const errors: Array<{ app: string; error: string }> = [];
 
-        for (const script of scripts) {
-          const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
-          if (!shouldRetryAppCustomDomainProvisioning(script, domain.domain)) continue;
-
-          retried++;
+        if (retried > 0) {
+          let result = null;
           try {
-            const result = await createOrRefreshCustomHostname(zoneId, apiToken, expectedHostname);
+            result = await createOrRefreshCustomHostname(zoneId, apiToken, domain.domain, {
+              wildcard: true,
+            });
             if (result) {
+              await orgStub.updateCustomDomainStatus(
+                domain.domain,
+                result.status === 'active' ? 'active' : 'pending',
+                result.ssl.status,
+                result.id
+              );
+              const staleHostnames = await listCustomHostnamesByBaseDomain(zoneId, apiToken, domain.domain);
+              for (const hostname of staleHostnames) {
+                if (hostname.id !== result.id) {
+                  await deleteCustomHostname(zoneId, apiToken, hostname.id);
+                }
+              }
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            for (const script of scriptsToSync) {
+              errors.push({ app: script.script_name, error: msg });
+            }
+          }
+
+          for (const script of scriptsToSync) {
+            const expectedHostname = getExpectedCustomDomainHostname(script.script_name, domain.domain);
+
+            try {
+              if (result) {
+                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                  hostname: expectedHostname,
+                  cf_hostname_id: result.id,
+                  status: result.status,
+                  ssl_status: result.ssl.status,
+                  error: null,
+                });
+                succeeded++;
+              } else {
+                const msg = 'Failed to create or locate Cloudflare wildcard hostname';
+                await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
+                  hostname: expectedHostname,
+                  cf_hostname_id: null,
+                  status: null,
+                  ssl_status: null,
+                  error: msg,
+                });
+                if (errors.length === 0) {
+                  errors.push({ app: script.script_name, error: msg });
+                }
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
               await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
                 hostname: expectedHostname,
-                cf_hostname_id: result.id,
-                status: result.status,
-                ssl_status: result.ssl.status,
-                error: null,
-              });
-              succeeded++;
-            } else {
-              const msg = 'Failed to create or locate Cloudflare hostname';
-              await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                hostname: expectedHostname,
-                cf_hostname_id: null,
-                status: null,
-                ssl_status: null,
                 error: msg,
               });
               errors.push({ app: script.script_name, error: msg });
             }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            await orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-              hostname: expectedHostname,
-              error: msg,
-            });
-            errors.push({ app: script.script_name, error: msg });
           }
         }
 
