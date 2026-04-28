@@ -85,7 +85,8 @@ describe('GET /api/admin/threads/:id/jsonl', () => {
     expect(response.headers.get('Content-Length')).toBe(String(rawJsonl.length));
     expect(await response.text()).toBe(rawJsonl);
     expect(readFileStream).toHaveBeenCalledWith(
-      '/home/claude/.claude/projects/-home-claude/thread_123.jsonl'
+      '/home/claude/.claude/projects/-home-claude/thread_123.jsonl',
+      { skipBanCheck: true }
     );
     expect(readThreadMessagesStream).not.toHaveBeenCalled();
   });
@@ -156,6 +157,7 @@ describe('GET /api/admin/threads/:id/jsonl', () => {
     expect(readThreadMessagesStream).toHaveBeenCalledWith('thread_123', {
       claudeSessionId: 'claude_session_123',
       codexSessionId: 'codex_session_123',
+      skipBanCheck: true,
     });
   });
 });

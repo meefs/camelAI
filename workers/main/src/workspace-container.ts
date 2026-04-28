@@ -92,6 +92,12 @@ interface ControlPlaneThreadMessagesStreamResponse {
   code?: string;
 }
 
+interface ReadThreadMessagesStreamOptions {
+  claudeSessionId?: string | null;
+  codexSessionId?: string | null;
+  skipBanCheck?: boolean;
+}
+
 interface ControlPlaneExistsResponse {
   exists: boolean;
   isFile?: boolean;
@@ -772,10 +778,15 @@ export class WorkspaceContainer {
    * Returns the Response object for pass-through streaming (no buffering/encoding).
    * Returns null if the file doesn't exist, throws on other errors.
    */
-  async readFileStream(path: string): Promise<Response | null> {
+  async readFileStream(
+    path: string,
+    options: { skipBanCheck?: boolean } = {},
+  ): Promise<Response | null> {
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSandbox(
       this.sandboxUrl("/fs/read", { path: normalizedPath }),
+      {},
+      options,
     );
 
     if (response.status === 404) return null;
@@ -826,7 +837,7 @@ export class WorkspaceContainer {
 
   async readThreadMessagesStream(
     threadId: string,
-    options: { claudeSessionId?: string | null; codexSessionId?: string | null } = {},
+    options: ReadThreadMessagesStreamOptions = {},
   ): Promise<ControlPlaneThreadMessagesStreamResponse> {
     const trimmedThreadId = threadId.trim();
     if (!trimmedThreadId) {
@@ -848,6 +859,7 @@ export class WorkspaceContainer {
       {
         headers: { Accept: "application/json" },
       },
+      { skipBanCheck: options.skipBanCheck },
     );
 
     if (!response.ok) {

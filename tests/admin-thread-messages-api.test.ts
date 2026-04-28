@@ -125,7 +125,7 @@ describe('GET /api/admin/threads/:id/messages', () => {
     });
     expect(WorkspaceContainer.prototype.readThreadMessagesStream).toHaveBeenCalledWith(
       'thread_123',
-      { claudeSessionId: null, codexSessionId: null }
+      { claudeSessionId: null, codexSessionId: null, skipBanCheck: true }
     );
   });
 });

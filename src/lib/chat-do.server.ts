@@ -384,7 +384,8 @@ export async function getCodexSessionId(
 export async function getMessages(
   context: AppLoadContext,
   threadId: string,
-  workspaceId: string
+  workspaceId: string,
+  options: { skipBanCheck?: boolean } = {},
 ): Promise<Message[]> {
   const env = getEnv(context);
 
@@ -401,6 +402,7 @@ export async function getMessages(
     const streamResult = await container.readThreadMessagesStream(threadId, {
       claudeSessionId: legacyClaudeSessionId,
       codexSessionId,
+      skipBanCheck: options.skipBanCheck,
     });
     if (!streamResult.success || !streamResult.response) {
       return [];
