@@ -343,10 +343,29 @@ describe('Billing status from OrgDO', () => {
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
     const { org } = await createOrg(testEnv, 'Billing Test Org', ownerId);
 
-    // getOrg should return the billing_status field (defaults to 'free')
+    // getOrg should return the billing_status field (defaults to 'inactive')
     const orgInfo = await getOrg(testEnv, org.id);
     expect(orgInfo).not.toBeNull();
-    expect(orgInfo!.billing_status).toBe('free');
+    expect(orgInfo!.billing_status).toBe('inactive');
+  });
+
+  it('applies each Stripe credit checkout session only once', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createOrg(testEnv, 'Credit Checkout Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+    const first = await orgStub.applyCreditCheckout('cs_test_credit_1', 2500, 'cus_test_1');
+    expect(first?.applied).toBe(true);
+    expect(first?.org.billing_credit_purchase_total_cents).toBe(2500);
+
+    const duplicate = await orgStub.applyCreditCheckout('cs_test_credit_1', 2500, 'cus_test_1');
+    expect(duplicate?.applied).toBe(false);
+    expect(duplicate?.org.billing_credit_purchase_total_cents).toBe(2500);
+
+    const second = await orgStub.applyCreditCheckout('cs_test_credit_2', 1000, 'cus_test_1');
+    expect(second?.applied).toBe(true);
+    expect(second?.org.billing_credit_purchase_total_cents).toBe(3500);
   });
 });
 

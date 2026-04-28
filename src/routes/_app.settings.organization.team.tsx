@@ -53,13 +53,21 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Valid email is required' };
     }
     const normalizedEmail = email.toLowerCase().trim();
-    const invitation = await createInvitation(
-      authEnv,
-      orgId,
-      normalizedEmail,
-      role || 'member',
-      actorId
-    );
+    let invitation: Awaited<ReturnType<typeof createInvitation>>;
+    try {
+      invitation = await createInvitation(
+        authEnv,
+        orgId,
+        normalizedEmail,
+        role || 'member',
+        actorId
+      );
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error ? error.message : 'Failed to create invitation',
+      };
+    }
     const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
     const invitationUrl = buildInvitationUrl(baseUrl, orgId, invitation.id);
     const emailDelivery = await sendOrgInvitationEmail({

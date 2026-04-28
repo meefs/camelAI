@@ -1,9 +1,9 @@
-import type { AppLoadContext } from 'react-router';
-import type { UserDO, OrgDO } from '../../workers/main/src/auth';
-import type { WorkspaceDO } from '../../workers/main/src/workspace';
-import type { ChatThreadDO } from '../../workers/main/src/durable-objects';
-import type { WorkerLogsDO } from '../../workers/main/src/worker-logs-do';
-import type { AdminIndexDO } from '../../workers/main/src/admin-index-do';
+import type { AppLoadContext } from "react-router";
+import type { UserDO, OrgDO } from "../../workers/main/src/auth";
+import type { WorkspaceDO } from "../../workers/main/src/workspace";
+import type { ChatThreadDO } from "../../workers/main/src/durable-objects";
+import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
+import type { AdminIndexDO } from "../../workers/main/src/admin-index-do";
 
 /**
  * Cloudflare environment bindings available in React Router loaders/actions.
@@ -57,6 +57,18 @@ export interface CloudflareEnv {
   RESEND_API_KEY?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
+  STRIPE_MODE?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_SUBSCRIPTION_PRICE_ID?: string;
+  STRIPE_STARTER_PRICE_ID?: string;
+  STRIPE_PRO_PRICE_ID?: string;
+  STRIPE_TEAM_PRICE_ID?: string;
+  STRIPE_CREDIT_PRICE_IDS?: string;
+  STRIPE_CREDIT_PRICE_ID?: string;
+  STRIPE_BILLING_PORTAL_CONFIGURATION_ID?: string;
+  BILLING_TRIAL_CREDIT_CENTS?: string;
+  BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
 }
@@ -76,7 +88,7 @@ export interface CloudflareLoadContext extends AppLoadContext {
 export function getEnv(context: AppLoadContext): CloudflareEnv {
   const cfContext = context as CloudflareLoadContext;
   if (!cfContext.cloudflare?.env) {
-    throw new Error('Cloudflare environment not available in load context');
+    throw new Error("Cloudflare environment not available in load context");
   }
   return cfContext.cloudflare.env;
 }

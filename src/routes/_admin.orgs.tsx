@@ -6,6 +6,7 @@ import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';
 import { Badge } from '@/components/ui/badge';
+import { billingStatusBadgeVariant, billingStatusLabel } from '@/lib/billing';
 import {
   Table,
   TableBody,
@@ -122,8 +123,8 @@ export default function AdminOrgsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={org.billing_status === 'paying' ? 'default' : 'outline'}>
-                        {org.billing_status === 'paying' ? 'Paying' : 'Free'}
+                      <Badge variant={billingStatusBadgeVariant(org.billing_status)}>
+                        {billingStatusLabel(org.billing_status)}
                       </Badge>
                     </TableCell>
                     <TableCell>

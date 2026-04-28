@@ -109,7 +109,9 @@ For background work in Workers, import `waitUntil` from `cloudflare:workers` and
 ```ts
 import { waitUntil } from "cloudflare:workers";
 
-waitUntil(task().catch((error) => console.error("Background task failed", error)));
+waitUntil(
+  task().catch((error) => console.error("Background task failed", error)),
+);
 ```
 
 ## Chat And Runtime Flow
@@ -141,6 +143,15 @@ waitUntil(task().catch((error) => console.error("Background task failed", error)
 - BYOK credentials are scoped by org/thread and should not be placed into container environment variables.
 - User app deploys can rewrite internal service bindings such as the data proxy, virtual AI binding, and virtual R2 bucket. Relevant files include `workers/main/src/cf-api-proxy.ts`, `data-proxy-service.ts`, `ai-virtual-binding.ts`, and `r2-virtual-bucket.ts`.
 - Outbound database traffic from the data proxy egresses from the sandbox host VM IP `20.46.233.68`. This IP is surfaced in direct database connection setup UIs (postgres, mysql, clickhouse, mongodb, redis, snowflake) for firewall/VPC allowlisting; constant lives in `src/lib/sandbox-network.ts`.
+
+## Stripe Billing And Credits
+
+- Org billing state lives on `org_info` JSON. Key fields include `billing_status`, Stripe customer/subscription ids, purchased credit cents, included/granted credit cents, trial credit grant metadata, and the last included-credit invoice id.
+- Hosted model access is enforced in `services/sandbox-host/internal/app/server.go`. Hosted `trialing` and `active` usage requires positive included/purchased credits; BYOK requires paid access but does not consume camelAI credits; `enterprise` bypasses Stripe subscription and credits.
+- Trial and subscription allowance defaults are `BILLING_TRIAL_CREDIT_CENTS=1000` and `BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS=1000`. Override with env vars when pricing changes.
+- `STRIPE_MODE` can be set to `test` or `live`; Stripe API calls reject secret keys whose `sk_`/`rk_` prefix does not match. Staging should use `STRIPE_MODE=test`, and production should use `STRIPE_MODE=live`.
+- Stripe webhooks land on `POST /api/billing/stripe/webhook`. Subscription events sync status and grant the one-time trial cap; `invoice.payment_succeeded` grants recurring included credits idempotently; credit checkout sessions increment purchased credits.
+- Credit balance is purchased credits plus included/granted credits minus sandbox-host usage rows marked `credit_chargeable = 1`.
 
 ## Auth, Onboarding, And Admin
 

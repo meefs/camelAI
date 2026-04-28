@@ -32,7 +32,7 @@ function parseCronField(
   min: number,
   max: number,
   fieldName: string,
-  options?: { allowSevenAsSunday?: boolean }
+  options?: { allowSevenAsSunday?: boolean },
 ): ParsedCronField {
   const field = rawField.trim();
   if (!field) {
@@ -40,7 +40,7 @@ function parseCronField(
   }
 
   const values = createValueArray(max);
-  const tokens = field.split(',');
+  const tokens = field.split(",");
   if (tokens.length === 0) {
     throw new Error(`Invalid ${fieldName} field "${field}"`);
   }
@@ -53,7 +53,7 @@ function parseCronField(
       throw new Error(`Invalid ${fieldName} token in "${field}"`);
     }
 
-    const parts = token.split('/');
+    const parts = token.split("/");
     if (parts.length > 2) {
       throw new Error(`Invalid ${fieldName} token "${token}"`);
     }
@@ -67,11 +67,11 @@ function parseCronField(
     let rangeStart: number;
     let rangeEnd: number;
 
-    if (basePart === '*') {
+    if (basePart === "*") {
       rangeStart = min;
       rangeEnd = max;
-    } else if (basePart.includes('-')) {
-      const [rawStart, rawEnd, ...rest] = basePart.split('-');
+    } else if (basePart.includes("-")) {
+      const [rawStart, rawEnd, ...rest] = basePart.split("-");
       if (rest.length > 0 || !rawStart || !rawEnd) {
         throw new Error(`Invalid ${fieldName} range "${basePart}"`);
       }
@@ -102,11 +102,15 @@ function parseCronField(
   return {
     raw: field,
     values,
-    wildcard: field === '*',
+    wildcard: field === "*",
   };
 }
 
-function getNextAllowed(values: boolean[], start: number, max: number): number | null {
+function getNextAllowed(
+  values: boolean[],
+  start: number,
+  max: number,
+): number | null {
   for (let value = start; value <= max; value += 1) {
     if (values[value]) return value;
   }
@@ -116,7 +120,7 @@ function getNextAllowed(values: boolean[], start: number, max: number): number |
 function getFirstAllowed(values: boolean[], min: number, max: number): number {
   const value = getNextAllowed(values, min, max);
   if (value === null) {
-    throw new Error('No allowed values in cron field');
+    throw new Error("No allowed values in cron field");
   }
   return value;
 }
@@ -140,9 +144,16 @@ function matchesDay(parsed: ParsedCronExpression, date: Date): boolean {
   return domMatches || dowMatches;
 }
 
-function jumpToNextAllowedMonth(parsed: ParsedCronExpression, current: Date): number {
+function jumpToNextAllowedMonth(
+  parsed: ParsedCronExpression,
+  current: Date,
+): number {
   const currentMonth = current.getUTCMonth() + 1;
-  const nextMonthThisYear = getNextAllowed(parsed.month.values, currentMonth + 1, 12);
+  const nextMonthThisYear = getNextAllowed(
+    parsed.month.values,
+    currentMonth + 1,
+    12,
+  );
   if (nextMonthThisYear !== null) {
     current.setUTCMonth(nextMonthThisYear - 1, 1);
     current.setUTCHours(0, 0, 0, 0);
@@ -155,7 +166,10 @@ function jumpToNextAllowedMonth(parsed: ParsedCronExpression, current: Date): nu
   return current.getTime();
 }
 
-function jumpToNextAllowedHour(parsed: ParsedCronExpression, current: Date): number {
+function jumpToNextAllowedHour(
+  parsed: ParsedCronExpression,
+  current: Date,
+): number {
   const currentHour = current.getUTCHours();
   const nextHour = getNextAllowed(parsed.hour.values, currentHour + 1, 23);
   if (nextHour !== null) {
@@ -169,9 +183,16 @@ function jumpToNextAllowedHour(parsed: ParsedCronExpression, current: Date): num
   return current.getTime();
 }
 
-function jumpToNextAllowedMinute(parsed: ParsedCronExpression, current: Date): number {
+function jumpToNextAllowedMinute(
+  parsed: ParsedCronExpression,
+  current: Date,
+): number {
   const currentMinute = current.getUTCMinutes();
-  const nextMinute = getNextAllowed(parsed.minute.values, currentMinute + 1, 59);
+  const nextMinute = getNextAllowed(
+    parsed.minute.values,
+    currentMinute + 1,
+    59,
+  );
   if (nextMinute !== null) {
     current.setUTCMinutes(nextMinute, 0, 0);
     return current.getTime();
@@ -183,30 +204,35 @@ function jumpToNextAllowedMinute(parsed: ParsedCronExpression, current: Date): n
 }
 
 export function parseCronExpression(expression: string): ParsedCronExpression {
-  const normalized = expression.trim().replace(/\s+/g, ' ');
-  const parts = normalized.split(' ');
+  const normalized = expression.trim().replace(/\s+/g, " ");
+  const parts = normalized.split(" ");
   if (parts.length !== 5) {
     throw new Error(
-      `Invalid cron expression "${expression}". Expected 5 fields: minute hour day-of-month month day-of-week`
+      `Invalid cron expression "${expression}". Expected 5 fields: minute hour day-of-month month day-of-week`,
     );
   }
 
   const [minuteRaw, hourRaw, domRaw, monthRaw, dowRaw] = parts;
   return {
     expression: normalized,
-    minute: parseCronField(minuteRaw, 0, 59, 'minute'),
-    hour: parseCronField(hourRaw, 0, 23, 'hour'),
-    dayOfMonth: parseCronField(domRaw, 1, 31, 'day-of-month'),
-    month: parseCronField(monthRaw, 1, 12, 'month'),
-    dayOfWeek: parseCronField(dowRaw, 0, 7, 'day-of-week', { allowSevenAsSunday: true }),
+    minute: parseCronField(minuteRaw, 0, 59, "minute"),
+    hour: parseCronField(hourRaw, 0, 23, "hour"),
+    dayOfMonth: parseCronField(domRaw, 1, 31, "day-of-month"),
+    month: parseCronField(monthRaw, 1, 12, "month"),
+    dayOfWeek: parseCronField(dowRaw, 0, 7, "day-of-week", {
+      allowSevenAsSunday: true,
+    }),
   };
 }
 
 export function matchesCronExpression(
   expression: ParsedCronExpression | string,
-  atMs: number
+  atMs: number,
 ): boolean {
-  const parsed = typeof expression === 'string' ? parseCronExpression(expression) : expression;
+  const parsed =
+    typeof expression === "string"
+      ? parseCronExpression(expression)
+      : expression;
   const date = new Date(atMs);
   const month = date.getUTCMonth() + 1;
   const hour = date.getUTCHours();
@@ -220,9 +246,12 @@ export function matchesCronExpression(
 
 export function getNextCronRunAt(
   expression: ParsedCronExpression | string,
-  fromMs: number
+  fromMs: number,
 ): number | null {
-  const parsed = typeof expression === 'string' ? parseCronExpression(expression) : expression;
+  const parsed =
+    typeof expression === "string"
+      ? parseCronExpression(expression)
+      : expression;
   const limit = fromMs + SEARCH_WINDOW_MS;
   let candidate = toNextMinute(fromMs);
 
@@ -261,4 +290,15 @@ export function getNextCronRunAt(
   }
 
   return null;
+}
+
+export function getCronMinimumIntervalMs(
+  expression: ParsedCronExpression | string,
+  fromMs = Date.now(),
+): number | null {
+  const first = getNextCronRunAt(expression, fromMs);
+  if (first === null) return null;
+  const second = getNextCronRunAt(expression, first);
+  if (second === null) return null;
+  return second - first;
 }

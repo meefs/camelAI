@@ -1,50 +1,54 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useFetcher, useLoaderData } from 'react-router';
-import { ChevronDown } from 'lucide-react';
-import type { Route } from './+types/_app.settings.organization.ai-provider';
-import { SettingsHeader } from '@/components/settings/settings-header';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { useEffect, useMemo, useState } from "react";
+import { useFetcher, useLoaderData } from "react-router";
+import { ChevronDown } from "lucide-react";
+import type { Route } from "./+types/_app.settings.organization.ai-provider";
+import { SettingsHeader } from "@/components/settings/settings-header";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+} from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
-import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import { buildPublicLlmProviderConfig } from '@/lib/llm-provider-config';
-import { cn } from '@/lib/utils';
-import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  requireAuthContext,
+  requireOrgAdmin,
+  getAuthEnv,
+} from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
+import { cn } from "@/lib/utils";
+import type { LlmProvider, LlmProviderConfigPublic } from "@/types";
 
 const AWS_REGIONS = [
-  { value: 'us-east-1', label: 'US East (N. Virginia)' },
-  { value: 'us-east-2', label: 'US East (Ohio)' },
-  { value: 'us-west-2', label: 'US West (Oregon)' },
-  { value: 'eu-west-1', label: 'EU (Ireland)' },
-  { value: 'eu-west-2', label: 'EU (London)' },
-  { value: 'eu-west-3', label: 'EU (Paris)' },
-  { value: 'eu-central-1', label: 'EU (Frankfurt)' },
-  { value: 'ap-southeast-1', label: 'Asia Pacific (Singapore)' },
-  { value: 'ap-southeast-2', label: 'Asia Pacific (Sydney)' },
-  { value: 'ap-northeast-1', label: 'Asia Pacific (Tokyo)' },
-  { value: 'ap-south-1', label: 'Asia Pacific (Mumbai)' },
-  { value: 'sa-east-1', label: 'South America (Sao Paulo)' },
-  { value: 'ca-central-1', label: 'Canada (Central)' },
+  { value: "us-east-1", label: "US East (N. Virginia)" },
+  { value: "us-east-2", label: "US East (Ohio)" },
+  { value: "us-west-2", label: "US West (Oregon)" },
+  { value: "eu-west-1", label: "EU (Ireland)" },
+  { value: "eu-west-2", label: "EU (London)" },
+  { value: "eu-west-3", label: "EU (Paris)" },
+  { value: "eu-central-1", label: "EU (Frankfurt)" },
+  { value: "ap-southeast-1", label: "Asia Pacific (Singapore)" },
+  { value: "ap-southeast-2", label: "Asia Pacific (Sydney)" },
+  { value: "ap-northeast-1", label: "Asia Pacific (Tokyo)" },
+  { value: "ap-south-1", label: "Asia Pacific (Mumbai)" },
+  { value: "sa-east-1", label: "South America (Sao Paulo)" },
+  { value: "ca-central-1", label: "Canada (Central)" },
 ] as const;
 
-type ProviderChoice = 'default' | LlmProvider;
-type FetcherIntent = 'setProvider' | 'deleteProvider' | 'testProvider' | null;
+type ProviderChoice = "default" | LlmProvider;
+type FetcherIntent = "setProvider" | "deleteProvider" | "testProvider" | null;
 
 interface ProviderActionResponse {
   success?: boolean;
@@ -72,72 +76,73 @@ const PROVIDER_CARD_OPTIONS: Array<{
   description: string;
 }> = [
   {
-    value: 'default',
-    label: 'Default (free tier)',
-    description: 'Codex with usage limits ($25/5hrs, $100/7days)',
+    value: "default",
+    label: "camelAI billing",
+    description:
+      "Uses camelAI-managed provider access and deducts usage from your credit balance",
   },
   {
-    value: 'anthropic',
-    label: 'Anthropic',
-    description: 'Direct access to Claude models',
+    value: "anthropic",
+    label: "Anthropic (recommended)",
+    description: "Uses your Anthropic key for Claude turns",
   },
   {
-    value: 'openai',
-    label: 'OpenAI',
-    description: 'Direct access to GPT models',
+    value: "openai",
+    label: "OpenAI",
+    description: "Uses your OpenAI key for Codex-powered threads",
   },
   {
-    value: 'bedrock',
-    label: 'AWS Bedrock',
-    description: 'Claude via your AWS account',
+    value: "bedrock",
+    label: "AWS Bedrock",
+    description: "Uses your AWS account for Claude via Bedrock",
   },
 ];
 
 const PROVIDER_GUIDES: Record<LlmProvider, ProviderGuide> = {
   anthropic: {
-    displayName: 'Anthropic',
-    description: 'Direct access to Claude models',
-    fieldLabel: 'Anthropic API Key',
-    placeholder: 'sk-ant-...',
-    href: 'https://console.anthropic.com/settings/keys',
-    firstStepLinkLabel: 'console.anthropic.com/settings/keys',
+    displayName: "Anthropic",
+    description: "Direct access to Claude models",
+    fieldLabel: "Anthropic API Key",
+    placeholder: "sk-ant-...",
+    href: "https://console.anthropic.com/settings/keys",
+    firstStepLinkLabel: "console.anthropic.com/settings/keys",
     steps: [
       'Click "Create Key".',
       'Name it anything, such as "camelAI".',
-      'Copy the key and paste it above.',
+      "Copy the key and paste it above.",
     ],
     note: "You'll need to add a payment method on Anthropic's site first if you haven't already.",
   },
   openai: {
-    displayName: 'OpenAI',
-    description: 'For Codex-powered threads',
-    fieldLabel: 'OpenAI API Key',
-    placeholder: 'sk-...',
-    href: 'https://platform.openai.com/api-keys',
-    firstStepLinkLabel: 'platform.openai.com/api-keys',
+    displayName: "OpenAI",
+    description: "For Codex-powered threads",
+    fieldLabel: "OpenAI API Key",
+    placeholder: "sk-...",
+    href: "https://platform.openai.com/api-keys",
+    firstStepLinkLabel: "platform.openai.com/api-keys",
     steps: [
       'Click "Create new secret key".',
       'Name it anything, such as "camelAI".',
-      'Copy the key and paste it above.',
+      "Copy the key and paste it above.",
     ],
     note: "You'll need to add a payment method on OpenAI's platform first if you haven't already.",
   },
   bedrock: {
-    displayName: 'AWS Bedrock',
-    description: 'Claude via your AWS account',
-    fieldLabel: 'Bedrock API Key',
-    placeholder: 'Enter your AWS Bedrock API key',
-    href: 'https://console.aws.amazon.com/bedrock/',
-    firstStepPrefix: 'Go to your ',
-    firstStepLinkLabel: 'AWS Console',
-    firstStepSuffix: ' and open Bedrock.',
+    displayName: "AWS Bedrock",
+    description: "Claude via your AWS account",
+    fieldLabel: "Bedrock API Key",
+    placeholder: "Enter your AWS Bedrock API key",
+    href: "https://console.aws.amazon.com/bedrock/",
+    firstStepPrefix: "Go to your ",
+    firstStepLinkLabel: "AWS Console",
+    firstStepSuffix: " and open Bedrock.",
     steps: [
-      'Make sure Claude models are enabled in your region.',
-      'Go to Bedrock API keys and create a new key.',
-      'Copy the key and paste it above.',
-      'Select your AWS region below.',
+      "Make sure Claude models are enabled in your region.",
+      "Go to Bedrock API keys and create a new key.",
+      "Copy the key and paste it above.",
+      "Select your AWS region below.",
     ],
-    note: 'AWS Bedrock usage is billed through your AWS account.',
+    note: "AWS Bedrock usage is billed through your AWS account.",
   },
 };
 
@@ -161,7 +166,12 @@ function ProviderSetupInstructions({
             className="flex w-full items-center justify-between gap-3 p-3 text-left text-xs font-medium"
           >
             <span>How to get your API key</span>
-            <ChevronDown className={cn('size-4 transition-transform', open && 'rotate-180')} />
+            <ChevronDown
+              className={cn(
+                "size-4 transition-transform",
+                open && "rotate-180",
+              )}
+            />
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
@@ -170,7 +180,7 @@ function ProviderSetupInstructions({
               <li className="flex gap-2">
                 <span className="w-4 shrink-0 text-foreground">1.</span>
                 <span>
-                  {guide.firstStepPrefix ?? 'Go to '}
+                  {guide.firstStepPrefix ?? "Go to "}
                   <a
                     href={guide.href}
                     target="_blank"
@@ -179,12 +189,14 @@ function ProviderSetupInstructions({
                   >
                     {guide.firstStepLinkLabel}
                   </a>
-                  {guide.firstStepSuffix ?? ''}
+                  {guide.firstStepSuffix ?? ""}
                 </span>
               </li>
               {guide.steps.map((step, index) => (
                 <li key={step} className="flex gap-2">
-                  <span className="w-4 shrink-0 text-foreground">{index + 2}.</span>
+                  <span className="w-4 shrink-0 text-foreground">
+                    {index + 2}.
+                  </span>
                   <span>{step}</span>
                 </li>
               ))}
@@ -199,8 +211,12 @@ function ProviderSetupInstructions({
 
 export function meta() {
   return [
-    { title: 'AI Provider - Settings - camelAI' },
-    { name: 'description', content: 'Add your own AI provider key to remove usage limits' },
+    { title: "AI Provider - Settings - camelAI" },
+    {
+      name: "description",
+      content:
+        "Manage whether camelAI or your own provider handles model requests",
+    },
   ];
 }
 
@@ -210,7 +226,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
+  const orgStub = authEnv.ORG.get(
+    authEnv.ORG.idFromName(authContext.currentOrg.id),
+  );
   const record = await orgStub.getLlmProviderConfig();
 
   if (!record) {
@@ -219,7 +237,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const config: LlmProviderConfigPublic = await buildPublicLlmProviderConfig(
     record,
-    env.INTEGRATION_SECRET_KEY
+    env.INTEGRATION_SECRET_KEY,
   );
 
   return { config, orgId: authContext.currentOrg.id };
@@ -229,28 +247,38 @@ export default function AiProviderPage() {
   const { config, orgId } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<ProviderActionResponse>();
 
-  const [selectedProvider, setSelectedProvider] = useState<ProviderChoice>(config?.provider ?? 'default');
-  const [apiKey, setApiKey] = useState('');
-  const [openAiApiKey, setOpenAiApiKey] = useState('');
-  const [bearerToken, setBearerToken] = useState('');
-  const [awsRegion, setAwsRegion] = useState(config?.config?.aws_region ?? 'us-east-1');
+  const [selectedProvider, setSelectedProvider] = useState<ProviderChoice>(
+    config?.provider ?? "default",
+  );
+  const [apiKey, setApiKey] = useState("");
+  const [openAiApiKey, setOpenAiApiKey] = useState("");
+  const [bearerToken, setBearerToken] = useState("");
+  const [awsRegion, setAwsRegion] = useState(
+    config?.config?.aws_region ?? "us-east-1",
+  );
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [lastIntent, setLastIntent] = useState<FetcherIntent>(null);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   const fetcherData = fetcher.data;
-  const isSaving = fetcher.state !== 'idle';
+  const isSaving = fetcher.state !== "idle";
   const configuredProvider = config?.provider ?? null;
-  const selectedLlmProvider = selectedProvider === 'default' ? null : selectedProvider;
-  const selectedGuide = selectedLlmProvider ? PROVIDER_GUIDES[selectedLlmProvider] : null;
+  const selectedLlmProvider =
+    selectedProvider === "default" ? null : selectedProvider;
+  const selectedGuide = selectedLlmProvider
+    ? PROVIDER_GUIDES[selectedLlmProvider]
+    : null;
 
   useEffect(() => {
-    setSelectedProvider(config?.provider ?? 'default');
-    setAwsRegion(config?.config?.aws_region ?? 'us-east-1');
+    setSelectedProvider(config?.provider ?? "default");
+    setAwsRegion(config?.config?.aws_region ?? "us-east-1");
   }, [config?.provider, config?.config?.aws_region]);
 
   useEffect(() => {
-    if (fetcher.state !== 'idle' || !fetcherData) {
+    if (fetcher.state !== "idle" || !fetcherData) {
       return;
     }
 
@@ -263,9 +291,9 @@ export default function AiProviderPage() {
     }
 
     if (fetcherData.success) {
-      setApiKey('');
-      setOpenAiApiKey('');
-      setBearerToken('');
+      setApiKey("");
+      setOpenAiApiKey("");
+      setBearerToken("");
       setTestResult(null);
     }
   }, [fetcher.state, fetcherData]);
@@ -275,22 +303,27 @@ export default function AiProviderPage() {
       return true;
     }
 
-    if (selectedProvider === 'default') {
+    if (selectedProvider === "default") {
       return !config;
     }
 
-    if (selectedProvider === 'anthropic') {
+    if (selectedProvider === "anthropic") {
       return apiKey.trim().length === 0;
     }
 
-    if (selectedProvider === 'openai') {
+    if (selectedProvider === "openai") {
       return openAiApiKey.trim().length === 0;
     }
 
-    const missingNewBedrockKey = configuredProvider !== 'bedrock' && bearerToken.trim().length === 0;
+    const missingNewBedrockKey =
+      configuredProvider !== "bedrock" && bearerToken.trim().length === 0;
     const regionUnchanged =
-      configuredProvider === 'bedrock' && awsRegion === config?.config?.aws_region;
-    return missingNewBedrockKey || (bearerToken.trim().length === 0 && regionUnchanged);
+      configuredProvider === "bedrock" &&
+      awsRegion === config?.config?.aws_region;
+    return (
+      missingNewBedrockKey ||
+      (bearerToken.trim().length === 0 && regionUnchanged)
+    );
   }, [
     apiKey,
     awsRegion,
@@ -303,10 +336,10 @@ export default function AiProviderPage() {
   ]);
 
   const saveSuccessVisible =
-    fetcher.state === 'idle' &&
+    fetcher.state === "idle" &&
     fetcherData?.success &&
     !fetcherData.message &&
-    lastIntent === 'setProvider';
+    lastIntent === "setProvider";
 
   function clearActionFeedback() {
     setLastIntent(null);
@@ -316,63 +349,95 @@ export default function AiProviderPage() {
   function handleSave() {
     clearActionFeedback();
 
-    if (selectedProvider === 'default') {
-      setLastIntent('deleteProvider');
+    if (selectedProvider === "default") {
+      setLastIntent("deleteProvider");
       fetcher.submit(
-        { intent: 'deleteProvider' },
-        { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+        { intent: "deleteProvider" },
+        {
+          method: "POST",
+          action: `/api/orgs/${orgId}/llm-provider`,
+          encType: "application/json",
+        },
       );
       return;
     }
 
-    setLastIntent('setProvider');
+    setLastIntent("setProvider");
 
-    if (selectedProvider === 'anthropic') {
+    if (selectedProvider === "anthropic") {
       fetcher.submit(
-        { intent: 'setProvider', provider: 'anthropic', api_key: apiKey.trim() },
-        { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+        {
+          intent: "setProvider",
+          provider: "anthropic",
+          api_key: apiKey.trim(),
+        },
+        {
+          method: "POST",
+          action: `/api/orgs/${orgId}/llm-provider`,
+          encType: "application/json",
+        },
       );
       return;
     }
 
-    if (selectedProvider === 'openai') {
+    if (selectedProvider === "openai") {
       fetcher.submit(
-        { intent: 'setProvider', provider: 'openai', api_key: openAiApiKey.trim() },
-        { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+        {
+          intent: "setProvider",
+          provider: "openai",
+          api_key: openAiApiKey.trim(),
+        },
+        {
+          method: "POST",
+          action: `/api/orgs/${orgId}/llm-provider`,
+          encType: "application/json",
+        },
       );
       return;
     }
 
     fetcher.submit(
       {
-        intent: 'setProvider',
-        provider: 'bedrock',
+        intent: "setProvider",
+        provider: "bedrock",
         ...(bearerToken.trim() ? { bearer_token: bearerToken.trim() } : {}),
         aws_region: awsRegion,
       },
-      { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+      {
+        method: "POST",
+        action: `/api/orgs/${orgId}/llm-provider`,
+        encType: "application/json",
+      },
     );
   }
 
   function handleTest() {
-    setLastIntent('testProvider');
+    setLastIntent("testProvider");
     setTestResult(null);
     fetcher.submit(
-      { intent: 'testProvider' },
-      { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+      { intent: "testProvider" },
+      {
+        method: "POST",
+        action: `/api/orgs/${orgId}/llm-provider`,
+        encType: "application/json",
+      },
     );
   }
 
   function handleRemove() {
     clearActionFeedback();
-    setLastIntent('deleteProvider');
-    setApiKey('');
-    setOpenAiApiKey('');
-    setBearerToken('');
-    setSelectedProvider('default');
+    setLastIntent("deleteProvider");
+    setApiKey("");
+    setOpenAiApiKey("");
+    setBearerToken("");
+    setSelectedProvider("default");
     fetcher.submit(
-      { intent: 'deleteProvider' },
-      { method: 'POST', action: `/api/orgs/${orgId}/llm-provider`, encType: 'application/json' }
+      { intent: "deleteProvider" },
+      {
+        method: "POST",
+        action: `/api/orgs/${orgId}/llm-provider`,
+        encType: "application/json",
+      },
     );
   }
 
@@ -380,7 +445,7 @@ export default function AiProviderPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="AI Provider"
-        description="Add your own API key to remove usage limits. You're billed directly by the provider, and camelAI adds zero markup."
+        description="Choose which provider credentials camelAI should use when it runs model requests."
       />
       <Separator />
 
@@ -391,14 +456,20 @@ export default function AiProviderPage() {
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
                   <p className="text-xs font-medium">Current key</p>
-                  <Badge variant="outline">{PROVIDER_GUIDES[config.provider].displayName}</Badge>
+                  <Badge variant="outline">
+                    {PROVIDER_GUIDES[config.provider].displayName}
+                  </Badge>
                 </div>
                 <div className="space-y-1 text-xs text-muted-foreground">
                   <p>
                     Key: {config.key_hint}
-                    {config.config.aws_region ? ` | Region: ${config.config.aws_region}` : ''}
+                    {config.config.aws_region
+                      ? ` | Region: ${config.config.aws_region}`
+                      : ""}
                   </p>
-                  <p>Updated {new Date(config.updated_at).toLocaleDateString()}</p>
+                  <p>
+                    Updated {new Date(config.updated_at).toLocaleDateString()}
+                  </p>
                 </div>
               </div>
 
@@ -409,7 +480,9 @@ export default function AiProviderPage() {
                   onClick={handleTest}
                   disabled={isSaving}
                 >
-                  {isSaving && lastIntent === 'testProvider' ? 'Testing...' : 'Test'}
+                  {isSaving && lastIntent === "testProvider"
+                    ? "Testing..."
+                    : "Test"}
                 </Button>
                 <Button
                   variant="destructive"
@@ -417,13 +490,22 @@ export default function AiProviderPage() {
                   onClick={handleRemove}
                   disabled={isSaving}
                 >
-                  {isSaving && lastIntent === 'deleteProvider' ? 'Removing...' : 'Remove'}
+                  {isSaving && lastIntent === "deleteProvider"
+                    ? "Removing..."
+                    : "Remove"}
                 </Button>
               </div>
             </div>
 
             {testResult && (
-              <p className={cn('mt-3 text-xs', testResult.success ? 'text-green-700 dark:text-green-300' : 'text-destructive')}>
+              <p
+                className={cn(
+                  "mt-3 text-xs",
+                  testResult.success
+                    ? "text-green-700 dark:text-green-300"
+                    : "text-destructive",
+                )}
+              >
                 {testResult.message}
               </p>
             )}
@@ -433,7 +515,8 @@ export default function AiProviderPage() {
         {saveSuccessVisible && (
           <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-3">
             <p className="text-xs text-green-700 dark:text-green-300">
-              API key saved. Your active chats are now using your key and do not need a refresh.
+              API key saved. Active chats will reconnect onto the updated
+              provider credentials automatically.
             </p>
           </div>
         )}
@@ -442,7 +525,9 @@ export default function AiProviderPage() {
           <div className="space-y-1">
             <h3 className="text-sm font-medium">Choose a provider</h3>
             <p className="text-xs text-muted-foreground">
-              Pick the option you want camelAI to use for new chat threads.
+              Pick the option you want camelAI to use for new chat turns. BYOK
+              still requires paid access, but those turns do not consume camelAI
+              credits.
             </p>
           </div>
 
@@ -457,13 +542,19 @@ export default function AiProviderPage() {
           >
             {PROVIDER_CARD_OPTIONS.map((option) => (
               <div key={option.value} className="flex items-start gap-3">
-                <RadioGroupItem value={option.value} id={`provider-${option.value}`} className="mt-0.5" />
+                <RadioGroupItem
+                  value={option.value}
+                  id={`provider-${option.value}`}
+                  className="mt-0.5"
+                />
                 <Label
                   htmlFor={`provider-${option.value}`}
                   className="cursor-pointer space-y-0.5"
                 >
                   <span className="font-medium">{option.label}</span>
-                  <p className="text-xs text-muted-foreground">{option.description}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {option.description}
+                  </p>
                 </Label>
               </div>
             ))}
@@ -473,7 +564,9 @@ export default function AiProviderPage() {
         {selectedLlmProvider && selectedGuide ? (
           <div className="space-y-4 pt-2">
             <div className="space-y-2">
-              <Label htmlFor={`${selectedProvider}-key`}>{selectedGuide.fieldLabel}</Label>
+              <Label htmlFor={`${selectedProvider}-key`}>
+                {selectedGuide.fieldLabel}
+              </Label>
               <Input
                 id={`${selectedProvider}-key`}
                 type="password"
@@ -483,20 +576,20 @@ export default function AiProviderPage() {
                     : selectedGuide.placeholder
                 }
                 value={
-                  selectedProvider === 'anthropic'
+                  selectedProvider === "anthropic"
                     ? apiKey
-                    : selectedProvider === 'openai'
+                    : selectedProvider === "openai"
                       ? openAiApiKey
                       : bearerToken
                 }
                 onChange={(event) => {
                   clearActionFeedback();
                   const nextValue = event.target.value;
-                  if (selectedProvider === 'anthropic') {
+                  if (selectedProvider === "anthropic") {
                     setApiKey(nextValue);
                     return;
                   }
-                  if (selectedProvider === 'openai') {
+                  if (selectedProvider === "openai") {
                     setOpenAiApiKey(nextValue);
                     return;
                   }
@@ -511,7 +604,7 @@ export default function AiProviderPage() {
               onOpenChange={setInstructionsOpen}
             />
 
-            {selectedProvider === 'bedrock' && (
+            {selectedProvider === "bedrock" && (
               <div className="space-y-2">
                 <Label htmlFor="aws-region">AWS Region</Label>
                 <Select
@@ -547,11 +640,11 @@ export default function AiProviderPage() {
 
         <div className="flex gap-2">
           <Button onClick={handleSave} disabled={saveDisabled}>
-            {isSaving && lastIntent === 'setProvider'
-              ? 'Saving...'
-              : selectedProvider === 'default'
-                ? 'Use free tier'
-                : 'Save'}
+            {isSaving && lastIntent === "setProvider"
+              ? "Saving..."
+              : selectedProvider === "default"
+                ? "Use camelAI billing"
+                : "Save"}
           </Button>
         </div>
       </div>

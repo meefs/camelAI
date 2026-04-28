@@ -1,107 +1,121 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "chiridion-app",
-	"main": "build/server/index.js",
-	"no_bundle": true,
-	"compatibility_date": "2025-12-01",
-	"compatibility_flags": ["nodejs_compat"],
-	"upload_source_maps": true,
-	"observability": { "enabled": true },
-	"rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
-	"routes": [
-		{ "pattern": "camelai.dev", "custom_domain": true }
-	],
-	"vpc_services": [
-		{
-			"binding": "SANDBOX_HOST",
-			"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
-		}
-	],
-	"vars": {
-		"AI_VIRTUAL_MODEL": "dynamic/auto",
-			"R2_BUCKET_NAME": "chiridion-sandbox",
-			"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-			"R2_MOUNT_DIR": "/home/claude",
-			"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
-			"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-			"CF_GATEWAY_NAME": "chiridion",
-			"CF_DISPATCH_NAMESPACE": "chiridion-platform",
-			"WORKER_BASE_URL": "https://camelai.dev",
-				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-				"EXT_API_CLIENT_ID": "set-me",
-				"CF_WORKER_NAME": "chiridion-app",
-			"TAIL_WORKER_NAME": "chiridion-user-logs-tail",
-			"CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",
-			"CF_CUSTOM_HOSTNAME_FALLBACK": "custom-domains.camelai.app",
-		"CF_DCV_DELEGATION_UUID": "1b7fee6764db9b60"
-		},
-	"assets": {
-		"binding": "ASSETS",
-		"directory": "build/client"
-	},
-	"images": { "binding": "IMAGES" },
-	"browser": { "binding": "BROWSER" },
-	"ai": { "binding": "AI", "remote": true },
-	"r2_buckets": [
-		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" }
-	],
-	"analytics_engine_datasets": [
-		{ "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_prod" }
-	],
-	"kv_namespaces": [
-		{ "binding": "EMAIL_TO_USER", "id": "45b452b3b19c42f6991408c140149a70" },
-		{ "binding": "APP_KV", "id": "0ee80299e67c4c7fa0c1ad618b7e7a9c" },
-		{ "binding": "SESSIONS", "id": "67958a5b0d104621bd93c91c802ccd1c" }
-	],
-	"queues": {
-		"producers": [
-			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots" },
-			{ "binding": "SLACK_EVENTS_QUEUE", "queue": "chiridion-app-slack-events" }
-		],
-		"consumers": [
-			{ "queue": "chiridion-app-screenshots" },
-			{ "queue": "chiridion-app-slack-events" }
-		]
-	},
-	"services": [
-		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app" }
-	],
-	"durable_objects": {
-		"bindings": [
-			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
-			{ "name": "USER", "class_name": "UserDO" },
-			{ "name": "ORG", "class_name": "OrgDO" },
-			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
-			{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
-			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
-			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" }
-		]
-	},
-	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["ChatDurableObject"] },
-		{ "tag": "v2", "deleted_classes": ["ChatDurableObject"] },
-		{ "tag": "v3", "new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"] },
-		{ "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
-		{ "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
-		{ "tag": "v6", "new_sqlite_classes": ["WorkspaceDO"] },
-		{ "tag": "v7", "deleted_classes": ["SessionDO"] },
-		{ "tag": "v8", "deleted_classes": ["ChatIndexDO"] },
-		{ "tag": "v9", "new_sqlite_classes": ["ChiridionMcp"] },
-		{ "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] },
-		{ "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
-		{ "tag": "v12", "deleted_classes": ["MssqlProxy"], "new_sqlite_classes": ["DataProxy"] },
-		{ "tag": "v13", "deleted_classes": ["ThreadSandbox"] },
-		{ "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] },
-		{ "tag": "v15", "new_sqlite_classes": ["AdminIndexDO"] },
-		{ "tag": "v16", "deleted_classes": ["DataProxy"] },
-		{ "tag": "v17", "new_sqlite_classes": ["OAuthStateDO"] },
-		{ "tag": "v18", "new_sqlite_classes": ["WorkspaceCronDO"] },
-		{ "tag": "v19", "deleted_classes": ["OAuthStateDO"] },
-		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
-		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] }
-	]
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chiridion-app",
+  "main": "build/server/index.js",
+  "no_bundle": true,
+  "compatibility_date": "2025-12-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": { "enabled": true },
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
+  "routes": [{ "pattern": "camelai.dev", "custom_domain": true }],
+  "vpc_services": [
+    {
+      "binding": "SANDBOX_HOST",
+      "service_id": "019c54ff-d555-7741-8464-3b68f8a18edf",
+    },
+  ],
+  "vars": {
+    "AI_VIRTUAL_MODEL": "dynamic/auto",
+    "R2_BUCKET_NAME": "chiridion-sandbox",
+    "R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+    "R2_MOUNT_DIR": "/home/claude",
+    "R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+    "CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+    "CF_GATEWAY_NAME": "chiridion",
+    "CF_DISPATCH_NAMESPACE": "chiridion-platform",
+    "WORKER_BASE_URL": "https://camelai.dev",
+    "EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+    "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+    "STRIPE_MODE": "live",
+    "STRIPE_SUBSCRIPTION_PRICE_ID": "price_1TRHq3GvliMKf4vHuJafp5nQ",
+    "STRIPE_STARTER_PRICE_ID": "price_1TRHq3GvliMKf4vHuJafp5nQ",
+    "STRIPE_PRO_PRICE_ID": "price_1TRJfrGvliMKf4vHJL0t4Chz",
+    "STRIPE_TEAM_PRICE_ID": "price_1TRJftGvliMKf4vHBYwNOTSU",
+    "STRIPE_CREDIT_PRICE_IDS": "price_1TRHq4GvliMKf4vHWeuO0RU9,price_1TRHq5GvliMKf4vHWEfWfoaa,price_1TRHq6GvliMKf4vHqEN0i5iZ,price_1TRHq8GvliMKf4vH1HG70y7N",
+    "EXT_API_CLIENT_ID": "set-me",
+    "CF_WORKER_NAME": "chiridion-app",
+    "TAIL_WORKER_NAME": "chiridion-user-logs-tail",
+    "CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",
+    "CF_CUSTOM_HOSTNAME_FALLBACK": "custom-domains.camelai.app",
+    "CF_DCV_DELEGATION_UUID": "1b7fee6764db9b60",
+  },
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "build/client",
+  },
+  "images": { "binding": "IMAGES" },
+  "browser": { "binding": "BROWSER" },
+  "ai": { "binding": "AI", "remote": true },
+  "r2_buckets": [
+    { "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" },
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_prod" },
+  ],
+  "kv_namespaces": [
+    { "binding": "EMAIL_TO_USER", "id": "45b452b3b19c42f6991408c140149a70" },
+    { "binding": "APP_KV", "id": "0ee80299e67c4c7fa0c1ad618b7e7a9c" },
+    { "binding": "SESSIONS", "id": "67958a5b0d104621bd93c91c802ccd1c" },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "APP_SCREENSHOT_QUEUE",
+        "queue": "chiridion-app-screenshots",
+      },
+      {
+        "binding": "SLACK_EVENTS_QUEUE",
+        "queue": "chiridion-app-slack-events",
+      },
+    ],
+    "consumers": [
+      { "queue": "chiridion-app-screenshots" },
+      { "queue": "chiridion-app-slack-events" },
+    ],
+  },
+  "services": [
+    { "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app" },
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+      { "name": "USER", "class_name": "UserDO" },
+      { "name": "ORG", "class_name": "OrgDO" },
+      { "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
+      { "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
+      { "name": "WORKSPACE", "class_name": "WorkspaceDO" },
+      { "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
+      { "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
+      { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
+      { "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ChatDurableObject"] },
+    { "tag": "v2", "deleted_classes": ["ChatDurableObject"] },
+    { "tag": "v3", "new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"] },
+    { "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
+    { "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
+    { "tag": "v6", "new_sqlite_classes": ["WorkspaceDO"] },
+    { "tag": "v7", "deleted_classes": ["SessionDO"] },
+    { "tag": "v8", "deleted_classes": ["ChatIndexDO"] },
+    { "tag": "v9", "new_sqlite_classes": ["ChiridionMcp"] },
+    { "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] },
+    { "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
+    {
+      "tag": "v12",
+      "deleted_classes": ["MssqlProxy"],
+      "new_sqlite_classes": ["DataProxy"],
+    },
+    { "tag": "v13", "deleted_classes": ["ThreadSandbox"] },
+    { "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] },
+    { "tag": "v15", "new_sqlite_classes": ["AdminIndexDO"] },
+    { "tag": "v16", "deleted_classes": ["DataProxy"] },
+    { "tag": "v17", "new_sqlite_classes": ["OAuthStateDO"] },
+    { "tag": "v18", "new_sqlite_classes": ["WorkspaceCronDO"] },
+    { "tag": "v19", "deleted_classes": ["OAuthStateDO"] },
+    { "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
+    { "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
+  ],
 }

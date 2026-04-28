@@ -1,44 +1,48 @@
-import { Link } from 'react-router';
-import { Info, KeyRound } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Link } from "react-router";
+import { CreditCard, Info, KeyRound } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
 import {
   Sheet,
   SheetContent,
   SheetFooter,
   SheetHeader,
   SheetTitle,
-} from '@/components/ui/sheet';
-import { useIsMobile } from '@/hooks/use-mobile';
+} from "@/components/ui/sheet";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface FreeTierModalProps {
   open: boolean;
   onClose: () => void;
 }
 
-const AI_PROVIDER_SETTINGS_PATH = '/settings/organization/ai-provider';
+const AI_PROVIDER_SETTINGS_PATH = "/settings/organization/ai-provider";
+const BILLING_SETTINGS_PATH = "/settings/organization/billing";
 
-function LimitsCard() {
+function BillingCard({ onClose }: { onClose: () => void }) {
   return (
     <div className="space-y-3 rounded-lg border bg-muted/50 p-4">
-      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        Free tier limits
-      </p>
-      <div className="space-y-2">
-        <div className="flex items-center justify-between text-sm">
-          <span>Rolling 5-hour window</span>
-          <span className="font-medium">$25</span>
-        </div>
-        <div className="flex items-center justify-between text-sm">
-          <span>Rolling 7-day window</span>
-          <span className="font-medium">$100</span>
-        </div>
+      <div className="flex gap-3">
+        <CreditCard className="mt-0.5 size-4 shrink-0 text-primary" />
+        <p className="text-sm text-muted-foreground">
+          Hosted usage now requires a subscription. Your first 7 days include
+          capped credits, and after that usage is deducted from your credit
+          balance in{" "}
+          <Link
+            to={BILLING_SETTINGS_PATH}
+            onClick={onClose}
+            className="font-medium text-foreground underline underline-offset-4"
+          >
+            Billing
+          </Link>
+          .
+        </p>
       </div>
     </div>
   );
@@ -50,15 +54,16 @@ function ApiKeyCallout({ onClose }: { onClose: () => void }) {
       <div className="flex gap-3">
         <KeyRound className="mt-0.5 size-4 shrink-0 text-primary" />
         <p className="text-sm text-muted-foreground">
-          Want unlimited usage?{' '}
+          Want camelAI to run turns with your own provider credentials?{" "}
           <Link
             to={AI_PROVIDER_SETTINGS_PATH}
             onClick={onClose}
             className="font-medium text-foreground underline underline-offset-4"
           >
             Add your own API key.
-          </Link>{' '}
-          You&apos;re billed directly by the provider, and camelAI adds zero markup.
+          </Link>{" "}
+          Paid access still gates usage, but BYOK turns do not consume camelAI
+          credits. Your provider may also bill the underlying model usage.
         </p>
       </div>
     </div>
@@ -68,7 +73,7 @@ function ApiKeyCallout({ onClose }: { onClose: () => void }) {
 function ModalBody({ onClose }: { onClose: () => void }) {
   return (
     <>
-      <LimitsCard />
+      <BillingCard onClose={onClose} />
       <ApiKeyCallout onClose={onClose} />
     </>
   );
@@ -101,10 +106,13 @@ export function FreeTierModal({ open, onClose }: FreeTierModalProps) {
           <SheetHeader className="gap-3">
             <div className="flex items-center gap-2">
               <Info className="size-5 text-primary" />
-              <SheetTitle className="text-base font-semibold">A quick heads up on usage</SheetTitle>
+              <SheetTitle className="text-base font-semibold">
+                A quick heads up on billing
+              </SheetTitle>
             </div>
             <p className="text-sm text-muted-foreground">
-              camelAI is free to use. We want everyone to have access to a powerful coding assistant.
+              camelAI now uses subscription access plus usage credits for hosted
+              models.
             </p>
           </SheetHeader>
           <div className="space-y-4 px-6 pb-2">
@@ -129,10 +137,13 @@ export function FreeTierModal({ open, onClose }: FreeTierModalProps) {
         <DialogHeader className="gap-3">
           <div className="flex items-center gap-2">
             <Info className="size-5 text-primary" />
-            <DialogTitle className="text-base font-semibold">A quick heads up on usage</DialogTitle>
+            <DialogTitle className="text-base font-semibold">
+              A quick heads up on billing
+            </DialogTitle>
           </div>
           <p className="text-sm text-muted-foreground">
-            camelAI is free to use. We want everyone to have access to a powerful coding assistant.
+            camelAI now uses subscription access plus usage credits for hosted
+            models.
           </p>
         </DialogHeader>
         <div className="space-y-4">

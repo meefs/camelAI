@@ -79,7 +79,15 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       });
     } catch (error) {
       console.error('Create invitation error:', error);
-      return Response.json({ error: 'Failed to create invitation' }, { status: 500 });
+      return Response.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Failed to create invitation',
+        },
+        { status: 500 },
+      );
     }
   }
 

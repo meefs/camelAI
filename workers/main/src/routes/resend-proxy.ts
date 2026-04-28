@@ -8,8 +8,9 @@
 
 import type { RouteContext } from '../types.js';
 import { validateSandboxProxy } from '../sandbox-auth.js';
-import { getWorkspaceStub, getUserStub } from '../helpers/stubs.js';
+import { getWorkspaceStub, getUserStub, getOrgStub } from '../helpers/stubs.js';
 import { buildWorkspaceEmailAddress, getWorkspaceEmailDomain } from '../../../../src/lib/workspace-email.js';
+import { getBillingPlanLimits } from '../../../../src/lib/billing-plans.js';
 
 // ---------------------------------------------------------------------------
 // Rate limit constants
@@ -144,6 +145,15 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
   }
 
   const { orgId, workspaceId } = proxyAuth;
+
+  const orgInfo = await getOrgStub(env, orgId).getInfo();
+  if (
+    !orgInfo ||
+    !getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
+      .emailInbox
+  ) {
+    return errorResponse('Workspace email inbox requires a Pro, Team, or Enterprise plan', 403);
+  }
 
   // 2. Require Resend API key
   if (!env.RESEND_API_KEY) {

@@ -122,6 +122,7 @@ describe('handleWorkspaceEmailIngress', () => {
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
     };
     const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
@@ -208,7 +209,11 @@ describe('handleWorkspaceEmailIngress', () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
     };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
+    };
     getWorkspaceStubMock.mockReturnValue(workspaceStub);
+    getOrgStubMock.mockReturnValue(orgStub);
 
     const message = createMessage({
       from: 'stranger@example.com',
@@ -228,6 +233,7 @@ describe('handleWorkspaceEmailIngress', () => {
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
     };
     const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),

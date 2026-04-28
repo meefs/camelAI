@@ -1,18 +1,40 @@
-import { DurableObject } from 'cloudflare:workers';
-import type { OrgDO, OrgThread } from './auth';
-import type { ChatThreadDO, ExternalMessageRequest, ExternalTurnResult } from './durable-objects';
-import { getNextCronRunAt, parseCronExpression } from './cron-schedule';
-import type { WorkspaceDO } from './workspace';
+import { DurableObject } from "cloudflare:workers";
+import type { OrgDO, OrgThread } from "./auth";
+import type {
+  ChatThreadDO,
+  ExternalMessageRequest,
+  ExternalTurnResult,
+} from "./durable-objects";
+import {
+  getCronMinimumIntervalMs,
+  getNextCronRunAt,
+  parseCronExpression,
+} from "./cron-schedule";
+import type { WorkspaceDO } from "./workspace";
 import {
   getDefaultLlmModel,
   getDefaultThreadProvider,
-} from '../../../src/lib/llm-provider-config';
+} from "../../../src/lib/llm-provider-config";
+import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 
 const DEFAULT_EXTERNAL_MESSAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_DUE_JOBS_PER_ALARM = 20;
-const WORKSPACE_ID_KEY = 'workspaceId';
+const WORKSPACE_ID_KEY = "workspaceId";
 
-type RunStatus = 'success' | 'busy' | 'question' | 'error';
+function formatInterval(ms: number): string {
+  if (ms % (24 * 60 * 60 * 1000) === 0) {
+    const days = ms / (24 * 60 * 60 * 1000);
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  if (ms % (60 * 60 * 1000) === 0) {
+    const hours = ms / (60 * 60 * 1000);
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  const minutes = Math.round(ms / (60 * 1000));
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+type RunStatus = "success" | "busy" | "question" | "error";
 
 interface ScheduledPromptRow {
   id: string;
@@ -46,7 +68,9 @@ interface DispatchResult {
 }
 
 type ExternalMessageRpc = {
-  externalMessage: (body: ExternalMessageRequest) => Promise<ExternalTurnResult>;
+  externalMessage: (
+    body: ExternalMessageRequest,
+  ) => Promise<ExternalTurnResult>;
 };
 
 export interface WorkspaceScheduledPrompt {
@@ -115,7 +139,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
   }
 
   private migrate(): void {
-    const version = this.ctx.storage.kv.get<number>('schemaVersion') ?? 0;
+    const version = this.ctx.storage.kv.get<number>("schemaVersion") ?? 0;
     if (version < 1) {
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS scheduled_prompts (
@@ -137,23 +161,25 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         )
       `);
       this.sql.exec(
-        'CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_next_run ON scheduled_prompts(enabled, next_run_at)'
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_next_run ON scheduled_prompts(enabled, next_run_at)",
       );
     }
 
     if (version >= 1 && version < 2) {
-      this.sql.exec('ALTER TABLE scheduled_prompts ADD COLUMN scheduled_by_thread_id TEXT');
+      this.sql.exec(
+        "ALTER TABLE scheduled_prompts ADD COLUMN scheduled_by_thread_id TEXT",
+      );
     }
 
     if (version < 2) {
-      this.ctx.storage.kv.put('schemaVersion', 2);
+      this.ctx.storage.kv.put("schemaVersion", 2);
     }
   }
 
   private normalizeWorkspaceId(workspaceId: string): string {
     const normalized = workspaceId.trim();
     if (!normalized) {
-      throw new Error('workspaceId is required');
+      throw new Error("workspaceId is required");
     }
     return normalized;
   }
@@ -166,7 +192,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       return normalized;
     }
     if (storedWorkspaceId !== normalized) {
-      throw new Error('Workspace scheduler context mismatch');
+      throw new Error("Workspace scheduler context mismatch");
     }
     return normalized;
   }
@@ -200,10 +226,10 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
   private parseName(value: string): string {
     const trimmed = value.trim();
     if (!trimmed) {
-      throw new Error('name is required');
+      throw new Error("name is required");
     }
     if (trimmed.length > 120) {
-      throw new Error('name must be 120 characters or fewer');
+      throw new Error("name must be 120 characters or fewer");
     }
     return trimmed;
   }
@@ -211,27 +237,29 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
   private parsePrompt(value: string): string {
     const trimmed = value.trim();
     if (!trimmed) {
-      throw new Error('prompt is required');
+      throw new Error("prompt is required");
     }
     if (trimmed.length > 20_000) {
-      throw new Error('prompt must be 20000 characters or fewer');
+      throw new Error("prompt must be 20000 characters or fewer");
     }
     return trimmed;
   }
 
-  private parseOptionalThreadId(value: string | null | undefined): string | null {
-    if (typeof value !== 'string') return null;
+  private parseOptionalThreadId(
+    value: string | null | undefined,
+  ): string | null {
+    if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
   }
 
   private normalizeCronExpression(value: string): string {
-    const trimmed = value.trim().replace(/\s+/g, ' ');
+    const trimmed = value.trim().replace(/\s+/g, " ");
     if (!trimmed) {
-      throw new Error('cronExpression is required');
+      throw new Error("cronExpression is required");
     }
     if (trimmed.length > 100) {
-      throw new Error('cronExpression must be 100 characters or fewer');
+      throw new Error("cronExpression must be 100 characters or fewer");
     }
     parseCronExpression(trimmed);
     return trimmed;
@@ -239,18 +267,18 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
 
   private getPromptRow(id: string): ScheduledPromptRow | null {
     const rows = this.sql
-      .exec('SELECT * FROM scheduled_prompts WHERE id = ?', id)
+      .exec("SELECT * FROM scheduled_prompts WHERE id = ?", id)
       .toArray() as unknown as ScheduledPromptRow[];
     return rows[0] ?? null;
   }
 
   private async getWorkspaceInfo(workspaceId: string): Promise<WorkspaceInfo> {
     const workspaceStub = this.env.WORKSPACE.get(
-      this.env.WORKSPACE.idFromName(workspaceId)
+      this.env.WORKSPACE.idFromName(workspaceId),
     ) as DurableObjectStub<WorkspaceDO>;
     const info = await workspaceStub.getInfo();
     if (!info || info.archived) {
-      throw new Error('Workspace not found or archived');
+      throw new Error("Workspace not found or archived");
     }
     return {
       id: info.id,
@@ -260,38 +288,97 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
   }
 
   private getOrgStub(orgId: string): DurableObjectStub<OrgDO> {
-    return this.env.ORG.get(this.env.ORG.idFromName(orgId)) as DurableObjectStub<OrgDO>;
+    return this.env.ORG.get(
+      this.env.ORG.idFromName(orgId),
+    ) as DurableObjectStub<OrgDO>;
+  }
+
+  private async assertCronWithinBillingLimits(
+    workspace: WorkspaceInfo,
+    cronExpression: string,
+    createdBy: string,
+    existingPromptId?: string,
+  ): Promise<void> {
+    const orgStub = this.getOrgStub(workspace.org_id);
+    const org = await orgStub.getInfo();
+    const limits = getBillingPlanLimits(org?.billing_plan, org?.billing_status);
+    const minIntervalMs = limits.minCronIntervalMs;
+    if (minIntervalMs !== null) {
+      const actualIntervalMs = getCronMinimumIntervalMs(cronExpression);
+      if (actualIntervalMs !== null && actualIntervalMs < minIntervalMs) {
+        throw new Error(
+          `Your current billing plan allows cron jobs no more frequent than every ${formatInterval(minIntervalMs)}.`,
+        );
+      }
+    }
+
+    if (limits.maxCronJobsPerUser !== null) {
+      const count =
+        this.sql
+          .exec<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM scheduled_prompts
+           WHERE created_by = ? AND id != ?`,
+            createdBy,
+            existingPromptId ?? "",
+          )
+          .toArray()[0]?.count ?? 0;
+      if (count >= limits.maxCronJobsPerUser) {
+        throw new Error(
+          `Your current billing plan allows ${limits.maxCronJobsPerUser} cron jobs per user.`,
+        );
+      }
+      return;
+    }
+
+    if (limits.maxCronJobsPerWorkspace !== null) {
+      const count =
+        this.sql
+          .exec<{
+            count: number;
+          }>("SELECT COUNT(*) AS count FROM scheduled_prompts WHERE id != ?", existingPromptId ?? "")
+          .toArray()[0]?.count ?? 0;
+      if (count >= limits.maxCronJobsPerWorkspace) {
+        throw new Error(
+          `Your current billing plan allows ${limits.maxCronJobsPerWorkspace} cron jobs per workspace.`,
+        );
+      }
+    }
   }
 
   private async createInitialThreadForPrompt(
     workspace: WorkspaceInfo,
     name: string,
     prompt: string,
-    createdBy: string
+    createdBy: string,
   ): Promise<string> {
     const orgStub = this.getOrgStub(workspace.org_id);
     const [llmProviderConfig, experimentalSettings] = await Promise.all([
       orgStub.getLlmProviderConfig(),
       orgStub.getExperimentalSettings(),
     ]);
-    const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
-    const created = await orgStub.createThread(
+    const provider = getDefaultThreadProvider(
+      llmProviderConfig?.provider,
+      experimentalSettings,
+    );
+    const created = (await orgStub.createThread(
       workspace.id,
       `Scheduled: ${name}`,
-      createdBy || 'system',
+      createdBy || "system",
       prompt.slice(0, 500),
       getDefaultLlmModel(provider),
-      provider
-    ) as OrgThread;
+      provider,
+    )) as OrgThread;
     return created.id;
   }
 
   private async ensureRunnableThread(
     prompt: WorkspaceScheduledPrompt,
-    workspace: WorkspaceInfo
+    workspace: WorkspaceInfo,
   ): Promise<string> {
     const orgStub = this.getOrgStub(workspace.org_id);
-    const existing = await orgStub.getThread(prompt.thread_id) as OrgThread | null;
+    const existing = (await orgStub.getThread(
+      prompt.thread_id,
+    )) as OrgThread | null;
     if (existing && existing.workspace_id === workspace.id) {
       return prompt.thread_id;
     }
@@ -300,42 +387,48 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       orgStub.getLlmProviderConfig(),
       orgStub.getExperimentalSettings(),
     ]);
-    const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
-    const created = await orgStub.createThread(
+    const provider = getDefaultThreadProvider(
+      llmProviderConfig?.provider,
+      experimentalSettings,
+    );
+    const created = (await orgStub.createThread(
       workspace.id,
       `Scheduled: ${prompt.name}`,
-      'system',
+      "system",
       prompt.prompt.slice(0, 500),
       getDefaultLlmModel(provider),
-      provider
-    ) as OrgThread;
+      provider,
+    )) as OrgThread;
 
     this.sql.exec(
-      'UPDATE scheduled_prompts SET thread_id = ?, updated_at = ? WHERE id = ?',
+      "UPDATE scheduled_prompts SET thread_id = ?, updated_at = ? WHERE id = ?",
       created.id,
       Date.now(),
-      prompt.id
+      prompt.id,
     );
     return created.id;
   }
 
-  private buildScheduledMessage(prompt: WorkspaceScheduledPrompt, scheduledForMs: number): string {
+  private buildScheduledMessage(
+    prompt: WorkspaceScheduledPrompt,
+    scheduledForMs: number,
+  ): string {
     const scheduledForIso = new Date(scheduledForMs).toISOString();
-    const originThreadId = prompt.scheduled_by_thread_id ?? 'unknown';
+    const originThreadId = prompt.scheduled_by_thread_id ?? "unknown";
     return [
       `<camelai system message>Scheduled prompt "${prompt.name}" fired at ${scheduledForIso} UTC. Origin scheduler thread/session id: ${originThreadId}. Use this id to search prior context from when this cron was created.</camelai system message>`,
       prompt.prompt,
-    ].join('\n\n');
+    ].join("\n\n");
   }
 
   private async dispatchPrompt(
     prompt: WorkspaceScheduledPrompt,
     workspace: WorkspaceInfo,
-    scheduledForMs: number
+    scheduledForMs: number,
   ): Promise<DispatchResult> {
     const threadId = await this.ensureRunnableThread(prompt, workspace);
     const chatThreadStub = this.env.CHAT_THREAD.get(
-      this.env.CHAT_THREAD.idFromName(threadId)
+      this.env.CHAT_THREAD.idFromName(threadId),
     ) as DurableObjectStub<ExternalMessageRpc>;
 
     try {
@@ -343,39 +436,43 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         threadId,
         workspaceId: workspace.id,
         orgId: workspace.org_id,
-        userName: 'Scheduler',
+        userName: "Scheduler",
         message: this.buildScheduledMessage(prompt, scheduledForMs),
         timeoutMs: DEFAULT_EXTERNAL_MESSAGE_TIMEOUT_MS,
       });
       switch (payload.status) {
-        case 'result':
+        case "result":
           return {
-            status: 'success',
-            reply: typeof payload.reply === 'string' ? payload.reply : undefined,
+            status: "success",
+            reply:
+              typeof payload.reply === "string" ? payload.reply : undefined,
             threadId,
           };
-        case 'busy':
+        case "busy":
           return {
-            status: 'busy',
-            error: 'Thread is busy with another run',
+            status: "busy",
+            error: "Thread is busy with another run",
             threadId,
           };
-        case 'error':
+        case "error":
           return {
-            status: 'error',
-            error: typeof payload.error === 'string' ? payload.error : 'Unknown chat error',
+            status: "error",
+            error:
+              typeof payload.error === "string"
+                ? payload.error
+                : "Unknown chat error",
             threadId,
           };
         default:
           return {
-            status: 'error',
-            error: 'Unexpected response from chat thread',
+            status: "error",
+            error: "Unexpected response from chat thread",
             threadId,
           };
       }
     } catch (error) {
       return {
-        status: 'error',
+        status: "error",
         error: error instanceof Error ? error.message : String(error),
         threadId,
       };
@@ -387,7 +484,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       .exec(
         `SELECT MIN(next_run_at) as next_run_at
          FROM scheduled_prompts
-         WHERE enabled = 1 AND next_run_at IS NOT NULL`
+         WHERE enabled = 1 AND next_run_at IS NOT NULL`,
       )
       .toArray() as Array<{ next_run_at: number | null }>;
 
@@ -401,30 +498,48 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     await this.ctx.storage.setAlarm(Math.max(now + 1000, nextRunAt));
   }
 
-  async listScheduledPrompts(workspaceId: string): Promise<WorkspaceScheduledPrompt[]> {
+  async listScheduledPrompts(
+    workspaceId: string,
+  ): Promise<WorkspaceScheduledPrompt[]> {
     this.assertWorkspaceIdentity(workspaceId);
     const rows = this.sql
-      .exec('SELECT * FROM scheduled_prompts ORDER BY created_at DESC')
+      .exec("SELECT * FROM scheduled_prompts ORDER BY created_at DESC")
       .toArray() as unknown as ScheduledPromptRow[];
     return rows.map((row) => this.toPrompt(row));
   }
 
-  async createScheduledPrompt(input: CreateScheduledPromptInput): Promise<WorkspaceScheduledPrompt> {
+  async createScheduledPrompt(
+    input: CreateScheduledPromptInput,
+  ): Promise<WorkspaceScheduledPrompt> {
     const workspaceId = this.assertWorkspaceIdentity(input.workspaceId);
     const workspace = await this.getWorkspaceInfo(workspaceId);
     const name = this.parseName(input.name);
     const prompt = this.parsePrompt(input.prompt);
     const cronExpression = this.normalizeCronExpression(input.cronExpression);
-    const createdBy = input.createdBy?.trim() || 'system';
-    const scheduledByThreadId = this.parseOptionalThreadId(input.scheduledByThreadId);
+    const createdBy = input.createdBy?.trim() || "system";
+    const scheduledByThreadId = this.parseOptionalThreadId(
+      input.scheduledByThreadId,
+    );
     const enabled = input.enabled ?? true;
+    await this.assertCronWithinBillingLimits(
+      workspace,
+      cronExpression,
+      createdBy,
+    );
 
     const now = Date.now();
     const nextRunAt = enabled ? getNextCronRunAt(cronExpression, now) : null;
     if (enabled && !nextRunAt) {
-      throw new Error('Unable to compute next run time for this cron expression');
+      throw new Error(
+        "Unable to compute next run time for this cron expression",
+      );
     }
-    const threadId = await this.createInitialThreadForPrompt(workspace, name, prompt, createdBy);
+    const threadId = await this.createInitialThreadForPrompt(
+      workspace,
+      name,
+      prompt,
+      createdBy,
+    );
 
     const id = crypto.randomUUID();
     this.sql.exec(
@@ -441,30 +556,46 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       createdBy,
       now,
       now,
-      nextRunAt
+      nextRunAt,
     );
 
     await this.scheduleNextAlarm();
     const created = this.getPromptRow(id);
     if (!created) {
-      throw new Error('Failed to create scheduled prompt');
+      throw new Error("Failed to create scheduled prompt");
     }
     return this.toPrompt(created);
   }
 
-  async updateScheduledPrompt(input: UpdateScheduledPromptInput): Promise<WorkspaceScheduledPrompt | null> {
+  async updateScheduledPrompt(
+    input: UpdateScheduledPromptInput,
+  ): Promise<WorkspaceScheduledPrompt | null> {
     this.assertWorkspaceIdentity(input.workspaceId);
     const existing = this.getPromptRow(input.id);
     if (!existing) return null;
 
-    await this.getWorkspaceInfo(input.workspaceId);
+    const workspace = await this.getWorkspaceInfo(input.workspaceId);
     const existingPrompt = this.toPrompt(existing);
-    const name = input.name !== undefined ? this.parseName(input.name) : existingPrompt.name;
-    const prompt = input.prompt !== undefined ? this.parsePrompt(input.prompt) : existingPrompt.prompt;
-    const cronExpression = input.cronExpression !== undefined
-      ? this.normalizeCronExpression(input.cronExpression)
-      : existingPrompt.cron_expression;
-    const enabled = input.enabled !== undefined ? input.enabled : existingPrompt.enabled;
+    const name =
+      input.name !== undefined
+        ? this.parseName(input.name)
+        : existingPrompt.name;
+    const prompt =
+      input.prompt !== undefined
+        ? this.parsePrompt(input.prompt)
+        : existingPrompt.prompt;
+    const cronExpression =
+      input.cronExpression !== undefined
+        ? this.normalizeCronExpression(input.cronExpression)
+        : existingPrompt.cron_expression;
+    const enabled =
+      input.enabled !== undefined ? input.enabled : existingPrompt.enabled;
+    await this.assertCronWithinBillingLimits(
+      workspace,
+      cronExpression,
+      existingPrompt.created_by,
+      existingPrompt.id,
+    );
 
     const now = Date.now();
     let nextRunAt: number | null;
@@ -472,10 +603,17 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       nextRunAt = null;
     } else {
       const cronChanged = cronExpression !== existingPrompt.cron_expression;
-      const needsRecompute = !existingPrompt.enabled || cronChanged || existingPrompt.next_run_at === null;
-      nextRunAt = needsRecompute ? getNextCronRunAt(cronExpression, now) : existingPrompt.next_run_at;
+      const needsRecompute =
+        !existingPrompt.enabled ||
+        cronChanged ||
+        existingPrompt.next_run_at === null;
+      nextRunAt = needsRecompute
+        ? getNextCronRunAt(cronExpression, now)
+        : existingPrompt.next_run_at;
       if (!nextRunAt) {
-        throw new Error('Unable to compute next run time for this cron expression');
+        throw new Error(
+          "Unable to compute next run time for this cron expression",
+        );
       }
     }
 
@@ -489,7 +627,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       enabled ? 1 : 0,
       now,
       nextRunAt,
-      existingPrompt.id
+      existingPrompt.id,
     );
 
     await this.scheduleNextAlarm();
@@ -497,16 +635,22 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     return updated ? this.toPrompt(updated) : null;
   }
 
-  async deleteScheduledPrompt(workspaceId: string, id: string): Promise<boolean> {
+  async deleteScheduledPrompt(
+    workspaceId: string,
+    id: string,
+  ): Promise<boolean> {
     this.assertWorkspaceIdentity(workspaceId);
     const existing = this.getPromptRow(id);
     if (!existing) return false;
-    this.sql.exec('DELETE FROM scheduled_prompts WHERE id = ?', id);
+    this.sql.exec("DELETE FROM scheduled_prompts WHERE id = ?", id);
     await this.scheduleNextAlarm();
     return true;
   }
 
-  async disableAllScheduledPrompts(workspaceId: string, reason = 'disabled'): Promise<void> {
+  async disableAllScheduledPrompts(
+    workspaceId: string,
+    reason = "disabled",
+  ): Promise<void> {
     this.assertWorkspaceIdentity(workspaceId);
     const now = Date.now();
     this.sql.exec(
@@ -514,19 +658,26 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
        SET enabled = 0, next_run_at = NULL, updated_at = ?, last_run_error = ?
        WHERE enabled = 1`,
       now,
-      reason
+      reason,
     );
     await this.ctx.storage.deleteAlarm();
   }
 
-  async runScheduledPromptNow(workspaceId: string, id: string): Promise<RunScheduledPromptNowResult | null> {
+  async runScheduledPromptNow(
+    workspaceId: string,
+    id: string,
+  ): Promise<RunScheduledPromptNowResult | null> {
     this.assertWorkspaceIdentity(workspaceId);
     const existingRow = this.getPromptRow(id);
     if (!existingRow) return null;
     const existing = this.toPrompt(existingRow);
     const workspace = await this.getWorkspaceInfo(workspaceId);
     const runStartedAt = Date.now();
-    const dispatch = await this.dispatchPrompt(existing, workspace, runStartedAt);
+    const dispatch = await this.dispatchPrompt(
+      existing,
+      workspace,
+      runStartedAt,
+    );
 
     let nextRunAt = existing.next_run_at;
     if (existing.enabled && (!nextRunAt || nextRunAt <= runStartedAt)) {
@@ -543,7 +694,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       runStartedAt,
       dispatch.status,
       dispatch.error ?? null,
-      existing.id
+      existing.id,
     );
 
     await this.scheduleNextAlarm();
@@ -571,11 +722,17 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     try {
       workspace = await this.getWorkspaceInfo(workspaceId);
     } catch (error) {
-      console.warn('[WorkspaceCronDO] workspace unavailable, disabling scheduled prompts', {
+      console.warn(
+        "[WorkspaceCronDO] workspace unavailable, disabling scheduled prompts",
+        {
+          workspaceId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      await this.disableAllScheduledPrompts(
         workspaceId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await this.disableAllScheduledPrompts(workspaceId, 'workspace_unavailable');
+        "workspace_unavailable",
+      );
       return;
     }
 
@@ -589,7 +746,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
          ORDER BY next_run_at ASC
          LIMIT ?`,
         now,
-        MAX_DUE_JOBS_PER_ALARM
+        MAX_DUE_JOBS_PER_ALARM,
       )
       .toArray() as unknown as ScheduledPromptRow[];
 
@@ -597,7 +754,11 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       const prompt = this.toPrompt(row);
       const runStartedAt = Date.now();
       const scheduledFor = prompt.next_run_at ?? runStartedAt;
-      const dispatch = await this.dispatchPrompt(prompt, workspace, scheduledFor);
+      const dispatch = await this.dispatchPrompt(
+        prompt,
+        workspace,
+        scheduledFor,
+      );
       const nextRunAt = getNextCronRunAt(prompt.cron_expression, runStartedAt);
       const enabledAfterRun = Boolean(nextRunAt);
 
@@ -611,8 +772,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         nextRunAt,
         runStartedAt,
         dispatch.status,
-        dispatch.error ?? (!enabledAfterRun ? 'No future run found' : null),
-        prompt.id
+        dispatch.error ?? (!enabledAfterRun ? "No future run found" : null),
+        prompt.id,
       );
     }
 

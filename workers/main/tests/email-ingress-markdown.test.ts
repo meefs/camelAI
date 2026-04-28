@@ -120,6 +120,7 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
     });
 
     mockGetOrgStub.mockReturnValue({
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),

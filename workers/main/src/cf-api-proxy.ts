@@ -5,20 +5,25 @@
  * Provides auth, path rewriting, and post-deploy side effects.
  */
 
-import { waitUntil } from 'cloudflare:workers';
-import { isSignedToken, validateSignedToken, createSignedToken } from './signed-tokens.js';
-import { mapCredentialsToEnvVars } from './integration-env.js';
-import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
-import { validateSandboxProxy } from './sandbox-auth.js';
-import type { OrgDO } from './auth.js';
-import type { WorkspaceDO } from './workspace.js';
+import { waitUntil } from "cloudflare:workers";
+import {
+  isSignedToken,
+  validateSignedToken,
+  createSignedToken,
+} from "./signed-tokens.js";
+import { mapCredentialsToEnvVars } from "./integration-env.js";
+import { decryptCredentials } from "../../../src/lib/integration-crypto.js";
+import { validateSandboxProxy } from "./sandbox-auth.js";
+import type { OrgDO } from "./auth.js";
+import type { WorkspaceDO } from "./workspace.js";
+import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
 
 // Secrets managed by Chiridion (will be cleaned up if removed)
-const MANAGED_SECRET_PREFIXES = ['INT_'];
-const VIRTUAL_DATA_PROXY_BINDING_NAME = 'DATA_PROXY';
+const MANAGED_SECRET_PREFIXES = ["INT_"];
+const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
 
 function isManagedSecret(name: string): boolean {
-  return MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p));
+  return MANAGED_SECRET_PREFIXES.some((p) => name.startsWith(p));
 }
 
 // =============================================================================
@@ -30,36 +35,36 @@ function isManagedSecret(name: string): boolean {
 
 /** Binding types that are completely forbidden */
 const FORBIDDEN_BINDING_TYPES = new Set([
-  'kv_namespace',           // KV storage
-  'd1',                     // D1 database
+  "kv_namespace", // KV storage
+  "d1", // D1 database
   // r2_bucket is NOT forbidden — it's transparently replaced with a virtual R2 service binding
-  'queue',                  // Queue producer
-  'analytics_engine',       // Analytics Engine
-  'hyperdrive',             // Hyperdrive database connections
-  'vectorize',              // Vectorize vector indexes
-  'browser',                // Browser Rendering API
-  'mtls_certificate',       // mTLS certificates
-  'dispatch_namespace',     // Workers for Platforms dispatch
-  'send_email',             // Email sending
-  'version_metadata',       // Version metadata (internal)
+  "queue", // Queue producer
+  "analytics_engine", // Analytics Engine
+  "hyperdrive", // Hyperdrive database connections
+  "vectorize", // Vectorize vector indexes
+  "browser", // Browser Rendering API
+  "mtls_certificate", // mTLS certificates
+  "dispatch_namespace", // Workers for Platforms dispatch
+  "send_email", // Email sending
+  "version_metadata", // Version metadata (internal)
 ]);
 
 /** Binding types that pass validation but are transformed before forwarding to CF API */
 const TRANSFORMED_BINDING_TYPES = new Set([
-  'r2_bucket',              // Replaced with virtual R2 service binding
-  'ai',                     // Replaced with virtual AI binding
+  "r2_bucket", // Replaced with virtual R2 service binding
+  "ai", // Replaced with virtual AI binding
 ]);
 
 /** Binding types that are always allowed (safe, self-contained) */
 const ALLOWED_BINDING_TYPES = new Set([
-  'plain_text',             // Plain text env vars
-  'secret_text',            // Secret text env vars (we manage secrets separately)
-  'json',                   // JSON env vars
-  'wasm_module',            // WASM modules (bundled with script)
-  'text_blob',              // Text blobs (bundled)
-  'data_blob',              // Data blobs (bundled)
-  'assets',                 // Static assets (bundled with worker)
-  'worker_loader',          // Worker loaders for codemode (ephemeral isolates, no external resource access)
+  "plain_text", // Plain text env vars
+  "secret_text", // Secret text env vars (we manage secrets separately)
+  "json", // JSON env vars
+  "wasm_module", // WASM modules (bundled with script)
+  "text_blob", // Text blobs (bundled)
+  "data_blob", // Data blobs (bundled)
+  "assets", // Static assets (bundled with worker)
+  "worker_loader", // Worker loaders for codemode (ephemeral isolates, no external resource access)
 ]);
 
 export interface WorkerBinding {
@@ -91,14 +96,20 @@ export interface BindingValidationResult {
  * Validate bindings in worker metadata.
  * Returns which bindings are forbidden and why.
  */
-export function validateBindings(bindings: WorkerBinding[]): BindingValidationResult {
-  const forbiddenBindings: Array<{ name: string; type: string; reason: string }> = [];
+export function validateBindings(
+  bindings: WorkerBinding[],
+): BindingValidationResult {
+  const forbiddenBindings: Array<{
+    name: string;
+    type: string;
+    reason: string;
+  }> = [];
 
   for (const binding of bindings) {
     const { type, name } = binding;
 
     // Allow virtual DATA_PROXY service binding (platform-virtualized at deploy time).
-    if (type === 'service') {
+    if (type === "service") {
       if (name === VIRTUAL_DATA_PROXY_BINDING_NAME) {
         continue;
       }
@@ -121,7 +132,7 @@ export function validateBindings(bindings: WorkerBinding[]): BindingValidationRe
     }
 
     // Check Durable Object bindings - only allow local DOs (no script_name)
-    if (type === 'durable_object_namespace') {
+    if (type === "durable_object_namespace") {
       if (binding.script_name) {
         forbiddenBindings.push({
           name,
@@ -158,17 +169,21 @@ export function validateBindings(bindings: WorkerBinding[]): BindingValidationRe
 }
 
 // Re-export for index.ts to use
-export const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
+export const CHIRIDION_DEPLOY_TOKEN_HEADER = "X-Chiridion-Deploy-Token";
 
-const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
-const DISPATCH_SCRIPT_BASE = /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/;
-const DISPATCH_SCRIPT_ANY = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)(?:\/|$)/;
-const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
+const DISPATCH_SCRIPT_UPLOAD =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+const DISPATCH_SCRIPT_BASE =
+  /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/;
+const DISPATCH_SCRIPT_ANY =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)(?:\/|$)/;
+const ASSETS_UPLOAD =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
 
 // Legacy prefix for script ownership (being phased out)
-const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
+const SCRIPT_ORG_PREFIX_LEGACY = "script_org:";
 // New prefix with org-slug namespacing: script:{script-name}--{org-slug}
-const SCRIPT_PREFIX = 'script:';
+const SCRIPT_PREFIX = "script:";
 
 export interface CfApiProxyEnv {
   CF_API_TOKEN?: string;
@@ -207,16 +222,23 @@ export interface DeploySideEffectsInfo {
  * Return a Cloudflare API-formatted error response.
  * Wrangler expects this format to parse errors correctly.
  */
-export function cfApiError(code: number, message: string, status: number): Response {
-  return new Response(JSON.stringify({
-    success: false,
-    errors: [{ code, message }],
-    messages: [],
-    result: null,
-  }), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
+export function cfApiError(
+  code: number,
+  message: string,
+  status: number,
+): Response {
+  return new Response(
+    JSON.stringify({
+      success: false,
+      errors: [{ code, message }],
+      messages: [],
+      result: null,
+    }),
+    {
+      status,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
 }
 
 /**
@@ -224,25 +246,33 @@ export function cfApiError(code: number, message: string, status: number): Respo
  * E.g., "staging.camelai.dev" -> "staging", "camelai.dev" -> ""
  */
 export function getEnvPrefix(hostname: string): string {
-  if (hostname.endsWith('.camelai.dev') || hostname === 'camelai.dev') {
-    const parts = hostname.split('.');
-    if (parts.length <= 2 || parts[0] === 'www') {
-      return '';
+  if (hostname.endsWith(".camelai.dev") || hostname === "camelai.dev") {
+    const parts = hostname.split(".");
+    if (parts.length <= 2 || parts[0] === "www") {
+      return "";
     }
-    return parts[0] ?? '';
+    return parts[0] ?? "";
   }
 
-  if (hostname === 'localhost' || hostname.startsWith('127.0.0.1') || hostname.endsWith('.local') || hostname === 'host.docker.internal') {
-    return 'local';
+  if (
+    hostname === "localhost" ||
+    hostname.startsWith("127.0.0.1") ||
+    hostname.endsWith(".local") ||
+    hostname === "host.docker.internal"
+  ) {
+    return "local";
   }
 
-  return '';
+  return "";
 }
 
 /**
  * Resolve environment prefix, preferring WORKER_BASE_URL if set.
  */
-export function resolveEnvPrefix(baseUrl: string | undefined, hostname: string): string {
+export function resolveEnvPrefix(
+  baseUrl: string | undefined,
+  hostname: string,
+): string {
   if (baseUrl) {
     try {
       return getEnvPrefix(new URL(baseUrl).hostname);
@@ -260,7 +290,7 @@ function extractScriptName(pathname: string): string | null {
   const match = pathname.match(DISPATCH_SCRIPT_ANY);
   if (!match) return null;
   try {
-    return decodeURIComponent(match[1] ?? '').trim() || null;
+    return decodeURIComponent(match[1] ?? "").trim() || null;
   } catch {
     return match[1]?.trim() || null;
   }
@@ -275,7 +305,7 @@ function extractScriptName(pathname: string): string | null {
 async function checkScriptOwnershipLegacy(
   kv: KVNamespace,
   scriptName: string,
-  _requestingOrgId: string
+  _requestingOrgId: string,
 ): Promise<{ owned: boolean; orgId: string | null }> {
   const data = await kv.get(`${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`);
   if (!data) {
@@ -295,7 +325,7 @@ async function checkScriptOwnershipLegacy(
  */
 async function getScriptAccessInfo(
   kv: KVNamespace,
-  dispatchScriptName: string
+  dispatchScriptName: string,
 ): Promise<{ org_id: string; is_public: boolean } | null> {
   const data = await kv.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
   if (!data) return null;
@@ -307,39 +337,60 @@ async function getScriptAccessInfo(
 }
 
 // Pattern for tail creation (wrangler tail)
-const DISPATCH_SCRIPT_TAILS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)\/tails$/;
+const DISPATCH_SCRIPT_TAILS =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)\/tails$/;
 
-function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
+function isAllowedCloudflareApiProxyRequest(
+  pathname: string,
+  method: string,
+): boolean {
   const m = method.toUpperCase();
   // All paths are rewritten to WFP dispatch namespace format
   // Base pattern: /client/v4/accounts/{account}/workers/dispatch/namespaces/{ns}/scripts/{script}
-  const dispatchScript = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
-  const dispatchScriptDeployments = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/;
-  const dispatchScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
-  const dispatchScriptScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/script-settings$/;
-  const dispatchAssetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
-  const dispatchScriptSecrets = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets$/;
-  const dispatchScriptSecretBinding = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets\/[^/]+$/;
-  const dispatchScriptVersions = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/versions$/;
+  const dispatchScript =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+  const dispatchScriptDeployments =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/;
+  const dispatchScriptSettings =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
+  const dispatchScriptScriptSettings =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/script-settings$/;
+  const dispatchAssetsUploadSession =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
+  const dispatchScriptSecrets =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets$/;
+  const dispatchScriptSecretBinding =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets\/[^/]+$/;
+  const dispatchScriptVersions =
+    /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/versions$/;
 
   switch (m) {
-    case 'GET':
-      return dispatchScript.test(pathname) ||
+    case "GET":
+      return (
+        dispatchScript.test(pathname) ||
         dispatchScriptDeployments.test(pathname) ||
         dispatchScriptSettings.test(pathname) ||
         dispatchScriptSecrets.test(pathname) ||
         dispatchScriptSecretBinding.test(pathname) ||
-        dispatchScriptVersions.test(pathname);
-    case 'PUT':
-      return dispatchScript.test(pathname) || dispatchScriptSecrets.test(pathname);
-    case 'PATCH':
-      return dispatchScriptSettings.test(pathname) || dispatchScriptScriptSettings.test(pathname);
-    case 'POST':
-      return dispatchAssetsUploadSession.test(pathname) ||
+        dispatchScriptVersions.test(pathname)
+      );
+    case "PUT":
+      return (
+        dispatchScript.test(pathname) || dispatchScriptSecrets.test(pathname)
+      );
+    case "PATCH":
+      return (
+        dispatchScriptSettings.test(pathname) ||
+        dispatchScriptScriptSettings.test(pathname)
+      );
+    case "POST":
+      return (
+        dispatchAssetsUploadSession.test(pathname) ||
         dispatchScriptVersions.test(pathname) ||
         DISPATCH_SCRIPT_TAILS.test(pathname) ||
-        ASSETS_UPLOAD.test(pathname);
-    case 'DELETE':
+        ASSETS_UPLOAD.test(pathname)
+      );
+    case "DELETE":
       return dispatchScriptSecretBinding.test(pathname);
     default:
       return false;
@@ -348,13 +399,19 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
 
 function isUploadRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
-  return (m === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname)) || (m === 'POST' && ASSETS_UPLOAD.test(pathname));
+  return (
+    (m === "PUT" && DISPATCH_SCRIPT_UPLOAD.test(pathname)) ||
+    (m === "POST" && ASSETS_UPLOAD.test(pathname))
+  );
 }
 
 // Patterns for requests that may contain bindings in JSON body
-const DISPATCH_SCRIPT_SETTINGS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
-const DISPATCH_SCRIPT_SCRIPT_SETTINGS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/script-settings$/;
-const DISPATCH_SCRIPT_VERSIONS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/versions$/;
+const DISPATCH_SCRIPT_SETTINGS =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
+const DISPATCH_SCRIPT_SCRIPT_SETTINGS =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/script-settings$/;
+const DISPATCH_SCRIPT_VERSIONS =
+  /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/versions$/;
 
 /**
  * Check if this is a request that may contain bindings in JSON body.
@@ -363,11 +420,14 @@ const DISPATCH_SCRIPT_VERSIONS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispa
 function isBindingsJsonRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
   // PATCH to settings/script-settings can modify bindings
-  if (m === 'PATCH') {
-    return DISPATCH_SCRIPT_SETTINGS.test(pathname) || DISPATCH_SCRIPT_SCRIPT_SETTINGS.test(pathname);
+  if (m === "PATCH") {
+    return (
+      DISPATCH_SCRIPT_SETTINGS.test(pathname) ||
+      DISPATCH_SCRIPT_SCRIPT_SETTINGS.test(pathname)
+    );
   }
   // POST to versions can include bindings
-  if (m === 'POST') {
+  if (m === "POST") {
     return DISPATCH_SCRIPT_VERSIONS.test(pathname);
   }
   return false;
@@ -380,17 +440,22 @@ interface SettingsRequestBody {
 
 function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
-  const boundary = boundaryMatch?.[1]?.trim().replace(/^"|"$/g, '');
+  const boundary = boundaryMatch?.[1]?.trim().replace(/^"|"$/g, "");
   if (!boundary) {
     return null;
   }
 
-  const decoder = new TextDecoder('utf-8');
+  const decoder = new TextDecoder("utf-8");
   const text = decoder.decode(body);
   const delimiter = `--${boundary}`;
   const parts = text.split(delimiter);
   const files: string[] = [];
-  const wranglerConfigs: Array<{ filename: string; content: string; size: number; truncated: boolean }> = [];
+  const wranglerConfigs: Array<{
+    filename: string;
+    content: string;
+    size: number;
+    truncated: boolean;
+  }> = [];
   const formParts: Array<{
     name: string | null;
     filename: string | null;
@@ -407,12 +472,12 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
 
   for (const part of parts) {
     const trimmed = part.trim();
-    if (!trimmed || trimmed === '--') continue;
+    if (!trimmed || trimmed === "--") continue;
 
-    const headerEnd = part.indexOf('\r\n\r\n');
+    const headerEnd = part.indexOf("\r\n\r\n");
     if (headerEnd === -1) continue;
     const headerText = part.slice(0, headerEnd);
-    const bodyText = part.slice(headerEnd + 4).replace(/\r\n$/, '');
+    const bodyText = part.slice(headerEnd + 4).replace(/\r\n$/, "");
 
     const dispositionMatch = headerText.match(/Content-Disposition:[^\n]*\n?/i);
     if (!dispositionMatch) continue;
@@ -431,7 +496,7 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     }
 
     // Extract config_path and bindings from metadata JSON
-    if (name === 'metadata' && !filename) {
+    if (name === "metadata" && !filename) {
       try {
         const metadata = JSON.parse(bodyText) as WorkerMetadata;
         if (metadata.config_path) {
@@ -447,7 +512,9 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     }
 
     const previewTruncated = bodyText.length > maxPartLogChars;
-    const preview = previewTruncated ? `${bodyText.slice(0, maxPartLogChars)}\n...[truncated]` : bodyText;
+    const preview = previewTruncated
+      ? `${bodyText.slice(0, maxPartLogChars)}\n...[truncated]`
+      : bodyText;
     formParts.push({
       name,
       filename,
@@ -458,9 +525,11 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     });
 
     const wranglerKey = filename ?? name;
-    if (wranglerKey === 'wrangler.toml' || wranglerKey === 'wrangler.jsonc') {
+    if (wranglerKey === "wrangler.toml" || wranglerKey === "wrangler.jsonc") {
       const truncated = bodyText.length > maxConfigLogChars;
-      const content = truncated ? `${bodyText.slice(0, maxConfigLogChars)}\n...[truncated]` : bodyText;
+      const content = truncated
+        ? `${bodyText.slice(0, maxConfigLogChars)}\n...[truncated]`
+        : bodyText;
       wranglerConfigs.push({
         filename: wranglerKey,
         content,
@@ -470,7 +539,14 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     }
   }
 
-  return { files, wranglerConfigs, formParts, configPath, bindings, rawMetadataJson };
+  return {
+    files,
+    wranglerConfigs,
+    formParts,
+    configPath,
+    bindings,
+    rawMetadataJson,
+  };
 }
 
 /**
@@ -486,25 +562,40 @@ function transformVirtualBindings(
   workspaceId: string,
   orgId: string,
   userId: string | undefined,
-  workerServiceName: string
+  workerServiceName: string,
 ): ArrayBuffer {
-  const r2Bindings = bindings.filter(b => b.type === 'r2_bucket');
-  const dataProxyBindings = bindings.filter(b => b.type === 'service' && b.name === VIRTUAL_DATA_PROXY_BINDING_NAME);
-  const aiBindings = bindings.filter(b => b.type === 'ai');
-  if (r2Bindings.length === 0 && dataProxyBindings.length === 0 && aiBindings.length === 0) return body;
+  const r2Bindings = bindings.filter((b) => b.type === "r2_bucket");
+  const dataProxyBindings = bindings.filter(
+    (b) => b.type === "service" && b.name === VIRTUAL_DATA_PROXY_BINDING_NAME,
+  );
+  const aiBindings = bindings.filter((b) => b.type === "ai");
+  if (
+    r2Bindings.length === 0 &&
+    dataProxyBindings.length === 0 &&
+    aiBindings.length === 0
+  )
+    return body;
 
   // Parse and transform the metadata
   let metadata: WorkerMetadata;
   try {
     metadata = JSON.parse(rawMetadataJson);
   } catch {
-    console.warn('[cf-api-proxy] failed to parse metadata JSON for R2 binding transformation');
+    console.warn(
+      "[cf-api-proxy] failed to parse metadata JSON for R2 binding transformation",
+    );
     return body;
   }
 
   if (!metadata.bindings) return body;
 
-  metadata.bindings = mapVirtualizedBindings(metadata.bindings, workspaceId, orgId, userId, workerServiceName);
+  metadata.bindings = mapVirtualizedBindings(
+    metadata.bindings,
+    workspaceId,
+    orgId,
+    userId,
+    workerServiceName,
+  );
 
   const newMetadataJson = JSON.stringify(metadata);
 
@@ -526,10 +617,13 @@ function transformVirtualBindings(
   }
 
   if (matchPos === -1) {
-    console.warn('[cf-api-proxy] could not find metadata bytes in body for R2 transformation', {
-      metadataLength: rawMetadataJson.length,
-      bodyLength: body.byteLength,
-    });
+    console.warn(
+      "[cf-api-proxy] could not find metadata bytes in body for R2 transformation",
+      {
+        metadataLength: rawMetadataJson.length,
+        bodyLength: body.byteLength,
+      },
+    );
     return body;
   }
 
@@ -541,13 +635,16 @@ function transformVirtualBindings(
   result.set(newBytes, before.length);
   result.set(after, before.length + newBytes.length);
 
-  console.log('[cf-api-proxy] transformed virtual bindings', {
+  console.log("[cf-api-proxy] transformed virtual bindings", {
     workspaceId,
     orgId,
     workerServiceName,
-    r2Bindings: r2Bindings.map(b => ({ name: b.name, bucket_name: b.bucket_name })),
-    dataProxyBindings: dataProxyBindings.map(b => ({ name: b.name })),
-    aiBindings: aiBindings.map(b => ({ name: b.name })),
+    r2Bindings: r2Bindings.map((b) => ({
+      name: b.name,
+      bucket_name: b.bucket_name,
+    })),
+    dataProxyBindings: dataProxyBindings.map((b) => ({ name: b.name })),
+    aiBindings: aiBindings.map((b) => ({ name: b.name })),
     originalSize: body.byteLength,
     newSize: result.length,
   });
@@ -560,39 +657,42 @@ export function mapVirtualizedBindings(
   workspaceId: string,
   orgId: string,
   userId: string | undefined,
-  workerServiceName: string
+  workerServiceName: string,
 ): WorkerBinding[] {
-  return bindings.map(binding => {
-    if (binding.type === 'r2_bucket') {
+  return bindings.map((binding) => {
+    if (binding.type === "r2_bucket") {
       return {
-        type: 'service',
+        type: "service",
         name: binding.name,
         service: workerServiceName,
-        entrypoint: 'R2VirtualBucket',
+        entrypoint: "R2VirtualBucket",
         props: { workspaceId, bucketName: binding.bucket_name ?? binding.name },
       };
     }
 
-    if (binding.type === 'service' && binding.name === VIRTUAL_DATA_PROXY_BINDING_NAME) {
+    if (
+      binding.type === "service" &&
+      binding.name === VIRTUAL_DATA_PROXY_BINDING_NAME
+    ) {
       return {
-        type: 'service',
+        type: "service",
         name: binding.name,
         service: workerServiceName,
-        entrypoint: 'DataProxyService',
+        entrypoint: "DataProxyService",
         props: { workspaceId, orgId },
       };
     }
 
-    if (binding.type === 'ai') {
+    if (binding.type === "ai") {
       const props: Record<string, string> = { workspaceId, orgId };
       if (userId) {
         props.userId = userId;
       }
       return {
-        type: 'service',
+        type: "service",
         name: binding.name,
         service: workerServiceName,
-        entrypoint: 'AIVirtualBinding',
+        entrypoint: "AIVirtualBinding",
         props,
       };
     }
@@ -605,12 +705,12 @@ async function callCloudflareApi<T>(
   url: string,
   init: RequestInit,
   context: string,
-  options?: { suppressMissingWorkerWarning?: boolean }
+  options?: { suppressMissingWorkerWarning?: boolean },
 ): Promise<T | null> {
   const isMissingWorkerError = (status: number, errors: unknown[]): boolean =>
     status === 404 &&
     errors.some((error) => {
-      if (!error || typeof error !== 'object') return false;
+      if (!error || typeof error !== "object") return false;
       const code = (error as { code?: unknown }).code;
       return code === 10007;
     });
@@ -626,7 +726,10 @@ async function callCloudflareApi<T>(
       // Non-JSON response body: keep default empty errors array
     }
 
-    if (options?.suppressMissingWorkerWarning && isMissingWorkerError(resp.status, errors)) {
+    if (
+      options?.suppressMissingWorkerWarning &&
+      isMissingWorkerError(resp.status, errors)
+    ) {
       return null;
     }
 
@@ -637,10 +740,17 @@ async function callCloudflareApi<T>(
     });
     return null;
   }
-  const data = await resp.json() as { success?: boolean; result?: T; errors?: unknown[] };
+  const data = (await resp.json()) as {
+    success?: boolean;
+    result?: T;
+    errors?: unknown[];
+  };
   if (data.success === false) {
     const errors = Array.isArray(data.errors) ? data.errors : [];
-    if (options?.suppressMissingWorkerWarning && isMissingWorkerError(resp.status, errors)) {
+    if (
+      options?.suppressMissingWorkerWarning &&
+      isMissingWorkerError(resp.status, errors)
+    ) {
       return null;
     }
     console.warn(`[cf-api] ${context} returned error`, { errors: data.errors });
@@ -653,18 +763,21 @@ async function listDispatchScriptSecrets(
   accountId: string,
   dispatchNamespace: string,
   scriptName: string,
-  apiToken: string
+  apiToken: string,
 ): Promise<Array<{ name: string }>> {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+  const url =
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(scriptName)}/secrets`;
   const headers = { Authorization: `Bearer ${apiToken}` };
-  return (await callCloudflareApi<Array<{ name: string }>>(
-    url,
-    { method: 'GET', headers },
-    'list script secrets',
-    { suppressMissingWorkerWarning: true }
-  )) ?? [];
+  return (
+    (await callCloudflareApi<Array<{ name: string }>>(
+      url,
+      { method: "GET", headers },
+      "list script secrets",
+      { suppressMissingWorkerWarning: true },
+    )) ?? []
+  );
 }
 
 async function upsertDispatchScriptSecret(
@@ -673,23 +786,24 @@ async function upsertDispatchScriptSecret(
   scriptName: string,
   apiToken: string,
   name: string,
-  text: string
+  text: string,
 ): Promise<void> {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+  const url =
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(scriptName)}/secrets`;
   const headers = {
     Authorization: `Bearer ${apiToken}`,
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   };
   await callCloudflareApi(
     url,
     {
-      method: 'PUT',
+      method: "PUT",
       headers,
-      body: JSON.stringify({ name, text, type: 'secret_text' }),
+      body: JSON.stringify({ name, text, type: "secret_text" }),
     },
-    `upsert script secret ${name}`
+    `upsert script secret ${name}`,
   );
 }
 
@@ -698,16 +812,17 @@ async function deleteDispatchScriptSecret(
   dispatchNamespace: string,
   scriptName: string,
   apiToken: string,
-  name: string
+  name: string,
 ): Promise<void> {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+  const url =
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(scriptName)}/secrets/${encodeURIComponent(name)}`;
   const headers = { Authorization: `Bearer ${apiToken}` };
   await callCloudflareApi(
     url,
-    { method: 'DELETE', headers },
-    `delete script secret ${name}`
+    { method: "DELETE", headers },
+    `delete script secret ${name}`,
   );
 }
 
@@ -720,9 +835,10 @@ async function syncDispatchScriptSettings(
   dispatchNamespace: string,
   scriptName: string,
   apiToken: string,
-  tailWorkerName: string
+  tailWorkerName: string,
 ): Promise<void> {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+  const url =
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(scriptName)}/settings`;
 
@@ -731,23 +847,21 @@ async function syncDispatchScriptSettings(
   };
 
   const settings = {
-    tail_consumers: [
-      { service: tailWorkerName }
-    ]
+    tail_consumers: [{ service: tailWorkerName }],
   };
 
   // Cloudflare expects multipart settings updates with a "settings" JSON part.
   const formData = new FormData();
   formData.set(
-    'settings',
-    new Blob([JSON.stringify(settings)], { type: 'application/json' }),
-    'settings.json'
+    "settings",
+    new Blob([JSON.stringify(settings)], { type: "application/json" }),
+    "settings.json",
   );
 
-  const resp = await fetch(url, { method: 'PATCH', headers, body: formData });
+  const resp = await fetch(url, { method: "PATCH", headers, body: formData });
   if (!resp.ok) {
     const text = await resp.text();
-    console.error('[cf-api-proxy] failed to set tail_consumers', {
+    console.error("[cf-api-proxy] failed to set tail_consumers", {
       status: resp.status,
       scriptName,
       tailWorkerName,
@@ -756,7 +870,7 @@ async function syncDispatchScriptSettings(
     throw new Error(`Failed to set tail_consumers: ${resp.status}`);
   }
 
-  console.log('[cf-api-proxy] configured tail_consumers', {
+  console.log("[cf-api-proxy] configured tail_consumers", {
     scriptName,
     tailWorkerName,
   });
@@ -770,26 +884,30 @@ export async function deleteDispatchScript(
   accountId: string,
   dispatchNamespace: string,
   scriptName: string,
-  apiToken: string
+  apiToken: string,
 ): Promise<boolean> {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+  const url =
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(scriptName)}`;
   const headers = { Authorization: `Bearer ${apiToken}` };
-  const resp = await fetch(url, { method: 'DELETE', headers });
+  const resp = await fetch(url, { method: "DELETE", headers });
 
   if (!resp.ok) {
     // 404 means script doesn't exist - that's OK for delete
     if (resp.status === 404) {
-      console.log('[cf-api] script not found in dispatch namespace (already deleted)', {
-        accountId,
-        dispatchNamespace,
-        scriptName,
-      });
+      console.log(
+        "[cf-api] script not found in dispatch namespace (already deleted)",
+        {
+          accountId,
+          dispatchNamespace,
+          scriptName,
+        },
+      );
       return true;
     }
     const bodyText = await resp.text();
-    console.error('[cf-api] failed to delete dispatch script', {
+    console.error("[cf-api] failed to delete dispatch script", {
       status: resp.status,
       statusText: resp.statusText,
       bodyPreview: bodyText.slice(0, 512),
@@ -800,7 +918,7 @@ export async function deleteDispatchScript(
     return false;
   }
 
-  console.log('[cf-api] deleted dispatch script', {
+  console.log("[cf-api] deleted dispatch script", {
     accountId,
     dispatchNamespace,
     scriptName,
@@ -823,8 +941,8 @@ export interface CfCustomHostname {
 }
 
 const CUSTOM_HOSTNAME_SSL_SETTINGS = {
-  method: 'http',
-  type: 'dv',
+  method: "http",
+  type: "dv",
   wildcard: false,
 } as const;
 
@@ -840,14 +958,14 @@ export async function createCustomHostname(
   zoneId: string,
   apiToken: string,
   hostname: string,
-  options: CustomHostnameOptions | string = {}
+  options: CustomHostnameOptions | string = {},
 ): Promise<CfCustomHostname | null> {
   const normalizedOptions =
-    typeof options === 'string' ? { customOriginServer: options } : options;
+    typeof options === "string" ? { customOriginServer: options } : options;
   const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames`;
   const headers = {
     Authorization: `Bearer ${apiToken}`,
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   };
   const body: Record<string, unknown> = {
     hostname,
@@ -859,11 +977,11 @@ export async function createCustomHostname(
   return callCloudflareApi<CfCustomHostname>(
     url,
     {
-      method: 'POST',
+      method: "POST",
       headers,
       body: JSON.stringify(body),
     },
-    `create custom hostname ${hostname}`
+    `create custom hostname ${hostname}`,
   );
 }
 
@@ -871,14 +989,14 @@ export async function refreshCustomHostnameValidation(
   zoneId: string,
   apiToken: string,
   hostnameId: string,
-  options: CustomHostnameOptions | string = {}
+  options: CustomHostnameOptions | string = {},
 ): Promise<CfCustomHostname | null> {
   const normalizedOptions =
-    typeof options === 'string' ? { customOriginServer: options } : options;
+    typeof options === "string" ? { customOriginServer: options } : options;
   const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames/${encodeURIComponent(hostnameId)}`;
   const headers = {
     Authorization: `Bearer ${apiToken}`,
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   };
   const body: Record<string, unknown> = {
     ssl: buildCustomHostnameSslSettings(),
@@ -889,11 +1007,11 @@ export async function refreshCustomHostnameValidation(
   return callCloudflareApi<CfCustomHostname>(
     url,
     {
-      method: 'PATCH',
+      method: "PATCH",
       headers,
       body: JSON.stringify(body),
     },
-    `refresh custom hostname validation ${hostnameId}`
+    `refresh custom hostname validation ${hostnameId}`,
   );
 }
 
@@ -901,58 +1019,72 @@ export async function createOrRefreshCustomHostname(
   zoneId: string,
   apiToken: string,
   hostname: string,
-  options: CustomHostnameOptions | string = {}
+  options: CustomHostnameOptions | string = {},
 ): Promise<CfCustomHostname | null> {
-  const created = await createCustomHostname(zoneId, apiToken, hostname, options);
+  const created = await createCustomHostname(
+    zoneId,
+    apiToken,
+    hostname,
+    options,
+  );
   if (created) {
     return created;
   }
 
-  const existing = await findCustomHostnameByHostname(zoneId, apiToken, hostname);
+  const existing = await findCustomHostnameByHostname(
+    zoneId,
+    apiToken,
+    hostname,
+  );
   if (!existing) {
     return null;
   }
 
   return (
-    await refreshCustomHostnameValidation(zoneId, apiToken, existing.id, options)
-  ) ?? existing;
+    (await refreshCustomHostnameValidation(
+      zoneId,
+      apiToken,
+      existing.id,
+      options,
+    )) ?? existing
+  );
 }
 
 export async function getCustomHostnameStatus(
   zoneId: string,
   apiToken: string,
-  hostnameId: string
+  hostnameId: string,
 ): Promise<CfCustomHostname | null> {
   const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames/${encodeURIComponent(hostnameId)}`;
   const headers = { Authorization: `Bearer ${apiToken}` };
   return callCloudflareApi<CfCustomHostname>(
     url,
-    { method: 'GET', headers },
-    `get custom hostname status ${hostnameId}`
+    { method: "GET", headers },
+    `get custom hostname status ${hostnameId}`,
   );
 }
 
 export async function deleteCustomHostname(
   zoneId: string,
   apiToken: string,
-  hostnameId: string
+  hostnameId: string,
 ): Promise<boolean> {
   const url = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/custom_hostnames/${encodeURIComponent(hostnameId)}`;
   try {
     const resp = await fetch(url, {
-      method: 'DELETE',
+      method: "DELETE",
       headers: { Authorization: `Bearer ${apiToken}` },
     });
     if (resp.ok || resp.status === 404) return true;
     const body = await resp.text();
-    console.warn('[cf-api] delete custom hostname failed', {
+    console.warn("[cf-api] delete custom hostname failed", {
       hostnameId,
       status: resp.status,
       bodyPreview: body.slice(0, 512),
     });
     return false;
   } catch (err) {
-    console.error('[cf-api] delete custom hostname error', err);
+    console.error("[cf-api] delete custom hostname error", err);
     return false;
   }
 }
@@ -960,7 +1092,7 @@ export async function deleteCustomHostname(
 export async function listCustomHostnames(
   zoneId: string,
   apiToken: string,
-  hostnameContains: string
+  hostnameContains: string,
 ): Promise<CfCustomHostname[]> {
   const results: CfCustomHostname[] = [];
   let page = 1;
@@ -971,7 +1103,10 @@ export async function listCustomHostnames(
       headers: { Authorization: `Bearer ${apiToken}` },
     });
     if (!resp.ok) break;
-    const data = await resp.json() as { result?: CfCustomHostname[]; result_info?: { total_pages: number } };
+    const data = (await resp.json()) as {
+      result?: CfCustomHostname[];
+      result_info?: { total_pages: number };
+    };
     if (!data.result?.length) break;
     results.push(...data.result);
     if (page >= (data.result_info?.total_pages ?? 1)) break;
@@ -983,11 +1118,19 @@ export async function listCustomHostnames(
 export async function findCustomHostnameByHostname(
   zoneId: string,
   apiToken: string,
-  hostname: string
+  hostname: string,
 ): Promise<CfCustomHostname | null> {
   const normalizedHostname = hostname.trim().toLowerCase();
-  const hostnames = await listCustomHostnames(zoneId, apiToken, normalizedHostname);
-  return hostnames.find((entry) => entry.hostname.trim().toLowerCase() === normalizedHostname) ?? null;
+  const hostnames = await listCustomHostnames(
+    zoneId,
+    apiToken,
+    normalizedHostname,
+  );
+  return (
+    hostnames.find(
+      (entry) => entry.hostname.trim().toLowerCase() === normalizedHostname,
+    ) ?? null
+  );
 }
 
 /**
@@ -1001,46 +1144,96 @@ async function syncDispatchScriptSecrets(
   accountId: string,
   dispatchNamespace: string,
   scriptName: string,
-  apiToken: string
+  apiToken: string,
 ): Promise<void> {
   const secretsToSync: Record<string, string> = {};
 
   // Get integration env vars from WorkspaceDO
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const workspaceStub = env.WORKSPACE.get(
+    env.WORKSPACE.idFromName(workspaceId),
+  );
   const records = await workspaceStub.getIntegrations();
 
   for (const record of records) {
-    const credentials = await decryptCredentials(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY);
+    const credentials = await decryptCredentials(
+      record.credentials_encrypted,
+      env.INTEGRATION_SECRET_KEY,
+    );
     const config = JSON.parse(record.config) as Record<string, unknown>;
-    Object.assign(secretsToSync, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
+    Object.assign(
+      secretsToSync,
+      mapCredentialsToEnvVars(
+        record.name,
+        record.integration_type,
+        credentials,
+        config,
+      ),
+    );
   }
 
   const secretEntries = Object.entries(secretsToSync);
 
   if (secretEntries.length === 0) {
     // No secrets to sync - clean up any managed secrets that exist
-    const existing = await listDispatchScriptSecrets(accountId, dispatchNamespace, scriptName, apiToken);
-    const managed = existing.filter(secret => isManagedSecret(secret.name));
+    const existing = await listDispatchScriptSecrets(
+      accountId,
+      dispatchNamespace,
+      scriptName,
+      apiToken,
+    );
+    const managed = existing.filter((secret) => isManagedSecret(secret.name));
     if (managed.length) {
-      await Promise.all(managed.map(secret =>
-        deleteDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, secret.name)
-      ));
+      await Promise.all(
+        managed.map((secret) =>
+          deleteDispatchScriptSecret(
+            accountId,
+            dispatchNamespace,
+            scriptName,
+            apiToken,
+            secret.name,
+          ),
+        ),
+      );
     }
     return;
   }
 
-  const existingSecrets = await listDispatchScriptSecrets(accountId, dispatchNamespace, scriptName, apiToken);
+  const existingSecrets = await listDispatchScriptSecrets(
+    accountId,
+    dispatchNamespace,
+    scriptName,
+    apiToken,
+  );
   const desiredNames = new Set(secretEntries.map(([name]) => name));
-  const stale = existingSecrets.filter(secret => isManagedSecret(secret.name) && !desiredNames.has(secret.name));
+  const stale = existingSecrets.filter(
+    (secret) => isManagedSecret(secret.name) && !desiredNames.has(secret.name),
+  );
 
-  await Promise.all(secretEntries.map(([name, value]) =>
-    upsertDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, name, value)
-  ));
+  await Promise.all(
+    secretEntries.map(([name, value]) =>
+      upsertDispatchScriptSecret(
+        accountId,
+        dispatchNamespace,
+        scriptName,
+        apiToken,
+        name,
+        value,
+      ),
+    ),
+  );
 
   if (stale.length) {
-    await Promise.all(stale.map(secret =>
-      deleteDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, secret.name)
-    ));
+    await Promise.all(
+      stale.map((secret) =>
+        deleteDispatchScriptSecret(
+          accountId,
+          dispatchNamespace,
+          scriptName,
+          apiToken,
+          secret.name,
+        ),
+      ),
+    );
   }
 }
 
@@ -1053,14 +1246,16 @@ async function syncDispatchScriptSecrets(
 export async function syncAllWorkspaceWorkerSecrets(
   env: CfApiProxyEnv,
   workspaceId: string,
-  orgId: string
+  orgId: string,
 ): Promise<{ synced: number; failed: number }> {
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
   const apiToken = env.CF_API_TOKEN?.trim();
 
   if (!accountId || !dispatchNamespace || !apiToken) {
-    console.warn('[cf-api-proxy] syncAllWorkspaceWorkerSecrets: missing CF config, skipping');
+    console.warn(
+      "[cf-api-proxy] syncAllWorkspaceWorkerSecrets: missing CF config, skipping",
+    );
     return { synced: 0, failed: 0 };
   }
 
@@ -1068,7 +1263,9 @@ export async function syncAllWorkspaceWorkerSecrets(
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const orgSlug = await orgStub.getSlug();
   if (!orgSlug) {
-    console.warn('[cf-api-proxy] syncAllWorkspaceWorkerSecrets: org has no slug, skipping');
+    console.warn(
+      "[cf-api-proxy] syncAllWorkspaceWorkerSecrets: org has no slug, skipping",
+    );
     return { synced: 0, failed: 0 };
   }
 
@@ -1078,32 +1275,41 @@ export async function syncAllWorkspaceWorkerSecrets(
     return { synced: 0, failed: 0 };
   }
 
-  console.log(`[cf-api-proxy] syncing secrets to ${workers.length} workers in workspace ${workspaceId}`);
+  console.log(
+    `[cf-api-proxy] syncing secrets to ${workers.length} workers in workspace ${workspaceId}`,
+  );
 
   let synced = 0;
   let failed = 0;
 
   // Sync secrets to each worker
-  await Promise.all(workers.map(async (worker) => {
-    // Dispatch script name format: {script-name}--{org-slug}
-    const dispatchScriptName = `${worker.script_name}--${orgSlug}`;
-    try {
-      await syncDispatchScriptSecrets(
-        env,
-        workspaceId,
-        orgId,
-        accountId,
-        dispatchNamespace,
-        dispatchScriptName,
-        apiToken
-      );
-      synced++;
-      console.log(`[cf-api-proxy] synced secrets to worker ${worker.script_name}`);
-    } catch (err) {
-      failed++;
-      console.error(`[cf-api-proxy] failed to sync secrets to worker ${worker.script_name}:`, err);
-    }
-  }));
+  await Promise.all(
+    workers.map(async (worker) => {
+      // Dispatch script name format: {script-name}--{org-slug}
+      const dispatchScriptName = `${worker.script_name}--${orgSlug}`;
+      try {
+        await syncDispatchScriptSecrets(
+          env,
+          workspaceId,
+          orgId,
+          accountId,
+          dispatchNamespace,
+          dispatchScriptName,
+          apiToken,
+        );
+        synced++;
+        console.log(
+          `[cf-api-proxy] synced secrets to worker ${worker.script_name}`,
+        );
+      } catch (err) {
+        failed++;
+        console.error(
+          `[cf-api-proxy] failed to sync secrets to worker ${worker.script_name}:`,
+          err,
+        );
+      }
+    }),
+  );
 
   return { synced, failed };
 }
@@ -1115,16 +1321,20 @@ export interface ProxyCloudflareApiOptions {
 export async function proxyCloudflareApi(
   request: Request,
   env: CfApiProxyEnv,
-  options: ProxyCloudflareApiOptions
+  options: ProxyCloudflareApiOptions,
 ): Promise<Response> {
   const url = new URL(request.url);
 
   const upstreamApiToken = env.CF_API_TOKEN?.trim();
   if (!upstreamApiToken) {
-    return cfApiError(10000, 'Missing CF_API_TOKEN for Cloudflare API proxy', 500);
+    return cfApiError(
+      10000,
+      "Missing CF_API_TOKEN for Cloudflare API proxy",
+      500,
+    );
   }
 
-  console.log('[cf-api-proxy] request', {
+  console.log("[cf-api-proxy] request", {
     method: request.method,
     path: url.pathname,
     search: url.search,
@@ -1137,28 +1347,38 @@ export async function proxyCloudflareApi(
   // Skip our deploy token validation and pass through - Cloudflare validates the JWT.
   // Security: JWTs can only be obtained via assets-upload-session (which requires deploy token auth)
   // and are tied to the script name.
-  if (ASSETS_UPLOAD.test(url.pathname) && request.method.toUpperCase() === 'POST') {
+  if (
+    ASSETS_UPLOAD.test(url.pathname) &&
+    request.method.toUpperCase() === "POST"
+  ) {
     let pathname = url.pathname;
     // Rewrite account ID if configured
     if (accountId) {
-      const accountMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/);
+      const accountMatch = pathname.match(
+        /^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/,
+      );
       if (accountMatch) {
-        pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ''}`;
+        pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ""}`;
       }
     }
 
-    const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
+    const upstreamUrl = new URL(
+      `https://api.cloudflare.com${pathname}${url.search}`,
+    );
     const headers = new Headers(request.headers);
     // Keep the original Authorization header (Cloudflare JWT)
-    headers.delete('cookie');
-    headers.delete('host');
+    headers.delete("cookie");
+    headers.delete("host");
 
     const resp = await fetch(upstreamUrl, {
-      method: 'POST',
+      method: "POST",
       headers,
       body: request.body,
     });
-    return new Response(resp.body, { status: resp.status, headers: resp.headers });
+    return new Response(resp.body, {
+      status: resp.status,
+      headers: resp.headers,
+    });
   }
 
   // Check sandbox proxy secret first (static secret from sandbox host)
@@ -1176,69 +1396,96 @@ export async function proxyCloudflareApi(
     threadId = proxyAuth.threadId;
 
     // Look up org_slug from OrgDO (needed for script namespacing)
-    const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as DurableObjectStub<OrgDO>;
-    orgSlug = await orgStub.getSlug() ?? undefined;
+    const orgStub = env.ORG.get(
+      env.ORG.idFromName(orgId),
+    ) as DurableObjectStub<OrgDO>;
+    orgSlug = (await orgStub.getSlug()) ?? undefined;
     if (!orgSlug) {
-      console.warn('[cf-api-proxy] sandbox proxy: org has no slug', { orgId });
-      return cfApiError(10003, 'Authentication error: Org has no slug', 401);
+      console.warn("[cf-api-proxy] sandbox proxy: org has no slug", { orgId });
+      return cfApiError(10003, "Authentication error: Org has no slug", 401);
     }
 
-    console.log('[cf-api-proxy] authenticated via sandbox proxy', { orgId, workspaceId, orgSlug });
+    console.log("[cf-api-proxy] authenticated via sandbox proxy", {
+      orgId,
+      workspaceId,
+      orgSlug,
+    });
   } else {
     const proxyToken =
       request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER)?.trim() ||
       (() => {
-        const authHeader = request.headers.get('Authorization') ?? '';
+        const authHeader = request.headers.get("Authorization") ?? "";
         const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
         return bearerMatch?.[1]?.trim() || null;
       })();
 
     if (!proxyToken) {
-      console.warn('[cf-api-proxy] missing deploy token', {
+      console.warn("[cf-api-proxy] missing deploy token", {
         method: request.method,
         path: url.pathname,
-        hasAuthorizationHeader: !!request.headers.get('Authorization'),
-        hasDeployTokenHeader: !!request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER),
+        hasAuthorizationHeader: !!request.headers.get("Authorization"),
+        hasDeployTokenHeader: !!request.headers.get(
+          CHIRIDION_DEPLOY_TOKEN_HEADER,
+        ),
       });
-      return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
+      return cfApiError(
+        10001,
+        "Authentication error: Missing deploy token",
+        401,
+      );
     }
 
     // Validate signed deploy token (no KV lookup needed)
     if (!isSignedToken(proxyToken)) {
-      console.warn('[cf-api-proxy] invalid deploy token format', {
+      console.warn("[cf-api-proxy] invalid deploy token format", {
         method: request.method,
         path: url.pathname,
         tokenPrefix: proxyToken.slice(0, 8),
       });
-      return cfApiError(10002, 'Authentication error: Invalid deploy token format', 401);
+      return cfApiError(
+        10002,
+        "Authentication error: Invalid deploy token format",
+        401,
+      );
     }
 
-    const tokenPayload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, proxyToken);
+    const tokenPayload = await validateSignedToken(
+      env.TOKEN_SIGNING_SECRET,
+      proxyToken,
+    );
     if (!tokenPayload) {
-      console.warn('[cf-api-proxy] invalid deploy token signature', {
+      console.warn("[cf-api-proxy] invalid deploy token signature", {
         method: request.method,
         path: url.pathname,
         tokenPrefix: proxyToken.slice(0, 8),
       });
-      return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
+      return cfApiError(
+        10002,
+        "Authentication error: Invalid deploy token",
+        401,
+      );
     }
 
     // Check for deploy scope
-    if (!tokenPayload.scopes.includes('deploy')) {
-      console.warn('[cf-api-proxy] deploy token lacks deploy scope', {
+    if (!tokenPayload.scopes.includes("deploy")) {
+      console.warn("[cf-api-proxy] deploy token lacks deploy scope", {
         method: request.method,
         path: url.pathname,
         scopes: tokenPayload.scopes,
       });
-      return cfApiError(10002, 'Authentication error: Token lacks deploy scope', 401);
+      return cfApiError(
+        10002,
+        "Authentication error: Token lacks deploy scope",
+        401,
+      );
     }
 
     if (!tokenPayload.workspace_id) {
-      console.warn('[cf-api-proxy] deploy token missing workspace_id', {
+      console.warn("[cf-api-proxy] deploy token missing workspace_id", {
         method: request.method,
         path: url.pathname,
       });
-      return cfApiError(10003, 'Authentication error: Invalid workspace', 401);
+      return cfApiError(10003, "Authentication error: Invalid workspace", 401);
     }
 
     orgId = tokenPayload.org_id;
@@ -1249,12 +1496,16 @@ export async function proxyCloudflareApi(
 
     // Require org_slug for deploy operations
     if (!orgSlug) {
-      console.warn('[cf-api-proxy] deploy token missing org_slug', {
+      console.warn("[cf-api-proxy] deploy token missing org_slug", {
         method: request.method,
         path: url.pathname,
         orgId,
       });
-      return cfApiError(10003, 'Authentication error: Deploy token missing org_slug', 401);
+      return cfApiError(
+        10003,
+        "Authentication error: Deploy token missing org_slug",
+        401,
+      );
     }
   }
 
@@ -1266,9 +1517,11 @@ export async function proxyCloudflareApi(
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
   // Also rewrite script name to include org-slug suffix: {script-name}--{org-slug}
   // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/scripts/:script/...
-  const dispatchMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/dispatch\/namespaces\/([^\/]+)\/(.*)$/);
+  const dispatchMatch = pathname.match(
+    /^\/client\/v4\/accounts\/([^\/]+)\/workers\/dispatch\/namespaces\/([^\/]+)\/(.*)$/,
+  );
   if (dispatchMatch) {
-    let rest = dispatchMatch[3] ?? '';
+    let rest = dispatchMatch[3] ?? "";
     const rewrittenAccount = accountId ?? dispatchMatch[1]!;
     const rewrittenNs = dispatchNamespace ?? dispatchMatch[2]!;
 
@@ -1276,7 +1529,7 @@ export async function proxyCloudflareApi(
     // rest might be: scripts/{scriptName} or scripts/{scriptName}/settings etc.
     const scriptPathMatch = rest.match(/^scripts\/([^\/]+)(\/.*)?$/);
     if (scriptPathMatch && originalScriptName) {
-      const suffix = scriptPathMatch[2] ?? '';
+      const suffix = scriptPathMatch[2] ?? "";
       const dispatchScriptName = `${originalScriptName}--${orgSlug}`;
       rest = `scripts/${encodeURIComponent(dispatchScriptName)}${suffix}`;
     }
@@ -1286,79 +1539,104 @@ export async function proxyCloudflareApi(
   // Block regular worker script/service endpoints - users must use the globally installed wrangler
   // which is configured to deploy to the dispatch namespace directly
   if (!dispatchMatch) {
-    const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/[^\/]+\/workers\/scripts\/[^\/]+/);
-    const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/[^\/]+\/workers\/services\/[^\/]+/);
+    const scriptsMatch = pathname.match(
+      /^\/client\/v4\/accounts\/[^\/]+\/workers\/scripts\/[^\/]+/,
+    );
+    const servicesMatch = pathname.match(
+      /^\/client\/v4\/accounts\/[^\/]+\/workers\/services\/[^\/]+/,
+    );
 
     if (scriptsMatch || servicesMatch) {
-      console.warn('[cf-api-proxy] blocked non-dispatch worker endpoint', {
+      console.warn("[cf-api-proxy] blocked non-dispatch worker endpoint", {
         method: request.method,
         path: pathname,
       });
       return cfApiError(
         10000,
-        'Direct worker deployments are not supported. Use `wrangler deploy --dispatch-namespace chiridion` instead.',
-        403
+        "Direct worker deployments are not supported. Use `wrangler deploy --dispatch-namespace chiridion` instead.",
+        403,
       );
     }
   }
 
   // Opportunistically rewrite account id for any /accounts/:id/... calls.
   if (accountId) {
-    const accountMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/);
+    const accountMatch = pathname.match(
+      /^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/,
+    );
     if (accountMatch) {
-      pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ''}`;
+      pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ""}`;
     }
   }
 
   // Intercept R2 bucket verification requests from wrangler.
   // Wrangler checks if the bucket exists before deploying a worker with r2_bucket bindings.
   // Since we virtualize all R2 buckets, return a synthetic success response.
-  const r2BucketMatch = pathname.match(/^\/client\/v4\/accounts\/[^/]+\/r2\/buckets\/([^/]+)$/);
-  if (r2BucketMatch && request.method === 'GET') {
+  const r2BucketMatch = pathname.match(
+    /^\/client\/v4\/accounts\/[^/]+\/r2\/buckets\/([^/]+)$/,
+  );
+  if (r2BucketMatch && request.method === "GET") {
     const bucketName = decodeURIComponent(r2BucketMatch[1]!);
-    console.log('[cf-api-proxy] intercepted R2 bucket verification (virtual bucket)', {
-      bucketName,
-      workspaceId,
-      orgId,
-    });
-    return new Response(JSON.stringify({
-      success: true,
-      errors: [],
-      messages: [],
-      result: {
-        name: bucketName,
-        creation_date: new Date().toISOString(),
+    console.log(
+      "[cf-api-proxy] intercepted R2 bucket verification (virtual bucket)",
+      {
+        bucketName,
+        workspaceId,
+        orgId,
       },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    );
+    return new Response(
+      JSON.stringify({
+        success: true,
+        errors: [],
+        messages: [],
+        result: {
+          name: bucketName,
+          creation_date: new Date().toISOString(),
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
   }
 
   if (!isAllowedCloudflareApiProxyRequest(pathname, request.method)) {
-    console.warn('[cf-api-proxy] blocked', {
+    console.warn("[cf-api-proxy] blocked", {
       method: request.method,
       originalPath: url.pathname,
       rewrittenPath: pathname,
       search: url.search,
       hasToken: true,
     });
-    return cfApiError(10003, 'Forbidden: Request blocked by API proxy allowlist', 403);
+    return cfApiError(
+      10003,
+      "Forbidden: Request blocked by API proxy allowlist",
+      403,
+    );
   }
 
   // Script ownership is now enforced by org-slug namespacing in the script name.
   // Scripts are named {script-name}--{org-slug}, so org A cannot deploy to org B's scripts.
   // The org-slug in the token is verified, so the script name prefix is trusted.
-  const dispatchScriptName = originalScriptName ? `${originalScriptName}--${orgSlug}` : null;
+  const dispatchScriptName = originalScriptName
+    ? `${originalScriptName}--${orgSlug}`
+    : null;
 
   // Intercept tail creation requests (wrangler tail) and return our WebSocket URL
   const tailMatch = pathname.match(DISPATCH_SCRIPT_TAILS);
-  if (tailMatch && request.method.toUpperCase() === 'POST' && originalScriptName && dispatchScriptName) {
+  if (
+    tailMatch &&
+    request.method.toUpperCase() === "POST" &&
+    originalScriptName &&
+    dispatchScriptName
+  ) {
     // Generate a tail token for WebSocket auth
     const tailToken = await createSignedToken(env.TOKEN_SIGNING_SECRET, {
       org_id: orgId,
       org_slug: orgSlug,
-      scopes: ['tail'],
+      scopes: ["tail"],
       exp: Date.now() + 60 * 60 * 1000, // 1 hour
       workspace_id: workspaceId,
       script_name: originalScriptName,
@@ -1368,49 +1646,54 @@ export async function proxyCloudflareApi(
 
     // Build WebSocket URL - use WORKER_BASE_URL or derive from request
     const baseUrl = env.WORKER_BASE_URL || `https://${url.hostname}`;
-    const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/logs?scriptName=${encodeURIComponent(originalScriptName)}&token=${encodeURIComponent(tailToken)}`;
+    const wsUrl = `${baseUrl.replace(/^http/, "ws")}/ws/logs?scriptName=${encodeURIComponent(originalScriptName)}&token=${encodeURIComponent(tailToken)}`;
 
-    console.log('[cf-api-proxy] intercepted tail request', {
+    console.log("[cf-api-proxy] intercepted tail request", {
       scriptName: originalScriptName,
       dispatchScriptName,
       orgId,
     });
 
     // Return Cloudflare-compatible tail response
-    return new Response(JSON.stringify({
-      success: true,
-      errors: [],
-      messages: [],
-      result: {
-        id: crypto.randomUUID(),
-        url: wsUrl,
-        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    return new Response(
+      JSON.stringify({
+        success: true,
+        errors: [],
+        messages: [],
+        result: {
+          id: crypto.randomUUID(),
+          url: wsUrl,
+          expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
       },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    );
   }
 
-  const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
+  const upstreamUrl = new URL(
+    `https://api.cloudflare.com${pathname}${url.search}`,
+  );
   const headers = new Headers(request.headers);
 
   // Always use our Worker token when proxying (POC).
-  headers.set('Authorization', `Bearer ${upstreamApiToken}`);
-  headers.delete('cookie');
-  headers.delete('host');
+  headers.set("Authorization", `Bearer ${upstreamApiToken}`);
+  headers.delete("cookie");
+  headers.delete("host");
 
   const method = request.method.toUpperCase();
   let body: ArrayBuffer | undefined =
-    method === 'GET' || method === 'HEAD'
+    method === "GET" || method === "HEAD"
       ? undefined
       : await request.arrayBuffer();
 
   // Extract configPath and validate bindings from metadata if present in upload
   let configPath: string | undefined;
   if (body && isUploadRequest(pathname, method)) {
-    const contentType = request.headers.get('Content-Type') ?? '';
-    if (contentType.toLowerCase().includes('multipart/form-data')) {
+    const contentType = request.headers.get("Content-Type") ?? "";
+    if (contentType.toLowerCase().includes("multipart/form-data")) {
       const uploadInfo = parseMultipartUploads(body, contentType);
       if (uploadInfo?.configPath) {
         configPath = uploadInfo.configPath;
@@ -1421,9 +1704,9 @@ export async function proxyCloudflareApi(
         const validationResult = validateBindings(uploadInfo.bindings);
         if (!validationResult.valid) {
           const forbiddenList = validationResult.forbiddenBindings
-            .map(b => `${b.name} (${b.type})`)
-            .join(', ');
-          console.warn('[cf-api-proxy] blocked deploy: forbidden bindings', {
+            .map((b) => `${b.name} (${b.type})`)
+            .join(", ");
+          console.warn("[cf-api-proxy] blocked deploy: forbidden bindings", {
             method,
             path: pathname,
             scriptName: originalScriptName,
@@ -1434,28 +1717,28 @@ export async function proxyCloudflareApi(
           return cfApiError(
             10005,
             `Deploy blocked: Your worker contains forbidden bindings: ${forbiddenList}. ` +
-            `User workers can only use environment variables and Durable Objects defined in the same script. ` +
-            `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
-            403
+              `User workers can only use environment variables and Durable Objects defined in the same script. ` +
+              `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
+            403,
           );
         }
-        console.log('[cf-api-proxy] bindings validated', {
+        console.log("[cf-api-proxy] bindings validated", {
           method,
           path: pathname,
           bindingCount: uploadInfo.bindings.length,
-          bindingTypes: [...new Set(uploadInfo.bindings.map(b => b.type))],
+          bindingTypes: [...new Set(uploadInfo.bindings.map((b) => b.type))],
         });
       }
 
       if (uploadInfo?.files.length) {
-        console.log('[cf-api-proxy] upload files', {
+        console.log("[cf-api-proxy] upload files", {
           method,
           path: pathname,
           files: uploadInfo.files,
         });
       }
       if (uploadInfo?.formParts.length) {
-        console.log('[cf-api-proxy] upload form parts', {
+        console.log("[cf-api-proxy] upload form parts", {
           method,
           path: pathname,
           partCount: uploadInfo.formParts.length,
@@ -1464,7 +1747,7 @@ export async function proxyCloudflareApi(
       }
       if (uploadInfo?.wranglerConfigs.length) {
         for (const config of uploadInfo.wranglerConfigs) {
-          console.log('[cf-api-proxy] wrangler config upload', {
+          console.log("[cf-api-proxy] wrangler config upload", {
             method,
             path: pathname,
             filename: config.filename,
@@ -1479,38 +1762,43 @@ export async function proxyCloudflareApi(
 
   // Validate bindings in JSON body requests (settings PATCH, versions POST)
   if (body && isBindingsJsonRequest(pathname, method)) {
-    const contentType = request.headers.get('Content-Type') ?? '';
-    if (contentType.toLowerCase().includes('application/json')) {
+    const contentType = request.headers.get("Content-Type") ?? "";
+    if (contentType.toLowerCase().includes("application/json")) {
       try {
-        const decoder = new TextDecoder('utf-8');
-        const jsonBody = JSON.parse(decoder.decode(body)) as SettingsRequestBody;
+        const decoder = new TextDecoder("utf-8");
+        const jsonBody = JSON.parse(
+          decoder.decode(body),
+        ) as SettingsRequestBody;
         if (jsonBody.bindings?.length) {
           const validationResult = validateBindings(jsonBody.bindings);
           if (!validationResult.valid) {
             const forbiddenList = validationResult.forbiddenBindings
-              .map(b => `${b.name} (${b.type})`)
-              .join(', ');
-            console.warn('[cf-api-proxy] blocked settings update: forbidden bindings', {
-              method,
-              path: pathname,
-              scriptName: originalScriptName,
-              orgId,
-              workspaceId,
-              forbiddenBindings: validationResult.forbiddenBindings,
-            });
+              .map((b) => `${b.name} (${b.type})`)
+              .join(", ");
+            console.warn(
+              "[cf-api-proxy] blocked settings update: forbidden bindings",
+              {
+                method,
+                path: pathname,
+                scriptName: originalScriptName,
+                orgId,
+                workspaceId,
+                forbiddenBindings: validationResult.forbiddenBindings,
+              },
+            );
             return cfApiError(
               10005,
               `Settings update blocked: Request contains forbidden bindings: ${forbiddenList}. ` +
-              `User workers can only use environment variables and Durable Objects defined in the same script. ` +
-              `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
-              403
+                `User workers can only use environment variables and Durable Objects defined in the same script. ` +
+                `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
+              403,
             );
           }
-          console.log('[cf-api-proxy] settings bindings validated', {
+          console.log("[cf-api-proxy] settings bindings validated", {
             method,
             path: pathname,
             bindingCount: jsonBody.bindings.length,
-            bindingTypes: [...new Set(jsonBody.bindings.map(b => b.type))],
+            bindingTypes: [...new Set(jsonBody.bindings.map((b) => b.type))],
           });
 
           if (env.CF_WORKER_NAME) {
@@ -1519,7 +1807,7 @@ export async function proxyCloudflareApi(
               workspaceId,
               orgId,
               userId,
-              env.CF_WORKER_NAME
+              env.CF_WORKER_NAME,
             );
             const changed = transformedBindings.some((binding, idx) => {
               const original = jsonBody.bindings?.[idx];
@@ -1527,25 +1815,32 @@ export async function proxyCloudflareApi(
             });
             if (changed) {
               jsonBody.bindings = transformedBindings;
-              body = new TextEncoder().encode(JSON.stringify(jsonBody)).buffer as ArrayBuffer;
-              headers.set('Content-Length', String(body.byteLength));
-              console.log('[cf-api-proxy] transformed JSON bindings to virtual bindings', {
-                method,
-                path: pathname,
-                scriptName: originalScriptName,
-                orgId,
-                workspaceId,
-              });
+              body = new TextEncoder().encode(JSON.stringify(jsonBody))
+                .buffer as ArrayBuffer;
+              headers.set("Content-Length", String(body.byteLength));
+              console.log(
+                "[cf-api-proxy] transformed JSON bindings to virtual bindings",
+                {
+                  method,
+                  path: pathname,
+                  scriptName: originalScriptName,
+                  orgId,
+                  workspaceId,
+                },
+              );
             }
           }
         }
       } catch (e) {
         // If we can't parse the JSON, let Cloudflare handle the error
-        console.warn('[cf-api-proxy] failed to parse JSON body for binding validation', {
-          method,
-          path: pathname,
-          error: String(e),
-        });
+        console.warn(
+          "[cf-api-proxy] failed to parse JSON body for binding validation",
+          {
+            method,
+            path: pathname,
+            error: String(e),
+          },
+        );
       }
     }
   }
@@ -1556,7 +1851,7 @@ export async function proxyCloudflareApi(
     const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as unknown as OrgDO;
     const existingScript = await orgStub.getWorkerScript(originalScriptName);
     if (existingScript && existingScript.workspace_id !== workspaceId) {
-      console.warn('[cf-api-proxy] blocked deploy: script name collision', {
+      console.warn("[cf-api-proxy] blocked deploy: script name collision", {
         scriptName: originalScriptName,
         existingWorkspaceId: existingScript.workspace_id,
         attemptedWorkspaceId: workspaceId,
@@ -1565,15 +1860,33 @@ export async function proxyCloudflareApi(
       return cfApiError(
         10004,
         `Script name "${originalScriptName}" is already in use by another workspace in this organization. Please choose a different name.`,
-        409
+        409,
       );
+    }
+    if (!existingScript) {
+      const orgInfo = await orgStub.getInfo();
+      const appLimit = orgInfo
+        ? getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
+            .maxDeployedAppsPerWorkspace
+        : 3;
+      if (appLimit !== null) {
+        const workspaceScripts =
+          await orgStub.listWorkerScriptsByWorkspace(workspaceId);
+        if (workspaceScripts.length >= appLimit) {
+          return cfApiError(
+            10005,
+            `Your current billing plan allows ${appLimit} deployed app${appLimit === 1 ? "" : "s"} per workspace.`,
+            402,
+          );
+        }
+      }
     }
   }
 
   // Transform virtualized bindings into internal service bindings.
   if (body && isUploadRequest(pathname, method) && env.CF_WORKER_NAME) {
-    const contentType = request.headers.get('Content-Type') ?? '';
-    if (contentType.toLowerCase().includes('multipart/form-data')) {
+    const contentType = request.headers.get("Content-Type") ?? "";
+    if (contentType.toLowerCase().includes("multipart/form-data")) {
       const uploadInfo2 = parseMultipartUploads(body, contentType);
       if (uploadInfo2?.rawMetadataJson && uploadInfo2?.bindings) {
         body = transformVirtualBindings(
@@ -1583,9 +1896,9 @@ export async function proxyCloudflareApi(
           workspaceId,
           orgId,
           userId,
-          env.CF_WORKER_NAME
+          env.CF_WORKER_NAME,
         );
-        headers.set('Content-Length', String(body.byteLength));
+        headers.set("Content-Length", String(body.byteLength));
       }
     }
   }
@@ -1594,16 +1907,16 @@ export async function proxyCloudflareApi(
   const respBody = await resp.arrayBuffer();
 
   if (!resp.ok) {
-    const ct = resp.headers.get('Content-Type') ?? '';
-    let preview = '';
-    if (ct.includes('application/json') || ct.startsWith('text/')) {
+    const ct = resp.headers.get("Content-Type") ?? "";
+    let preview = "";
+    if (ct.includes("application/json") || ct.startsWith("text/")) {
       try {
         preview = new TextDecoder().decode(respBody.slice(0, 1024));
       } catch {
-        preview = '';
+        preview = "";
       }
     }
-    console.warn('[cf-api-proxy] upstream error', {
+    console.warn("[cf-api-proxy] upstream error", {
       status: resp.status,
       method,
       upstreamPath: upstreamUrl.pathname,
@@ -1611,10 +1924,13 @@ export async function proxyCloudflareApi(
       contentType: ct,
       bodyPreview: preview,
     });
-    return new Response(respBody, { status: resp.status, headers: resp.headers });
+    return new Response(respBody, {
+      status: resp.status,
+      headers: resp.headers,
+    });
   }
 
-  if (method === 'PUT') {
+  if (method === "PUT") {
     const scriptMatch = pathname.match(DISPATCH_SCRIPT_BASE);
     if (scriptMatch && originalScriptName && dispatchScriptName) {
       const account = decodeURIComponent(scriptMatch[1]!);
@@ -1622,54 +1938,71 @@ export async function proxyCloudflareApi(
 
       // Register script ownership and enqueue screenshots
       waitUntil(
-        options.onDeploySideEffects({
-          scriptName: originalScriptName,
-          dispatchScriptName,
-          orgId,
-          orgSlug,
-          workspaceId,
-          hostname: url.hostname,
-          threadId,
-          configPath,
-        }).catch(err => {
-          console.error('[cf-api-proxy] failed to process deploy side effects', {
+        options
+          .onDeploySideEffects({
             scriptName: originalScriptName,
+            dispatchScriptName,
+            orgId,
+            orgSlug,
+            workspaceId,
+            hostname: url.hostname,
+            threadId,
+            configPath,
+          })
+          .catch((err) => {
+            console.error(
+              "[cf-api-proxy] failed to process deploy side effects",
+              {
+                scriptName: originalScriptName,
+                dispatchScriptName,
+                orgId,
+                workspaceId,
+                error: String(err),
+              },
+            );
+          }),
+      );
+
+      // Sync integration secrets to deployed worker (uses dispatchScriptName for Cloudflare API)
+      waitUntil(
+        syncDispatchScriptSecrets(
+          env,
+          workspaceId,
+          orgId,
+          account,
+          dispatchNs,
+          dispatchScriptName,
+          upstreamApiToken,
+        ).catch((err) => {
+          console.error("[cf-api-proxy] failed to sync script secrets", {
+            account,
+            dispatchNamespace: dispatchNs,
             dispatchScriptName,
             orgId,
             workspaceId,
             error: String(err),
           });
-        })
-      );
-
-      // Sync integration secrets to deployed worker (uses dispatchScriptName for Cloudflare API)
-      waitUntil(
-        syncDispatchScriptSecrets(env, workspaceId, orgId, account, dispatchNs, dispatchScriptName, upstreamApiToken)
-          .catch(err => {
-            console.error('[cf-api-proxy] failed to sync script secrets', {
-              account,
-              dispatchNamespace: dispatchNs,
-              dispatchScriptName,
-              orgId,
-              workspaceId,
-              error: String(err),
-            });
-          })
+        }),
       );
 
       // Attach tail worker for log capture
       if (env.TAIL_WORKER_NAME) {
         waitUntil(
-          syncDispatchScriptSettings(account, dispatchNs, dispatchScriptName, upstreamApiToken, env.TAIL_WORKER_NAME)
-            .catch(err => {
-              console.error('[cf-api-proxy] failed to configure tail worker', {
-                account,
-                dispatchNamespace: dispatchNs,
-                dispatchScriptName,
-                tailWorkerName: env.TAIL_WORKER_NAME,
-                error: String(err),
-              });
-            })
+          syncDispatchScriptSettings(
+            account,
+            dispatchNs,
+            dispatchScriptName,
+            upstreamApiToken,
+            env.TAIL_WORKER_NAME,
+          ).catch((err) => {
+            console.error("[cf-api-proxy] failed to configure tail worker", {
+              account,
+              dispatchNamespace: dispatchNs,
+              dispatchScriptName,
+              tailWorkerName: env.TAIL_WORKER_NAME,
+              error: String(err),
+            });
+          }),
         );
       }
 
@@ -1678,24 +2011,33 @@ export async function proxyCloudflareApi(
         waitUntil(
           (async () => {
             try {
-              const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+              const threadStub = env.CHAT_THREAD.get(
+                env.CHAT_THREAD.idFromName(threadId),
+              );
               let isPublic = false;
               try {
                 const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
                 // Use originalScriptName for OrgDO lookup (stores user-facing name)
-                const script = await orgStub.getWorkerScript(originalScriptName);
+                const script =
+                  await orgStub.getWorkerScript(originalScriptName);
                 if (script) {
                   isPublic = script.is_public;
                 } else {
                   // Check new KV format first, then legacy
-                  let stored = await env.APP_KV.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
+                  let stored = await env.APP_KV.get(
+                    `${SCRIPT_PREFIX}${dispatchScriptName}`,
+                  );
                   if (!stored) {
-                    stored = await env.APP_KV.get(`${SCRIPT_ORG_PREFIX_LEGACY}${originalScriptName}`);
+                    stored = await env.APP_KV.get(
+                      `${SCRIPT_ORG_PREFIX_LEGACY}${originalScriptName}`,
+                    );
                   }
                   if (stored) {
                     try {
-                      const parsed = JSON.parse(stored) as { is_public?: boolean };
-                      if (typeof parsed.is_public === 'boolean') {
+                      const parsed = JSON.parse(stored) as {
+                        is_public?: boolean;
+                      };
+                      if (typeof parsed.is_public === "boolean") {
                         isPublic = parsed.is_public;
                       } else {
                         isPublic = true;
@@ -1709,7 +2051,7 @@ export async function proxyCloudflareApi(
                   }
                 }
               } catch (err) {
-                console.error('[cf-api-proxy] failed to load app visibility', {
+                console.error("[cf-api-proxy] failed to load app visibility", {
                   threadId,
                   scriptName: originalScriptName,
                   orgId,
@@ -1717,31 +2059,33 @@ export async function proxyCloudflareApi(
                 });
               }
               // Use originalScriptName for preview (user-facing)
-              await threadStub.fetch(new Request('http://internal/preview', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  target: {
-                    kind: 'app',
-                    scriptName: originalScriptName,
-                    isPublic,
-                  },
+              await threadStub.fetch(
+                new Request("http://internal/preview", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    target: {
+                      kind: "app",
+                      scriptName: originalScriptName,
+                      isPublic,
+                    },
+                  }),
                 }),
-              }));
-              console.log('[cf-api-proxy] auto-set preview', {
+              );
+              console.log("[cf-api-proxy] auto-set preview", {
                 threadId,
                 scriptName: originalScriptName,
                 orgId,
               });
             } catch (err) {
-              console.error('[cf-api-proxy] failed to auto-set preview', {
+              console.error("[cf-api-proxy] failed to auto-set preview", {
                 threadId,
                 scriptName: originalScriptName,
                 orgId,
                 error: String(err),
               });
             }
-          })()
+          })(),
         );
       }
     }

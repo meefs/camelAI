@@ -9,24 +9,31 @@ import type {
   AuditLogEntry,
   AppPreviewStatus,
   Integration,
-} from '@/types';
-import { validateApiToken as validateApiTokenKV } from '../../workers/main/src/api-tokens';
+} from "@/types";
+import { validateApiToken as validateApiTokenKV } from "../../workers/main/src/api-tokens";
 import {
   createSignedSession,
   type SignedSessionData,
-} from '../../workers/main/src/signed-session';
-import { assertEmailDomainAllowed, getBlocklistFromKV } from './email-domain-blocklist';
+} from "../../workers/main/src/signed-session";
+import {
+  assertEmailDomainAllowed,
+  getBlocklistFromKV,
+} from "./email-domain-blocklist";
+import { getBillingPlanLimits } from "./billing-plans";
 
 import {
   type AuthEnv,
   type OrgThread,
   type SessionData,
   type ApiTokenData,
-} from './auth-helpers';
-import type { UserOrg } from '../../workers/main/src/auth';
+} from "./auth-helpers";
+import type { UserOrg } from "../../workers/main/src/auth";
 
 interface GetUserOrgsOptions {
-  preloadedOrgInfoById?: Map<string, Promise<Organization | null> | Organization | null>;
+  preloadedOrgInfoById?: Map<
+    string,
+    Promise<Organization | null> | Organization | null
+  >;
   preloadedUserOrgs?: UserOrg[];
 }
 
@@ -43,7 +50,7 @@ function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
  */
 export async function resetOnboardingForUser(
   env: AuthEnv,
-  userId: string
+  userId: string,
 ): Promise<void> {
   const stub = env.USER.get(env.USER.idFromName(userId));
 
@@ -51,7 +58,7 @@ export async function resetOnboardingForUser(
     await stub.resetOnboarding();
     return;
   } catch (error) {
-    if (!isMissingRpcMethodError(error, 'resetOnboarding')) {
+    if (!isMissingRpcMethodError(error, "resetOnboarding")) {
       throw error;
     }
   }
@@ -70,7 +77,7 @@ export async function createSession(
   userId: string,
   orgId: string,
   workspaceId: string | null = null,
-  userInfo?: { name?: string | null; email?: string | null }
+  userInfo?: { name?: string | null; email?: string | null },
 ): Promise<{ signedToken: string; sessionData: SessionData }> {
   const now = Date.now();
   const sessionData: SessionData = {
@@ -90,7 +97,10 @@ export async function createSession(
     user_name: userInfo?.name ?? null,
     user_email: userInfo?.email ?? null,
   };
-  const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, signedSession);
+  const signedToken = await createSignedSession(
+    env.TOKEN_SIGNING_SECRET,
+    signedSession,
+  );
   return { signedToken, sessionData };
 }
 
@@ -101,7 +111,7 @@ export async function switchSessionOrg(
   env: AuthEnv,
   currentSession: SessionData,
   orgId: string,
-  workspaceId: string | null = null
+  workspaceId: string | null = null,
 ): Promise<string> {
   const signedSession: SignedSessionData = {
     user_id: currentSession.user_id,
@@ -111,7 +121,10 @@ export async function switchSessionOrg(
     user_name: currentSession.user_name,
     user_email: currentSession.user_email,
   };
-  const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, signedSession);
+  const signedToken = await createSignedSession(
+    env.TOKEN_SIGNING_SECRET,
+    signedSession,
+  );
   // Update user's last workspace for this org
   if (workspaceId) {
     const stub = env.USER.get(env.USER.idFromName(currentSession.user_id));
@@ -126,7 +139,7 @@ export async function switchSessionOrg(
 export async function switchSessionWorkspace(
   env: AuthEnv,
   currentSession: SessionData,
-  workspaceId: string | null
+  workspaceId: string | null,
 ): Promise<string> {
   const signedSession: SignedSessionData = {
     user_id: currentSession.user_id,
@@ -136,7 +149,10 @@ export async function switchSessionWorkspace(
     user_name: currentSession.user_name,
     user_email: currentSession.user_email,
   };
-  const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, signedSession);
+  const signedToken = await createSignedSession(
+    env.TOKEN_SIGNING_SECRET,
+    signedSession,
+  );
   // Update user's last workspace for this org
   if (workspaceId && currentSession.org_id) {
     const stub = env.USER.get(env.USER.idFromName(currentSession.user_id));
@@ -146,7 +162,10 @@ export async function switchSessionWorkspace(
 }
 
 // User functions
-export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ userId: string; user: User } | null> {
+export async function getUserByEmail(
+  env: AuthEnv,
+  email: string,
+): Promise<{ userId: string; user: User } | null> {
   const normalizedEmail = email.toLowerCase();
   const userId = await env.EMAIL_TO_USER.get(`email:${normalizedEmail}`);
   if (!userId) return null;
@@ -156,12 +175,15 @@ export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ use
   return { userId, user };
 }
 
-export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<(User & Disposable)[]> {
+export async function getUsersByIds(
+  env: AuthEnv,
+  userIds: string[],
+): Promise<(User & Disposable)[]> {
   const results = await Promise.all(
     userIds.map(async (userId) => {
       const stub = env.USER.get(env.USER.idFromName(userId));
       return stub.getProfile();
-    })
+    }),
   );
   return results.filter((p): p is User & Disposable => p !== null);
 }
@@ -169,7 +191,10 @@ export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<(U
 export async function updateUser(
   env: AuthEnv,
   userId: string,
-  updates: { name?: string | null; avatar?: { color: string; content: string } }
+  updates: {
+    name?: string | null;
+    avatar?: { color: string; content: string };
+  },
 ): Promise<User | null> {
   const stub = env.USER.get(env.USER.idFromName(userId));
   const profile = await stub.updateProfile({
@@ -185,7 +210,7 @@ export async function createUser(
   email: string,
   password: string,
   name: string | null,
-  signupIp: string | null = null
+  signupIp: string | null = null,
 ): Promise<{ userId: string; user: User }> {
   const blocklist = await getBlocklistFromKV(env.APP_KV);
   assertEmailDomainAllowed(email, blocklist);
@@ -196,7 +221,7 @@ export async function createUser(
   // Check if email already exists
   const existingUserId = await env.EMAIL_TO_USER.get(emailKvKey);
   if (existingUserId) {
-    throw new Error('An account with this email already exists');
+    throw new Error("An account with this email already exists");
   }
 
   const userId = crypto.randomUUID();
@@ -207,12 +232,18 @@ export async function createUser(
   // Verify we still own it
   const verifyEmail = await env.EMAIL_TO_USER.get(emailKvKey);
   if (verifyEmail !== userId) {
-    throw new Error('An account with this email already exists');
+    throw new Error("An account with this email already exists");
   }
 
   try {
     const stub = env.USER.get(env.USER.idFromName(userId));
-    const user = await stub.createUser(userId, normalizedEmail, password, name, signupIp);
+    const user = await stub.createUser(
+      userId,
+      normalizedEmail,
+      password,
+      name,
+      signupIp,
+    );
     return { userId, user };
   } catch (error) {
     // Clean up on failure
@@ -223,14 +254,16 @@ export async function createUser(
 
 export async function isSignupIpBlocked(
   env: AuthEnv,
-  ip: string | null | undefined
+  ip: string | null | undefined,
 ): Promise<boolean> {
   const normalizedIp = ip?.trim();
   if (!normalizedIp || !env.ADMIN_INDEX) {
     return false;
   }
 
-  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+  const adminIndex = env.ADMIN_INDEX.get(
+    env.ADMIN_INDEX.idFromName("admin_index"),
+  );
   return adminIndex.isSignupIpBlocked(normalizedIp);
 }
 
@@ -238,22 +271,26 @@ export async function blockSignupIp(
   env: AuthEnv,
   ip: string,
   blockedBy: string | null = null,
-  reason: string | null = null
+  reason: string | null = null,
 ): Promise<void> {
   if (!env.ADMIN_INDEX) {
-    throw new Error('ADMIN_INDEX binding is not configured');
+    throw new Error("ADMIN_INDEX binding is not configured");
   }
 
-  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+  const adminIndex = env.ADMIN_INDEX.get(
+    env.ADMIN_INDEX.idFromName("admin_index"),
+  );
   await adminIndex.blockSignupIp(ip, blockedBy, reason);
 }
 
 export async function unblockSignupIp(env: AuthEnv, ip: string): Promise<void> {
   if (!env.ADMIN_INDEX) {
-    throw new Error('ADMIN_INDEX binding is not configured');
+    throw new Error("ADMIN_INDEX binding is not configured");
   }
 
-  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'));
+  const adminIndex = env.ADMIN_INDEX.get(
+    env.ADMIN_INDEX.idFromName("admin_index"),
+  );
   await adminIndex.unblockSignupIp(ip);
 }
 
@@ -262,8 +299,8 @@ export async function createUserFromOAuth(
   env: AuthEnv,
   email: string,
   name: string | null,
-  provider: 'google' | 'github',
-  providerId: string
+  provider: "google" | "github",
+  providerId: string,
 ): Promise<{ userId: string; user: User }> {
   const blocklist = await getBlocklistFromKV(env.APP_KV);
   assertEmailDomainAllowed(email, blocklist);
@@ -275,13 +312,13 @@ export async function createUserFromOAuth(
   // Check if email already exists
   const existingUserId = await env.EMAIL_TO_USER.get(emailKvKey);
   if (existingUserId) {
-    throw new Error('An account with this email already exists');
+    throw new Error("An account with this email already exists");
   }
 
   // Check if OAuth provider already linked
   const existingOAuthUserId = await env.EMAIL_TO_USER.get(oauthKvKey);
   if (existingOAuthUserId) {
-    throw new Error('This OAuth account is already linked to another user');
+    throw new Error("This OAuth account is already linked to another user");
   }
 
   const userId = crypto.randomUUID();
@@ -304,12 +341,20 @@ export async function createUserFromOAuth(
       env.EMAIL_TO_USER.delete(emailKvKey),
       env.EMAIL_TO_USER.delete(oauthKvKey),
     ]);
-    throw new Error('An account with this email or OAuth provider already exists');
+    throw new Error(
+      "An account with this email or OAuth provider already exists",
+    );
   }
 
   try {
     const stub = env.USER.get(env.USER.idFromName(userId));
-    const user = await stub.createUserFromOAuth(userId, normalizedEmail, name, provider, providerId);
+    const user = await stub.createUserFromOAuth(
+      userId,
+      normalizedEmail,
+      name,
+      provider,
+      providerId,
+    );
     return { userId, user };
   } catch (error) {
     // Clean up on failure
@@ -324,15 +369,15 @@ export async function createUserFromOAuth(
 export async function linkOAuthProvider(
   env: AuthEnv,
   userId: string,
-  provider: 'google' | 'github',
-  providerId: string
+  provider: "google" | "github",
+  providerId: string,
 ): Promise<void> {
   const oauthKvKey = `oauth:${provider}:${providerId}`;
 
   // Check if already linked to another user
   const existingUserId = await env.EMAIL_TO_USER.get(oauthKvKey);
   if (existingUserId && existingUserId !== userId) {
-    throw new Error('This OAuth account is already linked to another user');
+    throw new Error("This OAuth account is already linked to another user");
   }
 
   // Link in KV and DO
@@ -344,7 +389,7 @@ export async function linkOAuthProvider(
 export async function getUserOrgs(
   env: AuthEnv,
   userId: string,
-  options?: GetUserOrgsOptions
+  options?: GetUserOrgsOptions,
 ): Promise<OrgMembership[]> {
   const userOrgs =
     options?.preloadedUserOrgs ??
@@ -359,7 +404,7 @@ export async function getUserOrgs(
         ? await preloadedOrgInfo
         : await env.ORG.get(env.ORG.idFromName(uo.org_id)).getInfo();
       return { uo, orgInfo };
-    })
+    }),
   );
 
   return orgInfos
@@ -377,7 +422,11 @@ export async function getUserOrgs(
 export async function adminUpdateUser(
   env: AuthEnv,
   userId: string,
-  updates: { name?: string | null; avatar?: { color: string; content: string }; is_superuser?: boolean }
+  updates: {
+    name?: string | null;
+    avatar?: { color: string; content: string };
+    is_superuser?: boolean;
+  },
 ): Promise<User | null> {
   const stub = env.USER.get(env.USER.idFromName(userId));
   const profile = await stub.updateProfile({
@@ -389,19 +438,17 @@ export async function adminUpdateUser(
   return profile;
 }
 
-
-
 export async function adminTransferOrgOwnership(
   env: AuthEnv,
   orgId: string,
   newOwnerId: string,
-  actorId: string
+  actorId: string,
 ): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const members = await orgStub.getMembers();
-  const currentOwner = members.find((member) => member.role === 'owner');
+  const currentOwner = members.find((member) => member.role === "owner");
   if (!currentOwner) {
-    throw new Error('Organization has no owner');
+    throw new Error("Organization has no owner");
   }
   if (newOwnerId === currentOwner.user_id) {
     return;
@@ -410,18 +457,18 @@ export async function adminTransferOrgOwnership(
   await orgStub.adminTransferOwnership(actorId, newOwnerId);
 
   const newOwnerStub = env.USER.get(env.USER.idFromName(newOwnerId));
-  await newOwnerStub.updateOrgRole(orgId, 'owner');
+  await newOwnerStub.updateOrgRole(orgId, "owner");
 
   const oldOwnerStub = env.USER.get(env.USER.idFromName(currentOwner.user_id));
-  await oldOwnerStub.updateOrgRole(orgId, 'admin');
+  await oldOwnerStub.updateOrgRole(orgId, "admin");
 }
 
 export async function adminAddOrgMember(
   env: AuthEnv,
   orgId: string,
   userId: string,
-  role: 'admin' | 'member',
-  actorId: string
+  role: "admin" | "member",
+  actorId: string,
 ): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   await orgStub.addMember(userId, role, actorId);
@@ -432,7 +479,11 @@ export async function adminAddOrgMember(
   await userStub.setOrphaned(false);
 }
 
-export async function adminForceOrphanUser(env: AuthEnv, userId: string, _actorId: string): Promise<void> {
+export async function adminForceOrphanUser(
+  env: AuthEnv,
+  userId: string,
+  _actorId: string,
+): Promise<void> {
   const userStub = env.USER.get(env.USER.idFromName(userId));
   const orgs = await userStub.getOrgs();
   // Remove from all orgs
@@ -444,27 +495,34 @@ export async function adminForceOrphanUser(env: AuthEnv, userId: string, _actorI
   await userStub.setOrphaned(true);
 }
 
-
 // Organization functions
-export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization | null> {
+export async function getOrg(
+  env: AuthEnv,
+  orgId: string,
+): Promise<Organization | null> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await stub.getInfo();
   if (!info) return null;
   return info;
 }
 
-
-export async function archiveOrg(env: AuthEnv, orgId: string, actorId: string): Promise<void> {
+export async function archiveOrg(
+  env: AuthEnv,
+  orgId: string,
+  actorId: string,
+): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
 
   // Archive all workspaces first (before marking org archived, so partial
   // failures don't leave an archived org with unarchived workspaces)
   const workspaces = await orgStub.getWorkspaces(true);
   await Promise.all(
-    workspaces.filter((ws) => !ws.archived).map(async (ws) => {
-      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      await wsStub.archive(actorId);
-    })
+    workspaces
+      .filter((ws) => !ws.archived)
+      .map(async (ws) => {
+        const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+        await wsStub.archive(actorId);
+      }),
   );
 
   // Remove non-owner members from OrgDO (owner stays for audit trail).
@@ -472,34 +530,44 @@ export async function archiveOrg(env: AuthEnv, orgId: string, actorId: string): 
   const members = await orgStub.getMembers();
   await Promise.all(
     members.map(async (member) => {
-      if (member.role !== 'owner') {
+      if (member.role !== "owner") {
         await orgStub.removeMember(member.user_id, actorId);
       }
       const userStub = env.USER.get(env.USER.idFromName(member.user_id));
       await userStub.removeOrg(orgId);
       await checkUserOrphaned(env, member.user_id);
-    })
+    }),
   );
 
   // Mark the org as archived last, after all cleanup is done
   await orgStub.archiveOrg(actorId);
 }
 
-export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
+export async function createOrg(
+  env: AuthEnv,
+  name: string,
+  createdBy: string,
+): Promise<{ org: Organization; defaultWorkspaceId: string }> {
   const orgId = crypto.randomUUID();
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   // createOrg now creates the default workspace internally
-  const { org: info, defaultWorkspaceId } = await orgStub.createOrg(orgId, name, createdBy);
+  const { org: info, defaultWorkspaceId } = await orgStub.createOrg(
+    orgId,
+    name,
+    createdBy,
+  );
 
   // Add to user's orgs with the default workspace
   const userStub = env.USER.get(env.USER.idFromName(createdBy));
-  await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
+  await userStub.addOrg(orgId, "owner", defaultWorkspaceId);
 
   return { org: info, defaultWorkspaceId };
 }
 
-
-export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
+export async function getOrgMembers(
+  env: AuthEnv,
+  orgId: string,
+): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const members = await stub.getMembers();
 
@@ -509,7 +577,7 @@ export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<
       const userStub = env.USER.get(env.USER.idFromName(member.user_id));
       const profile = await userStub.getProfile();
       return { member, profile };
-    })
+    }),
   );
 
   return profileResults
@@ -523,8 +591,15 @@ export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<
 
 export async function getOrgMembersWithWorkspaceAccess(
   env: AuthEnv,
-  orgId: string
-): Promise<Array<{ user: User; role: OrgRole; joined_at: number; workspaceAccess: Record<string, WorkspaceAccessLevel> }>> {
+  orgId: string,
+): Promise<
+  Array<{
+    user: User;
+    role: OrgRole;
+    joined_at: number;
+    workspaceAccess: Record<string, WorkspaceAccessLevel>;
+  }>
+> {
   const [members, workspaces] = await Promise.all([
     getOrgMembers(env, orgId),
     listOrgWorkspaces(env, orgId),
@@ -534,15 +609,18 @@ export async function getOrgMembersWithWorkspaceAccess(
     workspaces.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
       const allMembers = await wsStub.listMembers();
-      const accessMap = new Map(allMembers.map((m) => [m.user_id, m.access_level]));
+      const accessMap = new Map(
+        allMembers.map((m) => [m.user_id, m.access_level]),
+      );
       return { workspaceId: ws.id, accessMap };
-    })
+    }),
   );
 
   return members.map((member) => {
     const workspaceAccess: Record<string, WorkspaceAccessLevel> = {};
     for (const ws of workspaceMembers) {
-      workspaceAccess[ws.workspaceId] = ws.accessMap.get(member.user.id) ?? 'full';
+      workspaceAccess[ws.workspaceId] =
+        ws.accessMap.get(member.user.id) ?? "full";
     }
     return {
       ...member,
@@ -551,31 +629,46 @@ export async function getOrgMembersWithWorkspaceAccess(
   });
 }
 
-export async function isOrgMember(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
+export async function isOrgMember(
+  env: AuthEnv,
+  userId: string,
+  orgId: string,
+): Promise<boolean> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await stub.getInfo();
   if (!info || info.archived) return false;
   return stub.isMember(userId);
 }
 
-export async function isOrgAdmin(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
+export async function isOrgAdmin(
+  env: AuthEnv,
+  userId: string,
+  orgId: string,
+): Promise<boolean> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await stub.getInfo();
   if (!info || info.archived) return false;
   const member = await stub.getMember(userId);
-  return member?.role === 'owner' || member?.role === 'admin';
+  return member?.role === "owner" || member?.role === "admin";
 }
 
-export async function removeOrgMember(env: AuthEnv, orgId: string, userId: string, actorId: string): Promise<void> {
+export async function removeOrgMember(
+  env: AuthEnv,
+  orgId: string,
+  userId: string,
+  actorId: string,
+): Promise<void> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
 
   // Remove from all workspaces in the org
   const workspaces = await stub.getWorkspaces();
   await Promise.all(
-    workspaces.filter((ws) => !ws.archived).map(async (ws) => {
-      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      await wsStub.removeMember(userId, actorId);
-    })
+    workspaces
+      .filter((ws) => !ws.archived)
+      .map(async (ws) => {
+        const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+        await wsStub.removeMember(userId, actorId);
+      }),
   );
 
   await stub.removeMember(userId, actorId);
@@ -588,7 +681,13 @@ export async function removeOrgMember(env: AuthEnv, orgId: string, userId: strin
   await checkUserOrphaned(env, userId);
 }
 
-export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
+export async function updateOrgMemberRole(
+  env: AuthEnv,
+  orgId: string,
+  userId: string,
+  role: OrgRole,
+  actorId: string,
+): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   await orgStub.updateMemberRole(userId, role, actorId);
 
@@ -596,21 +695,29 @@ export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: s
   await userStub.updateOrgRole(orgId, role);
 }
 
-export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwnerId: string, actorId: string): Promise<void> {
+export async function transferOrgOwnership(
+  env: AuthEnv,
+  orgId: string,
+  newOwnerId: string,
+  actorId: string,
+): Promise<void> {
   if (newOwnerId === actorId) {
-    throw new Error('Cannot transfer ownership to yourself');
+    throw new Error("Cannot transfer ownership to yourself");
   }
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   await stub.transferOwnership(actorId, newOwnerId);
   // Update user roles
   const newOwnerStub = env.USER.get(env.USER.idFromName(newOwnerId));
-  await newOwnerStub.updateOrgRole(orgId, 'owner');
+  await newOwnerStub.updateOrgRole(orgId, "owner");
   const oldOwnerStub = env.USER.get(env.USER.idFromName(actorId));
-  await oldOwnerStub.updateOrgRole(orgId, 'admin');
+  await oldOwnerStub.updateOrgRole(orgId, "admin");
 }
 
-
-export async function listOrgWorkspaces(env: AuthEnv, orgId: string, includeArchived = false): Promise<Workspace[]> {
+export async function listOrgWorkspaces(
+  env: AuthEnv,
+  orgId: string,
+  includeArchived = false,
+): Promise<Workspace[]> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const workspaceIds = await stub.getWorkspaces(includeArchived);
 
@@ -618,7 +725,7 @@ export async function listOrgWorkspaces(env: AuthEnv, orgId: string, includeArch
     workspaceIds.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
       return wsStub.getInfo();
-    })
+    }),
   );
 
   if (includeArchived) {
@@ -627,7 +734,11 @@ export async function listOrgWorkspaces(env: AuthEnv, orgId: string, includeArch
   return infos.filter((info) => info !== null && !info.archived) as Workspace[];
 }
 
-export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: string): Promise<WorkspaceWithAccess[]> {
+export async function listUserWorkspaces(
+  env: AuthEnv,
+  userId: string,
+  orgId: string,
+): Promise<WorkspaceWithAccess[]> {
   const isMember = await isOrgMember(env, userId, orgId);
   if (!isMember) return [];
 
@@ -640,22 +751,31 @@ export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: st
   // NOTE: This optimization assumes binary access ('full' or 'none'). If we add granular
   // access levels (e.g., 'viewer', 'editor'), we should store access info in OrgDO for
   // batch loading, or add a listUserWorkspaceAccess() method to avoid N RPC calls.
-  return workspaces.map((workspace) => ({ ...workspace, access_level: 'full' as const }));
+  return workspaces.map((workspace) => ({
+    ...workspace,
+    access_level: "full" as const,
+  }));
 }
 
 /**
  * List org workspaces skipping membership check — caller must have already
  * validated that the user belongs to the org (e.g. via getUserOrgs).
  */
-async function listOrgWorkspacesForMember(env: AuthEnv, orgId: string): Promise<WorkspaceWithAccess[]> {
+async function listOrgWorkspacesForMember(
+  env: AuthEnv,
+  orgId: string,
+): Promise<WorkspaceWithAccess[]> {
   const workspaces = await listOrgWorkspaces(env, orgId);
-  return workspaces.map((workspace) => ({ ...workspace, access_level: 'full' as const }));
+  return workspaces.map((workspace) => ({
+    ...workspace,
+    access_level: "full" as const,
+  }));
 }
 
 export async function listUserWorkspacesAcrossOrgs(
   env: AuthEnv,
   userId: string,
-  orgs?: OrgMembership[]
+  orgs?: OrgMembership[],
 ): Promise<WorkspaceWithAccess[]> {
   const memberships = orgs ?? (await getUserOrgs(env, userId));
   if (memberships.length === 0) return [];
@@ -663,13 +783,20 @@ export async function listUserWorkspacesAcrossOrgs(
   // When orgs are pre-validated (passed in), skip redundant isOrgMember checks
   const workspaces = await Promise.all(
     orgs
-      ? memberships.map((membership) => listOrgWorkspacesForMember(env, membership.org_id))
-      : memberships.map((membership) => listUserWorkspaces(env, userId, membership.org_id))
+      ? memberships.map((membership) =>
+          listOrgWorkspacesForMember(env, membership.org_id),
+        )
+      : memberships.map((membership) =>
+          listUserWorkspaces(env, userId, membership.org_id),
+        ),
   );
   return workspaces.flat();
 }
 
-export async function getWorkspace(env: AuthEnv, workspaceId: string): Promise<Workspace | null> {
+export async function getWorkspace(
+  env: AuthEnv,
+  workspaceId: string,
+): Promise<Workspace | null> {
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await stub.getInfo();
   if (!info || info.archived) return null;
@@ -681,20 +808,40 @@ export async function createWorkspace(
   orgId: string,
   name: string,
   createdBy: string,
-  description?: string | null
+  description?: string | null,
 ): Promise<Workspace> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  const [orgInfo, existingWorkspaces] = await Promise.all([
+    orgStub.getInfo(),
+    listOrgWorkspaces(env, orgId),
+  ]);
+  const workspaceLimit = orgInfo
+    ? getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
+        .includedWorkspaceCount
+    : 1;
+  if (workspaceLimit !== null && existingWorkspaces.length >= workspaceLimit) {
+    throw new Error(
+      `Your current billing plan includes ${workspaceLimit} workspace${workspaceLimit === 1 ? "" : "s"}.`,
+    );
+  }
+
   const workspaceId = crypto.randomUUID();
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   // WorkspaceDO.createWorkspace registers with OrgDO internally (addWorkspace)
-  const info = await stub.createWorkspace(workspaceId, orgId, name, createdBy, description ?? null);
+  const info = await stub.createWorkspace(
+    workspaceId,
+    orgId,
+    name,
+    createdBy,
+    description ?? null,
+  );
 
   // Grant full access to all existing org members
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const members = await orgStub.getMembers();
   await Promise.all(
     members.map(async (member) => {
-      await stub.setMemberAccess(member.user_id, 'full', createdBy);
-    })
+      await stub.setMemberAccess(member.user_id, "full", createdBy);
+    }),
   );
 
   return info;
@@ -703,7 +850,7 @@ export async function createWorkspace(
 export async function archiveWorkspace(
   env: AuthEnv,
   workspaceId: string,
-  actorId: string
+  actorId: string,
 ): Promise<void> {
   const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await wsStub.getInfo();
@@ -728,46 +875,60 @@ export async function archiveWorkspace(
         const workspaceRows = await orgStub.getWorkspaces();
         let newWorkspaceId: string | null = null;
         for (const workspace of workspaceRows) {
-          const candidateStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace.id));
-          const memberAccess = await candidateStub.getMemberAccess(member.user_id);
-          if ((memberAccess?.access_level ?? 'full') !== 'none') {
+          const candidateStub = env.WORKSPACE.get(
+            env.WORKSPACE.idFromName(workspace.id),
+          );
+          const memberAccess = await candidateStub.getMemberAccess(
+            member.user_id,
+          );
+          if ((memberAccess?.access_level ?? "full") !== "none") {
             newWorkspaceId = workspace.id;
             break;
           }
         }
         await userStub.setOrgLastWorkspace(info.org_id, newWorkspaceId);
       }
-    })
+    }),
   );
 }
 
 export async function updateWorkspace(
   env: AuthEnv,
   workspaceId: string,
-  updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
-  actorId: string
+  updates: {
+    name?: string;
+    description?: string | null;
+    avatar?: { color: string; content: string };
+  },
+  actorId: string,
 ): Promise<Workspace | null> {
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await stub.updateWorkspace({
-    name: updates.name,
-    description: updates.description,
-    avatar: updates.avatar,
-  }, actorId);
+  const info = await stub.updateWorkspace(
+    {
+      name: updates.name,
+      description: updates.description,
+      avatar: updates.avatar,
+    },
+    actorId,
+  );
   if (!info) return null;
   return info;
 }
 
-
-export async function getWorkspaceAccess(env: AuthEnv, workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
+export async function getWorkspaceAccess(
+  env: AuthEnv,
+  workspaceId: string,
+  userId: string,
+): Promise<WorkspaceAccessLevel> {
   const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await wsStub.getInfo();
-  if (!info || info.archived) return 'none';
+  if (!info || info.archived) return "none";
 
   const isMember = await isOrgMember(env, userId, info.org_id);
-  if (!isMember) return 'none';
+  if (!isMember) return "none";
 
   const access = await wsStub.getMemberAccess(userId);
-  return access?.access_level ?? 'full';
+  return access?.access_level ?? "full";
 }
 
 export async function setWorkspaceAccess(
@@ -775,21 +936,24 @@ export async function setWorkspaceAccess(
   workspaceId: string,
   userId: string,
   accessLevel: WorkspaceAccessLevel,
-  actorId: string
+  actorId: string,
 ): Promise<void> {
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   await stub.setMemberAccess(userId, accessLevel, actorId);
 }
 
-export async function listWorkspaceIntegrations(env: AuthEnv, workspaceId: string): Promise<Integration[]> {
+export async function listWorkspaceIntegrations(
+  env: AuthEnv,
+  workspaceId: string,
+): Promise<Integration[]> {
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const records = await stub.getIntegrations();
   return records.map((r) => ({
     id: r.id,
     integration_type: r.integration_type,
     name: r.name,
-    category: r.category as Integration['category'],
-    auth_method: r.auth_method as Integration['auth_method'],
+    category: r.category as Integration["category"],
+    auth_method: r.auth_method as Integration["auth_method"],
     config: r.config ? JSON.parse(r.config) : {},
     created_by: r.created_by,
     created_at: r.created_at,
@@ -798,7 +962,10 @@ export async function listWorkspaceIntegrations(env: AuthEnv, workspaceId: strin
   }));
 }
 
-export async function checkUserOrphaned(env: AuthEnv, userId: string): Promise<boolean> {
+export async function checkUserOrphaned(
+  env: AuthEnv,
+  userId: string,
+): Promise<boolean> {
   const userStub = env.USER.get(env.USER.idFromName(userId));
   const profile = await userStub.getProfile();
   if (!profile) return false;
@@ -818,32 +985,32 @@ export async function checkUserOrphaned(env: AuthEnv, userId: string): Promise<b
 
 export async function handleOrphanedUserLogin(
   env: AuthEnv,
-  userId: string
+  userId: string,
 ): Promise<{ org: Organization; workspace: WorkspaceWithAccess } | null> {
   const userStub = env.USER.get(env.USER.idFromName(userId));
   const profile = await userStub.getProfile();
   if (!profile?.is_orphaned) return null;
 
-  const baseName = profile.name?.trim() || 'My';
+  const baseName = profile.name?.trim() || "My";
   const orgName = `${baseName}'s Organization`;
   const { org, defaultWorkspaceId } = await createOrg(env, orgName, userId);
 
   // Get the default workspace info
   const workspace = await getWorkspace(env, defaultWorkspaceId);
   if (!workspace) {
-    throw new Error('Failed to create default workspace');
+    throw new Error("Failed to create default workspace");
   }
 
   await userStub.setOrphaned(false);
 
-  return { org, workspace: { ...workspace, access_level: 'full' } };
+  return { org, workspace: { ...workspace, access_level: "full" } };
 }
 
 export async function getOrgAuditLog(
   env: AuthEnv,
   orgId: string,
   limit = 100,
-  offset = 0
+  offset = 0,
 ): Promise<AuditLogEntry[]> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const entries = await stub.getAuditLog(limit, offset);
@@ -861,7 +1028,7 @@ export async function getWorkspaceAuditLog(
   env: AuthEnv,
   workspaceId: string,
   limit = 100,
-  offset = 0
+  offset = 0,
 ): Promise<AuditLogEntry[]> {
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const entries = await stub.getAuditLog(limit, offset);
@@ -881,17 +1048,21 @@ export async function createInvitation(
   orgId: string,
   email: string,
   role: OrgRole,
-  invitedBy: string
+  invitedBy: string,
 ): Promise<{ id: string; expires_at: number }> {
-  if (role === 'owner') {
-    throw new Error('Cannot invite as owner');
+  if (role === "owner") {
+    throw new Error("Cannot invite as owner");
   }
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitation = await stub.createInvitation(email, role, invitedBy);
   return { id: invitation.id, expires_at: invitation.expires_at };
 }
 
-export async function getInvitation(env: AuthEnv, orgId: string, invitationId: string): Promise<{
+export async function getInvitation(
+  env: AuthEnv,
+  orgId: string,
+  invitationId: string,
+): Promise<{
   id: string;
   email: string;
   role: OrgRole;
@@ -912,13 +1083,21 @@ export async function getInvitation(env: AuthEnv, orgId: string, invitationId: s
   };
 }
 
-export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId: string, userId: string): Promise<boolean> {
+export async function acceptInvitation(
+  env: AuthEnv,
+  orgId: string,
+  invitationId: string,
+  userId: string,
+): Promise<boolean> {
   // Validate invitation exists and org is not archived
   const validatedInvitation = await getInvitation(env, orgId, invitationId);
   if (!validatedInvitation) return false;
 
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const acceptedInvitation = await orgStub.acceptInvitation(invitationId, userId);
+  const acceptedInvitation = await orgStub.acceptInvitation(
+    invitationId,
+    userId,
+  );
   if (!acceptedInvitation) return false;
 
   const workspaces = await listOrgWorkspaces(env, orgId);
@@ -929,9 +1108,9 @@ export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId
   await Promise.all(
     workspaces.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      const access = presetAccess?.[ws.id] ?? 'full';
+      const access = presetAccess?.[ws.id] ?? "full";
       await wsStub.setMemberAccess(userId, access, userId);
-    })
+    }),
   );
 
   const userStub = env.USER.get(env.USER.idFromName(userId));
@@ -941,27 +1120,34 @@ export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId
   return true;
 }
 
-export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Array<{
-  id: string;
-  email: string;
-  role: OrgRole;
-  invited_by: string;
-  created_at: number;
-  expires_at: number;
-  workspace_access?: Record<string, 'full' | 'none'> | null;
-}>> {
+export async function getOrgInvitations(
+  env: AuthEnv,
+  orgId: string,
+): Promise<
+  Array<{
+    id: string;
+    email: string;
+    role: OrgRole;
+    invited_by: string;
+    created_at: number;
+    expires_at: number;
+    workspace_access?: Record<string, "full" | "none"> | null;
+  }>
+> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitations = await stub.getInvitations();
   const now = Date.now();
-  return invitations.filter((inv) => inv.expires_at > now).map((inv) => ({
-    id: inv.id,
-    email: inv.email,
-    role: inv.role,
-    invited_by: inv.invited_by,
-    created_at: inv.created_at,
-    expires_at: inv.expires_at,
-    workspace_access: inv.workspace_access ?? null,
-  }));
+  return invitations
+    .filter((inv) => inv.expires_at > now)
+    .map((inv) => ({
+      id: inv.id,
+      email: inv.email,
+      role: inv.role,
+      invited_by: inv.invited_by,
+      created_at: inv.created_at,
+      expires_at: inv.expires_at,
+      workspace_access: inv.workspace_access ?? null,
+    }));
 }
 
 export async function updateInvitationWorkspaceAccess(
@@ -969,14 +1155,14 @@ export async function updateInvitationWorkspaceAccess(
   orgId: string,
   invitationId: string,
   workspaceId: string,
-  access: 'full' | 'none'
+  access: "full" | "none",
 ): Promise<boolean> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitation = await stub.getInvitation(invitationId);
   if (!invitation) return false;
 
   const current = invitation.workspace_access ?? {};
-  if (access === 'full') {
+  if (access === "full") {
     delete current[workspaceId];
   } else {
     current[workspaceId] = access;
@@ -987,9 +1173,11 @@ export async function updateInvitationWorkspaceAccess(
   return stub.updateInvitationWorkspaceAccess(invitationId, updated);
 }
 
-
 // API Token functions
-export async function validateApiToken(env: AuthEnv, tokenId: string): Promise<ApiTokenData | null> {
+export async function validateApiToken(
+  env: AuthEnv,
+  tokenId: string,
+): Promise<ApiTokenData | null> {
   return validateApiTokenKV(env.APP_KV, tokenId);
 }
 
@@ -1002,8 +1190,8 @@ export interface WorkerScriptAccess {
 }
 
 // KV key prefixes
-const SCRIPT_PREFIX = 'script:';
-const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
+const SCRIPT_PREFIX = "script:";
+const SCRIPT_ORG_PREFIX_LEGACY = "script_org:";
 
 /**
  * Get worker access info by dispatch script name.
@@ -1012,15 +1200,18 @@ const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 export async function getWorkerAccessInfo(
   env: AuthEnv,
   dispatchScriptName: string,
-  legacyScriptName?: string
+  legacyScriptName?: string,
 ): Promise<WorkerScriptAccess | null> {
   // Try new format first: script:{script-name}--{org-slug}
   let data = await env.APP_KV.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
   if (data) {
-    const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
+    const { org_id, is_public } = JSON.parse(data) as {
+      org_id: string;
+      is_public: boolean;
+    };
     return {
       script_name: dispatchScriptName,
-      workspace_id: '', // Not needed for access check, avoids DO lookup
+      workspace_id: "", // Not needed for access check, avoids DO lookup
       org_id,
       is_public,
     };
@@ -1028,12 +1219,17 @@ export async function getWorkerAccessInfo(
 
   // Fall back to legacy format: script_org:{script-name}
   if (legacyScriptName) {
-    data = await env.APP_KV.get(`${SCRIPT_ORG_PREFIX_LEGACY}${legacyScriptName}`);
+    data = await env.APP_KV.get(
+      `${SCRIPT_ORG_PREFIX_LEGACY}${legacyScriptName}`,
+    );
     if (data) {
-      const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
+      const { org_id, is_public } = JSON.parse(data) as {
+        org_id: string;
+        is_public: boolean;
+      };
       return {
         script_name: legacyScriptName,
-        workspace_id: '', // Not needed for access check, avoids DO lookup
+        workspace_id: "", // Not needed for access check, avoids DO lookup
         org_id,
         is_public,
       };
@@ -1062,7 +1258,10 @@ export interface WorkerScript {
   custom_domain_updated_at: number | null;
 }
 
-export async function listWorkerScriptsByWorkspace(env: AuthEnv, workspaceId: string): Promise<WorkerScript[]> {
+export async function listWorkerScriptsByWorkspace(
+  env: AuthEnv,
+  workspaceId: string,
+): Promise<WorkerScript[]> {
   const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await wsStub.getInfo();
   if (!info) return [];
@@ -1073,7 +1272,7 @@ export async function listWorkerScriptsByWorkspace(env: AuthEnv, workspaceId: st
 export async function getWorkerScript(
   env: AuthEnv,
   orgId: string,
-  scriptName: string
+  scriptName: string,
 ): Promise<WorkerScript | null> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   return stub.getWorkerScript(scriptName);
@@ -1083,7 +1282,7 @@ export async function deleteWorkerScript(
   env: AuthEnv,
   orgId: string,
   scriptName: string,
-  actorId: string
+  actorId: string,
 ): Promise<boolean> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const result = await stub.deleteWorkerScript(scriptName, actorId);
@@ -1107,10 +1306,14 @@ export async function setWorkerScriptPublic(
   orgId: string,
   scriptName: string,
   isPublic: boolean,
-  actorId: string
+  actorId: string,
 ): Promise<WorkerScript | null> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  const script = await stub.setWorkerScriptPublic(scriptName, isPublic, actorId);
+  const script = await stub.setWorkerScriptPublic(
+    scriptName,
+    isPublic,
+    actorId,
+  );
   if (script) {
     // Get org slug to build dispatch script name
     const orgInfo = await stub.getInfo();
@@ -1120,13 +1323,17 @@ export async function setWorkerScriptPublic(
       // Update the new format KV index
       await env.APP_KV.put(
         `${SCRIPT_PREFIX}${dispatchScriptName}`,
-        JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public })
+        JSON.stringify({
+          org_id: orgId,
+          org_slug: orgSlug,
+          is_public: script.is_public,
+        }),
       );
     }
     // Also update legacy format for backwards compatibility
     await env.APP_KV.put(
       `${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`,
-      JSON.stringify({ org_id: orgId, is_public: script.is_public })
+      JSON.stringify({ org_id: orgId, is_public: script.is_public }),
     );
   }
   return script;

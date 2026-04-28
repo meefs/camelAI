@@ -14,6 +14,7 @@ import {
   getDefaultLlmModel,
   getDefaultThreadProvider,
 } from "../../../src/lib/llm-provider-config.js";
+import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
 import type { Attachment as PostalMimeAttachment } from "postal-mime";
 import { isOrgBanned } from "./ban-list.js";
 
@@ -840,6 +841,16 @@ export async function handleWorkspaceEmailIngress(
   );
   if (!resolved) {
     message.setReject("Unknown workspace email address.");
+    return;
+  }
+
+  const orgInfo = await getOrgStub(env, resolved.orgId).getInfo();
+  if (
+    !orgInfo ||
+    !getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
+      .emailInbox
+  ) {
+    message.setReject("Workspace email inbox requires a Pro, Team, or Enterprise plan.");
     return;
   }
 

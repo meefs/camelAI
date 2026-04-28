@@ -1,8 +1,11 @@
-import { DurableObject } from 'cloudflare:workers';
-import { hashPassword, verifyPassword } from './password';
-import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
-import { DEFAULT_THREAD_TITLE } from '../../../src/lib/thread-title';
-import { slugifyWorkspaceName } from '../../../src/lib/workspace-email';
+import { DurableObject } from "cloudflare:workers";
+import { hashPassword, verifyPassword } from "./password";
+import {
+  generateDefaultAvatar,
+  validateAvatarContent,
+} from "../../../src/lib/avatar";
+import { DEFAULT_THREAD_TITLE } from "../../../src/lib/thread-title";
+import { slugifyWorkspaceName } from "../../../src/lib/workspace-email";
 import type {
   OrgRole,
   BillingStatus,
@@ -13,18 +16,24 @@ import type {
   ChatHarness,
   LlmModel,
   OnboardingPreferences,
-} from '../../../src/types';
-import type { ChatThreadDO } from './durable-objects';
-import { WorkspaceDO } from './workspace';
+} from "../../../src/types";
+import type { ChatThreadDO } from "./durable-objects";
+import { WorkspaceDO } from "./workspace";
 import {
   DEFAULT_LLM_MODEL,
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   normalizeLlmModel,
   parseOrganizationExperimentalSettings,
-} from '../../../src/lib/llm-provider-config';
+} from "../../../src/lib/llm-provider-config";
+import {
+  getBillingPlanLimits,
+  getOrgSeatLimit,
+  normalizeBillingPlan,
+  normalizeSeatCount,
+} from "../../../src/lib/billing-plans";
 
 // Re-export for consumers that import from this module
-export type { OrgRole, BillingStatus } from '../../../src/types';
+export type { OrgRole, BillingStatus } from "../../../src/types";
 
 // Environment bindings needed by auth Durable Objects
 export interface DOEnv {
@@ -32,41 +41,43 @@ export interface DOEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
-  ADMIN_INDEX: DurableObjectNamespace<import('./admin-index-do.js').AdminIndexDO>;
+  ADMIN_INDEX: DurableObjectNamespace<
+    import("./admin-index-do.js").AdminIndexDO
+  >;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
 }
 
-const SUPERUSER_EMAILS = new Set([
-  'admin@example.com',
-  '1033072+Vercantez@users.noreply.github.com',
-]);
-const USER_ONBOARDING_KEY = 'onboarding';
-const USER_SIGNUP_IP_KEY = 'signup_ip';
-const ORG_EXPERIMENTAL_SETTINGS_KEY = 'experimental_settings';
+const SUPERUSER_EMAILS = new Set(["admin@example.com", "1033072+Vercantez@users.noreply.github.com"]);
+const USER_ONBOARDING_KEY = "onboarding";
+const USER_SIGNUP_IP_KEY = "signup_ip";
+const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
 
 function isSuperuserEmail(email: string | null): boolean {
   if (!email) return false;
   return SUPERUSER_EMAILS.has(email.toLowerCase());
 }
 
-const ORG_INDEX_PREFIX = 'org_index:';
-const ORG_SLUG_KV_PREFIX = 'org_slug:';
-const CUSTOM_DOMAIN_HOST_PREFIX = 'custom_domain_host:';
+const ORG_INDEX_PREFIX = "org_index:";
+const ORG_SLUG_KV_PREFIX = "org_slug:";
+const CUSTOM_DOMAIN_HOST_PREFIX = "custom_domain_host:";
 
 async function hashOrgSlug(orgId: string): Promise<string> {
   const data = new TextEncoder().encode(orgId);
-  const hash = await crypto.subtle.digest('SHA-256', data);
+  const hash = await crypto.subtle.digest("SHA-256", data);
   const bytes = new Uint8Array(hash);
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let slug = '';
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let slug = "";
   for (let i = 0; i < 6; i++) {
     slug += chars[bytes[i] % chars.length];
   }
   return slug;
 }
 
-async function generateUniqueOrgSlug(orgId: string, kv: KVNamespace): Promise<string> {
+async function generateUniqueOrgSlug(
+  orgId: string,
+  kv: KVNamespace,
+): Promise<string> {
   const baseSlug = await hashOrgSlug(orgId);
   const existing = await kv.get(`${ORG_SLUG_KV_PREFIX}${baseSlug}`);
   if (!existing || existing === orgId) return baseSlug;
@@ -77,35 +88,43 @@ async function generateUniqueOrgSlug(orgId: string, kv: KVNamespace): Promise<st
     const owner = await kv.get(`${ORG_SLUG_KV_PREFIX}${candidate}`);
     if (!owner || owner === orgId) return candidate;
   }
-  throw new Error('slug_generation_failed');
+  throw new Error("slug_generation_failed");
 }
 
-async function registerOrgSlug(kv: KVNamespace, slug: string, orgId: string): Promise<void> {
+async function registerOrgSlug(
+  kv: KVNamespace,
+  slug: string,
+  orgId: string,
+): Promise<void> {
   await kv.put(`${ORG_SLUG_KV_PREFIX}${slug}`, orgId);
 }
 
-import type { AdminEventType } from './admin-index-do.js';
+import type { AdminEventType } from "./admin-index-do.js";
 
-export function dispatchAdminEvent(ctx: DurableObjectState, env: DOEnv, event: AdminEventType) {
+export function dispatchAdminEvent(
+  ctx: DurableObjectState,
+  env: DOEnv,
+  event: AdminEventType,
+) {
   try {
     ctx.waitUntil(
-      env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'))
+      env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName("admin_index"))
         .handleEvent(event)
-        .catch(err => console.error('AdminIndex sync failed:', err))
+        .catch((err) => console.error("AdminIndex sync failed:", err)),
     );
   } catch (err) {
-    console.error('Failed to dispatch to AdminIndex', err);
+    console.error("Failed to dispatch to AdminIndex", err);
   }
 }
 
 function toOnboardingPreferences(raw: unknown): OnboardingPreferences | null {
-  if (!raw || typeof raw !== 'object') {
+  if (!raw || typeof raw !== "object") {
     return null;
   }
 
   const value = raw as Partial<OnboardingPreferences> & Record<string, unknown>;
   const completedAt =
-    typeof value.completed_at === 'number' || value.completed_at === null
+    typeof value.completed_at === "number" || value.completed_at === null
       ? value.completed_at
       : null;
   return {
@@ -120,8 +139,8 @@ function getDefaultOnboardingPreferences(): OnboardingPreferences {
 }
 
 function normalizeCompletedAt(
-  value: OnboardingPreferences['completed_at']
-): OnboardingPreferences['completed_at'] {
+  value: OnboardingPreferences["completed_at"],
+): OnboardingPreferences["completed_at"] {
   if (value === null) {
     return null;
   }
@@ -129,13 +148,15 @@ function normalizeCompletedAt(
   return Number.isFinite(value) ? value : null;
 }
 
-function sanitizeOnboardingPreferences(input: OnboardingPreferences): OnboardingPreferences {
-  const next = toOnboardingPreferences(input) ?? getDefaultOnboardingPreferences();
+function sanitizeOnboardingPreferences(
+  input: OnboardingPreferences,
+): OnboardingPreferences {
+  const next =
+    toOnboardingPreferences(input) ?? getDefaultOnboardingPreferences();
   return {
     completed_at: normalizeCompletedAt(next.completed_at),
   };
 }
-
 
 export interface UserOrg {
   org_id: string;
@@ -153,14 +174,13 @@ export interface UserAuthBootstrap {
   sessionInvalidatedAt: number | null;
 }
 
-export type OAuthProvider = 'google' | 'github';
+export type OAuthProvider = "google" | "github";
 
 export interface UserOAuthProvider {
   provider: OAuthProvider;
   provider_id: string;
   linked_at: number;
 }
-
 
 export interface OrgMember {
   user_id: string;
@@ -175,7 +195,7 @@ export interface OrgInvitation {
   invited_by: string;
   created_at: number;
   expires_at: number;
-  workspace_access?: Record<string, 'full' | 'none'> | null;
+  workspace_access?: Record<string, "full" | "none"> | null;
 }
 
 export interface OrgIntegrationRecord {
@@ -191,7 +211,7 @@ export interface OrgIntegrationRecord {
   updated_at: number;
 }
 
-export type WorkerScriptPreviewStatus = 'pending' | 'ready' | 'failed';
+export type WorkerScriptPreviewStatus = "pending" | "ready" | "failed";
 
 export interface WorkerScript {
   script_name: string;
@@ -265,7 +285,7 @@ export interface WorkerScriptAccess {
   is_public: boolean;
 }
 
-export type CustomDomainStatus = 'pending' | 'active' | 'failed';
+export type CustomDomainStatus = "pending" | "active" | "failed";
 
 export interface CustomDomain {
   domain: string;
@@ -278,11 +298,36 @@ export interface CustomDomain {
 
 type CustomDomainRow = CustomDomain & Record<string, SqlStorageValue>;
 
+function normalizeOrgBillingFields(info: Organization): boolean {
+  let changed = false;
+  if (!info.billing_status) {
+    info.billing_status = "inactive";
+    changed = true;
+  }
+  const normalizedPlan = normalizeBillingPlan(
+    info.billing_plan,
+    info.billing_status,
+  );
+  if (info.billing_plan !== normalizedPlan) {
+    info.billing_plan = normalizedPlan;
+    changed = true;
+  }
+  const normalizedSeats = normalizeSeatCount(
+    normalizedPlan,
+    info.billing_seat_count,
+  );
+  if (info.billing_seat_count !== normalizedSeats) {
+    info.billing_seat_count = normalizedSeats;
+    changed = true;
+  }
+  return changed;
+}
+
 export interface OrgThread {
   id: string;
   workspace_id: string;
   title: string;
-  provider: 'claude' | 'codex';
+  provider: "claude" | "codex";
   created_by: string;
   model: LlmModel;
   created_at: number;
@@ -300,7 +345,7 @@ export type OrgChatThreadAccessResult =
     }
   | {
       ok: false;
-      reason: 'org_not_found' | 'forbidden' | 'thread_not_found';
+      reason: "org_not_found" | "forbidden" | "thread_not_found";
     };
 
 export interface ProxyUsageInput {
@@ -309,6 +354,33 @@ export interface ProxyUsageInput {
   total_tokens: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+}
+
+export interface OrgBillingStateUpdate {
+  billing_status?: BillingStatus;
+  billing_plan?: Organization["billing_plan"];
+  billing_seat_count?: number;
+  billing_customer_id?: string | null;
+  billing_subscription_id?: string | null;
+  billing_subscription_status?: string | null;
+  billing_trial_started_at?: number | null;
+  billing_trial_ends_at?: number | null;
+  billing_credit_purchase_total_cents?: number;
+  billing_credit_grant_total_cents?: number;
+  billing_trial_credit_grant_cents?: number;
+  billing_trial_credit_granted_at?: number | null;
+  billing_last_included_credit_invoice_id?: string | null;
+  billing_credit_usage_started_at?: number | null;
+}
+
+export interface SyncSubscriptionBillingStateResult {
+  org: Organization;
+  trialCreditGranted: boolean;
+}
+
+export interface ApplyCreditCheckoutResult {
+  org: Organization;
+  applied: boolean;
 }
 
 /**
@@ -339,15 +411,17 @@ export class UserDO extends DurableObject<DOEnv> {
   }
 
   private getSchemaVersionValue(): number {
-    const storedVersion = this.ctx.storage.kv.get<number>('schemaVersion');
-    if (typeof storedVersion === 'number') {
+    const storedVersion = this.ctx.storage.kv.get<number>("schemaVersion");
+    if (typeof storedVersion === "number") {
       return storedVersion;
     }
 
     try {
-      const rows = this.sql.exec<{ version: number }>(
-        'SELECT MAX(version) AS version FROM _schema_version'
-      ).toArray();
+      const rows = this.sql
+        .exec<{
+          version: number;
+        }>("SELECT MAX(version) AS version FROM _schema_version")
+        .toArray();
       return rows[0]?.version ?? 0;
     } catch {
       return 0;
@@ -360,9 +434,9 @@ export class UserDO extends DurableObject<DOEnv> {
 
     if (version < 1) {
       // V1: Fresh start
-      this.sql.exec('DROP TABLE IF EXISTS profile');
-      this.sql.exec('DROP TABLE IF EXISTS orgs');
-      this.sql.exec('DROP TABLE IF EXISTS projects');
+      this.sql.exec("DROP TABLE IF EXISTS profile");
+      this.sql.exec("DROP TABLE IF EXISTS orgs");
+      this.sql.exec("DROP TABLE IF EXISTS projects");
       this.sql.exec(`
         CREATE TABLE profile (
           key TEXT PRIMARY KEY,
@@ -388,16 +462,20 @@ export class UserDO extends DurableObject<DOEnv> {
     }
 
     if (version < 2) {
-      const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
+      const rows = this.sql
+        .exec("SELECT value FROM profile WHERE key = ?", "data")
+        .toArray();
       if (rows.length > 0) {
-        const profile = JSON.parse((rows[0] as { value: string }).value) as User;
+        const profile = JSON.parse(
+          (rows[0] as { value: string }).value,
+        ) as User;
         const shouldBeSuperuser = isSuperuserEmail(profile.email);
         if (profile.is_superuser !== shouldBeSuperuser) {
           profile.is_superuser = shouldBeSuperuser;
           this.sql.exec(
-            'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
-            'data',
-            JSON.stringify(profile)
+            "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
+            "data",
+            JSON.stringify(profile),
           );
         }
       }
@@ -405,29 +483,34 @@ export class UserDO extends DurableObject<DOEnv> {
 
     if (version < 3) {
       // V3: Remove projects table - projects feature removed
-      this.sql.exec('DROP TABLE IF EXISTS projects');
+      this.sql.exec("DROP TABLE IF EXISTS projects");
     }
 
     if (version < 4) {
-      const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
+      const rows = this.sql
+        .exec("SELECT value FROM profile WHERE key = ?", "data")
+        .toArray();
       if (rows.length > 0) {
-        const profile = JSON.parse((rows[0] as { value: string }).value) as User;
+        const profile = JSON.parse(
+          (rows[0] as { value: string }).value,
+        ) as User;
         if (!profile.avatar) {
           profile.avatar = generateDefaultAvatar(profile.name || profile.email);
         }
-        if (typeof profile.is_orphaned !== 'boolean') profile.is_orphaned = false;
+        if (typeof profile.is_orphaned !== "boolean")
+          profile.is_orphaned = false;
         if (profile.orphaned_at === undefined) profile.orphaned_at = null;
         this.sql.exec(
-          'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
-          'data',
-          JSON.stringify(profile)
+          "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
+          "data",
+          JSON.stringify(profile),
         );
       }
     }
 
     if (version < 5) {
       try {
-        this.sql.exec('ALTER TABLE orgs ADD COLUMN last_workspace_id TEXT');
+        this.sql.exec("ALTER TABLE orgs ADD COLUMN last_workspace_id TEXT");
       } catch {
         // Column may already exist in fresh databases.
       }
@@ -449,16 +532,20 @@ export class UserDO extends DurableObject<DOEnv> {
 
     if (version < 8) {
       // V8: Track email verification status on profiles.
-      const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
+      const rows = this.sql
+        .exec("SELECT value FROM profile WHERE key = ?", "data")
+        .toArray();
       if (rows.length > 0) {
-        const profile = JSON.parse((rows[0] as { value: string }).value) as User;
+        const profile = JSON.parse(
+          (rows[0] as { value: string }).value,
+        ) as User;
         if (profile.email_verified_at === undefined) {
           // Backfill legacy accounts as verified so this remains non-breaking.
           profile.email_verified_at = profile.created_at ?? Date.now();
           this.sql.exec(
-            'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
-            'data',
-            JSON.stringify(profile)
+            "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
+            "data",
+            JSON.stringify(profile),
           );
         }
       }
@@ -466,18 +553,20 @@ export class UserDO extends DurableObject<DOEnv> {
 
     const CURRENT_SCHEMA_VERSION = 8;
     if (version < CURRENT_SCHEMA_VERSION) {
-      this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
+      this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
   }
 
   // Profile methods
   async getProfile(): Promise<User | null> {
-    const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
+    const rows = this.sql
+      .exec("SELECT value FROM profile WHERE key = ?", "data")
+      .toArray();
     if (rows.length === 0) return null;
     const profile = JSON.parse((rows[0] as { value: string }).value) as User;
     let changed = false;
 
-    if (typeof profile.is_superuser !== 'boolean') {
+    if (typeof profile.is_superuser !== "boolean") {
       profile.is_superuser = isSuperuserEmail(profile.email);
       changed = true;
     }
@@ -485,7 +574,7 @@ export class UserDO extends DurableObject<DOEnv> {
       profile.avatar = generateDefaultAvatar(profile.name || profile.email);
       changed = true;
     }
-    if (typeof profile.is_orphaned !== 'boolean') {
+    if (typeof profile.is_orphaned !== "boolean") {
       profile.is_orphaned = false;
       changed = true;
     }
@@ -516,8 +605,15 @@ export class UserDO extends DurableObject<DOEnv> {
       required: Boolean(passwordHash),
       verified: profile?.email_verified_at != null,
     };
-    const sessionInvalidatedAt = this.ctx.storage.kv.get<number>('sessionInvalidatedAt') ?? null;
-    return { profile, onboarding, orgs, emailVerification, sessionInvalidatedAt };
+    const sessionInvalidatedAt =
+      this.ctx.storage.kv.get<number>("sessionInvalidatedAt") ?? null;
+    return {
+      profile,
+      onboarding,
+      orgs,
+      emailVerification,
+      sessionInvalidatedAt,
+    };
   }
 
   /**
@@ -525,48 +621,53 @@ export class UserDO extends DurableObject<DOEnv> {
    * Any session created before this timestamp will be rejected.
    */
   invalidateSessions(): void {
-    this.ctx.storage.kv.put('sessionInvalidatedAt', Date.now());
+    this.ctx.storage.kv.put("sessionInvalidatedAt", Date.now());
   }
 
   /**
    * Get the session invalidation timestamp. Returns null if never invalidated.
    */
   getSessionInvalidatedAt(): number | null {
-    return this.ctx.storage.kv.get<number>('sessionInvalidatedAt') ?? null;
+    return this.ctx.storage.kv.get<number>("sessionInvalidatedAt") ?? null;
   }
 
   setPendingSalesPrompt(prompt: string): void {
-    this.ctx.storage.kv.put('pendingSalesPrompt', prompt);
+    this.ctx.storage.kv.put("pendingSalesPrompt", prompt);
   }
 
   getPendingSalesPrompt(): string | null {
-    return this.ctx.storage.kv.get<string>('pendingSalesPrompt') ?? null;
+    return this.ctx.storage.kv.get<string>("pendingSalesPrompt") ?? null;
   }
 
   clearPendingSalesPrompt(): void {
-    this.ctx.storage.kv.delete('pendingSalesPrompt');
+    this.ctx.storage.kv.delete("pendingSalesPrompt");
   }
 
   async setProfile(profile: User): Promise<void> {
     this.sql.exec(
-      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
-      'data',
-      JSON.stringify(profile)
+      "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
+      "data",
+      JSON.stringify(profile),
     );
-    dispatchAdminEvent(this.ctx, this.env, { type: 'user_upsert', payload: profile });
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "user_upsert",
+      payload: profile,
+    });
   }
 
   async getPasswordHash(): Promise<string | null> {
-    const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'password_hash').toArray();
+    const rows = this.sql
+      .exec("SELECT value FROM profile WHERE key = ?", "password_hash")
+      .toArray();
     if (rows.length === 0) return null;
     return (rows[0] as { value: string }).value;
   }
 
   async setPasswordHash(hash: string): Promise<void> {
     this.sql.exec(
-      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
-      'password_hash',
-      hash
+      "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
+      "password_hash",
+      hash,
     );
   }
 
@@ -577,7 +678,9 @@ export class UserDO extends DurableObject<DOEnv> {
   }
 
   getSignupIp(): string | null {
-    const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', USER_SIGNUP_IP_KEY).toArray();
+    const rows = this.sql
+      .exec("SELECT value FROM profile WHERE key = ?", USER_SIGNUP_IP_KEY)
+      .toArray();
     if (rows.length === 0) return null;
     return (rows[0] as { value: string }).value;
   }
@@ -586,9 +689,9 @@ export class UserDO extends DurableObject<DOEnv> {
     const normalizedIp = ip.trim().toLowerCase();
     if (!normalizedIp) return;
     this.sql.exec(
-      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+      "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
       USER_SIGNUP_IP_KEY,
-      normalizedIp
+      normalizedIp,
     );
   }
 
@@ -597,7 +700,7 @@ export class UserDO extends DurableObject<DOEnv> {
     email: string,
     password: string,
     name: string | null,
-    signupIp: string | null = null
+    signupIp: string | null = null,
   ): Promise<User> {
     const now = Date.now();
     const avatar = generateDefaultAvatar(name || email);
@@ -619,7 +722,10 @@ export class UserDO extends DurableObject<DOEnv> {
     if (signupIp) {
       this.setSignupIp(signupIp);
       // Re-dispatch with signup_ip so AdminIndexDO can index it
-      dispatchAdminEvent(this.ctx, this.env, { type: 'user_upsert', payload: { ...profile, signup_ip: signupIp } });
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "user_upsert",
+        payload: { ...profile, signup_ip: signupIp },
+      });
     }
 
     return profile;
@@ -678,21 +784,30 @@ export class UserDO extends DurableObject<DOEnv> {
       changed = true;
     }
 
-    if (updates.avatar?.color && updates.avatar.color !== profile.avatar.color) {
+    if (
+      updates.avatar?.color &&
+      updates.avatar.color !== profile.avatar.color
+    ) {
       profile.avatar.color = updates.avatar.color;
       changed = true;
     }
 
-    if (updates.avatar?.content && updates.avatar.content !== profile.avatar.content) {
+    if (
+      updates.avatar?.content &&
+      updates.avatar.content !== profile.avatar.content
+    ) {
       const trimmed = updates.avatar.content.trim();
       if (!validateAvatarContent(trimmed)) {
-        throw new Error('Invalid avatar content');
+        throw new Error("Invalid avatar content");
       }
       profile.avatar.content = trimmed;
       changed = true;
     }
 
-    if (updates.is_superuser !== undefined && updates.is_superuser !== profile.is_superuser) {
+    if (
+      updates.is_superuser !== undefined &&
+      updates.is_superuser !== profile.is_superuser
+    ) {
       profile.is_superuser = updates.is_superuser;
       changed = true;
     }
@@ -705,10 +820,9 @@ export class UserDO extends DurableObject<DOEnv> {
   }
 
   async getOnboarding(): Promise<OnboardingPreferences | null> {
-    const rows = this.sql.exec(
-      'SELECT value FROM profile WHERE key = ?',
-      USER_ONBOARDING_KEY
-    ).toArray() as Array<{ value: string }>;
+    const rows = this.sql
+      .exec("SELECT value FROM profile WHERE key = ?", USER_ONBOARDING_KEY)
+      .toArray() as Array<{ value: string }>;
     if (rows.length === 0) {
       return null;
     }
@@ -720,12 +834,14 @@ export class UserDO extends DurableObject<DOEnv> {
     }
   }
 
-  async updateOnboarding(input: OnboardingPreferences): Promise<OnboardingPreferences> {
+  async updateOnboarding(
+    input: OnboardingPreferences,
+  ): Promise<OnboardingPreferences> {
     const next = sanitizeOnboardingPreferences(input);
     this.sql.exec(
-      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+      "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
       USER_ONBOARDING_KEY,
-      JSON.stringify(next)
+      JSON.stringify(next),
     );
     return next;
   }
@@ -733,88 +849,126 @@ export class UserDO extends DurableObject<DOEnv> {
   async resetOnboarding(): Promise<OnboardingPreferences> {
     const next = getDefaultOnboardingPreferences();
     this.sql.exec(
-      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+      "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
       USER_ONBOARDING_KEY,
-      JSON.stringify(next)
+      JSON.stringify(next),
     );
     return next;
   }
 
   // Org membership methods
   async getOrgs(): Promise<UserOrg[]> {
-    return this.sql.exec('SELECT org_id, role, joined_at, last_workspace_id FROM orgs ORDER BY joined_at ASC')
+    return this.sql
+      .exec(
+        "SELECT org_id, role, joined_at, last_workspace_id FROM orgs ORDER BY joined_at ASC",
+      )
       .toArray() as unknown as UserOrg[];
   }
 
-  async addOrg(orgId: string, role: OrgRole, lastWorkspaceId: string | null = null): Promise<void> {
+  async addOrg(
+    orgId: string,
+    role: OrgRole,
+    lastWorkspaceId: string | null = null,
+  ): Promise<void> {
     const now = Date.now();
     this.sql.exec(
-      'INSERT OR REPLACE INTO orgs (org_id, role, joined_at, last_workspace_id) VALUES (?, ?, ?, ?)',
+      "INSERT OR REPLACE INTO orgs (org_id, role, joined_at, last_workspace_id) VALUES (?, ?, ?, ?)",
       orgId,
       role,
       now,
-      lastWorkspaceId
+      lastWorkspaceId,
     );
     const profile = await this.getProfile();
-    if (profile) dispatchAdminEvent(this.ctx, this.env, { type: 'user_org_delta', payload: { user_id: profile.id, delta: 1 } });
+    if (profile)
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "user_org_delta",
+        payload: { user_id: profile.id, delta: 1 },
+      });
   }
 
   async removeOrg(orgId: string): Promise<void> {
-    this.sql.exec('DELETE FROM orgs WHERE org_id = ?', orgId);
+    this.sql.exec("DELETE FROM orgs WHERE org_id = ?", orgId);
     const profile = await this.getProfile();
-    if (profile) dispatchAdminEvent(this.ctx, this.env, { type: 'user_org_delta', payload: { user_id: profile.id, delta: -1 } });
+    if (profile)
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "user_org_delta",
+        payload: { user_id: profile.id, delta: -1 },
+      });
   }
 
   async updateOrgRole(orgId: string, role: OrgRole): Promise<void> {
-    this.sql.exec('UPDATE orgs SET role = ? WHERE org_id = ?', role, orgId);
+    this.sql.exec("UPDATE orgs SET role = ? WHERE org_id = ?", role, orgId);
   }
 
-  async setOrgLastWorkspace(orgId: string, workspaceId: string | null): Promise<void> {
-    this.sql.exec('UPDATE orgs SET last_workspace_id = ? WHERE org_id = ?', workspaceId, orgId);
+  async setOrgLastWorkspace(
+    orgId: string,
+    workspaceId: string | null,
+  ): Promise<void> {
+    this.sql.exec(
+      "UPDATE orgs SET last_workspace_id = ? WHERE org_id = ?",
+      workspaceId,
+      orgId,
+    );
   }
 
   async hasOrg(orgId: string): Promise<boolean> {
-    const rows = this.sql.exec('SELECT 1 FROM orgs WHERE org_id = ?', orgId).toArray();
+    const rows = this.sql
+      .exec("SELECT 1 FROM orgs WHERE org_id = ?", orgId)
+      .toArray();
     return rows.length > 0;
   }
 
   async getOrgRole(orgId: string): Promise<OrgRole | null> {
-    const rows = this.sql.exec('SELECT role FROM orgs WHERE org_id = ?', orgId).toArray();
+    const rows = this.sql
+      .exec("SELECT role FROM orgs WHERE org_id = ?", orgId)
+      .toArray();
     if (rows.length === 0) return null;
     return (rows[0] as { role: string }).role as OrgRole;
   }
 
   // OAuth provider methods
   async getOAuthProviders(): Promise<UserOAuthProvider[]> {
-    return this.sql.exec('SELECT provider, provider_id, linked_at FROM oauth_providers ORDER BY linked_at ASC')
+    return this.sql
+      .exec(
+        "SELECT provider, provider_id, linked_at FROM oauth_providers ORDER BY linked_at ASC",
+      )
       .toArray() as unknown as UserOAuthProvider[];
   }
 
-  async getOAuthProvider(provider: OAuthProvider): Promise<UserOAuthProvider | null> {
-    const rows = this.sql.exec(
-      'SELECT provider, provider_id, linked_at FROM oauth_providers WHERE provider = ?',
-      provider
-    ).toArray() as unknown as UserOAuthProvider[];
+  async getOAuthProvider(
+    provider: OAuthProvider,
+  ): Promise<UserOAuthProvider | null> {
+    const rows = this.sql
+      .exec(
+        "SELECT provider, provider_id, linked_at FROM oauth_providers WHERE provider = ?",
+        provider,
+      )
+      .toArray() as unknown as UserOAuthProvider[];
     return rows[0] || null;
   }
 
-  async linkOAuthProvider(provider: OAuthProvider, providerId: string): Promise<UserOAuthProvider> {
+  async linkOAuthProvider(
+    provider: OAuthProvider,
+    providerId: string,
+  ): Promise<UserOAuthProvider> {
     const now = Date.now();
     this.sql.exec(
-      'INSERT OR REPLACE INTO oauth_providers (provider, provider_id, linked_at) VALUES (?, ?, ?)',
+      "INSERT OR REPLACE INTO oauth_providers (provider, provider_id, linked_at) VALUES (?, ?, ?)",
       provider,
       providerId,
-      now
+      now,
     );
     return { provider, provider_id: providerId, linked_at: now };
   }
 
   async unlinkOAuthProvider(provider: OAuthProvider): Promise<void> {
-    this.sql.exec('DELETE FROM oauth_providers WHERE provider = ?', provider);
+    this.sql.exec("DELETE FROM oauth_providers WHERE provider = ?", provider);
   }
 
   async hasOAuthProvider(provider: OAuthProvider): Promise<boolean> {
-    const rows = this.sql.exec('SELECT 1 FROM oauth_providers WHERE provider = ?', provider).toArray();
+    const rows = this.sql
+      .exec("SELECT 1 FROM oauth_providers WHERE provider = ?", provider)
+      .toArray();
     return rows.length > 0;
   }
 
@@ -827,7 +981,7 @@ export class UserDO extends DurableObject<DOEnv> {
     name: string | null,
     provider: OAuthProvider,
     providerId: string,
-    signupIp: string | null = null
+    signupIp: string | null = null,
   ): Promise<User> {
     const now = Date.now();
     const avatar = generateDefaultAvatar(name || email);
@@ -848,7 +1002,10 @@ export class UserDO extends DurableObject<DOEnv> {
     if (signupIp) {
       this.setSignupIp(signupIp);
       // Re-dispatch with signup_ip so AdminIndexDO can index it
-      dispatchAdminEvent(this.ctx, this.env, { type: 'user_upsert', payload: { ...profile, signup_ip: signupIp } });
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "user_upsert",
+        payload: { ...profile, signup_ip: signupIp },
+      });
     }
 
     return profile;
@@ -867,9 +1024,9 @@ export class UserDO extends DurableObject<DOEnv> {
    * Wipes profile, org memberships, OAuth providers, onboarding, and password.
    */
   async hardDeleteUser(): Promise<void> {
-    this.sql.exec('DELETE FROM profile');
-    this.sql.exec('DELETE FROM orgs');
-    this.sql.exec('DELETE FROM oauth_providers');
+    this.sql.exec("DELETE FROM profile");
+    this.sql.exec("DELETE FROM orgs");
+    this.sql.exec("DELETE FROM oauth_providers");
   }
 
   // Test helper RPC: simulate constructor migration path on an existing DO.
@@ -902,7 +1059,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   private async indexOrg(orgId: string): Promise<void> {
-    await this.env.APP_KV.put(this.getOrgIndexKey(orgId), '1');
+    await this.env.APP_KV.put(this.getOrgIndexKey(orgId), "1");
   }
 
   private async unindexOrg(orgId: string): Promise<void> {
@@ -911,10 +1068,14 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   private migrate() {
     // Read version from sync KV, falling back to legacy SQL table for existing DOs.
-    let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
+    let version = this.ctx.storage.kv.get<number>("schemaVersion") ?? null;
     if (version === null) {
       try {
-        const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) AS version FROM _schema_version').toArray();
+        const rows = this.sql
+          .exec<{
+            version: number;
+          }>("SELECT MAX(version) AS version FROM _schema_version")
+          .toArray();
         version = rows[0]?.version ?? 0;
       } catch {
         version = 0;
@@ -923,12 +1084,12 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     if (version < 1) {
       // V1: Fresh start
-      this.sql.exec('DROP TABLE IF EXISTS org_info');
-      this.sql.exec('DROP TABLE IF EXISTS members');
-      this.sql.exec('DROP TABLE IF EXISTS invitations');
-      this.sql.exec('DROP TABLE IF EXISTS integrations');
-      this.sql.exec('DROP TABLE IF EXISTS workspaces');
-      this.sql.exec('DROP TABLE IF EXISTS audit_log');
+      this.sql.exec("DROP TABLE IF EXISTS org_info");
+      this.sql.exec("DROP TABLE IF EXISTS members");
+      this.sql.exec("DROP TABLE IF EXISTS invitations");
+      this.sql.exec("DROP TABLE IF EXISTS integrations");
+      this.sql.exec("DROP TABLE IF EXISTS workspaces");
+      this.sql.exec("DROP TABLE IF EXISTS audit_log");
       this.sql.exec(`
         CREATE TABLE org_info (
           key TEXT PRIMARY KEY,
@@ -988,17 +1149,49 @@ export class OrgDO extends DurableObject<DOEnv> {
           created_at INTEGER NOT NULL
         )
       `);
-      const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
+      const rows = this.sql
+        .exec("SELECT value FROM org_info WHERE key = ?", "data")
+        .toArray();
       if (rows.length > 0) {
-        const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
-        if (!info.billing_status) info.billing_status = 'free';
-        if (typeof info.archived !== 'boolean') info.archived = false;
+        const info = JSON.parse(
+          (rows[0] as { value: string }).value,
+        ) as Organization;
+        normalizeOrgBillingFields(info);
+        if (info.billing_customer_id === undefined)
+          info.billing_customer_id = null;
+        if (info.billing_subscription_id === undefined)
+          info.billing_subscription_id = null;
+        if (info.billing_subscription_status === undefined)
+          info.billing_subscription_status = null;
+        if (info.billing_trial_started_at === undefined)
+          info.billing_trial_started_at = null;
+        if (info.billing_trial_ends_at === undefined)
+          info.billing_trial_ends_at = null;
+        if (typeof info.billing_credit_purchase_total_cents !== "number") {
+          info.billing_credit_purchase_total_cents = 0;
+        }
+        if (typeof info.billing_credit_grant_total_cents !== "number") {
+          info.billing_credit_grant_total_cents = 0;
+        }
+        if (typeof info.billing_trial_credit_grant_cents !== "number") {
+          info.billing_trial_credit_grant_cents = 0;
+        }
+        if (info.billing_trial_credit_granted_at === undefined) {
+          info.billing_trial_credit_granted_at = null;
+        }
+        if (info.billing_last_included_credit_invoice_id === undefined) {
+          info.billing_last_included_credit_invoice_id = null;
+        }
+        if (info.billing_credit_usage_started_at === undefined) {
+          info.billing_credit_usage_started_at = null;
+        }
+        if (typeof info.archived !== "boolean") info.archived = false;
         if (info.archived_at === undefined) info.archived_at = null;
         if (info.archived_by === undefined) info.archived_by = null;
         this.sql.exec(
-          'INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)',
-          'data',
-          JSON.stringify(info)
+          "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+          "data",
+          JSON.stringify(info),
         );
       }
     }
@@ -1013,13 +1206,17 @@ export class OrgDO extends DurableObject<DOEnv> {
           updated_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)');
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)",
+      );
     }
 
     if (version < 4) {
       // V4: Add is_public column to worker_scripts (default false = private)
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0",
+        );
       } catch {
         // Column may already exist in fresh databases that ran V3 after this migration was added
       }
@@ -1038,8 +1235,12 @@ export class OrgDO extends DurableObject<DOEnv> {
           source TEXT NOT NULL DEFAULT 'web'
         )
       `);
-      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
-      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)');
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)",
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)",
+      );
     }
 
     if (version < 6) {
@@ -1059,27 +1260,35 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (version < 7) {
       // V7: Add preview metadata fields to worker_scripts
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_key TEXT');
+        this.sql.exec("ALTER TABLE worker_scripts ADD COLUMN preview_key TEXT");
       } catch {
         // Column may already exist
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_updated_at INTEGER');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN preview_updated_at INTEGER",
+        );
       } catch {
         // Column may already exist
       }
       try {
-        this.sql.exec("ALTER TABLE worker_scripts ADD COLUMN preview_status TEXT DEFAULT 'pending'");
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN preview_status TEXT DEFAULT 'pending'",
+        );
       } catch {
         // Column may already exist
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_error TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN preview_error TEXT",
+        );
       } catch {
         // Column may already exist
       }
       try {
-        this.sql.exec("UPDATE worker_scripts SET preview_status = 'pending' WHERE preview_status IS NULL");
+        this.sql.exec(
+          "UPDATE worker_scripts SET preview_status = 'pending' WHERE preview_status IS NULL",
+        );
       } catch {
         // Skip update if columns are unavailable (fallback queries will handle nulls)
       }
@@ -1174,7 +1383,9 @@ export class OrgDO extends DurableObject<DOEnv> {
           updated_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)');
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)",
+      );
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS threads (
           id TEXT PRIMARY KEY,
@@ -1186,8 +1397,12 @@ export class OrgDO extends DurableObject<DOEnv> {
           source TEXT NOT NULL DEFAULT 'web'
         )
       `);
-      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
-      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)');
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)",
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)",
+      );
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS proxy_usage (
           user_id TEXT PRIMARY KEY,
@@ -1206,57 +1421,77 @@ export class OrgDO extends DurableObject<DOEnv> {
 
       // Ensure all columns exist on worker_scripts
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_key TEXT');
+        this.sql.exec("ALTER TABLE worker_scripts ADD COLUMN preview_key TEXT");
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_updated_at INTEGER');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN preview_updated_at INTEGER",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec("ALTER TABLE worker_scripts ADD COLUMN preview_status TEXT DEFAULT 'pending'");
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN preview_status TEXT DEFAULT 'pending'",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_error TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN preview_error TEXT",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_hostname TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_hostname TEXT",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_cf_hostname_id TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_cf_hostname_id TEXT",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_status TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_status TEXT",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_ssl_status TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_ssl_status TEXT",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_error TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_error TEXT",
+        );
       } catch {
         // Column already exists
       }
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_updated_at INTEGER');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_updated_at INTEGER",
+        );
       } catch {
         // Column already exists
       }
@@ -1265,7 +1500,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (version < 11) {
       // V11: Add config_path column to worker_scripts for tracking source directory
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN config_path TEXT');
+        this.sql.exec("ALTER TABLE worker_scripts ADD COLUMN config_path TEXT");
       } catch {
         // Column may already exist
       }
@@ -1279,12 +1514,16 @@ export class OrgDO extends DurableObject<DOEnv> {
       // V13: Add workspace_access to invitations for pre-acceptance assignment,
       // and user_message_count to threads for admin visibility
       try {
-        this.sql.exec('ALTER TABLE invitations ADD COLUMN workspace_access TEXT');
+        this.sql.exec(
+          "ALTER TABLE invitations ADD COLUMN workspace_access TEXT",
+        );
       } catch {
         // Column may already exist
       }
       try {
-        this.sql.exec('ALTER TABLE threads ADD COLUMN user_message_count INTEGER NOT NULL DEFAULT 0');
+        this.sql.exec(
+          "ALTER TABLE threads ADD COLUMN user_message_count INTEGER NOT NULL DEFAULT 0",
+        );
       } catch {
         // Column may already exist
       }
@@ -1293,7 +1532,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (version < 14) {
       // V14: Add first_user_message to threads for welcome screen preview
       try {
-        this.sql.exec('ALTER TABLE threads ADD COLUMN first_user_message TEXT');
+        this.sql.exec("ALTER TABLE threads ADD COLUMN first_user_message TEXT");
       } catch {
         // Column may already exist
       }
@@ -1302,12 +1541,16 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (version < 15) {
       // V15: Add source column to threads (legacy; runtime treats all sources uniformly)
       try {
-        this.sql.exec("ALTER TABLE threads ADD COLUMN source TEXT NOT NULL DEFAULT 'web'");
+        this.sql.exec(
+          "ALTER TABLE threads ADD COLUMN source TEXT NOT NULL DEFAULT 'web'",
+        );
       } catch {
         // Column may already exist
       }
       try {
-        this.sql.exec("UPDATE threads SET source = 'web' WHERE source IS NULL OR source = ''");
+        this.sql.exec(
+          "UPDATE threads SET source = 'web' WHERE source IS NULL OR source = ''",
+        );
       } catch {
         // Best-effort backfill
       }
@@ -1317,17 +1560,18 @@ export class OrgDO extends DurableObject<DOEnv> {
       // V17: Roll back abandoned V16 workspace summary columns (avatar/content/created_by)
       // so OrgDO workspace schema returns to id/name/created_at/archived only.
       try {
-        const workspaceColumns = this.sql.exec<{ name: string }>('PRAGMA table_info(workspaces)').toArray();
+        const workspaceColumns = this.sql
+          .exec<{ name: string }>("PRAGMA table_info(workspaces)")
+          .toArray();
         const names = new Set(workspaceColumns.map((row) => row.name));
-        const hasLegacySummaryColumns = (
-          names.has('avatar_color') ||
-          names.has('avatar_content') ||
-          names.has('created_by')
-        );
+        const hasLegacySummaryColumns =
+          names.has("avatar_color") ||
+          names.has("avatar_content") ||
+          names.has("created_by");
 
         if (hasLegacySummaryColumns) {
           this.ctx.storage.transactionSync(() => {
-            this.sql.exec('DROP TABLE IF EXISTS workspaces_v17_rollback');
+            this.sql.exec("DROP TABLE IF EXISTS workspaces_v17_rollback");
             this.sql.exec(`
               CREATE TABLE workspaces_v17_rollback (
                 id TEXT PRIMARY KEY,
@@ -1340,12 +1584,14 @@ export class OrgDO extends DurableObject<DOEnv> {
               INSERT INTO workspaces_v17_rollback (id, name, created_at, archived)
               SELECT id, name, created_at, archived FROM workspaces
             `);
-            this.sql.exec('DROP TABLE workspaces');
-            this.sql.exec('ALTER TABLE workspaces_v17_rollback RENAME TO workspaces');
+            this.sql.exec("DROP TABLE workspaces");
+            this.sql.exec(
+              "ALTER TABLE workspaces_v17_rollback RENAME TO workspaces",
+            );
           });
         }
       } catch (err) {
-        console.error('[OrgDO] V17 rollback migration failed:', err);
+        console.error("[OrgDO] V17 rollback migration failed:", err);
         throw err;
       }
     }
@@ -1382,70 +1628,102 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (version < 20) {
       // V20: Per-app Cloudflare custom hostname state
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_hostname TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_hostname TEXT",
+        );
       } catch {}
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_cf_hostname_id TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_cf_hostname_id TEXT",
+        );
       } catch {}
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_status TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_status TEXT",
+        );
       } catch {}
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_ssl_status TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_ssl_status TEXT",
+        );
       } catch {}
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_error TEXT');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_error TEXT",
+        );
       } catch {}
       try {
-        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN custom_domain_updated_at INTEGER');
+        this.sql.exec(
+          "ALTER TABLE worker_scripts ADD COLUMN custom_domain_updated_at INTEGER",
+        );
       } catch {}
     }
 
     if (version < 21) {
       try {
-        this.sql.exec("ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'");
-      } catch {}
-      try {
-        this.sql.exec("UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''");
-      } catch {}
-      try {
         this.sql.exec(
-          `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`
+          "ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
         );
       } catch {}
       try {
         this.sql.exec(
-          `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`
+          "UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''",
+        );
+      } catch {}
+      try {
+        this.sql.exec(
+          `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`,
+        );
+      } catch {}
+      try {
+        this.sql.exec(
+          `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`,
         );
       } catch {}
     }
 
-    const CURRENT_SCHEMA_VERSION = 21;
+    if (version < 22) {
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS stripe_credit_checkouts (
+          session_id TEXT PRIMARY KEY,
+          amount_cents INTEGER NOT NULL,
+          customer_id TEXT,
+          created_at INTEGER NOT NULL
+        )
+      `);
+    }
+
+    const CURRENT_SCHEMA_VERSION = 22;
     if (version < CURRENT_SCHEMA_VERSION) {
-      this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
+      this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
 
-    this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();
+    this.workerScriptsHasPreviewColumns =
+      this.detectWorkerScriptPreviewColumns();
     if (!this.workerScriptsHasPreviewColumns) {
-      console.warn('[OrgDO] worker_scripts missing preview columns - preview updates will be skipped');
+      console.warn(
+        "[OrgDO] worker_scripts missing preview columns - preview updates will be skipped",
+      );
     }
   }
 
   private detectWorkerScriptPreviewColumns(): boolean {
     try {
-      const rows = this.sql.exec<{ name: string }>('PRAGMA table_info(worker_scripts)').toArray();
+      const rows = this.sql
+        .exec<{ name: string }>("PRAGMA table_info(worker_scripts)")
+        .toArray();
       const names = new Set(rows.map((row) => row.name));
       return (
-        names.has('preview_key') &&
-        names.has('preview_updated_at') &&
-        names.has('preview_status') &&
-        names.has('preview_error') &&
-        names.has('custom_domain_hostname') &&
-        names.has('custom_domain_cf_hostname_id') &&
-        names.has('custom_domain_status') &&
-        names.has('custom_domain_ssl_status') &&
-        names.has('custom_domain_error') &&
-        names.has('custom_domain_updated_at')
+        names.has("preview_key") &&
+        names.has("preview_updated_at") &&
+        names.has("preview_status") &&
+        names.has("preview_error") &&
+        names.has("custom_domain_hostname") &&
+        names.has("custom_domain_cf_hostname_id") &&
+        names.has("custom_domain_status") &&
+        names.has("custom_domain_ssl_status") &&
+        names.has("custom_domain_error") &&
+        names.has("custom_domain_updated_at")
       );
     } catch {
       return false;
@@ -1454,66 +1732,82 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   private ensureThreadSchemaColumns(): void {
     try {
-      const rows = this.sql.exec<{ name: string }>('PRAGMA table_info(threads)').toArray();
+      const rows = this.sql
+        .exec<{ name: string }>("PRAGMA table_info(threads)")
+        .toArray();
       if (rows.length === 0) return;
 
       const names = new Set(rows.map((row) => row.name));
 
-      if (!names.has('source')) {
-        try {
-          this.sql.exec("ALTER TABLE threads ADD COLUMN source TEXT NOT NULL DEFAULT 'web'");
-        } catch {}
-        try {
-          this.sql.exec("UPDATE threads SET source = 'web' WHERE source IS NULL OR source = ''");
-        } catch {}
-      }
-
-      if (!names.has('user_message_count')) {
-        try {
-          this.sql.exec('ALTER TABLE threads ADD COLUMN user_message_count INTEGER NOT NULL DEFAULT 0');
-        } catch {}
-      }
-
-      if (!names.has('first_user_message')) {
-        try {
-          this.sql.exec('ALTER TABLE threads ADD COLUMN first_user_message TEXT');
-        } catch {}
-      }
-
-      if (!names.has('provider')) {
-        try {
-          this.sql.exec("ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'");
-        } catch {}
-        try {
-          this.sql.exec("UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''");
-        } catch {}
-      }
-
-      if (!names.has('model')) {
+      if (!names.has("source")) {
         try {
           this.sql.exec(
-            `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`
+            "ALTER TABLE threads ADD COLUMN source TEXT NOT NULL DEFAULT 'web'",
           );
         } catch {}
         try {
           this.sql.exec(
-            `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`
+            "UPDATE threads SET source = 'web' WHERE source IS NULL OR source = ''",
+          );
+        } catch {}
+      }
+
+      if (!names.has("user_message_count")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN user_message_count INTEGER NOT NULL DEFAULT 0",
+          );
+        } catch {}
+      }
+
+      if (!names.has("first_user_message")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN first_user_message TEXT",
+          );
+        } catch {}
+      }
+
+      if (!names.has("provider")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
+          );
+        } catch {}
+        try {
+          this.sql.exec(
+            "UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''",
+          );
+        } catch {}
+      }
+
+      if (!names.has("model")) {
+        try {
+          this.sql.exec(
+            `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`,
+          );
+        } catch {}
+        try {
+          this.sql.exec(
+            `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`,
           );
         } catch {}
       }
     } catch (err) {
-      console.error('[OrgDO] failed to ensure thread schema columns', err);
+      console.error("[OrgDO] failed to ensure thread schema columns", err);
     }
   }
 
   private execWorkerScriptsQuery(
     queryWithPreview: string,
     queryBase: string,
-    params: Array<string | number>
+    params: Array<string | number>,
   ): WorkerScriptRow[] {
     if (this.workerScriptsHasPreviewColumns) {
       try {
-        return this.sql.exec<WorkerScriptRow>(queryWithPreview, ...params).toArray();
+        return this.sql
+          .exec<WorkerScriptRow>(queryWithPreview, ...params)
+          .toArray();
       } catch {
         this.workerScriptsHasPreviewColumns = false;
       }
@@ -1544,16 +1838,103 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   // Org info methods
-  async getInfo(): Promise<Organization | null> {
-    const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
+  private getInfoSync(): Organization | null {
+    const rows = this.sql
+      .exec("SELECT value FROM org_info WHERE key = ?", "data")
+      .toArray();
     if (rows.length === 0) return null;
-    const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
+    const info = JSON.parse(
+      (rows[0] as { value: string }).value,
+    ) as Organization;
+    normalizeOrgBillingFields(info);
+    if (info.billing_customer_id === undefined) info.billing_customer_id = null;
+    if (info.billing_subscription_id === undefined)
+      info.billing_subscription_id = null;
+    if (info.billing_subscription_status === undefined)
+      info.billing_subscription_status = null;
+    if (info.billing_trial_started_at === undefined)
+      info.billing_trial_started_at = null;
+    if (info.billing_trial_ends_at === undefined)
+      info.billing_trial_ends_at = null;
+    if (typeof info.billing_credit_purchase_total_cents !== "number") {
+      info.billing_credit_purchase_total_cents = 0;
+    }
+    if (typeof info.billing_credit_grant_total_cents !== "number") {
+      info.billing_credit_grant_total_cents = 0;
+    }
+    if (typeof info.billing_trial_credit_grant_cents !== "number") {
+      info.billing_trial_credit_grant_cents = 0;
+    }
+    if (info.billing_trial_credit_granted_at === undefined) {
+      info.billing_trial_credit_granted_at = null;
+    }
+    if (info.billing_last_included_credit_invoice_id === undefined) {
+      info.billing_last_included_credit_invoice_id = null;
+    }
+    if (info.billing_credit_usage_started_at === undefined) {
+      info.billing_credit_usage_started_at = null;
+    }
+    if (typeof info.archived !== "boolean") info.archived = false;
+    if (info.archived_at === undefined) info.archived_at = null;
+    if (info.archived_by === undefined) info.archived_by = null;
+    return info;
+  }
+
+  async getInfo(): Promise<Organization | null> {
+    const rows = this.sql
+      .exec("SELECT value FROM org_info WHERE key = ?", "data")
+      .toArray();
+    if (rows.length === 0) return null;
+    const info = JSON.parse(
+      (rows[0] as { value: string }).value,
+    ) as Organization;
     let changed = false;
-    if (!info.billing_status) {
-      info.billing_status = 'free';
+    changed = normalizeOrgBillingFields(info) || changed;
+    if (info.billing_customer_id === undefined) {
+      info.billing_customer_id = null;
       changed = true;
     }
-    if (typeof info.archived !== 'boolean') {
+    if (info.billing_subscription_id === undefined) {
+      info.billing_subscription_id = null;
+      changed = true;
+    }
+    if (info.billing_subscription_status === undefined) {
+      info.billing_subscription_status = null;
+      changed = true;
+    }
+    if (info.billing_trial_started_at === undefined) {
+      info.billing_trial_started_at = null;
+      changed = true;
+    }
+    if (info.billing_trial_ends_at === undefined) {
+      info.billing_trial_ends_at = null;
+      changed = true;
+    }
+    if (typeof info.billing_credit_purchase_total_cents !== "number") {
+      info.billing_credit_purchase_total_cents = 0;
+      changed = true;
+    }
+    if (typeof info.billing_credit_grant_total_cents !== "number") {
+      info.billing_credit_grant_total_cents = 0;
+      changed = true;
+    }
+    if (typeof info.billing_trial_credit_grant_cents !== "number") {
+      info.billing_trial_credit_grant_cents = 0;
+      changed = true;
+    }
+    if (info.billing_trial_credit_granted_at === undefined) {
+      info.billing_trial_credit_granted_at = null;
+      changed = true;
+    }
+    if (info.billing_last_included_credit_invoice_id === undefined) {
+      info.billing_last_included_credit_invoice_id = null;
+      changed = true;
+    }
+    if (info.billing_credit_usage_started_at === undefined) {
+      info.billing_credit_usage_started_at = null;
+      changed = true;
+    }
+    if (typeof info.archived !== "boolean") {
       info.archived = false;
       changed = true;
     }
@@ -1594,18 +1975,25 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async setInfo(info: Organization): Promise<void> {
     this.sql.exec(
-      'INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)',
-      'data',
-      JSON.stringify(info)
+      "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+      "data",
+      JSON.stringify(info),
     );
-    dispatchAdminEvent(this.ctx, this.env, { type: 'org_upsert', payload: info });
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "org_upsert",
+      payload: info,
+    });
   }
 
   getExperimentalSettings(): OrganizationExperimentalSettings {
-    const rows = this.sql.exec<{ value: string }>(
-      'SELECT value FROM org_info WHERE key = ?',
-      ORG_EXPERIMENTAL_SETTINGS_KEY,
-    ).toArray();
+    const rows = this.sql
+      .exec<{
+        value: string;
+      }>(
+        "SELECT value FROM org_info WHERE key = ?",
+        ORG_EXPERIMENTAL_SETTINGS_KEY,
+      )
+      .toArray();
     if (rows.length === 0) {
       return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
     }
@@ -1617,14 +2005,16 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
   }
 
-  setExperimentalSettings(settings: Partial<OrganizationExperimentalSettings>): OrganizationExperimentalSettings {
+  setExperimentalSettings(
+    settings: Partial<OrganizationExperimentalSettings>,
+  ): OrganizationExperimentalSettings {
     const nextSettings = parseOrganizationExperimentalSettings({
       ...this.getExperimentalSettings(),
       ...settings,
     });
 
     this.sql.exec(
-      'INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)',
+      "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
       ORG_EXPERIMENTAL_SETTINGS_KEY,
       JSON.stringify(nextSettings),
     );
@@ -1632,7 +2022,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     return nextSettings;
   }
 
-  async createOrg(id: string, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
+  async createOrg(
+    id: string,
+    name: string,
+    createdBy: string,
+  ): Promise<{ org: Organization; defaultWorkspaceId: string }> {
     const now = Date.now();
     const slug = await generateUniqueOrgSlug(id, this.env.APP_KV);
     await registerOrgSlug(this.env.APP_KV, slug, id);
@@ -1643,7 +2037,20 @@ export class OrgDO extends DurableObject<DOEnv> {
       slug,
       created_at: now,
       created_by: createdBy,
-      billing_status: 'free',
+      billing_status: "inactive",
+      billing_plan: "free",
+      billing_seat_count: 1,
+      billing_customer_id: null,
+      billing_subscription_id: null,
+      billing_subscription_status: null,
+      billing_trial_started_at: null,
+      billing_trial_ends_at: null,
+      billing_credit_purchase_total_cents: 0,
+      billing_credit_grant_total_cents: 0,
+      billing_trial_credit_grant_cents: 0,
+      billing_trial_credit_granted_at: null,
+      billing_last_included_credit_invoice_id: null,
+      billing_credit_usage_started_at: null,
       archived: false,
       archived_at: null,
       archived_by: null,
@@ -1653,22 +2060,22 @@ export class OrgDO extends DurableObject<DOEnv> {
       await this.setInfo(info);
 
       // Add creator as owner
-      await this.addMember(createdBy, 'owner', createdBy);
-      this.log('org_created', createdBy, id, { name });
+      await this.addMember(createdBy, "owner", createdBy);
+      this.log("org_created", createdBy, id, { name });
 
       // Create default workspace (WorkspaceDO.createWorkspace registers with org automatically)
       const workspaceId = crypto.randomUUID();
       const workspaceStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(workspaceId)
+        this.env.WORKSPACE.idFromName(workspaceId),
       ) as unknown as WorkspaceDO;
       await workspaceStub.createWorkspace(
         workspaceId,
         id,
-        'Default Workspace',
+        "Default Workspace",
         createdBy,
-        null
+        null,
       );
-      await workspaceStub.setMemberAccess(createdBy, 'full', createdBy);
+      await workspaceStub.setMemberAccess(createdBy, "full", createdBy);
 
       try {
         await this.indexOrg(id);
@@ -1694,31 +2101,181 @@ export class OrgDO extends DurableObject<DOEnv> {
       info.name = name;
       await this.setInfo(info);
       if (previousName !== name) {
-        this.log('org_updated', actorId, info.id, { previous_name: previousName, name });
+        this.log("org_updated", actorId, info.id, {
+          previous_name: previousName,
+          name,
+        });
       }
     }
   }
 
+  async updateBillingState(
+    updates: OrgBillingStateUpdate,
+  ): Promise<Organization | null> {
+    const info = await this.getInfo();
+    if (!info) return null;
+
+    const nextInfo: Organization = {
+      ...info,
+      ...updates,
+    };
+    normalizeOrgBillingFields(nextInfo);
+
+    await this.setInfo(nextInfo);
+    return nextInfo;
+  }
+
+  syncSubscriptionBillingState(
+    updates: OrgBillingStateUpdate,
+    trialCreditGrantCents: number,
+  ): SyncSubscriptionBillingStateResult | null {
+    const normalizedTrialCreditGrantCents = Math.max(
+      0,
+      Math.floor(trialCreditGrantCents),
+    );
+
+    const result = this.ctx.storage.transactionSync(() => {
+      const existingOrg = this.getInfoSync();
+      if (!existingOrg) return null;
+
+      const nextInfo: Organization = {
+        ...existingOrg,
+        ...updates,
+      };
+      let trialCreditGranted = false;
+
+      if (
+        normalizedTrialCreditGrantCents > 0 &&
+        existingOrg.billing_status !== "enterprise" &&
+        updates.billing_status === "trialing" &&
+        updates.billing_trial_started_at &&
+        updates.billing_trial_ends_at &&
+        !existingOrg.billing_trial_credit_granted_at
+      ) {
+        nextInfo.billing_credit_grant_total_cents =
+          (existingOrg.billing_credit_grant_total_cents ?? 0) +
+          normalizedTrialCreditGrantCents;
+        nextInfo.billing_trial_credit_grant_cents =
+          normalizedTrialCreditGrantCents;
+        nextInfo.billing_trial_credit_granted_at = Date.now();
+        trialCreditGranted = true;
+      } else {
+        nextInfo.billing_credit_grant_total_cents =
+          existingOrg.billing_credit_grant_total_cents ?? 0;
+        nextInfo.billing_trial_credit_grant_cents =
+          existingOrg.billing_trial_credit_grant_cents ?? 0;
+        nextInfo.billing_trial_credit_granted_at =
+          existingOrg.billing_trial_credit_granted_at ?? null;
+      }
+
+      normalizeOrgBillingFields(nextInfo);
+      this.sql.exec(
+        "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+        "data",
+        JSON.stringify(nextInfo),
+      );
+
+      return { org: nextInfo, trialCreditGranted };
+    });
+
+    return result;
+  }
+
+  applyCreditCheckout(
+    sessionId: string,
+    amountCents: number,
+    customerId: string | null,
+  ): ApplyCreditCheckoutResult | null {
+    const trimmedSessionId = sessionId.trim();
+    const normalizedAmountCents = Math.max(0, Math.floor(amountCents));
+    if (!trimmedSessionId || normalizedAmountCents <= 0) return null;
+
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS stripe_credit_checkouts (
+        session_id TEXT PRIMARY KEY,
+        amount_cents INTEGER NOT NULL,
+        customer_id TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+
+    const result = this.ctx.storage.transactionSync(() => {
+      const existingCheckout = this.sql
+        .exec(
+          "SELECT session_id FROM stripe_credit_checkouts WHERE session_id = ?",
+          trimmedSessionId,
+        )
+        .toArray();
+      if (existingCheckout.length > 0) {
+        const existingOrg = this.getInfoSync();
+        return existingOrg ? { org: existingOrg, applied: false } : null;
+      }
+
+      const existingOrg = this.getInfoSync();
+      if (!existingOrg) return null;
+
+      const nextInfo: Organization = {
+        ...existingOrg,
+        billing_customer_id:
+          customerId ?? existingOrg.billing_customer_id ?? null,
+        billing_credit_purchase_total_cents:
+          (existingOrg.billing_credit_purchase_total_cents ?? 0) +
+          normalizedAmountCents,
+      };
+
+      this.sql.exec(
+        "INSERT INTO stripe_credit_checkouts (session_id, amount_cents, customer_id, created_at) VALUES (?, ?, ?, ?)",
+        trimmedSessionId,
+        normalizedAmountCents,
+        customerId,
+        Date.now(),
+      );
+      this.sql.exec(
+        "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+        "data",
+        JSON.stringify(nextInfo),
+      );
+      return { org: nextInfo, applied: true };
+    });
+
+    if (result?.applied) {
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "org_upsert",
+        payload: result.org,
+      });
+    }
+    return result;
+  }
+
   // Member methods
   async getMembers(): Promise<OrgMember[]> {
-    this.ensureOwnerExists('system');
-    return this.sql.exec('SELECT user_id, role, joined_at FROM members ORDER BY joined_at ASC')
+    this.ensureOwnerExists("system");
+    return this.sql
+      .exec(
+        "SELECT user_id, role, joined_at FROM members ORDER BY joined_at ASC",
+      )
       .toArray() as unknown as OrgMember[];
   }
 
   async getMember(userId: string): Promise<OrgMember | null> {
-    const rows = this.sql.exec(
-      'SELECT user_id, role, joined_at FROM members WHERE user_id = ?',
-      userId
-    ).toArray() as unknown as OrgMember[];
+    const rows = this.sql
+      .exec(
+        "SELECT user_id, role, joined_at FROM members WHERE user_id = ?",
+        userId,
+      )
+      .toArray() as unknown as OrgMember[];
     return rows[0] || null;
   }
 
-  private dispatchOrgMembershipUpsert(userId: string, role: OrgRole, joinedAt: number): void {
+  private dispatchOrgMembershipUpsert(
+    userId: string,
+    role: OrgRole,
+    joinedAt: number,
+  ): void {
     this.getInfo().then((info) => {
       if (!info) return;
       dispatchAdminEvent(this.ctx, this.env, {
-        type: 'org_membership_upsert',
+        type: "org_membership_upsert",
         payload: {
           org_id: info.id,
           user_id: userId,
@@ -1733,7 +2290,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.getInfo().then((info) => {
       if (!info) return;
       dispatchAdminEvent(this.ctx, this.env, {
-        type: 'org_membership_delete',
+        type: "org_membership_delete",
         payload: {
           org_id: info.id,
           user_id: userId,
@@ -1742,53 +2299,97 @@ export class OrgDO extends DurableObject<DOEnv> {
     });
   }
 
-  async addMember(userId: string, role: OrgRole, actorId: string): Promise<void> {
+  async addMember(
+    userId: string,
+    role: OrgRole,
+    actorId: string,
+  ): Promise<void> {
     const existing = await this.getMember(userId);
+    if (!existing) {
+      await this.assertSeatCapacityForNewMember(0);
+    }
     const now = Date.now();
     this.sql.exec(
-      'INSERT OR REPLACE INTO members (user_id, role, joined_at) VALUES (?, ?, ?)',
+      "INSERT OR REPLACE INTO members (user_id, role, joined_at) VALUES (?, ?, ?)",
       userId,
       role,
-      now
+      now,
     );
     if (!existing) {
-      this.log('member_added', actorId, userId, { role });
+      this.log("member_added", actorId, userId, { role });
       const info = await this.getInfo();
       if (info) {
-        dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: 1 } });
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "org_member_delta",
+          payload: { org_id: info.id, delta: 1 },
+        });
       }
       this.dispatchOrgMembershipUpsert(userId, role, now);
     }
   }
 
+  private async assertSeatCapacityForNewMember(
+    reservedInvitations: number,
+  ): Promise<void> {
+    const info = await this.getInfo();
+    if (!info) return;
+
+    const seatLimit = getOrgSeatLimit(info);
+    if (seatLimit === null) return;
+
+    const currentMembers =
+      this.sql.exec<{ count: number }>("SELECT COUNT(*) as count FROM members")
+        .next().value?.count ?? 0;
+    if (currentMembers + reservedInvitations >= seatLimit) {
+      throw new Error(
+        `Your current billing plan includes ${seatLimit} seat${seatLimit === 1 ? "" : "s"}.`,
+      );
+    }
+  }
+
   async removeMember(userId: string, actorId: string): Promise<void> {
     const existing = await this.getMember(userId);
-    if (existing?.role === 'owner') {
-      throw new Error('Cannot remove the organization owner. Transfer ownership first.');
+    if (existing?.role === "owner") {
+      throw new Error(
+        "Cannot remove the organization owner. Transfer ownership first.",
+      );
     }
-    this.sql.exec('DELETE FROM members WHERE user_id = ?', userId);
+    this.sql.exec("DELETE FROM members WHERE user_id = ?", userId);
     if (existing) {
-      this.log('member_removed', actorId, userId, { role: existing.role });
+      this.log("member_removed", actorId, userId, { role: existing.role });
       const info = await this.getInfo();
       if (info) {
-        dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: -1 } });
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "org_member_delta",
+          payload: { org_id: info.id, delta: -1 },
+        });
       }
       this.dispatchOrgMembershipDelete(userId);
     }
     this.ensureOwnerExists(actorId);
   }
 
-  async updateMemberRole(userId: string, role: OrgRole, actorId: string): Promise<void> {
+  async updateMemberRole(
+    userId: string,
+    role: OrgRole,
+    actorId: string,
+  ): Promise<void> {
     const existing = await this.getMember(userId);
-    if (role === 'owner') {
-      throw new Error('Use transferOwnership to assign owner role');
+    if (role === "owner") {
+      throw new Error("Use transferOwnership to assign owner role");
     }
-    if (existing?.role === 'owner') {
-      throw new Error('Cannot change the owner role. Transfer ownership first.');
+    if (existing?.role === "owner") {
+      throw new Error(
+        "Cannot change the owner role. Transfer ownership first.",
+      );
     }
-    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', role, userId);
+    this.sql.exec(
+      "UPDATE members SET role = ? WHERE user_id = ?",
+      role,
+      userId,
+    );
     if (existing && existing.role !== role) {
-      this.log('member_role_changed', actorId, userId, {
+      this.log("member_role_changed", actorId, userId, {
         old_role: existing.role,
         new_role: role,
       });
@@ -1798,89 +2399,126 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   async isMember(userId: string): Promise<boolean> {
-    const rows = this.sql.exec('SELECT 1 FROM members WHERE user_id = ?', userId).toArray();
+    const rows = this.sql
+      .exec("SELECT 1 FROM members WHERE user_id = ?", userId)
+      .toArray();
     return rows.length > 0;
   }
 
   async isAdmin(userId: string): Promise<boolean> {
-    const rows = this.sql.exec(
-      'SELECT 1 FROM members WHERE user_id = ? AND role IN (?, ?)',
-      userId,
-      'owner',
-      'admin'
-    ).toArray();
+    const rows = this.sql
+      .exec(
+        "SELECT 1 FROM members WHERE user_id = ? AND role IN (?, ?)",
+        userId,
+        "owner",
+        "admin",
+      )
+      .toArray();
     return rows.length > 0;
   }
 
   async isOwner(userId: string): Promise<boolean> {
-    const rows = this.sql.exec(
-      'SELECT 1 FROM members WHERE user_id = ? AND role = ?',
-      userId,
-      'owner'
-    ).toArray();
+    const rows = this.sql
+      .exec(
+        "SELECT 1 FROM members WHERE user_id = ? AND role = ?",
+        userId,
+        "owner",
+      )
+      .toArray();
     return rows.length > 0;
   }
 
   async getMemberCount(): Promise<number> {
-    const rows = this.sql.exec('SELECT COUNT(*) as count FROM members').toArray();
+    const rows = this.sql
+      .exec("SELECT COUNT(*) as count FROM members")
+      .toArray();
     return (rows[0] as { count: number }).count;
   }
 
   private ensureOwnerExists(actorId: string): void {
-    const ownerRows = this.sql.exec(
-      'SELECT user_id FROM members WHERE role = ? LIMIT 1',
-      'owner'
-    ).toArray() as Array<{ user_id: string }>;
+    const ownerRows = this.sql
+      .exec("SELECT user_id FROM members WHERE role = ? LIMIT 1", "owner")
+      .toArray() as Array<{ user_id: string }>;
     if (ownerRows.length > 0) return;
 
-    const fallbackRows = this.sql.exec(
-      `SELECT user_id, role, joined_at FROM members
+    const fallbackRows = this.sql
+      .exec(
+        `SELECT user_id, role, joined_at FROM members
        ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, joined_at ASC
-       LIMIT 1`
-    ).toArray() as Array<{ user_id: string }>;
+       LIMIT 1`,
+      )
+      .toArray() as Array<{ user_id: string }>;
     const fallback = fallbackRows[0];
     if (!fallback) return;
 
-    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', fallback.user_id);
-    this.log('owner_recovered', actorId, fallback.user_id);
+    this.sql.exec(
+      "UPDATE members SET role = ? WHERE user_id = ?",
+      "owner",
+      fallback.user_id,
+    );
+    this.log("owner_recovered", actorId, fallback.user_id);
   }
 
   // Invitation methods
   async getInvitations(): Promise<OrgInvitation[]> {
-    const rows = this.sql.exec(
-      'SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations ORDER BY created_at DESC'
-    ).toArray() as unknown as Array<Omit<OrgInvitation, 'workspace_access'> & { workspace_access?: string | null }>;
+    const rows = this.sql
+      .exec(
+        "SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations ORDER BY created_at DESC",
+      )
+      .toArray() as unknown as Array<
+      Omit<OrgInvitation, "workspace_access"> & {
+        workspace_access?: string | null;
+      }
+    >;
     return rows.map((row) => ({
       ...row,
-      workspace_access: row.workspace_access ? JSON.parse(row.workspace_access) : null,
+      workspace_access: row.workspace_access
+        ? JSON.parse(row.workspace_access)
+        : null,
     }));
   }
 
   async getInvitation(id: string): Promise<OrgInvitation | null> {
     const now = Date.now();
-    const rows = this.sql.exec(
-      'SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations WHERE id = ? AND expires_at > ?',
-      id,
-      now
-    ).toArray() as unknown as Array<Omit<OrgInvitation, 'workspace_access'> & { workspace_access?: string | null }>;
+    const rows = this.sql
+      .exec(
+        "SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations WHERE id = ? AND expires_at > ?",
+        id,
+        now,
+      )
+      .toArray() as unknown as Array<
+      Omit<OrgInvitation, "workspace_access"> & {
+        workspace_access?: string | null;
+      }
+    >;
     if (!rows[0]) return null;
     return {
       ...rows[0],
-      workspace_access: rows[0].workspace_access ? JSON.parse(rows[0].workspace_access) : null,
+      workspace_access: rows[0].workspace_access
+        ? JSON.parse(rows[0].workspace_access)
+        : null,
     };
   }
 
   async getInvitationByEmail(email: string): Promise<OrgInvitation | null> {
     const now = Date.now();
-    const rows = this.sql.exec(
-      'SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations WHERE email = ? AND expires_at > ?',
-      email.toLowerCase(),
-      now
-    ).toArray() as unknown as Array<Omit<OrgInvitation, 'workspace_access'> & { workspace_access?: string | null }>;
+    const rows = this.sql
+      .exec(
+        "SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations WHERE email = ? AND expires_at > ?",
+        email.toLowerCase(),
+        now,
+      )
+      .toArray() as unknown as Array<
+      Omit<OrgInvitation, "workspace_access"> & {
+        workspace_access?: string | null;
+      }
+    >;
     if (!rows[0]) return null;
     return {
       ...rows[0],
-      workspace_access: rows[0].workspace_access ? JSON.parse(rows[0].workspace_access) : null,
+      workspace_access: rows[0].workspace_access
+        ? JSON.parse(rows[0].workspace_access)
+        : null,
     };
   }
 
@@ -1888,11 +2526,19 @@ export class OrgDO extends DurableObject<DOEnv> {
     email: string,
     role: OrgRole,
     invitedBy: string,
-    workspaceAccess?: Record<string, 'full' | 'none'> | null
+    workspaceAccess?: Record<string, "full" | "none"> | null,
   ): Promise<OrgInvitation> {
     const id = crypto.randomUUID();
     const now = Date.now();
     const expiresAt = now + 7 * 24 * 60 * 60 * 1000; // 7 days
+    const activeInvitations =
+      this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+          now,
+        )
+        .next().value?.count ?? 0;
+    await this.assertSeatCapacityForNewMember(activeInvitations);
 
     const invitation: OrgInvitation = {
       id,
@@ -1905,41 +2551,51 @@ export class OrgDO extends DurableObject<DOEnv> {
     };
 
     this.sql.exec(
-      'INSERT INTO invitations (id, email, role, invited_by, created_at, expires_at, workspace_access) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      "INSERT INTO invitations (id, email, role, invited_by, created_at, expires_at, workspace_access) VALUES (?, ?, ?, ?, ?, ?, ?)",
       id,
       email.toLowerCase(),
       role,
       invitedBy,
       now,
       expiresAt,
-      workspaceAccess ? JSON.stringify(workspaceAccess) : null
+      workspaceAccess ? JSON.stringify(workspaceAccess) : null,
     );
 
     const info = await this.getInfo();
-    if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'invitation_upsert', payload: { ...invitation, org_id: info.id } });
+    if (info)
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "invitation_upsert",
+        payload: { ...invitation, org_id: info.id },
+      });
     return invitation;
   }
 
   async deleteInvitation(id: string): Promise<void> {
-    this.sql.exec('DELETE FROM invitations WHERE id = ?', id);
-    dispatchAdminEvent(this.ctx, this.env, { type: 'invitation_delete', payload: { id } });
+    this.sql.exec("DELETE FROM invitations WHERE id = ?", id);
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "invitation_delete",
+      payload: { id },
+    });
   }
 
   async updateInvitationWorkspaceAccess(
     invitationId: string,
-    workspaceAccess: Record<string, 'full' | 'none'> | null
+    workspaceAccess: Record<string, "full" | "none"> | null,
   ): Promise<boolean> {
     const invitation = await this.getInvitation(invitationId);
     if (!invitation) return false;
     this.sql.exec(
-      'UPDATE invitations SET workspace_access = ? WHERE id = ?',
+      "UPDATE invitations SET workspace_access = ? WHERE id = ?",
       workspaceAccess ? JSON.stringify(workspaceAccess) : null,
-      invitationId
+      invitationId,
     );
     return true;
   }
 
-  async acceptInvitation(invitationId: string, userId: string): Promise<OrgInvitation | null> {
+  async acceptInvitation(
+    invitationId: string,
+    userId: string,
+  ): Promise<OrgInvitation | null> {
     const invitation = await this.getInvitation(invitationId);
     if (!invitation) return null;
 
@@ -1949,7 +2605,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     // Delete the invitation (single use)
     await this.deleteInvitation(invitationId);
 
-    dispatchAdminEvent(this.ctx, this.env, { type: 'invitation_delete', payload: { id: invitationId } });
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "invitation_delete",
+      payload: { id: invitationId },
+    });
     return invitation;
   }
 
@@ -1961,7 +2620,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         `SELECT id, integration_type, name, category, auth_method, config,
                 credentials_encrypted, created_by, created_at, updated_at
          FROM integrations
-         ORDER BY created_at DESC`
+         ORDER BY created_at DESC`,
       )
       .toArray() as unknown as OrgIntegrationRecord[];
   }
@@ -1973,7 +2632,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         `SELECT id, integration_type, name, category, auth_method, config,
                 credentials_encrypted, created_by, created_at, updated_at
          FROM integrations WHERE id = ?`,
-        id
+        id,
       )
       .toArray() as unknown as OrgIntegrationRecord[];
     return rows[0] || null;
@@ -1988,7 +2647,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     authMethod: string,
     config: string,
     credentialsEncrypted: string,
-    createdBy: string
+    createdBy: string,
   ): Promise<void> {
     const now = Date.now();
     this.sql.exec(
@@ -2004,7 +2663,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       credentialsEncrypted,
       createdBy,
       now,
-      now
+      now,
     );
   }
 
@@ -2015,37 +2674,40 @@ export class OrgDO extends DurableObject<DOEnv> {
       name?: string;
       config?: string;
       credentialsEncrypted?: string;
-    }
+    },
   ): Promise<void> {
     const now = Date.now();
-    const setClauses: string[] = ['updated_at = ?'];
+    const setClauses: string[] = ["updated_at = ?"];
     const params: (string | number)[] = [now];
 
     if (updates.name !== undefined) {
-      setClauses.push('name = ?');
+      setClauses.push("name = ?");
       params.push(updates.name);
     }
     if (updates.config !== undefined) {
-      setClauses.push('config = ?');
+      setClauses.push("config = ?");
       params.push(updates.config);
     }
     if (updates.credentialsEncrypted !== undefined) {
-      setClauses.push('credentials_encrypted = ?');
+      setClauses.push("credentials_encrypted = ?");
       params.push(updates.credentialsEncrypted);
     }
 
     params.push(id);
-    this.sql.exec(`UPDATE integrations SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
+    this.sql.exec(
+      `UPDATE integrations SET ${setClauses.join(", ")} WHERE id = ?`,
+      ...params,
+    );
   }
 
   /** @deprecated Integrations are workspace-scoped; migrate to WorkspaceDO. */
   async deleteIntegration(id: string): Promise<void> {
-    this.sql.exec('DELETE FROM integrations WHERE id = ?', id);
+    this.sql.exec("DELETE FROM integrations WHERE id = ?", id);
   }
 
   /** @deprecated Integrations are workspace-scoped; migrate to WorkspaceDO. */
   async dropLegacyIntegrations(): Promise<void> {
-    this.sql.exec('DROP TABLE IF EXISTS integrations');
+    this.sql.exec("DROP TABLE IF EXISTS integrations");
   }
 
   // Worker script methods
@@ -2053,7 +2715,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     scriptName: string,
     workspaceId: string,
     createdBy: string,
-    configPath?: string
+    configPath?: string,
   ): Promise<WorkerScript> {
     const now = Date.now();
     const existing = await this.getWorkerScript(scriptName);
@@ -2063,18 +2725,21 @@ export class OrgDO extends DurableObject<DOEnv> {
       if (existing.workspace_id !== workspaceId) {
         throw new Error(
           `Script name "${scriptName}" is already in use by another workspace in this organization. ` +
-          `Please choose a different name.`
+            `Please choose a different name.`,
         );
       }
 
       // Same workspace - update the script (redeploy)
       this.sql.exec(
-        'UPDATE worker_scripts SET updated_at = ?, config_path = ? WHERE script_name = ?',
+        "UPDATE worker_scripts SET updated_at = ?, config_path = ? WHERE script_name = ?",
         now,
         configPath ?? null,
-        scriptName
+        scriptName,
       );
-      this.log('worker_script_updated', createdBy, scriptName, { workspace_id: workspaceId, config_path: configPath });
+      this.log("worker_script_updated", createdBy, scriptName, {
+        workspace_id: workspaceId,
+        config_path: configPath,
+      });
       return {
         ...existing,
         updated_at: now,
@@ -2083,15 +2748,18 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     this.sql.exec(
-      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at, is_public, config_path) VALUES (?, ?, ?, ?, ?, 1, ?)',
+      "INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at, is_public, config_path) VALUES (?, ?, ?, ?, ?, 1, ?)",
       scriptName,
       workspaceId,
       createdBy,
       now,
       now,
-      configPath ?? null
+      configPath ?? null,
     );
-    this.log('worker_script_registered', createdBy, scriptName, { workspace_id: workspaceId, config_path: configPath });
+    this.log("worker_script_registered", createdBy, scriptName, {
+      workspace_id: workspaceId,
+      config_path: configPath,
+    });
     const newScript = {
       script_name: scriptName,
       workspace_id: workspaceId,
@@ -2101,7 +2769,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       is_public: true,
       preview_key: null,
       preview_updated_at: null,
-      preview_status: 'pending' as WorkerScriptPreviewStatus,
+      preview_status: "pending" as WorkerScriptPreviewStatus,
       preview_error: null,
       config_path: configPath ?? null,
       custom_domain_hostname: null,
@@ -2112,7 +2780,11 @@ export class OrgDO extends DurableObject<DOEnv> {
       custom_domain_updated_at: null,
     };
     const info = await this.getInfo();
-    if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...newScript, org_id: info.id } });
+    if (info)
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "app_upsert",
+        payload: { ...newScript, org_id: info.id },
+      });
     return newScript;
   }
 
@@ -2127,7 +2799,9 @@ export class OrgDO extends DurableObject<DOEnv> {
                               NULL AS custom_domain_hostname, NULL AS custom_domain_cf_hostname_id, NULL AS custom_domain_status,
                               NULL AS custom_domain_ssl_status, NULL AS custom_domain_error, NULL AS custom_domain_updated_at
                        FROM worker_scripts WHERE script_name = ?`;
-    const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [scriptName]);
+    const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [
+      scriptName,
+    ]);
     if (rows.length === 0) return null;
     return this.toWorkerScript(rows[0]);
   }
@@ -2150,19 +2824,21 @@ export class OrgDO extends DurableObject<DOEnv> {
   async listWorkerScriptsPaginated(
     offset: number,
     limit: number,
-    search?: string
+    search?: string,
   ): Promise<{ items: WorkerScript[]; total: number }> {
     const normalized = search?.trim().toLowerCase();
-    const whereClause = normalized ? 'WHERE lower(script_name) LIKE ?' : '';
+    const whereClause = normalized ? "WHERE lower(script_name) LIKE ?" : "";
     const params: Array<string | number> = [];
     if (normalized) {
       params.push(`%${normalized}%`);
     }
 
-    const countRows = this.sql.exec(
-      `SELECT COUNT(*) as count FROM worker_scripts ${whereClause}`,
-      ...params
-    ).toArray() as unknown as Array<{ count: number }>;
+    const countRows = this.sql
+      .exec(
+        `SELECT COUNT(*) as count FROM worker_scripts ${whereClause}`,
+        ...params,
+      )
+      .toArray() as unknown as Array<{ count: number }>;
     const total = countRows[0]?.count ?? 0;
 
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
@@ -2175,14 +2851,20 @@ export class OrgDO extends DurableObject<DOEnv> {
                               NULL AS custom_domain_hostname, NULL AS custom_domain_cf_hostname_id, NULL AS custom_domain_status,
                               NULL AS custom_domain_ssl_status, NULL AS custom_domain_error, NULL AS custom_domain_updated_at
                        FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
-    const items = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [...params, limit, offset]);
+    const items = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [
+      ...params,
+      limit,
+      offset,
+    ]);
     return {
       items: items.map((row) => this.toWorkerScript(row)),
       total,
     };
   }
 
-  async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
+  async listWorkerScriptsByWorkspace(
+    workspaceId: string,
+  ): Promise<WorkerScript[]> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
                                      preview_key, preview_updated_at, preview_status, preview_error, config_path,
                                      custom_domain_hostname, custom_domain_cf_hostname_id, custom_domain_status,
@@ -2193,46 +2875,69 @@ export class OrgDO extends DurableObject<DOEnv> {
                               NULL AS custom_domain_hostname, NULL AS custom_domain_cf_hostname_id, NULL AS custom_domain_status,
                               NULL AS custom_domain_ssl_status, NULL AS custom_domain_error, NULL AS custom_domain_updated_at
                        FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
-    const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [workspaceId]);
+    const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [
+      workspaceId,
+    ]);
     return rows.map((row) => this.toWorkerScript(row));
   }
 
-  async updateWorkerScript(scriptName: string, actorId: string): Promise<WorkerScript | null> {
+  async updateWorkerScript(
+    scriptName: string,
+    actorId: string,
+  ): Promise<WorkerScript | null> {
     const now = Date.now();
-    this.sql.exec('UPDATE worker_scripts SET updated_at = ? WHERE script_name = ?', now, scriptName);
+    this.sql.exec(
+      "UPDATE worker_scripts SET updated_at = ? WHERE script_name = ?",
+      now,
+      scriptName,
+    );
     const script = await this.getWorkerScript(scriptName);
     if (script) {
-      this.log('worker_script_touched', actorId, scriptName);
+      this.log("worker_script_touched", actorId, scriptName);
       const info = await this.getInfo();
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
+      if (info)
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "app_upsert",
+          payload: { ...script, org_id: info.id },
+        });
     }
     return script;
   }
 
-  async setWorkerScriptPublic(scriptName: string, isPublic: boolean, actorId: string): Promise<WorkerScript | null> {
+  async setWorkerScriptPublic(
+    scriptName: string,
+    isPublic: boolean,
+    actorId: string,
+  ): Promise<WorkerScript | null> {
     const existing = await this.getWorkerScript(scriptName);
     if (!existing) return null;
     const now = Date.now();
     this.sql.exec(
-      'UPDATE worker_scripts SET is_public = ?, updated_at = ? WHERE script_name = ?',
+      "UPDATE worker_scripts SET is_public = ?, updated_at = ? WHERE script_name = ?",
       isPublic ? 1 : 0,
       now,
-      scriptName
+      scriptName,
     );
-    this.log('worker_script_visibility_changed', actorId, scriptName, { is_public: isPublic });
+    this.log("worker_script_visibility_changed", actorId, scriptName, {
+      is_public: isPublic,
+    });
     const updated = {
       ...existing,
       is_public: isPublic,
       updated_at: now,
     };
     const info = await this.getInfo();
-    if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...updated, org_id: info.id } });
+    if (info)
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "app_upsert",
+        payload: { ...updated, org_id: info.id },
+      });
     return updated;
   }
 
   async updateWorkerScriptPreview(
     scriptName: string,
-    input: WorkerScriptPreviewUpdateInput
+    input: WorkerScriptPreviewUpdateInput,
   ): Promise<WorkerScriptPreviewUpdateResult> {
     const existing = await this.getWorkerScript(scriptName);
     if (!existing) {
@@ -2256,18 +2961,22 @@ export class OrgDO extends DurableObject<DOEnv> {
       input.preview_key ?? null,
       input.preview_error ?? null,
       previewUpdatedAt,
-      scriptName
+      scriptName,
     );
 
     const script = await this.getWorkerScript(scriptName);
     const info = await this.getInfo();
-    if (info && script) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
+    if (info && script)
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "app_upsert",
+        payload: { ...script, org_id: info.id },
+      });
     return { script, updated: true, stale: false };
   }
 
   async updateWorkerScriptCustomDomain(
     scriptName: string,
-    input: WorkerScriptCustomDomainUpdateInput
+    input: WorkerScriptCustomDomainUpdateInput,
   ): Promise<WorkerScript | null> {
     const existing = await this.getWorkerScript(scriptName);
     if (!existing) return null;
@@ -2281,6 +2990,33 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     const nextHostname = input.hostname?.trim().toLowerCase() ?? null;
+    if (nextHostname && nextHostname !== existing.custom_domain_hostname) {
+      const info = await this.getInfo();
+      if (info) {
+        const limit = getBillingPlanLimits(
+          info.billing_plan,
+          info.billing_status,
+        ).maxCustomDomains;
+        if (limit !== null) {
+          const currentCount =
+            this.sql
+              .exec<{ count: number }>(
+                `SELECT COUNT(*) AS count
+               FROM worker_scripts
+               WHERE custom_domain_hostname IS NOT NULL
+                 AND custom_domain_hostname != ''
+                 AND script_name != ?`,
+                scriptName,
+              )
+              .toArray()[0]?.count ?? 0;
+          if (currentCount >= limit) {
+            throw new Error(
+              `Your current billing plan allows ${limit} custom domain${limit === 1 ? "" : "s"}.`,
+            );
+          }
+        }
+      }
+    }
 
     this.sql.exec(
       `UPDATE worker_scripts
@@ -2293,15 +3029,18 @@ export class OrgDO extends DurableObject<DOEnv> {
       input.ssl_status ?? null,
       input.error ?? null,
       input.updated_at ?? Date.now(),
-      scriptName
+      scriptName,
     );
 
     const script = await this.getWorkerScript(scriptName);
     const info = await this.getInfo();
     if (info && script) {
-      if (existing.custom_domain_hostname && existing.custom_domain_hostname !== nextHostname) {
+      if (
+        existing.custom_domain_hostname &&
+        existing.custom_domain_hostname !== nextHostname
+      ) {
         await this.env.APP_KV.delete(
-          `${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`
+          `${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`,
         );
       }
       if (nextHostname) {
@@ -2312,15 +3051,20 @@ export class OrgDO extends DurableObject<DOEnv> {
             org_slug: info.slug,
             script_name: scriptName,
             dispatch_script_name: `${scriptName}--${info.slug}`,
-          })
+          }),
         );
       }
-      dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "app_upsert",
+        payload: { ...script, org_id: info.id },
+      });
     }
     return script;
   }
 
-  async clearWorkerScriptCustomDomain(scriptName: string): Promise<WorkerScript | null> {
+  async clearWorkerScriptCustomDomain(
+    scriptName: string,
+  ): Promise<WorkerScript | null> {
     const existing = await this.getWorkerScript(scriptName);
     if (!existing) return null;
     if (!this.workerScriptsHasPreviewColumns) {
@@ -2336,18 +3080,23 @@ export class OrgDO extends DurableObject<DOEnv> {
            custom_domain_error = NULL,
            custom_domain_updated_at = NULL
        WHERE script_name = ?`,
-      scriptName
+      scriptName,
     );
 
     if (existing.custom_domain_hostname) {
       await this.env.APP_KV.delete(
-        `${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`
+        `${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`,
       );
     }
 
     const script = await this.getWorkerScript(scriptName);
     const info = await this.getInfo();
-    if (info && script) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
+    if (info && script) {
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "app_upsert",
+        payload: { ...script, org_id: info.id },
+      });
+    }
     return script;
   }
 
@@ -2365,26 +3114,36 @@ export class OrgDO extends DurableObject<DOEnv> {
            custom_domain_status = NULL,
            custom_domain_ssl_status = NULL,
            custom_domain_error = NULL,
-           custom_domain_updated_at = NULL`
+           custom_domain_updated_at = NULL`,
     );
     await Promise.all(
       customHostnames.map((hostname) =>
-        this.env.APP_KV.delete(`${CUSTOM_DOMAIN_HOST_PREFIX}${hostname}`)
-      )
+        this.env.APP_KV.delete(`${CUSTOM_DOMAIN_HOST_PREFIX}${hostname}`),
+      ),
     );
   }
 
-  async deleteWorkerScript(scriptName: string, actorId: string): Promise<boolean> {
+  async deleteWorkerScript(
+    scriptName: string,
+    actorId: string,
+  ): Promise<boolean> {
     const existing = await this.getWorkerScript(scriptName);
     if (!existing) return false;
     if (existing.custom_domain_hostname) {
-      await this.env.APP_KV.delete(`${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`);
+      await this.env.APP_KV.delete(
+        `${CUSTOM_DOMAIN_HOST_PREFIX}${existing.custom_domain_hostname}`,
+      );
     }
-    this.sql.exec('DELETE FROM worker_scripts WHERE script_name = ?', scriptName);
-    this.log('worker_script_deleted', actorId, scriptName, { workspace_id: existing.workspace_id });
+    this.sql.exec(
+      "DELETE FROM worker_scripts WHERE script_name = ?",
+      scriptName,
+    );
+    this.log("worker_script_deleted", actorId, scriptName, {
+      workspace_id: existing.workspace_id,
+    });
     const info = await this.getInfo();
     dispatchAdminEvent(this.ctx, this.env, {
-      type: 'app_delete',
+      type: "app_delete",
       payload: { script_name: scriptName, org_id: info?.id ?? null },
     });
     return true;
@@ -2398,17 +3157,19 @@ export class OrgDO extends DurableObject<DOEnv> {
   ): Promise<CustomDomain> {
     const now = Date.now();
     // Org can have at most one custom domain — upsert
-    this.sql.exec('DELETE FROM custom_domains');
+    this.sql.exec("DELETE FROM custom_domains");
     this.sql.exec(
       `INSERT INTO custom_domains (domain, cf_hostname_id, status, ssl_status, created_at, updated_at)
        VALUES (?, NULL, 'pending', NULL, ?, ?)`,
-      domain, now, now
+      domain,
+      now,
+      now,
     );
-    this.log('custom_domain_set', actorId, domain);
+    this.log("custom_domain_set", actorId, domain);
     return {
       domain,
       cf_hostname_id: null,
-      status: 'pending',
+      status: "pending",
       ssl_status: null,
       created_at: now,
       updated_at: now,
@@ -2418,15 +3179,17 @@ export class OrgDO extends DurableObject<DOEnv> {
   async removeCustomDomain(actorId: string): Promise<CustomDomain | null> {
     const existing = this.getCustomDomain();
     if (!existing) return null;
-    this.sql.exec('DELETE FROM custom_domains');
-    this.log('custom_domain_removed', actorId, existing.domain);
+    this.sql.exec("DELETE FROM custom_domains");
+    this.log("custom_domain_removed", actorId, existing.domain);
     return existing;
   }
 
   getCustomDomain(): CustomDomain | null {
-    const rows = this.sql.exec<CustomDomainRow>(
-      'SELECT domain, cf_hostname_id, status, ssl_status, created_at, updated_at FROM custom_domains LIMIT 1'
-    ).toArray();
+    const rows = this.sql
+      .exec<CustomDomainRow>(
+        "SELECT domain, cf_hostname_id, status, ssl_status, created_at, updated_at FROM custom_domains LIMIT 1",
+      )
+      .toArray();
     return rows[0] ?? null;
   }
 
@@ -2434,25 +3197,25 @@ export class OrgDO extends DurableObject<DOEnv> {
     domain: string,
     status: CustomDomainStatus,
     sslStatus?: string | null,
-    cfHostnameId?: string
+    cfHostnameId?: string,
   ): Promise<CustomDomain | null> {
     const existing = this.getCustomDomain();
     if (!existing || existing.domain !== domain) return null;
     const now = Date.now();
-    const updates: string[] = ['status = ?', 'updated_at = ?'];
+    const updates: string[] = ["status = ?", "updated_at = ?"];
     const params: (string | number | null)[] = [status, now];
     if (sslStatus !== undefined) {
-      updates.push('ssl_status = ?');
+      updates.push("ssl_status = ?");
       params.push(sslStatus ?? null);
     }
     if (cfHostnameId !== undefined) {
-      updates.push('cf_hostname_id = ?');
+      updates.push("cf_hostname_id = ?");
       params.push(cfHostnameId);
     }
     params.push(domain);
     this.sql.exec(
-      `UPDATE custom_domains SET ${updates.join(', ')} WHERE domain = ?`,
-      ...params
+      `UPDATE custom_domains SET ${updates.join(", ")} WHERE domain = ?`,
+      ...params,
     );
     return this.getCustomDomain();
   }
@@ -2461,22 +3224,25 @@ export class OrgDO extends DurableObject<DOEnv> {
     action: string,
     actorId: string,
     targetId?: string,
-    details?: Record<string, unknown>
+    details?: Record<string, unknown>,
   ): void {
     const id = crypto.randomUUID();
     const now = Date.now();
     this.sql.exec(
-      'INSERT INTO audit_log (id, action, actor_id, target_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      "INSERT INTO audit_log (id, action, actor_id, target_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       id,
       action,
       actorId,
       targetId ?? null,
       details ? JSON.stringify(details) : null,
-      now
+      now,
     );
   }
 
-  async checkWorkspaceNameAvailable(name: string, excludeWorkspaceId?: string): Promise<boolean> {
+  async checkWorkspaceNameAvailable(
+    name: string,
+    excludeWorkspaceId?: string,
+  ): Promise<boolean> {
     const trimmed = name.trim();
     if (!trimmed) return false;
 
@@ -2485,13 +3251,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     // slugify to "data-science")
     const slug = slugifyWorkspaceName(trimmed);
     const rows = excludeWorkspaceId
-      ? this.sql.exec(
-          'SELECT id, name FROM workspaces WHERE archived = 0 AND id != ?',
-          excludeWorkspaceId
-        ).toArray() as Array<{ id: string; name: string }>
-      : this.sql.exec(
-          'SELECT id, name FROM workspaces WHERE archived = 0'
-        ).toArray() as Array<{ id: string; name: string }>;
+      ? (this.sql
+          .exec(
+            "SELECT id, name FROM workspaces WHERE archived = 0 AND id != ?",
+            excludeWorkspaceId,
+          )
+          .toArray() as Array<{ id: string; name: string }>)
+      : (this.sql
+          .exec("SELECT id, name FROM workspaces WHERE archived = 0")
+          .toArray() as Array<{ id: string; name: string }>);
 
     for (const row of rows) {
       if (row.name.toLowerCase() === trimmed.toLowerCase()) return false;
@@ -2504,118 +3272,206 @@ export class OrgDO extends DurableObject<DOEnv> {
     workspaceId: string,
     name: string,
     createdAt: number,
-    actorId: string
+    actorId: string,
   ): Promise<void> {
     const available = await this.checkWorkspaceNameAvailable(name, workspaceId);
     if (!available) {
-      throw new Error(`A workspace named "${name}" already exists in this organization`);
+      throw new Error(
+        `A workspace named "${name}" already exists in this organization`,
+      );
     }
     this.sql.exec(
-      'INSERT INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at',
+      "INSERT INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at",
       workspaceId,
       name,
-      createdAt
+      createdAt,
     );
-    this.log('workspace_created', actorId, workspaceId, { name });
+    this.log("workspace_created", actorId, workspaceId, { name });
   }
 
   async updateWorkspaceName(workspaceId: string, name: string): Promise<void> {
     const available = await this.checkWorkspaceNameAvailable(name, workspaceId);
     if (!available) {
-      throw new Error(`A workspace named "${name}" already exists in this organization`);
+      throw new Error(
+        `A workspace named "${name}" already exists in this organization`,
+      );
     }
-    this.sql.exec('UPDATE workspaces SET name = ? WHERE id = ?', name, workspaceId);
+    this.sql.exec(
+      "UPDATE workspaces SET name = ? WHERE id = ?",
+      name,
+      workspaceId,
+    );
   }
 
   async archiveWorkspace(workspaceId: string): Promise<void> {
-    this.sql.exec('UPDATE workspaces SET archived = 1 WHERE id = ?', workspaceId);
+    this.sql.exec(
+      "UPDATE workspaces SET archived = 1 WHERE id = ?",
+      workspaceId,
+    );
   }
 
-  async getWorkspaces(includeArchived = false): Promise<Array<{ id: string; name: string; created_at: number; archived: number }>> {
+  async getWorkspaces(
+    includeArchived = false,
+  ): Promise<
+    Array<{ id: string; name: string; created_at: number; archived: number }>
+  > {
     if (includeArchived) {
-      return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces ORDER BY created_at ASC')
-        .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+      return this.sql
+        .exec(
+          "SELECT id, name, created_at, archived FROM workspaces ORDER BY created_at ASC",
+        )
+        .toArray() as unknown as Array<{
+        id: string;
+        name: string;
+        created_at: number;
+        archived: number;
+      }>;
     }
-    return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0 ORDER BY created_at ASC')
-      .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+    return this.sql
+      .exec(
+        "SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0 ORDER BY created_at ASC",
+      )
+      .toArray() as unknown as Array<{
+      id: string;
+      name: string;
+      created_at: number;
+      archived: number;
+    }>;
   }
 
-  async getWorkspaceBySlug(slug: string): Promise<{ id: string; name: string; created_at: number; archived: number } | null> {
-    const workspaces = this.sql.exec(
-      'SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0'
-    ).toArray() as Array<{ id: string; name: string; created_at: number; archived: number }>;
+  async getWorkspaceBySlug(slug: string): Promise<{
+    id: string;
+    name: string;
+    created_at: number;
+    archived: number;
+  } | null> {
+    const workspaces = this.sql
+      .exec(
+        "SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0",
+      )
+      .toArray() as Array<{
+      id: string;
+      name: string;
+      created_at: number;
+      archived: number;
+    }>;
     const normalizedSlug = slug.toLowerCase();
-    return workspaces.find((ws) => slugifyWorkspaceName(ws.name) === normalizedSlug) ?? null;
+    return (
+      workspaces.find(
+        (ws) => slugifyWorkspaceName(ws.name) === normalizedSlug,
+      ) ?? null
+    );
   }
 
   async transferOwnership(actorId: string, newOwnerId: string): Promise<void> {
-    const currentOwnerRows = this.sql.exec(
-      'SELECT user_id, joined_at FROM members WHERE role = ? LIMIT 1',
-      'owner'
-    ).toArray() as Array<{ user_id: string; joined_at: number }>;
+    const currentOwnerRows = this.sql
+      .exec(
+        "SELECT user_id, joined_at FROM members WHERE role = ? LIMIT 1",
+        "owner",
+      )
+      .toArray() as Array<{ user_id: string; joined_at: number }>;
     const currentOwner = currentOwnerRows[0]?.user_id;
     if (!currentOwner) {
-      throw new Error('No owner found');
+      throw new Error("No owner found");
     }
     if (currentOwner !== actorId) {
-      throw new Error('Only the owner can transfer ownership');
+      throw new Error("Only the owner can transfer ownership");
     }
 
-    const newOwnerRows = this.sql.exec(
-      'SELECT joined_at FROM members WHERE user_id = ?',
-      newOwnerId
-    ).toArray() as Array<{ joined_at: number }>;
+    const newOwnerRows = this.sql
+      .exec("SELECT joined_at FROM members WHERE user_id = ?", newOwnerId)
+      .toArray() as Array<{ joined_at: number }>;
     if (newOwnerRows.length === 0) {
-      throw new Error('New owner is not a member');
+      throw new Error("New owner is not a member");
     }
 
-    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', newOwnerId);
-    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'admin', currentOwner);
-    this.log('ownership_transferred', actorId, newOwnerId, { from_user_id: currentOwner });
-    this.dispatchOrgMembershipUpsert(newOwnerId, 'owner', newOwnerRows[0]!.joined_at);
-    this.dispatchOrgMembershipUpsert(currentOwner, 'admin', currentOwnerRows[0]!.joined_at);
+    this.sql.exec(
+      "UPDATE members SET role = ? WHERE user_id = ?",
+      "owner",
+      newOwnerId,
+    );
+    this.sql.exec(
+      "UPDATE members SET role = ? WHERE user_id = ?",
+      "admin",
+      currentOwner,
+    );
+    this.log("ownership_transferred", actorId, newOwnerId, {
+      from_user_id: currentOwner,
+    });
+    this.dispatchOrgMembershipUpsert(
+      newOwnerId,
+      "owner",
+      newOwnerRows[0]!.joined_at,
+    );
+    this.dispatchOrgMembershipUpsert(
+      currentOwner,
+      "admin",
+      currentOwnerRows[0]!.joined_at,
+    );
   }
 
-  async adminTransferOwnership(actorId: string, newOwnerId: string): Promise<void> {
-    const currentOwnerRows = this.sql.exec(
-      'SELECT user_id, joined_at FROM members WHERE role = ? LIMIT 1',
-      'owner'
-    ).toArray() as Array<{ user_id: string; joined_at: number }>;
+  async adminTransferOwnership(
+    actorId: string,
+    newOwnerId: string,
+  ): Promise<void> {
+    const currentOwnerRows = this.sql
+      .exec(
+        "SELECT user_id, joined_at FROM members WHERE role = ? LIMIT 1",
+        "owner",
+      )
+      .toArray() as Array<{ user_id: string; joined_at: number }>;
     const currentOwner = currentOwnerRows[0]?.user_id;
     if (!currentOwner) {
-      throw new Error('No owner found');
+      throw new Error("No owner found");
     }
 
-    const newOwnerRows = this.sql.exec(
-      'SELECT joined_at FROM members WHERE user_id = ?',
-      newOwnerId
-    ).toArray() as Array<{ joined_at: number }>;
+    const newOwnerRows = this.sql
+      .exec("SELECT joined_at FROM members WHERE user_id = ?", newOwnerId)
+      .toArray() as Array<{ joined_at: number }>;
     if (newOwnerRows.length === 0) {
-      throw new Error('New owner is not a member');
+      throw new Error("New owner is not a member");
     }
 
     if (newOwnerId === currentOwner) {
       return;
     }
 
-    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', newOwnerId);
-    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'admin', currentOwner);
-    this.log('ownership_transferred', actorId, newOwnerId, { from_user_id: currentOwner });
-    this.dispatchOrgMembershipUpsert(newOwnerId, 'owner', newOwnerRows[0]!.joined_at);
-    this.dispatchOrgMembershipUpsert(currentOwner, 'admin', currentOwnerRows[0]!.joined_at);
+    this.sql.exec(
+      "UPDATE members SET role = ? WHERE user_id = ?",
+      "owner",
+      newOwnerId,
+    );
+    this.sql.exec(
+      "UPDATE members SET role = ? WHERE user_id = ?",
+      "admin",
+      currentOwner,
+    );
+    this.log("ownership_transferred", actorId, newOwnerId, {
+      from_user_id: currentOwner,
+    });
+    this.dispatchOrgMembershipUpsert(
+      newOwnerId,
+      "owner",
+      newOwnerRows[0]!.joined_at,
+    );
+    this.dispatchOrgMembershipUpsert(
+      currentOwner,
+      "admin",
+      currentOwnerRows[0]!.joined_at,
+    );
   }
 
   async archiveOrg(actorId: string): Promise<void> {
     const info = await this.getInfo();
     if (!info) {
-      throw new Error('Organization not found');
+      throw new Error("Organization not found");
     }
     if (info.archived) return;
     info.archived = true;
     info.archived_at = Date.now();
     info.archived_by = actorId;
     await this.setInfo(info);
-    this.log('org_archived', actorId);
+    this.log("org_archived", actorId);
   }
 
   /**
@@ -2640,30 +3496,51 @@ export class OrgDO extends DurableObject<DOEnv> {
       // Best-effort cleanup; stale index only affects enumeration.
     }
 
-    this.sql.exec('DELETE FROM org_info WHERE key = ?', 'data');
-    this.sql.exec('DELETE FROM members');
-    this.sql.exec('DELETE FROM invitations');
-    this.sql.exec('DELETE FROM integrations');
-    this.sql.exec('DELETE FROM workspaces');
-    this.sql.exec('DELETE FROM audit_log');
-    this.sql.exec('DELETE FROM worker_scripts');
-    this.sql.exec('DELETE FROM threads');
-    this.sql.exec('DELETE FROM proxy_usage');
+    this.sql.exec("DELETE FROM org_info WHERE key = ?", "data");
+    this.sql.exec("DELETE FROM members");
+    this.sql.exec("DELETE FROM invitations");
+    this.sql.exec("DELETE FROM integrations");
+    this.sql.exec("DELETE FROM workspaces");
+    this.sql.exec("DELETE FROM audit_log");
+    this.sql.exec("DELETE FROM worker_scripts");
+    this.sql.exec("DELETE FROM threads");
+    this.sql.exec("DELETE FROM proxy_usage");
 
-    console.log('[OrgDO] hard deleted org', {
+    console.log("[OrgDO] hard deleted org", {
       orgId: info.id,
       actorId,
     });
   }
 
-  async getAuditLog(limit = 100, offset = 0): Promise<Array<{ id: string; action: string; actor_id: string; target_id: string | null; details: string | null; created_at: number }>> {
+  async getAuditLog(
+    limit = 100,
+    offset = 0,
+  ): Promise<
+    Array<{
+      id: string;
+      action: string;
+      actor_id: string;
+      target_id: string | null;
+      details: string | null;
+      created_at: number;
+    }>
+  > {
     const resolvedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     const resolvedOffset = Math.max(0, Math.floor(offset));
-    return this.sql.exec(
-      'SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?',
-      resolvedLimit,
-      resolvedOffset
-    ).toArray() as unknown as Array<{ id: string; action: string; actor_id: string; target_id: string | null; details: string | null; created_at: number }>;
+    return this.sql
+      .exec(
+        "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        resolvedLimit,
+        resolvedOffset,
+      )
+      .toArray() as unknown as Array<{
+      id: string;
+      action: string;
+      actor_id: string;
+      target_id: string | null;
+      details: string | null;
+      created_at: number;
+    }>;
   }
 
   // Thread methods (consolidated from ChatIndexDO)
@@ -2674,7 +3551,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   getThreads(): OrgThread[] {
     this.ensureThreadSchemaColumns();
     return this.sql
-      .exec('SELECT * FROM threads ORDER BY updated_at DESC')
+      .exec("SELECT * FROM threads ORDER BY updated_at DESC")
       .toArray() as unknown as OrgThread[];
   }
 
@@ -2684,7 +3561,10 @@ export class OrgDO extends DurableObject<DOEnv> {
   getThreadsByWorkspace(workspaceId: string): OrgThread[] {
     this.ensureThreadSchemaColumns();
     return this.sql
-      .exec('SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC', workspaceId)
+      .exec(
+        "SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC",
+        workspaceId,
+      )
       .toArray() as unknown as OrgThread[];
   }
 
@@ -2695,7 +3575,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     offset = 0,
     limit = 50,
     workspaceId?: string,
-    createdBy?: string
+    createdBy?: string,
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     this.ensureThreadSchemaColumns();
     const resolvedOffset = Math.max(0, Math.floor(offset));
@@ -2705,30 +3585,28 @@ export class OrgDO extends DurableObject<DOEnv> {
     const whereParams: (string | number)[] = [];
 
     if (workspaceId) {
-      whereClauses.push('workspace_id = ?');
+      whereClauses.push("workspace_id = ?");
       whereParams.push(workspaceId);
     }
     if (createdBy) {
-      whereClauses.push('created_by = ?');
+      whereClauses.push("created_by = ?");
       whereParams.push(createdBy);
     }
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const whereSql =
+      whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
     const items = this.sql
       .exec(
         `SELECT * FROM threads ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
         ...whereParams,
         resolvedLimit,
-        resolvedOffset
+        resolvedOffset,
       )
       .toArray() as unknown as OrgThread[];
 
     const totalRows = this.sql
-      .exec(
-        `SELECT COUNT(*) as count FROM threads ${whereSql}`,
-        ...whereParams
-      )
+      .exec(`SELECT COUNT(*) as count FROM threads ${whereSql}`, ...whereParams)
       .toArray() as Array<{ count: number }>;
     const total = Number(totalRows[0]?.count ?? 0);
 
@@ -2747,7 +3625,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     workspaceIds: string[],
     offset = 0,
     limit = 50,
-    createdBy?: string
+    createdBy?: string,
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     this.ensureThreadSchemaColumns();
     const resolvedOffset = Math.max(0, Math.floor(offset));
@@ -2762,28 +3640,31 @@ export class OrgDO extends DurableObject<DOEnv> {
       };
     }
 
-    const placeholders = workspaceIds.map(() => '?').join(',');
+    const placeholders = workspaceIds.map(() => "?").join(",");
     const whereClauses = [`workspace_id IN (${placeholders})`];
     const queryParams: (string | number)[] = [...workspaceIds];
 
     if (createdBy) {
-      whereClauses.push('created_by = ?');
+      whereClauses.push("created_by = ?");
       queryParams.push(createdBy);
     }
 
-    const whereSql = whereClauses.join(' AND ');
+    const whereSql = whereClauses.join(" AND ");
 
     const items = this.sql
       .exec(
         `SELECT * FROM threads WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
         ...queryParams,
         resolvedLimit,
-        resolvedOffset
+        resolvedOffset,
       )
       .toArray() as unknown as OrgThread[];
 
     const totalRows = this.sql
-      .exec(`SELECT COUNT(*) as count FROM threads WHERE ${whereSql}`, ...queryParams)
+      .exec(
+        `SELECT COUNT(*) as count FROM threads WHERE ${whereSql}`,
+        ...queryParams,
+      )
       .toArray() as Array<{ count: number }>;
     const total = Number(totalRows[0]?.count ?? 0);
 
@@ -2795,20 +3676,23 @@ export class OrgDO extends DurableObject<DOEnv> {
     };
   }
 
-  getThreadCreators(
-    workspaceId?: string
-  ): Array<{ created_by: string; thread_count: number; latest_updated_at: number }> {
+  getThreadCreators(workspaceId?: string): Array<{
+    created_by: string;
+    thread_count: number;
+    latest_updated_at: number;
+  }> {
     this.ensureThreadSchemaColumns();
 
     const whereClauses: string[] = [];
     const params: string[] = [];
 
     if (workspaceId) {
-      whereClauses.push('workspace_id = ?');
+      whereClauses.push("workspace_id = ?");
       params.push(workspaceId);
     }
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const whereSql =
+      whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
     return this.sql
       .exec(
@@ -2816,21 +3700,27 @@ export class OrgDO extends DurableObject<DOEnv> {
          FROM threads ${whereSql}
          GROUP BY created_by
          ORDER BY latest_updated_at DESC`,
-        ...params
+        ...params,
       )
-      .toArray() as Array<{ created_by: string; thread_count: number; latest_updated_at: number }>;
+      .toArray() as Array<{
+      created_by: string;
+      thread_count: number;
+      latest_updated_at: number;
+    }>;
   }
 
-  getThreadCreatorsAllWorkspaces(
-    workspaceIds: string[]
-  ): Array<{ created_by: string; thread_count: number; latest_updated_at: number }> {
+  getThreadCreatorsAllWorkspaces(workspaceIds: string[]): Array<{
+    created_by: string;
+    thread_count: number;
+    latest_updated_at: number;
+  }> {
     this.ensureThreadSchemaColumns();
 
     if (workspaceIds.length === 0) {
       return [];
     }
 
-    const placeholders = workspaceIds.map(() => '?').join(', ');
+    const placeholders = workspaceIds.map(() => "?").join(", ");
 
     return this.sql
       .exec(
@@ -2839,9 +3729,13 @@ export class OrgDO extends DurableObject<DOEnv> {
          WHERE workspace_id IN (${placeholders})
          GROUP BY created_by
          ORDER BY latest_updated_at DESC`,
-        ...workspaceIds
+        ...workspaceIds,
       )
-      .toArray() as Array<{ created_by: string; thread_count: number; latest_updated_at: number }>;
+      .toArray() as Array<{
+      created_by: string;
+      thread_count: number;
+      latest_updated_at: number;
+    }>;
   }
 
   /**
@@ -2853,17 +3747,17 @@ export class OrgDO extends DurableObject<DOEnv> {
     createdBy?: string,
     firstUserMessage?: string,
     model?: LlmModel,
-    provider: 'claude' | 'codex' = 'claude'
+    provider: "claude" | "codex" = "claude",
   ): OrgThread {
     this.ensureThreadSchemaColumns();
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || DEFAULT_THREAD_TITLE;
-    const creator = createdBy?.trim() || 'system';
+    const creator = createdBy?.trim() || "system";
     const msg = firstUserMessage?.slice(0, 500) || null;
     const normalizedModel = normalizeLlmModel(model, provider);
     this.sql.exec(
-      'INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      "INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       id,
       workspaceId,
       t,
@@ -2872,9 +3766,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       normalizedModel,
       now,
       now,
-      msg
+      msg,
     );
-    this.log('thread_created', creator, id, { workspace_id: workspaceId, title: t });
+    this.log("thread_created", creator, id, {
+      workspace_id: workspaceId,
+      title: t,
+    });
     const thread = {
       id,
       workspace_id: workspaceId,
@@ -2887,8 +3784,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       user_message_count: 0,
       first_user_message: msg,
     };
-    this.getInfo().then(info => {
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...thread, org_id: info.id } });
+    this.getInfo().then((info) => {
+      if (info)
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "thread_upsert",
+          payload: { ...thread, org_id: info.id },
+        });
     });
     return thread;
   }
@@ -2899,7 +3800,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   getThread(id: string): OrgThread | null {
     this.ensureThreadSchemaColumns();
     const rows = this.sql
-      .exec('SELECT * FROM threads WHERE id = ?', id)
+      .exec("SELECT * FROM threads WHERE id = ?", id)
       .toArray() as unknown as OrgThread[];
     return rows[0] || null;
   }
@@ -2907,7 +3808,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   // Test helper RPC: simulate a legacy thread schema before provider/model columns existed.
   async downgradeThreadSchemaForTest(): Promise<void> {
     this.ctx.storage.transactionSync(() => {
-      this.sql.exec('DROP TABLE IF EXISTS threads_legacy_test');
+      this.sql.exec("DROP TABLE IF EXISTS threads_legacy_test");
       this.sql.exec(`
         CREATE TABLE threads_legacy_test (
           id TEXT PRIMARY KEY,
@@ -2945,10 +3846,10 @@ export class OrgDO extends DurableObject<DOEnv> {
           first_user_message
         FROM threads
       `);
-      this.sql.exec('DROP TABLE threads');
-      this.sql.exec('ALTER TABLE threads_legacy_test RENAME TO threads');
+      this.sql.exec("DROP TABLE threads");
+      this.sql.exec("ALTER TABLE threads_legacy_test RENAME TO threads");
     });
-    this.ctx.storage.kv.put('schemaVersion', 20);
+    this.ctx.storage.kv.put("schemaVersion", 20);
   }
 
   /**
@@ -2958,27 +3859,45 @@ export class OrgDO extends DurableObject<DOEnv> {
     const existing = this.getThread(id);
     if (!existing) return null;
     const now = Date.now();
-    this.sql.exec('UPDATE threads SET title = ?, updated_at = ? WHERE id = ?', title, now, id);
+    this.sql.exec(
+      "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?",
+      title,
+      now,
+      id,
+    );
     if (actorId) {
-      this.log('thread_updated', actorId, id, { title });
+      this.log("thread_updated", actorId, id, { title });
     }
     const updated = {
       ...existing,
       title,
       updated_at: now,
     };
-    this.getInfo().then((info) => {
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
-    }).catch((err) => {
-      console.error('Failed to sync thread update to AdminIndex', err);
-    });
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync thread update to AdminIndex", err);
+      });
     return updated;
   }
 
-  updateThreadModel(id: string, model: LlmModel, actorId?: string): OrgThread | null {
+  updateThreadModel(
+    id: string,
+    model: LlmModel,
+    actorId?: string,
+  ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
-    const normalizedModel = normalizeLlmModel(model, existing.provider ?? 'claude');
+    const normalizedModel = normalizeLlmModel(
+      model,
+      existing.provider ?? "claude",
+    );
     if (normalizedModel !== existing.model) {
       return existing;
     }
@@ -2989,7 +3908,10 @@ export class OrgDO extends DurableObject<DOEnv> {
    * Set first user message used for welcome-screen previews.
    * This intentionally does not modify updated_at to avoid reordering threads.
    */
-  setThreadFirstUserMessage(id: string, firstUserMessage: string): OrgThread | null {
+  setThreadFirstUserMessage(
+    id: string,
+    firstUserMessage: string,
+  ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
 
@@ -3001,7 +3923,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec(
       "UPDATE threads SET first_user_message = ? WHERE id = ? AND (first_user_message IS NULL OR first_user_message = '')",
       message,
-      id
+      id,
     );
 
     return this.getThread(id);
@@ -3010,36 +3932,45 @@ export class OrgDO extends DurableObject<DOEnv> {
   /**
    * Admin: Update thread with arbitrary fields
    */
-  adminUpdateThread(id: string, updates: { title?: string; created_by?: string; model?: LlmModel }, actorId?: string): OrgThread | null {
+  adminUpdateThread(
+    id: string,
+    updates: { title?: string; created_by?: string; model?: LlmModel },
+    actorId?: string,
+  ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
-    const normalizedModel = updates.model !== undefined
-      ? normalizeLlmModel(updates.model, existing.provider ?? 'claude')
-      : undefined;
-    const persistedModel = normalizedModel === existing.model ? normalizedModel : undefined;
+    const normalizedModel =
+      updates.model !== undefined
+        ? normalizeLlmModel(updates.model, existing.provider ?? "claude")
+        : undefined;
+    const persistedModel =
+      normalizedModel === existing.model ? normalizedModel : undefined;
     const now = Date.now();
 
-    const setClauses: string[] = ['updated_at = ?'];
+    const setClauses: string[] = ["updated_at = ?"];
     const params: (string | number)[] = [now];
 
     if (updates.title !== undefined) {
-      setClauses.push('title = ?');
+      setClauses.push("title = ?");
       params.push(updates.title);
     }
     if (updates.created_by !== undefined) {
-      setClauses.push('created_by = ?');
+      setClauses.push("created_by = ?");
       params.push(updates.created_by);
     }
     if (persistedModel !== undefined) {
-      setClauses.push('model = ?');
+      setClauses.push("model = ?");
       params.push(persistedModel);
     }
 
     params.push(id);
-    this.sql.exec(`UPDATE threads SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
+    this.sql.exec(
+      `UPDATE threads SET ${setClauses.join(", ")} WHERE id = ?`,
+      ...params,
+    );
 
     if (actorId) {
-      this.log('thread_admin_updated', actorId, id, updates);
+      this.log("thread_admin_updated", actorId, id, updates);
     }
 
     const updated = {
@@ -3049,11 +3980,17 @@ export class OrgDO extends DurableObject<DOEnv> {
       model: persistedModel ?? existing.model,
       updated_at: now,
     };
-    this.getInfo().then((info) => {
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
-    }).catch((err) => {
-      console.error('Failed to sync admin thread update to AdminIndex', err);
-    });
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync admin thread update to AdminIndex", err);
+      });
     return updated;
   }
 
@@ -3063,11 +4000,16 @@ export class OrgDO extends DurableObject<DOEnv> {
   deleteThread(id: string, actorId?: string): boolean {
     const existing = this.getThread(id);
     if (!existing) return false;
-    this.sql.exec('DELETE FROM threads WHERE id = ?', id);
+    this.sql.exec("DELETE FROM threads WHERE id = ?", id);
     if (actorId) {
-      this.log('thread_deleted', actorId, id, { workspace_id: existing.workspace_id });
+      this.log("thread_deleted", actorId, id, {
+        workspace_id: existing.workspace_id,
+      });
     }
-    dispatchAdminEvent(this.ctx, this.env, { type: 'thread_delete', payload: { id, workspace_id: existing.workspace_id } });
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "thread_delete",
+      payload: { id, workspace_id: existing.workspace_id },
+    });
     return true;
   }
 
@@ -3079,39 +4021,45 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return;
     const now = Date.now();
     this.sql.exec(
-      'UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1 WHERE id = ?',
+      "UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1 WHERE id = ?",
       now,
-      id
+      id,
     );
     const updated = {
       ...existing,
       updated_at: now,
       user_message_count: existing.user_message_count + 1,
     };
-    this.getInfo().then((info) => {
-      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
-    }).catch((err) => {
-      console.error('Failed to sync thread touch to AdminIndex', err);
-    });
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync thread touch to AdminIndex", err);
+      });
   }
 
   async validateChatThreadAccess(
     userId: string,
     workspaceId: string,
-    threadId: string
+    threadId: string,
   ): Promise<OrgChatThreadAccessResult> {
     const info = await this.getInfo();
     if (!info || info.archived) {
-      return { ok: false, reason: 'org_not_found' };
+      return { ok: false, reason: "org_not_found" };
     }
 
     if (!(await this.isMember(userId))) {
-      return { ok: false, reason: 'forbidden' };
+      return { ok: false, reason: "forbidden" };
     }
 
     const thread = this.getThread(threadId);
     if (!thread || thread.workspace_id !== workspaceId) {
-      return { ok: false, reason: 'thread_not_found' };
+      return { ok: false, reason: "thread_not_found" };
     }
 
     return {
@@ -3130,9 +4078,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     const searchPattern = `%${query}%`;
     return this.sql
       .exec(
-        'SELECT * FROM threads WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?',
+        "SELECT * FROM threads WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?",
         searchPattern,
-        resolvedLimit
+        resolvedLimit,
       )
       .toArray() as unknown as OrgThread[];
   }
@@ -3155,7 +4103,9 @@ export class OrgDO extends DurableObject<DOEnv> {
         created_by: string;
         created_at: number;
         updated_at: number;
-      }>("SELECT provider, credentials_encrypted, config, created_by, created_at, updated_at FROM llm_provider_config WHERE id = 'active'")
+      }>(
+        "SELECT provider, credentials_encrypted, config, created_by, created_at, updated_at FROM llm_provider_config WHERE id = 'active'",
+      )
       .toArray();
     return rows.length > 0 ? rows[0] : null;
   }
@@ -3164,7 +4114,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     provider: string,
     credentialsEncrypted: string,
     config: string,
-    createdBy: string
+    createdBy: string,
   ): void {
     const now = Date.now();
     this.sql.exec(
@@ -3181,7 +4131,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       config,
       createdBy,
       now,
-      now
+      now,
     );
   }
 
@@ -3193,24 +4143,27 @@ export class OrgDO extends DurableObject<DOEnv> {
   getActiveThreadIdsForByokChange(targetProviders: ChatHarness[]): string[] {
     this.ensureThreadSchemaColumns();
     const normalizedProviders = Array.from(
-      new Set(targetProviders.filter((provider): provider is ChatHarness => (
-        provider === 'claude' || provider === 'codex'
-      )))
+      new Set(
+        targetProviders.filter(
+          (provider): provider is ChatHarness =>
+            provider === "claude" || provider === "codex",
+        ),
+      ),
     );
     if (normalizedProviders.length === 0) {
       return [];
     }
 
     const activeSince = Date.now() - 30 * 60 * 1000;
-    const placeholders = normalizedProviders.map(() => '?').join(',');
+    const placeholders = normalizedProviders.map(() => "?").join(",");
     return this.sql
       .exec<{ id: string }>(
         `SELECT id FROM threads WHERE updated_at > ? AND provider IN (${placeholders}) ORDER BY updated_at DESC`,
         activeSince,
-        ...normalizedProviders
+        ...normalizedProviders,
       )
       .toArray()
-      .flatMap((row) => row.id ? [row.id] : []);
+      .flatMap((row) => (row.id ? [row.id] : []));
   }
 
   async notifyByokChanged(targetProviders: ChatHarness[]): Promise<number> {
@@ -3221,13 +4174,13 @@ export class OrgDO extends DurableObject<DOEnv> {
       await Promise.allSettled(
         batch.map((threadId) => {
           const chatThread = this.env.CHAT_THREAD.get(
-            this.env.CHAT_THREAD.idFromName(threadId)
+            this.env.CHAT_THREAD.idFromName(threadId),
           ) as unknown as {
             byokChanged(): Promise<void>;
           };
 
           return chatThread.byokChanged();
-        })
+        }),
       );
     }
 
@@ -3236,7 +4189,9 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   hasLlmProviderConfig(): boolean {
     const rows = this.sql
-      .exec<{ cnt: number }>("SELECT COUNT(*) as cnt FROM llm_provider_config WHERE id = 'active'")
+      .exec<{
+        cnt: number;
+      }>("SELECT COUNT(*) as cnt FROM llm_provider_config WHERE id = 'active'")
       .toArray();
     return (rows[0]?.cnt ?? 0) > 0;
   }
@@ -3249,14 +4204,23 @@ export class OrgDO extends DurableObject<DOEnv> {
     usage: ProxyUsageInput,
     provider?: string | null,
     model?: string | null,
-    tokenId?: string | null
+    tokenId?: string | null,
   ): void {
     const now = Date.now();
     const inputTokens = Math.max(0, Math.floor(usage.input_tokens ?? 0));
     const outputTokens = Math.max(0, Math.floor(usage.output_tokens ?? 0));
-    const totalTokens = Math.max(0, Math.floor(usage.total_tokens ?? inputTokens + outputTokens));
-    const cacheCreationTokens = Math.max(0, Math.floor(usage.cache_creation_input_tokens ?? 0));
-    const cacheReadTokens = Math.max(0, Math.floor(usage.cache_read_input_tokens ?? 0));
+    const totalTokens = Math.max(
+      0,
+      Math.floor(usage.total_tokens ?? inputTokens + outputTokens),
+    );
+    const cacheCreationTokens = Math.max(
+      0,
+      Math.floor(usage.cache_creation_input_tokens ?? 0),
+    );
+    const cacheReadTokens = Math.max(
+      0,
+      Math.floor(usage.cache_read_input_tokens ?? 0),
+    );
 
     this.sql.exec(
       `
@@ -3296,8 +4260,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       provider ?? null,
       model ?? null,
       tokenId ?? null,
-      now
+      now,
     );
   }
-
 }

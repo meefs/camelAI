@@ -279,7 +279,7 @@ async function notifyThreadMetadataChange(
 }
 
 function toDailySpendBillingPlan(status: string | null | undefined): string {
-  return status === 'paying' ? 'pro' : 'free';
+  return status === 'paying' || status === 'active' || status === 'trialing' || status === 'enterprise' ? 'pro' : 'free';
 }
 
 function toDailySpendPct(value: number, total: number): number {

@@ -363,6 +363,8 @@ func (u *UsageStore) initOrgSchema(ctx context.Context, db *sql.DB) error {
 			thread_id TEXT NOT NULL DEFAULT '',
 			model TEXT NOT NULL,
 			provider TEXT NOT NULL DEFAULT '',
+			billing_source TEXT NOT NULL DEFAULT 'hosted',
+			credit_chargeable INTEGER NOT NULL DEFAULT 0,
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -394,9 +396,49 @@ func (u *UsageStore) initOrgSchema(ctx context.Context, db *sql.DB) error {
 		}
 	}
 
+	if err := ensureUsageLogColumnExists(ctx, db, "billing_source", "TEXT NOT NULL DEFAULT 'hosted'"); err != nil {
+		return err
+	}
+	if err := ensureUsageLogColumnExists(ctx, db, "credit_chargeable", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
 	// Ensure the single spend row exists.
 	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO spend (id) VALUES (1)`)
 	return err
+}
+
+func ensureUsageLogColumnExists(ctx context.Context, db *sql.DB, columnName string, columnDef string) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(usage_log)`)
+	if err != nil {
+		return fmt.Errorf("inspect usage_log columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			valueType string
+			notNull   int
+			defaultV  sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &valueType, &notNull, &defaultV, &pk); err != nil {
+			return fmt.Errorf("scan usage_log column: %w", err)
+		}
+		if name == columnName {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate usage_log columns: %w", err)
+	}
+
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE usage_log ADD COLUMN %s %s`, columnName, columnDef)); err != nil {
+		return fmt.Errorf("alter usage_log add %s: %w", columnName, err)
+	}
+	return nil
 }
 
 // UsageRecord represents a single AI Gateway request's token usage and cost.
@@ -407,6 +449,8 @@ type UsageRecord struct {
 	ThreadID                 string
 	Model                    string
 	Provider                 string
+	BillingSource            string
+	CreditChargeable         bool
 	InputTokens              int64
 	OutputTokens             int64
 	CacheCreationInputTokens int64
@@ -429,6 +473,10 @@ func (u *UsageStore) RecordUsage(record UsageRecord) error {
 	defer cancel()
 
 	now := time.Now().UTC().UnixMilli()
+	billingSource := strings.TrimSpace(record.BillingSource)
+	if billingSource == "" {
+		billingSource = "hosted"
+	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -438,12 +486,12 @@ func (u *UsageStore) RecordUsage(record UsageRecord) error {
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO usage_log (
-			workspace_id, user_id, thread_id, model, provider,
+			workspace_id, user_id, thread_id, model, provider, billing_source, credit_chargeable,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			cost_usd, duration_ms, created_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.WorkspaceID, record.UserID, record.ThreadID,
-		record.Model, record.Provider,
+		record.Model, record.Provider, billingSource, boolToInt(record.CreditChargeable),
 		record.InputTokens, record.OutputTokens,
 		record.CacheCreationInputTokens, record.CacheReadInputTokens,
 		record.CostUSD, record.DurationMs, now,
@@ -476,6 +524,13 @@ func (u *UsageStore) RecordUsage(record UsageRecord) error {
 		logAnalyticsWarning("record usage", err)
 	}
 	return nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // OrgSpend holds lifetime totals for an org.
@@ -801,6 +856,14 @@ type UsageLogSum struct {
 
 // GetUsageLogSum returns aggregated totals for usage log entries in a date range.
 func (u *UsageStore) GetUsageLogSum(orgID string, fromMs, toMs int64) (UsageLogSum, error) {
+	return u.getUsageLogSum(orgID, fromMs, toMs, false)
+}
+
+func (u *UsageStore) GetCreditChargeableUsageLogSum(orgID string, fromMs, toMs int64) (UsageLogSum, error) {
+	return u.getUsageLogSum(orgID, fromMs, toMs, true)
+}
+
+func (u *UsageStore) getUsageLogSum(orgID string, fromMs, toMs int64, creditChargeableOnly bool) (UsageLogSum, error) {
 	if u == nil {
 		return UsageLogSum{}, nil
 	}
@@ -813,7 +876,7 @@ func (u *UsageStore) GetUsageLogSum(orgID string, fromMs, toMs int64) (UsageLogS
 	defer cancel()
 
 	var s UsageLogSum
-	err = db.QueryRowContext(ctx, `
+	query := `
 		SELECT COALESCE(SUM(cost_usd), 0),
 		       COUNT(*),
 		       COALESCE(SUM(input_tokens), 0),
@@ -821,9 +884,12 @@ func (u *UsageStore) GetUsageLogSum(orgID string, fromMs, toMs int64) (UsageLogS
 		       COALESCE(SUM(cache_creation_input_tokens), 0),
 		       COALESCE(SUM(cache_read_input_tokens), 0)
 		FROM usage_log
-		WHERE created_at_ms >= ? AND created_at_ms < ?`,
-		fromMs, toMs,
-	).Scan(
+		WHERE created_at_ms >= ? AND created_at_ms < ?`
+	args := []any{fromMs, toMs}
+	if creditChargeableOnly {
+		query += ` AND credit_chargeable = 1`
+	}
+	err = db.QueryRowContext(ctx, query, args...).Scan(
 		&s.TotalCostUSD, &s.TotalRequests,
 		&s.TotalInputTokens, &s.TotalOutputTokens,
 		&s.TotalCacheCreationInputTokens, &s.TotalCacheReadInputTokens,

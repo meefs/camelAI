@@ -362,13 +362,13 @@ func TestGetUsageLogSum(t *testing.T) {
 		OrgID: "org-1", Model: "claude-sonnet-4-5-20250929",
 		InputTokens: 1000, OutputTokens: 500,
 		CacheCreationInputTokens: 200, CacheReadInputTokens: 100,
-		CostUSD: 0.012,
+		CostUSD: 0.012, BillingSource: "hosted", CreditChargeable: true,
 	})
 	_ = store.RecordUsage(UsageRecord{
 		OrgID: "org-1", Model: "claude-opus-4-6",
 		InputTokens: 2000, OutputTokens: 1000,
 		CacheCreationInputTokens: 300, CacheReadInputTokens: 150,
-		CostUSD: 0.025,
+		CostUSD: 0.025, BillingSource: "byok", CreditChargeable: false,
 	})
 
 	now := time.Now().UTC().UnixMilli()
@@ -405,6 +405,17 @@ func TestGetUsageLogSum(t *testing.T) {
 	}
 	if sum.TotalRequests != 0 || sum.TotalCostUSD != 0 {
 		t.Fatalf("expected zero sum in future range, got %+v", sum)
+	}
+
+	chargeableSum, err := store.GetCreditChargeableUsageLogSum("org-1", 0, now+1000)
+	if err != nil {
+		t.Fatalf("get chargeable usage sum: %v", err)
+	}
+	if chargeableSum.TotalRequests != 1 {
+		t.Fatalf("expected 1 chargeable request, got %d", chargeableSum.TotalRequests)
+	}
+	if diff := chargeableSum.TotalCostUSD - 0.012; diff > 0.0001 || diff < -0.0001 {
+		t.Fatalf("expected ~0.012 chargeable cost, got %f", chargeableSum.TotalCostUSD)
 	}
 }
 

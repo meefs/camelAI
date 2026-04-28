@@ -42,8 +42,19 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { getContrastTextColor } from "@/lib/avatar";
+import { billingStatusBadgeVariant, billingStatusLabel } from "@/lib/billing";
 import { cn } from "@/lib/utils";
+import type { BillingStatus } from "@/types";
 import { RefreshCw } from "lucide-react";
+
+const ADMIN_BILLING_STATUSES: BillingStatus[] = [
+  "inactive",
+  "trialing",
+  "active",
+  "enterprise",
+  "past_due",
+  "canceled",
+];
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -154,6 +165,19 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     created_by: org.created_by,
     created_at: org.created_at,
     billing_status: org.billing_status,
+    billing_customer_id: org.billing_customer_id,
+    billing_subscription_id: org.billing_subscription_id,
+    billing_subscription_status: org.billing_subscription_status,
+    billing_trial_started_at: org.billing_trial_started_at,
+    billing_trial_ends_at: org.billing_trial_ends_at,
+    billing_credit_purchase_total_cents:
+      org.billing_credit_purchase_total_cents,
+    billing_credit_grant_total_cents: org.billing_credit_grant_total_cents,
+    billing_trial_credit_grant_cents: org.billing_trial_credit_grant_cents,
+    billing_trial_credit_granted_at: org.billing_trial_credit_granted_at,
+    billing_last_included_credit_invoice_id:
+      org.billing_last_included_credit_invoice_id,
+    billing_credit_usage_started_at: org.billing_credit_usage_started_at,
     archived: org.archived,
     archived_at: org.archived_at,
     archived_by: org.archived_by ?? null,
@@ -303,11 +327,21 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   if (intent === "updateOrg") {
     const name = formData.get("name") as string;
+    const billingStatus = String(formData.get("billingStatus") ?? "").trim();
     if (!name?.trim()) {
       return { error: "Organization name is required" };
     }
+    if (
+      !billingStatus ||
+      !ADMIN_BILLING_STATUSES.includes(billingStatus as BillingStatus)
+    ) {
+      return { error: "A valid billing status is required" };
+    }
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     await stub.updateName(name.trim(), "system-admin");
+    await stub.updateBillingState({
+      billing_status: billingStatus as BillingStatus,
+    });
     return { success: true };
   }
 
@@ -401,8 +435,15 @@ function AdminCustomDomainCard({
           <fetcher.Form method="post">
             <input type="hidden" name="intent" value="refreshCustomDomain" />
             <input type="hidden" name="includeActive" value="false" />
-            <Button type="submit" variant="outline" size="sm" disabled={loading}>
-              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+            <Button
+              type="submit"
+              variant="outline"
+              size="sm"
+              disabled={loading}
+            >
+              <RefreshCw
+                className={cn("size-3.5", loading && "animate-spin")}
+              />
               {loading ? "Refreshing" : "Refresh Pending SSL"}
             </Button>
           </fetcher.Form>
@@ -544,13 +585,9 @@ export default function AdminOrgDetailPage() {
                     </dt>
                     <dd>
                       <Badge
-                        variant={
-                          org.billing_status === "paying"
-                            ? "default"
-                            : "outline"
-                        }
+                        variant={billingStatusBadgeVariant(org.billing_status)}
                       >
-                        {org.billing_status === "paying" ? "Paying" : "Free"}
+                        {billingStatusLabel(org.billing_status)}
                       </Badge>
                     </dd>
                   </div>
@@ -636,48 +673,6 @@ export default function AdminOrgDetailPage() {
               <CardContent>
                 {usageSpend ? (
                   <div className="space-y-4">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {usageSpend.windows.map((w) => (
-                        <div
-                          key={w.label}
-                          className={cn(
-                            "rounded-lg border p-3",
-                            w.exceeded
-                              ? "border-destructive/50 bg-destructive/5"
-                              : "border-border",
-                          )}
-                        >
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium">
-                              {w.label} window
-                            </span>
-                            {w.exceeded ? (
-                              <Badge variant="destructive">Exceeded</Badge>
-                            ) : (
-                              <Badge variant="outline">OK</Badge>
-                            )}
-                          </div>
-                          <div className="text-lg font-semibold">
-                            ${w.spent_usd.toFixed(2)}{" "}
-                            <span className="text-sm font-normal text-muted-foreground">
-                              / ${w.limit_usd.toFixed(0)}
-                            </span>
-                          </div>
-                          <div className="mt-1.5 h-1.5 rounded-full bg-muted overflow-hidden">
-                            <div
-                              className={cn(
-                                "h-full rounded-full transition-all",
-                                w.exceeded ? "bg-destructive" : "bg-primary",
-                              )}
-                              style={{
-                                width: `${Math.min(100, (w.spent_usd / w.limit_usd) * 100)}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
                     {usageLog && usageLog.entries.length > 0 ? (
                       <div>
                         <p className="text-sm font-medium text-muted-foreground mb-2">
@@ -742,27 +737,48 @@ export default function AdminOrgDetailPage() {
                       <p className="text-sm font-medium">
                         Legacy proxy model-access flag
                       </p>
-                      <Badge variant={experimentalSettings.claude_proxy_models ? "default" : "outline"}>
-                        {experimentalSettings.claude_proxy_models ? "Allowed" : "Standard"}
+                      <Badge
+                        variant={
+                          experimentalSettings.claude_proxy_models
+                            ? "default"
+                            : "outline"
+                        }
+                      >
+                        {experimentalSettings.claude_proxy_models
+                          ? "Allowed"
+                          : "Standard"}
                       </Badge>
                     </div>
                     <p className="max-w-xl text-sm text-muted-foreground">
                       Implemented in April 2026 as a temporary override. New
                       proxy chats now show Claude by default without checking
                       this flag, while BYOK orgs remain scoped to their selected
-                      provider. This control remains for admin/API compatibility.
+                      provider. This control remains for admin/API
+                      compatibility.
                     </p>
                   </div>
                   <Form method="post">
-                    <input type="hidden" name="intent" value="updateExperimentalSettings" />
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="updateExperimentalSettings"
+                    />
                     <input
                       type="hidden"
                       name="claude_proxy_models"
-                      value={experimentalSettings.claude_proxy_models ? "false" : "true"}
+                      value={
+                        experimentalSettings.claude_proxy_models
+                          ? "false"
+                          : "true"
+                      }
                     />
                     <Button
                       type="submit"
-                      variant={experimentalSettings.claude_proxy_models ? "outline" : "default"}
+                      variant={
+                        experimentalSettings.claude_proxy_models
+                          ? "outline"
+                          : "default"
+                      }
                     >
                       {experimentalSettings.claude_proxy_models
                         ? "Disable Legacy Flag"
@@ -773,9 +789,7 @@ export default function AdminOrgDetailPage() {
               </CardContent>
             </Card>
 
-            <AdminCustomDomainCard
-              apps={customDomainApps}
-            />
+            <AdminCustomDomainCard apps={customDomainApps} />
 
             <Card>
               <CardHeader>

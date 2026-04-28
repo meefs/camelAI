@@ -198,5 +198,5 @@ export function isOrgExcludedByInternalDomains(
 }
 
 export function normalizeBillingStatus(status: string | null | undefined): 'active' | 'free' {
-  return status === 'paying' ? 'active' : 'free';
+  return status === 'paying' || status === 'active' || status === 'trialing' || status === 'enterprise' ? 'active' : 'free';
 }

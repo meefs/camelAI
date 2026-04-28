@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -1123,17 +1124,19 @@ func (s *Server) forwardClaudeDirect(
 	)
 
 	isMessagesEndpoint := strings.Contains(claudeEndpoint, "messages") && !strings.Contains(claudeEndpoint, "count_tokens")
+	billingDecision := BillingAccessDecision{BillingSource: billingSourceHosted}
 
-	// Budget enforcement: reject if org has exceeded its spend limit.
+	// Billing enforcement: reject if the org does not currently have access.
 	if isMessagesEndpoint {
-		if exceeded, msg := s.checkOrgBudget(threadContext.OrgID); exceeded {
-			s.trace("claude_direct_budget_exceeded", map[string]any{
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted)
+		if billingDecision.Denied {
+			s.trace("claude_direct_billing_denied", map[string]any{
 				"requestId":       requestID,
 				"callerContainer": caller.Name,
 				"orgId":           threadContext.OrgID,
 				"threadId":        threadContext.ThreadID,
 			})
-			errorJSON(w, msg, http.StatusTooManyRequests)
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
 			return
 		}
 	}
@@ -1305,7 +1308,7 @@ func (s *Server) forwardClaudeDirect(
 	}
 
 	if isMessagesEndpoint && usage.HasBillableTokens() {
-		go s.recordUsage(threadContext, usedProvider, usage, totalDurationMs)
+		go s.recordUsage(threadContext, usedProvider, billingDecision.BillingSource, billingDecision.CreditChargeable, usage, totalDurationMs)
 	}
 }
 
@@ -1392,25 +1395,153 @@ func (s *Server) doAnthropicRequest(ctx context.Context, rawBody []byte, srcHead
 	return resp, false, err
 }
 
-// checkOrgBudget checks all rolling spend windows for the org.
-// Returns true if any window is exceeded.
-func (s *Server) checkOrgBudget(orgID string) (exceeded bool, message string) {
-	exc, _, err := s.usage.CheckSpendLimits(orgID)
+type BillingAccessSnapshot struct {
+	OrgID                           string `json:"org_id"`
+	BillingStatus                   string `json:"billing_status"`
+	BillingSubscriptionStatus       string `json:"billing_subscription_status"`
+	BillingTrialEndsAt              *int64 `json:"billing_trial_ends_at"`
+	BillingCreditPurchaseTotalCents int64  `json:"billing_credit_purchase_total_cents"`
+	BillingCreditGrantTotalCents    int64  `json:"billing_credit_grant_total_cents"`
+	BillingCreditUsageStartedAt     *int64 `json:"billing_credit_usage_started_at"`
+}
+
+const (
+	billingSourceHosted = "hosted"
+	billingSourceBYOK   = "byok"
+)
+
+type BillingAccessDecision struct {
+	Denied           bool
+	StatusCode       int
+	Message          string
+	BillingSource    string
+	CreditChargeable bool
+}
+
+func (s *Server) fetchBillingAccessSnapshot(threadContext *ProxyThreadContext) (*BillingAccessSnapshot, error) {
+	workerBaseURL := normalizeWorkerBaseURL(firstNonEmpty(threadContext.WorkerBaseURL, s.cfg.WorkerBaseURL))
+	if workerBaseURL == "" {
+		return nil, errors.New("missing worker base URL")
+	}
+
+	targetURL := workerBaseURL + "/api/internal/billing/access"
+	forwardReq, err := http.NewRequest(http.MethodGet, targetURL, nil)
 	if err != nil {
-		log.Printf("[SandboxHost] budget check failed org=%s error=%v (allowing request)", orgID, err)
-		return false, ""
+		return nil, err
 	}
-	if exc == nil {
-		return false, ""
+	forwardReq.Header.Set("x-sandbox-secret", s.cfg.SandboxProxySecret)
+	forwardReq.Header.Set("x-chiridion-org-id", threadContext.OrgID)
+	forwardReq.Header.Set("x-chiridion-workspace-id", threadContext.WorkspaceID)
+	if threadContext.UserID != "" {
+		forwardReq.Header.Set("x-chiridion-user-id", threadContext.UserID)
 	}
-	return true, fmt.Sprintf(
-		"Usage limit exceeded: $%.2f spent in the last %s (limit $%.2f). Please try again later.",
-		exc.SpentUSD, exc.Label, exc.LimitUSD,
+	if threadContext.ThreadID != "" {
+		forwardReq.Header.Set("x-chiridion-thread-id", threadContext.ThreadID)
+	}
+
+	resp, err := s.httpClient.Do(forwardReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("billing access returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var snapshot BillingAccessSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
+}
+
+func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billingSource string) BillingAccessDecision {
+	decision := BillingAccessDecision{
+		BillingSource:    billingSource,
+		CreditChargeable: false,
+	}
+
+	snapshot, err := s.fetchBillingAccessSnapshot(threadContext)
+	if err != nil {
+		log.Printf("[SandboxHost] billing check failed org=%s thread=%s error=%v (allowing request)",
+			threadContext.OrgID, threadContext.ThreadID, err)
+		return decision
+	}
+	if snapshot == nil {
+		if billingSource == billingSourceBYOK {
+			return decision
+		}
+		decision.Denied = true
+		decision.StatusCode = http.StatusPaymentRequired
+		decision.Message = "Start a paid plan or bring your own API key to use camelAI."
+		return decision
+	}
+
+	switch snapshot.BillingStatus {
+	case "enterprise":
+		return decision
+	case "trialing":
+		if billingSource == billingSourceBYOK {
+			return decision
+		}
+		return s.checkCreditBalance(threadContext, snapshot, decision, "Trial credits are used up. Add credits in Billing to continue during your trial.")
+	case "active":
+		if billingSource == billingSourceBYOK {
+			return decision
+		}
+		return s.checkCreditBalance(threadContext, snapshot, decision, "No credits remaining. Buy more credits in Billing to continue.")
+	case "past_due":
+		decision.Denied = true
+		decision.StatusCode = http.StatusPaymentRequired
+		decision.Message = "Your subscription is past due. Update billing to continue."
+		return decision
+	case "canceled":
+		decision.Denied = true
+		decision.StatusCode = http.StatusPaymentRequired
+		decision.Message = "Your subscription was canceled. Start a new subscription to continue."
+		return decision
+	default:
+		if billingSource == billingSourceBYOK {
+			return decision
+		}
+		decision.Denied = true
+		decision.StatusCode = http.StatusPaymentRequired
+		decision.Message = "Start a paid plan to use hosted models, or bring your own API key."
+		return decision
+	}
+}
+
+func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot *BillingAccessSnapshot, decision BillingAccessDecision, deniedMessage string) BillingAccessDecision {
+	sum, err := s.usage.GetCreditChargeableUsageLogSum(
+		threadContext.OrgID,
+		0,
+		time.Now().UnixMilli(),
 	)
+	if err != nil {
+		log.Printf("[SandboxHost] billing credit usage sum failed org=%s thread=%s error=%v (allowing request)",
+			threadContext.OrgID, threadContext.ThreadID, err)
+		return decision
+	}
+
+	spentCents := int64(math.Round(sum.TotalCostUSD * 100))
+	totalCreditsCents := snapshot.BillingCreditPurchaseTotalCents + snapshot.BillingCreditGrantTotalCents
+	if totalCreditsCents-spentCents > 0 {
+		decision.CreditChargeable = true
+		return decision
+	}
+	decision.Denied = true
+	decision.StatusCode = http.StatusPaymentRequired
+	decision.Message = deniedMessage
+	return decision
 }
 
 // recordUsage persists token usage and cost to the state store.
-func (s *Server) recordUsage(tc *ProxyThreadContext, provider string, usage UsageTokens, durationMs int64) {
+func (s *Server) recordUsage(tc *ProxyThreadContext, provider string, billingSource string, creditChargeable bool, usage UsageTokens, durationMs int64) {
 	costUSD := usage.CostUSD()
 
 	record := state.UsageRecord{
@@ -1420,6 +1551,8 @@ func (s *Server) recordUsage(tc *ProxyThreadContext, provider string, usage Usag
 		ThreadID:                 tc.ThreadID,
 		Model:                    usage.Model,
 		Provider:                 provider,
+		BillingSource:            billingSource,
+		CreditChargeable:         creditChargeable,
 		InputTokens:              usage.InputTokens,
 		OutputTokens:             usage.OutputTokens,
 		CacheCreationInputTokens: usage.CacheCreationInputTokens,
@@ -1441,6 +1574,8 @@ func (s *Server) recordUsage(tc *ProxyThreadContext, provider string, usage Usag
 		"userId":                   tc.UserID,
 		"model":                    usage.Model,
 		"provider":                 provider,
+		"billingSource":            billingSource,
+		"creditChargeable":         creditChargeable,
 		"inputTokens":              usage.InputTokens,
 		"outputTokens":             usage.OutputTokens,
 		"cacheCreationInputTokens": usage.CacheCreationInputTokens,
@@ -1462,9 +1597,29 @@ func (s *Server) forwardClaudeToAnthropicDirect(
 	requestID string,
 	startedAt time.Time,
 ) {
+	claudeEndpoint := strings.TrimPrefix(
+		strings.Replace(proxy.UpstreamPath, "/api/claude/", "/", 1),
+		"/",
+	)
+	isMessagesEndpoint := strings.Contains(claudeEndpoint, "messages") && !strings.Contains(claudeEndpoint, "count_tokens")
+	billingDecision := BillingAccessDecision{BillingSource: billingSourceBYOK}
+	if req.Method == http.MethodPost && isMessagesEndpoint {
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK)
+		if billingDecision.Denied {
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+			return
+		}
+	}
+
+	rawBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
 	targetURL := "https://api.anthropic.com" + strings.Replace(proxy.UpstreamPath, "/api/claude", "", 1)
 
-	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, req.Body)
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, bytes.NewReader(rawBody))
 	if err != nil {
 		errorJSON(w, "Failed to create Anthropic request", http.StatusInternalServerError)
 		return
@@ -1493,7 +1648,22 @@ func (s *Server) forwardClaudeToAnthropicDirect(
 	copyHeaders(w.Header(), resp.Header)
 	applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
-	_ = copyResponseBody(w, resp.Body)
+	streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
+	usage, err := copyResponseBodyWithUsage(w, resp.Body, streaming)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.trace("byok_anthropic_direct_copy_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"threadId":        threadContext.ThreadID,
+			"error":           err.Error(),
+		})
+	}
+	if usage.Model == "" {
+		usage.Model = extractModelFromRequestBody(rawBody)
+	}
+	if isMessagesEndpoint && resp.StatusCode < 400 && usage.HasBillableTokens() {
+		go s.recordUsage(threadContext, "anthropic", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+	}
 }
 
 // forwardClaudeToBedrockDirect handles BYOK Bedrock requests by calling
@@ -1508,6 +1678,15 @@ func (s *Server) forwardClaudeToBedrockDirect(
 	requestID string,
 	startedAt time.Time,
 ) {
+	billingDecision := BillingAccessDecision{BillingSource: billingSourceBYOK}
+	if req.Method == http.MethodPost {
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK)
+		if billingDecision.Denied {
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+			return
+		}
+	}
+
 	rawBody, err := io.ReadAll(req.Body)
 	if err != nil {
 		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
@@ -1626,7 +1805,8 @@ func (s *Server) forwardClaudeToBedrockDirect(
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		applyStreamingResponseHeaders(w.Header(), "text/event-stream")
 		w.WriteHeader(resp.StatusCode)
-		if err := copyBedrockStreamToSSE(w, resp.Body); err != nil {
+		usage, err := copyBedrockStreamToSSEWithUsage(w, resp.Body)
+		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				s.trace("byok_bedrock_direct_copy_error", map[string]any{
 					"requestId":       requestID,
@@ -1636,11 +1816,18 @@ func (s *Server) forwardClaudeToBedrockDirect(
 				})
 			}
 		}
+		if usage.Model == "" {
+			usage.Model = modelStr
+		}
+		if resp.StatusCode < 400 && usage.HasBillableTokens() {
+			go s.recordUsage(threadContext, "bedrock", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+		}
 	} else {
 		copyHeaders(w.Header(), resp.Header)
 		applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
 		w.WriteHeader(resp.StatusCode)
-		if err := copyResponseBody(w, resp.Body); err != nil {
+		usage, err := copyNonStreamingWithUsage(w, resp.Body)
+		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				s.trace("byok_bedrock_direct_copy_error", map[string]any{
 					"requestId":       requestID,
@@ -1649,6 +1836,12 @@ func (s *Server) forwardClaudeToBedrockDirect(
 					"error":           err.Error(),
 				})
 			}
+		}
+		if usage.Model == "" {
+			usage.Model = modelStr
+		}
+		if resp.StatusCode < 400 && usage.HasBillableTokens() {
+			go s.recordUsage(threadContext, "bedrock", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
 		}
 	}
 }
@@ -1669,6 +1862,14 @@ func (s *Server) forwardOpenAIToAIGateway(
 	if !ok {
 		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
 		return
+	}
+	billingDecision := BillingAccessDecision{BillingSource: billingSourceHosted}
+	if req.Method == http.MethodPost {
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted)
+		if billingDecision.Denied {
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+			return
+		}
 	}
 
 	// Resolve model and determine gateway provider
@@ -1780,7 +1981,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 		if gatewayProvider == "openrouter" {
 			provider = "openrouter"
 		}
-		go s.recordUsage(threadContext, provider, usage, durationMs)
+		go s.recordUsage(threadContext, provider, billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
 	}
 }
 
@@ -1798,6 +1999,14 @@ func (s *Server) forwardOpenAIDirect(
 	if !ok {
 		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
 		return
+	}
+	billingDecision := BillingAccessDecision{BillingSource: billingSourceBYOK}
+	if req.Method == http.MethodPost {
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK)
+		if billingDecision.Denied {
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+			return
+		}
 	}
 
 	targetURL := "https://api.openai.com" + normalizedPath
@@ -1881,7 +2090,7 @@ func (s *Server) forwardOpenAIDirect(
 		usage.Model = extractModelFromRequestBody(rawBody)
 	}
 	if resp.StatusCode < 400 && usage.HasBillableTokens() {
-		go s.recordUsage(threadContext, "openai", usage, durationMs)
+		go s.recordUsage(threadContext, "openai", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
 	}
 }
 

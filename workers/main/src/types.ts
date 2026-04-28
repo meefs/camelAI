@@ -2,19 +2,26 @@
  * Shared types and constants for the main worker
  */
 
-import type { ChatEnv } from './durable-objects.js';
-import type { DOEnv } from './auth.js';
-import type { WorkspaceContainerEnv } from './workspace-container.js';
-import type { DataProxyEnv } from './data-proxy.js';
-import type { CfApiProxyEnv } from './cf-api-proxy.js';
-import type { McpEnv } from './mcp-handler.js';
-import type { WorkspaceDO } from './workspace.js';
-import type { WorkerLogsDO } from './worker-logs-do.js';
-import type { EmailHandleDO } from './email-handle-registry.js';
-import type { AppScreenshotJob } from './screenshot-queue.js';
-import type { SlackEventQueueMessage } from './slack-types.js';
+import type { ChatEnv } from "./durable-objects.js";
+import type { DOEnv } from "./auth.js";
+import type { WorkspaceContainerEnv } from "./workspace-container.js";
+import type { DataProxyEnv } from "./data-proxy.js";
+import type { CfApiProxyEnv } from "./cf-api-proxy.js";
+import type { McpEnv } from "./mcp-handler.js";
+import type { WorkspaceDO } from "./workspace.js";
+import type { WorkerLogsDO } from "./worker-logs-do.js";
+import type { EmailHandleDO } from "./email-handle-registry.js";
+import type { AppScreenshotJob } from "./screenshot-queue.js";
+import type { SlackEventQueueMessage } from "./slack-types.js";
 
-export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv, CfApiProxyEnv, McpEnv {
+export interface Env
+  extends
+    ChatEnv,
+    DOEnv,
+    WorkspaceContainerEnv,
+    DataProxyEnv,
+    CfApiProxyEnv,
+    McpEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
@@ -40,6 +47,18 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   RESEND_API_KEY?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
+  STRIPE_MODE?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_SUBSCRIPTION_PRICE_ID?: string;
+  STRIPE_STARTER_PRICE_ID?: string;
+  STRIPE_PRO_PRICE_ID?: string;
+  STRIPE_TEAM_PRICE_ID?: string;
+  STRIPE_CREDIT_PRICE_IDS?: string;
+  STRIPE_CREDIT_PRICE_ID?: string;
+  STRIPE_BILLING_PORTAL_CONFIGURATION_ID?: string;
+  BILLING_TRIAL_CREDIT_CENTS?: string;
+  BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
@@ -70,9 +89,9 @@ export interface Route {
 }
 
 // Re-export cookie constants from cookies.ts (single source of truth)
-export { SESSION_HEADER } from './cookies.js';
+export { SESSION_HEADER } from "./cookies.js";
 
 // New prefix with org-slug namespacing: script:{script-name}--{org-slug}
-export const SCRIPT_PREFIX = 'script:';
+export const SCRIPT_PREFIX = "script:";
 // Legacy prefix for backwards compatibility during migration
-export const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
+export const SCRIPT_ORG_PREFIX_LEGACY = "script_org:";

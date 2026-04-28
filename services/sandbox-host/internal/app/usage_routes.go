@@ -13,7 +13,7 @@ import (
 
 // Usage API routes (control port only):
 //
-//   GET  /v1/usage/orgs/{orgId}/spend   — lifetime totals + rolling window status
+//   GET  /v1/usage/orgs/{orgId}/spend   — lifetime totals
 //   GET  /v1/usage/orgs/{orgId}/limits  — effective spend limits
 //   PUT  /v1/usage/orgs/{orgId}/limits  — set per-org limit overrides (or clear)
 //   GET  /v1/usage/orgs/{orgId}/log         — recent usage log entries (paginated)
@@ -165,21 +165,11 @@ func (s *Server) handleGetOrgSpend(w http.ResponseWriter, orgID string) {
 		errorJSON(w, "Failed to read org spend", http.StatusInternalServerError)
 		return
 	}
-
-	_, windows, err := s.usage.CheckSpendLimits(orgID)
-	if err != nil {
-		errorJSON(w, "Failed to check spend limits", http.StatusInternalServerError)
-		return
-	}
-
-	if windows == nil {
-		windows = []state.WindowSpend{}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"org_id":         orgID,
 		"total_cost_usd": spend.TotalCostUSD,
 		"total_requests": spend.TotalRequests,
-		"windows":        windows,
+		"windows":        []state.WindowSpend{},
 	})
 }
 
@@ -307,7 +297,13 @@ func (s *Server) handleGetOrgUsageLogSum(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	sum, err := s.usage.GetUsageLogSum(orgID, fromMs, toMs)
+	chargeableOnly := query.Get("chargeable_only") == "1"
+	var sum state.UsageLogSum
+	if chargeableOnly {
+		sum, err = s.usage.GetCreditChargeableUsageLogSum(orgID, fromMs, toMs)
+	} else {
+		sum, err = s.usage.GetUsageLogSum(orgID, fromMs, toMs)
+	}
 	if err != nil {
 		errorJSON(w, "Failed to compute usage sum", http.StatusInternalServerError)
 		return
@@ -323,6 +319,7 @@ func (s *Server) handleGetOrgUsageLogSum(w http.ResponseWriter, req *http.Reques
 		"total_cache_read_input_tokens":     sum.TotalCacheReadInputTokens,
 		"from_ms":                           fromMs,
 		"to_ms":                             toMs,
+		"chargeable_only":                   chargeableOnly,
 	})
 }
 

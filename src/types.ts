@@ -23,13 +23,13 @@ export interface ThreadCreator {
 
 export type PreviewTarget =
   | {
-      kind: 'app';
+      kind: "app";
       scriptName: string;
       isPublic: boolean;
     }
   | {
-      kind: 'file';
-      source: 'workspace' | 'upload' | 'output';
+      kind: "file";
+      source: "workspace" | "upload" | "output";
       workspaceId: string;
       path: string;
       filename?: string;
@@ -45,14 +45,14 @@ export interface PreviewTab {
 
 // Content block types for structured message content
 export interface TextBlock {
-  type: 'text';
+  type: "text";
   text: string;
   itemId?: string;
   itemKind?: string;
 }
 
 export interface ToolUseBlock {
-  type: 'tool_use';
+  type: "tool_use";
   id: string;
   name: string;
   input: Record<string, unknown>;
@@ -60,7 +60,7 @@ export interface ToolUseBlock {
 }
 
 export interface ToolResultBlock {
-  type: 'tool_result';
+  type: "tool_result";
   tool_use_id: string;
   content: string | ContentBlock[];
   /** Marks a Task progress update (not the final Task result). */
@@ -70,7 +70,7 @@ export interface ToolResultBlock {
 }
 
 export interface ThinkingBlock {
-  type: 'thinking';
+  type: "thinking";
   thinking: string;
   signature?: string;
   itemId?: string;
@@ -80,17 +80,17 @@ export interface ThinkingBlock {
 }
 
 export interface RedactedThinkingBlock {
-  type: 'redacted_thinking';
+  type: "redacted_thinking";
 }
 
 export interface TeammateMessageBlock {
-  type: 'teammate_message';
+  type: "teammate_message";
   teammateId: string;
   content: string;
 }
 
 export interface TaskNotificationBlock {
-  type: 'task_notification';
+  type: "task_notification";
   taskId: string;
   outputFile: string;
   status: string;
@@ -109,7 +109,7 @@ export type ContentBlock =
 export interface Message {
   id: string;
   thread_id: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string | ContentBlock[];
   created_at: number;
   isStreaming?: boolean;
@@ -129,7 +129,7 @@ export interface SandboxFileInfo {
   name: string;
   absolutePath: string;
   relativePath: string;
-  type: 'file' | 'directory' | 'symlink' | 'other';
+  type: "file" | "directory" | "symlink" | "other";
   size: number;
   modifiedAt: string;
 }
@@ -144,7 +144,7 @@ export interface SandboxFileListing {
 export interface WorkspaceFileEntry {
   path: string;
   name: string;
-  type: SandboxFileInfo['type'];
+  type: SandboxFileInfo["type"];
   size: number;
   modifiedAt: string;
 }
@@ -164,7 +164,7 @@ export interface WorkspaceFileRead {
   size: number | null;
   mtime: string | null;
   isBinary: boolean;
-  encoding: 'utf-8' | 'base64';
+  encoding: "utf-8" | "base64";
   mimeType?: string | null;
 }
 
@@ -187,9 +187,16 @@ export interface WorkspaceOperationResult {
 // the org without making them public. Viewers can view apps but cannot: create apps,
 // use chat, access the computer tab, manage team settings, or perform any write
 // operations. They are read-only consumers of workspace output.
-export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
-export type WorkspaceAccessLevel = 'full' | 'none';
-export type BillingStatus = 'free' | 'paying';
+export type OrgRole = "owner" | "admin" | "member" | "viewer";
+export type WorkspaceAccessLevel = "full" | "none";
+export type BillingStatus =
+  | "inactive"
+  | "trialing"
+  | "active"
+  | "enterprise"
+  | "past_due"
+  | "canceled";
+export type BillingPlan = "free" | "starter" | "pro" | "team" | "enterprise";
 
 export interface Avatar {
   color: string;
@@ -224,6 +231,19 @@ export interface Organization {
   created_at: number;
   created_by: string;
   billing_status: BillingStatus;
+  billing_plan?: BillingPlan;
+  billing_seat_count?: number;
+  billing_customer_id: string | null;
+  billing_subscription_id: string | null;
+  billing_subscription_status: string | null;
+  billing_trial_started_at: number | null;
+  billing_trial_ends_at: number | null;
+  billing_credit_purchase_total_cents: number;
+  billing_credit_grant_total_cents: number;
+  billing_trial_credit_grant_cents: number;
+  billing_trial_credit_granted_at: number | null;
+  billing_last_included_credit_invoice_id: string | null;
+  billing_credit_usage_started_at: number | null;
   archived: boolean;
   archived_at: number | null;
   archived_by: string | null;
@@ -259,7 +279,7 @@ export interface Workspace {
   archived: boolean;
   archived_at: number | null;
   archived_by: string | null;
-  compute_tier: 'standard';
+  compute_tier: "standard";
   email_handle: string | null;
 }
 
@@ -397,13 +417,13 @@ export interface PaginationParams {
 
 // Integration types
 export type IntegrationCategory =
-  | 'databases'
-  | 'saas'
-  | 'ai_services'
-  | 'cloud_providers'
-  | 'communication';
+  | "databases"
+  | "saas"
+  | "ai_services"
+  | "cloud_providers"
+  | "communication";
 
-export type IntegrationAuthMethod = 'oauth2' | 'api_key';
+export type IntegrationAuthMethod = "oauth2" | "api_key";
 
 export interface Integration {
   id: string;
@@ -440,7 +460,7 @@ export interface CreateApiTokenInput {
 }
 
 // Worker/App types
-export type AppPreviewStatus = 'pending' | 'ready' | 'failed';
+export type AppPreviewStatus = "pending" | "ready" | "failed";
 
 export interface WorkerScript {
   script_name: string;
@@ -474,9 +494,9 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 }
 
 // LLM Provider BYOK types
-export type ChatHarness = 'claude' | 'codex';
-export type LlmProvider = 'anthropic' | 'bedrock' | 'openai';
-export type LlmModel = 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini';
+export type ChatHarness = "claude" | "codex";
+export type LlmProvider = "anthropic" | "bedrock" | "openai";
+export type LlmModel = "sonnet" | "opus" | "gpt-5.4" | "gpt-5.4-mini";
 export interface OrganizationExperimentalSettings {
   /** Internal allowlist for creating new Claude threads on the camelAI proxy. */
   claude_proxy_models: boolean;

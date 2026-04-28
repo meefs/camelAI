@@ -1,0 +1,87 @@
+import type { BillingStatus, Organization } from "@/types";
+
+export const BILLING_ACTIVE_STATUSES: BillingStatus[] = [
+  "trialing",
+  "active",
+  "enterprise",
+];
+
+export function isBillingActive(
+  status: BillingStatus | null | undefined,
+): boolean {
+  return (
+    status === "trialing" || status === "active" || status === "enterprise"
+  );
+}
+
+export function canUsePaidWorkspace(
+  status: BillingStatus | null | undefined,
+): boolean {
+  return isBillingActive(status);
+}
+
+export function billingStatusLabel(
+  status: BillingStatus | null | undefined,
+): string {
+  switch (status) {
+    case "trialing":
+      return "Trial";
+    case "active":
+      return "Active";
+    case "enterprise":
+      return "Enterprise";
+    case "past_due":
+      return "Past due";
+    case "canceled":
+      return "Canceled";
+    case "inactive":
+    default:
+      return "Free";
+  }
+}
+
+export function billingStatusBadgeVariant(
+  status: BillingStatus | null | undefined,
+): "default" | "secondary" | "outline" | "destructive" {
+  switch (status) {
+    case "trialing":
+    case "active":
+    case "enterprise":
+      return "default";
+    case "past_due":
+      return "destructive";
+    case "canceled":
+      return "outline";
+    case "inactive":
+    default:
+      return "secondary";
+  }
+}
+
+export function formatCreditBalance(cents: number): string {
+  return `${(cents / 100).toFixed(2)} credits`;
+}
+
+export function formatUsdFromCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+export function getBillingStatusDescription(
+  org: Pick<Organization, "billing_status">,
+): string {
+  switch (org.billing_status) {
+    case "trialing":
+      return "Your subscription trial is active with capped included credits.";
+    case "active":
+      return "Your subscription is active with included credits.";
+    case "enterprise":
+      return "Your organization is billed outside Stripe and does not need a subscription or credits.";
+    case "past_due":
+      return "Your subscription needs attention before chat can continue.";
+    case "canceled":
+      return "Your subscription was canceled.";
+    case "inactive":
+    default:
+      return "Free access supports bring-your-own-key LLM use only.";
+  }
+}

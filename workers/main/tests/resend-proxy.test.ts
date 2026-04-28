@@ -98,6 +98,16 @@ function buildEnv(overrides: {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn(() => workspaceStub),
     },
+    ORG: {
+      idFromName: vi.fn((id: string) => id),
+      get: vi.fn(() => ({
+        getInfo: vi.fn(async () => ({
+          id: 'org-1',
+          billing_plan: 'pro',
+          billing_status: 'active',
+        })),
+      })),
+    },
     USER: {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn((id: string) => userStubs.get(id) ?? makeUserStub('unknown@example.com')),

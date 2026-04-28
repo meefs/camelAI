@@ -855,7 +855,7 @@ function getEmailDomain(email: string | null | undefined): string | null {
 }
 
 function normalizeBillingStatus(status: string | null | undefined): 'active' | 'free' {
-  return status === 'paying' ? 'active' : 'free';
+  return status === 'paying' || status === 'active' || status === 'trialing' || status === 'enterprise' ? 'active' : 'free';
 }
 
 function formatMonthDay(timestampMs: number): string {
