@@ -113,6 +113,7 @@ export async function loadAdminThreadMessagesResponse(
   const streamResult = await container.readThreadMessagesStream(trimmedThreadId, {
     claudeSessionId: legacyClaudeSessionId,
     codexSessionId,
+    skipBanCheck: true,
   });
   if (!streamResult.success || !streamResult.response) {
     const status = streamResult.code?.startsWith('HTTP_')

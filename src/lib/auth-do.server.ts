@@ -812,7 +812,9 @@ export async function adminGetThreadWithMessages(
   }
 
   const [messages, preview_target] = await Promise.all([
-    getThreadMessages(context, threadId, thread.workspace_id),
+    getThreadMessages(context, threadId, thread.workspace_id, {
+      skipBanCheck: true,
+    }),
     getThreadPreviewTarget(context, threadId),
   ]);
 
