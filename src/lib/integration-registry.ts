@@ -59,6 +59,7 @@ export interface IntegrationDefinition {
   configSchema: ConfigField[];
   credentialSchema: CredentialField[];
   oauthConfig?: OAuthConfig;
+  requiresOutboundIpAllowlist?: boolean;
 }
 
 export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
@@ -72,6 +73,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Connect to a PostgreSQL database',
     category: 'databases',
     authMethod: 'api_key',
+    requiresOutboundIpAllowlist: true,
     configSchema: [
       { name: 'host', label: 'Host', type: 'string', required: true, placeholder: 'localhost' },
       { name: 'port', label: 'Port', type: 'number', required: true, default: 5432 },
@@ -104,6 +106,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Connect to a MySQL database',
     category: 'databases',
     authMethod: 'api_key',
+    requiresOutboundIpAllowlist: true,
     configSchema: [
       { name: 'host', label: 'Host', type: 'string', required: true, placeholder: 'localhost' },
       { name: 'port', label: 'Port', type: 'number', required: true, default: 3306 },
@@ -653,6 +656,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Cloud data warehouse',
     category: 'databases',
     authMethod: 'api_key',
+    requiresOutboundIpAllowlist: true,
     configSchema: [
       {
         name: 'account',
@@ -692,6 +696,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Fast analytics database',
     category: 'databases',
     authMethod: 'api_key',
+    requiresOutboundIpAllowlist: true,
     configSchema: [
       {
         name: 'host',
@@ -791,6 +796,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Document database',
     category: 'databases',
     authMethod: 'api_key',
+    requiresOutboundIpAllowlist: true,
     configSchema: [
       {
         name: 'cluster_url',
@@ -820,6 +826,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'In-memory data store',
     category: 'databases',
     authMethod: 'api_key',
+    requiresOutboundIpAllowlist: true,
     configSchema: [
       {
         name: 'host',

@@ -2168,6 +2168,7 @@ export default function Chat({
         integrationType: data.integrationType as string,
         suggestedName: data.suggestedName as string | undefined,
         message: data.message as string | undefined,
+        instructions: data.instructions as string | undefined,
         dynamicSchema: data.dynamicSchema as ConnectionSetupPromptData['dynamicSchema'],
         mcpDoId: data.mcpDoId as string | undefined,
       });

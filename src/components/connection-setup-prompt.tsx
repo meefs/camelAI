@@ -24,12 +24,14 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, ExternalLink, Plug } from 'lucide-react';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { SnowflakeCredentialsForm } from '@/components/snowflake-credentials-form';
+import { SandboxIpNotice } from '@/components/connections/sandbox-ip-notice';
 
 export interface ConnectionSetupPromptData {
   requestId: string;
   integrationType: string;
   suggestedName?: string;
   message?: string;
+  instructions?: string;
   dynamicSchema?: DynamicIntegrationSchema;
   mcpDoId?: string; // MCP DO ID for OAuth callback completion
 }
@@ -233,7 +235,8 @@ export function ConnectionSetupPrompt({
   const rawDescription = data.message || (isDynamic && dynamicSchema ? dynamicSchema.description : typeDef?.description) || '';
   // Normalize literal \n sequences (backslash + n) that LLMs sometimes emit in tool call args
   const description = rawDescription.replace(/\\n/g, '\n');
-  const rawInstructions = isDynamic && dynamicSchema ? dynamicSchema.instructions : undefined;
+  const rawInstructions =
+    data.instructions || (isDynamic && dynamicSchema ? dynamicSchema.instructions : undefined);
   const instructions = rawInstructions?.replace(/\\n/g, '\n');
 
   return (
@@ -264,7 +267,7 @@ export function ConnectionSetupPrompt({
                 </Alert>
               )}
 
-              {/* Instructions for dynamic integrations (rendered as markdown) */}
+              {/* Tool-provided instructions rendered as markdown */}
               {instructions && (
                 <div className="rounded-md border bg-muted/50 p-3 text-sm overflow-x-auto">
                   <MarkdownRenderer content={instructions} />
@@ -355,6 +358,8 @@ export function ConnectionSetupPrompt({
                   )}
                 </div>
               ))}
+
+              {!isDynamic && typeDef?.requiresOutboundIpAllowlist && <SandboxIpNotice />}
 
               {/* Static credential fields (non-dynamic mode, non-OAuth with flow) */}
               {!isDynamic && !isOAuthWithFlow && typeDef && typeDef.credentialSchema.length > 0 && (

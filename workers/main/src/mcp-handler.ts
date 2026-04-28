@@ -1184,7 +1184,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     // Prompt user to set up a connection via UI modal
     this.server.tool(
       'prompt_connection_setup',
-      'Prompt the user to set up a new integration/connection through a UI modal in the chat interface. This allows the user to securely enter credentials without exposing them in the chat. The tool will wait for the user to complete the setup and return the result. For custom integrations, use integration_type="other" with the fields parameter to define custom credential fields.',
+      'Prompt the user to set up a new integration/connection through a UI modal in the chat interface. This allows the user to securely enter credentials without exposing them in the chat. The tool will wait for the user to complete the setup and return the result. For direct database integrations, include a note in instructions reminding the user to allowlist 20.46.233.68 on their database firewall. For custom integrations, use integration_type="other" with the fields parameter to define custom credential fields.',
       {
         integration_type: z
           .string()
@@ -1285,6 +1285,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                 integrationType: integration_type,
                 suggestedName: defaultName,
                 message,
+                instructions,
                 createdAt: Date.now(),
                 // Callback info for RPC
                 mcpDoId,

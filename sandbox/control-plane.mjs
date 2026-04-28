@@ -345,6 +345,8 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 
 Integration credentials auto-sync to deployed workers as secrets.
 
+Outbound DB traffic from \`DATA_PROXY_URL\` and user-provided database connections (postgres, mysql, mssql, clickhouse, mongodb, redis, snowflake) egresses from \`20.46.233.68\`. If a connection times out or is refused, tell the user to allowlist \`20.46.233.68\` on their database firewall or VPC security group.
+
 If environment variables (especially \`INT_*\` integration credentials) appear stale or missing during a session, manually re-source the env file:
 \`\`\`bash
 set -a && source "$CLAUDE_ENV_FILE" && set +a
