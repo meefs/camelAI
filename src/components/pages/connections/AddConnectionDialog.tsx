@@ -25,6 +25,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, ExternalLink } from 'lucide-react';
 import { SnowflakeCredentialsForm } from '@/components/snowflake-credentials-form';
+import { SandboxIpNotice } from '@/components/connections/sandbox-ip-notice';
 
 interface AddConnectionDialogProps {
   open: boolean;
@@ -200,6 +201,8 @@ export function AddConnectionDialog({
                 )}
               </div>
             ))}
+
+            {typeDef.requiresOutboundIpAllowlist && <SandboxIpNotice />}
 
             {/* Credential fields */}
             {typeDef.credentialSchema.length > 0 && (

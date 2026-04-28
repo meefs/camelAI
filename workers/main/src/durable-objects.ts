@@ -58,6 +58,7 @@ export interface ConnectionSetupRequest {
   integrationType: string; // Required: the integration type to set up
   suggestedName?: string; // Optional: suggested name for the connection
   message?: string; // Optional: message to show user
+  instructions?: string; // Optional: markdown setup instructions to show user
   createdAt: number;
   dynamicSchema?: DynamicIntegrationSchema; // Optional: custom fields for "other" type
 }
@@ -144,6 +145,7 @@ interface PendingConnectionSetupInfo {
   integrationType: string;
   suggestedName?: string;
   message?: string;
+  instructions?: string;
   dynamicSchema?: DynamicIntegrationSchema;
 }
 
@@ -943,6 +945,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         integrationType: body.integrationType,
         suggestedName: body.suggestedName,
         message: body.message,
+        instructions: body.instructions,
         dynamicSchema: body.dynamicSchema,
       };
       this.pendingConnectionSetups.set(requestId, pendingInfo);
@@ -954,6 +957,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         integrationType: body.integrationType,
         suggestedName: body.suggestedName,
         message: body.message,
+        instructions: body.instructions,
         dynamicSchema: body.dynamicSchema,
         mcpDoId,
       });
@@ -3069,6 +3073,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         integrationType: info.integrationType,
         suggestedName: info.suggestedName,
         message: info.message,
+        instructions: info.instructions,
         dynamicSchema: info.dynamicSchema,
         mcpDoId: info.mcpDoId,
       });
