@@ -67,7 +67,9 @@ bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
 bun run deploy:bedrock-provider:prod
 bun run deploy:go:sandbox-host
+bun run deploy:go:sandbox-host:staging
 bun run deploy:go:data-proxy
+bun run deploy:go:data-proxy:staging
 ```
 
 ## Frontend Conventions
@@ -172,6 +174,8 @@ waitUntil(
 
 - Go service code lives in `services/sandbox-host/`.
 - The host manages Docker + gVisor lifecycle, workspace filesystem operations, chat transcript retrieval, OpenAI proxying/usage tracking, and data proxy forwarding.
+- Prod and staging sandbox-hosts should be separate VMs/VPC services. Prod SSH target is `chiridion-vm` (`20.46.233.68`, Central US). Staging SSH target is `chiridion-vm-staging` (`172.206.70.242`, East US 2). Keep deploys explicit with `bun run deploy:go:sandbox-host:prod` or `bun run deploy:go:sandbox-host:staging`.
+- Terraform examples for the Azure sandbox-host environments live in `infra/`; see `infra/README.md`, `infra/prod.tfvars.example`, and `infra/staging.tfvars.example`.
 - Run `bun run test:sandbox-host` for Go changes.
 - Local sandbox-host development uses `bun run dev:sandbox-host`.
 

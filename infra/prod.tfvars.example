@@ -1,0 +1,33 @@
+environment       = "prod"
+location          = "centralus"
+availability_zone = "1"
+vm_size           = "Standard_E64as_v7"
+admin_username    = "chiridion"
+ssh_public_key    = "ssh-ed25519 AAAA... user@host"
+os_disk_size_gb   = 128
+
+sandbox_data_disk_size_gb = 10240
+sandbox_data_disk_iops    = 20000
+sandbox_data_disk_mbps    = 1200
+sandbox_data_disk_lun     = 0
+
+# Restrict SSH to your IP in production.
+ssh_allowed_cidr = "*"
+
+# Cloudflare tunnel token used by cloudflared on the VM.
+cloudflared_tunnel_token = "eyJ...replace-me..."
+
+# Sandbox host auth. Must match the prod Worker secret.
+sandbox_proxy_secret = "replace-with-prod-hex-secret"
+sandbox_proxy_port   = 8081
+
+# R2 credentials for sandbox-host.
+r2_access_key_id     = "replace-with-r2-access-key-id"
+r2_secret_access_key = "replace-with-r2-secret-access-key"
+r2_account_id        = "85bbd288051330fb51ee1c86031a299b"
+r2_bucket_name       = "chiridion-sandbox"
+
+# AI Gateway credentials for sandbox-host OpenAI-compatible proxy.
+cf_account_id    = "85bbd288051330fb51ee1c86031a299b"
+cf_gateway_name  = "chiridion"
+cf_gateway_token = "replace-with-prod-cf-gateway-token"

@@ -38,9 +38,15 @@
 		"dev:sandbox-host": "node scripts/dev-sandbox-host.mjs",
 		"test:sandbox-host": "cd services/sandbox-host && CGO_ENABLED=0 go test ./...",
 		"build:renderer": "vite build --config vite.renderer.config.ts",
-		"deploy:go": "bash scripts/deploy-go-services.sh",
-		"deploy:go:sandbox-host": "bash scripts/deploy-go-services.sh sandbox-host",
-		"deploy:go:data-proxy": "bash scripts/deploy-go-services.sh data-proxy"
+		"deploy:go": "bash scripts/deploy-go-services.sh --env prod",
+		"deploy:go:prod": "bash scripts/deploy-go-services.sh --env prod",
+		"deploy:go:staging": "bash scripts/deploy-go-services.sh --env staging",
+		"deploy:go:sandbox-host": "bash scripts/deploy-go-services.sh --env prod sandbox-host",
+		"deploy:go:sandbox-host:prod": "bash scripts/deploy-go-services.sh --env prod sandbox-host",
+		"deploy:go:sandbox-host:staging": "bash scripts/deploy-go-services.sh --env staging sandbox-host",
+		"deploy:go:data-proxy": "bash scripts/deploy-go-services.sh --env prod data-proxy",
+		"deploy:go:data-proxy:prod": "bash scripts/deploy-go-services.sh --env prod data-proxy",
+		"deploy:go:data-proxy:staging": "bash scripts/deploy-go-services.sh --env staging data-proxy"
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.71.2",

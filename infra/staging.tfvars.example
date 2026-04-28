@@ -1,0 +1,34 @@
+environment       = "staging"
+location          = "eastus2"
+availability_zone = "3"
+vm_size           = "Standard_E8as_v7"
+admin_username    = "chiridion"
+ssh_public_key    = "ssh-ed25519 AAAA... user@host"
+os_disk_size_gb   = 128
+
+sandbox_data_disk_size_gb = 1024
+sandbox_data_disk_iops    = 3000
+sandbox_data_disk_mbps    = 125
+sandbox_data_disk_lun     = 0
+
+# Restrict this once the staging host is stable.
+ssh_allowed_cidr = "*"
+
+# Use a staging-only Cloudflare tunnel/VPC service.
+cloudflared_tunnel_token = "eyJ...replace-me..."
+
+# Sandbox host auth. Must match the staging Worker secret.
+sandbox_proxy_secret = "replace-with-staging-hex-secret"
+sandbox_proxy_port   = 8081
+
+# Prefer a staging-only R2 bucket when available. The current Worker config
+# still points at chiridion-sandbox, so keep this aligned with wrangler staging.
+r2_access_key_id     = "replace-with-r2-access-key-id"
+r2_secret_access_key = "replace-with-r2-secret-access-key"
+r2_account_id        = "85bbd288051330fb51ee1c86031a299b"
+r2_bucket_name       = "chiridion-sandbox"
+
+# AI Gateway credentials for sandbox-host OpenAI-compatible proxy.
+cf_account_id    = "85bbd288051330fb51ee1c86031a299b"
+cf_gateway_name  = "chiridion"
+cf_gateway_token = "replace-with-staging-cf-gateway-token"

@@ -1,19 +1,73 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VM="chiridion-vm"
+ENVIRONMENT="prod"
+TARGET="all"
+VM=""
 REMOTE_BUILD="/tmp/chiridion-build"
 LOCAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
-  echo "Usage: $0 [sandbox-host|data-proxy|all]"
+  echo "Usage: $0 [--env prod|staging] [--host ssh-target] [sandbox-host|data-proxy|all]"
   echo ""
-  echo "Deploy Go services to the Azure VM."
+  echo "Deploy Go services to the Azure sandbox-host VM."
+  echo ""
+  echo "Options:"
+  echo "  --env ENV       Deploy target environment. Defaults to prod."
+  echo "  --host HOST     Override SSH target. Also available via SANDBOX_GO_DEPLOY_HOST."
+  echo ""
+  echo "Targets:"
   echo "  sandbox-host  - Deploy sandbox host only"
   echo "  data-proxy    - Deploy data proxy only"
   echo "  all           - Deploy both (default)"
   exit 1
 }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      if [[ $# -lt 2 ]]; then
+        usage
+      fi
+      ENVIRONMENT="${2:-}"
+      shift 2
+      ;;
+    --host)
+      if [[ $# -lt 2 ]]; then
+        usage
+      fi
+      VM="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      ;;
+    sandbox-host|data-proxy|all)
+      TARGET="$1"
+      shift
+      ;;
+    *)
+      usage
+      ;;
+  esac
+done
+
+if [[ -z "$ENVIRONMENT" ]]; then
+  usage
+fi
+
+case "$ENVIRONMENT" in
+  prod)
+    VM="${VM:-${SANDBOX_GO_DEPLOY_HOST:-chiridion-vm}}"
+    ;;
+  staging)
+    VM="${VM:-${SANDBOX_GO_DEPLOY_HOST:-chiridion-vm-staging}}"
+    ;;
+  *)
+    echo "Unknown environment: $ENVIRONMENT"
+    usage
+    ;;
+esac
 
 # Resolve service config by name
 service_pkg() {
@@ -35,8 +89,6 @@ service_unit() {
   esac
 }
 
-TARGET="${1:-all}"
-
 if [[ "$TARGET" != "all" && "$TARGET" != "sandbox-host" && "$TARGET" != "data-proxy" ]]; then
   usage
 fi
@@ -48,6 +100,7 @@ else
   TARGETS=("$TARGET")
 fi
 
+echo "==> Deploying Go services to $ENVIRONMENT ($VM)..."
 echo "==> Syncing Go source to $VM..."
 rsync -az --delete \
   "$LOCAL_ROOT/services/sandbox-host/" \
