@@ -68,7 +68,7 @@ const PROVIDER_CARD_OPTIONS: Array<{
   },
   {
     value: "anthropic",
-    label: "Anthropic (recommended)",
+    label: "Anthropic",
     description: "Uses your Anthropic key for Claude turns",
   },
   {
