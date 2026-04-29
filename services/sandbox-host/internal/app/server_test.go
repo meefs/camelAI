@@ -860,6 +860,50 @@ func TestForwardOpenAICompatibleDirectPreservesModelForOpenRouter(t *testing.T) 
 	}
 }
 
+func TestForwardOpenAIDirectUsesV1ResponsesPath(t *testing.T) {
+	var capturedPath string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"response","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		httpClient: upstream.Client(),
+		containers: container.NewTestManager(),
+	}
+
+	originalTransport := server.httpClient.Transport
+	server.httpClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		req.URL.Scheme = "https"
+		req.URL.Host = strings.TrimPrefix(upstream.URL, "https://")
+		return originalTransport.RoundTrip(req)
+	})
+
+	body := `{"model":"gpt-5.4","input":"hi"}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	thread := testThreadContext()
+	thread.ByokOpenAIKey = "test-openai-key"
+	server.forwardOpenAIDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"}, thread, testCaller(), "test-req-openai-direct-responses", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/v1/responses" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/v1/responses")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
 type chunkReader struct {
 	chunks [][]byte
 	index  int
