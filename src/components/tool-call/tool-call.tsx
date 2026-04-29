@@ -6,6 +6,7 @@ import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { ToolCallDetails } from './tool-details';
+import { AppLink } from './app-link';
 import { FileLink } from './file-link';
 import { getToolStatus, ratchetToolStatusForIdentity, type ToolStatus } from './tool-status';
 import { getToolSummaryParts } from './tool-summary';
@@ -54,6 +55,21 @@ function ToolCallSummary({
     () => getToolSummaryParts(tool, result, isStreaming, status),
     [tool, result, isStreaming, status]
   );
+
+  if (parts.appPreview && parts.filename) {
+    return (
+      <span className="tool-call__text min-w-0 flex-1 truncate">
+        {parts.action}{' '}
+        <AppLink
+          scriptName={parts.appPreview.scriptName}
+          isPublic={parts.appPreview.isPublic}
+          className="inline-flex max-w-full min-w-0"
+        >
+          <span className="truncate">{parts.filename}</span>
+        </AppLink>
+      </span>
+    );
+  }
 
   if (!parts.path || !parts.filename) {
     if (parts.filename && !parts.path) {

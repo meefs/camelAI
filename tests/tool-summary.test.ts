@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolUseBlock } from '@/types';
+import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { getToolSummary, getToolSummaryParts } from '@/components/tool-call/tool-summary';
 
 function makeTeamCreateTool(input: Record<string, unknown> = {}): ToolUseBlock {
@@ -44,6 +44,23 @@ function makeWriteTool(input: Record<string, unknown> = {}): ToolUseBlock {
     id: 'tool_write',
     name: 'Write',
     input,
+  };
+}
+
+function makeMcpTool(name: string, input: Record<string, unknown> = {}): ToolUseBlock {
+  return {
+    type: 'tool_use',
+    id: `tool_${name}`,
+    name,
+    input,
+  };
+}
+
+function makeToolResult(content: string): ToolResultBlock {
+  return {
+    type: 'tool_result',
+    tool_use_id: 'tool_result',
+    content,
   };
 }
 
@@ -136,6 +153,113 @@ describe('getToolSummaryParts tense follows status', () => {
     const summary = getToolSummaryParts(tool, undefined, false, 'running');
     expect(summary.action).toBe('Creating');
     expect(summary.filename).toBe('new-file.ts');
+  });
+});
+
+describe('getToolSummaryParts set-preview MCP tools', () => {
+  it('shows generic opening copy while set_file_preview is running without a path', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview');
+    const summary = getToolSummaryParts(tool, undefined, false, 'running');
+
+    expect(summary).toEqual({
+      action: 'Opening preview...',
+    });
+  });
+
+  it('shows the filename while set_file_preview is running with a path', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview', {
+      path: '/home/claude/src/app.tsx',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'running');
+
+    expect(summary).toEqual({
+      action: 'Opening preview',
+      filename: 'app.tsx',
+      path: '/home/claude/src/app.tsx',
+    });
+  });
+
+  it('renders set_file_preview as a clickable file summary source', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview', {
+      path: '/home/claude/src/app.tsx',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'app.tsx',
+      path: '/home/claude/src/app.tsx',
+    });
+  });
+
+  it('shows file preview error copy with the filename', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview', {
+      path: '/home/claude/src/app.tsx',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'error');
+
+    expect(summary).toEqual({
+      action: 'Failed to preview',
+      filename: 'app.tsx',
+      path: '/home/claude/src/app.tsx',
+    });
+  });
+
+  it('shows the script name while set_app_preview is running', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_app_preview', {
+      script_name: 'my-todo-app',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'running');
+
+    expect(summary).toEqual({
+      action: 'Opening preview',
+      filename: 'my-todo-app',
+    });
+  });
+
+  it('renders set_app_preview with an app preview target when is_public is parseable', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_app_preview', {
+      script_name: 'my-todo-app',
+    });
+    const result = makeToolResult(JSON.stringify({
+      success: true,
+      app: {
+        name: 'my-todo-app',
+        url: 'https://my-todo-app.camelai.app',
+        is_public: true,
+      },
+    }));
+    const summary = getToolSummaryParts(tool, result, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'my-todo-app',
+      appPreview: { scriptName: 'my-todo-app', isPublic: true },
+    });
+  });
+
+  it('shows app preview error copy with the script name', () => {
+    const tool = makeMcpTool('mcp__chiridion-mcp__set_app_preview', {
+      script_name: 'my-todo-app',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'error');
+
+    expect(summary).toEqual({
+      action: 'Failed to preview',
+      filename: 'my-todo-app',
+    });
+  });
+
+  it('leaves set_app_preview plain when is_public cannot be determined', () => {
+    const tool = makeMcpTool('set_app_preview', {
+      script_name: 'my-private-app',
+    });
+    const summary = getToolSummaryParts(tool, makeToolResult('not json'), false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'my-private-app',
+    });
   });
 });
 
