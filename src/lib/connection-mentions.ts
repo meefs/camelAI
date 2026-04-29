@@ -1,3 +1,5 @@
+import { getIntegrationDefinition } from './integration-registry';
+
 /**
  * Shared utilities for connection (@-mention) parsing, slugging, and expansion.
  *
@@ -41,6 +43,52 @@ export function slug(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+/**
+ * Rank connections for the live @-mention menu. Empty queries are alphabetic;
+ * typed queries prefer name prefixes, then integration/display-name prefixes,
+ * then substring matches across all three fields.
+ */
+export function rankMentionableConnections<T extends MentionableIntegration>(
+  connections: ReadonlyArray<T>,
+  query: string,
+): T[] {
+  const q = query.toLowerCase();
+  if (!q) {
+    return [...connections].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+    );
+  }
+
+  const tiers: [T[], T[], T[]] = [[], [], []];
+
+  for (const connection of connections) {
+    const name = connection.name.toLowerCase();
+    const type = connection.integration_type.toLowerCase();
+    const displayName = getIntegrationDefinition(connection.integration_type)
+      ?.displayName.toLowerCase() ?? '';
+
+    if (name.startsWith(q)) {
+      tiers[0].push(connection);
+    } else if (type.startsWith(q) || displayName.startsWith(q)) {
+      tiers[1].push(connection);
+    } else if (
+      name.includes(q) ||
+      type.includes(q) ||
+      displayName.includes(q)
+    ) {
+      tiers[2].push(connection);
+    }
+  }
+
+  for (const tier of tiers) {
+    tier.sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+    );
+  }
+
+  return [...tiers[0], ...tiers[1], ...tiers[2]];
 }
 
 /**

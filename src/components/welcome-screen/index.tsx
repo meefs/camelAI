@@ -422,6 +422,8 @@ export function WelcomeScreen({
             onModelChange={onModelChange}
             modelOptions={modelOptions}
             modelDisabled={isCreatingThread}
+            mentionableConnections={connections}
+            onMentionAddNewClick={() => navigate('/connections')}
           />
         )}
       </AnimatedPlaceholder>

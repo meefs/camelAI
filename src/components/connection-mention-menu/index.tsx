@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/popover';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { getIntegrationDefinition } from '@/lib/integration-registry';
+import { rankMentionableConnections } from '@/lib/connection-mentions';
 import type { Integration } from '@/types';
 
 export interface ConnectionMentionMenuProps {
@@ -32,44 +33,6 @@ export interface ConnectionMentionMenuProps {
 
 const ADD_CONNECTION_VALUE = '__add_connection__';
 
-function rankConnections(connections: Integration[], query: string): Integration[] {
-  if (!query) {
-    return [...connections].sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
-    );
-  }
-
-  const q = query.toLowerCase();
-  const tiers: Record<number, Integration[]> = { 0: [], 1: [], 2: [] };
-
-  for (const conn of connections) {
-    const name = conn.name.toLowerCase();
-    const type = conn.integration_type.toLowerCase();
-    const def = getIntegrationDefinition(conn.integration_type);
-    const display = def?.displayName.toLowerCase() ?? '';
-
-    if (name.startsWith(q)) {
-      tiers[0].push(conn);
-    } else if (type.startsWith(q) || display.startsWith(q)) {
-      tiers[1].push(conn);
-    } else if (
-      name.includes(q) ||
-      type.includes(q) ||
-      display.includes(q)
-    ) {
-      tiers[2].push(conn);
-    }
-  }
-
-  for (const tier of Object.values(tiers)) {
-    tier.sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
-    );
-  }
-
-  return [...tiers[0], ...tiers[1], ...tiers[2]];
-}
-
 export function ConnectionMentionMenu({
   open,
   query,
@@ -82,7 +45,7 @@ export function ConnectionMentionMenu({
   onAddNewClick,
 }: ConnectionMentionMenuProps) {
   const filtered = useMemo(
-    () => rankConnections(connections, query),
+    () => rankMentionableConnections(connections, query),
     [connections, query],
   );
 

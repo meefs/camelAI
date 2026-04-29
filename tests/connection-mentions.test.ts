@@ -3,6 +3,7 @@ import {
   buildSlugMap,
   expandMentions,
   parseMentions,
+  rankMentionableConnections,
   slug,
   slugForIntegration,
   type MentionableIntegration,
@@ -62,6 +63,30 @@ describe('slugForIntegration', () => {
     const map = buildSlugMap([a, b]);
     expect(slugForIntegration(a, map)).toBe('prod');
     expect(slugForIntegration(b, map)).toBe('prod-2');
+  });
+});
+
+describe('rankMentionableConnections', () => {
+  const integrations = [
+    fix({ id: 'stripe', name: 'Stripe Live', integration_type: 'stripe' }),
+    fix({ id: 'sales', name: 'Sales DB', integration_type: 'postgres' }),
+    fix({ id: 'post', name: 'Post Analytics', integration_type: 'stripe' }),
+    fix({ id: 'inventory', name: 'Inventory DB', integration_type: 'postgres' }),
+  ];
+
+  it('sorts alphabetically for an empty query', () => {
+    expect(rankMentionableConnections(integrations, '').map((item) => item.id))
+      .toEqual(['inventory', 'post', 'sales', 'stripe']);
+  });
+
+  it('ranks name prefixes before integration type/display name prefixes', () => {
+    expect(rankMentionableConnections(integrations, 'post').map((item) => item.id))
+      .toEqual(['post', 'inventory', 'sales']);
+  });
+
+  it('matches registry display names', () => {
+    expect(rankMentionableConnections(integrations, 'postgresql').map((item) => item.id))
+      .toEqual(['inventory', 'sales']);
   });
 });
 

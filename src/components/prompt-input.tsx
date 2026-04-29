@@ -19,7 +19,11 @@ import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
 import type { Integration, LlmModel } from '@/types';
 import { ConnectionMentionMenu } from '@/components/connection-mention-menu';
 import { useMentionTrigger } from '@/components/connection-mention-menu/use-mention-trigger';
-import { buildSlugMap, slugForIntegration } from '@/lib/connection-mentions';
+import {
+  buildSlugMap,
+  rankMentionableConnections,
+  slugForIntegration,
+} from '@/lib/connection-mentions';
 
 interface PromptInputProps {
   value: string;
@@ -153,14 +157,10 @@ export function PromptInput({
   );
 
   const filteredMentionConnections = useMemo(() => {
-    const q = mentionTrigger.query;
-    const all = mentionableConnections ?? [];
-    if (!q) return all;
-    return all.filter((c) => {
-      const name = c.name.toLowerCase();
-      const type = c.integration_type.toLowerCase();
-      return name.includes(q) || type.includes(q);
-    });
+    return rankMentionableConnections(
+      mentionableConnections ?? [],
+      mentionTrigger.query,
+    );
   }, [mentionableConnections, mentionTrigger.query]);
 
   // Escape (or outside-click) closes the menu but the trigger conditions
