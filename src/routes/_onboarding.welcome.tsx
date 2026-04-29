@@ -380,7 +380,7 @@ export default function OnboardingWelcomeRoute() {
                   return;
                 }
                 if (cta.kind === "contact") {
-                  window.open(BOOK_DEMO_URL, "_blank");
+                  window.open(BOOK_DEMO_URL, "_blank", "noopener,noreferrer");
                 }
               }}
             />
