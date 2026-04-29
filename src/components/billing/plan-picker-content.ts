@@ -25,10 +25,10 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   },
   starter: {
     tagline: "For solo builders",
-    ctaLabel: "Start trial",
+    ctaLabel: "Start 7-day free trial",
     ctaKind: "trial",
     features: [
-      "$10 hosted credits / mo",
+      "$10 of model credits / mo",
       "Bring your own API key",
       "30 deployed apps",
       "50 GB storage",
@@ -37,10 +37,10 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   },
   pro: {
     tagline: "For power users",
-    ctaLabel: "Start trial",
+    ctaLabel: "Start 7-day free trial",
     ctaKind: "trial",
     features: [
-      "$30 hosted credits / mo",
+      "$30 of model credits / mo",
       "Bring your own API key",
       "Unlimited deployed apps",
       "100 GB storage",
@@ -50,10 +50,10 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   },
   team: {
     tagline: "For teams shipping together",
-    ctaLabel: "Start trial",
+    ctaLabel: "Start 7-day free trial",
     ctaKind: "trial",
     features: [
-      "$10 hosted credits / seat / mo",
+      "$10 of model credits / seat / mo",
       "Everything in Pro",
       "2 workspaces",
       "Role-based access",

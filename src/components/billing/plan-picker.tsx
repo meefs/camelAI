@@ -170,10 +170,10 @@ export function PlanPicker({
         <div className="space-y-4">
           <div className="rounded-xl bg-muted/40 px-5 py-4">
             <p className="text-base font-semibold text-foreground">
-              Use Claude, Codex, or your own API key
+              Use Claude, Codex, Open Routner, or your own API key
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Top up credits to use Claude or Codex through us at cost — no
+              Top up credits to use any model through us at cost, no
               markup. Or bring your own API key anytime.
             </p>
           </div>

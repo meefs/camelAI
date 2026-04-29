@@ -242,41 +242,39 @@ export default function OnboardingWelcomeRoute() {
       contentClassName={isBillingChoiceRequired ? "max-w-4xl" : undefined}
     >
       <div className="space-y-4">
-        <div className="space-y-3 text-center">
-          <h1 className="text-3xl font-semibold tracking-tight">
-            {isTeamWelcome ? `Welcome to ${orgName}` : "Welcome to camelAI"}
-          </h1>
-          {!isTeamWelcome ? (
-            <>
-              <p className="text-balance text-muted-foreground">
-                camelAI is your AI software engineer. Claude has a permanent
-                computer here, so it can build, deploy, and maintain
-                applications for you.
-              </p>
-              {isBillingChoiceRequired ? (
-                <p className="text-muted-foreground">
-                  Choose how you want to cover model usage.
+        {!isBillingChoiceRequired ? (
+          <div className="space-y-3 text-center">
+            <h1 className="text-3xl font-semibold tracking-tight">
+              {isTeamWelcome ? `Welcome to ${orgName}` : "Welcome to camelAI"}
+            </h1>
+            {!isTeamWelcome ? (
+              <>
+                <p className="text-balance text-muted-foreground">
+                  camelAI is your AI software engineer. Claude has a permanent
+                  computer here, so it can build, deploy, and maintain
+                  applications for you.
                 </p>
-              ) : emailVerificationRequired ? (
+                {emailVerificationRequired ? (
+                  <p className="text-muted-foreground">
+                    Verify your email to get started.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <>
                 <p className="text-muted-foreground">
-                  Verify your email to get started.
+                  You&apos;re joining a team that&apos;s already building.
                 </p>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <p className="text-muted-foreground">
-                You&apos;re joining a team that&apos;s already building.
-              </p>
-              <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
-                {formatTeamSummary(teamContext)}
-              </div>
-              <p className="text-muted-foreground">
-                Let&apos;s get you set up.
-              </p>
-            </>
-          )}
-        </div>
+                <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+                  {formatTeamSummary(teamContext)}
+                </div>
+                <p className="text-muted-foreground">
+                  Let&apos;s get you set up.
+                </p>
+              </>
+            )}
+          </div>
+        ) : null}
 
         {emailVerificationRequired ? (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-left">
@@ -336,6 +334,11 @@ export default function OnboardingWelcomeRoute() {
           <div className="space-y-5 text-left">
             <PlanPicker
               defaultBillingMode="individual"
+              heading={{
+                title: "Choose your plan",
+                subtitle:
+                  "Start a free trial with model credits, or use your own API key.",
+              }}
               pendingPlan={isStartingCheckout ? "starter" : null}
               onSelectPlan={(cta) => {
                 // FIXME(billing): trial CTAs silently no-op when Stripe isn't configured.
