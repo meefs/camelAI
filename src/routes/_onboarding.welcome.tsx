@@ -1,20 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  useFetcher,
-  useLoaderData,
-  useOutletContext,
-} from "react-router";
+import { useFetcher, useLoaderData, useOutletContext } from "react-router";
 import type { Route } from "./+types/_onboarding.welcome";
-import { getAuthEnv, requireAuthContext, requireSession } from "@/lib/auth.server";
+import {
+  getAuthEnv,
+  requireAuthContext,
+  requireSession,
+} from "@/lib/auth.server";
 import { createSubscriptionCheckoutSession } from "@/lib/billing.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
+import { PlanPicker } from "@/components/billing/plan-picker";
+import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import type { LlmProvider } from "@/types";
+import type { OnboardingByokProvider } from "@/lib/byok-providers";
 import type { OnboardingRouteContext } from "./_onboarding";
 
 interface TeamContext {
@@ -29,33 +28,7 @@ interface WelcomeLoaderData {
   teamContext: TeamContext;
 }
 
-type OnboardingByokProvider = Extract<LlmProvider, "anthropic" | "openai" | "openrouter">;
-
-const BYOK_PROVIDER_OPTIONS: Array<{
-  value: OnboardingByokProvider;
-  label: string;
-  placeholder: string;
-  helper: string;
-}> = [
-  {
-    value: "openrouter",
-    label: "OpenRouter",
-    placeholder: "sk-or-...",
-    helper: "Codex and Claude models billed through OpenRouter.",
-  },
-  {
-    value: "anthropic",
-    label: "Anthropic",
-    placeholder: "sk-ant-...",
-    helper: "Claude models billed through your Anthropic account.",
-  },
-  {
-    value: "openai",
-    label: "OpenAI",
-    placeholder: "sk-...",
-    helper: "Codex models billed through your OpenAI account.",
-  },
-];
+const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionContext = await requireSession(request, context);
@@ -121,11 +94,20 @@ export async function action({ request, context }: Route.ActionArgs) {
   const intent = String(formData.get("intent") || "");
 
   if (intent !== "startTrial") {
-    return Response.json({ error: "Unknown onboarding action" }, { status: 400 });
+    return Response.json(
+      { error: "Unknown onboarding action" },
+      { status: 400 },
+    );
   }
 
-  const successUrl = new URL("/onboarding?checkout=success", request.url).toString();
-  const cancelUrl = new URL("/onboarding?checkout=cancelled", request.url).toString();
+  const successUrl = new URL(
+    "/onboarding?checkout=success",
+    request.url,
+  ).toString();
+  const cancelUrl = new URL(
+    "/onboarding?checkout=cancelled",
+    request.url,
+  ).toString();
   const checkoutUrl = await createSubscriptionCheckoutSession({
     env,
     org: authContext.currentOrg,
@@ -169,6 +151,9 @@ export default function OnboardingWelcomeRoute() {
   const [selectedProvider, setSelectedProvider] =
     useState<OnboardingByokProvider>("openrouter");
   const [providerApiKey, setProviderApiKey] = useState("");
+  const [awsRegion, setAwsRegion] = useState("us-east-1");
+  const [byokDialogOpen, setByokDialogOpen] = useState(false);
+  const [showProviderError, setShowProviderError] = useState(true);
   const completionStartedRef = useRef(false);
   const providerCompletionStartedRef = useRef(false);
   const verificationFetcher = useFetcher<{
@@ -206,15 +191,17 @@ export default function OnboardingWelcomeRoute() {
   const checkoutError =
     checkoutFetcher.state === "idle" ? checkoutFetcher.data?.error : undefined;
   const providerError =
-    providerFetcher.state === "idle" ? providerFetcher.data?.error : undefined;
-  const selectedProviderOption =
-    BYOK_PROVIDER_OPTIONS.find((option) => option.value === selectedProvider) ??
-    BYOK_PROVIDER_OPTIONS[0];
+    showProviderError && providerFetcher.state === "idle"
+      ? providerFetcher.data?.error
+      : undefined;
   const isSavingProvider = providerFetcher.state !== "idle";
   const isStartingCheckout = checkoutFetcher.state !== "idle";
 
   useEffect(() => {
-    if (checkoutFetcher.state !== "idle" || !checkoutFetcher.data?.checkoutUrl) {
+    if (
+      checkoutFetcher.state !== "idle" ||
+      !checkoutFetcher.data?.checkoutUrl
+    ) {
       return;
     }
     window.location.assign(checkoutFetcher.data.checkoutUrl);
@@ -229,19 +216,18 @@ export default function OnboardingWelcomeRoute() {
       return;
     }
     providerCompletionStartedRef.current = true;
+    setByokDialogOpen(false);
     setIsCompleting(true);
     setError(null);
-    context
-      .completeOnboarding({ accessChoice: "byok" })
-      .catch((nextError) => {
-        providerCompletionStartedRef.current = false;
-        setIsCompleting(false);
-        setError(
-          nextError instanceof Error
-            ? nextError.message
-            : "Failed to complete onboarding",
-        );
-      });
+    context.completeOnboarding({ accessChoice: "byok" }).catch((nextError) => {
+      providerCompletionStartedRef.current = false;
+      setIsCompleting(false);
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Failed to complete onboarding",
+      );
+    });
   }, [context, providerFetcher.data, providerFetcher.state]);
 
   const saveProviderAndContinue = () => {
@@ -250,58 +236,65 @@ export default function OnboardingWelcomeRoute() {
       return;
     }
     setError(null);
-    providerFetcher.submit(
-      {
-        intent: "setProvider",
-        provider: selectedProvider,
-        api_key: providerApiKey.trim(),
-      },
-      {
-        method: "POST",
-        action: `/api/orgs/${orgId}/llm-provider`,
-        encType: "application/json",
-      },
-    );
+    setShowProviderError(true);
+
+    const providerPayload: Record<string, string> = {
+      intent: "setProvider",
+      provider: selectedProvider,
+    };
+
+    if (selectedProvider === "bedrock") {
+      providerPayload.bearer_token = providerApiKey.trim();
+      providerPayload.aws_region = awsRegion;
+    } else {
+      providerPayload.api_key = providerApiKey.trim();
+    }
+
+    providerFetcher.submit(providerPayload, {
+      method: "POST",
+      action: `/api/orgs/${orgId}/llm-provider`,
+      encType: "application/json",
+    });
   };
 
   return (
-    <OnboardingLayout>
-      <div className="space-y-6 text-center">
-        <div className="space-y-3">
-          <h1 className="text-3xl font-semibold tracking-tight">
-            {isTeamWelcome ? `Welcome to ${orgName}` : "Welcome to camelAI"}
-          </h1>
-          {!isTeamWelcome ? (
-            <>
-              <p className="text-balance text-muted-foreground">
-                camelAI is your AI software engineer. Claude has a permanent
-                computer here, so it can build, deploy, and maintain
-                applications for you.
-              </p>
-              {isBillingChoiceRequired ? (
-                <p className="text-muted-foreground">
-                  Choose how you want to cover model usage.
+    <OnboardingLayout
+      contentClassName={isBillingChoiceRequired ? "max-w-4xl" : undefined}
+    >
+      <div className="space-y-4">
+        {!isBillingChoiceRequired ? (
+          <div className="space-y-3 text-center">
+            <h1 className="text-3xl font-semibold tracking-tight">
+              {isTeamWelcome ? `Welcome to ${orgName}` : "Welcome to camelAI"}
+            </h1>
+            {!isTeamWelcome ? (
+              <>
+                <p className="text-balance text-muted-foreground">
+                  camelAI is your AI software engineer. Claude has a permanent
+                  computer here, so it can build, deploy, and maintain
+                  applications for you.
                 </p>
-              ) : emailVerificationRequired ? (
+                {emailVerificationRequired ? (
+                  <p className="text-muted-foreground">
+                    Verify your email to get started.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <>
                 <p className="text-muted-foreground">
-                  Verify your email to get started.
+                  You&apos;re joining a team that&apos;s already building.
                 </p>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <p className="text-muted-foreground">
-                You&apos;re joining a team that&apos;s already building.
-              </p>
-              <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
-                {formatTeamSummary(teamContext)}
-              </div>
-              <p className="text-muted-foreground">
-                Let&apos;s get you set up.
-              </p>
-            </>
-          )}
-        </div>
+                <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+                  {formatTeamSummary(teamContext)}
+                </div>
+                <p className="text-muted-foreground">
+                  Let&apos;s get you set up.
+                </p>
+              </>
+            )}
+          </div>
+        ) : null}
 
         {emailVerificationRequired ? (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-left">
@@ -339,7 +332,7 @@ export default function OnboardingWelcomeRoute() {
           </div>
         ) : null}
 
-        {error ? (
+        {error && !byokDialogOpen ? (
           <Alert variant="destructive" className="text-left">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
@@ -351,128 +344,112 @@ export default function OnboardingWelcomeRoute() {
           </Alert>
         ) : null}
 
-        {providerError ? (
-          <Alert variant="destructive" className="text-left">
-            <AlertDescription>{providerError}</AlertDescription>
-          </Alert>
-        ) : null}
-
         {isBillingChoiceRequired ? (
-          <div className="space-y-4 text-left">
-            <div className="rounded-lg border p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
-                  <p className="font-medium">Start the 7-day trial</p>
-                  <p className="text-sm text-muted-foreground">
-                    Starter includes hosted model credits and then bills monthly through Stripe.
-                  </p>
-                </div>
-                <checkoutFetcher.Form method="post">
-                  <input type="hidden" name="intent" value="startTrial" />
-                  <Button type="submit" disabled={isStartingCheckout}>
-                    {isStartingCheckout ? "Opening Stripe..." : "Start trial"}
-                  </Button>
-                </checkoutFetcher.Form>
-              </div>
-            </div>
+          <div className="space-y-5 text-left">
+            <PlanPicker
+              defaultBillingMode="individual"
+              heading={{
+                title: "Choose your plan",
+                subtitle:
+                  "Start a free trial with model credits, or use your own API key.",
+              }}
+              pendingPlan={isStartingCheckout ? "starter" : null}
+              onSelectPlan={(cta) => {
+                // FIXME(billing): trial CTAs silently no-op when Stripe isn't configured.
+                // The billing engineer wiring Pro/Team should also handle the unconfigured case
+                // server-side (toast on action error path), not by gating these CTAs in the UI.
+                setError(null);
+                if (cta.kind === "byok") {
+                  setShowProviderError(false);
+                  setByokDialogOpen(true);
+                  return;
+                }
+                if (cta.kind === "trial" && cta.plan === "starter") {
+                  checkoutFetcher.submit(
+                    { intent: "startTrial" },
+                    { method: "post" },
+                  );
+                  return;
+                }
+                if (
+                  cta.kind === "trial" &&
+                  (cta.plan === "pro" || cta.plan === "team")
+                ) {
+                  // FIXME(billing): wire Pro and Team trial Stripe checkout — different engineer is owning the Stripe piping.
+                  // Team checkout will land on a Stripe page that asks for seat count, so onboarding does not need to collect it.
+                  return;
+                }
+                if (cta.kind === "contact") {
+                  window.open(BOOK_DEMO_URL, "_blank", "noopener,noreferrer");
+                }
+              }}
+            />
 
-            <div className="space-y-4 rounded-lg border p-4">
-              <div className="space-y-1">
-                <p className="font-medium">Use your own provider</p>
-                <p className="text-sm text-muted-foreground">
-                  Continue without camelAI-hosted credits. Your provider bills you directly.
-                </p>
-              </div>
-              <RadioGroup
-                value={selectedProvider}
-                onValueChange={(value) => {
-                  setSelectedProvider(value as OnboardingByokProvider);
+            <ByokKeyDialog
+              open={byokDialogOpen}
+              onOpenChange={(open) => {
+                setByokDialogOpen(open);
+                if (!open) {
                   setError(null);
-                }}
-                className="grid gap-2 sm:grid-cols-3"
-              >
-                {BYOK_PROVIDER_OPTIONS.map((option) => (
-                  <Label
-                    key={option.value}
-                    htmlFor={`provider-${option.value}`}
-                    className="flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm"
-                  >
-                    <RadioGroupItem
-                      id={`provider-${option.value}`}
-                      value={option.value}
-                      className="mt-0.5"
-                    />
-                    <span>
-                      <span className="block font-medium">{option.label}</span>
-                      <span className="block text-muted-foreground">
-                        {option.helper}
-                      </span>
-                    </span>
-                  </Label>
-                ))}
-              </RadioGroup>
-              <div className="space-y-2">
-                <Label htmlFor="provider-api-key">
-                  {selectedProviderOption.label} API key
-                </Label>
-                <Input
-                  id="provider-api-key"
-                  type="password"
-                  value={providerApiKey}
-                  placeholder={selectedProviderOption.placeholder}
-                  autoComplete="off"
-                  onChange={(event) => {
-                    setProviderApiKey(event.target.value);
-                    setError(null);
-                  }}
-                />
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={isSavingProvider || isCompleting}
-                onClick={saveProviderAndContinue}
-              >
-                {isSavingProvider || isCompleting
-                  ? "Saving..."
-                  : "Continue with own key"}
-              </Button>
-            </div>
-
+                  setShowProviderError(false);
+                }
+              }}
+              selectedProvider={selectedProvider}
+              onProviderChange={(provider) => {
+                setSelectedProvider(provider);
+                setError(null);
+                setShowProviderError(false);
+              }}
+              apiKey={providerApiKey}
+              onApiKeyChange={(key) => {
+                setProviderApiKey(key);
+                setError(null);
+                setShowProviderError(false);
+              }}
+              awsRegion={awsRegion}
+              onAwsRegionChange={(region) => {
+                setAwsRegion(region);
+                setError(null);
+                setShowProviderError(false);
+              }}
+              onSubmit={saveProviderAndContinue}
+              isSubmitting={isSavingProvider || isCompleting}
+              errorMessage={error ?? providerError ?? null}
+            />
           </div>
         ) : (
-        <div className="pt-2">
-          <Button
-            type="button"
-            size="lg"
-            disabled={emailVerificationRequired || isCompleting}
-            onClick={async () => {
-              if (isTeamMemberAlreadyOnboarded) {
-                context.skipToChat();
-                return;
-              }
-              if (completionStartedRef.current) {
-                return;
-              }
-              completionStartedRef.current = true;
-              setIsCompleting(true);
-              setError(null);
-              try {
-                await context.completeOnboarding();
-              } catch (nextError) {
-                completionStartedRef.current = false;
-                setIsCompleting(false);
-                setError(
-                  nextError instanceof Error
-                    ? nextError.message
-                    : "Failed to complete onboarding",
-                );
-              }
-            }}
-          >
-            {isCompleting ? "Getting Started..." : "Get Started"}
-          </Button>
-        </div>
+          <div className="flex justify-center pt-2">
+            <Button
+              type="button"
+              size="lg"
+              disabled={emailVerificationRequired || isCompleting}
+              onClick={async () => {
+                if (isTeamMemberAlreadyOnboarded) {
+                  context.skipToChat();
+                  return;
+                }
+                if (completionStartedRef.current) {
+                  return;
+                }
+                completionStartedRef.current = true;
+                setIsCompleting(true);
+                setError(null);
+                try {
+                  await context.completeOnboarding();
+                } catch (nextError) {
+                  completionStartedRef.current = false;
+                  setIsCompleting(false);
+                  setError(
+                    nextError instanceof Error
+                      ? nextError.message
+                      : "Failed to complete onboarding",
+                  );
+                }
+              }}
+            >
+              {isCompleting ? "Getting Started..." : "Get Started"}
+            </Button>
+          </div>
         )}
       </div>
     </OnboardingLayout>
