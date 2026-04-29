@@ -1,21 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  useFetcher,
-  useLoaderData,
-  useOutletContext,
-} from "react-router";
+import { useFetcher, useLoaderData, useOutletContext } from "react-router";
 import type { Route } from "./+types/_onboarding.welcome";
-import { getAuthEnv, requireAuthContext, requireSession } from "@/lib/auth.server";
+import {
+  getAuthEnv,
+  requireAuthContext,
+  requireSession,
+} from "@/lib/auth.server";
 import { createSubscriptionCheckoutSession } from "@/lib/billing.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { PlanPicker } from "@/components/billing/plan-picker";
-import {
-  ByokProviderForm,
-  type OnboardingByokProvider,
-} from "@/components/onboarding/byok-provider-form";
+import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import type { OnboardingByokProvider } from "@/lib/byok-providers";
 import type { OnboardingRouteContext } from "./_onboarding";
 
 interface TeamContext {
@@ -96,11 +94,20 @@ export async function action({ request, context }: Route.ActionArgs) {
   const intent = String(formData.get("intent") || "");
 
   if (intent !== "startTrial") {
-    return Response.json({ error: "Unknown onboarding action" }, { status: 400 });
+    return Response.json(
+      { error: "Unknown onboarding action" },
+      { status: 400 },
+    );
   }
 
-  const successUrl = new URL("/onboarding?checkout=success", request.url).toString();
-  const cancelUrl = new URL("/onboarding?checkout=cancelled", request.url).toString();
+  const successUrl = new URL(
+    "/onboarding?checkout=success",
+    request.url,
+  ).toString();
+  const cancelUrl = new URL(
+    "/onboarding?checkout=cancelled",
+    request.url,
+  ).toString();
   const checkoutUrl = await createSubscriptionCheckoutSession({
     env,
     org: authContext.currentOrg,
@@ -144,6 +151,9 @@ export default function OnboardingWelcomeRoute() {
   const [selectedProvider, setSelectedProvider] =
     useState<OnboardingByokProvider>("openrouter");
   const [providerApiKey, setProviderApiKey] = useState("");
+  const [awsRegion, setAwsRegion] = useState("us-east-1");
+  const [byokDialogOpen, setByokDialogOpen] = useState(false);
+  const [showProviderError, setShowProviderError] = useState(true);
   const completionStartedRef = useRef(false);
   const providerCompletionStartedRef = useRef(false);
   const verificationFetcher = useFetcher<{
@@ -161,7 +171,6 @@ export default function OnboardingWelcomeRoute() {
   const { orgId, orgName, teamContext } = useLoaderData<
     typeof loader
   >() as WelcomeLoaderData;
-  const [showByokForm, setShowByokForm] = useState(false);
 
   const isTeamWelcome = context.teamMode;
   const isBillingChoiceRequired =
@@ -182,12 +191,17 @@ export default function OnboardingWelcomeRoute() {
   const checkoutError =
     checkoutFetcher.state === "idle" ? checkoutFetcher.data?.error : undefined;
   const providerError =
-    providerFetcher.state === "idle" ? providerFetcher.data?.error : undefined;
+    showProviderError && providerFetcher.state === "idle"
+      ? providerFetcher.data?.error
+      : undefined;
   const isSavingProvider = providerFetcher.state !== "idle";
   const isStartingCheckout = checkoutFetcher.state !== "idle";
 
   useEffect(() => {
-    if (checkoutFetcher.state !== "idle" || !checkoutFetcher.data?.checkoutUrl) {
+    if (
+      checkoutFetcher.state !== "idle" ||
+      !checkoutFetcher.data?.checkoutUrl
+    ) {
       return;
     }
     window.location.assign(checkoutFetcher.data.checkoutUrl);
@@ -202,19 +216,18 @@ export default function OnboardingWelcomeRoute() {
       return;
     }
     providerCompletionStartedRef.current = true;
+    setByokDialogOpen(false);
     setIsCompleting(true);
     setError(null);
-    context
-      .completeOnboarding({ accessChoice: "byok" })
-      .catch((nextError) => {
-        providerCompletionStartedRef.current = false;
-        setIsCompleting(false);
-        setError(
-          nextError instanceof Error
-            ? nextError.message
-            : "Failed to complete onboarding",
-        );
-      });
+    context.completeOnboarding({ accessChoice: "byok" }).catch((nextError) => {
+      providerCompletionStartedRef.current = false;
+      setIsCompleting(false);
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Failed to complete onboarding",
+      );
+    });
   }, [context, providerFetcher.data, providerFetcher.state]);
 
   const saveProviderAndContinue = () => {
@@ -223,18 +236,25 @@ export default function OnboardingWelcomeRoute() {
       return;
     }
     setError(null);
-    providerFetcher.submit(
-      {
-        intent: "setProvider",
-        provider: selectedProvider,
-        api_key: providerApiKey.trim(),
-      },
-      {
-        method: "POST",
-        action: `/api/orgs/${orgId}/llm-provider`,
-        encType: "application/json",
-      },
-    );
+    setShowProviderError(true);
+
+    const providerPayload: Record<string, string> = {
+      intent: "setProvider",
+      provider: selectedProvider,
+    };
+
+    if (selectedProvider === "bedrock") {
+      providerPayload.bearer_token = providerApiKey.trim();
+      providerPayload.aws_region = awsRegion;
+    } else {
+      providerPayload.api_key = providerApiKey.trim();
+    }
+
+    providerFetcher.submit(providerPayload, {
+      method: "POST",
+      action: `/api/orgs/${orgId}/llm-provider`,
+      encType: "application/json",
+    });
   };
 
   return (
@@ -312,7 +332,7 @@ export default function OnboardingWelcomeRoute() {
           </div>
         ) : null}
 
-        {error ? (
+        {error && !byokDialogOpen ? (
           <Alert variant="destructive" className="text-left">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
@@ -321,12 +341,6 @@ export default function OnboardingWelcomeRoute() {
         {checkoutError ? (
           <Alert variant="destructive" className="text-left">
             <AlertDescription>{checkoutError}</AlertDescription>
-          </Alert>
-        ) : null}
-
-        {providerError ? (
-          <Alert variant="destructive" className="text-left">
-            <AlertDescription>{providerError}</AlertDescription>
           </Alert>
         ) : null}
 
@@ -346,7 +360,8 @@ export default function OnboardingWelcomeRoute() {
                 // server-side (toast on action error path), not by gating these CTAs in the UI.
                 setError(null);
                 if (cta.kind === "byok") {
-                  setShowByokForm(true);
+                  setShowProviderError(false);
+                  setByokDialogOpen(true);
                   return;
                 }
                 if (cta.kind === "trial" && cta.plan === "starter") {
@@ -370,58 +385,71 @@ export default function OnboardingWelcomeRoute() {
               }}
             />
 
-            {showByokForm ? (
-              <ByokProviderForm
-                selectedProvider={selectedProvider}
-                onProviderChange={(provider) => {
-                  setSelectedProvider(provider);
+            <ByokKeyDialog
+              open={byokDialogOpen}
+              onOpenChange={(open) => {
+                setByokDialogOpen(open);
+                if (!open) {
                   setError(null);
-                }}
-                apiKey={providerApiKey}
-                onApiKeyChange={(key) => {
-                  setProviderApiKey(key);
-                  setError(null);
-                }}
-                onSubmit={saveProviderAndContinue}
-                disabled={isSavingProvider || isCompleting}
-                isSubmitting={isSavingProvider || isCompleting}
-                submitLabel="Continue with own key"
-              />
-            ) : null}
+                  setShowProviderError(false);
+                }
+              }}
+              selectedProvider={selectedProvider}
+              onProviderChange={(provider) => {
+                setSelectedProvider(provider);
+                setError(null);
+                setShowProviderError(false);
+              }}
+              apiKey={providerApiKey}
+              onApiKeyChange={(key) => {
+                setProviderApiKey(key);
+                setError(null);
+                setShowProviderError(false);
+              }}
+              awsRegion={awsRegion}
+              onAwsRegionChange={(region) => {
+                setAwsRegion(region);
+                setError(null);
+                setShowProviderError(false);
+              }}
+              onSubmit={saveProviderAndContinue}
+              isSubmitting={isSavingProvider || isCompleting}
+              errorMessage={error ?? providerError ?? null}
+            />
           </div>
         ) : (
-        <div className="flex justify-center pt-2">
-          <Button
-            type="button"
-            size="lg"
-            disabled={emailVerificationRequired || isCompleting}
-            onClick={async () => {
-              if (isTeamMemberAlreadyOnboarded) {
-                context.skipToChat();
-                return;
-              }
-              if (completionStartedRef.current) {
-                return;
-              }
-              completionStartedRef.current = true;
-              setIsCompleting(true);
-              setError(null);
-              try {
-                await context.completeOnboarding();
-              } catch (nextError) {
-                completionStartedRef.current = false;
-                setIsCompleting(false);
-                setError(
-                  nextError instanceof Error
-                    ? nextError.message
-                    : "Failed to complete onboarding",
-                );
-              }
-            }}
-          >
-            {isCompleting ? "Getting Started..." : "Get Started"}
-          </Button>
-        </div>
+          <div className="flex justify-center pt-2">
+            <Button
+              type="button"
+              size="lg"
+              disabled={emailVerificationRequired || isCompleting}
+              onClick={async () => {
+                if (isTeamMemberAlreadyOnboarded) {
+                  context.skipToChat();
+                  return;
+                }
+                if (completionStartedRef.current) {
+                  return;
+                }
+                completionStartedRef.current = true;
+                setIsCompleting(true);
+                setError(null);
+                try {
+                  await context.completeOnboarding();
+                } catch (nextError) {
+                  completionStartedRef.current = false;
+                  setIsCompleting(false);
+                  setError(
+                    nextError instanceof Error
+                      ? nextError.message
+                      : "Failed to complete onboarding",
+                  );
+                }
+              }}
+            >
+              {isCompleting ? "Getting Started..." : "Get Started"}
+            </Button>
+          </div>
         )}
       </div>
     </OnboardingLayout>

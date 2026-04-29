@@ -27,25 +27,10 @@ import {
   getAuthEnv,
 } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
+import { AWS_REGIONS, BYOK_PROVIDERS } from "@/lib/byok-providers";
 import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
 import { cn } from "@/lib/utils";
 import type { LlmProvider, LlmProviderConfigPublic } from "@/types";
-
-const AWS_REGIONS = [
-  { value: "us-east-1", label: "US East (N. Virginia)" },
-  { value: "us-east-2", label: "US East (Ohio)" },
-  { value: "us-west-2", label: "US West (Oregon)" },
-  { value: "eu-west-1", label: "EU (Ireland)" },
-  { value: "eu-west-2", label: "EU (London)" },
-  { value: "eu-west-3", label: "EU (Paris)" },
-  { value: "eu-central-1", label: "EU (Frankfurt)" },
-  { value: "ap-southeast-1", label: "Asia Pacific (Singapore)" },
-  { value: "ap-southeast-2", label: "Asia Pacific (Sydney)" },
-  { value: "ap-northeast-1", label: "Asia Pacific (Tokyo)" },
-  { value: "ap-south-1", label: "Asia Pacific (Mumbai)" },
-  { value: "sa-east-1", label: "South America (Sao Paulo)" },
-  { value: "ca-central-1", label: "Canada (Central)" },
-] as const;
 
 type ProviderChoice = "default" | LlmProvider;
 type FetcherIntent = "setProvider" | "deleteProvider" | "testProvider" | null;
@@ -109,7 +94,7 @@ const PROVIDER_GUIDES: Record<LlmProvider, ProviderGuide> = {
     description: "Direct access to Claude models",
     fieldLabel: "Anthropic API Key",
     placeholder: "sk-ant-...",
-    href: "https://console.anthropic.com/settings/keys",
+    href: BYOK_PROVIDERS.anthropic.getKeyUrl,
     firstStepLinkLabel: "console.anthropic.com/settings/keys",
     steps: [
       'Click "Create Key".',
@@ -123,7 +108,7 @@ const PROVIDER_GUIDES: Record<LlmProvider, ProviderGuide> = {
     description: "For Codex-powered threads",
     fieldLabel: "OpenAI API Key",
     placeholder: "sk-...",
-    href: "https://platform.openai.com/api-keys",
+    href: BYOK_PROVIDERS.openai.getKeyUrl,
     firstStepLinkLabel: "platform.openai.com/api-keys",
     steps: [
       'Click "Create new secret key".',
@@ -137,7 +122,7 @@ const PROVIDER_GUIDES: Record<LlmProvider, ProviderGuide> = {
     description: "Codex and Claude model access through OpenRouter",
     fieldLabel: "OpenRouter API Key",
     placeholder: "sk-or-...",
-    href: "https://openrouter.ai/settings/keys",
+    href: BYOK_PROVIDERS.openrouter.getKeyUrl,
     firstStepLinkLabel: "openrouter.ai/settings/keys",
     steps: [
       'Click "Create Key".',
@@ -151,7 +136,7 @@ const PROVIDER_GUIDES: Record<LlmProvider, ProviderGuide> = {
     description: "Claude via your AWS account",
     fieldLabel: "Bedrock API Key",
     placeholder: "Enter your AWS Bedrock API key",
-    href: "https://console.aws.amazon.com/bedrock/",
+    href: BYOK_PROVIDERS.bedrock.getKeyUrl,
     firstStepPrefix: "Go to your ",
     firstStepLinkLabel: "AWS Console",
     firstStepSuffix: " and open Bedrock.",
