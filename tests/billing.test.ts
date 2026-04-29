@@ -3,10 +3,13 @@ import {
   billingStatusBadgeVariant,
   billingStatusLabel,
   canUsePaidWorkspace,
+  formatCreditAmount,
   formatCreditBalance,
+  formatCreditsFromUsd,
   formatUsdFromCents,
 } from "@/lib/billing";
 import {
+  BILLING_PLAN_LIMITS,
   getIncludedCreditCentsForPlan,
   getOrgSeatLimit,
   normalizeBillingPlan,
@@ -45,7 +48,11 @@ describe("billing helpers", () => {
   });
 
   it("formats credits and usd values from cents", () => {
+    expect(formatCreditAmount(1.2345, { maximumFractionDigits: 4 })).toBe(
+      "1.2345 credits",
+    );
     expect(formatCreditBalance(2500)).toBe("25.00 credits");
+    expect(formatCreditsFromUsd(0.1234)).toBe("0.1234 credits");
     expect(formatUsdFromCents(2500)).toBe("$25.00");
   });
 
@@ -70,6 +77,72 @@ describe("billing helpers", () => {
         billing_seat_count: 1,
       }),
     ).toBeNull();
+  });
+
+  it("matches the v1 billing design plan matrix", () => {
+    expect(BILLING_PLAN_LIMITS.free).toMatchObject({
+      monthlyPriceCents: 0,
+      minimumSeats: 1,
+      includedWorkspaceCount: 1,
+      storageGbPerWorkspace: 5,
+      includedCreditCentsBase: 0,
+      includedCreditCentsPerSeat: 0,
+      maxDeployedAppsPerWorkspace: 3,
+      maxCustomDomains: 0,
+      maxCronJobsPerWorkspace: 2,
+      maxCronJobsPerUser: null,
+      minCronIntervalMs: 24 * 60 * 60 * 1000,
+      byokOnly: true,
+      emailInbox: false,
+    });
+
+    expect(BILLING_PLAN_LIMITS.starter).toMatchObject({
+      monthlyPriceCents: 4000,
+      minimumSeats: 1,
+      includedWorkspaceCount: 1,
+      storageGbPerWorkspace: 50,
+      includedCreditCentsBase: 1000,
+      includedCreditCentsPerSeat: 0,
+      maxDeployedAppsPerWorkspace: 30,
+      maxCustomDomains: 10,
+      maxCronJobsPerWorkspace: 10,
+      maxCronJobsPerUser: null,
+      minCronIntervalMs: 60 * 60 * 1000,
+      byokOnly: false,
+      emailInbox: false,
+    });
+
+    expect(BILLING_PLAN_LIMITS.pro).toMatchObject({
+      monthlyPriceCents: 15000,
+      minimumSeats: 1,
+      includedWorkspaceCount: 1,
+      storageGbPerWorkspace: 100,
+      includedCreditCentsBase: 3000,
+      includedCreditCentsPerSeat: 0,
+      maxDeployedAppsPerWorkspace: null,
+      maxCustomDomains: null,
+      maxCronJobsPerWorkspace: 50,
+      maxCronJobsPerUser: null,
+      minCronIntervalMs: 5 * 60 * 1000,
+      byokOnly: false,
+      emailInbox: true,
+    });
+
+    expect(BILLING_PLAN_LIMITS.team).toMatchObject({
+      monthlyPriceCents: 5000,
+      minimumSeats: 3,
+      includedWorkspaceCount: 2,
+      storageGbPerWorkspace: 100,
+      includedCreditCentsBase: 0,
+      includedCreditCentsPerSeat: 1000,
+      maxDeployedAppsPerWorkspace: null,
+      maxCustomDomains: null,
+      maxCronJobsPerWorkspace: null,
+      maxCronJobsPerUser: 50,
+      minCronIntervalMs: 5 * 60 * 1000,
+      byokOnly: false,
+      emailInbox: true,
+    });
   });
 
   it("parses configured stripe credit pack ids", () => {

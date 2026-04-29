@@ -119,7 +119,7 @@ export const BlockSignupIpBodySchema = z.object({
 export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
-  model: z.enum(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']).optional(),
+  model: z.enum(['haiku', 'sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']).optional(),
 });
 
 export const CreateBanBodySchema = z.object({
@@ -174,10 +174,10 @@ export const OrgSchema = z.object({
   workspace_count: z.number().int(),
 });
 
-export const LlmModelSchema = z.enum(['sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']);
+export const LlmModelSchema = z.enum(['haiku', 'sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']);
 
 export const LlmProviderConfigSchema = z.object({
-  provider: z.enum(['anthropic', 'bedrock', 'openai']),
+  provider: z.enum(['anthropic', 'bedrock', 'openai', 'openrouter']),
   config: z.object({
     aws_region: z.string().optional(),
   }),
@@ -210,6 +210,21 @@ export const UpdateOrgModelAccessBodySchema = z.object({
 export const OrgModelAccessSchema = z.object({
   org_id: z.string(),
   claude_proxy_models: z.boolean(),
+});
+
+export const GrantOrgCreditsBodySchema = z.object({
+  amount_cents: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(500).optional(),
+  idempotency_key: z.string().trim().min(1).max(200).optional(),
+});
+
+export const GrantOrgCreditsResponseSchema = z.object({
+  org_id: z.string(),
+  applied: z.boolean(),
+  grant_id: z.string(),
+  amount_cents: z.number().int(),
+  reason: z.string().nullable(),
+  billing_credit_grant_total_cents: z.number().int(),
 });
 
 export const RefreshOrgCustomDomainBodySchema = z.object({

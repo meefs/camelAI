@@ -17,7 +17,6 @@ import {
   billingStatusBadgeVariant,
   billingStatusLabel,
   formatCreditBalance,
-  formatUsdFromCents,
   getBillingStatusDescription,
 } from "@/lib/billing";
 import { Badge } from "@/components/ui/badge";
@@ -100,7 +99,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       plan: plan.plan,
       label: plan.limits.label,
       priceLabel: formatPriceLabel(plan.price),
-      includedCreditsLabel: formatUsdFromCents(
+      includedCreditsLabel: formatCreditBalance(
         plan.limits.includedCreditCentsBase ||
           plan.limits.includedCreditCentsPerSeat,
       ),
@@ -232,22 +231,24 @@ export default function BillingPage() {
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <p>
               Purchased:{" "}
-              {formatUsdFromCents(overview.billing_credit_purchase_total_cents)}
+              {formatCreditBalance(
+                overview.billing_credit_purchase_total_cents,
+              )}
             </p>
             <p>
               Included:{" "}
-              {formatUsdFromCents(overview.billing_credit_grant_total_cents)}
+              {formatCreditBalance(overview.billing_credit_grant_total_cents)}
             </p>
             <p>
               Billable usage:{" "}
-              {formatUsdFromCents(overview.chargeable_usage_cents)}
+              {formatCreditBalance(overview.chargeable_usage_cents)}
             </p>
             {creditPacks.length > 0 ? (
               <p>{creditPacks.length} credit pack options available.</p>
             ) : null}
             <p>
               Subscription grant:{" "}
-              {formatUsdFromCents(overview.subscription_included_credit_cents)}
+              {formatCreditBalance(overview.subscription_included_credit_cents)}
               /billing period.
             </p>
           </CardContent>
@@ -255,9 +256,9 @@ export default function BillingPage() {
 
         <Card>
           <CardHeader className="pb-3">
-            <CardDescription>Lifetime Spend</CardDescription>
+            <CardDescription>Lifetime Usage</CardDescription>
             <CardTitle className="text-xl">
-              {formatUsdFromCents(overview.lifetime_spend_cents)}
+              {formatCreditBalance(overview.lifetime_spend_cents)}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
@@ -268,7 +269,7 @@ export default function BillingPage() {
             <p>
               {isEnterprise
                 ? "Enterprise access bypasses Stripe subscription and credit deductions."
-                : `Trial includes ${formatUsdFromCents(
+                : `Trial includes ${formatCreditBalance(
                     overview.trial_credit_allowance_cents,
                   )} in hosted LLM credits.`}
             </p>

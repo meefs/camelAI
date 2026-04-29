@@ -13,6 +13,7 @@ interface OnboardingLoaderData {
   userEmail: string;
   teamMode: boolean;
   onboardingComplete: boolean;
+  billingAccessReady: boolean;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
 }
@@ -22,6 +23,7 @@ const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
 const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
 
 type CompleteOnboardingError = Error & { status?: number };
+export type OnboardingAccessChoice = "byok" | "existing";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,10 +48,11 @@ function getAutoCompleteErrorMessage(error: unknown): string {
 }
 
 export interface OnboardingRouteContext {
-  completeOnboarding: () => Promise<void>;
+  completeOnboarding: (options?: { accessChoice?: OnboardingAccessChoice }) => Promise<void>;
   skipToChat: () => void;
   teamMode: boolean;
   onboardingComplete: boolean;
+  billingAccessReady: boolean;
   userEmail: string;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
@@ -79,8 +82,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const onboardingComplete = hasCompletedOnboarding(onboarding);
   const emailVerificationRequired =
     emailVerificationStatus.required && !emailVerificationStatus.verified;
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(sessionContext.session.org_id));
+  const [orgInfo, llmProviderConfig] = await Promise.all([
+    orgStub.getInfo(),
+    orgStub.getLlmProviderConfig(),
+  ]);
+  const billingAccessReady = Boolean(
+    llmProviderConfig ||
+      orgInfo?.billing_status === "trialing" ||
+      orgInfo?.billing_status === "active" ||
+      orgInfo?.billing_status === "enterprise",
+  );
 
-  if (onboardingComplete && !teamMode && !emailVerificationRequired) {
+  if (
+    onboardingComplete &&
+    billingAccessReady &&
+    !teamMode &&
+    !emailVerificationRequired
+  ) {
     throw redirect("/chat");
   }
 
@@ -88,6 +107,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     userEmail: authBootstrap.profile.email,
     teamMode,
     onboardingComplete,
+    billingAccessReady,
     emailVerificationRequired,
     emailVerified: emailVerificationStatus.verified,
   } satisfies OnboardingLoaderData;
@@ -107,7 +127,7 @@ export default function OnboardingRoute() {
     navigate("/chat");
   }, [navigate]);
 
-  const completeOnboarding = useCallback(async () => {
+  const completeOnboarding = useCallback(async (options?: { accessChoice?: OnboardingAccessChoice }) => {
     if (completeOnboardingRequestRef.current) {
       return completeOnboardingRequestRef.current;
     }
@@ -115,6 +135,12 @@ export default function OnboardingRoute() {
     const completeRequest = (async () => {
       const response = await fetch("/api/onboarding/complete", {
         method: "POST",
+        headers: options?.accessChoice
+          ? { "Content-Type": "application/json" }
+          : undefined,
+        body: options?.accessChoice
+          ? JSON.stringify({ accessChoice: options.accessChoice })
+          : undefined,
       });
 
       if (!response.ok) {
@@ -179,7 +205,9 @@ export default function OnboardingRoute() {
   }, [navigate]);
 
   const needsWelcomeScreen =
-    loaderData.teamMode || loaderData.emailVerificationRequired;
+    loaderData.teamMode ||
+    loaderData.emailVerificationRequired ||
+    !loaderData.billingAccessReady;
 
   const runAutoComplete = useCallback(async () => {
     let lastError: unknown = null;
@@ -277,6 +305,7 @@ export default function OnboardingRoute() {
     skipToChat,
     teamMode: loaderData.teamMode,
     onboardingComplete: loaderData.onboardingComplete,
+    billingAccessReady: loaderData.billingAccessReady,
     userEmail: loaderData.userEmail,
     emailVerificationRequired: loaderData.emailVerificationRequired,
     emailVerified: loaderData.emailVerified,

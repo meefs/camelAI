@@ -58,8 +58,32 @@ export function billingStatusBadgeVariant(
   }
 }
 
+export function formatCreditAmount(
+  credits: number,
+  options: {
+    minimumFractionDigits?: number;
+    maximumFractionDigits?: number;
+  } = {},
+): string {
+  const formatter = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: options.minimumFractionDigits ?? 2,
+    maximumFractionDigits: options.maximumFractionDigits ?? 2,
+  });
+  return `${formatter.format(credits)} credits`;
+}
+
 export function formatCreditBalance(cents: number): string {
-  return `${(cents / 100).toFixed(2)} credits`;
+  return formatCreditAmount(cents / 100);
+}
+
+export function formatCreditsFromUsd(
+  usd: number,
+  maximumFractionDigits = 4,
+): string {
+  return formatCreditAmount(usd, {
+    minimumFractionDigits: maximumFractionDigits,
+    maximumFractionDigits,
+  });
 }
 
 export function formatUsdFromCents(cents: number): string {

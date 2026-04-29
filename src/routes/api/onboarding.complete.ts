@@ -3,7 +3,9 @@ import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { waitUntil } from '@/lib/wait-until';
-import type { ChatHarness } from '@/types';
+import type { ChatHarness, LlmModel, Organization } from '@/types';
+
+type OnboardingAccessChoice = 'byok' | 'existing' | null;
 
 function getQuestionToolName(provider: ChatHarness): string {
   return provider === 'codex' ? 'ask_user_question' : 'AskUserQuestion';
@@ -66,6 +68,37 @@ function getOnboardingSystemMessage(
   return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : getDefaultOnboardingSystemMessage(provider);
 }
 
+async function readAccessChoice(request: Request): Promise<OnboardingAccessChoice> {
+  const contentType = request.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return null;
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return null;
+  }
+
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const accessChoice = (body as { accessChoice?: unknown }).accessChoice;
+  return accessChoice === 'byok' ||
+    accessChoice === 'existing'
+    ? accessChoice
+    : null;
+}
+
+function hasPaidBillingAccess(org: Organization | null | undefined): boolean {
+  return (
+    org?.billing_status === 'trialing' ||
+    org?.billing_status === 'active' ||
+    org?.billing_status === 'enterprise'
+  );
+}
+
 export async function action({ request, context }: Route.ActionArgs) {
   if (request.method !== 'POST') {
     return Response.json({ error: 'Method not allowed' }, { status: 405 });
@@ -74,6 +107,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
+  const accessChoice = await readAccessChoice(request);
 
   const workspaceId = authContext.currentWorkspace?.id;
   if (!workspaceId) {
@@ -93,6 +127,32 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   // Read the sales prompt stored on the UserDO during signup.
   const salesPrompt = await userStub.getPendingSalesPrompt();
+  const orgStub = authEnv.ORG.get(
+    authEnv.ORG.idFromName(authContext.currentOrg.id),
+  );
+  const [orgInfo, llmProviderConfig] = await Promise.all([
+    orgStub.getInfo(),
+    orgStub.getLlmProviderConfig(),
+  ]);
+  let onboardingModel: LlmModel | undefined;
+
+  if (accessChoice === 'byok' && !llmProviderConfig) {
+    return Response.json(
+      { error: 'Add an API key before continuing with your own provider.' },
+      { status: 400 },
+    );
+  }
+
+  const hasBillingAccess =
+    hasPaidBillingAccess(orgInfo) ||
+    Boolean(llmProviderConfig);
+
+  if (!hasBillingAccess) {
+    return Response.json(
+      { error: 'Choose a billing option before continuing.' },
+      { status: 402 },
+    );
+  }
 
   const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
   const onboardingThreadTitle = `${firstName}'s first chat`;
@@ -144,7 +204,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       workspaceId,
       onboardingThreadTitle,
       authContext.user.id,
-      salesPrompt ?? undefined
+      salesPrompt ?? undefined,
+      onboardingModel,
     );
 
     if (salesPrompt) {
@@ -174,7 +235,8 @@ export async function action({ request, context }: Route.ActionArgs) {
     workspaceId,
     onboardingThreadTitle,
     authContext.user.id,
-    salesPrompt ?? undefined
+    salesPrompt ?? undefined,
+    onboardingModel,
   );
 
   if (salesPrompt) {

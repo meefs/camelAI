@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -45,6 +46,33 @@ func TestParseProxyRoute(t *testing.T) {
 	}
 	if proxy.UpstreamPath != "/api/claude/v1/messages" {
 		t.Fatalf("unexpected upstream path: %s", proxy.UpstreamPath)
+	}
+}
+
+func TestRewriteClaudeRequestBodyForOpenRouter(t *testing.T) {
+	body := []byte(`{"model":"sonnet","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+	rewritten := rewriteClaudeRequestBodyForOpenRouter(body)
+
+	var parsed map[string]any
+	if err := json.Unmarshal(rewritten, &parsed); err != nil {
+		t.Fatalf("rewritten body is not json: %v", err)
+	}
+	if parsed["model"] != "anthropic/claude-sonnet-4.6" {
+		t.Fatalf("unexpected model rewrite: %v", parsed["model"])
+	}
+
+	alreadyOpenRouter := []byte(`{"model":"anthropic/claude-haiku-4.5"}`)
+	if string(rewriteClaudeRequestBodyForOpenRouter(alreadyOpenRouter)) != string(alreadyOpenRouter) {
+		t.Fatal("expected explicit OpenRouter model to be preserved")
+	}
+
+	snapshotModel := []byte(`{"model":"claude-haiku-4-5-20251001"}`)
+	var snapshotParsed map[string]any
+	if err := json.Unmarshal(rewriteClaudeRequestBodyForOpenRouter(snapshotModel), &snapshotParsed); err != nil {
+		t.Fatalf("rewritten snapshot body is not json: %v", err)
+	}
+	if snapshotParsed["model"] != "anthropic/claude-haiku-4.5" {
+		t.Fatalf("unexpected snapshot model rewrite: %v", snapshotParsed["model"])
 	}
 }
 
@@ -324,6 +352,45 @@ func TestForwardOpenAIToAIGatewayUsesOpenAIResponsesForGPTModels(t *testing.T) {
 	}
 	if capturedPath != "/openai/responses" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openai/responses")
+	}
+}
+
+func TestForwardOpenAICompatibleDirectPreservesV1ResponsesPath(t *testing.T) {
+	var capturedPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-test","object":"response"}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(`{"model":"gpt-5.4","input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.forwardOpenAICompatibleDirect(
+		rec,
+		req,
+		ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"},
+		testThreadContext(),
+		testCaller(),
+		"test-req-byok-openrouter",
+		time.Now(),
+		upstream.URL+"/api",
+		"sk-test",
+		"openrouter",
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/api/v1/responses" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/api/v1/responses")
 	}
 }
 

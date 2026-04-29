@@ -30,6 +30,7 @@ export function shouldRevalidate({
 export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
 
   if (!authContext.onboarding?.completed_at) {
     throw redirect('/onboarding');
@@ -38,7 +39,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     throw redirect('/onboarding');
   }
 
-  const env = getEnv(context);
+  const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
+  const llmProviderConfig = await orgStub.getLlmProviderConfig();
+  const billingAccessReady = Boolean(
+    llmProviderConfig ||
+      authContext.currentOrg.billing_status === 'trialing' ||
+      authContext.currentOrg.billing_status === 'active' ||
+      authContext.currentOrg.billing_status === 'enterprise',
+  );
+  if (!billingAccessReady) {
+    throw redirect('/onboarding');
+  }
 
   // Get sidebar state from cookies
   const cookies = parseCookies(request);

@@ -173,21 +173,25 @@ export async function createThread(
     throw new Error('Workspace not found');
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const llmProviderConfig = await orgStub.getLlmProviderConfig();
-  const experimentalSettings = await orgStub.getExperimentalSettings();
+  const [llmProviderConfig, experimentalSettings, orgInfo] = await Promise.all([
+    orgStub.getLlmProviderConfig(),
+    orgStub.getExperimentalSettings(),
+    orgStub.getInfo(),
+  ]);
   const defaultProvider = getDefaultThreadProvider(
     llmProviderConfig?.provider,
     experimentalSettings,
   );
-  if (model !== undefined && !isLlmModelAllowedForNewThread(
-    model,
+  const selectedModel = model;
+  if (selectedModel !== undefined && !isLlmModelAllowedForNewThread(
+    selectedModel,
     llmProviderConfig?.provider,
     experimentalSettings,
   )) {
     throw new Error('Invalid thread model');
   }
-  const provider = getProviderForModel(model, defaultProvider);
-  const normalizedModel = normalizeLlmModel(model, provider);
+  const provider = getProviderForModel(selectedModel, defaultProvider);
+  const normalizedModel = normalizeLlmModel(selectedModel, provider);
   const thread = await orgStub.createThread(
     workspaceId,
     title,

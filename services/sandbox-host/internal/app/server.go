@@ -52,6 +52,7 @@ type ProxyThreadContext struct {
 	ByokBedrockToken  string
 	ByokBedrockRegion string
 	ByokOpenAIKey     string
+	ByokOpenRouterKey string
 }
 
 type WorkspaceRoute struct {
@@ -669,6 +670,7 @@ func (s *Server) handleChatProxy(
 	byokBedrockToken := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Bedrock-Token"))
 	byokBedrockRegion := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Bedrock-Region"))
 	byokOpenAIKey := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-OpenAI-Key"))
+	byokOpenRouterKey := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-OpenRouter-Key"))
 
 	workerBaseURL := normalizeWorkerBaseURL(firstNonEmpty(req.Header.Get(s.cfg.HeaderWorkerBaseURL), s.cfg.WorkerBaseURL))
 	if workerBaseURL == "" {
@@ -705,6 +707,7 @@ func (s *Server) handleChatProxy(
 		ByokBedrockToken:  byokBedrockToken,
 		ByokBedrockRegion: byokBedrockRegion,
 		ByokOpenAIKey:     byokOpenAIKey,
+		ByokOpenRouterKey: byokOpenRouterKey,
 	}
 	current := copyProxyThreadContext(s.proxyThreads[threadKey])
 	s.proxyMu.Unlock()
@@ -964,6 +967,10 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 			s.forwardClaudeToAnthropicDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
 			return
 		}
+		if threadContext.ByokOpenRouterKey != "" {
+			s.forwardClaudeToOpenRouterDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+			return
+		}
 		// Bedrock count_tokens falls through to AI Gateway (Bedrock uses Anthropic format for that).
 		if threadContext.ByokBedrockToken != "" && !strings.Contains(proxy.UpstreamPath, "count_tokens") {
 			s.forwardClaudeToBedrockDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
@@ -980,6 +987,10 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	// Route OpenAI API requests to AI Gateway (still uses gateway).
 	if strings.HasPrefix(proxy.UpstreamPath, "/api/openai/") && threadContext.ByokOpenAIKey != "" {
 		s.forwardOpenAIDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+		return
+	}
+	if strings.HasPrefix(proxy.UpstreamPath, "/api/openai/") && threadContext.ByokOpenRouterKey != "" {
+		s.forwardOpenRouterDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
 		return
 	}
 
@@ -1128,7 +1139,7 @@ func (s *Server) forwardClaudeDirect(
 
 	// Billing enforcement: reject if the org does not currently have access.
 	if isMessagesEndpoint {
-		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted)
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, extractModelFromRequestBody(rawBody))
 		if billingDecision.Denied {
 			s.trace("claude_direct_billing_denied", map[string]any{
 				"requestId":       requestID,
@@ -1402,6 +1413,8 @@ type BillingAccessSnapshot struct {
 	BillingTrialEndsAt              *int64 `json:"billing_trial_ends_at"`
 	BillingCreditPurchaseTotalCents int64  `json:"billing_credit_purchase_total_cents"`
 	BillingCreditGrantTotalCents    int64  `json:"billing_credit_grant_total_cents"`
+	BillingFreeCreditGrantCents     int64  `json:"billing_free_credit_grant_cents"`
+	BillingFreeCreditGrantedAt      *int64 `json:"billing_free_credit_granted_at"`
 	BillingCreditUsageStartedAt     *int64 `json:"billing_credit_usage_started_at"`
 }
 
@@ -1460,7 +1473,7 @@ func (s *Server) fetchBillingAccessSnapshot(threadContext *ProxyThreadContext) (
 	return &snapshot, nil
 }
 
-func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billingSource string) BillingAccessDecision {
+func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billingSource string, model string) BillingAccessDecision {
 	decision := BillingAccessDecision{
 		BillingSource:    billingSource,
 		CreditChargeable: false,
@@ -1478,7 +1491,7 @@ func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billin
 		}
 		decision.Denied = true
 		decision.StatusCode = http.StatusPaymentRequired
-		decision.Message = "Start a paid plan or bring your own API key to use camelAI."
+		decision.Message = "Hosted model access is not active for this organization. Start a subscription or add your own API key in Settings -> AI Provider. Your workspace is saved."
 		return decision
 	}
 
@@ -1489,21 +1502,21 @@ func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billin
 		if billingSource == billingSourceBYOK {
 			return decision
 		}
-		return s.checkCreditBalance(threadContext, snapshot, decision, "Trial credits are used up. Add credits in Billing to continue during your trial.")
+		return s.checkCreditBalance(threadContext, snapshot, decision, "Trial hosted-model credits are used up.")
 	case "active":
 		if billingSource == billingSourceBYOK {
 			return decision
 		}
-		return s.checkCreditBalance(threadContext, snapshot, decision, "No credits remaining. Buy more credits in Billing to continue.")
+		return s.checkCreditBalance(threadContext, snapshot, decision, "Hosted model credits are used up.")
 	case "past_due":
 		decision.Denied = true
 		decision.StatusCode = http.StatusPaymentRequired
-		decision.Message = "Your subscription is past due. Update billing to continue."
+		decision.Message = "Your subscription is past due. Update payment details in Settings -> Billing or add your own API key in Settings -> AI Provider to continue. Your workspace is saved."
 		return decision
 	case "canceled":
 		decision.Denied = true
 		decision.StatusCode = http.StatusPaymentRequired
-		decision.Message = "Your subscription was canceled. Start a new subscription to continue."
+		decision.Message = "Your subscription was canceled. Start a new subscription in Settings -> Billing or add your own API key in Settings -> AI Provider to continue. Your workspace is saved."
 		return decision
 	default:
 		if billingSource == billingSourceBYOK {
@@ -1511,9 +1524,16 @@ func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billin
 		}
 		decision.Denied = true
 		decision.StatusCode = http.StatusPaymentRequired
-		decision.Message = "Start a paid plan to use hosted models, or bring your own API key."
+		decision.Message = "Hosted models require billing access. Start a subscription or add your own API key in Settings -> AI Provider. Your workspace is saved."
 		return decision
 	}
+}
+
+func formatCreditCents(cents int64) string {
+	if cents < 0 {
+		cents = 0
+	}
+	return fmt.Sprintf("%.2f credits", float64(cents)/100)
 }
 
 func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot *BillingAccessSnapshot, decision BillingAccessDecision, deniedMessage string) BillingAccessDecision {
@@ -1536,7 +1556,11 @@ func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot 
 	}
 	decision.Denied = true
 	decision.StatusCode = http.StatusPaymentRequired
-	decision.Message = deniedMessage
+	decision.Message = fmt.Sprintf("%s You have used %s of %s. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.",
+		deniedMessage,
+		formatCreditCents(spentCents),
+		formatCreditCents(totalCreditsCents),
+	)
 	return decision
 }
 
@@ -1604,7 +1628,7 @@ func (s *Server) forwardClaudeToAnthropicDirect(
 	isMessagesEndpoint := strings.Contains(claudeEndpoint, "messages") && !strings.Contains(claudeEndpoint, "count_tokens")
 	billingDecision := BillingAccessDecision{BillingSource: billingSourceBYOK}
 	if req.Method == http.MethodPost && isMessagesEndpoint {
-		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK)
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK, "")
 		if billingDecision.Denied {
 			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
 			return
@@ -1666,6 +1690,144 @@ func (s *Server) forwardClaudeToAnthropicDirect(
 	}
 }
 
+// forwardClaudeToOpenRouterDirect handles OpenRouter BYOK requests through
+// OpenRouter's Anthropic-compatible Messages API.
+func (s *Server) forwardClaudeToOpenRouterDirect(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	claudeEndpoint := strings.TrimPrefix(
+		strings.Replace(proxy.UpstreamPath, "/api/claude/", "/", 1),
+		"/",
+	)
+	isMessagesEndpoint := strings.Contains(claudeEndpoint, "messages") && !strings.Contains(claudeEndpoint, "count_tokens")
+	billingDecision := BillingAccessDecision{BillingSource: billingSourceBYOK}
+	if req.Method == http.MethodPost && isMessagesEndpoint {
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK, "")
+		if billingDecision.Denied {
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+			return
+		}
+	}
+
+	rawBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	forwardBody := rewriteClaudeRequestBodyForOpenRouter(rawBody)
+
+	targetURL := "https://openrouter.ai/api" + strings.Replace(proxy.UpstreamPath, "/api/claude", "", 1)
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, bytes.NewReader(forwardBody))
+	if err != nil {
+		errorJSON(w, "Failed to create OpenRouter request", http.StatusInternalServerError)
+		return
+	}
+
+	forwardReq.Header = cloneHeaders(req.Header)
+	forwardReq.Header.Del("x-api-key")
+	forwardReq.Header.Set("Authorization", "Bearer "+threadContext.ByokOpenRouterKey)
+	applyStreamingRequestHeaders(forwardReq.Header)
+
+	proxyTag := fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath)
+	s.containers.AddProxyRequest(threadContext.ContainerName, proxyTag)
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, 0, durationMs)
+		log.Printf("[SandboxHost] BYOK OpenRouter Anthropic proxy failed thread=%s durationMs=%d error=%v",
+			threadContext.ThreadID, durationMs, upstreamErr)
+		errorJSON(w, "OpenRouter upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, resp.StatusCode, durationMs)
+
+	copyHeaders(w.Header(), resp.Header)
+	applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
+	usage, err := copyResponseBodyWithUsage(w, resp.Body, streaming)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.trace("byok_openrouter_anthropic_direct_copy_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"threadId":        threadContext.ThreadID,
+			"error":           err.Error(),
+		})
+	}
+	if usage.Model == "" {
+		usage.Model = extractModelFromRequestBody(rawBody)
+	}
+	if isMessagesEndpoint && resp.StatusCode < 400 && usage.HasBillableTokens() {
+		go s.recordUsage(threadContext, "openrouter", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+	}
+}
+
+func rewriteClaudeRequestBodyForOpenRouter(rawBody []byte) []byte {
+	if len(rawBody) == 0 {
+		return rawBody
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		return rawBody
+	}
+	model, ok := body["model"].(string)
+	if !ok {
+		return rawBody
+	}
+	openRouterModel := openRouterClaudeModel(model)
+	if openRouterModel == model {
+		return rawBody
+	}
+	body["model"] = openRouterModel
+	rewritten, err := json.Marshal(body)
+	if err != nil {
+		return rawBody
+	}
+	return rewritten
+}
+
+func openRouterClaudeModel(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "sonnet":
+		return "anthropic/claude-sonnet-4.6"
+	case "haiku":
+		return "anthropic/claude-haiku-4.5"
+	case "opus":
+		return "anthropic/claude-opus-4.6"
+	case "claude-sonnet-4-6":
+		return "anthropic/claude-sonnet-4.6"
+	case "claude-opus-4-6":
+		return "anthropic/claude-opus-4.6"
+	case "claude-sonnet-4-5-20250929":
+		return "anthropic/claude-sonnet-4.5"
+	case "claude-haiku-4-5-20251001":
+		return "anthropic/claude-haiku-4.5"
+	case "claude-opus-4-5-20251101":
+		return "anthropic/claude-opus-4.5"
+	case "claude-sonnet-4-20250514":
+		return "anthropic/claude-sonnet-4"
+	case "claude-opus-4-20250514":
+		return "anthropic/claude-opus-4"
+	case "claude-3-7-sonnet-20250219":
+		return "anthropic/claude-3.7-sonnet"
+	case "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620":
+		return "anthropic/claude-3.5-sonnet"
+	case "claude-3-5-haiku-20241022":
+		return "anthropic/claude-3.5-haiku"
+	default:
+		return model
+	}
+}
+
 // forwardClaudeToBedrockDirect handles BYOK Bedrock requests by calling
 // the Bedrock invoke-with-response-stream endpoint directly using the
 // org's bearer token (bypasses AI Gateway).
@@ -1680,7 +1842,7 @@ func (s *Server) forwardClaudeToBedrockDirect(
 ) {
 	billingDecision := BillingAccessDecision{BillingSource: billingSourceBYOK}
 	if req.Method == http.MethodPost {
-		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK)
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK, "")
 		if billingDecision.Denied {
 			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
 			return
@@ -1864,16 +2026,10 @@ func (s *Server) forwardOpenAIToAIGateway(
 		return
 	}
 	billingDecision := BillingAccessDecision{BillingSource: billingSourceHosted}
-	if req.Method == http.MethodPost {
-		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted)
-		if billingDecision.Denied {
-			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
-			return
-		}
-	}
 
 	// Resolve model and determine gateway provider
 	gatewayProvider := "compat"
+	requestModel := ""
 	var err error
 	var rawBody []byte
 	var forwardBody io.Reader = req.Body
@@ -1887,6 +2043,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 		if len(rawBody) > 0 {
 			if err := json.Unmarshal(rawBody, &bodyJSON); err == nil {
 				if model, _ := bodyJSON["model"].(string); model != "" {
+					requestModel = model
 					resolved := resolveGatewayModel(model)
 					if resolved != model {
 						bodyJSON["model"] = resolved
@@ -1901,6 +2058,11 @@ func (s *Server) forwardOpenAIToAIGateway(
 			}
 		}
 		forwardBody = bytes.NewReader(rawBody)
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, requestModel)
+		if billingDecision.Denied {
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+			return
+		}
 	}
 
 	targetURL := s.cfg.AIGatewayBaseURL + "/" + gatewayProvider + normalizedPath
@@ -1994,22 +2156,49 @@ func (s *Server) forwardOpenAIDirect(
 	requestID string,
 	startedAt time.Time,
 ) {
+	s.forwardOpenAICompatibleDirect(w, req, proxy, threadContext, caller, requestID, startedAt, "https://api.openai.com", threadContext.ByokOpenAIKey, "openai")
+}
+
+func (s *Server) forwardOpenRouterDirect(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	s.forwardOpenAICompatibleDirect(w, req, proxy, threadContext, caller, requestID, startedAt, "https://openrouter.ai/api", threadContext.ByokOpenRouterKey, "openrouter")
+}
+
+func (s *Server) forwardOpenAICompatibleDirect(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+	upstreamBaseURL string,
+	apiKey string,
+	providerName string,
+) {
 	openaiPath := strings.TrimPrefix(proxy.UpstreamPath, "/api/openai")
-	normalizedPath, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
+	_, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
 	if !ok {
 		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
 		return
 	}
 	billingDecision := BillingAccessDecision{BillingSource: billingSourceBYOK}
 	if req.Method == http.MethodPost {
-		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK)
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceBYOK, "")
 		if billingDecision.Denied {
 			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
 			return
 		}
 	}
 
-	targetURL := "https://api.openai.com" + normalizedPath
+	targetURL := strings.TrimRight(upstreamBaseURL, "/") + openaiPath
 	if req.URL.RawQuery != "" {
 		targetURL += "?" + req.URL.RawQuery
 	}
@@ -2033,7 +2222,7 @@ func (s *Server) forwardOpenAIDirect(
 	}
 
 	headers := sanitizeGatewayUpstreamHeaders(req.Header)
-	headers.Set("Authorization", "Bearer "+threadContext.ByokOpenAIKey)
+	headers.Set("Authorization", "Bearer "+apiKey)
 	applyStreamingRequestHeaders(headers)
 	forwardReq.Header = headers
 
@@ -2042,7 +2231,8 @@ func (s *Server) forwardOpenAIDirect(
 		"callerContainer": caller.Name,
 		"method":          req.Method,
 		"threadId":        threadContext.ThreadID,
-		"targetPath":      normalizedPath,
+		"targetPath":      openaiPath,
+		"provider":        providerName,
 	})
 	s.containers.AddProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath))
 
@@ -2058,7 +2248,7 @@ func (s *Server) forwardOpenAIDirect(
 			"error":           upstreamErr.Error(),
 		})
 		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, durationMs)
-		errorJSON(w, "OpenAI upstream unavailable", http.StatusBadGateway)
+		errorJSON(w, "LLM provider upstream unavailable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -2090,7 +2280,7 @@ func (s *Server) forwardOpenAIDirect(
 		usage.Model = extractModelFromRequestBody(rawBody)
 	}
 	if resp.StatusCode < 400 && usage.HasBillableTokens() {
-		go s.recordUsage(threadContext, "openai", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+		go s.recordUsage(threadContext, providerName, billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
 	}
 }
 

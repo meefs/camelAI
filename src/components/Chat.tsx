@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, memo } from 'react';
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import { useNavigate, useFetcher, useLocation, useRevalidator } from 'react-router';
-import { ArrowDown, RefreshCw, X, ChevronDown, Globe, Lock } from 'lucide-react';
+import { AlertTriangle, ArrowDown, RefreshCw, X, ChevronDown, Globe, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import type {
   ChatHarness,
@@ -106,6 +106,8 @@ interface ChatProps {
   threadModel?: LlmModel | null;
   threadProvider?: ChatHarness | null;
   llmProvider?: LlmProvider | null;
+  allowedThreadModels?: LlmModel[] | null;
+  billingCreditStatus?: BillingCreditStatus | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
@@ -128,6 +130,15 @@ interface ChatProps {
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
+}
+
+interface BillingCreditStatus {
+  availableCreditsCents: number;
+  totalCreditLimitCents: number;
+  usedPercent: number;
+  isLow: boolean;
+  isExhausted: boolean;
+  hasByokProvider: boolean;
 }
 
 interface PendingNewThreadMessagePayload {
@@ -489,6 +500,156 @@ function MobileViewSwitcher({
           </TabsTrigger>
         </TabsList>
       </Tabs>
+    </div>
+  );
+}
+
+function formatCredits(cents: number): string {
+  return `${(Math.max(0, cents) / 100).toFixed(2)} credits`;
+}
+
+function extractChatErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return extractChatErrorMessage(error.message);
+  }
+
+  if (typeof error !== 'string') {
+    return '';
+  }
+
+  const trimmed = error.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      'error' in parsed &&
+      typeof parsed.error === 'string'
+    ) {
+      return parsed.error;
+    }
+  } catch {
+    // Raw SDK/proxy errors often wrap JSON inside a larger message.
+  }
+
+  const jsonStart = trimmed.indexOf('{');
+  const jsonEnd = trimmed.lastIndexOf('}');
+  if (jsonStart !== -1 && jsonEnd > jsonStart) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1)) as unknown;
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        'error' in parsed &&
+        typeof parsed.error === 'string'
+      ) {
+        return parsed.error;
+      }
+    } catch {
+      // Fall through to the original text.
+    }
+  }
+
+  return trimmed.replace(/^Error:\s*/i, '');
+}
+
+function normalizeChatErrorMessage(error: unknown): string {
+  const message = extractChatErrorMessage(error) || 'An unknown error occurred';
+  const lower = message.toLowerCase();
+  const isBillingOrCreditError =
+    lower.includes('credit') ||
+    lower.includes('billing') ||
+    lower.includes('payment required') ||
+    lower.includes('subscription') ||
+    lower.includes('spend limit') ||
+    lower.includes('spending limit') ||
+    lower.includes('usage limit') ||
+    lower.includes('hosted model');
+
+  if (isBillingOrCreditError) {
+    const alreadyActionable =
+      lower.includes('settings') ||
+      lower.includes('buy credits') ||
+      lower.includes('api key') ||
+      lower.includes('subscription');
+    return alreadyActionable
+      ? message
+      : `${message} Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider.`;
+  }
+
+  if (lower.includes('429') || lower.includes('rate limit')) {
+    return `${message} Wait a minute and try again. If this is from hosted model spend limits, check Settings -> Billing.`;
+  }
+
+  return message;
+}
+
+function BillingCreditNotice({
+  status,
+  onOpenBilling,
+  onOpenProviderSettings,
+}: {
+  status: BillingCreditStatus;
+  onOpenBilling: () => void;
+  onOpenProviderSettings: () => void;
+}) {
+  const title = status.isExhausted
+    ? 'Hosted model credits are used up'
+    : 'Hosted model credits are running low';
+  const description = status.isExhausted
+    ? 'Buy credits or add your own API key before sending more hosted-model messages.'
+    : `${formatCredits(status.availableCreditsCents)} left of ${formatCredits(status.totalCreditLimitCents)}.`;
+
+  return (
+    <div className="mx-auto w-full max-w-3xl px-4 pt-3 md:px-6">
+      <div className={cn(
+        "flex flex-col gap-3 rounded-lg border px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between",
+        status.isExhausted
+          ? "border-destructive/30 bg-destructive/10 text-destructive"
+          : "border-amber-300/50 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100",
+      )}>
+        <div className="flex min-w-0 items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0">
+            <p className="font-medium">{title}</p>
+            <p className={cn(
+              "text-xs",
+              status.isExhausted
+                ? "text-destructive/80"
+                : "text-amber-900/80 dark:text-amber-100/80",
+            )}>
+              {description}
+              {status.hasByokProvider
+                ? " Own-key threads do not use hosted credits."
+                : null}
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            type="button"
+            variant={status.isExhausted ? "destructive" : "outline"}
+            size="sm"
+            onClick={onOpenBilling}
+          >
+            Billing
+          </Button>
+          {!status.hasByokProvider ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onOpenProviderSettings}
+            >
+              Use own key
+            </Button>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -928,6 +1089,8 @@ export default function Chat({
   threadModel,
   threadProvider,
   llmProvider,
+  allowedThreadModels,
+  billingCreditStatus,
   experimentalSettings,
   initialPreviewTarget,
   initialPreviewTabs,
@@ -1251,13 +1414,18 @@ export default function Chat({
     return map;
   }, [messages]);
   const availableThreadModels = useMemo(
-    () => getVisibleLlmModelOptions(
-      resolvedThreadProvider,
-      experimentalSettings,
-      threadModel ?? getDefaultLlmModel(resolvedThreadProvider),
-      { allowModelFamilySwitch: !threadId, orgProvider: llmProvider },
-    ),
-    [resolvedThreadProvider, experimentalSettings, llmProvider, threadId, threadModel]
+    () => {
+      const options = getVisibleLlmModelOptions(
+        resolvedThreadProvider,
+        experimentalSettings,
+        threadModel ?? getDefaultLlmModel(resolvedThreadProvider),
+        { allowModelFamilySwitch: !threadId, orgProvider: llmProvider },
+      );
+      return allowedThreadModels?.length
+        ? options.filter((option) => allowedThreadModels.includes(option.value))
+        : options;
+    },
+    [allowedThreadModels, resolvedThreadProvider, experimentalSettings, llmProvider, threadId, threadModel]
   );
 
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? '');
@@ -2364,6 +2532,7 @@ export default function Chat({
           setStreamingMessageId(null);
           setLoading(false);
           clearPendingDeliveryDraft();
+          revalidator.revalidate();
         }
       } else if (data.type === 'sdk_event') {
         // Handle SDK events for streaming
@@ -2710,6 +2879,7 @@ export default function Chat({
           setStreamingMessageId(null);
           setLoading(false);
           clearPendingDeliveryDraft();
+          revalidator.revalidate();
           isAutoCompactingRef.current = false;
           syncCompactionIndicator();
           compactingPriorMessageIdRef.current = null;
@@ -2751,7 +2921,7 @@ export default function Chat({
         setLoading(Boolean(data.isStreaming));
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
-        setError(data.error || 'An unknown error occurred');
+        setError(normalizeChatErrorMessage(data.error));
         // Finish streaming on error
         splitStreamingMessageOnNextPartRef.current = false;
         const msgId = streamingMessageIdRef.current;
@@ -2830,6 +3000,7 @@ export default function Chat({
     fetchMessages,
     isNewThread,
     persistSessionState,
+    revalidator,
     resolvedWorkspaceId,
     restorePendingDeliveryDraft,
     setMessages,
@@ -3465,7 +3636,7 @@ export default function Chat({
         // Thread creation failed
         sessionStorage.removeItem(pendingMessageKey);
         setIsCreatingThread(false);
-        setError('Failed to start a new chat');
+        setError(normalizeChatErrorMessage(data.error));
         const pendingDraft = pendingDeliveryDraftRef.current;
         pendingDeliveryDraftRef.current = null;
         pendingDraftCountRef.current = 0;
@@ -4291,6 +4462,13 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       <PageHeader
         breadcrumbs={chatBreadcrumbs}
       />
+      {!readOnly && billingCreditStatus ? (
+        <BillingCreditNotice
+          status={billingCreditStatus}
+          onOpenBilling={() => navigate('/settings/organization/billing')}
+          onOpenProviderSettings={() => navigate('/settings/organization/ai-provider')}
+        />
+      ) : null}
       {readOnly && (
         <div className="mx-auto w-full max-w-3xl px-4 md:px-6 pt-3">
           <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">

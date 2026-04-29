@@ -99,7 +99,7 @@ export interface BugReportCaptureResponse {
 export interface Thread {
   id: string;
   title: string;
-  model: 'sonnet' | 'opus';
+  model: LlmModel;
   created_by: string;
   created_at: number;
   updated_at: number;

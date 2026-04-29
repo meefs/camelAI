@@ -51,6 +51,8 @@ import {
   AddMemberResponseSchema,
   RefreshOrgCustomDomainBodySchema,
   RefreshOrgCustomDomainResponseSchema,
+  GrantOrgCreditsBodySchema,
+  GrantOrgCreditsResponseSchema,
   UpdateOrgModelAccessBodySchema,
   UpdateThreadBodySchema,
   BlockSignupIpBodySchema,
@@ -249,7 +251,7 @@ async function getAdminOrgLlmProvider(env: Env, orgId: string) {
 async function notifyThreadMetadataChange(
   env: Env,
   threadId: string,
-  updates: { title?: string; model?: 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini' }
+  updates: { title?: string; model?: 'haiku' | 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini' }
 ): Promise<void> {
   if (!env.CHAT_THREAD || typeof env.CHAT_THREAD.get !== 'function' || typeof env.CHAT_THREAD.idFromName !== 'function') {
     return;
@@ -258,7 +260,7 @@ async function notifyThreadMetadataChange(
   try {
     const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId)) as unknown as {
       setTitle(title: string): Promise<void>;
-      setModel(model: 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini'): Promise<void>;
+      setModel(model: 'haiku' | 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini'): Promise<void>;
       refreshRunnerConfig(): Promise<void>;
     };
 
@@ -707,6 +709,55 @@ routes.put(
     return c.json({
       org_id: orgId,
       claude_proxy_models: settings.claude_proxy_models,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /orgs/:id/credits
+// ---------------------------------------------------------------------------
+
+routes.post(
+  "/orgs/:id/credits",
+  openApi({
+    summary: "Grant org credits manually",
+    request: {
+      json: GrantOrgCreditsBodySchema,
+    },
+    responses: {
+      200: GrantOrgCreditsResponseSchema,
+      400: ErrorSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param("id");
+    const body = c.req.valid("json");
+    const orgStub = getOrgStub(c.env, orgId);
+    const orgInfo = await orgStub.getInfo();
+    if (!orgInfo) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    const idempotencyKey =
+      body.idempotency_key ?? c.req.header("Idempotency-Key") ?? null;
+    const result = await orgStub.applyManualCreditGrant(
+      body.amount_cents,
+      body.reason ?? null,
+      idempotencyKey,
+    );
+    if (!result) {
+      return c.json({ error: "Credit grant amount must be positive" }, 400);
+    }
+
+    return c.json({
+      org_id: orgId,
+      applied: result.applied,
+      grant_id: result.grantId,
+      amount_cents: result.amountCents,
+      reason: result.reason,
+      billing_credit_grant_total_cents:
+        result.org.billing_credit_grant_total_cents ?? 0,
     });
   },
 );

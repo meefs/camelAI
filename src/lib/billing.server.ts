@@ -125,6 +125,8 @@ export interface OrgBillingAccessSnapshot {
   billing_credit_grant_total_cents: number;
   billing_trial_credit_grant_cents: number;
   billing_trial_credit_granted_at: number | null;
+  billing_free_credit_grant_cents: number;
+  billing_free_credit_granted_at: number | null;
   billing_last_included_credit_invoice_id: string | null;
   billing_credit_usage_started_at: number | null;
 }
@@ -198,7 +200,8 @@ function parseCreditCents(
 export function getBillingAllowanceConfig(
   env: Pick<
     StripeBillingEnv,
-    "BILLING_TRIAL_CREDIT_CENTS" | "BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS"
+    | "BILLING_TRIAL_CREDIT_CENTS"
+    | "BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS"
   >,
 ): {
   trialCreditCents: number;
@@ -500,6 +503,10 @@ export async function getBillingAccessSnapshot(
     billing_trial_credit_grant_cents: org.billing_trial_credit_grant_cents ?? 0,
     billing_trial_credit_granted_at:
       org.billing_trial_credit_granted_at ?? null,
+    billing_free_credit_grant_cents:
+      org.billing_free_credit_grant_cents ?? 0,
+    billing_free_credit_granted_at:
+      org.billing_free_credit_granted_at ?? null,
     billing_last_included_credit_invoice_id:
       org.billing_last_included_credit_invoice_id ?? null,
     billing_credit_usage_started_at:

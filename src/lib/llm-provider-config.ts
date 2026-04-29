@@ -18,6 +18,7 @@ export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   { value: 'sonnet', label: 'Sonnet', description: 'Default and recommended' },
+  { value: 'haiku', label: 'Haiku', description: 'Faster and cheaper' },
   { value: 'opus', label: 'Opus', description: 'Smarter, but slower and more expensive' },
 ];
 
@@ -68,6 +69,9 @@ export function getAllowedChatHarnessesForNewThread(
   if (orgProvider === 'anthropic' || orgProvider === 'bedrock') {
     return ['claude'];
   }
+  if (orgProvider === 'openrouter') {
+    return ['codex', 'claude'];
+  }
   if (orgProvider === 'openai') {
     return ['codex'];
   }
@@ -100,7 +104,7 @@ export function getProviderForModel(
   if (model === 'gpt-5.4' || model === 'gpt-5.4-mini') {
     return 'codex';
   }
-  if (model === 'sonnet' || model === 'opus') {
+  if (model === 'haiku' || model === 'sonnet' || model === 'opus') {
     return 'claude';
   }
   return fallbackProvider;
@@ -109,6 +113,9 @@ export function getProviderForModel(
 export function getChatHarnessesForLlmProvider(
   provider: string | null | undefined,
 ): ChatHarness[] {
+  if (provider === 'openrouter') {
+    return ['codex', 'claude'];
+  }
   if (provider === 'openai') {
     return ['codex'];
   }
@@ -175,9 +182,10 @@ export function isLlmModel(value: unknown, provider?: ChatHarness): value is Llm
     return value === 'gpt-5.4' || value === 'gpt-5.4-mini';
   }
   if (provider === 'claude') {
-    return value === 'sonnet' || value === 'opus';
+    return value === 'haiku' || value === 'sonnet' || value === 'opus';
   }
   return (
+    value === 'haiku' ||
     value === 'sonnet' ||
     value === 'opus' ||
     value === 'gpt-5.4' ||
@@ -251,7 +259,9 @@ export async function buildPublicLlmProviderConfig(
       integrationSecretKey
     );
     const primaryKey =
-      record.provider === 'anthropic' || record.provider === 'openai'
+      record.provider === 'anthropic' ||
+      record.provider === 'openai' ||
+      record.provider === 'openrouter'
         ? creds.api_key
         : creds.bearer_token;
     if (primaryKey) {

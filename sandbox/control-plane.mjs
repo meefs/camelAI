@@ -843,6 +843,70 @@ function shouldRetryWithFreshThread(error) {
   );
 }
 
+function extractTurnErrorMessage(error) {
+  const raw =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+      return parsed.error;
+    }
+  } catch {
+    // SDK/proxy errors commonly include JSON after HTTP status text.
+  }
+
+  const jsonStart = trimmed.indexOf('{');
+  const jsonEnd = trimmed.lastIndexOf('}');
+  if (jsonStart !== -1 && jsonEnd > jsonStart) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1));
+      if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+        return parsed.error;
+      }
+    } catch {
+      // Fall through to the raw message.
+    }
+  }
+
+  return trimmed.replace(/^Error:\s*/i, '');
+}
+
+function normalizeTurnErrorMessage(error) {
+  const message = extractTurnErrorMessage(error) || 'Runner error';
+  const normalized = message.toLowerCase();
+  const isBillingOrCreditError =
+    normalized.includes('credit') ||
+    normalized.includes('billing') ||
+    normalized.includes('payment required') ||
+    normalized.includes('subscription') ||
+    normalized.includes('spend limit') ||
+    normalized.includes('spending limit') ||
+    normalized.includes('usage limit') ||
+    normalized.includes('hosted model');
+
+  if (isBillingOrCreditError) {
+    const alreadyActionable =
+      normalized.includes('settings') ||
+      normalized.includes('buy credits') ||
+      normalized.includes('api key') ||
+      normalized.includes('subscription');
+    return alreadyActionable
+      ? message
+      : `${message} Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider.`;
+  }
+
+  if (normalized.includes('429') || normalized.includes('rate limit')) {
+    return `${message} Wait a minute and try again. If this is from hosted model spend limits, check Settings -> Billing.`;
+  }
+
+  return message;
+}
+
 class CodexAppServerClient {
   constructor(threadId, sessionEnv = {}) {
     this.threadId = threadId;
@@ -1741,7 +1805,9 @@ class ChatSession {
 
     const systemAppend = buildSystemPromptAppend('claude').trim();
 
-    const configuredModel = mergedEnv.CHIRIDION_CLAUDE_MODEL === 'opus' ? 'opus' : 'sonnet';
+    const configuredModel = ['haiku', 'opus', 'sonnet'].includes(mergedEnv.CHIRIDION_CLAUDE_MODEL)
+      ? mergedEnv.CHIRIDION_CLAUDE_MODEL
+      : 'sonnet';
 
     const options = {
       // Force Node as the runtime executable — Bun has a bug that breaks the SDK.
@@ -1943,7 +2009,11 @@ class ChatSession {
       } catch (error) {
         console.error(`[ControlPlane] event loop error thread=${this.threadId}:`, error);
         this.setActiveTurnUserId(null, 'claude_turn_error');
-        this.broadcast({ type: 'error', error: String(error), source: 'eventLoop' });
+        this.broadcast({
+          type: 'error',
+          error: normalizeTurnErrorMessage(error),
+          source: 'eventLoop',
+        });
       } finally {
         this.activeQuery = null;
         this.queryIterator = null;
@@ -2002,7 +2072,7 @@ class ChatSession {
     } catch (error) {
       this.broadcast({
         type: 'error',
-        error: error instanceof Error ? error.message : String(error),
+        error: normalizeTurnErrorMessage(error),
         source: 'codex_app_server',
       });
       this.setActiveTurnUserId(null, 'codex_turn_error');

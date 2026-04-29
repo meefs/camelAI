@@ -7,7 +7,7 @@ import {
   billingStatusBadgeVariant,
   billingStatusLabel,
   formatCreditBalance,
-  formatUsdFromCents,
+  formatCreditsFromUsd,
 } from "@/lib/billing";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
@@ -125,11 +125,11 @@ export default function OrganizationUsagePage() {
           <div className="grid gap-4 sm:grid-cols-3">
             <Card>
               <CardHeader className="pb-2">
-                <CardDescription>Lifetime Spend</CardDescription>
+                <CardDescription>Lifetime Usage</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {formatUsdFromCents(overview.lifetime_spend_cents)}
+                  {formatCreditBalance(overview.lifetime_spend_cents)}
                 </div>
               </CardContent>
             </Card>
@@ -171,7 +171,7 @@ export default function OrganizationUsagePage() {
                 <div className="rounded-lg border p-4">
                   <p className="text-sm font-medium">Billable usage</p>
                   <p className="mt-2 text-2xl font-semibold">
-                    {formatUsdFromCents(overview.chargeable_usage_cents)}
+                    {formatCreditBalance(overview.chargeable_usage_cents)}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {overview.chargeable_request_count.toLocaleString()}{" "}
@@ -181,14 +181,14 @@ export default function OrganizationUsagePage() {
                 <div className="rounded-lg border p-4">
                   <p className="text-sm font-medium">Total credits</p>
                   <p className="mt-2 text-2xl font-semibold">
-                    {formatUsdFromCents(overview.total_credit_limit_cents)}
+                    {formatCreditBalance(overview.total_credit_limit_cents)}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {formatUsdFromCents(
+                    {formatCreditBalance(
                       overview.billing_credit_grant_total_cents,
                     )}{" "}
                     included,{" "}
-                    {formatUsdFromCents(
+                    {formatCreditBalance(
                       overview.billing_credit_purchase_total_cents,
                     )}{" "}
                     purchased.
@@ -203,9 +203,9 @@ export default function OrganizationUsagePage() {
               <Separator />
               <div className="space-y-3">
                 <div>
-                  <h3 className="text-lg font-medium">Spend Windows</h3>
+                  <h3 className="text-lg font-medium">Usage Windows</h3>
                   <p className="text-sm text-muted-foreground">
-                    Rolling time windows with budget caps.
+                    Rolling time windows with usage caps.
                   </p>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -230,9 +230,9 @@ export default function OrganizationUsagePage() {
                         )}
                       </div>
                       <div className="text-2xl font-semibold">
-                        ${w.spent_usd.toFixed(2)}{" "}
+                        {formatCreditsFromUsd(w.spent_usd, 2)}{" "}
                         <span className="text-sm font-normal text-muted-foreground">
-                          / ${w.limit_usd.toFixed(0)}
+                          / {formatCreditsFromUsd(w.limit_usd, 0)}
                         </span>
                       </div>
                       <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
@@ -276,7 +276,7 @@ export default function OrganizationUsagePage() {
                         <TableHead>Model</TableHead>
                         <TableHead>Input</TableHead>
                         <TableHead>Output</TableHead>
-                        <TableHead>Cost</TableHead>
+                        <TableHead>Credits</TableHead>
                         <TableHead>Time</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -295,7 +295,7 @@ export default function OrganizationUsagePage() {
                             {entry.output_tokens.toLocaleString()}
                           </TableCell>
                           <TableCell className="font-mono text-xs">
-                            ${entry.cost_usd.toFixed(4)}
+                            {formatCreditsFromUsd(entry.cost_usd)}
                           </TableCell>
                           <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                             {dateFormatter.format(

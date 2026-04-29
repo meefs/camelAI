@@ -3,6 +3,7 @@ import { useLoaderData, useRevalidator } from 'react-router';
 import type { Route } from './+types/_app.chat._index';
 import { requireAuthContext, requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
+import { getOrgBillingOverview, type OrgBillingOverview } from '@/lib/billing.server';
 import { waitUntil } from '@/lib/wait-until';
 import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
@@ -18,6 +19,43 @@ import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { ChatHarness, Integration, LlmModel, LlmProvider, Thread, WorkerScriptWithCreator } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
+
+function buildBillingCreditStatus(
+  overview: OrgBillingOverview | null,
+  hasByokProvider: boolean,
+) {
+  if (!overview || overview.billing_status === 'enterprise') {
+    return null;
+  }
+  if (overview.total_credit_limit_cents <= 0) {
+    return null;
+  }
+
+  const usedPercent = Math.min(
+    100,
+    Math.max(
+      0,
+      Math.round(
+        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
+          100,
+      ),
+    ),
+  );
+  const isExhausted = overview.available_credits_cents <= 0;
+  const isLow = !isExhausted && usedPercent >= 80;
+  if (!isLow && !isExhausted) {
+    return null;
+  }
+
+  return {
+    availableCreditsCents: overview.available_credits_cents,
+    totalCreditLimitCents: overview.total_credit_limit_cents,
+    usedPercent,
+    isLow,
+    isExhausted,
+    hasByokProvider,
+  };
+}
 
 /**
  * Skip loader revalidation after createThread — the user is navigating away
@@ -148,20 +186,33 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const orgStub = workspaceId && authContext.currentOrg?.id
     ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
     : null;
-  const llmProviderConfig = typeof orgStub?.getLlmProviderConfig === 'function'
-    ? await orgStub.getLlmProviderConfig().catch(() => null)
-    : null;
-  const experimentalSettings = typeof orgStub?.getExperimentalSettings === 'function'
-    ? await orgStub.getExperimentalSettings().catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS)
-    : DEFAULT_ORG_EXPERIMENTAL_SETTINGS;
+  const [llmProviderConfig, experimentalSettings, orgInfo] = orgStub
+    ? await Promise.all([
+        orgStub.getLlmProviderConfig().catch(() => null),
+        orgStub.getExperimentalSettings().catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
+        orgStub.getInfo().catch(() => null),
+      ])
+    : [null, DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null] as const;
   const threadProvider: ChatHarness = getDefaultThreadProvider(
     llmProviderConfig?.provider,
     experimentalSettings,
   );
+  const billingOverview = orgInfo
+    ? await getOrgBillingOverview(env, orgInfo).catch((error) => {
+        console.warn('Failed to load billing overview for chat:', error);
+        return null;
+      })
+    : null;
 
   return {
     workspaceId: workspaceId ?? null,
     threadProvider,
+    threadModel: getDefaultLlmModel(threadProvider),
+    allowedThreadModels: null,
+    billingCreditStatus: buildBillingCreditStatus(
+      billingOverview,
+      Boolean(llmProviderConfig),
+    ),
     llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     experimentalSettings,
     hostname,
@@ -243,7 +294,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json({ thread });
     } catch (error) {
       console.error('Failed to create thread:', error);
-      return Response.json({ error: 'Failed to create thread' }, { status: 500 });
+      const message = error instanceof Error ? error.message : 'Failed to create thread';
+      return Response.json({ error: message || 'Failed to create thread' }, { status: 500 });
     }
   }
 
@@ -255,6 +307,9 @@ export default function NewChatPage() {
     workspaceId,
     threadProvider,
     llmProvider,
+    threadModel,
+    allowedThreadModels,
+    billingCreditStatus,
     hostname,
     userId,
     userName,
@@ -296,7 +351,9 @@ export default function NewChatPage() {
       }}
       experimentalSettings={experimentalSettings}
       llmProvider={llmProvider}
-      threadModel={getDefaultLlmModel(threadProvider)}
+      threadModel={threadModel}
+      allowedThreadModels={allowedThreadModels}
+      billingCreditStatus={billingCreditStatus}
       initialWelcomeInput={salesPrompt}
     />
   );

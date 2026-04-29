@@ -59,4 +59,34 @@ describe("OrgDO billing grant idempotency", () => {
     expect(duplicate?.org.billing_credit_grant_total_cents).toBe(1200);
     expect(duplicate?.org.billing_trial_credit_grant_cents).toBe(1200);
   });
+
+  it("applies manual credit grants idempotently by grant id", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Manual Grant Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+    const first = await orgStub.applyManualCreditGrant(
+      2500,
+      "manual onboarding credit",
+      "grant-test-1",
+    );
+    expect(first?.applied).toBe(true);
+    expect(first?.amountCents).toBe(2500);
+    expect(first?.reason).toBe("manual onboarding credit");
+    expect(first?.org.billing_credit_grant_total_cents).toBe(2500);
+
+    const duplicate = await orgStub.applyManualCreditGrant(
+      2500,
+      "manual onboarding credit",
+      "grant-test-1",
+    );
+    expect(duplicate?.applied).toBe(false);
+    expect(duplicate?.amountCents).toBe(2500);
+    expect(duplicate?.org.billing_credit_grant_total_cents).toBe(2500);
+  });
 });

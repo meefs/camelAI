@@ -369,6 +369,8 @@ export interface OrgBillingStateUpdate {
   billing_credit_grant_total_cents?: number;
   billing_trial_credit_grant_cents?: number;
   billing_trial_credit_granted_at?: number | null;
+  billing_free_credit_grant_cents?: number;
+  billing_free_credit_granted_at?: number | null;
   billing_last_included_credit_invoice_id?: string | null;
   billing_credit_usage_started_at?: number | null;
 }
@@ -381,6 +383,14 @@ export interface SyncSubscriptionBillingStateResult {
 export interface ApplyCreditCheckoutResult {
   org: Organization;
   applied: boolean;
+}
+
+export interface ApplyManualCreditGrantResult {
+  org: Organization;
+  applied: boolean;
+  grantId: string;
+  amountCents: number;
+  reason: string | null;
 }
 
 /**
@@ -1179,6 +1189,12 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info.billing_trial_credit_granted_at === undefined) {
           info.billing_trial_credit_granted_at = null;
         }
+        if (typeof info.billing_free_credit_grant_cents !== "number") {
+          info.billing_free_credit_grant_cents = 0;
+        }
+        if (info.billing_free_credit_granted_at === undefined) {
+          info.billing_free_credit_granted_at = null;
+        }
         if (info.billing_last_included_credit_invoice_id === undefined) {
           info.billing_last_included_credit_invoice_id = null;
         }
@@ -1868,6 +1884,12 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (info.billing_trial_credit_granted_at === undefined) {
       info.billing_trial_credit_granted_at = null;
     }
+    if (typeof info.billing_free_credit_grant_cents !== "number") {
+      info.billing_free_credit_grant_cents = 0;
+    }
+    if (info.billing_free_credit_granted_at === undefined) {
+      info.billing_free_credit_granted_at = null;
+    }
     if (info.billing_last_included_credit_invoice_id === undefined) {
       info.billing_last_included_credit_invoice_id = null;
     }
@@ -1924,6 +1946,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
     if (info.billing_trial_credit_granted_at === undefined) {
       info.billing_trial_credit_granted_at = null;
+      changed = true;
+    }
+    if (typeof info.billing_free_credit_grant_cents !== "number") {
+      info.billing_free_credit_grant_cents = 0;
+      changed = true;
+    }
+    if (info.billing_free_credit_granted_at === undefined) {
+      info.billing_free_credit_granted_at = null;
       changed = true;
     }
     if (info.billing_last_included_credit_invoice_id === undefined) {
@@ -2236,6 +2266,96 @@ export class OrgDO extends DurableObject<DOEnv> {
         JSON.stringify(nextInfo),
       );
       return { org: nextInfo, applied: true };
+    });
+
+    if (result?.applied) {
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "org_upsert",
+        payload: result.org,
+      });
+    }
+    return result;
+  }
+
+  applyManualCreditGrant(
+    amountCents: number,
+    reason?: string | null,
+    idempotencyKey?: string | null,
+  ): ApplyManualCreditGrantResult | null {
+    const normalizedAmountCents = Math.max(0, Math.floor(amountCents));
+    if (normalizedAmountCents <= 0) return null;
+
+    const trimmedReason = reason?.trim() ? reason.trim().slice(0, 500) : null;
+    const trimmedIdempotencyKey = idempotencyKey?.trim()
+      ? idempotencyKey.trim().slice(0, 200)
+      : null;
+    const grantId = trimmedIdempotencyKey ?? `manual:${Date.now()}:${crypto.randomUUID()}`;
+
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS admin_credit_grants (
+        grant_id TEXT PRIMARY KEY,
+        amount_cents INTEGER NOT NULL,
+        reason TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+
+    const result = this.ctx.storage.transactionSync(() => {
+      const existingGrant = this.sql
+        .exec(
+          "SELECT grant_id, amount_cents, reason FROM admin_credit_grants WHERE grant_id = ?",
+          grantId,
+        )
+        .toArray();
+      if (existingGrant.length > 0) {
+        const existingOrg = this.getInfoSync();
+        return existingOrg
+          ? {
+              org: existingOrg,
+              applied: false,
+              grantId,
+              amountCents: Number(existingGrant[0].amount_cents ?? normalizedAmountCents),
+              reason:
+                typeof existingGrant[0].reason === "string"
+                  ? existingGrant[0].reason
+                  : null,
+            }
+          : null;
+      }
+
+      const existingOrg = this.getInfoSync();
+      if (!existingOrg) return null;
+
+      const nextInfo: Organization = {
+        ...existingOrg,
+        billing_credit_grant_total_cents:
+          (existingOrg.billing_credit_grant_total_cents ?? 0) +
+          normalizedAmountCents,
+        billing_credit_usage_started_at:
+          existingOrg.billing_credit_usage_started_at ?? Date.now(),
+      };
+
+      normalizeOrgBillingFields(nextInfo);
+      this.sql.exec(
+        "INSERT INTO admin_credit_grants (grant_id, amount_cents, reason, created_at) VALUES (?, ?, ?, ?)",
+        grantId,
+        normalizedAmountCents,
+        trimmedReason,
+        Date.now(),
+      );
+      this.sql.exec(
+        "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+        "data",
+        JSON.stringify(nextInfo),
+      );
+
+      return {
+        org: nextInfo,
+        applied: true,
+        grantId,
+        amountCents: normalizedAmountCents,
+        reason: trimmedReason,
+      };
     });
 
     if (result?.applied) {

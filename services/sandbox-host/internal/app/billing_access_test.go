@@ -31,7 +31,7 @@ func TestCheckOrgBillingAccessAllowsFreeBYOKOnly(t *testing.T) {
 		ThreadID:    "thread-free",
 	}
 
-	byokDecision := server.checkOrgBillingAccess(threadContext, billingSourceBYOK)
+	byokDecision := server.checkOrgBillingAccess(threadContext, billingSourceBYOK, "")
 	if byokDecision.Denied {
 		t.Fatalf("expected BYOK to be allowed on free plan: %+v", byokDecision)
 	}
@@ -39,7 +39,7 @@ func TestCheckOrgBillingAccessAllowsFreeBYOKOnly(t *testing.T) {
 		t.Fatal("BYOK usage should not be credit-chargeable")
 	}
 
-	hostedDecision := server.checkOrgBillingAccess(threadContext, billingSourceHosted)
+	hostedDecision := server.checkOrgBillingAccess(threadContext, billingSourceHosted, "claude-sonnet-4-6")
 	if !hostedDecision.Denied {
 		t.Fatal("expected hosted usage to be denied on free plan")
 	}

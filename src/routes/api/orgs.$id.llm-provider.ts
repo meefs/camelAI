@@ -12,7 +12,7 @@ import {
 import { waitUntil } from '@/lib/wait-until';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
-const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'openai'];
+const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'openai', 'openrouter'];
 const VALID_AWS_REGIONS = [
   'us-east-1',
   'us-east-2',
@@ -166,14 +166,20 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ success: true });
     }
 
-    if (provider === 'openai') {
+    if (provider === 'openai' || provider === 'openrouter') {
       const apiKey = (body.api_key as string)?.trim();
       if (!apiKey) {
         return Response.json({ error: 'API key is required' }, { status: 400 });
       }
-      if (!apiKey.startsWith('sk-')) {
+      if (provider === 'openai' && !apiKey.startsWith('sk-')) {
         return Response.json(
           { error: 'Invalid OpenAI API key format. Keys should start with sk-' },
+          { status: 400 }
+        );
+      }
+      if (provider === 'openrouter' && !apiKey.startsWith('sk-or-')) {
+        return Response.json(
+          { error: 'Invalid OpenRouter API key format. Keys should start with sk-or-' },
           { status: 400 }
         );
       }
@@ -283,27 +289,47 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         );
       }
 
-      if (record.provider === 'openai') {
-        const resp = await fetch('https://api.openai.com/v1/models?limit=1', {
+      if (record.provider === 'openai' || record.provider === 'openrouter') {
+        const resp = await fetch(
+          record.provider === 'openrouter'
+            ? 'https://openrouter.ai/api/v1/models'
+            : 'https://api.openai.com/v1/models?limit=1',
+          {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${creds.api_key}`,
           },
-        });
+          },
+        );
 
         if (resp.ok) {
-          return Response.json({ success: true, message: 'OpenAI API key is valid' });
+          return Response.json({
+            success: true,
+            message:
+              record.provider === 'openrouter'
+                ? 'OpenRouter API key is valid'
+                : 'OpenAI API key is valid',
+          });
         }
 
         const errorBody = await resp.text();
         if (resp.status === 401 || resp.status === 403) {
           return Response.json(
-            { success: false, message: 'Invalid OpenAI API key. Please check and try again.' },
+            {
+              success: false,
+              message:
+                record.provider === 'openrouter'
+                  ? 'Invalid OpenRouter API key. Please check and try again.'
+                  : 'Invalid OpenAI API key. Please check and try again.',
+            },
             { status: 200 }
           );
         }
         return Response.json(
-          { success: false, message: `OpenAI API returned ${resp.status}: ${errorBody.slice(0, 200)}` },
+          {
+            success: false,
+            message: `${record.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'} API returned ${resp.status}: ${errorBody.slice(0, 200)}`,
+          },
           { status: 200 }
         );
       }

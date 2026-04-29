@@ -135,7 +135,8 @@ export interface ChatRunnerEnvOptions {
 export type ByokProxyCredentials =
   | { provider: 'anthropic'; apiKey: string }
   | { provider: 'bedrock'; bearerToken: string; region: string }
-  | { provider: 'openai'; apiKey: string };
+  | { provider: 'openai'; apiKey: string }
+  | { provider: 'openrouter'; apiKey: string };
 
 const INTEGRATION_ENV_FILE_PATH = "/home/claude/.chiridion/integration.env";
 
@@ -564,6 +565,11 @@ export class WorkspaceContainer {
         return { provider: 'openai', apiKey: creds.api_key };
       }
 
+      if (record.provider === 'openrouter' && (provider === 'codex' || provider === 'claude')) {
+        console.log(`[Sandbox] BYOK: using OpenRouter via ${provider} proxy for org=${this.orgId}`);
+        return { provider: 'openrouter', apiKey: creds.api_key };
+      }
+
       return undefined;
     } catch (err) {
       console.error("[Sandbox] fetchByokProxyCredentials: error:", err);
@@ -627,6 +633,8 @@ export class WorkspaceContainer {
       headers['X-Chiridion-Byok-Bedrock-Region'] = options.byokProxy.region;
     } else if (options.byokProxy?.provider === 'openai') {
       headers['X-Chiridion-Byok-OpenAI-Key'] = options.byokProxy.apiKey;
+    } else if (options.byokProxy?.provider === 'openrouter') {
+      headers['X-Chiridion-Byok-OpenRouter-Key'] = options.byokProxy.apiKey;
     }
 
     const response = await this.fetchSandbox(this.sandboxUrl("/chat"), {

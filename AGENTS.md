@@ -149,8 +149,9 @@ waitUntil(
 ## Stripe Billing And Credits
 
 - Org billing state lives on `org_info` JSON. Key fields include `billing_status`, Stripe customer/subscription ids, purchased credit cents, included/granted credit cents, trial credit grant metadata, and the last included-credit invoice id.
-- Hosted model access is enforced in `services/sandbox-host/internal/app/server.go`. Hosted `trialing` and `active` usage requires positive included/purchased credits; BYOK requires paid access but does not consume camelAI credits; `enterprise` bypasses Stripe subscription and credits.
-- Trial and subscription allowance defaults are `BILLING_TRIAL_CREDIT_CENTS=1000` and `BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS=1000`. Override with env vars when pricing changes.
+- Hosted model access is enforced in `services/sandbox-host/internal/app/server.go`. Hosted `trialing` and `active` usage requires positive included/purchased credits; BYOK can be used from the free onboarding path and does not consume camelAI credits; `enterprise` bypasses Stripe subscription and credits.
+- Hosted credit allowances come from `src/lib/billing-plans.ts`: Starter includes $10/month, Pro includes $30/month, and Team includes $10/month per paid seat. `BILLING_TRIAL_CREDIT_CENTS` and `BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS` are global emergency overrides; do not set them for normal tier-specific pricing.
+- Admins can grant credits manually with `POST /api/admin/orgs/:id/credits`; credits add to `billing_credit_grant_total_cents` and can use an idempotency key.
 - `STRIPE_MODE` can be set to `test` or `live`; Stripe API calls reject secret keys whose `sk_`/`rk_` prefix does not match. Staging should use `STRIPE_MODE=test`, and production should use `STRIPE_MODE=live`.
 - Stripe webhooks land on `POST /api/billing/stripe/webhook`. Subscription events sync status and grant the one-time trial cap; `invoice.payment_succeeded` grants recurring included credits idempotently; credit checkout sessions increment purchased credits.
 - Credit balance is purchased credits plus included/granted credits minus sandbox-host usage rows marked `credit_chargeable = 1`.

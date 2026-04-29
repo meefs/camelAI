@@ -242,6 +242,8 @@ export interface Organization {
   billing_credit_grant_total_cents: number;
   billing_trial_credit_grant_cents: number;
   billing_trial_credit_granted_at: number | null;
+  billing_free_credit_grant_cents?: number;
+  billing_free_credit_granted_at?: number | null;
   billing_last_included_credit_invoice_id: string | null;
   billing_credit_usage_started_at: number | null;
   archived: boolean;
@@ -495,8 +497,8 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 
 // LLM Provider BYOK types
 export type ChatHarness = "claude" | "codex";
-export type LlmProvider = "anthropic" | "bedrock" | "openai";
-export type LlmModel = "sonnet" | "opus" | "gpt-5.4" | "gpt-5.4-mini";
+export type LlmProvider = "anthropic" | "bedrock" | "openai" | "openrouter";
+export type LlmModel = "haiku" | "sonnet" | "opus" | "gpt-5.4" | "gpt-5.4-mini";
 export interface OrganizationExperimentalSettings {
   /** Internal allowlist for creating new Claude threads on the camelAI proxy. */
   claude_proxy_models: boolean;

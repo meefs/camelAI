@@ -51,14 +51,20 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ error: 'Invalid thread model' }, { status: 400 });
   }
 
-  const thread = await chatDO.createThread(
-    context,
-    workspaceId,
-    body.initialTitle || undefined,
-    userId,
-    body.firstMessage || undefined,
-    body.model
-  );
+  let thread: Awaited<ReturnType<typeof chatDO.createThread>>;
+  try {
+    thread = await chatDO.createThread(
+      context,
+      workspaceId,
+      body.initialTitle || undefined,
+      userId,
+      body.firstMessage || undefined,
+      body.model
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create thread';
+    return Response.json({ error: message || 'Failed to create thread' }, { status: 500 });
+  }
 
   // Set preview apps if provided
   if (body.previewApps) {

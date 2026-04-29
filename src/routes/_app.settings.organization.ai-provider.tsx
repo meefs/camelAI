@@ -92,6 +92,11 @@ const PROVIDER_CARD_OPTIONS: Array<{
     description: "Uses your OpenAI key for Codex-powered threads",
   },
   {
+    value: "openrouter",
+    label: "OpenRouter",
+    description: "Uses your OpenRouter key for Codex and Claude threads",
+  },
+  {
     value: "bedrock",
     label: "AWS Bedrock",
     description: "Uses your AWS account for Claude via Bedrock",
@@ -126,6 +131,20 @@ const PROVIDER_GUIDES: Record<LlmProvider, ProviderGuide> = {
       "Copy the key and paste it above.",
     ],
     note: "You'll need to add a payment method on OpenAI's platform first if you haven't already.",
+  },
+  openrouter: {
+    displayName: "OpenRouter",
+    description: "Codex and Claude model access through OpenRouter",
+    fieldLabel: "OpenRouter API Key",
+    placeholder: "sk-or-...",
+    href: "https://openrouter.ai/settings/keys",
+    firstStepLinkLabel: "openrouter.ai/settings/keys",
+    steps: [
+      'Click "Create Key".',
+      'Name it anything, such as "camelAI".',
+      "Copy the key and paste it above.",
+    ],
+    note: "OpenRouter usage is billed through your OpenRouter account.",
   },
   bedrock: {
     displayName: "AWS Bedrock",
@@ -252,6 +271,7 @@ export default function AiProviderPage() {
   );
   const [apiKey, setApiKey] = useState("");
   const [openAiApiKey, setOpenAiApiKey] = useState("");
+  const [openRouterApiKey, setOpenRouterApiKey] = useState("");
   const [bearerToken, setBearerToken] = useState("");
   const [awsRegion, setAwsRegion] = useState(
     config?.config?.aws_region ?? "us-east-1",
@@ -293,6 +313,7 @@ export default function AiProviderPage() {
     if (fetcherData.success) {
       setApiKey("");
       setOpenAiApiKey("");
+      setOpenRouterApiKey("");
       setBearerToken("");
       setTestResult(null);
     }
@@ -315,6 +336,10 @@ export default function AiProviderPage() {
       return openAiApiKey.trim().length === 0;
     }
 
+    if (selectedProvider === "openrouter") {
+      return openRouterApiKey.trim().length === 0;
+    }
+
     const missingNewBedrockKey =
       configuredProvider !== "bedrock" && bearerToken.trim().length === 0;
     const regionUnchanged =
@@ -331,6 +356,7 @@ export default function AiProviderPage() {
     configuredProvider,
     isSaving,
     openAiApiKey,
+    openRouterApiKey,
     selectedProvider,
     bearerToken,
   ]);
@@ -396,6 +422,22 @@ export default function AiProviderPage() {
       return;
     }
 
+    if (selectedProvider === "openrouter") {
+      fetcher.submit(
+        {
+          intent: "setProvider",
+          provider: "openrouter",
+          api_key: openRouterApiKey.trim(),
+        },
+        {
+          method: "POST",
+          action: `/api/orgs/${orgId}/llm-provider`,
+          encType: "application/json",
+        },
+      );
+      return;
+    }
+
     fetcher.submit(
       {
         intent: "setProvider",
@@ -429,6 +471,7 @@ export default function AiProviderPage() {
     setLastIntent("deleteProvider");
     setApiKey("");
     setOpenAiApiKey("");
+    setOpenRouterApiKey("");
     setBearerToken("");
     setSelectedProvider("default");
     fetcher.submit(
@@ -580,7 +623,9 @@ export default function AiProviderPage() {
                     ? apiKey
                     : selectedProvider === "openai"
                       ? openAiApiKey
-                      : bearerToken
+                      : selectedProvider === "openrouter"
+                        ? openRouterApiKey
+                        : bearerToken
                 }
                 onChange={(event) => {
                   clearActionFeedback();
@@ -591,6 +636,10 @@ export default function AiProviderPage() {
                   }
                   if (selectedProvider === "openai") {
                     setOpenAiApiKey(nextValue);
+                    return;
+                  }
+                  if (selectedProvider === "openrouter") {
+                    setOpenRouterApiKey(nextValue);
                     return;
                   }
                   setBearerToken(nextValue);
