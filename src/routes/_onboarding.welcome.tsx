@@ -9,12 +9,13 @@ import { getAuthEnv, requireAuthContext, requireSession } from "@/lib/auth.serve
 import { createSubscriptionCheckoutSession } from "@/lib/billing.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
+import { PlanPicker } from "@/components/billing/plan-picker";
+import {
+  ByokProviderForm,
+  type OnboardingByokProvider,
+} from "@/components/onboarding/byok-provider-form";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import type { LlmProvider } from "@/types";
 import type { OnboardingRouteContext } from "./_onboarding";
 
 interface TeamContext {
@@ -29,33 +30,7 @@ interface WelcomeLoaderData {
   teamContext: TeamContext;
 }
 
-type OnboardingByokProvider = Extract<LlmProvider, "anthropic" | "openai" | "openrouter">;
-
-const BYOK_PROVIDER_OPTIONS: Array<{
-  value: OnboardingByokProvider;
-  label: string;
-  placeholder: string;
-  helper: string;
-}> = [
-  {
-    value: "openrouter",
-    label: "OpenRouter",
-    placeholder: "sk-or-...",
-    helper: "Codex and Claude models billed through OpenRouter.",
-  },
-  {
-    value: "anthropic",
-    label: "Anthropic",
-    placeholder: "sk-ant-...",
-    helper: "Claude models billed through your Anthropic account.",
-  },
-  {
-    value: "openai",
-    label: "OpenAI",
-    placeholder: "sk-...",
-    helper: "Codex models billed through your OpenAI account.",
-  },
-];
+const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionContext = await requireSession(request, context);
@@ -186,6 +161,7 @@ export default function OnboardingWelcomeRoute() {
   const { orgId, orgName, teamContext } = useLoaderData<
     typeof loader
   >() as WelcomeLoaderData;
+  const [showByokForm, setShowByokForm] = useState(false);
 
   const isTeamWelcome = context.teamMode;
   const isBillingChoiceRequired =
@@ -207,9 +183,6 @@ export default function OnboardingWelcomeRoute() {
     checkoutFetcher.state === "idle" ? checkoutFetcher.data?.error : undefined;
   const providerError =
     providerFetcher.state === "idle" ? providerFetcher.data?.error : undefined;
-  const selectedProviderOption =
-    BYOK_PROVIDER_OPTIONS.find((option) => option.value === selectedProvider) ??
-    BYOK_PROVIDER_OPTIONS[0];
   const isSavingProvider = providerFetcher.state !== "idle";
   const isStartingCheckout = checkoutFetcher.state !== "idle";
 
@@ -265,9 +238,11 @@ export default function OnboardingWelcomeRoute() {
   };
 
   return (
-    <OnboardingLayout>
-      <div className="space-y-6 text-center">
-        <div className="space-y-3">
+    <OnboardingLayout
+      contentClassName={isBillingChoiceRequired ? "max-w-4xl" : undefined}
+    >
+      <div className="space-y-4">
+        <div className="space-y-3 text-center">
           <h1 className="text-3xl font-semibold tracking-tight">
             {isTeamWelcome ? `Welcome to ${orgName}` : "Welcome to camelAI"}
           </h1>
@@ -358,90 +333,61 @@ export default function OnboardingWelcomeRoute() {
         ) : null}
 
         {isBillingChoiceRequired ? (
-          <div className="space-y-4 text-left">
-            <div className="rounded-lg border p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
-                  <p className="font-medium">Start the 7-day trial</p>
-                  <p className="text-sm text-muted-foreground">
-                    Starter includes hosted model credits and then bills monthly through Stripe.
-                  </p>
-                </div>
-                <checkoutFetcher.Form method="post">
-                  <input type="hidden" name="intent" value="startTrial" />
-                  <Button type="submit" disabled={isStartingCheckout}>
-                    {isStartingCheckout ? "Opening Stripe..." : "Start trial"}
-                  </Button>
-                </checkoutFetcher.Form>
-              </div>
-            </div>
+          <div className="space-y-5 text-left">
+            <PlanPicker
+              defaultBillingMode="individual"
+              pendingPlan={isStartingCheckout ? "starter" : null}
+              onSelectPlan={(cta) => {
+                // FIXME(billing): trial CTAs silently no-op when Stripe isn't configured.
+                // The billing engineer wiring Pro/Team should also handle the unconfigured case
+                // server-side (toast on action error path), not by gating these CTAs in the UI.
+                setError(null);
+                if (cta.kind === "byok") {
+                  setShowByokForm(true);
+                  return;
+                }
+                if (cta.kind === "trial" && cta.plan === "starter") {
+                  checkoutFetcher.submit(
+                    { intent: "startTrial" },
+                    { method: "post" },
+                  );
+                  return;
+                }
+                if (
+                  cta.kind === "trial" &&
+                  (cta.plan === "pro" || cta.plan === "team")
+                ) {
+                  // FIXME(billing): wire Pro and Team trial Stripe checkout — different engineer is owning the Stripe piping.
+                  // Team checkout will land on a Stripe page that asks for seat count, so onboarding does not need to collect it.
+                  return;
+                }
+                if (cta.kind === "contact") {
+                  window.open(BOOK_DEMO_URL, "_blank");
+                }
+              }}
+            />
 
-            <div className="space-y-4 rounded-lg border p-4">
-              <div className="space-y-1">
-                <p className="font-medium">Use your own provider</p>
-                <p className="text-sm text-muted-foreground">
-                  Continue without camelAI-hosted credits. Your provider bills you directly.
-                </p>
-              </div>
-              <RadioGroup
-                value={selectedProvider}
-                onValueChange={(value) => {
-                  setSelectedProvider(value as OnboardingByokProvider);
+            {showByokForm ? (
+              <ByokProviderForm
+                selectedProvider={selectedProvider}
+                onProviderChange={(provider) => {
+                  setSelectedProvider(provider);
                   setError(null);
                 }}
-                className="grid gap-2 sm:grid-cols-3"
-              >
-                {BYOK_PROVIDER_OPTIONS.map((option) => (
-                  <Label
-                    key={option.value}
-                    htmlFor={`provider-${option.value}`}
-                    className="flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm"
-                  >
-                    <RadioGroupItem
-                      id={`provider-${option.value}`}
-                      value={option.value}
-                      className="mt-0.5"
-                    />
-                    <span>
-                      <span className="block font-medium">{option.label}</span>
-                      <span className="block text-muted-foreground">
-                        {option.helper}
-                      </span>
-                    </span>
-                  </Label>
-                ))}
-              </RadioGroup>
-              <div className="space-y-2">
-                <Label htmlFor="provider-api-key">
-                  {selectedProviderOption.label} API key
-                </Label>
-                <Input
-                  id="provider-api-key"
-                  type="password"
-                  value={providerApiKey}
-                  placeholder={selectedProviderOption.placeholder}
-                  autoComplete="off"
-                  onChange={(event) => {
-                    setProviderApiKey(event.target.value);
-                    setError(null);
-                  }}
-                />
-              </div>
-              <Button
-                type="button"
-                variant="outline"
+                apiKey={providerApiKey}
+                onApiKeyChange={(key) => {
+                  setProviderApiKey(key);
+                  setError(null);
+                }}
+                onSubmit={saveProviderAndContinue}
                 disabled={isSavingProvider || isCompleting}
-                onClick={saveProviderAndContinue}
-              >
-                {isSavingProvider || isCompleting
-                  ? "Saving..."
-                  : "Continue with own key"}
-              </Button>
-            </div>
-
+                isSubmitting={isSavingProvider || isCompleting}
+                submitLabel="Continue with own key"
+              />
+            ) : null}
           </div>
         ) : (
-        <div className="pt-2">
+        <div className="flex justify-center pt-2">
           <Button
             type="button"
             size="lg"
