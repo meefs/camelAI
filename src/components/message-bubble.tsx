@@ -1,7 +1,7 @@
 'use client';
 
 import { Copy, Check } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock } from '@/types';
+import type { Integration, Message, ContentBlock, ToolResultBlock } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -256,14 +256,15 @@ interface ContentBlockRendererProps {
   messageId?: string;
   isStreaming?: boolean;
   skillSheets?: Map<string, string>;
+  mentionSlugMap?: Map<string, Integration>;
 }
 
-export function ContentBlockRenderer({ content, messageId, isStreaming = false, skillSheets }: ContentBlockRendererProps) {
+export function ContentBlockRenderer({ content, messageId, isStreaming = false, skillSheets, mentionSlugMap }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
     const displayContent = stripSystemMessageTags(content);
     if (!displayContent) return null;
-    return <MarkdownRenderer content={displayContent} isStreaming={isStreaming} />;
+    return <MarkdownRenderer content={displayContent} isStreaming={isStreaming} mentionSlugMap={mentionSlugMap} />;
   }
 
   // Empty content
@@ -295,7 +296,7 @@ export function ContentBlockRenderer({ content, messageId, isStreaming = false, 
         key: `text-${index}`,
         node: (
           <div className="max-w-none">
-            <MarkdownRenderer content={displayText} isStreaming={isStreaming} />
+            <MarkdownRenderer content={displayText} isStreaming={isStreaming} mentionSlugMap={mentionSlugMap} />
           </div>
         ),
       });
@@ -449,6 +450,7 @@ interface MessageBubbleProps {
   skillSheets?: Map<string, string>;
   hostname?: string;
   orgSlug?: string;
+  mentionSlugMap?: Map<string, Integration>;
 }
 
 export function MessageBubble({
@@ -460,6 +462,7 @@ export function MessageBubble({
   skillSheets,
   hostname,
   orgSlug,
+  mentionSlugMap,
 }: MessageBubbleProps) {
   if (message.isMeta || message.sourceToolUseID) {
     return null;
@@ -641,6 +644,7 @@ export function MessageBubble({
                 content={cleanedContent}
                 messageId={message.id}
                 skillSheets={skillSheets}
+                mentionSlugMap={mentionSlugMap}
               />
             </CollapsibleUserMessage>
           </div>
@@ -691,6 +695,7 @@ export function MessageBubble({
             messageId={message.id}
             isStreaming={isStreaming}
             skillSheets={skillSheets}
+            mentionSlugMap={mentionSlugMap}
           />
         </div>
       )}

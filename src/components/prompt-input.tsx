@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useRef, useState, useCallback, useEffect } from 'react';
+import { memo, useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import { ArrowUp, Square, Loader2, Plus, Mic } from 'lucide-react';
 import {
   InputGroup,
@@ -16,7 +16,10 @@ import { useVoiceRecording } from '@/hooks/use-voice-recording';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
-import type { LlmModel } from '@/types';
+import type { Integration, LlmModel } from '@/types';
+import { ConnectionMentionMenu } from '@/components/connection-mention-menu';
+import { useMentionTrigger } from '@/components/connection-mention-menu/use-mention-trigger';
+import { buildSlugMap, slugForIntegration } from '@/lib/connection-mentions';
 
 interface PromptInputProps {
   value: string;
@@ -52,6 +55,9 @@ interface PromptInputProps {
   modelDisabled?: boolean;
   // Ref for programmatic focus
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  // @-mention menu for configured connections
+  mentionableConnections?: Integration[];
+  onMentionAddNewClick?: () => void;
 }
 
 interface SendButtonProps {
@@ -115,11 +121,98 @@ export function PromptInput({
   modelOptions = LLM_MODEL_OPTIONS,
   modelDisabled = false,
   textareaRef,
+  mentionableConnections,
+  onMentionAddNewClick,
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const onStopRef = useRef(onStop);
   onStopRef.current = onStop;
+
+  // @-mention state
+  const internalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const effectiveTextareaRef = textareaRef ?? internalTextareaRef;
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const [caretPos, setCaretPos] = useState(0);
+  const [isFocused, setIsFocused] = useState(false);
+  const [isComposing, setIsComposing] = useState(false);
+  const [activeMentionId, setActiveMentionId] = useState<string | null>(null);
+
+  const mentionsEnabled = (mentionableConnections?.length ?? 0) > 0
+    || onMentionAddNewClick !== undefined;
+  const mentionTrigger = useMentionTrigger({
+    value,
+    caretPos,
+    enabled: mentionsEnabled && isFocused && !isComposing && !disabled,
+  });
+  const mentionMenuOpen = mentionTrigger.open;
+
+  const slugMap = useMemo(
+    () => buildSlugMap(mentionableConnections ?? []) as Map<string, Integration>,
+    [mentionableConnections],
+  );
+
+  const filteredMentionConnections = useMemo(() => {
+    const q = mentionTrigger.query;
+    const all = mentionableConnections ?? [];
+    if (!q) return all;
+    return all.filter((c) => {
+      const name = c.name.toLowerCase();
+      const type = c.integration_type.toLowerCase();
+      return name.includes(q) || type.includes(q);
+    });
+  }, [mentionableConnections, mentionTrigger.query]);
+
+  // Escape (or outside-click) closes the menu but the trigger conditions
+  // still hold, so we lock out re-opening until the user types or moves the
+  // caret away.
+  const mentionLockoutValueRef = useRef<string | null>(null);
+  const mentionLockoutCaretRef = useRef<number>(-1);
+
+  const closeMentionMenu = useCallback(() => {
+    setActiveMentionId(null);
+    const ta = effectiveTextareaRef.current;
+    if (ta) {
+      mentionLockoutValueRef.current = ta.value;
+      mentionLockoutCaretRef.current = ta.selectionStart ?? 0;
+    }
+  }, [effectiveTextareaRef]);
+  const isLockedOut = mentionLockoutValueRef.current === value
+    && mentionLockoutCaretRef.current === caretPos;
+  const hasAnyConnections = (mentionableConnections?.length ?? 0) > 0;
+  const hasMatches = filteredMentionConnections.length > 0;
+  // When the user has connections but no match for their current query, hide
+  // the menu — Slack-style.
+  const matchesAvailable = !hasAnyConnections || hasMatches;
+  const effectiveMenuOpen = mentionMenuOpen && !isLockedOut && matchesAvailable;
+
+  const insertMention = useCallback((connection: Integration) => {
+    if (!mentionTrigger.open) return;
+    const computedSlug = slugForIntegration(connection, slugMap);
+    if (!computedSlug) return;
+    const before = value.slice(0, mentionTrigger.triggerStart);
+    const after = value.slice(mentionTrigger.triggerEnd);
+    const insertion = `@${computedSlug} `;
+    const nextValue = `${before}${insertion}${after}`;
+    onChange(nextValue);
+
+    const nextCaret = before.length + insertion.length;
+    requestAnimationFrame(() => {
+      const ta = effectiveTextareaRef.current;
+      if (!ta) return;
+      ta.selectionStart = nextCaret;
+      ta.selectionEnd = nextCaret;
+      setCaretPos(nextCaret);
+    });
+    mentionLockoutValueRef.current = null;
+    mentionLockoutCaretRef.current = -1;
+  }, [mentionTrigger, slugMap, value, onChange, effectiveTextareaRef]);
+
+  const updateCaretPos = useCallback(() => {
+    const ta = effectiveTextareaRef.current;
+    if (!ta) return;
+    setCaretPos(ta.selectionStart ?? 0);
+  }, [effectiveTextareaRef]);
 
   // Track latest value for voice recording callback
   const valueRef = useRef(value);
@@ -178,6 +271,50 @@ export function PromptInput({
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Menu key handling — ↑/↓/Enter/Tab/Escape are intercepted while open.
+    if (effectiveMenuOpen && filteredMentionConnections.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const idx = filteredMentionConnections.findIndex((c) => c.id === activeMentionId);
+        const nextIdx = idx === -1 ? 0 : (idx + 1) % filteredMentionConnections.length;
+        setActiveMentionId(filteredMentionConnections[nextIdx]!.id);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const idx = filteredMentionConnections.findIndex((c) => c.id === activeMentionId);
+        const prevIdx = idx <= 0 ? filteredMentionConnections.length - 1 : idx - 1;
+        setActiveMentionId(filteredMentionConnections[prevIdx]!.id);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const target = filteredMentionConnections.find((c) => c.id === activeMentionId)
+          ?? filteredMentionConnections[0]!;
+        e.preventDefault();
+        insertMention(target);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMentionMenu();
+        return;
+      }
+    }
+
+    if (effectiveMenuOpen && (mentionableConnections?.length ?? 0) === 0) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        onMentionAddNewClick?.();
+        closeMentionMenu();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMentionMenu();
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (showStopButton) {
@@ -302,6 +439,7 @@ export function PromptInput({
       )}
 
       <div
+        ref={anchorRef}
         onDragOver={showFileUpload ? handleDragOver : undefined}
         onDragLeave={showFileUpload ? handleDragLeave : undefined}
         onDrop={showFileUpload ? handleDrop : undefined}
@@ -310,6 +448,19 @@ export function PromptInput({
           isDragOver && 'ring-2 ring-primary ring-offset-2'
         )}
       >
+        {mentionsEnabled && (
+          <ConnectionMentionMenu
+            open={effectiveMenuOpen}
+            query={mentionTrigger.query}
+            connections={mentionableConnections ?? []}
+            anchorRef={anchorRef}
+            activeId={activeMentionId}
+            onActiveIdChange={setActiveMentionId}
+            onSelect={insertMention}
+            onClose={closeMentionMenu}
+            onAddNewClick={() => onMentionAddNewClick?.()}
+          />
+        )}
         {/* Drag overlay */}
         {isDragOver && (
           <div className="absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-primary/10 border-2 border-dashed border-primary">
@@ -330,16 +481,34 @@ export function PromptInput({
           )}
 
           <InputGroupTextarea
-            ref={textareaRef}
+            ref={effectiveTextareaRef}
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              onChange(e.target.value);
+              // Caret state needs to track value changes — onChange fires before selectionStart settles.
+              requestAnimationFrame(updateCaretPos);
+              // Any text edit clears the lockout from a previous Escape.
+              mentionLockoutValueRef.current = null;
+              mentionLockoutCaretRef.current = -1;
+            }}
             onKeyDown={handleKeyDown}
+            onKeyUp={updateCaretPos}
+            onClick={updateCaretPos}
+            onSelect={updateCaretPos}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={() => setIsComposing(false)}
             onPaste={handlePaste}
             placeholder={effectivePlaceholder}
             disabled={disabled || isActiveRecording}
             autoFocus={autoFocus}
-            onFocus={onFocus}
-            onBlur={onBlur}
+            onFocus={() => {
+              setIsFocused(true);
+              onFocus?.();
+            }}
+            onBlur={() => {
+              setIsFocused(false);
+              onBlur?.();
+            }}
             className={cn(
               'text-base md:text-base p-3.5 max-h-96 overflow-y-auto',
               isActiveRecording && 'opacity-50'

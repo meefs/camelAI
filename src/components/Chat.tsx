@@ -69,6 +69,7 @@ import { PreviewToolbar } from '@/components/preview-panel/preview-toolbar';
 import { getPreviewTabId } from '@/components/preview-panel/preview-utils';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
+import { buildSlugMap } from '@/lib/connection-mentions';
 import {
   type SDKEvent,
   applyStreamingEventToMessage,
@@ -661,6 +662,7 @@ interface ChatMessagesViewProps {
   assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
   assistantSpacerRef: RefObject<HTMLDivElement | null>;
   messagesEndRef: RefObject<HTMLDivElement | null>;
+  mentionSlugMap?: Map<string, Integration>;
 }
 
 const ChatMessagesView = memo(function ChatMessagesView({
@@ -688,6 +690,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
   assistantPendingMeasureRef,
   assistantSpacerRef,
   messagesEndRef,
+  mentionSlugMap,
 }: ChatMessagesViewProps) {
   const usageLimitError = error ? parseUsageLimitError(error) : null;
 
@@ -738,6 +741,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
               skillSheets={skillSheetsByToolId}
               hostname={hostname}
               orgSlug={orgSlug}
+              mentionSlugMap={mentionSlugMap}
             />
           </div>
         );
@@ -1565,6 +1569,10 @@ export default function Chat({
     recentThreads: [],
     renderedAt: fallbackRenderedAtRef.current,
   };
+  const mentionSlugMap = useMemo(
+    () => buildSlugMap(resolvedWelcomeData.connections) as Map<string, Integration>,
+    [resolvedWelcomeData.connections],
+  );
   // Use static key for pending messages - threadId in payload ensures correct matching
   // This avoids issues when workspace changes between welcome screen and chat page
   const pendingMessageKey = 'pendingMessage:newThread';
@@ -4364,6 +4372,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             assistantPendingMeasureRef={assistantPendingMeasureRef}
             assistantSpacerRef={assistantSpacerRef}
             messagesEndRef={messagesEndRef}
+            mentionSlugMap={mentionSlugMap}
           />
         </div>
       </div>
@@ -4432,6 +4441,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   modelOptions={availableThreadModels}
                   modelDisabled={loading || isStreaming || updateThreadModelFetcher.state !== 'idle'}
                   textareaRef={composerTextareaRef}
+                  mentionableConnections={welcomeData?.connections ?? []}
+                  onMentionAddNewClick={() => navigate('/settings/workspace/connections')}
                 />
               </div>
             </div>

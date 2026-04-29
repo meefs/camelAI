@@ -1,18 +1,34 @@
 'use client';
 
-import { memo, useMemo, useState, useCallback, useEffect } from 'react';
+import {
+  Fragment,
+  Children,
+  cloneElement,
+  isValidElement,
+  memo,
+  useMemo,
+  useState,
+  useCallback,
+  useEffect,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
+import { MentionChip } from '@/components/connection-mention-menu/mention-chip';
+import { parseMentions } from '@/lib/connection-mentions';
+import type { Integration } from '@/types';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
   isStreaming?: boolean;
   variant?: 'default' | 'user';
+  mentionSlugMap?: Map<string, Integration>;
 }
 
 const CODEX_CITATION_REGEX = /cite[^]+/g;
@@ -122,25 +138,100 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
   );
 }
 
+// react-markdown leaf text inside these elements should stay literal — never
+// transform `@slug` inside inline code or code blocks.
+function isOpaqueElement(element: ReactElement): boolean {
+  const t = (element as ReactElement & { type: unknown }).type;
+  if (t === InlineCode || t === CodeBlockPre) return true;
+  if (typeof t === 'string') return t === 'code' || t === 'pre';
+  return false;
+}
+
+function replaceMentionsInText(
+  text: string,
+  slugMap: Map<string, Integration>,
+  keyPrefix: string,
+): ReactNode[] {
+  // Only render chips for slugs we recognize; unknown `@words` stay as plain
+  // text so random non-mention `@foo` doesn't get visually highlighted.
+  const matches = parseMentions(text, slugMap).filter((m) => m.integration !== null);
+  if (matches.length === 0) return [text];
+
+  const out: ReactNode[] = [];
+  let cursor = 0;
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i]!;
+    if (m.index > cursor) {
+      out.push(text.slice(cursor, m.index));
+    }
+    out.push(
+      <MentionChip
+        key={`${keyPrefix}-m${i}`}
+        slug={m.slug}
+        integration={m.integration as Integration}
+      />,
+    );
+    cursor = m.index + m.length;
+  }
+  if (cursor < text.length) {
+    out.push(text.slice(cursor));
+  }
+  return out;
+}
+
+function withMentionChips(
+  children: ReactNode,
+  slugMap: Map<string, Integration>,
+  keyPrefix = 'mc',
+): ReactNode {
+  if (typeof children === 'string') {
+    const parts = replaceMentionsInText(children, slugMap, keyPrefix);
+    if (parts.length === 1 && parts[0] === children) return children;
+    return parts.map((part, i) => (
+      <Fragment key={`${keyPrefix}-${i}`}>{part}</Fragment>
+    ));
+  }
+  if (Array.isArray(children)) {
+    return Children.map(children, (child, i) =>
+      withMentionChips(child, slugMap, `${keyPrefix}-${i}`),
+    );
+  }
+  if (isValidElement(children)) {
+    if (isOpaqueElement(children)) return children;
+    const c = children as ReactElement<{ children?: ReactNode }>;
+    if (c.props && c.props.children !== undefined) {
+      return cloneElement(c, undefined, withMentionChips(c.props.children, slugMap, keyPrefix));
+    }
+    return children;
+  }
+  return children;
+}
+
 // Custom components for react-markdown
-const createComponents = (variant: 'default' | 'user'): Components => ({
+const createComponents = (
+  variant: 'default' | 'user',
+  mentionSlugMap?: Map<string, Integration>,
+): Components => {
+  const wrap = (children: ReactNode, keyPrefix: string) =>
+    mentionSlugMap ? withMentionChips(children, mentionSlugMap, keyPrefix) : children;
+  return ({
   // Paragraphs
   p: ({ children }) => (
-    <p className="mb-4 last:mb-0 leading-relaxed">{children}</p>
+    <p className="mb-4 last:mb-0 leading-relaxed">{wrap(children, 'p')}</p>
   ),
 
   // Headings
   h1: ({ children }) => (
-    <h1 className="text-2xl font-bold mt-6 mb-4 first:mt-0">{children}</h1>
+    <h1 className="text-2xl font-bold mt-6 mb-4 first:mt-0">{wrap(children, 'h1')}</h1>
   ),
   h2: ({ children }) => (
-    <h2 className="text-xl font-bold mt-6 mb-3 first:mt-0">{children}</h2>
+    <h2 className="text-xl font-bold mt-6 mb-3 first:mt-0">{wrap(children, 'h2')}</h2>
   ),
   h3: ({ children }) => (
-    <h3 className="text-lg font-semibold mt-5 mb-2 first:mt-0">{children}</h3>
+    <h3 className="text-lg font-semibold mt-5 mb-2 first:mt-0">{wrap(children, 'h3')}</h3>
   ),
   h4: ({ children }) => (
-    <h4 className="text-base font-semibold mt-4 mb-2 first:mt-0">{children}</h4>
+    <h4 className="text-base font-semibold mt-4 mb-2 first:mt-0">{wrap(children, 'h4')}</h4>
   ),
 
   // Inline code - simple styled span
@@ -164,7 +255,7 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
           variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
         )}
       >
-        {children}
+        {wrap(children, 'a')}
       </a>
     );
   },
@@ -176,7 +267,7 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
   ol: ({ children }) => (
     <ol className="list-decimal list-outside ml-6 mb-4 space-y-1">{children}</ol>
   ),
-  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  li: ({ children }) => <li className="leading-relaxed">{wrap(children, 'li')}</li>,
 
   // Blockquotes
   blockquote: ({ children }) => (
@@ -188,7 +279,7 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
           : 'border-border text-muted-foreground'
       )}
     >
-      {children}
+      {wrap(children, 'bq')}
     </blockquote>
   ),
 
@@ -209,12 +300,12 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
   ),
   th: ({ children }) => (
     <th className="px-4 py-2 text-left font-semibold border-r border-border last:border-r-0">
-      {children}
+      {wrap(children, 'th')}
     </th>
   ),
   td: ({ children }) => (
     <td className="px-4 py-2 border-r border-border last:border-r-0">
-      {children}
+      {wrap(children, 'td')}
     </td>
   ),
 
@@ -222,11 +313,11 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
   hr: () => <hr className="my-6 border-border" />,
 
   // Strong and emphasis
-  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-  em: ({ children }) => <em className="italic">{children}</em>,
+  strong: ({ children }) => <strong className="font-semibold">{wrap(children, 'strong')}</strong>,
+  em: ({ children }) => <em className="italic">{wrap(children, 'em')}</em>,
 
   // Strikethrough
-  del: ({ children }) => <del className="line-through">{children}</del>,
+  del: ({ children }) => <del className="line-through">{wrap(children, 'del')}</del>,
 
   // Images
   img: ({ src, alt }) => (
@@ -238,12 +329,14 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
     />
   ),
 });
+};
 
 function MarkdownRendererBase({
   content,
   className,
   isStreaming = false,
   variant = 'default',
+  mentionSlugMap,
 }: MarkdownRendererProps) {
   // Process content for streaming - auto-close unclosed code fences
   const processedContent = useMemo(() => {
@@ -259,7 +352,10 @@ function MarkdownRendererBase({
     return normalizedContent;
   }, [content, isStreaming]);
 
-  const components = useMemo(() => createComponents(variant), [variant]);
+  const components = useMemo(
+    () => createComponents(variant, mentionSlugMap),
+    [variant, mentionSlugMap],
+  );
 
   return (
     <div
@@ -285,7 +381,8 @@ export const MarkdownRenderer = memo(MarkdownRendererBase, (prev, next) => {
     prev.content === next.content &&
     prev.className === next.className &&
     prev.isStreaming === next.isStreaming &&
-    prev.variant === next.variant
+    prev.variant === next.variant &&
+    prev.mentionSlugMap === next.mentionSlugMap
   );
 });
 

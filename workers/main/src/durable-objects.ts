@@ -10,6 +10,7 @@ import {
   type ChatAuthorIdentity,
 } from './chat-author-attribution';
 import { injectFileSafetyMessage } from './file-safety';
+import { applyConnectionMentionContext } from './connection-mention-context';
 import {
   getThreadTitleSourceMessage,
   isPlaceholderThreadTitle,
@@ -1574,8 +1575,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const rawContent = typeof data.content === 'string' ? data.content : '';
     const safeRawContent = injectFileSafetyMessage(rawContent);
+    const mentionAugmented = await this.applyConnectionMentionsForTurn(safeRawContent);
     const attributedContent = formatAttributedUserMessage(
-      safeRawContent,
+      mentionAugmented,
       this.getSocketAuthorIdentity(ws)
     );
     if (!attributedContent) return;
@@ -1605,6 +1607,27 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         console.error('[ChatThreadDO] failed to update thread metadata after user message', err);
       })
     );
+  }
+
+  private async applyConnectionMentionsForTurn(content: string): Promise<string> {
+    if (!content) return content;
+    if (!content.includes('@')) return content;
+    const workspaceId = this.chatContext?.workspaceId;
+    if (!workspaceId) return content;
+    try {
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(workspaceId),
+      );
+      const integrations = await workspaceStub.getIntegrations();
+      const result = applyConnectionMentionContext(content, integrations);
+      return result.content;
+    } catch (err) {
+      console.error(
+        '[ChatThreadDO] applyConnectionMentionsForTurn failed',
+        err,
+      );
+      return content;
+    }
   }
 
   private async handleChatStop(): Promise<void> {
