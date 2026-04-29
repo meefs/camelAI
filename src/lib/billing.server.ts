@@ -5,6 +5,7 @@ import {
   getBillingPlanLimits,
   getIncludedCreditCentsForPlan,
   getMinimumSeats,
+  getOrgBillingPlan,
   normalizeBillingPlan,
   normalizeSeatCount,
 } from "@/lib/billing-plans";
@@ -49,6 +50,15 @@ export interface StripeSubscription {
   quantity?: number | null;
   trial_start?: number | null;
   trial_end?: number | null;
+  items?: {
+    data?: StripeSubscriptionItem[];
+  } | null;
+}
+
+export interface StripeSubscriptionItem {
+  id: string;
+  quantity?: number | null;
+  price?: string | StripePriceSummary | null;
 }
 
 export interface StripeCheckoutSession {
@@ -249,6 +259,25 @@ function getSubscriptionIncludedCreditCentsForPlan(
     env.BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS,
     getIncludedCreditCentsForPlan(plan, seatCount),
   );
+}
+
+function getStripePriceId(price: string | StripePriceSummary | null | undefined) {
+  return typeof price === "string" ? price : (price?.id ?? null);
+}
+
+function getStripeSubscriptionSeatQuantity(
+  subscription: StripeSubscription,
+  priceId: string | null,
+): number | null {
+  const items = subscription.items?.data ?? [];
+  const matchingItem = priceId
+    ? items.find((item) => getStripePriceId(item.price) === priceId)
+    : null;
+  const quantity = matchingItem?.quantity ?? items[0]?.quantity;
+  if (typeof quantity === "number" && Number.isFinite(quantity)) {
+    return quantity;
+  }
+  return subscription.quantity ?? null;
 }
 
 function normalizeBillingStatus(
@@ -457,6 +486,153 @@ export async function fetchStripePriceSummary(
     `/prices/${trimmedPriceId}`,
   );
   return response;
+}
+
+async function fetchStripeSubscription(
+  env: StripeBillingEnv,
+  subscriptionId: string,
+): Promise<StripeSubscription> {
+  return stripeRequest<StripeSubscription>(env, `/subscriptions/${subscriptionId}`);
+}
+
+function getStripeSubscriptionItemForPlan(
+  subscription: StripeSubscription,
+  priceId: string | null,
+): StripeSubscriptionItem {
+  const items = subscription.items?.data ?? [];
+  const matchingItem = priceId
+    ? items.find((item) => getStripePriceId(item.price) === priceId)
+    : null;
+  if (priceId && !matchingItem) {
+    throw new Error(
+      `Stripe subscription does not have an item for configured price ${priceId}`,
+    );
+  }
+  const item = matchingItem ?? items[0];
+  if (!item?.id) {
+    throw new Error("Stripe subscription does not have a billable item");
+  }
+  return item;
+}
+
+function shouldSyncTeamSeats(org: Organization): boolean {
+  if (getOrgBillingPlan(org) !== "team") return false;
+  if (org.billing_status === "enterprise") return false;
+  if (!org.billing_subscription_id?.trim()) return false;
+  return (
+    org.billing_status === "trialing" ||
+    org.billing_status === "active" ||
+    org.billing_status === "past_due"
+  );
+}
+
+export async function getBillableTeamSeatCount(
+  env: Pick<StripeBillingEnv, "ORG">,
+  orgId: string,
+  pendingReservedSeatDelta = 0,
+): Promise<number | null> {
+  const orgStub = getOrgStub(env as StripeBillingEnv, orgId);
+  const org = await orgStub.getInfo();
+  if (!org || getOrgBillingPlan(org) !== "team") return null;
+
+  const [memberCount, invitations] = await Promise.all([
+    orgStub.getMemberCount(),
+    orgStub.getInvitations(),
+  ]);
+  const now = Date.now();
+  const activeInvitationCount = invitations.filter(
+    (invitation) => invitation.expires_at > now,
+  ).length;
+  return normalizeSeatCount(
+    "team",
+    memberCount + activeInvitationCount + pendingReservedSeatDelta,
+  );
+}
+
+export async function syncTeamSubscriptionSeatCount(
+  env: StripeBillingEnv,
+  orgId: string,
+  options: {
+    pendingReservedSeatDelta?: number;
+  } = {},
+): Promise<Organization | null> {
+  const orgStub = getOrgStub(env, orgId);
+  const org = await orgStub.getInfo();
+  if (!org) return null;
+  if (!shouldSyncTeamSeats(org)) return org;
+
+  const seatCount = await getBillableTeamSeatCount(
+    env,
+    orgId,
+    options.pendingReservedSeatDelta ?? 0,
+  );
+  if (!seatCount) return org;
+
+  if (org.billing_seat_count === seatCount) {
+    return org;
+  }
+
+  const subscriptionId = org.billing_subscription_id?.trim();
+  if (!subscriptionId) return org;
+
+  const priceId = getConfiguredSubscriptionPriceId(env, "team");
+  const subscription = await fetchStripeSubscription(env, subscriptionId);
+  const item = getStripeSubscriptionItemForPlan(subscription, priceId);
+
+  const itemBody = new URLSearchParams();
+  itemBody.set("quantity", String(seatCount));
+  itemBody.set("proration_behavior", "create_prorations");
+  await stripeRequest<StripeSubscriptionItem>(
+    env,
+    `/subscription_items/${item.id}`,
+    {
+      method: "POST",
+      body: itemBody,
+    },
+  );
+
+  const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
+    env,
+    "team",
+    seatCount,
+  );
+  const subscriptionBody = new URLSearchParams();
+  subscriptionBody.set("metadata[org_id]", org.id);
+  subscriptionBody.set("metadata[billing_plan]", "team");
+  subscriptionBody.set("metadata[seat_count]", String(seatCount));
+  subscriptionBody.set(
+    "metadata[subscription_included_credit_cents]",
+    String(includedCreditCents),
+  );
+  await stripeRequest<StripeSubscription>(env, `/subscriptions/${subscriptionId}`, {
+    method: "POST",
+    body: subscriptionBody,
+  });
+
+  await orgStub.updateBillingState({
+    billing_seat_count: seatCount,
+  });
+  return orgStub.getInfo();
+}
+
+export async function bestEffortSyncTeamSubscriptionSeatCount(
+  env: StripeBillingEnv,
+  orgId: string,
+  options: {
+    pendingReservedSeatDelta?: number;
+    reason?: string;
+  } = {},
+): Promise<Organization | null> {
+  try {
+    return await syncTeamSubscriptionSeatCount(env, orgId, options);
+  } catch (error) {
+    console.error("[billing] failed to sync team subscription seats", {
+      orgId,
+      reason: options.reason ?? "unknown",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 export async function fetchConfiguredCreditPacks(
@@ -881,10 +1057,15 @@ export async function syncOrgSubscriptionFromStripe(
     existing.billing_status === "enterprise"
       ? "enterprise"
       : getMetadataBillingPlan(subscription.metadata, nextStatus);
-  const seatCount = getMetadataSeatCount(
-    subscription.metadata,
+  const subscriptionSeatQuantity = getStripeSubscriptionSeatQuantity(
+    subscription,
+    getConfiguredSubscriptionPriceId(env, nextPlan),
+  );
+  const seatCount = normalizeSeatCount(
     nextPlan,
-    subscription.quantity ?? existing.billing_seat_count,
+    subscriptionSeatQuantity ??
+      parsePositiveInteger(subscription.metadata?.seat_count) ??
+      existing.billing_seat_count,
   );
   const trialCreditCents = getMetadataTrialCreditCents(
     subscription.metadata,
