@@ -11,7 +11,7 @@ import {
 export interface InvoiceRow {
   id: string;
   createdAtMs: number;
-  amountPaidCents: number;
+  totalCents: number;
   currency: string;
   status: string;
   hostedInvoiceUrl: string | null;
@@ -61,7 +61,7 @@ export function InvoicesTable({ invoices }: InvoicesTableProps) {
               {dateFormatter.format(new Date(invoice.createdAtMs))}
             </TableCell>
             <TableCell>
-              {formatAmount(invoice.amountPaidCents, invoice.currency)}
+              {formatAmount(invoice.totalCents, invoice.currency)}
             </TableCell>
             <TableCell>{formatStatus(invoice.status)}</TableCell>
             <TableCell className="text-right">

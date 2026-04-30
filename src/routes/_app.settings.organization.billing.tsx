@@ -85,7 +85,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const invoiceRows: InvoiceRow[] = invoices.map((invoice) => ({
     id: invoice.id,
     createdAtMs: (invoice.created ?? 0) * 1000,
-    amountPaidCents: invoice.amount_paid ?? 0,
+    totalCents: invoice.total ?? invoice.amount_due ?? invoice.amount_paid ?? 0,
     currency: invoice.currency ?? "usd",
     status: invoice.status ?? "",
     hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,

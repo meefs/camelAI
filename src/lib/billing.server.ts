@@ -68,6 +68,7 @@ export interface StripeInvoiceListEntry {
   created: number;
   amount_paid?: number | null;
   amount_due?: number | null;
+  total?: number | null;
   currency: string;
   status?: string | null;
   hosted_invoice_url?: string | null;
@@ -107,6 +108,7 @@ export interface StripeInvoice {
   paid?: boolean | null;
   amount_paid?: number | null;
   amount_due?: number | null;
+  total?: number | null;
   billing_reason?: string | null;
   metadata?: Record<string, string>;
   subscription_details?: {
