@@ -75,6 +75,8 @@ describe('chat credit status', () => {
       isExhausted: true,
       hasByokProvider: true,
     });
-    expect(getDevChatInitialError(params)).toContain('Hosted model credits are used up');
+    expect(getDevChatInitialError(params)).toBe(
+      'Message not sent — top up credits or add an API key to continue.',
+    );
   });
 });

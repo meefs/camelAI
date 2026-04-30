@@ -878,6 +878,7 @@ function extractTurnErrorMessage(error) {
 
 function normalizeTurnErrorMessage(error) {
   const message = extractTurnErrorMessage(error) || 'Runner error';
+  const creditSendBlockedMessage = 'Message not sent — top up credits or add an API key to continue.';
   const normalized = message.toLowerCase();
   const isBillingOrCreditError =
     normalized.includes('credit') ||
@@ -890,14 +891,11 @@ function normalizeTurnErrorMessage(error) {
     normalized.includes('hosted model');
 
   if (isBillingOrCreditError) {
-    const alreadyActionable =
-      normalized.includes('settings') ||
-      normalized.includes('buy credits') ||
-      normalized.includes('api key') ||
-      normalized.includes('subscription');
-    return alreadyActionable
-      ? message
-      : `${message} Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider.`;
+    if (normalized.includes('credits are used up')) {
+      return creditSendBlockedMessage;
+    }
+
+    return message;
   }
 
   if (normalized.includes('429') || normalized.includes('rate limit')) {
