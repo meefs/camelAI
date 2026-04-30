@@ -11,7 +11,6 @@ import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -26,7 +25,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { AlertCircle, Check, Copy, Loader2, MessageSquare, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, Copy, Loader2, Trash2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export function meta() {
   return [
@@ -95,7 +95,12 @@ function StatusBadge({ app }: { app: AppDomainStatus }) {
     return <Badge variant="outline">Not configured</Badge>;
   }
   if (app.status === 'active' && app.ssl_status === 'active') {
-    return <Badge variant="default" className="bg-green-600 hover:bg-green-600">Active</Badge>;
+    // FIXME(badge-positive): Badge has no positive/success variant yet — emulate via outline + primary tokens.
+    return (
+      <Badge variant="outline" className="border-primary/30 text-primary">
+        Active
+      </Badge>
+    );
   }
   if (app.status === 'failed' || app.ssl_status === 'failed') {
     return <Badge variant="destructive">Needs attention</Badge>;
@@ -178,6 +183,7 @@ function AppDomainRow({
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [hostname, setHostname] = useState(app.hostname ?? '');
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<boolean>(Boolean(app.error));
   const loading = fetcher.state !== 'idle';
 
   useEffect(() => {
@@ -185,9 +191,14 @@ function AppDomainRow({
   }, [app.hostname]);
 
   useEffect(() => {
+    if (app.error) setExpanded(true);
+  }, [app.error]);
+
+  useEffect(() => {
     if (fetcher.state !== 'idle' || !fetcher.data) return;
     if (fetcher.data.error) {
       setError(fetcher.data.error);
+      setExpanded(true);
       return;
     }
     setError(null);
@@ -212,17 +223,19 @@ function AppDomainRow({
     );
   };
 
+  const showDisclosure = expanded && Boolean(app.hostname);
+
   return (
-    <TableRow>
-      <TableCell className="align-top font-medium">{app.name}</TableCell>
-      <TableCell className="align-top">
-        <div className="space-y-2">
-          <div className="flex gap-2">
+    <>
+      <TableRow>
+        <TableCell className="align-top font-medium">{app.name}</TableCell>
+        <TableCell className="align-top">
+          <div className="flex flex-wrap items-center gap-2">
             <Input
               value={hostname}
               onChange={(event) => setHostname(event.target.value)}
               placeholder="www.example.com or example.com"
-              className="h-9 min-w-56 font-mono text-xs"
+              className="w-[300px] max-w-[450px] flex-1 font-mono"
               disabled={!isAdmin || loading}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
@@ -243,34 +256,62 @@ function AppDomainRow({
             {app.hostname ? (
               <Button
                 type="button"
-                variant="ghost"
+                variant="destructive"
                 size="icon-sm"
                 disabled={!isAdmin || loading}
                 onClick={submitRemove}
                 aria-label={`Remove custom hostname for ${app.name}`}
               >
-                <Trash2 className="size-4 text-destructive" />
+                <Trash2 className="size-4" />
               </Button>
             ) : null}
           </div>
-          {error || app.error ? (
-            <p className="text-xs text-destructive">{error ?? app.error}</p>
+        </TableCell>
+        <TableCell className="align-top">
+          <StatusBadge app={app} />
+        </TableCell>
+        <TableCell className="align-top text-right">
+          {app.hostname ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setExpanded((open) => !open)}
+              aria-expanded={expanded}
+              aria-controls={`dns-${app.name}`}
+            >
+              DNS
+              <ChevronDown
+                className={cn(
+                  'size-3.5 transition-transform',
+                  expanded && 'rotate-180'
+                )}
+              />
+            </Button>
           ) : null}
-        </div>
-      </TableCell>
-      <TableCell className="align-top">
-        <StatusBadge app={app} />
-      </TableCell>
-      <TableCell className="align-top">
-        {app.hostname ? (
-          <div className="space-y-2 rounded-md border p-3">
-            <DnsRecordLine label="Create this DNS record" name={app.hostname} target={dnsTarget} />
-          </div>
-        ) : (
-          <span className="text-sm text-muted-foreground">Add a hostname to see its DNS record.</span>
-        )}
-      </TableCell>
-    </TableRow>
+        </TableCell>
+      </TableRow>
+      {showDisclosure ? (
+        <TableRow id={`dns-${app.name}`}>
+          <TableCell colSpan={4} className="bg-muted/30">
+            <div className="space-y-2 px-2 py-3 text-sm">
+              <DnsRecordLine
+                label={`DNS for ${app.hostname}`}
+                name={app.hostname!}
+                target={dnsTarget}
+              />
+              <p className="text-xs text-muted-foreground">
+                For root domains, use your DNS provider's CNAME flattening, ALIAS,
+                or ANAME option.
+              </p>
+              {error || app.error ? (
+                <p className="text-xs text-destructive">{error ?? app.error}</p>
+              ) : null}
+            </div>
+          </TableCell>
+        </TableRow>
+      ) : null}
+    </>
   );
 }
 
@@ -328,88 +369,94 @@ export default function DomainsPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="Domains"
-        description="Assign an exact hostname to each deployed app, then point that hostname at camelAI."
+        description="Point your own hostname at each deployed app, then update DNS."
       />
       <Separator />
 
       <section className="space-y-3">
-        <div className="space-y-1">
-          <h2 className="text-sm font-medium">Setup</h2>
-          <p className="text-sm text-muted-foreground">
-            Enter the hostname you want for an app, save it, then create the DNS record
-            shown in that app's row. For root domains like example.com, use your DNS
-            provider's CNAME flattening, ALIAS, or ANAME option if plain CNAME records
-            are not allowed.
-          </p>
-          <p className="text-sm text-muted-foreground">
-            You can also ask Camel to set up or troubleshoot a custom domain for one
-            of your apps.
-          </p>
+        <h2 className="text-base font-semibold">Have Camel set up your custom domain</h2>
+        <p className="text-sm text-muted-foreground">
+          Camel has tools to inspect DNS, configure your hostname, and troubleshoot
+          SSL. It walks you through DNS provider steps live.
+        </p>
+        <div>
           <Button
             type="button"
-            variant="outline"
-            size="sm"
-            className="mt-2"
             onClick={startCustomDomainChat}
             disabled={chatLoading || !workspaceId}
           >
-            {chatLoading ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <MessageSquare className="size-3.5" />
-            )}
+            {chatLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
             Start chat with Camel
           </Button>
-          {chatFetcher.data?.error ? (
-            <p className="text-xs text-destructive">{chatFetcher.data.error}</p>
-          ) : null}
         </div>
-        <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <span className="text-muted-foreground">DNS target</span>
-            <span className="ml-2 font-mono break-all">{dnsTarget}</span>
-          </div>
+        {chatFetcher.data?.error ? (
+          <p className="text-xs text-destructive">{chatFetcher.data.error}</p>
+        ) : null}
+        {!workspaceId ? (
+          <p className="text-xs text-muted-foreground">
+            Open a workspace to start a chat with Camel.
+          </p>
+        ) : null}
+      </section>
+
+      <Separator />
+
+      <section className="space-y-3">
+        <h2 className="text-base font-semibold">Configure manually</h2>
+        <p className="text-sm text-muted-foreground">
+          Prefer to do it yourself? Add a hostname to any deployed app, then point
+          your DNS at the camelAI target below.
+        </p>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-muted-foreground">DNS target</span>
+          <span className="font-mono break-all">{dnsTarget}</span>
           <CopyButton value={dnsTarget} />
         </div>
       </section>
 
-      {!isAdmin ? (
-        <Alert variant="destructive">
-          <AlertCircle className="size-4" />
-          <AlertDescription>Only organization admins can manage custom domains.</AlertDescription>
-        </Alert>
-      ) : null}
+      <Separator />
 
-      {apps.length > 0 ? (
-        <div className="rounded-md border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>App</TableHead>
-                <TableHead>Hostname</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>DNS record</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {apps.map((app) => (
-                <AppDomainRow
-                  key={app.name}
-                  app={app}
-                  orgId={org.id}
-                  dnsTarget={dnsTarget}
-                  isAdmin={isAdmin}
-                  onSuccess={handleSuccess}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          No apps deployed yet. Deploy an app, then assign an exact hostname here.
-        </p>
-      )}
+      <section className="space-y-3">
+        <h2 className="text-base font-semibold">Apps</h2>
+        {!isAdmin ? (
+          <p className="text-sm text-muted-foreground">
+            Only organization admins can change custom domains. Ask an admin to add
+            a hostname for an app.
+          </p>
+        ) : null}
+        {apps.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No apps deployed yet. Once you publish an app, add its hostname here.
+          </p>
+        ) : (
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>App</TableHead>
+                  <TableHead>Hostname</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>
+                    <span className="sr-only">DNS</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {apps.map((app) => (
+                  <AppDomainRow
+                    key={app.name}
+                    app={app}
+                    orgId={org.id}
+                    dnsTarget={dnsTarget}
+                    isAdmin={isAdmin}
+                    onSuccess={handleSuccess}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
