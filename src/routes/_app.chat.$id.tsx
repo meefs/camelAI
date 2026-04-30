@@ -3,7 +3,12 @@ import { redirect, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext, requireSuperuser, requireSessionWorkspaceAccess, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getOrgBillingOverview, type OrgBillingOverview } from '@/lib/billing.server';
+import { getOrgBillingOverview } from '@/lib/billing.server';
+import {
+  applyDevBillingCreditStatusOverride,
+  buildBillingCreditStatus,
+  getDevChatInitialError,
+} from '@/lib/chat-credit-status';
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
@@ -17,43 +22,6 @@ import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { ChatHarness, LlmModel, Message, PreviewTarget } from '@/types';
-
-function buildBillingCreditStatus(
-  overview: OrgBillingOverview | null,
-  hasByokProvider: boolean,
-) {
-  if (!overview || overview.billing_status === 'enterprise') {
-    return null;
-  }
-  if (overview.total_credit_limit_cents <= 0) {
-    return null;
-  }
-
-  const usedPercent = Math.min(
-    100,
-    Math.max(
-      0,
-      Math.round(
-        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
-          100,
-      ),
-    ),
-  );
-  const isExhausted = overview.available_credits_cents <= 0;
-  const isLow = !isExhausted && usedPercent >= 80;
-  if (!isLow && !isExhausted) {
-    return null;
-  }
-
-  return {
-    availableCreditsCents: overview.available_credits_cents,
-    totalCreditLimitCents: overview.total_credit_limit_cents,
-    usedPercent,
-    isLow,
-    isExhausted,
-    hasByokProvider,
-  };
-}
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || 'Chat';
@@ -96,7 +64,8 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
               : getDefaultLlmModel(threadProvider),
             threadProvider,
             experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-            billingCreditStatus: null,
+            billingCreditStatus: applyDevBillingCreditStatusOverride(null, url.searchParams),
+            initialChatError: getDevChatInitialError(url.searchParams),
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
@@ -255,6 +224,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadProvider: thread?.provider ?? ((threadContext.provider as ChatHarness | undefined) ?? 'claude'),
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
+      initialChatError: null,
       isNewThread: false,
       hostname,
       orgSlug: org?.slug,
@@ -274,6 +244,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadProvider: 'claude' as const,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
+      initialChatError: getDevChatInitialError(url.searchParams),
       isNewThread: false,
       hostname: undefined,
       readOnly: false,
@@ -316,10 +287,14 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadModel: thread?.model ?? getDefaultLlmModel(thread?.provider ?? 'claude'),
     threadProvider: thread?.provider ?? 'claude',
     experimentalSettings,
-    billingCreditStatus: buildBillingCreditStatus(
-      billingOverview,
-      Boolean(llmProviderConfig),
+    billingCreditStatus: applyDevBillingCreditStatusOverride(
+      buildBillingCreditStatus(
+        billingOverview,
+        Boolean(llmProviderConfig),
+      ),
+      url.searchParams,
     ),
+    initialChatError: getDevChatInitialError(url.searchParams),
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
@@ -354,6 +329,7 @@ export default function ChatPage() {
     threadProvider,
     experimentalSettings,
     billingCreditStatus,
+    initialChatError,
     isNewThread,
     hostname,
     orgSlug,
@@ -395,6 +371,7 @@ export default function ChatPage() {
         threadProvider={threadProvider}
         experimentalSettings={experimentalSettings}
         billingCreditStatus={billingCreditStatus}
+        initialError={initialChatError}
         initialPreviewTarget={chatData.previewTarget}
         initialPreviewTabs={chatData.previewTabs}
         initialActiveTabId={chatData.activeTabId}

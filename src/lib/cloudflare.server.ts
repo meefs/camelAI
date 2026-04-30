@@ -75,6 +75,9 @@ export interface CloudflareEnv {
   SANDBOX_HOST_URL?: string;
   ADMIN_MCP_CLIENT_ID?: string;
   ADMIN_MCP_REDIRECT_URIS?: string;
+  LOCAL_AUTH_BYPASS?: string;
+  LOCAL_AUTH_EMAIL?: string;
+  LOCAL_AUTH_NAME?: string;
 }
 
 /**

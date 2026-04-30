@@ -13,6 +13,7 @@ export default [
   ]),
   route("banned", "routes/banned.tsx"),
   route("dev/billing-paywall", "routes/dev.billing-paywall.tsx"),
+  route("dev/chat-credit-states", "routes/dev.chat-credit-states.tsx"),
 
   // Public invitation page (loader fetches optional auth state)
   layout("routes/_invite.tsx", [

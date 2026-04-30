@@ -3,7 +3,12 @@ import { useLoaderData, useRevalidator } from 'react-router';
 import type { Route } from './+types/_app.chat._index';
 import { requireAuthContext, requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getOrgBillingOverview, type OrgBillingOverview } from '@/lib/billing.server';
+import { getOrgBillingOverview } from '@/lib/billing.server';
+import {
+  applyDevBillingCreditStatusOverride,
+  buildBillingCreditStatus,
+  getDevChatInitialError,
+} from '@/lib/chat-credit-status';
 import { waitUntil } from '@/lib/wait-until';
 import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
@@ -19,43 +24,6 @@ import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { ChatHarness, Integration, LlmModel, LlmProvider, Thread, WorkerScriptWithCreator } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
-
-function buildBillingCreditStatus(
-  overview: OrgBillingOverview | null,
-  hasByokProvider: boolean,
-) {
-  if (!overview || overview.billing_status === 'enterprise') {
-    return null;
-  }
-  if (overview.total_credit_limit_cents <= 0) {
-    return null;
-  }
-
-  const usedPercent = Math.min(
-    100,
-    Math.max(
-      0,
-      Math.round(
-        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
-          100,
-      ),
-    ),
-  );
-  const isExhausted = overview.available_credits_cents <= 0;
-  const isLow = !isExhausted && usedPercent >= 80;
-  if (!isLow && !isExhausted) {
-    return null;
-  }
-
-  return {
-    availableCreditsCents: overview.available_credits_cents,
-    totalCreditLimitCents: overview.total_credit_limit_cents,
-    usedPercent,
-    isLow,
-    isExhausted,
-    hasByokProvider,
-  };
-}
 
 /**
  * Skip loader revalidation after createThread — the user is navigating away
@@ -209,10 +177,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     threadProvider,
     threadModel: getDefaultLlmModel(threadProvider),
     allowedThreadModels: null,
-    billingCreditStatus: buildBillingCreditStatus(
-      billingOverview,
-      Boolean(llmProviderConfig),
+    billingCreditStatus: applyDevBillingCreditStatusOverride(
+      buildBillingCreditStatus(
+        billingOverview,
+        Boolean(llmProviderConfig),
+      ),
+      url.searchParams,
     ),
+    initialChatError: getDevChatInitialError(url.searchParams),
     llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     experimentalSettings,
     hostname,
@@ -310,6 +282,7 @@ export default function NewChatPage() {
     threadModel,
     allowedThreadModels,
     billingCreditStatus,
+    initialChatError,
     hostname,
     userId,
     userName,
@@ -354,6 +327,7 @@ export default function NewChatPage() {
       threadModel={threadModel}
       allowedThreadModels={allowedThreadModels}
       billingCreditStatus={billingCreditStatus}
+      initialError={initialChatError}
       initialWelcomeInput={salesPrompt}
     />
   );

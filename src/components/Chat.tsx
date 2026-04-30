@@ -90,6 +90,7 @@ import {
   isLlmModel,
   THREAD_MODEL_LOCK_MESSAGE,
 } from '@/lib/llm-provider-config';
+import type { BillingCreditStatus } from '@/lib/chat-credit-status';
 import {
   loadDraft,
   removeDraft,
@@ -108,6 +109,7 @@ interface ChatProps {
   llmProvider?: LlmProvider | null;
   allowedThreadModels?: LlmModel[] | null;
   billingCreditStatus?: BillingCreditStatus | null;
+  initialError?: string | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
@@ -130,15 +132,6 @@ interface ChatProps {
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
-}
-
-interface BillingCreditStatus {
-  availableCreditsCents: number;
-  totalCreditLimitCents: number;
-  usedPercent: number;
-  isLow: boolean;
-  isExhausted: boolean;
-  hasByokProvider: boolean;
 }
 
 interface PendingNewThreadMessagePayload {
@@ -588,7 +581,7 @@ function normalizeChatErrorMessage(error: unknown): string {
   return message;
 }
 
-function BillingCreditNotice({
+export function BillingCreditNotice({
   status,
   onOpenBilling,
   onOpenProviderSettings,
@@ -649,6 +642,104 @@ function BillingCreditNotice({
             </Button>
           ) : null}
         </div>
+      </div>
+    </div>
+  );
+}
+
+export function ChatErrorNotice({
+  error,
+  onDismiss,
+}: {
+  error: string;
+  onDismiss?: () => void;
+}) {
+  return (
+    <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
+      <div className="flex items-start gap-3">
+        <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+        <div className="flex-1">
+          <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
+          <p className="text-sm text-muted-foreground">{error}</p>
+        </div>
+        {onDismiss ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={onDismiss}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function DevChatCreditControls({
+  search,
+  onNavigate,
+}: {
+  search: string;
+  onNavigate: (nextSearch: string) => void;
+}) {
+  if (!import.meta.env.DEV) return null;
+
+  const params = new URLSearchParams(search);
+  const isEnabled = params.get('devCreditTest') === '1' || params.has('devCreditState') || params.has('devChatError');
+  if (!isEnabled) return null;
+
+  const current = params.get('devCreditState') ?? 'normal';
+  const currentError = params.get('devChatError');
+  const setState = (nextState: string | null, nextError?: string | null) => {
+    const nextParams = new URLSearchParams(search);
+    nextParams.set('devCreditTest', '1');
+    if (nextState) {
+      nextParams.set('devCreditState', nextState);
+    } else {
+      nextParams.delete('devCreditState');
+    }
+    if (nextError) {
+      nextParams.set('devChatError', nextError);
+    } else {
+      nextParams.delete('devChatError');
+    }
+    const nextSearch = nextParams.toString();
+    onNavigate(nextSearch ? `?${nextSearch}` : '');
+  };
+  const buttonVariant = (state: string, error?: string) => (
+    current === state && (error ? currentError === error : !currentError)
+      ? 'default'
+      : 'outline'
+  );
+
+  return (
+    <div className="mx-auto w-full max-w-3xl px-4 pt-3 md:px-6">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Credit test</span>
+        <Button type="button" size="sm" variant={buttonVariant('normal')} onClick={() => setState(null)}>
+          Normal
+        </Button>
+        <Button type="button" size="sm" variant={buttonVariant('low')} onClick={() => setState('low')}>
+          Low credits
+        </Button>
+        <Button type="button" size="sm" variant={buttonVariant('low-byok')} onClick={() => setState('low-byok')}>
+          Low + BYOK
+        </Button>
+        <Button type="button" size="sm" variant={buttonVariant('exhausted')} onClick={() => setState('exhausted')}>
+          No credits
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={buttonVariant('exhausted', 'out-of-credits')}
+          onClick={() => setState('exhausted', 'out-of-credits')}
+        >
+          Send failure
+        </Button>
       </div>
     </div>
   );
@@ -884,27 +975,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
       })}
 
       {/* Error display */}
-      {error && (
-        <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
-          <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
-              <p className="text-sm text-muted-foreground">{error}</p>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={() => setError(null)}
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      )}
+      {error ? <ChatErrorNotice error={error} onDismiss={() => setError(null)} /> : null}
 
       {/* Compaction in-progress indicator */}
       {isCompacting && (
@@ -1091,6 +1162,7 @@ export default function Chat({
   llmProvider,
   allowedThreadModels,
   billingCreditStatus,
+  initialError,
   experimentalSettings,
   initialPreviewTarget,
   initialPreviewTabs,
@@ -1430,7 +1502,9 @@ export default function Chat({
 
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? '');
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => (
+    initialError ? normalizeChatErrorMessage(initialError) : null
+  ));
   const [welcomeInput, setWelcomeInput] = useState(() => (
     initialWelcomeInput ?? initialWelcomeDraft?.text ?? ''
   ));
@@ -1453,6 +1527,10 @@ export default function Chat({
   const skipNextEmptyDraftSaveRef = useRef(false);
   const pendingDeliveryDraftRef = useRef<{ workspaceId: string; threadId: string | null } | null>(null);
   const pendingDraftCountRef = useRef(0);
+
+  useEffect(() => {
+    setError(initialError ? normalizeChatErrorMessage(initialError) : null);
+  }, [initialError]);
   const { saveDraft, flushDraft } = useDraftPersistence(resolvedWorkspaceId, threadId ?? null);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -4467,6 +4545,12 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           status={billingCreditStatus}
           onOpenBilling={() => navigate('/settings/organization/billing')}
           onOpenProviderSettings={() => navigate('/settings/organization/ai-provider')}
+        />
+      ) : null}
+      {!readOnly ? (
+        <DevChatCreditControls
+          search={location.search}
+          onNavigate={(nextSearch) => navigate(`${location.pathname}${nextSearch}`)}
         />
       ) : null}
       {readOnly && (

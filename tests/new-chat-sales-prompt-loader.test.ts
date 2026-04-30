@@ -4,6 +4,7 @@ const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getRecentThreadsMock = vi.fn();
+const getOrgBillingOverviewMock = vi.fn();
 
 vi.mock('@/lib/wait-until', () => ({
   waitUntil: vi.fn(),
@@ -16,6 +17,10 @@ vi.mock('@/lib/auth.server', () => ({
 
 vi.mock('@/lib/cloudflare.server', () => ({
   getEnv: getEnvMock,
+}));
+
+vi.mock('@/lib/billing.server', () => ({
+  getOrgBillingOverview: getOrgBillingOverviewMock,
 }));
 
 vi.mock('@/lib/auth-helpers', () => ({
@@ -59,6 +64,7 @@ describe('new chat loader sales prompt handling', () => {
       onboarding: { completed_at: Date.now() },
     });
     getRecentThreadsMock.mockResolvedValue([]);
+    getOrgBillingOverviewMock.mockResolvedValue(null);
   });
 
   it('consumes prompt_key from KV and returns a normalized welcome prompt', async () => {
@@ -85,6 +91,13 @@ describe('new chat loader sales prompt handling', () => {
         idFromName: (id: string) => id,
         get: () => ({
           listWorkerScripts: async () => [],
+          getLlmProviderConfig: async () => null,
+          getExperimentalSettings: async () => ({
+            providerType: 'claude',
+            enabledModelFamilies: [],
+            allowedModels: [],
+          }),
+          getInfo: async () => ({ id: 'org_123' }),
         }),
       },
       USER: {

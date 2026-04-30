@@ -19,11 +19,113 @@ import {
   getUserOrgs,
   listUserWorkspacesAcrossOrgs,
   listOrgWorkspaces,
+  getUserByEmail,
+  createUser,
+  createOrg,
 } from "./auth-do";
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
 const authContextCache = new WeakMap<Request, Promise<AuthContext | null>>();
+
+function getRuntimeEnvValue(key: string): string | undefined {
+  return typeof process !== "undefined" ? process.env[key] : undefined;
+}
+
+function isLocalAuthBypassEnabled(env: ReturnType<typeof getEnv>): boolean {
+  if (
+    env.NEXTJS_ENV !== "development" &&
+    getRuntimeEnvValue("NEXTJS_ENV") !== "development"
+  ) {
+    return false;
+  }
+  return (
+    env.LOCAL_AUTH_BYPASS === "1" ||
+    env.LOCAL_AUTH_BYPASS === "true" ||
+    getRuntimeEnvValue("LOCAL_AUTH_BYPASS") === "1" ||
+    getRuntimeEnvValue("LOCAL_AUTH_BYPASS") === "true"
+  );
+}
+
+async function getLocalBypassSession(
+  request: Request,
+  env: ReturnType<typeof getEnv>,
+): Promise<SessionContext | null> {
+  if (!isLocalAuthBypassEnabled(env)) return null;
+
+  const authEnv = getAuthEnv(env);
+  const email = (
+    env.LOCAL_AUTH_EMAIL ??
+    getRuntimeEnvValue("LOCAL_AUTH_EMAIL") ??
+    "local@example.com"
+  ).trim().toLowerCase();
+  const name = (
+    env.LOCAL_AUTH_NAME ??
+    getRuntimeEnvValue("LOCAL_AUTH_NAME") ??
+    "Local User"
+  ).trim();
+  if (!email) return null;
+
+  let userResult = await getUserByEmail(authEnv, email);
+  if (!userResult) {
+    userResult = await createUser(
+      authEnv,
+      email,
+      "local-password-not-used",
+      name || "Local User",
+      request.headers.get("CF-Connecting-IP") ?? "127.0.0.1",
+    );
+  }
+
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userResult.userId));
+  await Promise.all([
+    userStub.markEmailVerified().catch(() => null),
+    userStub.updateOnboarding({ completed_at: Date.now() }).catch(() => null),
+  ]);
+
+  let orgs = await getUserOrgs(authEnv, userResult.userId).catch(() => []);
+  if (orgs.length === 0) {
+    const created = await createOrg(
+      authEnv,
+      `${name || "Local User"}'s Workspace`,
+      userResult.userId,
+    );
+    orgs = [{
+      org_id: created.org.id,
+      org_name: created.org.name,
+      role: "owner",
+      joined_at: Date.now(),
+      last_workspace_id: created.defaultWorkspaceId,
+    }];
+  }
+
+  const orgId = orgs[0].org_id;
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  await orgStub.updateBillingState({
+    billing_status: "enterprise",
+    billing_plan: "enterprise",
+  }).catch(() => null);
+
+  const workspaces = await listOrgWorkspaces(authEnv, orgId).catch(() => []);
+  const workspaceId =
+    orgs[0].last_workspace_id ??
+    workspaces[0]?.id ??
+    null;
+
+  const now = Date.now();
+  return {
+    sessionId: `local:${userResult.userId}`,
+    session: {
+      user_id: userResult.userId,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      created_at: now,
+      last_accessed: now,
+      user_name: userResult.user.name,
+      user_email: userResult.user.email,
+    },
+  };
+}
 
 // Re-export AuthEnv and getAuthEnv for routes that need them
 export { getAuthEnv, type AuthEnv } from "./auth-helpers";
@@ -77,7 +179,9 @@ export async function getSession(
     request,
     env.TOKEN_SIGNING_SECRET,
   );
-  if (!signedSession) return null;
+  if (!signedSession) {
+    return getLocalBypassSession(request, env);
+  }
 
   await redirectIfBannedSession(request, context, {
     userId: signedSession.user_id,
