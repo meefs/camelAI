@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
 import type { Integration, LlmModel } from '@/types';
 import { ConnectionMentionMenu } from '@/components/connection-mention-menu';
-import { ComposerMentionOverlay } from '@/components/connection-mention-menu/composer-mention-overlay';
+import { ComposerMentionDecorations } from '@/components/connection-mention-menu/composer-mention-overlay';
 import { useMentionTrigger } from '@/components/connection-mention-menu/use-mention-trigger';
 import {
   buildSlugMap,
@@ -142,7 +142,8 @@ export function PromptInput({
   const [isFocused, setIsFocused] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [activeMentionId, setActiveMentionId] = useState<string | null>(null);
-  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const textareaWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [textareaScroll, setTextareaScroll] = useState({ top: 0, left: 0 });
 
   const mentionsEnabled = (mentionableConnections?.length ?? 0) > 0
     || onMentionAddNewClick !== undefined;
@@ -482,24 +483,16 @@ export function PromptInput({
             </InputGroupAddon>
           )}
 
-          <div className="relative w-full">
-            <div
-              aria-hidden
-              ref={overlayRef}
-              className={cn(
-                'pointer-events-none absolute inset-0 z-10 overflow-hidden',
-                'whitespace-pre-wrap break-words',
-                'p-3.5 text-base md:text-base max-h-96',
-                'font-[inherit] leading-[inherit] tracking-[inherit] text-foreground',
-                (disabled || isActiveRecording) && 'opacity-50',
-              )}
-            >
-              <ComposerMentionOverlay
-                value={value}
-                slugMap={slugMap}
-                textareaRef={effectiveTextareaRef}
-              />
-            </div>
+          <div ref={textareaWrapperRef} className="relative w-full">
+            <ComposerMentionDecorations
+              value={value}
+              slugMap={slugMap}
+              textareaRef={effectiveTextareaRef}
+              wrapperRef={textareaWrapperRef}
+              scrollTop={textareaScroll.top}
+              scrollLeft={textareaScroll.left}
+              onTextareaSelectionChange={updateCaretPos}
+            />
             <InputGroupTextarea
               ref={effectiveTextareaRef}
               value={value}
@@ -512,10 +505,13 @@ export function PromptInput({
                 mentionLockoutCaretRef.current = -1;
               }}
               onScroll={(e) => {
-                if (overlayRef.current) {
-                  overlayRef.current.scrollTop = e.currentTarget.scrollTop;
-                  overlayRef.current.scrollLeft = e.currentTarget.scrollLeft;
-                }
+                const nextTop = e.currentTarget.scrollTop;
+                const nextLeft = e.currentTarget.scrollLeft;
+                setTextareaScroll((current) => (
+                  current.top === nextTop && current.left === nextLeft
+                    ? current
+                    : { top: nextTop, left: nextLeft }
+                ));
               }}
               onKeyDown={handleKeyDown}
               onKeyUp={updateCaretPos}
@@ -536,13 +532,12 @@ export function PromptInput({
                 onBlur?.();
               }}
               className={cn(
-                'text-base md:text-base p-3.5 max-h-96 overflow-y-auto',
-                'selection:bg-primary/30 selection:text-transparent',
+                'relative z-10 bg-transparent text-base md:text-base p-3.5 max-h-96 overflow-y-auto',
+                'selection:bg-primary/30',
                 isActiveRecording && 'opacity-50',
               )}
               style={{
                 minHeight,
-                color: 'transparent',
                 caretColor: 'var(--foreground)',
               }}
             />

@@ -9,7 +9,7 @@ interface MentionChipProps {
 }
 
 const CHIP_BASE =
-  'inline rounded-sm align-baseline text-[0.95em] font-semibold leading-[inherit] cursor-default';
+  'inline rounded-md px-1.5 py-0.5 -my-0.5 align-baseline font-normal leading-[inherit] cursor-default';
 const CHIP_LIVE = 'bg-muted text-foreground';
 const CHIP_DELETED = 'bg-muted/60 text-muted-foreground';
 

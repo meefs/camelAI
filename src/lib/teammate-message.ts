@@ -1,4 +1,5 @@
 const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)">\n?([\s\S]*?)\n?<\/teammate-message>$/;
+const MENTION_ANNOTATION_REGEX = /\s*⟦ref:[^⟧]*⟧/g;
 
 export interface ParsedTeammateMessage {
   teammateId: string;
@@ -10,7 +11,10 @@ export interface ParsedTeammateMessage {
  * Duplicated here to avoid circular dependency with message-bubble.tsx.
  */
 function stripSystemMessageTags(text: string): string {
-  return text.replace(/<camelai system message>[\s\S]*?<\/camelai system message>/g, '').trim();
+  return text
+    .replace(/<camelai system message>[\s\S]*?<\/camelai system message>/g, '')
+    .replace(MENTION_ANNOTATION_REGEX, '')
+    .trim();
 }
 
 export function parseTeammateMessage(rawContent: string): ParsedTeammateMessage | null {

@@ -16,6 +16,11 @@ describe('contentToString', () => {
     expect(contentToString(content)).toBe('<teammate-message teammate_id="alice">literal example</teammate-message>');
   });
 
+  it('strips connection mention annotations from plain string content', () => {
+    const content = 'Check @camel ⟦ref: other "Camel" id=conn_123⟧ please';
+    expect(contentToString(content)).toBe('Check @camel please');
+  });
+
   it('preserves literal teammate XML in text blocks', () => {
     const blocks: ContentBlock[] = [
       {
@@ -26,6 +31,16 @@ describe('contentToString', () => {
     expect(contentToString(blocks)).toBe(
       'Use this snippet: <teammate-message teammate_id="alice">example</teammate-message>'
     );
+  });
+
+  it('strips connection mention annotations from text blocks', () => {
+    const blocks: ContentBlock[] = [
+      {
+        type: 'text',
+        text: 'Check @camel ⟦ref: other "Camel" id=conn_123⟧ please',
+      },
+    ];
+    expect(contentToString(blocks)).toBe('Check @camel please');
   });
 
   it('serializes parsed teammate message blocks as teammate updates', () => {

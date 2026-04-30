@@ -91,6 +91,7 @@ interface ParsedMessage {
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
+const MENTION_ANNOTATION_REGEX = /\s*⟦ref:[^⟧]*⟧/g;
 
 /**
  * Strip camelAI system message tags from content.
@@ -98,7 +99,10 @@ const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
  * be shown verbosely to users.
  */
 function stripSystemMessageTags(text: string): string {
-  return text.replace(/<camelai system message>[\s\S]*?<\/camelai system message>/g, '').trim();
+  return text
+    .replace(/<camelai system message>[\s\S]*?<\/camelai system message>/g, '')
+    .replace(MENTION_ANNOTATION_REGEX, '')
+    .trim();
 }
 
 function parseMessageAuthor(rawContent: string): ParsedMessage {

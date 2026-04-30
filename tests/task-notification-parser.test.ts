@@ -23,6 +23,25 @@ describe('parseTaskNotification', () => {
     });
   });
 
+  it('ignores connection mention annotations outside the task payload', () => {
+    const raw = [
+      '<task-notification>',
+      '<task-id>task_123</task-id>',
+      '<output-file>/mnt/user-outputs/task_123.md</output-file>',
+      '<status>Completed</status>',
+      '<summary>Report generation finished for @camel.</summary>',
+      '</task-notification>',
+      ' ⟦ref: other "Camel" id=conn_123⟧',
+    ].join('\n');
+
+    expect(parseTaskNotification(raw)).toEqual({
+      taskId: 'task_123',
+      outputFile: '/mnt/user-outputs/task_123.md',
+      status: 'completed',
+      summary: 'Report generation finished for @camel.',
+    });
+  });
+
   it('rejects payloads with unrelated wrapper text', () => {
     const raw = [
       'unexpected wrapper',

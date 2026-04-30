@@ -145,8 +145,8 @@ export function ConnectionMentionMenu({
                         size={16}
                         className="size-4 shrink-0"
                       />
-                      <span className="truncate font-medium">{c.name}</span>
-                      <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                      <span className="min-w-0 truncate font-medium">{c.name}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
                         {def?.displayName ?? c.integration_type}
                       </span>
                     </CommandItem>

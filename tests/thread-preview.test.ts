@@ -21,6 +21,11 @@ describe('normalizeThreadPreviewUserMessage', () => {
     expect(normalizeThreadPreviewUserMessage(content)).toBe('Hello there');
   });
 
+  it('strips connection mention annotations', () => {
+    const content = 'Hello @camel ⟦ref: other "Camel" id=conn_123⟧';
+    expect(normalizeThreadPreviewUserMessage(content)).toBe('Hello @camel');
+  });
+
   it('returns null for system-only content', () => {
     const content = '<camelai system message>hidden</camelai system message>';
     expect(normalizeThreadPreviewUserMessage(content)).toBeNull();
