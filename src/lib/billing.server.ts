@@ -50,6 +50,8 @@ export interface StripeSubscription {
   quantity?: number | null;
   trial_start?: number | null;
   trial_end?: number | null;
+  current_period_end?: number | null;
+  cancel_at_period_end?: boolean | null;
   items?: {
     data?: StripeSubscriptionItem[];
   } | null;
@@ -59,6 +61,30 @@ export interface StripeSubscriptionItem {
   id: string;
   quantity?: number | null;
   price?: string | StripePriceSummary | null;
+}
+
+export interface StripeInvoiceListEntry {
+  id: string;
+  created: number;
+  amount_paid?: number | null;
+  amount_due?: number | null;
+  total?: number | null;
+  currency: string;
+  status?: string | null;
+  hosted_invoice_url?: string | null;
+}
+
+export interface StripePaymentMethodSummary {
+  brand: string;
+  last4: string;
+}
+
+export interface StripeSubscriptionSummary {
+  id: string;
+  status: string;
+  current_period_end_ms: number | null;
+  cancel_at_period_end: boolean;
+  trial_end_ms: number | null;
 }
 
 export interface StripeCheckoutSession {
@@ -82,6 +108,7 @@ export interface StripeInvoice {
   paid?: boolean | null;
   amount_paid?: number | null;
   amount_due?: number | null;
+  total?: number | null;
   billing_reason?: string | null;
   metadata?: Record<string, string>;
   subscription_details?: {
@@ -1305,4 +1332,104 @@ export async function verifyStripeWebhookSignature(args: {
     .join("");
 
   return signatures.some((signature) => timingSafeEqual(signature, digest));
+}
+
+interface StripeListResponse<T> {
+  data: T[];
+  has_more?: boolean;
+}
+
+export async function listStripeInvoicesForOrg(
+  env: StripeBillingEnv,
+  org: Organization,
+  options: { limit?: number } = {},
+): Promise<StripeInvoiceListEntry[]> {
+  // FIXME(billing-stripe): paginate beyond the first page if needed.
+  if (!org.billing_customer_id) return [];
+  if (!env.STRIPE_SECRET_KEY?.trim()) return [];
+
+  const limit = Math.min(Math.max(options.limit ?? 24, 1), 100);
+  const params = new URLSearchParams();
+  params.set("customer", org.billing_customer_id);
+  params.set("limit", String(limit));
+  const response = await stripeRequest<StripeListResponse<StripeInvoiceListEntry>>(
+    env,
+    `/invoices?${params.toString()}`,
+  );
+  return response.data ?? [];
+}
+
+interface StripePaymentMethod {
+  id: string;
+  card?: {
+    brand?: string | null;
+    last4?: string | null;
+  } | null;
+}
+
+interface StripeCustomerWithPaymentMethod extends StripeCustomer {
+  invoice_settings?: {
+    default_payment_method?: string | StripePaymentMethod | null;
+  } | null;
+  default_source?: string | null;
+}
+
+export async function getStripeDefaultPaymentMethodSummary(
+  env: StripeBillingEnv,
+  org: Organization,
+): Promise<StripePaymentMethodSummary | null> {
+  // FIXME(billing-stripe): support non-card payment methods (Link, bank, etc.).
+  if (!org.billing_customer_id) return null;
+  if (!env.STRIPE_SECRET_KEY?.trim()) return null;
+
+  const customer = await stripeRequest<StripeCustomerWithPaymentMethod>(
+    env,
+    `/customers/${org.billing_customer_id}?expand[]=invoice_settings.default_payment_method`,
+  );
+
+  const defaultPm = customer.invoice_settings?.default_payment_method;
+  if (defaultPm && typeof defaultPm === "object" && defaultPm.card?.last4) {
+    return {
+      brand: defaultPm.card.brand?.trim() || "card",
+      last4: defaultPm.card.last4,
+    };
+  }
+  if (typeof defaultPm === "string" && defaultPm) {
+    const expanded = await stripeRequest<StripePaymentMethod>(
+      env,
+      `/payment_methods/${defaultPm}`,
+    );
+    if (expanded.card?.last4) {
+      return {
+        brand: expanded.card.brand?.trim() || "card",
+        last4: expanded.card.last4,
+      };
+    }
+  }
+  return null;
+}
+
+export async function getStripeSubscriptionSummary(
+  env: StripeBillingEnv,
+  org: Organization,
+): Promise<StripeSubscriptionSummary | null> {
+  // FIXME(billing-stripe): wire this to the live Stripe subscription so renewal
+  // and cancel-at-period-end render correctly.
+  if (!org.billing_subscription_id) return null;
+  if (!env.STRIPE_SECRET_KEY?.trim()) return null;
+
+  const subscription = await stripeRequest<StripeSubscription>(
+    env,
+    `/subscriptions/${org.billing_subscription_id}`,
+  );
+
+  return {
+    id: subscription.id,
+    status: subscription.status,
+    current_period_end_ms: subscription.current_period_end
+      ? subscription.current_period_end * 1000
+      : null,
+    cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
+    trial_end_ms: subscription.trial_end ? subscription.trial_end * 1000 : null,
+  };
 }

@@ -22,17 +22,19 @@ export default function SettingsLayout() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <PageHeader breadcrumbs={[{ label: 'Settings' }]} />
-      <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
-        <Suspense fallback={<SettingsNavSkeleton />}>
-          <SettingsNav isOrgAdmin={isOrgAdmin} />
-        </Suspense>
-        <main className="flex-1 overflow-y-auto p-4 md:p-8">
-          <SettingsRefreshWrapper>
-            <Suspense fallback={<SettingsContentSkeleton />}>
-              <Outlet />
-            </Suspense>
-          </SettingsRefreshWrapper>
-        </main>
+      <div className="flex flex-1 overflow-hidden">
+        <div className="mx-auto flex w-full max-w-[90rem] flex-col overflow-hidden md:flex-row">
+          <Suspense fallback={<SettingsNavSkeleton />}>
+            <SettingsNav isOrgAdmin={isOrgAdmin} />
+          </Suspense>
+          <main className="flex-1 overflow-y-auto p-4 md:p-8">
+            <SettingsRefreshWrapper>
+              <Suspense fallback={<SettingsContentSkeleton />}>
+                <Outlet />
+              </Suspense>
+            </SettingsRefreshWrapper>
+          </main>
+        </div>
       </div>
     </div>
   );
@@ -42,11 +44,13 @@ export function HydrateFallback() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <PageHeader breadcrumbs={[{ label: 'Settings' }]} />
-      <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
-        <SettingsNavSkeleton />
-        <main className="flex-1 overflow-y-auto p-4 md:p-8">
-          <SettingsContentSkeleton />
-        </main>
+      <div className="flex flex-1 overflow-hidden">
+        <div className="mx-auto flex w-full max-w-[90rem] flex-col overflow-hidden md:flex-row">
+          <SettingsNavSkeleton />
+          <main className="flex-1 overflow-y-auto p-4 md:p-8">
+            <SettingsContentSkeleton />
+          </main>
+        </div>
       </div>
     </div>
   );

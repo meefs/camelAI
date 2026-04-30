@@ -36,6 +36,35 @@ describe('onboarding complete sales prompt flow', () => {
     getPendingSalesPrompt: ReturnType<typeof vi.fn>;
     clearPendingSalesPrompt: ReturnType<typeof vi.fn>;
   };
+  let orgStubs: Map<
+    string,
+    {
+      getInfo: ReturnType<typeof vi.fn>;
+      getLlmProviderConfig: ReturnType<typeof vi.fn>;
+      getThreadsPaginated: ReturnType<typeof vi.fn>;
+    }
+  >;
+
+  function createOrgStub({
+    billingStatus = 'active',
+    llmProviderConfig = null,
+    threadTotal = 0,
+  }: {
+    billingStatus?: string;
+    llmProviderConfig?: unknown;
+    threadTotal?: number;
+  } = {}) {
+    return {
+      getInfo: vi.fn().mockResolvedValue({ billing_status: billingStatus }),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(llmProviderConfig),
+      getThreadsPaginated: vi.fn().mockResolvedValue({
+        items: [],
+        total: threadTotal,
+        offset: 0,
+        limit: 1,
+      }),
+    };
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -52,18 +81,33 @@ describe('onboarding complete sales prompt flow', () => {
 
     requireAuthContextMock.mockResolvedValue({
       user: { id: 'user_123', name: 'Illiana Reed' },
+      currentOrg: { id: 'org_123' },
       currentWorkspace: { id: 'ws_123' },
+      orgs: [{ org_id: 'org_123' }],
       onboarding: { completed_at: null },
     });
+    orgStubs = new Map([['org_123', createOrgStub()]]);
     getAuthEnvMock.mockReturnValue({
       USER: {
         idFromName: (id: string) => id,
         get: () => userStub,
       },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: (id: string) => {
+          let stub = orgStubs.get(id);
+          if (!stub) {
+            stub = createOrgStub();
+            orgStubs.set(id, stub);
+          }
+          return stub;
+        },
+      },
     });
     getEnvMock.mockReturnValue({});
     createThreadMock.mockResolvedValue({
       id: 'thread_123',
+      provider: 'claude',
     });
     generateThreadTitleMock.mockResolvedValue(undefined);
     getThreadsPaginatedMock.mockResolvedValue({ items: [] });
@@ -139,6 +183,75 @@ describe('onboarding complete sales prompt flow', () => {
       success: true,
       threadId: 'thread_123',
       salesPrompt: null,
+    });
+  });
+
+  it('does not start the first-chat flow for BYOK when the user already has a chat', async () => {
+    orgStubs.set(
+      'org_123',
+      createOrgStub({
+        llmProviderConfig: { provider: 'openai' },
+        threadTotal: 1,
+      }),
+    );
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: 'user_123', name: 'Illiana Reed' },
+      currentOrg: { id: 'org_123' },
+      currentWorkspace: { id: 'ws_123' },
+      orgs: [{ org_id: 'org_123' }],
+      onboarding: { completed_at: Date.now() },
+    });
+
+    const response = await action({
+      request: new Request('https://camelai.dev/api/onboarding/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessChoice: 'byok' }),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(createThreadMock).not.toHaveBeenCalled();
+    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      redirectTo: '/chat',
+    });
+  });
+
+  it('marks onboarding complete without first-chat flow when prior chats exist in another org', async () => {
+    orgStubs.set(
+      'org_123',
+      createOrgStub({ llmProviderConfig: { provider: 'openai' } }),
+    );
+    orgStubs.set('org_other', createOrgStub({ threadTotal: 1 }));
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: 'user_123', name: 'Illiana Reed' },
+      currentOrg: { id: 'org_123' },
+      currentWorkspace: { id: 'ws_123' },
+      orgs: [{ org_id: 'org_123' }, { org_id: 'org_other' }],
+      onboarding: { completed_at: null },
+    });
+
+    const response = await action({
+      request: new Request('https://camelai.dev/api/onboarding/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessChoice: 'byok' }),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(userStub.updateOnboarding).toHaveBeenCalledWith({
+      completed_at: expect.any(Number),
+    });
+    expect(createThreadMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      redirectTo: '/chat',
     });
   });
 });
