@@ -266,6 +266,9 @@ function AppDomainRow({
               </Button>
             ) : null}
           </div>
+          {!app.hostname && error ? (
+            <p className="mt-2 text-xs text-destructive">{error}</p>
+          ) : null}
         </TableCell>
         <TableCell className="align-top">
           <StatusBadge app={app} />
