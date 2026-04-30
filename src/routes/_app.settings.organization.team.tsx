@@ -12,6 +12,9 @@ import {
   resolveAppBaseUrl,
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
+import {
+  bestEffortSyncTeamSubscriptionSeatCount,
+} from '@/lib/billing.server';
 
 export function meta() {
   return [
@@ -40,6 +43,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       await requireOrgAdmin(request, context, orgId);
     }
     await removeOrgMember(authEnv, orgId, userId, actorId);
+    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+      reason: 'member_removed',
+    });
     return { success: true };
   }
 
@@ -63,11 +69,17 @@ export async function action({ request, context }: Route.ActionArgs) {
         actorId
       );
     } catch (error) {
+      await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+        reason: 'invite_create_failed',
+      });
       return {
         error:
           error instanceof Error ? error.message : 'Failed to create invitation',
       };
     }
+    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+      reason: 'invitation_created',
+    });
     const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
     const invitationUrl = buildInvitationUrl(baseUrl, orgId, invitation.id);
     const emailDelivery = await sendOrgInvitationEmail({
@@ -129,6 +141,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     await stub.deleteInvitation(invitationId);
+    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+      reason: 'invitation_deleted',
+    });
     return { success: true };
   }
 

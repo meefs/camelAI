@@ -8,6 +8,7 @@ import {
   listOrgWorkspaces,
   switchSessionOrg,
 } from '@/lib/auth-do';
+import { bestEffortSyncTeamSubscriptionSeatCount } from '@/lib/billing.server';
 
 export async function loader({ params, context }: Route.LoaderArgs) {
   try {
@@ -77,10 +78,18 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ error: 'Invitation email does not match current user' }, { status: 403 });
     }
 
+    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+      reason: 'invitation_accept_before_membership',
+    });
+
     const accepted = await acceptInvitation(authEnv, orgId, invitationId, session.user_id);
     if (!accepted) {
       return Response.json({ error: 'Invitation not found' }, { status: 404 });
     }
+
+    await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+      reason: 'invitation_accepted',
+    });
 
     const workspaces = await listOrgWorkspaces(authEnv, orgId);
     const workspaceId = workspaces[0]?.id ?? null;

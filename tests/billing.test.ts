@@ -17,19 +17,58 @@ import {
 } from "@/lib/billing-plans";
 import {
   applySubscriptionIncludedCreditsFromInvoice,
+  bestEffortSyncTeamSubscriptionSeatCount,
   createBillingPortalSession,
   createSubscriptionCheckoutSession,
+  getBillableTeamSeatCount,
   getBillingAllowanceConfig,
   getConfiguredSubscriptionPriceId,
   isRecurringSubscriptionInvoice,
   isStripeSecretKeyAllowedForMode,
   parseStripePriceIdList,
+  syncTeamSubscriptionSeatCount,
 } from "@/lib/billing.server";
+import type { Organization } from "@/types";
 
 describe("billing helpers", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  function makeBillingOrgEnv(args: {
+    org: Partial<Organization>;
+    memberCount: number;
+    invitations?: Array<{ expires_at: number }>;
+  }) {
+    const org = {
+      id: "org_team",
+      name: "Team Org",
+      billing_status: "active",
+      billing_plan: "team",
+      billing_seat_count: 3,
+      billing_subscription_id: "sub_team",
+      ...args.org,
+    } as Organization;
+    const orgStub = {
+      getInfo: vi.fn(async () => org),
+      getMemberCount: vi.fn(async () => args.memberCount),
+      getInvitations: vi.fn(async () => args.invitations ?? []),
+      updateBillingState: vi.fn(async (updates: Partial<Organization>) => {
+        Object.assign(org, updates);
+        return org;
+      }),
+    };
+    const env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+      STRIPE_MODE: "test",
+      STRIPE_SECRET_KEY: "sk_test_123",
+      STRIPE_TEAM_PRICE_ID: "price_team",
+    };
+    return { env, org, orgStub };
+  }
 
   it("treats trialing, active, and enterprise orgs as allowed", () => {
     expect(canUsePaidWorkspace("trialing")).toBe(true);
@@ -77,6 +116,24 @@ describe("billing helpers", () => {
         billing_seat_count: 1,
       }),
     ).toBeNull();
+  });
+
+  it("computes billable team seats from members and active invitations", async () => {
+    const { env } = makeBillingOrgEnv({
+      org: { billing_seat_count: 4 },
+      memberCount: 3,
+      invitations: [
+        { expires_at: Date.now() + 60_000 },
+        { expires_at: Date.now() - 60_000 },
+      ],
+    });
+
+    await expect(getBillableTeamSeatCount(env as never, "org_team")).resolves.toBe(
+      4,
+    );
+    await expect(
+      getBillableTeamSeatCount(env as never, "org_team", 1),
+    ).resolves.toBe(5);
   });
 
   it("matches the v1 billing design plan matrix", () => {
@@ -305,6 +362,127 @@ describe("billing helpers", () => {
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
     ).toBe("3000");
+  });
+
+  it("updates Stripe subscription item quantity and metadata for team seats", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: { billing_seat_count: 3 },
+      memberCount: 3,
+      invitations: [{ expires_at: Date.now() + 60_000 }],
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            items: {
+              data: [
+                {
+                  id: "si_team",
+                  quantity: 3,
+                  price: { id: "price_team" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ id: url.includes("subscription_items") ? "si_team" : "sub_team" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      syncTeamSubscriptionSeatCount(env as never, "org_team"),
+    ).resolves.toMatchObject({ billing_seat_count: 4 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const itemUpdate = fetchMock.mock.calls[1];
+    expect(String(itemUpdate[0])).toBe(
+      "https://api.stripe.com/v1/subscription_items/si_team",
+    );
+    const itemParams = new URLSearchParams(itemUpdate[1]?.body as string);
+    expect(itemParams.get("quantity")).toBe("4");
+    expect(itemParams.get("proration_behavior")).toBe("create_prorations");
+
+    const subscriptionUpdate = fetchMock.mock.calls[2];
+    expect(String(subscriptionUpdate[0])).toBe(
+      "https://api.stripe.com/v1/subscriptions/sub_team",
+    );
+    const subscriptionParams = new URLSearchParams(
+      subscriptionUpdate[1]?.body as string,
+    );
+    expect(subscriptionParams.get("metadata[billing_plan]")).toBe("team");
+    expect(subscriptionParams.get("metadata[seat_count]")).toBe("4");
+    expect(
+      subscriptionParams.get("metadata[subscription_included_credit_cents]"),
+    ).toBe("4000");
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith({
+      billing_seat_count: 4,
+    });
+  });
+
+  it("does not update a Stripe subscription item when the configured team price is missing", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: { billing_seat_count: 3 },
+      memberCount: 4,
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        id: "sub_team",
+        status: "active",
+        items: {
+          data: [
+            {
+              id: "si_other",
+              quantity: 3,
+              price: { id: "price_other" },
+            },
+          ],
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      syncTeamSubscriptionSeatCount(env as never, "org_team"),
+    ).rejects.toThrow(
+      "Stripe subscription does not have an item for configured price price_team",
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(orgStub.updateBillingState).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when best-effort team seat sync cannot reach Stripe", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: { billing_seat_count: 3 },
+      memberCount: 4,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        text: async () => "stripe unavailable",
+      })),
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    await expect(
+      bestEffortSyncTeamSubscriptionSeatCount(env as never, "org_team", {
+        reason: "test",
+      }),
+    ).resolves.toBeNull();
+
+    expect(orgStub.updateBillingState).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   it("honors explicit billing credit overrides in subscription checkout metadata", async () => {

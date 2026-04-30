@@ -71,6 +71,8 @@ export interface CloudflareEnv {
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
+  ADMIN_MCP_CLIENT_ID?: string;
+  ADMIN_MCP_REDIRECT_URIS?: string;
 }
 
 /**

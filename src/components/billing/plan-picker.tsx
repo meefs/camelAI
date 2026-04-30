@@ -113,7 +113,9 @@ export function PlanPicker({
       {plans.map((plan) => {
         const state = resolveCardState(plan, highlight, currentPlan);
         const cta = ctaForPlan(plan, state);
-        const disabled = isDisabled && cta.kind === "trial";
+        const disabled =
+          cta.kind === "trial" &&
+          (isDisabled || (pendingPlan !== null && pendingPlan !== plan));
         return (
           <PlanPickerCard
             key={plan}

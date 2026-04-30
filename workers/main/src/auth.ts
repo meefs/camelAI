@@ -27,6 +27,7 @@ import {
 } from "../../../src/lib/llm-provider-config";
 import {
   getBillingPlanLimits,
+  getOrgBillingPlan,
   getOrgSeatLimit,
   normalizeBillingPlan,
   normalizeSeatCount,
@@ -2423,10 +2424,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     userId: string,
     role: OrgRole,
     actorId: string,
+    reservedInvitations?: number,
+    pendingBillingSeatAllowance = 0,
   ): Promise<void> {
     const existing = await this.getMember(userId);
     if (!existing) {
-      await this.assertSeatCapacityForNewMember(0);
+      await this.assertSeatCapacityForNewMember(
+        reservedInvitations,
+        pendingBillingSeatAllowance,
+      );
     }
     const now = Date.now();
     this.sql.exec(
@@ -2449,7 +2455,8 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   private async assertSeatCapacityForNewMember(
-    reservedInvitations: number,
+    reservedInvitations?: number,
+    pendingBillingSeatAllowance = 0,
   ): Promise<void> {
     const info = await this.getInfo();
     if (!info) return;
@@ -2460,11 +2467,36 @@ export class OrgDO extends DurableObject<DOEnv> {
     const currentMembers =
       this.sql.exec<{ count: number }>("SELECT COUNT(*) as count FROM members")
         .next().value?.count ?? 0;
-    if (currentMembers + reservedInvitations >= seatLimit) {
+    const activeInvitations =
+      reservedInvitations ??
+      (this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+          Date.now(),
+        )
+        .next().value?.count ??
+        0);
+    if (
+      currentMembers + activeInvitations >=
+      seatLimit + pendingBillingSeatAllowance
+    ) {
       throw new Error(
         `Your current billing plan includes ${seatLimit} seat${seatLimit === 1 ? "" : "s"}.`,
       );
     }
+  }
+
+  private getPendingBillingSeatAllowance(info: Organization): number {
+    if (getOrgBillingPlan(info) !== "team") return 0;
+    if (!info.billing_subscription_id?.trim()) return 0;
+    if (
+      info.billing_status !== "trialing" &&
+      info.billing_status !== "active" &&
+      info.billing_status !== "past_due"
+    ) {
+      return 0;
+    }
+    return 1;
   }
 
   async removeMember(userId: string, actorId: string): Promise<void> {
@@ -2658,7 +2690,11 @@ export class OrgDO extends DurableObject<DOEnv> {
           now,
         )
         .next().value?.count ?? 0;
-    await this.assertSeatCapacityForNewMember(activeInvitations);
+    const info = await this.getInfo();
+    await this.assertSeatCapacityForNewMember(
+      activeInvitations,
+      info ? this.getPendingBillingSeatAllowance(info) : 0,
+    );
 
     const invitation: OrgInvitation = {
       id,
@@ -2681,7 +2717,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       workspaceAccess ? JSON.stringify(workspaceAccess) : null,
     );
 
-    const info = await this.getInfo();
     if (info)
       dispatchAdminEvent(this.ctx, this.env, {
         type: "invitation_upsert",
@@ -2719,8 +2754,26 @@ export class OrgDO extends DurableObject<DOEnv> {
     const invitation = await this.getInvitation(invitationId);
     if (!invitation) return null;
 
+    const now = Date.now();
+    const activeInvitationsExcludingAccepted = Math.max(
+      0,
+      (this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+          now,
+        )
+        .next().value?.count ?? 0) - 1,
+    );
+    const info = await this.getInfo();
+
     // Add user as member with invited role
-    await this.addMember(userId, invitation.role, userId);
+    await this.addMember(
+      userId,
+      invitation.role,
+      userId,
+      activeInvitationsExcludingAccepted,
+      info ? this.getPendingBillingSeatAllowance(info) : 0,
+    );
 
     // Delete the invitation (single use)
     await this.deleteInvitation(invitationId);

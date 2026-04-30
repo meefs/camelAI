@@ -7,6 +7,7 @@ import {
   requireSession,
 } from "@/lib/auth.server";
 import { createSubscriptionCheckoutSession } from "@/lib/billing.server";
+import { BILLING_PLAN_LIMITS, isBillingPlan } from "@/lib/billing-plans";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { PlanPicker } from "@/components/billing/plan-picker";
@@ -29,6 +30,11 @@ interface WelcomeLoaderData {
 }
 
 const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
+const TRIAL_PLANS = new Set(["starter", "pro", "team"]);
+
+function isTrialPlan(plan: string): plan is "starter" | "pro" | "team" {
+  return isBillingPlan(plan) && TRIAL_PLANS.has(plan);
+}
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionContext = await requireSession(request, context);
@@ -108,17 +114,49 @@ export async function action({ request, context }: Route.ActionArgs) {
     "/onboarding?checkout=cancelled",
     request.url,
   ).toString();
-  const checkoutUrl = await createSubscriptionCheckoutSession({
-    env,
-    org: authContext.currentOrg,
-    customerEmail: authContext.user.email,
-    successUrl,
-    cancelUrl,
-    plan: "starter",
-    seatCount: 1,
-  });
 
-  return Response.json({ checkoutUrl });
+  const rawPlan = String(formData.get("plan") || "").trim();
+  if (!isTrialPlan(rawPlan)) {
+    return Response.json(
+      { error: "Choose Starter, Pro, or Team to start a trial." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const seatCount =
+      rawPlan === "team"
+        ? Math.max(
+            BILLING_PLAN_LIMITS.team.minimumSeats,
+            await env.ORG.get(
+              env.ORG.idFromName(authContext.currentOrg.id),
+            ).getMemberCount(),
+          )
+        : 1;
+
+    const checkoutUrl = await createSubscriptionCheckoutSession({
+      env,
+      org: authContext.currentOrg,
+      customerEmail: authContext.user.email,
+      successUrl,
+      cancelUrl,
+      plan: rawPlan,
+      seatCount,
+    });
+
+    return Response.json({ checkoutUrl });
+  } catch (nextError) {
+    console.error("[onboarding] failed to create trial checkout", nextError);
+    return Response.json(
+      {
+        error:
+          nextError instanceof Error
+            ? nextError.message
+            : "Failed to start trial checkout",
+      },
+      { status: 503 },
+    );
+  }
 }
 
 export function meta(_: Route.MetaArgs) {
@@ -190,6 +228,12 @@ export default function OnboardingWelcomeRoute() {
       : undefined;
   const checkoutError =
     checkoutFetcher.state === "idle" ? checkoutFetcher.data?.error : undefined;
+  const pendingCheckoutPlanValue = String(
+    checkoutFetcher.formData?.get("plan") || "",
+  );
+  const pendingCheckoutPlan = isTrialPlan(pendingCheckoutPlanValue)
+    ? pendingCheckoutPlanValue
+    : null;
   const providerError =
     showProviderError && providerFetcher.state === "idle"
       ? providerFetcher.data?.error
@@ -353,30 +397,22 @@ export default function OnboardingWelcomeRoute() {
                 subtitle:
                   "Start a free trial with model credits, or use your own API key.",
               }}
-              pendingPlan={isStartingCheckout ? "starter" : null}
+              pendingPlan={isStartingCheckout ? pendingCheckoutPlan : null}
               onSelectPlan={(cta) => {
-                // FIXME(billing): trial CTAs silently no-op when Stripe isn't configured.
-                // The billing engineer wiring Pro/Team should also handle the unconfigured case
-                // server-side (toast on action error path), not by gating these CTAs in the UI.
                 setError(null);
                 if (cta.kind === "byok") {
                   setShowProviderError(false);
                   setByokDialogOpen(true);
                   return;
                 }
-                if (cta.kind === "trial" && cta.plan === "starter") {
+                if (cta.kind === "trial") {
+                  if (isStartingCheckout) {
+                    return;
+                  }
                   checkoutFetcher.submit(
-                    { intent: "startTrial" },
+                    { intent: "startTrial", plan: cta.plan },
                     { method: "post" },
                   );
-                  return;
-                }
-                if (
-                  cta.kind === "trial" &&
-                  (cta.plan === "pro" || cta.plan === "team")
-                ) {
-                  // FIXME(billing): wire Pro and Team trial Stripe checkout — different engineer is owning the Stripe piping.
-                  // Team checkout will land on a Stripe page that asks for seat count, so onboarding does not need to collect it.
                   return;
                 }
                 if (cta.kind === "contact") {

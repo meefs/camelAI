@@ -139,6 +139,10 @@ export default [
   route("api/history", "routes/api/history.tsx"),
   route("api/dev/sent-emails", "routes/api/dev.sent-emails.ts"),
   route("api/dev/sent-emails/:id", "routes/api/dev.sent-emails.$id.ts"),
+  route("api/admin/oauth/register", "routes/api/admin.oauth.register.ts"),
+  route("api/admin/oauth/authorize", "routes/api/admin.oauth.authorize.tsx"),
+  route("api/admin/oauth/token", "routes/api/admin.oauth.token.ts"),
+  route("api/admin/oauth/revoke", "routes/api/admin.oauth.revoke.ts"),
   route(
     "api/admin/threads/:id/messages",
     "routes/api/admin.threads.$id.messages.ts",

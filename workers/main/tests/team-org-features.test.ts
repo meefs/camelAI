@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
 import {
   createUser,
-  createOrg,
+  createOrg as createBaseOrg,
   createInvitation,
   acceptInvitation,
   createWorkspace,
@@ -35,6 +35,20 @@ import {
 
 const testEmail = () =>
   `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+
+async function createOrg(
+  env: TestEnv,
+  name: string,
+  createdBy: string,
+): ReturnType<typeof createBaseOrg> {
+  const result = await createBaseOrg(env, name, createdBy);
+  const orgStub = env.ORG.get(env.ORG.idFromName(result.org.id));
+  await orgStub.updateBillingState({
+    billing_status: 'enterprise',
+    billing_plan: 'enterprise',
+  });
+  return result;
+}
 
 describe('Default workspace access on invitation accept', () => {
   const testEnv = env as unknown as TestEnv;
@@ -341,7 +355,7 @@ describe('Billing status from OrgDO', () => {
   it('returns actual billing_status from org data (not hardcoded)', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
-    const { org } = await createOrg(testEnv, 'Billing Test Org', ownerId);
+    const { org } = await createBaseOrg(testEnv, 'Billing Test Org', ownerId);
 
     // getOrg should return the billing_status field (defaults to 'inactive')
     const orgInfo = await getOrg(testEnv, org.id);
@@ -352,7 +366,7 @@ describe('Billing status from OrgDO', () => {
   it('applies each Stripe credit checkout session only once', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
-    const { org } = await createOrg(testEnv, 'Credit Checkout Org', ownerId);
+    const { org } = await createBaseOrg(testEnv, 'Credit Checkout Org', ownerId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
     const first = await orgStub.applyCreditCheckout('cs_test_credit_1', 2500, 'cus_test_1');
@@ -366,6 +380,88 @@ describe('Billing status from OrgDO', () => {
     const second = await orgStub.applyCreditCheckout('cs_test_credit_2', 1000, 'cus_test_1');
     expect(second?.applied).toBe(true);
     expect(second?.org.billing_credit_purchase_total_cents).toBe(3500);
+  });
+
+  it('reserves team seats for active invitations and allows accepted invites to consume the reserved seat', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createBaseOrg(testEnv, 'Team Seats Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: 'active',
+      billing_plan: 'team',
+      billing_seat_count: 3,
+      billing_subscription_id: 'sub_team',
+      billing_subscription_status: 'active',
+    });
+
+    const memberOneEmail = testEmail();
+    const { userId: memberOneId } = await createUser(testEnv, memberOneEmail, 'password', 'Member One');
+    const { id: firstInvitationId } = await createInvitation(
+      testEnv,
+      org.id,
+      memberOneEmail,
+      'member',
+      ownerId,
+    );
+    await expect(
+      acceptInvitation(testEnv, org.id, firstInvitationId, memberOneId),
+    ).resolves.toBe(true);
+
+    const memberTwoEmail = testEmail();
+    const { userId: memberTwoId } = await createUser(testEnv, memberTwoEmail, 'password', 'Member Two');
+    const { id: secondInvitationId } = await createInvitation(
+      testEnv,
+      org.id,
+      memberTwoEmail,
+      'member',
+      ownerId,
+    );
+
+    await expect(
+      acceptInvitation(testEnv, org.id, secondInvitationId, memberTwoId),
+    ).resolves.toBe(true);
+
+    const members = await getOrgMembers(testEnv, org.id);
+    expect(members).toHaveLength(3);
+  });
+
+  it('allows one pending team invite while billing sync catches up and then enforces the seat count', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createBaseOrg(testEnv, 'Team Invitation Cap Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: 'active',
+      billing_plan: 'team',
+      billing_seat_count: 3,
+      billing_subscription_id: 'sub_team',
+      billing_subscription_status: 'active',
+    });
+
+    const acceptedEmail = testEmail();
+    const { userId: acceptedUserId } = await createUser(
+      testEnv,
+      acceptedEmail,
+      'password',
+      'Accepted Member',
+    );
+    const { id: acceptedInvitationId } = await createInvitation(
+      testEnv,
+      org.id,
+      acceptedEmail,
+      'member',
+      ownerId,
+    );
+    await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
+    await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
+
+    await expect(
+      createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
+    ).rejects.toThrow('Your current billing plan includes 3 seats.');
+    await expect(
+      acceptInvitation(testEnv, org.id, acceptedInvitationId, acceptedUserId),
+    ).resolves.toBe(true);
   });
 });
 

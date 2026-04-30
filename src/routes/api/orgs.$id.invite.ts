@@ -13,6 +13,9 @@ import {
   resolveAppBaseUrl,
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
+import {
+  bestEffortSyncTeamSubscriptionSeatCount,
+} from '@/lib/billing.server';
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   const orgId = params.id;
@@ -44,13 +47,24 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       const email = parsed.data.email.toLowerCase().trim();
       const role = parsed.data.role;
 
-      const invitation = await createInvitation(
-        authEnv,
-        orgId,
-        email,
-        role,
-        session.user_id
-      );
+      let invitation: Awaited<ReturnType<typeof createInvitation>>;
+      try {
+        invitation = await createInvitation(
+          authEnv,
+          orgId,
+          email,
+          role,
+          session.user_id
+        );
+      } catch (error) {
+        await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+          reason: 'api_invite_create_failed',
+        });
+        throw error;
+      }
+      await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+        reason: 'api_invitation_created',
+      });
       const inviter = await authEnv.USER.get(
         authEnv.USER.idFromName(session.user_id)
       ).getProfile();
@@ -123,6 +137,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       await orgStub.deleteInvitation(invitationId);
+      await bestEffortSyncTeamSubscriptionSeatCount(env, orgId, {
+        reason: 'api_invitation_deleted',
+      });
 
       return Response.json({ success: true });
     } catch (error) {
