@@ -509,6 +509,10 @@ function formatCredits(cents: number): string {
   return creditFormatter.format(Math.max(0, cents) / 100);
 }
 
+function isHostedCreditExhaustedMessage(lowerMessage: string): boolean {
+  return lowerMessage.includes('credits are used up');
+}
+
 function extractChatErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return extractChatErrorMessage(error.message);
@@ -572,23 +576,11 @@ function normalizeChatErrorMessage(error: unknown): string {
     lower.includes('hosted model');
 
   if (isBillingOrCreditError) {
-    const isCreditExhaustedError =
-      lower.includes('credits are used up') ||
-      (lower.includes('hosted model') && lower.includes('credit'));
-    if (isCreditExhaustedError) {
+    if (isHostedCreditExhaustedMessage(lower)) {
       return CREDIT_SEND_BLOCKED_MESSAGE;
     }
 
-    const alreadyActionable =
-      lower.includes('message not sent') ||
-      lower.includes('settings') ||
-      lower.includes('buy credits') ||
-      lower.includes('top up credits') ||
-      lower.includes('api key') ||
-      lower.includes('subscription');
-    return alreadyActionable
-      ? message
-      : CREDIT_SEND_BLOCKED_MESSAGE;
+    return message;
   }
 
   if (lower.includes('429') || lower.includes('rate limit')) {
@@ -602,11 +594,13 @@ export function BillingCreditNotice({
   status,
   onOpenUsage,
   onTopUp,
+  canTopUp = true,
   className,
 }: {
   status: BillingCreditStatus;
   onOpenUsage: () => void;
   onTopUp: () => void;
+  canTopUp?: boolean;
   className?: string;
 }) {
   const usedCreditsCents = Math.max(
@@ -616,6 +610,14 @@ export function BillingCreditNotice({
   const usedPercent = Math.min(100, Math.max(0, status.usedPercent));
 
   if (status.isExhausted) {
+    const description = status.hasByokProvider
+      ? canTopUp
+        ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
+        : "This thread uses a hosted model that isn't covered by your API key. Ask an organization admin to top up credits, or switch to a model your key supports."
+      : canTopUp
+        ? 'Top up to keep going, or use your own API key.'
+        : 'Ask an organization admin to top up credits, or use your own API key.';
+
     return (
       <div className={cn("mx-auto w-full max-w-3xl px-4 pt-3 md:px-6", className)}>
         <div className="rounded-lg bg-foreground px-4 py-3 text-background">
@@ -623,9 +625,7 @@ export function BillingCreditNotice({
             <div className="min-w-0">
               <p className="text-sm font-semibold">You&apos;re out of hosted credits this month</p>
               <p className="mt-0.5 text-xs text-background/80">
-                {status.hasByokProvider
-                  ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
-                  : 'Top up to keep going, or use your own API key.'}
+                {description}
               </p>
             </div>
             <div className="flex shrink-0 gap-2">
@@ -638,14 +638,16 @@ export function BillingCreditNotice({
               >
                 View usage
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                className="bg-background text-foreground hover:bg-background/90"
-                onClick={onTopUp}
-              >
-                Top up
-              </Button>
+              {canTopUp ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="bg-background text-foreground hover:bg-background/90"
+                  onClick={onTopUp}
+                >
+                  Top up
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -676,9 +678,11 @@ export function BillingCreditNotice({
             >
               View usage
             </Button>
-            <Button type="button" size="sm" onClick={onTopUp}>
-              Top up
-            </Button>
+            {canTopUp ? (
+              <Button type="button" size="sm" onClick={onTopUp}>
+                Top up
+              </Button>
+            ) : null}
           </div>
         </div>
         <Progress value={usedPercent} className="mt-2 h-2" />
@@ -4579,6 +4583,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           status={billingCreditStatus}
           onOpenUsage={() => navigate('/settings/organization/usage')}
           onTopUp={() => navigate('/settings/organization/usage?action=topup')}
+          canTopUp={Boolean(isAdmin)}
         />
       ) : null}
       {!readOnly ? (

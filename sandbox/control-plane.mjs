@@ -891,23 +891,11 @@ function normalizeTurnErrorMessage(error) {
     normalized.includes('hosted model');
 
   if (isBillingOrCreditError) {
-    const isCreditExhaustedError =
-      normalized.includes('credits are used up') ||
-      (normalized.includes('hosted model') && normalized.includes('credit'));
-    if (isCreditExhaustedError) {
+    if (normalized.includes('credits are used up')) {
       return creditSendBlockedMessage;
     }
 
-    const alreadyActionable =
-      normalized.includes('message not sent') ||
-      normalized.includes('settings') ||
-      normalized.includes('buy credits') ||
-      normalized.includes('top up credits') ||
-      normalized.includes('api key') ||
-      normalized.includes('subscription');
-    return alreadyActionable
-      ? message
-      : creditSendBlockedMessage;
+    return message;
   }
 
   if (normalized.includes('429') || normalized.includes('rate limit')) {
