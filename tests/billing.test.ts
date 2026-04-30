@@ -21,10 +21,15 @@ import {
   createBillingPortalSession,
   createSubscriptionCheckoutSession,
   getBillableTeamSeatCount,
+  getBillableTeamSeatCountForOrg,
   getBillingAllowanceConfig,
   getConfiguredSubscriptionPriceId,
+  getLegacyStripeMigrationEligibility,
+  hasOrgUsedSubscriptionTrial,
+  isConfiguredEnterpriseOrg,
   isRecurringSubscriptionInvoice,
   isStripeSecretKeyAllowedForMode,
+  migrateLegacyStripeSubscription,
   parseStripePriceIdList,
   syncTeamSubscriptionSeatCount,
 } from "@/lib/billing.server";
@@ -128,12 +133,30 @@ describe("billing helpers", () => {
       ],
     });
 
-    await expect(getBillableTeamSeatCount(env as never, "org_team")).resolves.toBe(
-      4,
-    );
+    await expect(
+      getBillableTeamSeatCount(env as never, "org_team"),
+    ).resolves.toBe(4);
     await expect(
       getBillableTeamSeatCount(env as never, "org_team", 1),
     ).resolves.toBe(5);
+  });
+
+  it("computes billable team checkout seats before the org is on Team", async () => {
+    const { env } = makeBillingOrgEnv({
+      org: { billing_status: "inactive", billing_plan: "free" },
+      memberCount: 2,
+      invitations: [
+        { expires_at: Date.now() + 60_000 },
+        { expires_at: Date.now() - 60_000 },
+      ],
+    });
+
+    await expect(
+      getBillableTeamSeatCount(env as never, "org_team"),
+    ).resolves.toBeNull();
+    await expect(
+      getBillableTeamSeatCountForOrg(env as never, "org_team"),
+    ).resolves.toBe(3);
   });
 
   it("matches the v1 billing design plan matrix", () => {
@@ -206,6 +229,97 @@ describe("billing helpers", () => {
     expect(
       parseStripePriceIdList("price_a, price_b,price_a,, price_c "),
     ).toEqual(["price_a", "price_b", "price_c"]);
+  });
+
+  it("detects legacy migration eligibility from the private CSV allowlist", () => {
+    const csv = [
+      "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_names,legacy_price_ids,total_legacy_quantity,customer_name,customer_user_id",
+      "owner@example.com,cus_123,1,sub_123,si_123,Individual,price_1QIfnqGvliMKf4vHaDTMG2Mu,1,Owner,user_123",
+      "team@example.com,cus_team,1,sub_team,si_team,Team,price_1S6NRLGvliMKf4vHtFDiA07o,5,Team,user_team",
+    ].join("\n");
+    const org = {
+      id: "org_123",
+      name: "Org",
+      slug: "org",
+      billing_status: "inactive",
+      billing_plan: "free",
+      billing_subscription_id: null,
+    } as Organization;
+
+    expect(
+      getLegacyStripeMigrationEligibility({
+        env: { LEGACY_STRIPE_MIGRATION_CUSTOMERS: csv },
+        org,
+        userEmail: "OWNER@example.com",
+      }),
+    ).toEqual({
+      eligible: true,
+      customerId: "cus_123",
+      activeLegacySubscriptionCount: 1,
+      defaultPlan: "pro",
+    });
+    expect(
+      getLegacyStripeMigrationEligibility({
+        env: { LEGACY_STRIPE_MIGRATION_CUSTOMERS: csv },
+        org,
+        userEmail: "team@example.com",
+      })?.defaultPlan,
+    ).toBe("team");
+  });
+
+  it("does not offer legacy migration to orgs already on v2 billing", () => {
+    expect(
+      getLegacyStripeMigrationEligibility({
+        env: {
+          LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+            "email,customer_id\nowner@example.com,cus_123",
+        },
+        org: {
+          id: "org_123",
+          name: "Org",
+          slug: "org",
+          billing_status: "active",
+          billing_plan: "pro",
+          billing_subscription_id: "sub_v2",
+        } as Organization,
+        userEmail: "owner@example.com",
+      }),
+    ).toBeNull();
+  });
+
+  it("requires manual migration for multiple active legacy subscriptions", async () => {
+    await expect(
+      migrateLegacyStripeSubscription({
+        env: {
+          LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+            "email,customer_id,active_legacy_subscription_count\nowner@example.com,cus_123,2",
+        } as never,
+        org: {
+          id: "org_123",
+          name: "Org",
+          slug: "org",
+          billing_status: "inactive",
+          billing_plan: "free",
+          billing_subscription_id: null,
+        } as Organization,
+        userEmail: "owner@example.com",
+        plan: "pro",
+      }),
+    ).rejects.toThrow("multiple active legacy subscriptions");
+  });
+
+  it("treats configured enterprise org slugs as enterprise", () => {
+    expect(
+      isConfiguredEnterpriseOrg(
+        { BILLING_ENTERPRISE_ORG_SLUGS: "seclock,other-org" },
+        {
+          id: "org_123",
+          name: "SecLock",
+          slug: "seclock",
+          billing_status: "inactive",
+        } as Organization,
+      ),
+    ).toBe(true);
   });
 
   it("uses configurable capped credit allowances", () => {
@@ -357,11 +471,193 @@ describe("billing helpers", () => {
     expect(params.get("subscription_data[metadata][billing_plan]")).toBe(
       "team",
     );
+    expect(params.get("subscription_data[trial_period_days]")).toBe("7");
+    expect(params.get("subscription_data[metadata][trial_credit_cents]")).toBe(
+      "1000",
+    );
     expect(
       params.get(
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
     ).toBe("3000");
+  });
+
+  it("blocks Checkout for configured enterprise orgs", async () => {
+    await expect(
+      createSubscriptionCheckoutSession({
+        env: {
+          ORG: {} as never,
+          STRIPE_MODE: "test",
+          STRIPE_SECRET_KEY: "sk_test_123",
+          STRIPE_PRO_PRICE_ID: "price_pro",
+          BILLING_ENTERPRISE_ORG_SLUGS: "seclock",
+        },
+        org: {
+          id: "org_123",
+          name: "SecLock",
+          slug: "seclock",
+          billing_status: "inactive",
+          billing_plan: "free",
+          billing_seat_count: 1,
+          billing_customer_id: "cus_123",
+        } as never,
+        customerEmail: "owner@example.com",
+        successUrl: "https://camelai.dev/success",
+        cancelUrl: "https://camelai.dev/cancel",
+        plan: "pro",
+      }),
+    ).rejects.toThrow("Enterprise orgs are billed outside Stripe Checkout");
+  });
+
+  it("does not scale team trial credits with seat count", async () => {
+    let checkoutRequestBody: string | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init) => {
+        checkoutRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://checkout.stripe.test/session" }),
+        };
+      }),
+    );
+
+    await createSubscriptionCheckoutSession({
+      env: {
+        ORG: {} as never,
+        STRIPE_MODE: "test",
+        STRIPE_SECRET_KEY: "sk_test_123",
+        STRIPE_TEAM_PRICE_ID: "price_team",
+      },
+      org: {
+        id: "org_123",
+        name: "Test Org",
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_123",
+      } as never,
+      customerEmail: "owner@example.com",
+      successUrl: "https://camelai.dev/success",
+      cancelUrl: "https://camelai.dev/cancel",
+      plan: "team",
+      seatCount: 25,
+    });
+
+    const params = new URLSearchParams(checkoutRequestBody ?? "");
+    expect(params.get("line_items[0][quantity]")).toBe("25");
+    expect(params.get("subscription_data[metadata][trial_credit_cents]")).toBe(
+      "1000",
+    );
+    expect(
+      params.get(
+        "subscription_data[metadata][subscription_included_credit_cents]",
+      ),
+    ).toBe("25000");
+  });
+
+  it("omits Stripe trial days after the org has already used a trial", async () => {
+    let checkoutRequestBody: string | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init) => {
+        checkoutRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://checkout.stripe.test/session" }),
+        };
+      }),
+    );
+
+    expect(
+      hasOrgUsedSubscriptionTrial({
+        billing_trial_started_at: 123,
+        billing_trial_ends_at: null,
+        billing_trial_credit_granted_at: null,
+      }),
+    ).toBe(true);
+
+    await createSubscriptionCheckoutSession({
+      env: {
+        ORG: {} as never,
+        STRIPE_MODE: "test",
+        STRIPE_SECRET_KEY: "sk_test_123",
+        STRIPE_PRO_PRICE_ID: "price_pro",
+      },
+      org: {
+        id: "org_123",
+        name: "Test Org",
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_123",
+        billing_trial_started_at: 123,
+        billing_trial_ends_at: 456,
+        billing_trial_credit_granted_at: 789,
+      } as never,
+      customerEmail: "owner@example.com",
+      successUrl: "https://camelai.dev/success",
+      cancelUrl: "https://camelai.dev/cancel",
+      plan: "pro",
+    });
+
+    const params = new URLSearchParams(checkoutRequestBody ?? "");
+    expect(params.has("subscription_data[trial_period_days]")).toBe(false);
+    expect(params.get("subscription_data[metadata][trial_credit_cents]")).toBe(
+      "0",
+    );
+    expect(
+      params.get(
+        "subscription_data[metadata][subscription_included_credit_cents]",
+      ),
+    ).toBe("3000");
+    expect(
+      params.get("subscription_data[metadata][initial_included_credit_cents]"),
+    ).toBe("3000");
+  });
+
+  it("applies included credits for explicit no-trial initial paid subscription invoices", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 1,
+    });
+
+    await expect(
+      applySubscriptionIncludedCreditsFromInvoice(env as never, {
+        id: "in_initial_paid",
+        subscription: {
+          id: "sub_pro",
+          status: "active",
+          metadata: {
+            org_id: "org_team",
+            billing_plan: "pro",
+            seat_count: "1",
+            subscription_included_credit_cents: "3000",
+            initial_included_credit_cents: "3000",
+          },
+        },
+        status: "paid",
+        paid: true,
+        amount_paid: 15000,
+        billing_reason: "subscription_create",
+      }),
+    ).resolves.toMatchObject({
+      billing_credit_grant_total_cents: 3000,
+      billing_last_included_credit_invoice_id: "in_initial_paid",
+    });
+
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_plan: "pro",
+        billing_credit_grant_total_cents: 3000,
+        billing_last_included_credit_invoice_id: "in_initial_paid",
+      }),
+    );
   });
 
   it("updates Stripe subscription item quantity and metadata for team seats", async () => {
@@ -391,7 +687,9 @@ describe("billing helpers", () => {
       }
       return {
         ok: true,
-        json: async () => ({ id: url.includes("subscription_items") ? "si_team" : "sub_team" }),
+        json: async () => ({
+          id: url.includes("subscription_items") ? "si_team" : "sub_team",
+        }),
       };
     });
     vi.stubGlobal("fetch", fetchMock);

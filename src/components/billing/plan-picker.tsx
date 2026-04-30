@@ -27,6 +27,7 @@ export interface PlanPickerProps {
   highlightedPlan?: BillingPlan | null;
   heading?: { title: string; subtitle?: string } | null;
   showFooter?: boolean;
+  trialAvailable?: boolean;
   onSelectPlan: (cta: PlanPickerCta) => void;
   pendingPlan?: BillingPlan | null;
 }
@@ -90,6 +91,7 @@ export function PlanPicker({
   highlightedPlan,
   heading = DEFAULT_HEADING,
   showFooter = true,
+  trialAvailable = true,
   onSelectPlan,
   pendingPlan = null,
 }: PlanPickerProps) {
@@ -123,6 +125,7 @@ export function PlanPicker({
             state={state}
             pending={pendingPlan === plan}
             disabled={disabled}
+            trialAvailable={trialAvailable}
             onSelect={() => onSelectPlan(cta)}
           />
         );
@@ -180,7 +183,9 @@ export function PlanPicker({
             </p>
           </div>
           <p className="text-center text-sm text-muted-foreground">
-            All paid plans include a 7-day free trial. Cancel anytime.
+            {trialAvailable
+              ? "All paid plans include one 7-day free trial per org."
+              : "Your free trial has already been used for this org."}
           </p>
         </div>
       ) : null}

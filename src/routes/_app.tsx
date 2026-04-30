@@ -1,14 +1,19 @@
-import { Outlet, redirect, data, useLoaderData } from 'react-router';
-import type { Route } from './+types/_app';
-import { requireAuthContext } from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import { parseCookies, createSessionCookieHeader } from '@/lib/cookies.server';
-import { LegacyUserBanner } from '@/components/legacy-user-banner';
-import { AppSidebar } from '@/components/sidebar/app-sidebar';
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
-import type { AuthState } from '@/types';
+import { Outlet, redirect, data, useLoaderData } from "react-router";
+import type { Route } from "./+types/_app";
+import { requireAuthContext } from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import { parseCookies, createSessionCookieHeader } from "@/lib/cookies.server";
+import { LegacyUserBanner } from "@/components/legacy-user-banner";
+import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
+import { AppSidebar } from "@/components/sidebar/app-sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import type { AuthState } from "@/types";
+import {
+  getLegacyStripeMigrationEligibility,
+  isConfiguredEnterpriseOrg,
+} from "@/lib/billing.server";
 
-const SIDEBAR_COOKIE_NAME = 'sidebar_state';
+const SIDEBAR_COOKIE_NAME = "sidebar_state";
 
 /**
  * Skip revalidation after createThread — the layout auth state hasn't changed
@@ -23,7 +28,7 @@ export function shouldRevalidate({
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
-  if (formData?.get('intent') === 'createThread') return false;
+  if (formData?.get("intent") === "createThread") return false;
   return defaultShouldRevalidate;
 }
 
@@ -33,36 +38,46 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
 
   if (!authContext.onboarding?.completed_at) {
-    throw redirect('/onboarding');
+    throw redirect("/onboarding");
   }
-  if (authContext.emailVerification.required && !authContext.emailVerification.verified) {
-    throw redirect('/onboarding');
+  if (
+    authContext.emailVerification.required &&
+    !authContext.emailVerification.verified
+  ) {
+    throw redirect("/onboarding");
   }
 
   const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
   const llmProviderConfig = await orgStub.getLlmProviderConfig();
+  const currentOrg = isConfiguredEnterpriseOrg(env, authContext.currentOrg)
+    ? {
+        ...authContext.currentOrg,
+        billing_status: "enterprise" as const,
+        billing_plan: "enterprise" as const,
+      }
+    : authContext.currentOrg;
   const billingAccessReady = Boolean(
     llmProviderConfig ||
-      authContext.currentOrg.billing_status === 'trialing' ||
-      authContext.currentOrg.billing_status === 'active' ||
-      authContext.currentOrg.billing_status === 'enterprise',
+    currentOrg.billing_status === "trialing" ||
+    currentOrg.billing_status === "active" ||
+    currentOrg.billing_status === "enterprise",
   );
   if (!billingAccessReady) {
-    throw redirect('/onboarding');
+    throw redirect("/onboarding");
   }
 
   // Get sidebar state from cookies
   const cookies = parseCookies(request);
   const sidebarValue = cookies[SIDEBAR_COOKIE_NAME];
   let defaultSidebarOpen = true;
-  if (sidebarValue === 'false') {
+  if (sidebarValue === "false") {
     defaultSidebarOpen = false;
   }
 
   // Convert auth context to AuthState for the provider
   const authState: AuthState = {
     user: authContext.user,
-    currentOrg: authContext.currentOrg,
+    currentOrg,
     currentWorkspace: authContext.currentWorkspace,
     orgs: authContext.orgs,
     onboarding: authContext.onboarding,
@@ -74,12 +89,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   };
 
   let showLegacyBanner = false;
+  const legacyMigration = getLegacyStripeMigrationEligibility({
+    env,
+    org: currentOrg,
+    userEmail: authContext.user.email,
+  });
   try {
     const normalizedEmail = authContext.user.email.trim().toLowerCase();
-    const isDevelopment = env.NEXTJS_ENV === 'development';
+    const isDevelopment = env.NEXTJS_ENV === "development";
     const [legacyUserValue, dismissedValue] = await Promise.all([
       isDevelopment || !normalizedEmail
-        ? Promise.resolve(isDevelopment ? '1' : null)
+        ? Promise.resolve(isDevelopment ? "1" : null)
         : env.APP_KV.get(`legacy_user:${normalizedEmail}`),
       env.APP_KV.get(`legacy_banner_dismissed:${authContext.user.id}`),
     ]);
@@ -92,12 +112,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     authState,
     defaultSidebarOpen,
     showLegacyBanner,
+    legacyMigration,
   };
 
   // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
   if (authContext.resignedSessionCookie) {
     return data(responseData, {
-      headers: { 'Set-Cookie': createSessionCookieHeader(authContext.resignedSessionCookie, request) },
+      headers: {
+        "Set-Cookie": createSessionCookieHeader(
+          authContext.resignedSessionCookie,
+          request,
+        ),
+      },
     });
   }
 
@@ -105,7 +131,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function AppLayout() {
-  const { authState, defaultSidebarOpen, showLegacyBanner } = useLoaderData<typeof loader>();
+  const { authState, defaultSidebarOpen, showLegacyBanner, legacyMigration } =
+    useLoaderData<typeof loader>();
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
@@ -113,7 +140,11 @@ export default function AppLayout() {
       <SidebarInset className="h-svh overflow-hidden flex flex-col">
         <Outlet />
       </SidebarInset>
-      <LegacyUserBanner show={showLegacyBanner} userId={authState.user?.id ?? 'legacy-user'} />
+      <LegacyUserBanner
+        show={showLegacyBanner}
+        userId={authState.user?.id ?? "legacy-user"}
+      />
+      <LegacyMigrationDialog migration={legacyMigration} />
     </SidebarProvider>
   );
 }

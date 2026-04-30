@@ -28,6 +28,7 @@ export interface PlanPickerCardProps {
   state: PlanCardState;
   pending: boolean;
   disabled: boolean;
+  trialAvailable: boolean;
   onSelect: (cta: { kind: PlanPickerCtaKind; plan: BillingPlan }) => void;
 }
 
@@ -36,6 +37,7 @@ export function PlanPickerCard({
   state,
   pending,
   disabled,
+  trialAvailable,
   onSelect,
 }: PlanPickerCardProps) {
   const limits = BILLING_PLAN_LIMITS[plan];
@@ -52,7 +54,9 @@ export function PlanPickerCard({
       ? "Downgrade"
       : pending
         ? "Opening Stripe…"
-        : content.ctaLabel;
+        : ctaKind === "trial" && !trialAvailable
+          ? "Choose plan"
+          : content.ctaLabel;
   const ctaVariant: "default" | "outline" | "secondary" = isCurrent
     ? "secondary"
     : isHighlighted

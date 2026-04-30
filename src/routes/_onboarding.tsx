@@ -4,10 +4,15 @@ import { Outlet, redirect, useLoaderData, useNavigate } from "react-router";
 import type { Route } from "./+types/_onboarding";
 import { getAuthEnv, requireSession } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
+import {
+  getLegacyStripeMigrationEligibility,
+  isConfiguredEnterpriseOrg,
+} from "@/lib/billing.server";
 import { hasCompletedOnboarding } from "@/lib/onboarding";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog";
 
 interface OnboardingLoaderData {
   userEmail: string;
@@ -16,6 +21,7 @@ interface OnboardingLoaderData {
   billingAccessReady: boolean;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
+  legacyMigration: LegacyMigrationDialogData | null;
 }
 
 const PENDING_NEW_THREAD_MESSAGE_KEY = "pendingMessage:newThread";
@@ -48,7 +54,9 @@ function getAutoCompleteErrorMessage(error: unknown): string {
 }
 
 export interface OnboardingRouteContext {
-  completeOnboarding: (options?: { accessChoice?: OnboardingAccessChoice }) => Promise<void>;
+  completeOnboarding: (options?: {
+    accessChoice?: OnboardingAccessChoice;
+  }) => Promise<void>;
   skipToChat: () => void;
   teamMode: boolean;
   onboardingComplete: boolean;
@@ -56,6 +64,7 @@ export interface OnboardingRouteContext {
   userEmail: string;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
+  legacyMigration: LegacyMigrationDialogData | null;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -82,16 +91,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const onboardingComplete = hasCompletedOnboarding(onboarding);
   const emailVerificationRequired =
     emailVerificationStatus.required && !emailVerificationStatus.verified;
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(sessionContext.session.org_id));
+  const orgStub = authEnv.ORG.get(
+    authEnv.ORG.idFromName(sessionContext.session.org_id),
+  );
   const [orgInfo, llmProviderConfig] = await Promise.all([
     orgStub.getInfo(),
     orgStub.getLlmProviderConfig(),
   ]);
+  const billingStatus = isConfiguredEnterpriseOrg(env, orgInfo)
+    ? "enterprise"
+    : orgInfo?.billing_status;
   const billingAccessReady = Boolean(
     llmProviderConfig ||
-      orgInfo?.billing_status === "trialing" ||
-      orgInfo?.billing_status === "active" ||
-      orgInfo?.billing_status === "enterprise",
+    billingStatus === "trialing" ||
+    billingStatus === "active" ||
+    billingStatus === "enterprise",
   );
 
   if (
@@ -110,6 +124,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     billingAccessReady,
     emailVerificationRequired,
     emailVerified: emailVerificationStatus.verified,
+    legacyMigration: orgInfo
+      ? getLegacyStripeMigrationEligibility({
+          env,
+          org: orgInfo,
+          userEmail: authBootstrap.profile.email,
+        })
+      : null,
   } satisfies OnboardingLoaderData;
 }
 
@@ -127,94 +148,100 @@ export default function OnboardingRoute() {
     navigate("/chat");
   }, [navigate]);
 
-  const completeOnboarding = useCallback(async (options?: { accessChoice?: OnboardingAccessChoice }) => {
-    if (completeOnboardingRequestRef.current) {
-      return completeOnboardingRequestRef.current;
-    }
+  const completeOnboarding = useCallback(
+    async (options?: { accessChoice?: OnboardingAccessChoice }) => {
+      if (completeOnboardingRequestRef.current) {
+        return completeOnboardingRequestRef.current;
+      }
 
-    const completeRequest = (async () => {
-      const response = await fetch("/api/onboarding/complete", {
-        method: "POST",
-        headers: options?.accessChoice
-          ? { "Content-Type": "application/json" }
-          : undefined,
-        body: options?.accessChoice
-          ? JSON.stringify({ accessChoice: options.accessChoice })
-          : undefined,
-      });
+      const completeRequest = (async () => {
+        const response = await fetch("/api/onboarding/complete", {
+          method: "POST",
+          headers: options?.accessChoice
+            ? { "Content-Type": "application/json" }
+            : undefined,
+          body: options?.accessChoice
+            ? JSON.stringify({ accessChoice: options.accessChoice })
+            : undefined,
+        });
 
-      if (!response.ok) {
-        let errorMessage = "Failed to complete onboarding";
-        try {
-          const data = (await response.json()) as { error?: string };
-          if (data.error) {
-            errorMessage = data.error;
+        if (!response.ok) {
+          let errorMessage = "Failed to complete onboarding";
+          try {
+            const data = (await response.json()) as { error?: string };
+            if (data.error) {
+              errorMessage = data.error;
+            }
+          } catch {
+            // Ignore parse failures and keep default error message.
           }
-        } catch {
-          // Ignore parse failures and keep default error message.
+          const error = new Error(errorMessage) as CompleteOnboardingError;
+          error.status = response.status;
+          throw error;
         }
-        const error = new Error(errorMessage) as CompleteOnboardingError;
-        error.status = response.status;
-        throw error;
+
+        const data = (await response.json()) as {
+          redirectTo?: string;
+          threadId?: string;
+          onboardingSystemMessage?: string | null;
+          salesPrompt?: string | null;
+        };
+
+        const threadId = data.threadId?.trim();
+        const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+        const salesPrompt = data.salesPrompt?.trim();
+
+        let shouldShowBootModal = false;
+
+        if (threadId && onboardingSystemMessage) {
+          shouldShowBootModal = true;
+          try {
+            const pendingMessage = salesPrompt
+              ? `<camelai system message>${onboardingSystemMessage}</camelai system message>\n\n${salesPrompt}`
+              : `<camelai system message>${onboardingSystemMessage}</camelai system message>`;
+            sessionStorage.setItem(
+              PENDING_NEW_THREAD_MESSAGE_KEY,
+              JSON.stringify({
+                message: pendingMessage,
+                threadId,
+              }),
+            );
+          } catch (error) {
+            console.error(
+              "Failed to persist onboarding prefill message:",
+              error,
+            );
+          }
+        }
+
+        if (shouldShowBootModal) {
+          try {
+            sessionStorage.setItem("showBootModal", "1");
+          } catch {
+            // Ignore storage failures.
+          }
+        } else {
+          try {
+            sessionStorage.removeItem("showBootModal");
+            sessionStorage.removeItem(PENDING_NEW_THREAD_MESSAGE_KEY);
+          } catch {
+            // Ignore storage failures.
+          }
+        }
+
+        navigate(data.redirectTo || "/chat");
+      })();
+
+      completeOnboardingRequestRef.current = completeRequest;
+
+      try {
+        await completeRequest;
+      } finally {
+        completeOnboardingRequestRef.current = null;
       }
-
-      const data = (await response.json()) as {
-        redirectTo?: string;
-        threadId?: string;
-        onboardingSystemMessage?: string | null;
-        salesPrompt?: string | null;
-      };
-
-      const threadId = data.threadId?.trim();
-      const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
-      const salesPrompt = data.salesPrompt?.trim();
-
-      let shouldShowBootModal = false;
-
-      if (threadId && onboardingSystemMessage) {
-        shouldShowBootModal = true;
-        try {
-          const pendingMessage = salesPrompt
-            ? `<camelai system message>${onboardingSystemMessage}</camelai system message>\n\n${salesPrompt}`
-            : `<camelai system message>${onboardingSystemMessage}</camelai system message>`;
-          sessionStorage.setItem(
-            PENDING_NEW_THREAD_MESSAGE_KEY,
-            JSON.stringify({
-              message: pendingMessage,
-              threadId,
-            }),
-          );
-        } catch (error) {
-          console.error("Failed to persist onboarding prefill message:", error);
-        }
-      }
-
-      if (shouldShowBootModal) {
-        try {
-          sessionStorage.setItem("showBootModal", "1");
-        } catch {
-          // Ignore storage failures.
-        }
-      } else {
-        try {
-          sessionStorage.removeItem("showBootModal");
-          sessionStorage.removeItem(PENDING_NEW_THREAD_MESSAGE_KEY);
-        } catch {
-          // Ignore storage failures.
-        }
-      }
-
-      navigate(data.redirectTo || "/chat");
-    })();
-
-    completeOnboardingRequestRef.current = completeRequest;
-
-    try {
-      await completeRequest;
-    } finally {
-      completeOnboardingRequestRef.current = null;
-    }
-  }, [navigate]);
+    },
+    [navigate],
+  );
 
   const needsWelcomeScreen =
     loaderData.teamMode ||
@@ -321,6 +348,7 @@ export default function OnboardingRoute() {
     userEmail: loaderData.userEmail,
     emailVerificationRequired: loaderData.emailVerificationRequired,
     emailVerified: loaderData.emailVerified,
+    legacyMigration: loaderData.legacyMigration,
   };
 
   return <Outlet context={contextValue} />;

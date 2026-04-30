@@ -12,6 +12,7 @@ export default [
     route("signup", "routes/_auth.signup.tsx"),
   ]),
   route("banned", "routes/banned.tsx"),
+  route("dev/billing-paywall", "routes/dev.billing-paywall.tsx"),
 
   // Public invitation page (loader fetches optional auth state)
   layout("routes/_invite.tsx", [
@@ -70,8 +71,8 @@ export default [
           "routes/_app.settings.organization.ai-provider.tsx",
         ),
         route(
-          'settings/organization/usage',
-          'routes/_app.settings.organization.usage.tsx'
+          "settings/organization/usage",
+          "routes/_app.settings.organization.usage.tsx",
         ),
       ]),
 
@@ -134,11 +135,16 @@ export default [
   route("api/auth/switch-org", "routes/api/auth.switch-org.ts"),
   route("api/auth/switch-workspace", "routes/api/auth.switch-workspace.ts"),
   route("api/onboarding/complete", "routes/api/onboarding.complete.ts"),
+  route(
+    "api/billing/legacy-migration",
+    "routes/api/billing.legacy-migration.ts",
+  ),
   route("api/legacy-banner/dismiss", "routes/api/legacy-banner.dismiss.ts"),
   route("api/help", "routes/api/help.ts"),
   route("api/history", "routes/api/history.tsx"),
   route("api/dev/sent-emails", "routes/api/dev.sent-emails.ts"),
   route("api/dev/sent-emails/:id", "routes/api/dev.sent-emails.$id.ts"),
+  route("api/dev/verify-email", "routes/api/dev.verify-email.ts"),
   route("api/admin/oauth/register", "routes/api/admin.oauth.register.ts"),
   route("api/admin/oauth/authorize", "routes/api/admin.oauth.authorize.tsx"),
   route("api/admin/oauth/token", "routes/api/admin.oauth.token.ts"),

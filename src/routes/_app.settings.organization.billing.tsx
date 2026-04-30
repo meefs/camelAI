@@ -1,28 +1,33 @@
-import { useState } from "react";
-import {
-  Form,
-  redirect,
-  useFetcher,
-  useLoaderData,
-} from "react-router";
+import { useEffect, useState } from "react";
+import { Form, redirect, useFetcher, useLoaderData } from "react-router";
 import { ArrowLeft, CreditCard } from "lucide-react";
 import type { Route } from "./+types/_app.settings.organization.billing";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   createBillingPortalSession,
+  createSubscriptionCheckoutSession,
+  getBillableTeamSeatCountForOrg,
   getOrgBillingOverview,
   getStripeDefaultPaymentMethodSummary,
   getStripeSubscriptionSummary,
+  hasOrgUsedSubscriptionTrial,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
 } from "@/lib/billing.server";
-import { BILLING_PLAN_LIMITS, normalizeBillingPlan } from "@/lib/billing-plans";
-import type { BillingPlan } from "@/types";
+import {
+  BILLING_PLAN_LIMITS,
+  isBillingPlan,
+  normalizeBillingPlan,
+} from "@/lib/billing-plans";
+import type { BillingPlan, Organization } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
-import { PlanPicker, type PlanPickerCta } from "@/components/billing/plan-picker";
+import {
+  PlanPicker,
+  type PlanPickerCta,
+} from "@/components/billing/plan-picker";
 import {
   InvoicesTable,
   type InvoiceRow,
@@ -32,6 +37,39 @@ import { CancelPlanDialog } from "@/components/billing/cancel-plan-dialog";
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
 });
+
+const EXISTING_STRIPE_SUBSCRIPTION_STATUSES = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+]);
+
+const NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
+  "canceled",
+  "incomplete_expired",
+]);
+
+function hasRecoverableStripeSubscription(
+  org: Pick<
+    Organization,
+    "billing_subscription_id" | "billing_subscription_status" | "billing_status"
+  >,
+): boolean {
+  if (!org.billing_subscription_id?.trim()) return false;
+  const rawStatus = org.billing_subscription_status?.trim();
+  if (
+    rawStatus &&
+    NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES.has(rawStatus)
+  ) {
+    return false;
+  }
+  return (
+    EXISTING_STRIPE_SUBSCRIPTION_STATUSES.has(rawStatus ?? "") ||
+    EXISTING_STRIPE_SUBSCRIPTION_STATUSES.has(org.billing_status)
+  );
+}
 
 function planSubtitle(plan: BillingPlan): string {
   switch (plan) {
@@ -98,33 +136,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     paymentMethod,
     invoices: invoiceRows,
     subscription,
+    trialAvailable: !hasOrgUsedSubscriptionTrial(overview),
   };
 }
 
-// FIXME(billing-stripe): Plan upgrades, downgrades, and cancellations are not
-// wired to Stripe yet. Today this route:
-//   - Disables the per-card CTA in <PlanPicker> when stripeConfigured is false
-//     (see ManagePlanView's `disabledReason`).
-//   - Stubs `changePlan` and `cancelSubscription` to redirect-only (below).
-//
-// To complete the wiring, the next engineer needs to:
-//   1. Implement createSubscriptionCheckoutSession() / upgradeSubscription() /
-//      downgradeSubscription() helpers in src/lib/billing.server.ts and call
-//      them from the `changePlan` case.
-//   2. Implement cancelStripeSubscription() (cancel at period end) and call it
-//      from the `cancelSubscription` case.
-//   3. Once those helpers exist, remove the `disabledReason` argument from
-//      <ManagePlanView>'s <PlanPicker> render so the card CTAs are enabled
-//      whenever stripeConfigured is true (or remove the gate entirely if the
-//      Stripe wiring is mandatory).
-//   4. Verify webhook handling in `/api/billing/stripe/webhook` updates
-//      org.billing_plan / billing_status correctly after each transition.
 export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
+  const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
+  const billingOrg =
+    (await orgStub.getInfo().catch(() => null)) ?? authContext.currentOrg;
 
   const billingUrl = new URL("/settings/organization/billing", request.url);
 
@@ -132,16 +156,92 @@ export async function action({ request, context }: Route.ActionArgs) {
     case "manageBilling": {
       const url = await createBillingPortalSession({
         env,
-        org: authContext.currentOrg,
+        org: billingOrg,
         customerEmail: authContext.user.email,
         returnUrl: billingUrl.toString(),
       });
       throw redirect(url);
     }
     case "changePlan": {
-      // FIXME(billing-stripe): see top-of-file FIXME block. Currently a no-op
-      // redirect — implement the actual Stripe subscription transition here.
-      throw redirect(billingUrl.toString());
+      const rawPlan = String(formData.get("plan") || "").trim();
+      if (!isBillingPlan(rawPlan)) {
+        return { error: "Choose a valid billing plan." };
+      }
+      if (rawPlan === "enterprise") {
+        return { error: "Contact sales to set up Enterprise." };
+      }
+
+      const hasActiveStripeSubscription =
+        hasRecoverableStripeSubscription(billingOrg);
+
+      if (hasActiveStripeSubscription) {
+        try {
+          const url = await createBillingPortalSession({
+            env,
+            org: billingOrg,
+            customerEmail: authContext.user.email,
+            returnUrl: billingUrl.toString(),
+          });
+          return { billingPortalUrl: url };
+        } catch (error) {
+          console.error("[billing] failed to create billing portal session", {
+            orgId: billingOrg.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return {
+            error:
+              "We couldn't open your billing portal. Please try again in a moment.",
+          };
+        }
+      }
+
+      if (rawPlan === "free") {
+        const currentPlan = normalizeBillingPlan(
+          billingOrg.billing_plan,
+          billingOrg.billing_status,
+        );
+        if (currentPlan !== "free" || billingOrg.billing_subscription_id) {
+          await orgStub.updateBillingState({
+            billing_status: "inactive",
+            billing_plan: "free",
+            billing_seat_count: 1,
+            billing_subscription_id: null,
+            billing_subscription_status: null,
+          });
+          return { planChanged: true };
+        }
+        return { error: "You are already on the Free plan." };
+      }
+
+      try {
+        const seatCount =
+          rawPlan === "team"
+            ? await getBillableTeamSeatCountForOrg(
+                env,
+                authContext.currentOrg.id,
+              )
+            : 1;
+        const checkoutUrl = await createSubscriptionCheckoutSession({
+          env,
+          org: billingOrg,
+          customerEmail: authContext.user.email,
+          successUrl: billingUrl.toString(),
+          cancelUrl: billingUrl.toString(),
+          plan: rawPlan,
+          seatCount,
+        });
+        return { checkoutUrl };
+      } catch (error) {
+        console.error("[billing] failed to create subscription checkout", {
+          orgId: billingOrg.id,
+          plan: rawPlan,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return {
+          error:
+            "We couldn't start checkout for that plan. Please try again in a moment.",
+        };
+      }
     }
     case "cancelSubscription": {
       // FIXME(billing-stripe): see top-of-file FIXME block. Currently a no-op
@@ -163,12 +263,13 @@ export default function BillingPage() {
     paymentMethod,
     invoices,
     subscription,
+    trialAvailable,
   } = useLoaderData<typeof loader>();
 
   const [view, setView] = useState<View>("overview");
   const [cancelOpen, setCancelOpen] = useState(false);
 
-  const isEnterprise = org.billing_status === "enterprise";
+  const isEnterprise = overview.billing_status === "enterprise";
   const plan: BillingPlan = normalizeBillingPlan(
     overview.billing_plan,
     overview.billing_status,
@@ -206,6 +307,7 @@ export default function BillingPage() {
       <ManagePlanView
         currentPlan={plan}
         stripeConfigured={stripeConfigured}
+        trialAvailable={trialAvailable}
         onBack={() => setView("overview")}
       />
     );
@@ -253,11 +355,7 @@ export default function BillingPage() {
                   </span>
                 </div>
                 <Form method="post">
-                  <input
-                    type="hidden"
-                    name="intent"
-                    value="manageBilling"
-                  />
+                  <input type="hidden" name="intent" value="manageBilling" />
                   <Button
                     type="submit"
                     variant="outline"
@@ -274,11 +372,7 @@ export default function BillingPage() {
                 </p>
                 {stripeConfigured && hasActiveSubscription ? (
                   <Form method="post">
-                    <input
-                      type="hidden"
-                      name="intent"
-                      value="manageBilling"
-                    />
+                    <input type="hidden" name="intent" value="manageBilling" />
                     <Button type="submit" variant="outline">
                       Add payment method
                     </Button>
@@ -333,13 +427,20 @@ export default function BillingPage() {
 function ManagePlanView({
   currentPlan,
   stripeConfigured,
+  trialAvailable,
   onBack,
 }: {
   currentPlan: BillingPlan;
   stripeConfigured: boolean;
+  trialAvailable: boolean;
   onBack: () => void;
 }) {
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<{
+    checkoutUrl?: string;
+    billingPortalUrl?: string;
+    planChanged?: boolean;
+    error?: string;
+  }>();
   const isSubmitting = fetcher.state !== "idle";
   const pendingPlan = isSubmitting
     ? ((fetcher.formData?.get("plan") as BillingPlan | null) ?? null)
@@ -363,6 +464,18 @@ function ManagePlanView({
     );
   }
 
+  useEffect(() => {
+    if (fetcher.state !== "idle") return;
+    const nextUrl = fetcher.data?.checkoutUrl ?? fetcher.data?.billingPortalUrl;
+    if (nextUrl) {
+      window.location.assign(nextUrl);
+      return;
+    }
+    if (fetcher.data?.planChanged) {
+      window.location.assign("/settings/organization/billing");
+    }
+  }, [fetcher.data, fetcher.state]);
+
   return (
     <div className="space-y-6">
       <button
@@ -378,16 +491,16 @@ function ManagePlanView({
         currentPlan={currentPlan}
         onSelectPlan={handleSelectPlan}
         pendingPlan={pendingPlan}
-        // FIXME(billing-stripe): `disabledReason` disables every paid-plan CTA when
-        // Stripe isn't configured locally. Once Stripe wiring is complete, either:
-        //   - keep this as-is (Stripe is required to upgrade), or
-        //   - drop the `disabledReason` prop entirely and rely on the action handler
-        //     to surface configuration errors via the fetcher's `data.error` channel.
+        trialAvailable={trialAvailable}
         disabledReason={
           stripeConfigured ? null : "Stripe billing is not configured."
         }
       />
+      {fetcher.data &&
+      typeof fetcher.data === "object" &&
+      "error" in fetcher.data ? (
+        <p className="text-sm text-destructive">{String(fetcher.data.error)}</p>
+      ) : null}
     </div>
   );
 }
-

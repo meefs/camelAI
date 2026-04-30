@@ -6,10 +6,15 @@ import {
   requireAuthContext,
   requireSession,
 } from "@/lib/auth.server";
-import { createSubscriptionCheckoutSession } from "@/lib/billing.server";
-import { BILLING_PLAN_LIMITS, isBillingPlan } from "@/lib/billing-plans";
+import {
+  createSubscriptionCheckoutSession,
+  getBillableTeamSeatCountForOrg,
+  hasOrgUsedSubscriptionTrial,
+} from "@/lib/billing.server";
+import { isBillingPlan } from "@/lib/billing-plans";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
+import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
 import { PlanPicker } from "@/components/billing/plan-picker";
 import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -27,6 +32,7 @@ interface WelcomeLoaderData {
   orgId: string;
   orgName: string;
   teamContext: TeamContext;
+  trialAvailable: boolean;
 }
 
 const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
@@ -40,11 +46,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionContext = await requireSession(request, context);
   const url = new URL(request.url);
   const teamMode = url.searchParams.get("team") === "1";
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgId = sessionContext.session.org_id;
+  const workspaceId = sessionContext.session.workspace_id;
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const orgInfo = await orgStub.getInfo().catch(() => null);
+  const trialAvailable = orgInfo ? !hasOrgUsedSubscriptionTrial(orgInfo) : true;
 
   if (!teamMode) {
     return {
-      orgId: sessionContext.session.org_id,
+      orgId,
       orgName: "camelAI",
+      trialAvailable,
       teamContext: {
         memberCount: 0,
         appCount: 0,
@@ -53,18 +67,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     } satisfies WelcomeLoaderData;
   }
 
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const orgId = sessionContext.session.org_id;
-  const workspaceId = sessionContext.session.workspace_id;
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-
   const [orgName, memberCount, workerScripts, integrations] = await Promise.all(
     [
-      orgStub
-        .getInfo()
-        .then((info) => info?.name ?? "your team")
-        .catch(() => "your team"),
+      Promise.resolve(orgInfo?.name ?? "your team"),
       orgStub.getMemberCount(),
       orgStub.listWorkerScripts(),
       workspaceId
@@ -81,6 +86,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return {
     orgId,
     orgName,
+    trialAvailable,
     teamContext: {
       memberCount,
       appCount: workerScripts.length,
@@ -126,12 +132,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   try {
     const seatCount =
       rawPlan === "team"
-        ? Math.max(
-            BILLING_PLAN_LIMITS.team.minimumSeats,
-            await env.ORG.get(
-              env.ORG.idFromName(authContext.currentOrg.id),
-            ).getMemberCount(),
-          )
+        ? await getBillableTeamSeatCountForOrg(env, authContext.currentOrg.id)
         : 1;
 
     const checkoutUrl = await createSubscriptionCheckoutSession({
@@ -206,7 +207,7 @@ export default function OnboardingWelcomeRoute() {
     success?: boolean;
     error?: string;
   }>();
-  const { orgId, orgName, teamContext } = useLoaderData<
+  const { orgId, orgName, teamContext, trialAvailable } = useLoaderData<
     typeof loader
   >() as WelcomeLoaderData;
 
@@ -390,13 +391,22 @@ export default function OnboardingWelcomeRoute() {
 
         {isBillingChoiceRequired ? (
           <div className="space-y-5 text-left">
+            {context.legacyMigration?.eligible ? (
+              <LegacyMigrationDialog
+                migration={context.legacyMigration}
+                variant="embedded"
+              />
+            ) : null}
+
             <PlanPicker
               defaultBillingMode="individual"
               heading={{
                 title: "Choose your plan",
-                subtitle:
-                  "Start a free trial with model credits, or use your own API key.",
+                subtitle: trialAvailable
+                  ? "Start a free trial with model credits, or use your own API key."
+                  : "Choose a plan, or use your own API key.",
               }}
+              trialAvailable={trialAvailable}
               pendingPlan={isStartingCheckout ? pendingCheckoutPlan : null}
               onSelectPlan={(cta) => {
                 setError(null);

@@ -60,6 +60,44 @@ describe("OrgDO billing grant idempotency", () => {
     expect(duplicate?.org.billing_trial_credit_grant_cents).toBe(1200);
   });
 
+  it("does not grant trial credits again after any prior org trial", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Prior Trial Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const priorTrialStart = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const trialStart = Date.now();
+    const trialEnd = trialStart + 7 * 24 * 60 * 60 * 1000;
+
+    await orgStub.updateBillingState({
+      billing_trial_started_at: priorTrialStart,
+      billing_trial_ends_at: priorTrialStart + 7 * 24 * 60 * 60 * 1000,
+    });
+
+    const result = await orgStub.syncSubscriptionBillingState(
+      {
+        billing_status: "trialing",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_test",
+        billing_subscription_id: "sub_test",
+        billing_subscription_status: "trialing",
+        billing_trial_started_at: trialStart,
+        billing_trial_ends_at: trialEnd,
+      },
+      3000,
+    );
+
+    expect(result?.trialCreditGranted).toBe(false);
+    expect(result?.org.billing_credit_grant_total_cents).toBe(0);
+    expect(result?.org.billing_trial_credit_grant_cents).toBe(0);
+    expect(result?.org.billing_trial_credit_granted_at).toBeNull();
+  });
+
   it("applies manual credit grants idempotently by grant id", async () => {
     const { userId: ownerId } = await createUser(
       testEnv,

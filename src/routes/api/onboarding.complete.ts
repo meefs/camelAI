@@ -1,18 +1,19 @@
-import type { Route } from './+types/onboarding.complete';
+import type { Route } from "./+types/onboarding.complete";
 import {
   getAuthEnv,
   requireAuthContext,
   type AuthContext,
-} from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import * as chatDO from '@/lib/chat-do.server';
-import { waitUntil } from '@/lib/wait-until';
-import type { ChatHarness, Organization } from '@/types';
+} from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import { isConfiguredEnterpriseOrg } from "@/lib/billing.server";
+import * as chatDO from "@/lib/chat-do.server";
+import { waitUntil } from "@/lib/wait-until";
+import type { ChatHarness, Organization } from "@/types";
 
-type OnboardingAccessChoice = 'byok' | 'existing' | null;
+type OnboardingAccessChoice = "byok" | "existing" | null;
 
 function getQuestionToolName(provider: ChatHarness): string {
-  return provider === 'codex' ? 'ask_user_question' : 'AskUserQuestion';
+  return provider === "codex" ? "ask_user_question" : "AskUserQuestion";
 }
 
 function getDefaultOnboardingSystemMessage(provider: ChatHarness): string {
@@ -74,9 +75,11 @@ function getOnboardingSystemMessage(
     : getDefaultOnboardingSystemMessage(provider);
 }
 
-async function readAccessChoice(request: Request): Promise<OnboardingAccessChoice> {
-  const contentType = request.headers.get('content-type') ?? '';
-  if (!contentType.includes('application/json')) {
+async function readAccessChoice(
+  request: Request,
+): Promise<OnboardingAccessChoice> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
     return null;
   }
 
@@ -87,21 +90,24 @@ async function readAccessChoice(request: Request): Promise<OnboardingAccessChoic
     return null;
   }
 
-  if (!body || typeof body !== 'object') {
+  if (!body || typeof body !== "object") {
     return null;
   }
   const accessChoice = (body as { accessChoice?: unknown }).accessChoice;
-  return accessChoice === 'byok' ||
-    accessChoice === 'existing'
+  return accessChoice === "byok" || accessChoice === "existing"
     ? accessChoice
     : null;
 }
 
-function hasPaidBillingAccess(org: Organization | null | undefined): boolean {
+function hasPaidBillingAccess(
+  env: Pick<ReturnType<typeof getEnv>, "BILLING_ENTERPRISE_ORG_SLUGS">,
+  org: Organization | null | undefined,
+): boolean {
   return (
-    org?.billing_status === 'trialing' ||
-    org?.billing_status === 'active' ||
-    org?.billing_status === 'enterprise'
+    isConfiguredEnterpriseOrg(env, org) ||
+    org?.billing_status === "trialing" ||
+    org?.billing_status === "active" ||
+    org?.billing_status === "enterprise"
   );
 }
 
@@ -133,8 +139,8 @@ async function hasUserThreadsAcrossOrgs(
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  if (request.method !== 'POST') {
-    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  if (request.method !== "POST") {
+    return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
 
   const authContext = await requireAuthContext(request, context);
@@ -144,17 +150,17 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const workspaceId = authContext.currentWorkspace?.id;
   if (!workspaceId) {
-    return Response.json({ error: 'No workspace selected' }, { status: 400 });
+    return Response.json({ error: "No workspace selected" }, { status: 400 });
   }
 
   const userStub = authEnv.USER.get(
-    authEnv.USER.idFromName(authContext.user.id)
+    authEnv.USER.idFromName(authContext.user.id),
   );
   const verificationStatus = await userStub.getEmailVerificationStatus();
   if (verificationStatus.required && !verificationStatus.verified) {
     return Response.json(
-      { error: 'Please verify your email before completing onboarding.' },
-      { status: 403 }
+      { error: "Please verify your email before completing onboarding." },
+      { status: 403 },
     );
   }
 
@@ -168,20 +174,19 @@ export async function action({ request, context }: Route.ActionArgs) {
     orgStub.getLlmProviderConfig(),
   ]);
 
-  if (accessChoice === 'byok' && !llmProviderConfig) {
+  if (accessChoice === "byok" && !llmProviderConfig) {
     return Response.json(
-      { error: 'Add an API key before continuing with your own provider.' },
+      { error: "Add an API key before continuing with your own provider." },
       { status: 400 },
     );
   }
 
   const hasBillingAccess =
-    hasPaidBillingAccess(orgInfo) ||
-    Boolean(llmProviderConfig);
+    hasPaidBillingAccess(env, orgInfo) || Boolean(llmProviderConfig);
 
   if (!hasBillingAccess) {
     return Response.json(
-      { error: 'Choose a billing option before continuing.' },
+      { error: "Choose a billing option before continuing." },
       { status: 402 },
     );
   }
@@ -193,9 +198,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       authContext,
     );
   } catch (error) {
-    console.error('Failed to verify prior user threads for onboarding:', error);
+    console.error("Failed to verify prior user threads for onboarding:", error);
     return Response.json(
-      { error: 'Failed to verify your onboarding status. Please try again.' },
+      { error: "Failed to verify your onboarding status. Please try again." },
       { status: 503 },
     );
   }
@@ -210,11 +215,11 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     return Response.json({
       success: true,
-      redirectTo: '/chat',
+      redirectTo: "/chat",
     });
   }
 
-  const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
+  const firstName = authContext.user.name?.trim().split(/\s+/)[0] || "Your";
   const onboardingThreadTitle = `${firstName}'s first chat`;
 
   if (!authContext.onboarding?.completed_at) {
@@ -232,12 +237,12 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (salesPrompt) {
     await userStub.clearPendingSalesPrompt();
     waitUntil(
-      chatDO.generateThreadTitle(context, thread.id, workspaceId, salesPrompt)
+      chatDO.generateThreadTitle(context, thread.id, workspaceId, salesPrompt),
     );
   }
   const onboardingSystemMessage = getOnboardingSystemMessage(
     salesPrompt,
-    thread.provider ?? 'claude',
+    thread.provider ?? "claude",
   );
 
   return Response.json({

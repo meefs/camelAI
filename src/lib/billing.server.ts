@@ -32,6 +32,8 @@ export interface StripeBillingEnv {
   STRIPE_CREDIT_PRICE_ID?: string;
   STRIPE_CREDIT_PRICE_IDS?: string;
   STRIPE_BILLING_PORTAL_CONFIGURATION_ID?: string;
+  LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
+  BILLING_ENTERPRISE_ORG_SLUGS?: string;
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
 }
@@ -61,6 +63,23 @@ export interface StripeSubscriptionItem {
   id: string;
   quantity?: number | null;
   price?: string | StripePriceSummary | null;
+}
+
+export interface LegacyStripeMigrationEligibility {
+  eligible: boolean;
+  customerId: string | null;
+  activeLegacySubscriptionCount: number;
+  defaultPlan: Exclude<BillingPlan, "free" | "enterprise">;
+}
+
+interface LegacyStripeMigrationCandidate {
+  email: string;
+  customerId: string;
+  subscriptionIds: string[];
+  subscriptionItemIds: string[];
+  legacyPriceIds: string[];
+  totalLegacyQuantity: number | null;
+  activeLegacySubscriptionCount: number;
 }
 
 export interface StripeInvoiceListEntry {
@@ -128,6 +147,18 @@ const RECURRING_INCLUDED_CREDIT_BILLING_REASONS = new Set([
   "subscription_cycle",
 ]);
 
+const LEGACY_INDIVIDUAL_PRICE_IDS = new Set([
+  "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+  "price_1QIfnqGvliMKf4vHOeGHG69q",
+]);
+
+const LEGACY_TEAM_PRICE_IDS = new Set(["price_1S6NRLGvliMKf4vHtFDiA07o"]);
+
+const LEGACY_MIGRATION_PRICE_IDS = new Set([
+  ...LEGACY_INDIVIDUAL_PRICE_IDS,
+  ...LEGACY_TEAM_PRICE_IDS,
+]);
+
 interface UsageLogSumResponse {
   total_cost_usd: number;
   total_requests: number;
@@ -157,6 +188,7 @@ export interface OrgBillingAccessSnapshot {
   billing_plan: BillingPlan;
   billing_seat_count: number;
   billing_subscription_status: string | null;
+  billing_trial_started_at: number | null;
   billing_trial_ends_at: number | null;
   billing_credit_purchase_total_cents: number;
   billing_credit_grant_total_cents: number;
@@ -237,8 +269,7 @@ function parseCreditCents(
 export function getBillingAllowanceConfig(
   env: Pick<
     StripeBillingEnv,
-    | "BILLING_TRIAL_CREDIT_CENTS"
-    | "BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS"
+    "BILLING_TRIAL_CREDIT_CENTS" | "BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS"
   >,
 ): {
   trialCreditCents: number;
@@ -266,6 +297,16 @@ function getConfiguredCreditCents(
   return parseCreditCents(rawValue, fallbackCents);
 }
 
+function getDefaultTrialCreditCentsForPlan(
+  plan: BillingPlan,
+  seatCount: number,
+): number {
+  if (plan === "team") {
+    return DEFAULT_TRIAL_CREDIT_CENTS;
+  }
+  return getIncludedCreditCentsForPlan(plan, seatCount);
+}
+
 function getTrialCreditCentsForPlan(
   env: Pick<StripeBillingEnv, "BILLING_TRIAL_CREDIT_CENTS">,
   plan: BillingPlan,
@@ -273,7 +314,7 @@ function getTrialCreditCentsForPlan(
 ): number {
   return getConfiguredCreditCents(
     env.BILLING_TRIAL_CREDIT_CENTS,
-    getIncludedCreditCentsForPlan(plan, seatCount),
+    getDefaultTrialCreditCentsForPlan(plan, seatCount),
   );
 }
 
@@ -288,7 +329,9 @@ function getSubscriptionIncludedCreditCentsForPlan(
   );
 }
 
-function getStripePriceId(price: string | StripePriceSummary | null | undefined) {
+function getStripePriceId(
+  price: string | StripePriceSummary | null | undefined,
+) {
   return typeof price === "string" ? price : (price?.id ?? null);
 }
 
@@ -355,6 +398,7 @@ async function stripeRequest<T>(
   init: {
     method?: string;
     body?: URLSearchParams;
+    idempotencyKey?: string;
   } = {},
 ): Promise<T> {
   const secretKey = env.STRIPE_SECRET_KEY?.trim();
@@ -364,6 +408,9 @@ async function stripeRequest<T>(
   assertStripeSecretKeyMatchesMode(secretKey, env.STRIPE_MODE);
 
   const headers = stripeAuthHeaders(secretKey);
+  if (init.idempotencyKey?.trim()) {
+    headers.set("Idempotency-Key", init.idempotencyKey.trim());
+  }
   let body: string | undefined;
   if (init.body) {
     headers.set("Content-Type", "application/x-www-form-urlencoded");
@@ -419,6 +466,249 @@ export function parseStripePriceIdList(
     ids.push(trimmed);
   }
   return ids;
+}
+
+function normalizeEmail(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function splitMultiValue(value: string | null | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(/[|;\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function parsePositiveIntegerOrNull(
+  value: string | null | undefined,
+): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.floor(parsed);
+}
+
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  values.push(current);
+  return values.map((value) => value.trim());
+}
+
+function parseLegacyMigrationCsv(
+  rawValue: string,
+): LegacyStripeMigrationCandidate[] {
+  const lines = rawValue
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return [];
+
+  const headers = parseCsvLine(lines[0]).map((header) =>
+    header.trim().toLowerCase(),
+  );
+  const indexOf = (name: string) => headers.indexOf(name);
+  const emailIndex = indexOf("email");
+  const customerIndex = indexOf("customer_id");
+  if (emailIndex < 0 || customerIndex < 0) return [];
+
+  const subscriptionIdsIndex = indexOf("legacy_subscription_ids");
+  const itemIdsIndex = indexOf("legacy_subscription_item_ids");
+  const priceIdsIndex = indexOf("legacy_price_ids");
+  const quantityIndex = indexOf("total_legacy_quantity");
+  const activeCountIndex = indexOf("active_legacy_subscription_count");
+
+  return lines.slice(1).flatMap((line) => {
+    const values = parseCsvLine(line);
+    const email = normalizeEmail(values[emailIndex]);
+    const customerId = values[customerIndex]?.trim() ?? "";
+    if (!email || !customerId) return [];
+    return [
+      {
+        email,
+        customerId,
+        subscriptionIds: splitMultiValue(values[subscriptionIdsIndex]),
+        subscriptionItemIds: splitMultiValue(values[itemIdsIndex]),
+        legacyPriceIds: splitMultiValue(values[priceIdsIndex]),
+        totalLegacyQuantity: parsePositiveIntegerOrNull(values[quantityIndex]),
+        activeLegacySubscriptionCount:
+          parsePositiveIntegerOrNull(values[activeCountIndex]) ?? 1,
+      },
+    ];
+  });
+}
+
+function parseLegacyMigrationJson(
+  rawValue: string,
+): LegacyStripeMigrationCandidate[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawValue);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed.flatMap((entry) => {
+    if (typeof entry === "string") {
+      const email = normalizeEmail(entry);
+      return email
+        ? [
+            {
+              email,
+              customerId: "",
+              subscriptionIds: [],
+              subscriptionItemIds: [],
+              legacyPriceIds: [],
+              totalLegacyQuantity: null,
+              activeLegacySubscriptionCount: 1,
+            },
+          ]
+        : [];
+    }
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    const email = normalizeEmail(String(record.email ?? ""));
+    const customerId = String(
+      record.customer_id ?? record.customerId ?? "",
+    ).trim();
+    if (!email || !customerId) return [];
+    return [
+      {
+        email,
+        customerId,
+        subscriptionIds: Array.isArray(record.subscription_ids)
+          ? record.subscription_ids.map(String)
+          : splitMultiValue(String(record.legacy_subscription_ids ?? "")),
+        subscriptionItemIds: Array.isArray(record.subscription_item_ids)
+          ? record.subscription_item_ids.map(String)
+          : splitMultiValue(String(record.legacy_subscription_item_ids ?? "")),
+        legacyPriceIds: Array.isArray(record.legacy_price_ids)
+          ? record.legacy_price_ids.map(String)
+          : splitMultiValue(String(record.legacy_price_ids ?? "")),
+        totalLegacyQuantity: parsePositiveIntegerOrNull(
+          String(record.total_legacy_quantity ?? ""),
+        ),
+        activeLegacySubscriptionCount:
+          parsePositiveIntegerOrNull(
+            String(record.active_legacy_subscription_count ?? ""),
+          ) ?? 1,
+      },
+    ];
+  });
+}
+
+function getLegacyMigrationCandidates(
+  env: Pick<StripeBillingEnv, "LEGACY_STRIPE_MIGRATION_CUSTOMERS">,
+): LegacyStripeMigrationCandidate[] {
+  const rawValue = env.LEGACY_STRIPE_MIGRATION_CUSTOMERS?.trim();
+  if (!rawValue) return [];
+  if (rawValue.startsWith("[")) {
+    return parseLegacyMigrationJson(rawValue);
+  }
+  return parseLegacyMigrationCsv(rawValue);
+}
+
+function getLegacyMigrationCandidateForEmail(
+  env: Pick<StripeBillingEnv, "LEGACY_STRIPE_MIGRATION_CUSTOMERS">,
+  email: string | null | undefined,
+): LegacyStripeMigrationCandidate | null {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return null;
+  return (
+    getLegacyMigrationCandidates(env).find(
+      (candidate) => candidate.email === normalizedEmail,
+    ) ?? null
+  );
+}
+
+function getDefaultLegacyMigrationPlan(
+  candidate: LegacyStripeMigrationCandidate | null,
+): Exclude<BillingPlan, "free" | "enterprise"> {
+  if (
+    candidate?.legacyPriceIds.some((priceId) =>
+      LEGACY_TEAM_PRICE_IDS.has(priceId),
+    )
+  ) {
+    return "team";
+  }
+  return "pro";
+}
+
+export function getLegacyStripeMigrationEligibility(args: {
+  env: Pick<StripeBillingEnv, "LEGACY_STRIPE_MIGRATION_CUSTOMERS">;
+  org: Organization;
+  userEmail: string | null | undefined;
+}): LegacyStripeMigrationEligibility | null {
+  if (
+    args.org.billing_status === "enterprise" ||
+    args.org.billing_status === "active" ||
+    args.org.billing_status === "trialing" ||
+    args.org.billing_subscription_id
+  ) {
+    return null;
+  }
+
+  const candidate = getLegacyMigrationCandidateForEmail(
+    args.env,
+    args.userEmail,
+  );
+  if (!candidate?.customerId) return null;
+
+  return {
+    eligible: true,
+    customerId: candidate.customerId,
+    activeLegacySubscriptionCount: candidate.activeLegacySubscriptionCount,
+    defaultPlan: getDefaultLegacyMigrationPlan(candidate),
+  };
+}
+
+function configuredEnterpriseTokens(
+  env: Pick<StripeBillingEnv, "BILLING_ENTERPRISE_ORG_SLUGS">,
+): Set<string> {
+  return new Set(
+    (env.BILLING_ENTERPRISE_ORG_SLUGS ?? "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+export function isConfiguredEnterpriseOrg(
+  env: Pick<StripeBillingEnv, "BILLING_ENTERPRISE_ORG_SLUGS">,
+  org:
+    | Pick<Organization, "id" | "name" | "slug" | "billing_status">
+    | null
+    | undefined,
+): boolean {
+  if (!org) return false;
+  if (org.billing_status === "enterprise") return true;
+  const tokens = configuredEnterpriseTokens(env);
+  if (tokens.size === 0) return false;
+  return [org.id, org.slug, org.name]
+    .map((value) => value?.trim().toLowerCase())
+    .filter(Boolean)
+    .some((value) => tokens.has(value));
 }
 
 export function getConfiguredCreditPriceIds(
@@ -519,7 +809,10 @@ async function fetchStripeSubscription(
   env: StripeBillingEnv,
   subscriptionId: string,
 ): Promise<StripeSubscription> {
-  return stripeRequest<StripeSubscription>(env, `/subscriptions/${subscriptionId}`);
+  return stripeRequest<StripeSubscription>(
+    env,
+    `/subscriptions/${subscriptionId}`,
+  );
 }
 
 function getStripeSubscriptionItemForPlan(
@@ -562,9 +855,18 @@ export async function getBillableTeamSeatCount(
   const org = await orgStub.getInfo();
   if (!org || getOrgBillingPlan(org) !== "team") return null;
 
+  return getBillableTeamSeatCountForOrg(env, orgId, pendingReservedSeatDelta);
+}
+
+export async function getBillableTeamSeatCountForOrg(
+  env: Pick<StripeBillingEnv, "ORG">,
+  orgId: string,
+  pendingReservedSeatDelta = 0,
+): Promise<number> {
+  const orgStub = getOrgStub(env as StripeBillingEnv, orgId);
   const [memberCount, invitations] = await Promise.all([
     orgStub.getMemberCount(),
-    orgStub.getInvitations(),
+    orgStub.getInvitations().catch(() => []),
   ]);
   const now = Date.now();
   const activeInvitationCount = invitations.filter(
@@ -631,10 +933,14 @@ export async function syncTeamSubscriptionSeatCount(
     "metadata[subscription_included_credit_cents]",
     String(includedCreditCents),
   );
-  await stripeRequest<StripeSubscription>(env, `/subscriptions/${subscriptionId}`, {
-    method: "POST",
-    body: subscriptionBody,
-  });
+  await stripeRequest<StripeSubscription>(
+    env,
+    `/subscriptions/${subscriptionId}`,
+    {
+      method: "POST",
+      body: subscriptionBody,
+    },
+  );
 
   await orgStub.updateBillingState({
     billing_seat_count: seatCount,
@@ -689,16 +995,24 @@ export async function getBillingAccessSnapshot(
 ): Promise<OrgBillingAccessSnapshot | null> {
   const org = await getOrgStub(env, orgId).getInfo();
   if (!org) return null;
+  const configuredEnterprise = isConfiguredEnterpriseOrg(env, org);
+  const effectiveStatus = configuredEnterprise
+    ? "enterprise"
+    : normalizeBillingStatus(org.billing_status);
+  const effectivePlan = configuredEnterprise
+    ? "enterprise"
+    : normalizeBillingPlan(org.billing_plan, org.billing_status);
 
   return {
     org_id: org.id,
-    billing_status: normalizeBillingStatus(org.billing_status),
-    billing_plan: normalizeBillingPlan(org.billing_plan, org.billing_status),
+    billing_status: effectiveStatus,
+    billing_plan: effectivePlan,
     billing_seat_count: normalizeSeatCount(
-      normalizeBillingPlan(org.billing_plan, org.billing_status),
+      effectivePlan,
       org.billing_seat_count,
     ),
     billing_subscription_status: org.billing_subscription_status ?? null,
+    billing_trial_started_at: org.billing_trial_started_at ?? null,
     billing_trial_ends_at: org.billing_trial_ends_at ?? null,
     billing_credit_purchase_total_cents:
       org.billing_credit_purchase_total_cents ?? 0,
@@ -706,10 +1020,8 @@ export async function getBillingAccessSnapshot(
     billing_trial_credit_grant_cents: org.billing_trial_credit_grant_cents ?? 0,
     billing_trial_credit_granted_at:
       org.billing_trial_credit_granted_at ?? null,
-    billing_free_credit_grant_cents:
-      org.billing_free_credit_grant_cents ?? 0,
-    billing_free_credit_granted_at:
-      org.billing_free_credit_granted_at ?? null,
+    billing_free_credit_grant_cents: org.billing_free_credit_grant_cents ?? 0,
+    billing_free_credit_granted_at: org.billing_free_credit_granted_at ?? null,
     billing_last_included_credit_invoice_id:
       org.billing_last_included_credit_invoice_id ?? null,
     billing_credit_usage_started_at:
@@ -837,6 +1149,40 @@ export async function ensureStripeCustomerForOrg(
   return customer.id;
 }
 
+export function hasOrgUsedSubscriptionTrial(
+  org: Pick<
+    Organization,
+    | "billing_trial_started_at"
+    | "billing_trial_ends_at"
+    | "billing_trial_credit_granted_at"
+  >,
+): boolean {
+  return Boolean(
+    org.billing_trial_started_at ||
+    org.billing_trial_ends_at ||
+    org.billing_trial_credit_granted_at,
+  );
+}
+
+async function getLatestOrgInfo(
+  env: StripeBillingEnv,
+  org: Organization,
+): Promise<Organization> {
+  try {
+    const orgNamespace = env.ORG;
+    if (
+      typeof orgNamespace?.idFromName !== "function" ||
+      typeof orgNamespace?.get !== "function"
+    ) {
+      return org;
+    }
+    const latest = await getOrgStub(env, org.id).getInfo();
+    return latest ?? org;
+  } catch {
+    return org;
+  }
+}
+
 export async function createSubscriptionCheckoutSession(args: {
   env: StripeBillingEnv;
   org: Organization;
@@ -847,7 +1193,11 @@ export async function createSubscriptionCheckoutSession(args: {
   seatCount?: number | null;
 }): Promise<string> {
   const { env, org, customerEmail, successUrl, cancelUrl } = args;
-  const plan = normalizeBillingPlan(args.plan, org.billing_status);
+  const latestOrg = await getLatestOrgInfo(env, org);
+  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+    throw new Error("Enterprise orgs are billed outside Stripe Checkout");
+  }
+  const plan = normalizeBillingPlan(args.plan, latestOrg.billing_status);
   if (plan === "free" || plan === "enterprise") {
     throw new Error("This plan cannot be started through Stripe Checkout");
   }
@@ -857,13 +1207,20 @@ export async function createSubscriptionCheckoutSession(args: {
   }
   const seatCount = normalizeSeatCount(
     plan,
-    args.seatCount ?? org.billing_seat_count ?? getMinimumSeats(plan),
+    args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
   );
-  const trialCreditCents = getTrialCreditCentsForPlan(env, plan, seatCount);
+  const trialEligible = !hasOrgUsedSubscriptionTrial(latestOrg);
+  const trialCreditCents = trialEligible
+    ? getTrialCreditCentsForPlan(env, plan, seatCount)
+    : 0;
   const subscriptionIncludedCreditCents =
     getSubscriptionIncludedCreditCentsForPlan(env, plan, seatCount);
 
-  const customerId = await ensureStripeCustomerForOrg(env, org, customerEmail);
+  const customerId = await ensureStripeCustomerForOrg(
+    env,
+    latestOrg,
+    customerEmail,
+  );
   const body = new URLSearchParams();
   body.set("mode", "subscription");
   body.set("customer", customerId);
@@ -880,12 +1237,20 @@ export async function createSubscriptionCheckoutSession(args: {
     "metadata[subscription_included_credit_cents]",
     String(subscriptionIncludedCreditCents),
   );
+  if (!trialEligible) {
+    body.set(
+      "metadata[initial_included_credit_cents]",
+      String(subscriptionIncludedCreditCents),
+    );
+  }
   body.set("line_items[0][price]", priceId);
   body.set("line_items[0][quantity]", String(seatCount));
-  body.set(
-    "subscription_data[trial_period_days]",
-    String(STRIPE_SUBSCRIPTION_TRIAL_DAYS),
-  );
+  if (trialEligible) {
+    body.set(
+      "subscription_data[trial_period_days]",
+      String(STRIPE_SUBSCRIPTION_TRIAL_DAYS),
+    );
+  }
   body.set("subscription_data[metadata][org_id]", org.id);
   body.set("subscription_data[metadata][billing_plan]", plan);
   body.set("subscription_data[metadata][seat_count]", String(seatCount));
@@ -897,6 +1262,12 @@ export async function createSubscriptionCheckoutSession(args: {
     "subscription_data[metadata][subscription_included_credit_cents]",
     String(subscriptionIncludedCreditCents),
   );
+  if (!trialEligible) {
+    body.set(
+      "subscription_data[metadata][initial_included_credit_cents]",
+      String(subscriptionIncludedCreditCents),
+    );
+  }
 
   const session = await stripeRequest<StripeCheckoutSession>(
     env,
@@ -993,6 +1364,214 @@ export async function createBillingPortalSession(args: {
   }
 
   return session.url;
+}
+
+interface LegacySubscriptionSelection {
+  subscription: StripeSubscription;
+  item: StripeSubscriptionItem;
+  priceId: string;
+}
+
+function isLegacyMigrationSubscriptionStatus(
+  status: string | null | undefined,
+) {
+  return status === "active" || status === "trialing" || status === "past_due";
+}
+
+function getLegacyMigrationSelection(
+  subscriptions: StripeSubscription[],
+  candidate: LegacyStripeMigrationCandidate,
+): LegacySubscriptionSelection | null {
+  const candidateSubscriptionIds = new Set(candidate.subscriptionIds);
+  const candidateItemIds = new Set(candidate.subscriptionItemIds);
+
+  const selections: LegacySubscriptionSelection[] = [];
+  for (const subscription of subscriptions) {
+    if (!isLegacyMigrationSubscriptionStatus(subscription.status)) continue;
+    if (
+      candidateSubscriptionIds.size > 0 &&
+      !candidateSubscriptionIds.has(subscription.id)
+    ) {
+      continue;
+    }
+    for (const item of subscription.items?.data ?? []) {
+      if (candidateItemIds.size > 0 && !candidateItemIds.has(item.id)) {
+        continue;
+      }
+      const priceId = getStripePriceId(item.price);
+      if (!priceId || !LEGACY_MIGRATION_PRICE_IDS.has(priceId)) continue;
+      selections.push({ subscription, item, priceId });
+    }
+  }
+
+  return (
+    selections.find((selection) =>
+      LEGACY_TEAM_PRICE_IDS.has(selection.priceId),
+    ) ??
+    selections[0] ??
+    null
+  );
+}
+
+async function fetchLegacyCandidateSubscriptions(
+  env: StripeBillingEnv,
+  candidate: LegacyStripeMigrationCandidate,
+): Promise<StripeSubscription[]> {
+  if (candidate.subscriptionIds.length > 0) {
+    return Promise.all(
+      candidate.subscriptionIds.map((subscriptionId) =>
+        fetchStripeSubscription(env, subscriptionId),
+      ),
+    );
+  }
+
+  const params = new URLSearchParams();
+  params.set("customer", candidate.customerId);
+  params.set("status", "all");
+  params.set("limit", "100");
+  const response = await stripeRequest<StripeListResponse<StripeSubscription>>(
+    env,
+    `/subscriptions?${params.toString()}`,
+  );
+  return response.data ?? [];
+}
+
+function getActiveLegacySubscriptionCount(
+  subscriptions: StripeSubscription[],
+): number {
+  const activeLegacySubscriptionIds = new Set<string>();
+  for (const subscription of subscriptions) {
+    if (!isLegacyMigrationSubscriptionStatus(subscription.status)) continue;
+    const hasLegacyItem = (subscription.items?.data ?? []).some((item) => {
+      const priceId = getStripePriceId(item.price);
+      return Boolean(priceId && LEGACY_MIGRATION_PRICE_IDS.has(priceId));
+    });
+    if (hasLegacyItem) {
+      activeLegacySubscriptionIds.add(subscription.id);
+    }
+  }
+  return activeLegacySubscriptionIds.size;
+}
+
+export async function migrateLegacyStripeSubscription(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  userEmail: string | null | undefined;
+  plan: BillingPlan;
+  seatCount?: number | null;
+}): Promise<Organization> {
+  const { env, org, userEmail } = args;
+  const candidate = getLegacyMigrationCandidateForEmail(env, userEmail);
+  if (!candidate?.customerId) {
+    throw new Error(
+      "This account is not eligible for legacy billing migration.",
+    );
+  }
+  if (candidate.activeLegacySubscriptionCount > 1) {
+    throw new Error(
+      "This account has multiple active legacy subscriptions. Contact support to migrate without double billing.",
+    );
+  }
+
+  const plan = normalizeBillingPlan(args.plan, org.billing_status);
+  if (plan === "free" || plan === "enterprise") {
+    throw new Error("Choose Starter, Pro, or Team for migration.");
+  }
+
+  const priceId = getConfiguredSubscriptionPriceId(env, plan);
+  if (!priceId) {
+    throw new Error(`Stripe ${plan} subscription price is not configured`);
+  }
+
+  const orgStub = getOrgStub(env, org.id);
+  const latestOrg = (await orgStub.getInfo()) ?? org;
+  if (
+    latestOrg.billing_status === "enterprise" ||
+    latestOrg.billing_status === "active" ||
+    latestOrg.billing_status === "trialing" ||
+    latestOrg.billing_subscription_id
+  ) {
+    return latestOrg;
+  }
+
+  const subscriptions = await fetchLegacyCandidateSubscriptions(env, candidate);
+  if (getActiveLegacySubscriptionCount(subscriptions) > 1) {
+    throw new Error(
+      "This account has multiple active legacy subscriptions. Contact support to migrate without double billing.",
+    );
+  }
+  const selection = getLegacyMigrationSelection(subscriptions, candidate);
+  if (!selection) {
+    throw new Error(
+      "No active legacy subscription was found for this account.",
+    );
+  }
+
+  const seatCount = normalizeSeatCount(
+    plan,
+    plan === "team"
+      ? (args.seatCount ??
+          selection.item.quantity ??
+          candidate.totalLegacyQuantity ??
+          getMinimumSeats("team"))
+      : 1,
+  );
+  const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
+    env,
+    plan,
+    seatCount,
+  );
+  const idempotencyKeyPrefix = `legacy-migration:${org.id}:${selection.subscription.id}:${plan}`;
+
+  const body = new URLSearchParams();
+  body.set("items[0][id]", selection.item.id);
+  body.set("items[0][price]", priceId);
+  body.set("items[0][quantity]", String(seatCount));
+  body.set("proration_behavior", "always_invoice");
+  body.set("metadata[org_id]", org.id);
+  body.set("metadata[billing_plan]", plan);
+  body.set("metadata[seat_count]", String(seatCount));
+  body.set("metadata[trial_credit_cents]", "0");
+  body.set(
+    "metadata[subscription_included_credit_cents]",
+    String(includedCreditCents),
+  );
+  body.set("metadata[migrated_from_legacy_customer_id]", candidate.customerId);
+  body.set(
+    "metadata[migrated_from_legacy_subscription_id]",
+    selection.subscription.id,
+  );
+  body.set("metadata[migrated_from_legacy_price_id]", selection.priceId);
+  body.set("metadata[migrated_to_v2_at]", String(Date.now()));
+
+  const updatedSubscription = await stripeRequest<StripeSubscription>(
+    env,
+    `/subscriptions/${selection.subscription.id}`,
+    {
+      method: "POST",
+      body,
+      idempotencyKey: `${idempotencyKeyPrefix}:subscription-update`,
+    },
+  );
+
+  const synced =
+    (await syncOrgSubscriptionFromStripe(env, updatedSubscription)) ??
+    (await orgStub.updateBillingState({
+      billing_status: mapStripeSubscriptionStatus(updatedSubscription.status),
+      billing_plan: plan,
+      billing_seat_count: seatCount,
+      billing_customer_id: candidate.customerId,
+      billing_subscription_id: updatedSubscription.id,
+      billing_subscription_status: updatedSubscription.status,
+    }));
+
+  const grantResult = await orgStub.applyManualCreditGrant(
+    includedCreditCents,
+    "Legacy Stripe migration current-period included credits",
+    `${idempotencyKeyPrefix}:current-period-included-credits`,
+  );
+
+  return grantResult?.org ?? synced ?? latestOrg;
 }
 
 async function resolveOrgIdFromStripeCustomer(
@@ -1161,13 +1740,45 @@ export function isRecurringSubscriptionInvoice(
   );
 }
 
+function getInvoiceMetadata(
+  invoice: StripeInvoice,
+): Record<string, string> | null | undefined {
+  return (
+    invoice.subscription_details?.metadata ||
+    (typeof invoice.subscription === "object"
+      ? invoice.subscription?.metadata
+      : null) ||
+    invoice.metadata
+  );
+}
+
+function isPaidInvoice(invoice: StripeInvoice): boolean {
+  return invoice.status === "paid" || invoice.paid === true;
+}
+
+function isInitialIncludedCreditInvoice(invoice: StripeInvoice): boolean {
+  if (invoice.billing_reason !== "subscription_create") return false;
+  if (!isPaidInvoice(invoice)) return false;
+  return (
+    (invoice.amount_paid ?? invoice.amount_due ?? invoice.total ?? 0) > 0 &&
+    (parsePositiveInteger(
+      getInvoiceMetadata(invoice)?.initial_included_credit_cents,
+    ) ?? 0) > 0
+  );
+}
+
 export async function applySubscriptionIncludedCreditsFromInvoice(
   env: StripeBillingEnv,
   invoice: StripeInvoice,
 ): Promise<Organization | null> {
   if (!getInvoiceSubscriptionId(invoice)) return null;
-  if (!isRecurringSubscriptionInvoice(invoice)) return null;
-  if (invoice.status !== "paid" && invoice.paid !== true) return null;
+  if (
+    !isRecurringSubscriptionInvoice(invoice) &&
+    !isInitialIncludedCreditInvoice(invoice)
+  ) {
+    return null;
+  }
+  if (!isPaidInvoice(invoice)) return null;
   if (await hasProcessedIncludedCreditInvoice(env, invoice.id)) return null;
 
   const customerId =
@@ -1198,12 +1809,7 @@ export async function applySubscriptionIncludedCreditsFromInvoice(
     await markIncludedCreditInvoiceProcessed(env, invoice.id);
     return existing;
   }
-  const invoiceMetadata =
-    invoice.subscription_details?.metadata ||
-    (typeof invoice.subscription === "object"
-      ? invoice.subscription?.metadata
-      : null) ||
-    invoice.metadata;
+  const invoiceMetadata = getInvoiceMetadata(invoice);
   const plan = getMetadataBillingPlan(invoiceMetadata, existing.billing_status);
   const seatCount = getMetadataSeatCount(
     invoiceMetadata,
@@ -1352,10 +1958,9 @@ export async function listStripeInvoicesForOrg(
   const params = new URLSearchParams();
   params.set("customer", org.billing_customer_id);
   params.set("limit", String(limit));
-  const response = await stripeRequest<StripeListResponse<StripeInvoiceListEntry>>(
-    env,
-    `/invoices?${params.toString()}`,
-  );
+  const response = await stripeRequest<
+    StripeListResponse<StripeInvoiceListEntry>
+  >(env, `/invoices?${params.toString()}`);
   return response.data ?? [];
 }
 

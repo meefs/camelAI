@@ -31,6 +31,7 @@
 		"test": "vitest",
 		"test:run": "vitest run",
 		"test:all": "bun run test:run && bun run test:workers",
+		"test:stripe": "RUN_STRIPE_INTEGRATION_TESTS=1 vitest run tests/stripe-integration.test.ts",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",
 		"test:e2e": "playwright test",
