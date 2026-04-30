@@ -48,38 +48,74 @@ export function slug(name: string): string {
 
 /**
  * Rank connections for the live @-mention menu. Empty queries are alphabetic;
- * typed queries prefer name prefixes, then integration/display-name prefixes,
- * then substring matches across all three fields.
+ * typed queries prefer natural name prefixes, then slug prefixes, then
+ * integration/display-name prefixes, then substring matches.
  */
 export function rankMentionableConnections<T extends MentionableIntegration>(
   connections: ReadonlyArray<T>,
   query: string,
 ): T[] {
-  const q = query.toLowerCase();
+  const q = normalizeMentionSearch(query);
+  const compactQ = compactMentionSearch(query);
+  const rawQ = query.toLowerCase().trim();
   if (!q) {
     return [...connections].sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
     );
   }
 
-  const tiers: [T[], T[], T[]] = [[], [], []];
+  const tiers: [T[], T[], T[], T[]] = [[], [], [], []];
+  const slugsById = new Map<string, string>();
+  for (const [connectionSlug, integration] of buildSlugMap(connections)) {
+    slugsById.set(integration.id, connectionSlug);
+  }
 
   for (const connection of connections) {
-    const name = connection.name.toLowerCase();
-    const type = connection.integration_type.toLowerCase();
+    const rawName = connection.name.toLowerCase();
+    const normalizedName = normalizeMentionSearch(connection.name);
+    const compactName = compactMentionSearch(connection.name);
+    const connectionSlug = slugsById.get(connection.id) ?? slug(connection.name);
+    const normalizedSlug = normalizeMentionSearch(connectionSlug);
+    const compactSlug = compactMentionSearch(connectionSlug);
+    const type = normalizeMentionSearch(connection.integration_type);
+    const compactType = compactMentionSearch(connection.integration_type);
     const displayName = getIntegrationDefinition(connection.integration_type)
-      ?.displayName.toLowerCase() ?? '';
+      ?.displayName ?? '';
+    const normalizedDisplayName = normalizeMentionSearch(displayName);
+    const compactDisplayName = compactMentionSearch(displayName);
 
-    if (name.startsWith(q)) {
+    if (
+      rawName.startsWith(rawQ) ||
+      normalizedName.startsWith(q) ||
+      compactName.startsWith(compactQ)
+    ) {
       tiers[0].push(connection);
-    } else if (type.startsWith(q) || displayName.startsWith(q)) {
+    } else if (
+      connectionSlug.startsWith(rawQ) ||
+      normalizedSlug.startsWith(q) ||
+      compactSlug.startsWith(compactQ)
+    ) {
       tiers[1].push(connection);
     } else if (
-      name.includes(q) ||
-      type.includes(q) ||
-      displayName.includes(q)
+      type.startsWith(q) ||
+      compactType.startsWith(compactQ) ||
+      normalizedDisplayName.startsWith(q) ||
+      compactDisplayName.startsWith(compactQ)
     ) {
       tiers[2].push(connection);
+    } else if (
+      rawName.includes(rawQ) ||
+      normalizedName.includes(q) ||
+      compactName.includes(compactQ) ||
+      connectionSlug.includes(rawQ) ||
+      normalizedSlug.includes(q) ||
+      compactSlug.includes(compactQ) ||
+      type.includes(q) ||
+      compactType.includes(compactQ) ||
+      normalizedDisplayName.includes(q) ||
+      compactDisplayName.includes(compactQ)
+    ) {
+      tiers[3].push(connection);
     }
   }
 
@@ -89,7 +125,19 @@ export function rankMentionableConnections<T extends MentionableIntegration>(
     );
   }
 
-  return [...tiers[0], ...tiers[1], ...tiers[2]];
+  return [...tiers[0], ...tiers[1], ...tiers[2], ...tiers[3]];
+}
+
+function normalizeMentionSearch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function compactMentionSearch(value: string): string {
+  return normalizeMentionSearch(value).replace(/\s+/g, '');
 }
 
 /**

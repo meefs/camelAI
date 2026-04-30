@@ -89,6 +89,23 @@ describe('rankMentionableConnections', () => {
     expect(rankMentionableConnections(integrations, 'postgresql').map((item) => item.id))
       .toEqual(['inventory', 'sales']);
   });
+
+  it('matches natural spaced names through slug and compact queries', () => {
+    for (const query of ['sales d', 'sales_db', 'sales-db', 'salesd', 'salesdb']) {
+      expect(rankMentionableConnections(integrations, query).map((item) => item.id))
+        .toContain('sales');
+    }
+  });
+
+  it('matches disambiguated slugs for duplicate names', () => {
+    const duplicates = [
+      fix({ id: 'a', name: 'Prod', created_at: 1 }),
+      fix({ id: 'b', name: 'Prod', created_at: 2 }),
+    ];
+
+    expect(rankMentionableConnections(duplicates, 'prod-2').map((item) => item.id))
+      .toEqual(['b']);
+  });
 });
 
 describe('parseMentions', () => {

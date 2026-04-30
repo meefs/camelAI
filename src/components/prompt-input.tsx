@@ -200,6 +200,8 @@ export function PromptInput({
     onChange(nextValue);
 
     const nextCaret = before.length + insertion.length;
+    mentionLockoutValueRef.current = nextValue;
+    mentionLockoutCaretRef.current = nextCaret;
     requestAnimationFrame(() => {
       const ta = effectiveTextareaRef.current;
       if (!ta) return;
@@ -207,8 +209,6 @@ export function PromptInput({
       ta.selectionEnd = nextCaret;
       setCaretPos(nextCaret);
     });
-    mentionLockoutValueRef.current = null;
-    mentionLockoutCaretRef.current = -1;
   }, [mentionTrigger, slugMap, value, onChange, effectiveTextareaRef]);
 
   const updateCaretPos = useCallback(() => {
