@@ -154,28 +154,48 @@ function isOpaqueElement(element: ReactElement): boolean {
 
 function buildAnnotatedIdsBySlug(
   annotatedMentions: ReadonlyArray<AnnotatedMentionRef> | undefined,
-): Map<string, Set<string | null>> {
-  const idsBySlug = new Map<string, Set<string | null>>();
+): Map<string, Array<string | null>> {
+  const idsBySlug = new Map<string, Array<string | null>>();
   for (const mention of annotatedMentions ?? []) {
-    const ids = idsBySlug.get(mention.slug) ?? new Set<string | null>();
-    ids.add(mention.id);
+    const ids = idsBySlug.get(mention.slug) ?? [];
+    ids.push(mention.id);
     idsBySlug.set(mention.slug, ids);
   }
   return idsBySlug;
 }
 
+const NO_ANNOTATION = Symbol('no mention annotation');
+
+class MentionAnnotationCursor {
+  private readonly annotatedIdsBySlug: ReadonlyMap<string, ReadonlyArray<string | null>>;
+  private readonly offsetsBySlug = new Map<string, number>();
+
+  constructor(annotatedIdsBySlug: ReadonlyMap<string, ReadonlyArray<string | null>>) {
+    this.annotatedIdsBySlug = annotatedIdsBySlug;
+  }
+
+  next(slug: string): string | null | typeof NO_ANNOTATION {
+    const ids = this.annotatedIdsBySlug.get(slug);
+    const offset = this.offsetsBySlug.get(slug) ?? 0;
+    if (!ids || offset >= ids.length) {
+      return NO_ANNOTATION;
+    }
+    this.offsetsBySlug.set(slug, offset + 1);
+    return ids[offset]!;
+  }
+}
+
 function resolveMentionChipIntegration(
   match: MentionMatch,
-  annotatedIdsBySlug: ReadonlyMap<string, ReadonlySet<string | null>>,
+  annotatedId: string | null | typeof NO_ANNOTATION,
 ): Integration | null {
   const currentIntegration = match.integration as Integration | null;
-  const annotatedIds = annotatedIdsBySlug.get(match.slug);
 
-  if (!annotatedIds) {
+  if (annotatedId === NO_ANNOTATION) {
     return currentIntegration;
   }
 
-  if (currentIntegration && annotatedIds.has(currentIntegration.id)) {
+  if (currentIntegration && annotatedId === currentIntegration.id) {
     return currentIntegration;
   }
 
@@ -185,20 +205,23 @@ function resolveMentionChipIntegration(
 function replaceMentionsInText(
   text: string,
   slugMap: Map<string, Integration>,
-  annotatedIdsBySlug: ReadonlyMap<string, ReadonlySet<string | null>>,
+  annotationCursor: MentionAnnotationCursor,
   keyPrefix: string,
 ): ReactNode[] {
   // Render chips for live slugs and for slugs whose stripped annotation proves
   // they were once real mentions. Random unknown `@words` stay as plain text.
-  const matches = parseMentions(text, slugMap).filter((m) =>
-    m.integration !== null || annotatedIdsBySlug.has(m.slug),
-  );
+  const matches = parseMentions(text, slugMap);
   if (matches.length === 0) return [text];
 
   const out: ReactNode[] = [];
   let cursor = 0;
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i]!;
+    const annotatedId = annotationCursor.next(m.slug);
+    if (m.integration === null && annotatedId === NO_ANNOTATION) {
+      continue;
+    }
+
     if (m.index > cursor) {
       out.push(text.slice(cursor, m.index));
     }
@@ -206,7 +229,7 @@ function replaceMentionsInText(
       <MentionChip
         key={`${keyPrefix}-m${i}`}
         slug={m.slug}
-        integration={resolveMentionChipIntegration(m, annotatedIdsBySlug)}
+        integration={resolveMentionChipIntegration(m, annotatedId)}
       />,
     );
     cursor = m.index + m.length;
@@ -220,14 +243,14 @@ function replaceMentionsInText(
 function withMentionChips(
   children: ReactNode,
   slugMap: Map<string, Integration>,
-  annotatedIdsBySlug: ReadonlyMap<string, ReadonlySet<string | null>>,
+  annotationCursor: MentionAnnotationCursor,
   keyPrefix = 'mc',
 ): ReactNode {
   if (typeof children === 'string') {
     const parts = replaceMentionsInText(
       children,
       slugMap,
-      annotatedIdsBySlug,
+      annotationCursor,
       keyPrefix,
     );
     if (parts.length === 1 && parts[0] === children) return children;
@@ -237,7 +260,7 @@ function withMentionChips(
   }
   if (Array.isArray(children)) {
     return Children.map(children, (child, i) =>
-      withMentionChips(child, slugMap, annotatedIdsBySlug, `${keyPrefix}-${i}`),
+      withMentionChips(child, slugMap, annotationCursor, `${keyPrefix}-${i}`),
     );
   }
   if (isValidElement(children)) {
@@ -247,7 +270,7 @@ function withMentionChips(
       return cloneElement(
         c,
         undefined,
-        withMentionChips(c.props.children, slugMap, annotatedIdsBySlug, keyPrefix),
+        withMentionChips(c.props.children, slugMap, annotationCursor, keyPrefix),
       );
     }
     return children;
@@ -264,9 +287,10 @@ const createComponents = (
   const annotatedIdsBySlug = buildAnnotatedIdsBySlug(annotatedMentions);
   const canRenderMentions = Boolean(mentionSlugMap || annotatedIdsBySlug.size);
   const slugMap = mentionSlugMap ?? new Map<string, Integration>();
+  const annotationCursor = new MentionAnnotationCursor(annotatedIdsBySlug);
   const wrap = (children: ReactNode, keyPrefix: string) =>
     canRenderMentions
-      ? withMentionChips(children, slugMap, annotatedIdsBySlug, keyPrefix)
+      ? withMentionChips(children, slugMap, annotationCursor, keyPrefix)
       : children;
   return ({
   // Paragraphs
@@ -407,10 +431,7 @@ function MarkdownRendererBase({
     return normalizedContent;
   }, [content, isStreaming]);
 
-  const components = useMemo(
-    () => createComponents(variant, mentionSlugMap, annotatedMentions),
-    [variant, mentionSlugMap, annotatedMentions],
-  );
+  const components = createComponents(variant, mentionSlugMap, annotatedMentions);
 
   return (
     <div

@@ -14,6 +14,7 @@ import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import {
   buildSlugMap,
+  filterMentionableConnections,
   slugForIntegration,
 } from '@/lib/connection-mentions';
 import { AnimatedPlaceholder } from './animated-placeholder';
@@ -343,11 +344,15 @@ export function WelcomeScreen({
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
   const [helpOpen, setHelpOpen] = useState(false);
-  const hasConnections = connections.length > 0;
+  const mentionableConnections = useMemo(
+    () => filterMentionableConnections(connections),
+    [connections],
+  );
+  const hasConnections = mentionableConnections.length > 0;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const connectionSlugMap = useMemo(
-    () => buildSlugMap(connections) as Map<string, Integration>,
-    [connections],
+    () => buildSlugMap(mentionableConnections) as Map<string, Integration>,
+    [mentionableConnections],
   );
 
   const focusInput = useCallback(() => {
@@ -432,7 +437,7 @@ export function WelcomeScreen({
             onModelChange={onModelChange}
             modelOptions={modelOptions}
             modelDisabled={isCreatingThread}
-            mentionableConnections={connections}
+            mentionableConnections={mentionableConnections}
             onMentionAddNewClick={() => navigate('/connections')}
           />
         )}
@@ -462,7 +467,7 @@ export function WelcomeScreen({
         />
 
         {hasConnections ? (
-          <ConnectedTools connections={connections} onSelect={handleConnectionSelect} />
+          <ConnectedTools connections={mentionableConnections} onSelect={handleConnectionSelect} />
         ) : (
           <IntegrationButtons
             integrations={FEATURED_CONNECTIONS}

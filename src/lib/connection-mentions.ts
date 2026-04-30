@@ -46,6 +46,12 @@ export function slug(name: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
+export function filterMentionableConnections<T extends MentionableIntegration>(
+  connections: ReadonlyArray<T>,
+): T[] {
+  return connections.filter((connection) => slug(connection.name).length > 0);
+}
+
 /**
  * Rank connections for the live @-mention menu. Empty queries are alphabetic;
  * typed queries prefer natural name prefixes, then slug prefixes, then
@@ -55,22 +61,23 @@ export function rankMentionableConnections<T extends MentionableIntegration>(
   connections: ReadonlyArray<T>,
   query: string,
 ): T[] {
+  const mentionableConnections = filterMentionableConnections(connections);
   const q = normalizeMentionSearch(query);
   const compactQ = compactMentionSearch(query);
   const rawQ = query.toLowerCase().trim();
   if (!q) {
-    return [...connections].sort((a, b) =>
+    return [...mentionableConnections].sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
     );
   }
 
   const tiers: [T[], T[], T[], T[]] = [[], [], [], []];
   const slugsById = new Map<string, string>();
-  for (const [connectionSlug, integration] of buildSlugMap(connections)) {
+  for (const [connectionSlug, integration] of buildSlugMap(mentionableConnections)) {
     slugsById.set(integration.id, connectionSlug);
   }
 
-  for (const connection of connections) {
+  for (const connection of mentionableConnections) {
     const rawName = connection.name.toLowerCase();
     const normalizedName = normalizeMentionSearch(connection.name);
     const compactName = compactMentionSearch(connection.name);

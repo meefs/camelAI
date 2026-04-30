@@ -22,6 +22,7 @@ import { ComposerMentionDecorations } from '@/components/connection-mention-menu
 import { useMentionTrigger } from '@/components/connection-mention-menu/use-mention-trigger';
 import {
   buildSlugMap,
+  filterMentionableConnections,
   rankMentionableConnections,
   slugForIntegration,
 } from '@/lib/connection-mentions';
@@ -145,7 +146,11 @@ export function PromptInput({
   const textareaWrapperRef = useRef<HTMLDivElement | null>(null);
   const [textareaScroll, setTextareaScroll] = useState({ top: 0, left: 0 });
 
-  const mentionsEnabled = (mentionableConnections?.length ?? 0) > 0
+  const mentionableConnectionList = useMemo(
+    () => filterMentionableConnections(mentionableConnections ?? []),
+    [mentionableConnections],
+  );
+  const mentionsEnabled = mentionableConnectionList.length > 0
     || onMentionAddNewClick !== undefined;
   const mentionTrigger = useMentionTrigger({
     value,
@@ -155,16 +160,16 @@ export function PromptInput({
   const mentionMenuOpen = mentionTrigger.open;
 
   const slugMap = useMemo(
-    () => buildSlugMap(mentionableConnections ?? []) as Map<string, Integration>,
-    [mentionableConnections],
+    () => buildSlugMap(mentionableConnectionList) as Map<string, Integration>,
+    [mentionableConnectionList],
   );
 
   const filteredMentionConnections = useMemo(() => {
     return rankMentionableConnections(
-      mentionableConnections ?? [],
+      mentionableConnectionList,
       mentionTrigger.query,
     );
-  }, [mentionableConnections, mentionTrigger.query]);
+  }, [mentionableConnectionList, mentionTrigger.query]);
 
   // Escape (or outside-click) closes the menu but the trigger conditions
   // still hold, so we lock out re-opening until the user types or moves the
@@ -182,7 +187,7 @@ export function PromptInput({
   }, [effectiveTextareaRef]);
   const isLockedOut = mentionLockoutValueRef.current === value
     && mentionLockoutCaretRef.current === caretPos;
-  const hasAnyConnections = (mentionableConnections?.length ?? 0) > 0;
+  const hasAnyConnections = mentionableConnectionList.length > 0;
   const hasMatches = filteredMentionConnections.length > 0;
   // When the user has connections but no match for their current query, hide
   // the menu — Slack-style.
@@ -304,7 +309,7 @@ export function PromptInput({
       }
     }
 
-    if (effectiveMenuOpen && (mentionableConnections?.length ?? 0) === 0) {
+    if (effectiveMenuOpen && mentionableConnectionList.length === 0) {
       if (e.key === 'Enter') {
         e.preventDefault();
         onMentionAddNewClick?.();
@@ -455,7 +460,7 @@ export function PromptInput({
           <ConnectionMentionMenu
             open={effectiveMenuOpen}
             query={mentionTrigger.query}
-            connections={mentionableConnections ?? []}
+            connections={mentionableConnectionList}
             anchorRef={anchorRef}
             activeId={activeMentionId}
             onActiveIdChange={setActiveMentionId}

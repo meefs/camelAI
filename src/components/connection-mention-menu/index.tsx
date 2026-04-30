@@ -15,7 +15,10 @@ import {
 } from '@/components/ui/popover';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { getIntegrationDefinition } from '@/lib/integration-registry';
-import { rankMentionableConnections } from '@/lib/connection-mentions';
+import {
+  filterMentionableConnections,
+  rankMentionableConnections,
+} from '@/lib/connection-mentions';
 import type { Integration } from '@/types';
 
 export interface ConnectionMentionMenuProps {
@@ -45,12 +48,16 @@ export function ConnectionMentionMenu({
   onAddNewClick,
 }: ConnectionMentionMenuProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
+  const mentionableConnections = useMemo(
+    () => filterMentionableConnections(connections),
+    [connections],
+  );
   const filtered = useMemo(
-    () => rankMentionableConnections(connections, query),
-    [connections, query],
+    () => rankMentionableConnections(mentionableConnections, query),
+    [mentionableConnections, query],
   );
 
-  const showAddRow = connections.length === 0;
+  const showAddRow = mentionableConnections.length === 0;
 
   // Keep activeId in sync with the visible list — pick the first match when
   // the current selection drops out, or when the list opens.

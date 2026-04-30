@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSlugMap,
   expandMentions,
+  filterMentionableConnections,
   parseMentions,
   rankMentionableConnections,
   slug,
@@ -54,6 +55,20 @@ describe('buildSlugMap', () => {
   it('skips integrations whose name slugs to empty', () => {
     const map = buildSlugMap([fix({ id: '1', name: '!!!' })]);
     expect(map.size).toBe(0);
+  });
+});
+
+describe('filterMentionableConnections', () => {
+  it('removes connections whose names cannot produce mention slugs', () => {
+    const integrations = [
+      fix({ id: 'valid', name: 'Sales DB' }),
+      fix({ id: 'invalid', name: '!!!' }),
+    ];
+
+    expect(filterMentionableConnections(integrations).map((item) => item.id))
+      .toEqual(['valid']);
+    expect(rankMentionableConnections(integrations, '').map((item) => item.id))
+      .toEqual(['valid']);
   });
 });
 

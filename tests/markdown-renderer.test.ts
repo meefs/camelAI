@@ -3,6 +3,20 @@ import { render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 
 import { MarkdownRenderer, normalizeCodexCitationMarkers } from '@/components/markdown-renderer';
+import type { Integration } from '@/types';
+
+function integration(fields: Pick<Integration, 'id' | 'integration_type' | 'name'>): Integration {
+  return {
+    category: 'databases',
+    auth_method: 'api_key',
+    config: {},
+    created_by: 'user',
+    created_at: 0,
+    updated_at: 0,
+    has_credentials: true,
+    ...fields,
+  };
+}
 
 describe('normalizeCodexCitationMarkers', () => {
   it('leaves normal markdown unchanged', () => {
@@ -38,6 +52,26 @@ describe('MarkdownRenderer mention chips', () => {
     );
 
     expect(screen.getByText('@camel')).toHaveClass('bg-muted/60');
+  });
+
+  it('scopes annotation ids to each mention occurrence', () => {
+    render(
+      createElement(MarkdownRenderer, {
+        content: '@camel then @camel',
+        mentionSlugMap: new Map([
+          ['camel', integration({ id: 'current', integration_type: 'postgres', name: 'Camel' })],
+        ]),
+        annotatedMentions: [
+          { slug: 'camel', id: 'old' },
+          { slug: 'camel', id: 'current' },
+        ],
+      }),
+    );
+
+    const chips = screen.getAllByText('@camel');
+    expect(chips[0]).toHaveClass('bg-muted/60');
+    expect(chips[1]).toHaveClass('bg-muted');
+    expect(chips[1]).not.toHaveClass('bg-muted/60');
   });
 
   it('leaves unmatched non-annotated @words as plain text', () => {
