@@ -22,6 +22,7 @@ import type { SlackEventQueueMessage } from './slack-types.js';
 // Route handlers
 import { handleCfProxy } from './routes/cf-proxy.js';
 import { handleMcp } from './routes/mcp.js';
+import { handleAdminMcp } from './routes/admin-mcp.js';
 import { handleThreadPreview } from './routes/threads.js';
 import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
 import {
@@ -127,6 +128,15 @@ function loadScreenshotQueueModule() {
 // =============================================================================
 
 const routes: Route[] = [
+  // OAuth-protected remote MCP server for the admin API.
+  // This must run before the ADMIN_API_KEY admin REST wrapper because it also
+  // uses Bearer tokens.
+  {
+    method: 'ALL',
+    path: /^\/api\/admin\/mcp$/,
+    handler: handleAdminMcp,
+  },
+
   // Admin REST API (ADMIN_API_KEY auth; returns null to fall through to React Router for session-auth routes)
   {
     method: 'ALL',

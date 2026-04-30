@@ -109,3 +109,12 @@ export async function handleAdminApi({ req, env }: RouteContext): Promise<Respon
   // Auth passed → delegate to Hono
   return app.fetch(req, env);
 }
+
+/**
+ * Delegate to the admin API after an upstream caller has already performed
+ * equivalent authorization. This is used by the OAuth-protected admin MCP
+ * bridge so admin API handlers remain the single implementation.
+ */
+export function fetchAdminApiWithValidatedAuth(req: Request, env: Env): Promise<Response> {
+  return app.fetch(req, env);
+}
