@@ -1,5 +1,11 @@
-import { useState } from "react";
-import { Link, redirect, useFetcher, useLoaderData } from "react-router";
+import { useEffect, useState } from "react";
+import {
+  Link,
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useSearchParams,
+} from "react-router";
 import type { Route } from "./+types/_app.settings.organization.usage";
 import {
   requireAuthContext,
@@ -206,7 +212,14 @@ export default function OrganizationUsagePage() {
 
   const topUpFetcher = useFetcher();
   const [topUpOpen, setTopUpOpen] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
   const topUpSubmitting = topUpFetcher.state !== "idle";
+
+  useEffect(() => {
+    if (searchParams.get("action") !== "topup") return;
+    setTopUpOpen(true);
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   if (!overview) {
     return (
@@ -328,7 +341,7 @@ export default function OrganizationUsagePage() {
                 Top-up is not configured yet.
               </p>
             ) : null}
-            {topUpPacks.length > 1 ? (
+            {topUpPacks.length > 0 ? (
               <TopUpDialog
                 open={topUpOpen}
                 onOpenChange={setTopUpOpen}
@@ -384,4 +397,3 @@ export default function OrganizationUsagePage() {
     </div>
   );
 }
-

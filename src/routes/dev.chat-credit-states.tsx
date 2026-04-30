@@ -6,12 +6,13 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
-type PreviewState = 'low' | 'low-byok' | 'exhausted' | 'send-error';
+type PreviewState = 'low' | 'low-byok' | 'exhausted' | 'exhausted-byok' | 'send-error';
 
 const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
   { value: 'low', label: 'Low credits' },
   { value: 'low-byok', label: 'Low + BYOK' },
   { value: 'exhausted', label: 'No credits' },
+  { value: 'exhausted-byok', label: 'No credits + BYOK' },
   { value: 'send-error', label: 'Send failure' },
 ];
 
@@ -89,32 +90,29 @@ export default function DevChatCreditStatesRoute() {
           <p className="text-xs text-muted-foreground">Chat preview with billing state injected</p>
         </div>
 
-        {creditStatus ? (
-          <BillingCreditNotice
-            status={creditStatus}
-            onOpenBilling={() => undefined}
-            onOpenProviderSettings={() => undefined}
-          />
-        ) : null}
-
         <div className="mx-auto flex min-h-[28rem] w-full max-w-3xl flex-col px-4 py-6 md:px-6">
           <div className="mb-5 self-end rounded-3xl bg-primary px-4 py-3 text-sm text-primary-foreground">
             Can you update the landing page copy?
           </div>
-          {error ? <ChatErrorNotice error={error} /> : null}
-          {!error ? (
-            <div className="mt-auto text-center text-sm text-muted-foreground">
-              Send a hosted-model message in this state to see the runtime result.
-            </div>
-          ) : null}
         </div>
 
         <div className="border-t p-4">
-          <div className="mx-auto flex max-w-3xl items-center justify-between rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-            <span>Message camelAI</span>
-            <Button size="sm" disabled>
-              Send
-            </Button>
+          <div className="mx-auto w-full max-w-3xl space-y-2">
+            {error ? <ChatErrorNotice error={error} /> : null}
+            {creditStatus ? (
+              <BillingCreditNotice
+                status={creditStatus}
+                onOpenUsage={() => undefined}
+                onTopUp={() => undefined}
+                className="px-0 pt-0 md:px-0"
+              />
+            ) : null}
+            <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              <span>Message camelAI</span>
+              <Button size="sm" disabled>
+                Send
+              </Button>
+            </div>
           </div>
         </div>
       </section>

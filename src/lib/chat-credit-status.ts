@@ -75,7 +75,7 @@ export function getDevChatInitialError(searchParams: URLSearchParams): string | 
   if (!import.meta.env.DEV) return null;
   const value = searchParams.get('devChatError');
   if (value === 'out-of-credits') {
-    return 'Hosted model credits are used up. You have used 10.00 credits of 10.00 credits. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.';
+    return 'Message not sent — top up credits or add an API key to continue.';
   }
   if (value === 'billing-required') {
     return 'Hosted models require billing access. Start a subscription or add your own API key in Settings -> AI Provider. Your workspace is saved.';

@@ -1502,12 +1502,12 @@ func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billin
 		if billingSource == billingSourceBYOK {
 			return decision
 		}
-		return s.checkCreditBalance(threadContext, snapshot, decision, "Trial hosted-model credits are used up.")
+		return s.checkCreditBalance(threadContext, snapshot, decision)
 	case "active":
 		if billingSource == billingSourceBYOK {
 			return decision
 		}
-		return s.checkCreditBalance(threadContext, snapshot, decision, "Hosted model credits are used up.")
+		return s.checkCreditBalance(threadContext, snapshot, decision)
 	case "past_due":
 		decision.Denied = true
 		decision.StatusCode = http.StatusPaymentRequired
@@ -1529,14 +1529,7 @@ func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billin
 	}
 }
 
-func formatCreditCents(cents int64) string {
-	if cents < 0 {
-		cents = 0
-	}
-	return fmt.Sprintf("%.2f credits", float64(cents)/100)
-}
-
-func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot *BillingAccessSnapshot, decision BillingAccessDecision, deniedMessage string) BillingAccessDecision {
+func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot *BillingAccessSnapshot, decision BillingAccessDecision) BillingAccessDecision {
 	sum, err := s.usage.GetCreditChargeableUsageLogSum(
 		threadContext.OrgID,
 		0,
@@ -1556,11 +1549,7 @@ func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot 
 	}
 	decision.Denied = true
 	decision.StatusCode = http.StatusPaymentRequired
-	decision.Message = fmt.Sprintf("%s You have used %s of %s. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.",
-		deniedMessage,
-		formatCreditCents(spentCents),
-		formatCreditCents(totalCreditsCents),
-	)
+	decision.Message = "Message not sent — top up credits or add an API key to continue."
 	return decision
 }
 
