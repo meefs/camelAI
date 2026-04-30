@@ -1,4 +1,5 @@
-import { Outlet, redirect, data, useLoaderData } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { Outlet, redirect, data, useLoaderData, useNavigate } from "react-router";
 import type { Route } from "./+types/_app";
 import { requireAuthContext } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -133,6 +134,32 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export default function AppLayout() {
   const { authState, defaultSidebarOpen, showLegacyBanner, legacyMigration } =
     useLoaderData<typeof loader>();
+  const navigate = useNavigate();
+  const legacyMigrationKey = legacyMigration?.eligible
+    ? [
+        authState.currentOrg?.id ?? "unknown-org",
+        legacyMigration.customerId,
+        legacyMigration.activeLegacySubscriptionCount,
+        legacyMigration.defaultPlan,
+      ].join(":")
+    : null;
+  const [legacyDialogOpen, setLegacyDialogOpen] = useState(
+    () => legacyMigrationKey !== null,
+  );
+  const legacyDialogKeyRef = useRef<string | null>(legacyMigrationKey);
+
+  useEffect(() => {
+    if (!legacyMigrationKey) {
+      legacyDialogKeyRef.current = null;
+      setLegacyDialogOpen(false);
+      return;
+    }
+
+    if (legacyDialogKeyRef.current !== legacyMigrationKey) {
+      legacyDialogKeyRef.current = legacyMigrationKey;
+      setLegacyDialogOpen(true);
+    }
+  }, [legacyMigrationKey]);
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
@@ -144,7 +171,18 @@ export default function AppLayout() {
         show={showLegacyBanner}
         userId={authState.user?.id ?? "legacy-user"}
       />
-      <LegacyMigrationDialog migration={legacyMigration} />
+      <LegacyMigrationDialog
+        migration={legacyMigration}
+        open={legacyDialogOpen}
+        onOpenChange={setLegacyDialogOpen}
+        primaryAction={{
+          label: "See plans",
+          onClick: () => {
+            setLegacyDialogOpen(false);
+            navigate("/settings/organization/billing?view=plans");
+          },
+        }}
+      />
     </SidebarProvider>
   );
 }

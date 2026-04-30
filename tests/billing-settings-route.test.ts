@@ -5,6 +5,7 @@ const requireOrgAdminMock = vi.fn();
 const getEnvMock = vi.fn();
 const createBillingPortalSessionMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
+const migrateLegacyStripeSubscriptionMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -21,6 +22,7 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     ...actual,
     createBillingPortalSession: createBillingPortalSessionMock,
     createSubscriptionCheckoutSession: createSubscriptionCheckoutSessionMock,
+    migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
   };
 });
 
@@ -69,6 +71,7 @@ describe("billing settings plan changes", () => {
     createSubscriptionCheckoutSessionMock.mockResolvedValue(
       "https://checkout.stripe.test/session",
     );
+    migrateLegacyStripeSubscriptionMock.mockResolvedValue({});
   });
 
   it("creates Checkout for a free org selecting a paid plan", async () => {
@@ -103,6 +106,54 @@ describe("billing settings plan changes", () => {
         seatCount: 1,
       }),
     );
+    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("migrates legacy-eligible paid plan selections instead of creating new Checkout", async () => {
+    const org = {
+      id: "org_123",
+      name: "Legacy Org",
+      slug: "legacy-org",
+      billing_status: "inactive",
+      billing_plan: "free",
+      billing_seat_count: 1,
+      billing_subscription_id: null,
+    };
+    const env = {
+      ...makeEnv(org),
+      LEGACY_STRIPE_MIGRATION_CUSTOMERS: [
+        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids,total_legacy_quantity",
+        "owner@example.com,cus_legacy,1,sub_legacy,si_legacy,price_1QIfnqGvliMKf4vHaDTMG2Mu,1",
+      ].join("\n"),
+    };
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+    migrateLegacyStripeSubscriptionMock.mockResolvedValue({
+      ...org,
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_subscription_id: "sub_legacy",
+    });
+
+    const result = await action({
+      request: makeFormRequest("pro"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({ planChanged: true });
+    expect(migrateLegacyStripeSubscriptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        userEmail: "owner@example.com",
+        plan: "pro",
+        seatCount: 1,
+      }),
+    );
+    expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
   });
 

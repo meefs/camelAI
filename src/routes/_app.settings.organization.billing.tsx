@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { Form, redirect, useFetcher, useLoaderData } from "react-router";
+import {
+  Form,
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useSearchParams,
+} from "react-router";
 import { ArrowLeft, CreditCard } from "lucide-react";
 import type { Route } from "./+types/_app.settings.organization.billing";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
@@ -9,14 +15,17 @@ import {
   createSubscriptionCheckoutSession,
   getBillableTeamSeatCountForOrg,
   getOrgBillingOverview,
+  getLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
   getStripeSubscriptionSummary,
   hasOrgUsedSubscriptionTrial,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
+  migrateLegacyStripeSubscription,
 } from "@/lib/billing.server";
 import {
   BILLING_PLAN_LIMITS,
+  getMinimumSeats,
   isBillingPlan,
   normalizeBillingPlan,
 } from "@/lib/billing-plans";
@@ -28,6 +37,7 @@ import {
   PlanPicker,
   type PlanPickerCta,
 } from "@/components/billing/plan-picker";
+import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog";
 import {
   InvoicesTable,
   type InvoiceRow,
@@ -137,6 +147,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     invoices: invoiceRows,
     subscription,
     trialAvailable: !hasOrgUsedSubscriptionTrial(overview),
+    legacyMigration: getLegacyStripeMigrationEligibility({
+      env,
+      org: authContext.currentOrg,
+      userEmail: authContext.user.email,
+    }),
   };
 }
 
@@ -169,6 +184,43 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
       if (rawPlan === "enterprise") {
         return { error: "Contact sales to set up Enterprise." };
+      }
+
+      const legacyMigration = getLegacyStripeMigrationEligibility({
+        env,
+        org: billingOrg,
+        userEmail: authContext.user.email,
+      });
+      if (legacyMigration?.eligible && rawPlan !== "free") {
+        try {
+          const seatCount =
+            rawPlan === "team"
+              ? await getBillableTeamSeatCountForOrg(
+                  env,
+                  authContext.currentOrg.id,
+                )
+              : getMinimumSeats(rawPlan);
+          await migrateLegacyStripeSubscription({
+            env,
+            org: billingOrg,
+            userEmail: authContext.user.email,
+            plan: rawPlan,
+            seatCount,
+          });
+          return { planChanged: true };
+        } catch (error) {
+          console.error("[billing] failed to migrate legacy subscription", {
+            orgId: billingOrg.id,
+            plan: rawPlan,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return {
+            error:
+              error instanceof Error
+                ? error.message
+                : "We couldn't migrate your legacy subscription. Please try again in a moment.",
+          };
+        }
       }
 
       const hasActiveStripeSubscription =
@@ -264,9 +316,14 @@ export default function BillingPage() {
     invoices,
     subscription,
     trialAvailable,
+    legacyMigration,
   } = useLoaderData<typeof loader>();
+  const [searchParams] = useSearchParams();
+  const showPlansView = searchParams.get("view") === "plans";
 
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>(() =>
+    showPlansView ? "manage" : "overview",
+  );
   const [cancelOpen, setCancelOpen] = useState(false);
 
   const isEnterprise = overview.billing_status === "enterprise";
@@ -302,12 +359,19 @@ export default function BillingPage() {
     return baseline;
   })();
 
+  useEffect(() => {
+    if (showPlansView) {
+      setView("manage");
+    }
+  }, [showPlansView]);
+
   if (view === "manage") {
     return (
       <ManagePlanView
         currentPlan={plan}
         stripeConfigured={stripeConfigured}
         trialAvailable={trialAvailable}
+        legacyMigration={legacyMigration}
         onBack={() => setView("overview")}
       />
     );
@@ -428,17 +492,20 @@ function ManagePlanView({
   currentPlan,
   stripeConfigured,
   trialAvailable,
+  legacyMigration,
   onBack,
 }: {
   currentPlan: BillingPlan;
   stripeConfigured: boolean;
   trialAvailable: boolean;
+  legacyMigration: LegacyMigrationDialogData | null;
   onBack: () => void;
 }) {
   const fetcher = useFetcher<{
     checkoutUrl?: string;
     billingPortalUrl?: string;
     planChanged?: boolean;
+    success?: boolean;
     error?: string;
   }>();
   const isSubmitting = fetcher.state !== "idle";
@@ -458,6 +525,16 @@ function ManagePlanView({
       );
       return;
     }
+    if (cta.kind === "migrate") {
+      fetcher.submit(
+        { plan: cta.plan },
+        {
+          method: "post",
+          action: "/api/billing/legacy-migration",
+        },
+      );
+      return;
+    }
     fetcher.submit(
       { intent: "changePlan", plan: cta.plan },
       { method: "post" },
@@ -473,8 +550,18 @@ function ManagePlanView({
     }
     if (fetcher.data?.planChanged) {
       window.location.assign("/settings/organization/billing");
+      return;
+    }
+    if (fetcher.data?.success) {
+      window.location.assign("/settings/organization/billing");
     }
   }, [fetcher.data, fetcher.state]);
+
+  const legacyDisabledReason =
+    legacyMigration?.eligible &&
+    legacyMigration.activeLegacySubscriptionCount > 1
+      ? "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing."
+      : null;
 
   return (
     <div className="space-y-6">
@@ -492,8 +579,19 @@ function ManagePlanView({
         onSelectPlan={handleSelectPlan}
         pendingPlan={pendingPlan}
         trialAvailable={trialAvailable}
+        legacyMigration={legacyMigration}
+        heading={
+          legacyMigration?.eligible
+            ? {
+                title: "Choose your plan",
+                subtitle:
+                  "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier.",
+              }
+            : undefined
+        }
         disabledReason={
-          stripeConfigured ? null : "Stripe billing is not configured."
+          legacyDisabledReason ??
+          (stripeConfigured ? null : "Stripe billing is not configured.")
         }
       />
       {fetcher.data &&

@@ -1,5 +1,5 @@
 import { Link, useSearchParams } from "react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Route } from "./+types/dev.billing-paywall";
 import {
   LegacyMigrationDialog,
@@ -76,7 +76,7 @@ function getPreviewConfig(state: PreviewState): PreviewConfig {
       return {
         ...base,
         description:
-          "A logged-in legacy customer sees the migration option embedded above the plan picker.",
+          "A logged-in legacy customer sees the migration modal first, then a slim alert and a switched-over plan picker.",
         migration: {
           eligible: true,
           customerId: "cus_preview",
@@ -88,13 +88,15 @@ function getPreviewConfig(state: PreviewState): PreviewConfig {
       return {
         ...base,
         description:
-          "Customers with multiple active legacy subscriptions are routed to manual migration.",
+          "Customers with multiple active legacy subscriptions are routed to manual migration; the picker is disabled.",
         migration: {
           eligible: true,
           customerId: "cus_preview_multiple",
           activeLegacySubscriptionCount: 2,
           defaultPlan: "team",
         },
+        disabledReason:
+          "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing.",
       };
     case "trial-used":
       return {
@@ -136,6 +138,8 @@ function describeCta(cta: PlanPickerCta): string {
       return "BYOK selected";
     case "trial":
       return `Start checkout for ${cta.plan}`;
+    case "migrate":
+      return `Legacy migration to ${cta.plan}`;
     case "contact":
       return "Contact sales selected";
     case "downgrade":
@@ -160,6 +164,14 @@ export default function DevBillingPaywallPreviewRoute() {
   const state = parsePreviewState(searchParams.get("state"));
   const config = getPreviewConfig(state);
   const [lastAction, setLastAction] = useState<string | null>(null);
+  const [introOpen, setIntroOpen] = useState(
+    config.migration?.eligible ?? false,
+  );
+
+  useEffect(() => {
+    setIntroOpen(config.migration?.eligible ?? false);
+    setLastAction(null);
+  }, [config.migration?.eligible, state]);
 
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
@@ -212,10 +224,8 @@ export default function DevBillingPaywallPreviewRoute() {
         {config.migration?.eligible ? (
           <LegacyMigrationDialog
             migration={config.migration}
-            variant="embedded"
-            onSelectPlan={(plan) =>
-              setLastAction(`Legacy migration selected: ${plan}`)
-            }
+            open={introOpen}
+            onOpenChange={setIntroOpen}
           />
         ) : null}
 
@@ -225,12 +235,16 @@ export default function DevBillingPaywallPreviewRoute() {
           disabledReason={config.disabledReason}
           heading={{
             title: "Choose your plan",
-            subtitle: config.trialAvailable
-              ? "Start a free trial with model credits, or use your own API key."
-              : "Choose a plan, or use your own API key.",
+            subtitle: config.migration?.eligible
+              ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
+              : config.trialAvailable
+                ? "Start a free trial with model credits, or use your own API key."
+                : "Choose a plan, or use your own API key.",
           }}
           highlightedPlan={state === "team" ? "team" : undefined}
           trialAvailable={config.trialAvailable}
+          legacyMigration={config.migration}
+          onLegacyWhyClick={() => setIntroOpen(true)}
           onSelectPlan={(cta) => setLastAction(describeCta(cta))}
         />
       </section>

@@ -29,6 +29,7 @@ export interface PlanPickerCardProps {
   pending: boolean;
   disabled: boolean;
   trialAvailable: boolean;
+  legacyMode?: boolean;
   onSelect: (cta: { kind: PlanPickerCtaKind; plan: BillingPlan }) => void;
 }
 
@@ -38,6 +39,7 @@ export function PlanPickerCard({
   pending,
   disabled,
   trialAvailable,
+  legacyMode = false,
   onSelect,
 }: PlanPickerCardProps) {
   const limits = BILLING_PLAN_LIMITS[plan];
@@ -48,15 +50,20 @@ export function PlanPickerCard({
   const isDowngrade = state.kind === "downgrade";
 
   const ctaKind: PlanPickerCtaKind = isDowngrade ? "downgrade" : content.ctaKind;
+  const isPaidLegacyCta = legacyMode && ctaKind === "trial";
   const ctaLabel = isCurrent
     ? "Current plan"
     : isDowngrade
       ? "Downgrade"
       : pending
-        ? "Opening Stripe…"
-        : ctaKind === "trial" && !trialAvailable
-          ? "Choose plan"
-          : content.ctaLabel;
+        ? isPaidLegacyCta
+          ? "Switching…"
+          : "Opening Stripe…"
+        : isPaidLegacyCta
+          ? `Switch to ${limits.label}`
+          : ctaKind === "trial" && !trialAvailable
+            ? "Choose plan"
+            : content.ctaLabel;
   const ctaVariant: "default" | "outline" | "secondary" = isCurrent
     ? "secondary"
     : isHighlighted
@@ -70,7 +77,7 @@ export function PlanPickerCard({
           variant="default"
           className="absolute top-0 left-4 z-10 -translate-y-1/2"
         >
-          Most popular
+          {legacyMode ? "Recommended" : "Most popular"}
         </Badge>
       ) : null}
       {isCurrent ? (
