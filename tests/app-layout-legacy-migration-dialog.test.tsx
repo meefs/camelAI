@@ -218,4 +218,19 @@ describe("AppLayout legacy migration disclosure", () => {
       );
     });
   });
+
+  it("routes the primary action directly to the billing plan picker", async () => {
+    const user = userEvent.setup();
+    testState.loaderData.current = makeLoaderData({
+      orgId: "org_legacy",
+      legacyMigration: makeMigration(),
+    });
+    render(<AppLayout />);
+
+    await user.click(screen.getByRole("button", { name: /see plans/i }));
+
+    expect(testState.navigate).toHaveBeenCalledWith(
+      "/settings/organization/billing?view=plans",
+    );
+  });
 });

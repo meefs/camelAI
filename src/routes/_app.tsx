@@ -179,7 +179,7 @@ export default function AppLayout() {
           label: "See plans",
           onClick: () => {
             setLegacyDialogOpen(false);
-            navigate("/settings/organization/billing");
+            navigate("/settings/organization/billing?view=plans");
           },
         }}
       />
