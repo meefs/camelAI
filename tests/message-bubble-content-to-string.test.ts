@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import type { ContentBlock } from '@/types';
-import { contentToString } from '@/components/message-bubble';
+import { render, screen } from '@testing-library/react';
+import { createElement } from 'react';
+import type { ContentBlock, Integration } from '@/types';
+import { ContentBlockRenderer, contentToString } from '@/components/message-bubble';
+
+function integrationWithId(id: string): Integration {
+  return {
+    id,
+    integration_type: 'other',
+    name: 'Camel',
+    category: 'saas',
+    auth_method: 'api_key',
+    config: {},
+    created_by: 'user',
+    created_at: 1,
+    updated_at: 1,
+    has_credentials: true,
+  };
+}
 
 describe('contentToString', () => {
   it('preserves literal teammate XML in plain string content', () => {
@@ -16,6 +33,11 @@ describe('contentToString', () => {
     expect(contentToString(content)).toBe('<teammate-message teammate_id="alice">literal example</teammate-message>');
   });
 
+  it('strips connection mention annotations from plain string content', () => {
+    const content = 'Check @camel ⟦ref: other "Camel" id=conn_123⟧ please';
+    expect(contentToString(content)).toBe('Check @camel please');
+  });
+
   it('preserves literal teammate XML in text blocks', () => {
     const blocks: ContentBlock[] = [
       {
@@ -26,6 +48,52 @@ describe('contentToString', () => {
     expect(contentToString(blocks)).toBe(
       'Use this snippet: <teammate-message teammate_id="alice">example</teammate-message>'
     );
+  });
+
+  it('strips connection mention annotations from text blocks', () => {
+    const blocks: ContentBlock[] = [
+      {
+        type: 'text',
+        text: 'Check @camel ⟦ref: other "Camel" id=conn_123⟧ please',
+      },
+    ];
+    expect(contentToString(blocks)).toBe('Check @camel please');
+  });
+
+  it('renders stripped stale connection annotations as deleted mention chips', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: 'Check @camel ⟦ref: other "Camel" id=conn_123⟧ please',
+        mentionSlugMap: new Map(),
+      }),
+    );
+
+    expect(screen.queryByText(/ref:/)).not.toBeInTheDocument();
+    expect(screen.getByText('@camel')).toHaveClass('bg-muted/60');
+  });
+
+  it('does not retarget annotated mentions to a reused slug', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: 'Check @camel ⟦ref: other "Camel" id=old_conn⟧ please',
+        mentionSlugMap: new Map([['camel', integrationWithId('new_conn')]]),
+      }),
+    );
+
+    expect(screen.getByText('@camel')).toHaveClass('bg-muted/60');
+  });
+
+  it('keeps annotated mentions live when the annotation id still matches', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: 'Check @camel ⟦ref: other "Camel" id=same_conn⟧ please',
+        mentionSlugMap: new Map([['camel', integrationWithId('same_conn')]]),
+      }),
+    );
+
+    const chip = screen.getByText('@camel');
+    expect(chip).toHaveClass('bg-muted');
+    expect(chip).not.toHaveClass('bg-muted/60');
   });
 
   it('serializes parsed teammate message blocks as teammate updates', () => {

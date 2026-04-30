@@ -12,6 +12,11 @@ import { GetHelpDialog } from '@/components/get-help-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
+import {
+  buildSlugMap,
+  filterMentionableConnections,
+  slugForIntegration,
+} from '@/lib/connection-mentions';
 import { AnimatedPlaceholder } from './animated-placeholder';
 import { BetaNotice } from './beta-notice';
 import { createSeededRandom, hashStringToSeed } from './deterministic-random';
@@ -339,8 +344,16 @@ export function WelcomeScreen({
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
   const [helpOpen, setHelpOpen] = useState(false);
-  const hasConnections = connections.length > 0;
+  const mentionableConnections = useMemo(
+    () => filterMentionableConnections(connections),
+    [connections],
+  );
+  const hasConnections = mentionableConnections.length > 0;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const connectionSlugMap = useMemo(
+    () => buildSlugMap(mentionableConnections) as Map<string, Integration>,
+    [mentionableConnections],
+  );
 
   const focusInput = useCallback(() => {
     textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -386,9 +399,11 @@ export function WelcomeScreen({
   }, [onPromptChange, focusInput]);
 
   const handleConnectionSelect = useCallback((connection: Integration) => {
-    onPromptChange(`Use my ${connection.name || connection.integration_type} connection to `);
+    const computedSlug = slugForIntegration(connection, connectionSlugMap);
+    if (!computedSlug) return;
+    onPromptChange(`@${computedSlug} `);
     focusInput();
-  }, [onPromptChange, focusInput]);
+  }, [connectionSlugMap, onPromptChange, focusInput]);
 
   const handleIntegrationSelect = useCallback((integration: { type: string; displayName: string }) => {
     onPromptChange(`Let's connect ${integration.displayName}`);
@@ -422,6 +437,8 @@ export function WelcomeScreen({
             onModelChange={onModelChange}
             modelOptions={modelOptions}
             modelDisabled={isCreatingThread}
+            mentionableConnections={mentionableConnections}
+            onMentionAddNewClick={() => navigate('/connections')}
           />
         )}
       </AnimatedPlaceholder>
@@ -450,7 +467,7 @@ export function WelcomeScreen({
         />
 
         {hasConnections ? (
-          <ConnectedTools connections={connections} onSelect={handleConnectionSelect} />
+          <ConnectedTools connections={mentionableConnections} onSelect={handleConnectionSelect} />
         ) : (
           <IntegrationButtons
             integrations={FEATURED_CONNECTIONS}
