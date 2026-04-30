@@ -49,6 +49,8 @@ import {
   AppSchema,
   AddMemberBodySchema,
   AddMemberResponseSchema,
+  UpdateUserCreditsBodySchema,
+  UserCreditsResponseSchema,
   RefreshOrgCustomDomainBodySchema,
   RefreshOrgCustomDomainResponseSchema,
   GrantOrgCreditsBodySchema,
@@ -146,6 +148,22 @@ async function fetchSandboxHostUsage(
     );
   }
   return env.SANDBOX_HOST.fetch(url, init);
+}
+
+function centsFromUsd(value: number): number {
+  return Math.round(value * 100);
+}
+
+async function fetchChargeableUsageCents(env: Env, orgId: string): Promise<number> {
+  const response = await fetchSandboxHostUsage(
+    env,
+    `/v1/usage/orgs/${encodeURIComponent(orgId)}/log/sum?from=0&to=${Date.now()}&chargeable_only=1`,
+  );
+  if (!response.ok) {
+    throw new Error(`Sandbox host returned ${response.status}`);
+  }
+  const data = await response.json() as { total_cost_usd?: number };
+  return centsFromUsd(Number(data.total_cost_usd ?? 0));
 }
 
 type AdminOrgDirectoryLookup = {
@@ -391,6 +409,134 @@ routes.get(
     const userStub = getUserStub(c.env, userId);
     const orgs = await userStub.getOrgs();
     return c.json({ data: orgs });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PUT /users/:id/credits
+// ---------------------------------------------------------------------------
+
+routes.put(
+  "/users/:id/credits",
+  openApi({
+    summary: "Arbitrarily set credits for one user's organization",
+    request: {
+      json: UpdateUserCreditsBodySchema,
+    },
+    responses: {
+      200: UserCreditsResponseSchema,
+      400: ErrorSchema,
+      404: ErrorSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const userId = c.req.param("id");
+    const body = c.req.valid("json");
+    const hasAvailableOverride = body.available_credits_cents !== undefined;
+    const hasPurchaseOverride = body.billing_credit_purchase_total_cents !== undefined;
+    const hasGrantOverride = body.billing_credit_grant_total_cents !== undefined;
+    const hasUsageStartOverride = body.billing_credit_usage_started_at !== undefined;
+
+    if (!hasAvailableOverride && !hasPurchaseOverride && !hasGrantOverride && !hasUsageStartOverride) {
+      return c.json(
+        {
+          error:
+            "At least one credit field is required: available_credits_cents, billing_credit_purchase_total_cents, billing_credit_grant_total_cents, or billing_credit_usage_started_at",
+        },
+        400,
+      );
+    }
+
+    const userStub = getUserStub(c.env, userId);
+    const profile = await userStub.getProfile();
+    if (!profile) {
+      return c.json({ error: "User not found" }, 404);
+    }
+
+    const memberships = await userStub.getOrgs();
+    const targetOrgId = body.org_id?.trim() || (memberships.length === 1 ? memberships[0]?.org_id : null);
+    if (!targetOrgId) {
+      return c.json(
+        { error: "org_id is required when the user belongs to zero or multiple organizations" },
+        400,
+      );
+    }
+    if (!memberships.some((membership) => membership.org_id === targetOrgId)) {
+      return c.json({ error: "User is not a member of the target organization" }, 400);
+    }
+
+    const orgStub = getOrgStub(c.env, targetOrgId);
+    const orgInfo = await orgStub.getInfo();
+    if (!orgInfo) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    let chargeableUsageCents: number;
+    try {
+      chargeableUsageCents = await fetchChargeableUsageCents(c.env, targetOrgId);
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? `Failed to load chargeable usage: ${error.message}`
+              : "Failed to load chargeable usage",
+        },
+        502,
+      );
+    }
+
+    const previousPurchase = orgInfo.billing_credit_purchase_total_cents ?? 0;
+    const previousGrant = orgInfo.billing_credit_grant_total_cents ?? 0;
+    const previousTotal = previousPurchase + previousGrant;
+    const previousAvailable = Math.max(0, previousTotal - chargeableUsageCents);
+
+    const nextPurchase = hasPurchaseOverride
+      ? body.billing_credit_purchase_total_cents!
+      : previousPurchase;
+    let nextGrant = hasGrantOverride
+      ? body.billing_credit_grant_total_cents!
+      : previousGrant;
+
+    if (hasAvailableOverride) {
+      // Preserve the purchased-credit accounting field and use grant total as
+      // the admin adjustment so the visible available balance reaches the
+      // requested value after already-chargeable usage is deducted.
+      nextGrant = body.available_credits_cents! + chargeableUsageCents - nextPurchase;
+    }
+
+    const nextOrg = await orgStub.updateBillingState({
+      billing_credit_purchase_total_cents: nextPurchase,
+      billing_credit_grant_total_cents: nextGrant,
+      ...(hasUsageStartOverride
+        ? { billing_credit_usage_started_at: body.billing_credit_usage_started_at ?? null }
+        : {}),
+    });
+    if (!nextOrg) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    const totalCreditLimitCents =
+      (nextOrg.billing_credit_purchase_total_cents ?? 0) +
+      (nextOrg.billing_credit_grant_total_cents ?? 0);
+    return c.json({
+      user_id: userId,
+      org_id: targetOrgId,
+      chargeable_usage_cents: chargeableUsageCents,
+      available_credits_cents: Math.max(0, totalCreditLimitCents - chargeableUsageCents),
+      total_credit_limit_cents: totalCreditLimitCents,
+      billing_credit_purchase_total_cents: nextOrg.billing_credit_purchase_total_cents ?? 0,
+      billing_credit_grant_total_cents: nextOrg.billing_credit_grant_total_cents ?? 0,
+      billing_credit_usage_started_at: nextOrg.billing_credit_usage_started_at ?? null,
+      previous: {
+        available_credits_cents: previousAvailable,
+        total_credit_limit_cents: previousTotal,
+        billing_credit_purchase_total_cents: previousPurchase,
+        billing_credit_grant_total_cents: previousGrant,
+        billing_credit_usage_started_at: orgInfo.billing_credit_usage_started_at ?? null,
+      },
+    });
   },
 );
 

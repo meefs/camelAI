@@ -116,6 +116,14 @@ export const BlockSignupIpBodySchema = z.object({
   reason: z.string().optional(),
 });
 
+export const UpdateUserCreditsBodySchema = z.object({
+  org_id: z.string().optional(),
+  available_credits_cents: z.number().int().min(0).optional(),
+  billing_credit_purchase_total_cents: z.number().int().optional(),
+  billing_credit_grant_total_cents: z.number().int().optional(),
+  billing_credit_usage_started_at: z.number().int().min(0).nullable().optional(),
+});
+
 export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
@@ -160,6 +168,24 @@ export const UserSummarySchema = z.object({
 export const OrgMembershipSchema = z.object({
   org_id: z.string(),
   role: z.enum(["admin", "member"]),
+});
+
+export const UserCreditsResponseSchema = z.object({
+  user_id: z.string(),
+  org_id: z.string(),
+  chargeable_usage_cents: z.number().int(),
+  available_credits_cents: z.number().int(),
+  total_credit_limit_cents: z.number().int(),
+  billing_credit_purchase_total_cents: z.number().int(),
+  billing_credit_grant_total_cents: z.number().int(),
+  billing_credit_usage_started_at: z.number().int().nullable(),
+  previous: z.object({
+    available_credits_cents: z.number().int(),
+    total_credit_limit_cents: z.number().int(),
+    billing_credit_purchase_total_cents: z.number().int(),
+    billing_credit_grant_total_cents: z.number().int(),
+    billing_credit_usage_started_at: z.number().int().nullable(),
+  }),
 });
 
 export const OrgSchema = z.object({
