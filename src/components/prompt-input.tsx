@@ -494,7 +494,11 @@ export function PromptInput({
                 (disabled || isActiveRecording) && 'opacity-50',
               )}
             >
-              <ComposerMentionOverlay value={value} slugMap={slugMap} />
+              <ComposerMentionOverlay
+                value={value}
+                slugMap={slugMap}
+                textareaRef={effectiveTextareaRef}
+              />
             </div>
             <InputGroupTextarea
               ref={effectiveTextareaRef}

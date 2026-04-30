@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, type RefObject } from 'react';
 import { Plus } from 'lucide-react';
 import {
   Command,
@@ -44,6 +44,7 @@ export function ConnectionMentionMenu({
   onClose,
   onAddNewClick,
 }: ConnectionMentionMenuProps) {
+  const listRef = useRef<HTMLDivElement | null>(null);
   const filtered = useMemo(
     () => rankMentionableConnections(connections, query),
     [connections, query],
@@ -67,6 +68,18 @@ export function ConnectionMentionMenu({
       onActiveIdChange(filtered[0]!.id);
     }
   }, [open, filtered, activeId, onActiveIdChange, showAddRow]);
+
+  useEffect(() => {
+    if (!open || !activeId) return;
+    const list = listRef.current;
+    if (!list) return;
+
+    const activeEl = Array.from(
+      list.querySelectorAll<HTMLElement>('[data-value]'),
+    ).find((element) => element.getAttribute('data-value') === activeId);
+
+    activeEl?.scrollIntoView({ block: 'nearest' });
+  }, [open, activeId]);
 
   if (!open) return null;
 
@@ -103,7 +116,7 @@ export function ConnectionMentionMenu({
           onValueChange={(v) => onActiveIdChange(v)}
           className="bg-transparent p-0 rounded-none"
         >
-          <CommandList className="max-h-[200px] py-1">
+          <CommandList ref={listRef} className="max-h-[200px] py-1">
             <CommandGroup className="p-0">
               {showAddRow ? (
                 <CommandItem

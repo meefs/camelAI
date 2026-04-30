@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import type { PointerEvent, ReactNode, RefObject } from 'react';
 import {
   HoverCard,
   HoverCardContent,
@@ -10,17 +10,17 @@ import { CATEGORY_TAB_LABELS } from '@/components/connection-picker/use-connecti
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { getIntegrationDefinition } from '@/lib/integration-registry';
 import { parseMentions } from '@/lib/connection-mentions';
-import { cn } from '@/lib/utils';
 import type { Integration } from '@/types';
 
 interface ComposerMentionOverlayProps {
   value: string;
   slugMap: Map<string, Integration>;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
 }
 
 const COMPOSER_CHIP_CLASS =
-  'pointer-events-auto rounded-md bg-muted px-1 py-0 -mx-0.5 ' +
-  'font-semibold text-foreground';
+  'pointer-events-auto select-none rounded-sm bg-muted text-foreground ' +
+  'shadow-[0_0_0_2px_var(--muted)]';
 
 function formatRelative(timestamp: number): string {
   const diff = Math.max(0, Date.now() - timestamp);
@@ -59,19 +59,14 @@ function ChipHoverPreview({ integration }: { integration: Integration }) {
         {def?.displayName ?? integration.integration_type}
         {category ? ` · ${CATEGORY_TAB_LABELS[category] ?? category}` : ''}
       </div>
-      <div className="flex items-center gap-1.5 text-xs">
-        <span
-          className={cn(
-            'inline-block size-1.5 rounded-full',
-            integration.has_credentials ? 'bg-emerald-500' : 'bg-amber-500',
-          )}
-        />
-        <span className="text-muted-foreground">
-          {integration.has_credentials ? 'Ready' : 'Credentials missing'}
-        </span>
-        <span className="ml-auto text-muted-foreground">
-          Updated {formatRelative(integration.updated_at)}
-        </span>
+      {!integration.has_credentials && (
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="inline-block size-1.5 rounded-full bg-amber-500" />
+          <span className="text-muted-foreground">No credentials configured</span>
+        </div>
+      )}
+      <div className="text-xs text-muted-foreground">
+        Updated {formatRelative(integration.updated_at)}
       </div>
     </div>
   );
@@ -80,14 +75,33 @@ function ChipHoverPreview({ integration }: { integration: Integration }) {
 function ComposerChip({
   slug,
   integration,
+  textareaRef,
+  startIndex,
+  endIndex,
 }: {
   slug: string;
   integration: Integration;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  startIndex: number;
+  endIndex: number;
 }) {
+  const handlePointerDown = (event: PointerEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(startIndex, endIndex);
+  };
+
   return (
     <HoverCard openDelay={200} closeDelay={100}>
       <HoverCardTrigger asChild>
-        <span className={COMPOSER_CHIP_CLASS}>@{slug}</span>
+        <span
+          className={COMPOSER_CHIP_CLASS}
+          onPointerDown={handlePointerDown}
+        >
+          @{slug}
+        </span>
       </HoverCardTrigger>
       <HoverCardContent
         side="top"
@@ -103,6 +117,7 @@ function ComposerChip({
 function renderComposerTokens(
   value: string,
   slugMap: Map<string, Integration>,
+  textareaRef: RefObject<HTMLTextAreaElement | null>,
 ): ReactNode[] {
   if (!value) return [];
 
@@ -123,6 +138,9 @@ function renderComposerTokens(
         key={`${match.index}-${match.slug}`}
         slug={match.slug}
         integration={match.integration as Integration}
+        textareaRef={textareaRef}
+        startIndex={match.index}
+        endIndex={match.index + match.length}
       />,
     );
     cursor = match.index + match.length;
@@ -138,6 +156,7 @@ function renderComposerTokens(
 export function ComposerMentionOverlay({
   value,
   slugMap,
+  textareaRef,
 }: ComposerMentionOverlayProps) {
-  return <>{renderComposerTokens(value, slugMap)}</>;
+  return <>{renderComposerTokens(value, slugMap, textareaRef)}</>;
 }
