@@ -1969,7 +1969,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     await this.ensureRunnerConnected();
 
     const safeRawMessage = injectFileSafetyMessage(rawMessage);
-    const attributedContent = formatAttributedUserMessage(safeRawMessage, {
+    const mentionAugmented = await this.applyConnectionMentionsForTurn(safeRawMessage);
+    const attributedContent = formatAttributedUserMessage(mentionAugmented, {
       userName: typeof body.userName === 'string' && body.userName.trim()
         ? body.userName.trim()
         : null,

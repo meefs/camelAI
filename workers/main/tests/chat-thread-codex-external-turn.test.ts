@@ -43,4 +43,71 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
     expect(fake.pendingExternalTurn).toBeNull();
   });
+
+  it('applies connection mention context before sending external turns', async () => {
+    const workspaceStub = {
+      getIntegrations: vi.fn().mockResolvedValue([
+        {
+          id: 'conn1',
+          integration_type: 'postgres',
+          name: 'Sales DB',
+          created_at: 1,
+          config: '{}',
+        },
+      ]),
+    };
+    const sentCommands: any[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.chatContext = null;
+    fake.chatIsStreaming = false;
+    fake.pendingExternalTurn = null;
+    fake.pendingQuestions = new Map();
+    fake.runnerActivityGeneration = 0;
+    fake.runnerIntentionalIdleDisconnect = false;
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+      waitUntil: vi.fn(),
+    };
+    fake.env = {
+      APP_KV: { get: vi.fn().mockResolvedValue(null) },
+      WORKSPACE: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => workspaceStub),
+      },
+    };
+    fake.trace = vi.fn();
+    fake.ensureRunnerConnected = vi.fn().mockResolvedValue(undefined);
+    fake.sendRunnerCommandWithReconnect = vi.fn(async (command: any) => {
+      sentCommands.push(command);
+      return false;
+    });
+    fake.createPendingExternalTurn = ChatThreadDO.prototype['createPendingExternalTurn'];
+    fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
+    fake.waitForPendingExternalTurn = ChatThreadDO.prototype['waitForPendingExternalTurn'];
+
+    const result = await ChatThreadDO.prototype.externalMessage.call(fake, {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userName: 'Ada',
+      message: 'Use @sales_db',
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toEqual({
+      status: 'error',
+      error: 'Failed to send message to sandbox',
+    });
+    expect(workspaceStub.getIntegrations).toHaveBeenCalledTimes(1);
+    expect(sentCommands).toHaveLength(1);
+    expect(sentCommands[0].content).toContain('<camelai system message>');
+    expect(sentCommands[0].content).toContain('Available connections');
+    expect(sentCommands[0].content).toContain(
+      '@sales_db ⟦ref: postgres "Sales DB" id=conn1⟧',
+    );
+    expect(sentCommands[0].content).toContain(
+      '[Ada]: Use @sales_db ⟦ref: postgres "Sales DB" id=conn1⟧',
+    );
+  });
 });
