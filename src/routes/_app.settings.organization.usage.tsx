@@ -106,6 +106,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const orgId = authContext.currentOrg.id;
 
+  const currentUserOrg = authContext.orgs.find((o) => o.org_id === orgId);
+  const isOrgAdmin =
+    currentUserOrg?.role === "owner" || currentUserOrg?.role === "admin";
+
   const stripeConfigured = isStripeBillingConfigured(env);
 
   const [overview, log, creditPacks, llmProviderConfig] = await Promise.all([
@@ -145,6 +149,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     overview,
     log,
     stripeConfigured,
+    isOrgAdmin,
     creditPacks: creditPacks.map((pack) => ({
       id: pack.id,
       priceLabel: formatPriceLabel(pack),
@@ -189,8 +194,15 @@ export async function action({ request, context }: Route.ActionArgs) {
 }
 
 export default function OrganizationUsagePage() {
-  const { orgName, overview, log, stripeConfigured, creditPacks, llmProviderConfig } =
-    useLoaderData<typeof loader>();
+  const {
+    orgName,
+    overview,
+    log,
+    stripeConfigured,
+    isOrgAdmin,
+    creditPacks,
+    llmProviderConfig,
+  } = useLoaderData<typeof loader>();
 
   const topUpFetcher = useFetcher();
   const [topUpOpen, setTopUpOpen] = useState(false);
@@ -293,7 +305,7 @@ export default function OrganizationUsagePage() {
         )}
       </section>
 
-      {!isEnterprise ? (
+      {!isEnterprise && isOrgAdmin ? (
         <>
           <Separator />
           <section className="space-y-3">
