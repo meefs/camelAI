@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
 import type { Integration, LlmModel } from '@/types';
 import { ConnectionMentionMenu } from '@/components/connection-mention-menu';
+import { ComposerMentionOverlay } from '@/components/connection-mention-menu/composer-mention-overlay';
 import { useMentionTrigger } from '@/components/connection-mention-menu/use-mention-trigger';
 import {
   buildSlugMap,
@@ -141,6 +142,7 @@ export function PromptInput({
   const [isFocused, setIsFocused] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [activeMentionId, setActiveMentionId] = useState<string | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
 
   const mentionsEnabled = (mentionableConnections?.length ?? 0) > 0
     || onMentionAddNewClick !== undefined;
@@ -480,41 +482,67 @@ export function PromptInput({
             </InputGroupAddon>
           )}
 
-          <InputGroupTextarea
-            ref={effectiveTextareaRef}
-            value={value}
-            onChange={(e) => {
-              onChange(e.target.value);
-              // Caret state needs to track value changes — onChange fires before selectionStart settles.
-              requestAnimationFrame(updateCaretPos);
-              // Any text edit clears the lockout from a previous Escape.
-              mentionLockoutValueRef.current = null;
-              mentionLockoutCaretRef.current = -1;
-            }}
-            onKeyDown={handleKeyDown}
-            onKeyUp={updateCaretPos}
-            onClick={updateCaretPos}
-            onSelect={updateCaretPos}
-            onCompositionStart={() => setIsComposing(true)}
-            onCompositionEnd={() => setIsComposing(false)}
-            onPaste={handlePaste}
-            placeholder={effectivePlaceholder}
-            disabled={disabled || isActiveRecording}
-            autoFocus={autoFocus}
-            onFocus={() => {
-              setIsFocused(true);
-              onFocus?.();
-            }}
-            onBlur={() => {
-              setIsFocused(false);
-              onBlur?.();
-            }}
-            className={cn(
-              'text-base md:text-base p-3.5 max-h-96 overflow-y-auto',
-              isActiveRecording && 'opacity-50'
-            )}
-            style={{ minHeight }}
-          />
+          <div className="relative w-full">
+            <div
+              aria-hidden
+              ref={overlayRef}
+              className={cn(
+                'pointer-events-none absolute inset-0 z-10 overflow-hidden',
+                'whitespace-pre-wrap break-words',
+                'p-3.5 text-base md:text-base max-h-96',
+                'font-[inherit] leading-[inherit] tracking-[inherit] text-foreground',
+                (disabled || isActiveRecording) && 'opacity-50',
+              )}
+            >
+              <ComposerMentionOverlay value={value} slugMap={slugMap} />
+            </div>
+            <InputGroupTextarea
+              ref={effectiveTextareaRef}
+              value={value}
+              onChange={(e) => {
+                onChange(e.target.value);
+                // Caret state needs to track value changes — onChange fires before selectionStart settles.
+                requestAnimationFrame(updateCaretPos);
+                // Any text edit clears the lockout from a previous Escape.
+                mentionLockoutValueRef.current = null;
+                mentionLockoutCaretRef.current = -1;
+              }}
+              onScroll={(e) => {
+                if (overlayRef.current) {
+                  overlayRef.current.scrollTop = e.currentTarget.scrollTop;
+                  overlayRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                }
+              }}
+              onKeyDown={handleKeyDown}
+              onKeyUp={updateCaretPos}
+              onClick={updateCaretPos}
+              onSelect={updateCaretPos}
+              onCompositionStart={() => setIsComposing(true)}
+              onCompositionEnd={() => setIsComposing(false)}
+              onPaste={handlePaste}
+              placeholder={effectivePlaceholder}
+              disabled={disabled || isActiveRecording}
+              autoFocus={autoFocus}
+              onFocus={() => {
+                setIsFocused(true);
+                onFocus?.();
+              }}
+              onBlur={() => {
+                setIsFocused(false);
+                onBlur?.();
+              }}
+              className={cn(
+                'text-base md:text-base p-3.5 max-h-96 overflow-y-auto',
+                'selection:bg-primary/30 selection:text-transparent',
+                isActiveRecording && 'opacity-50',
+              )}
+              style={{
+                minHeight,
+                color: 'transparent',
+                caretColor: 'var(--foreground)',
+              }}
+            />
+          </div>
 
           <InputGroupAddon align="block-end" className="justify-between pb-3 px-3">
             {isActiveRecording || isTranscribing ? (

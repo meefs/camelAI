@@ -82,6 +82,8 @@ export function ConnectionMentionMenu({
         side="top"
         align="start"
         sideOffset={4}
+        avoidCollisions={false}
+        collisionPadding={8}
         onOpenAutoFocus={(e) => e.preventDefault()}
         onCloseAutoFocus={(e) => e.preventDefault()}
         onPointerDownOutside={(e) => {
@@ -101,7 +103,7 @@ export function ConnectionMentionMenu({
           onValueChange={(v) => onActiveIdChange(v)}
           className="bg-transparent p-0 rounded-none"
         >
-          <CommandList className="max-h-[240px] py-1">
+          <CommandList className="max-h-[200px] py-1">
             <CommandGroup className="p-0">
               {showAddRow ? (
                 <CommandItem
