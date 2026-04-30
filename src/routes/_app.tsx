@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Outlet, redirect, data, useLoaderData, useNavigate } from "react-router";
 import type { Route } from "./+types/_app";
 import { requireAuthContext } from "@/lib/auth.server";
@@ -135,9 +135,31 @@ export default function AppLayout() {
   const { authState, defaultSidebarOpen, showLegacyBanner, legacyMigration } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
+  const legacyMigrationKey = legacyMigration?.eligible
+    ? [
+        authState.currentOrg?.id ?? "unknown-org",
+        legacyMigration.customerId,
+        legacyMigration.activeLegacySubscriptionCount,
+        legacyMigration.defaultPlan,
+      ].join(":")
+    : null;
   const [legacyDialogOpen, setLegacyDialogOpen] = useState(
-    () => legacyMigration?.eligible ?? false,
+    () => legacyMigrationKey !== null,
   );
+  const legacyDialogKeyRef = useRef<string | null>(legacyMigrationKey);
+
+  useEffect(() => {
+    if (!legacyMigrationKey) {
+      legacyDialogKeyRef.current = null;
+      setLegacyDialogOpen(false);
+      return;
+    }
+
+    if (legacyDialogKeyRef.current !== legacyMigrationKey) {
+      legacyDialogKeyRef.current = legacyMigrationKey;
+      setLegacyDialogOpen(true);
+    }
+  }, [legacyMigrationKey]);
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>

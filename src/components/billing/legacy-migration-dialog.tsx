@@ -95,7 +95,7 @@ export function LegacyMigrationDialog({
                 ✓
               </span>
               <span>
-                Apply your unused balance as credit on your first invoice.
+                Apply your unused balance as credit on your first invoice
               </span>
             </li>
             <li className="flex items-start gap-2">
@@ -103,7 +103,7 @@ export function LegacyMigrationDialog({
                 ✓
               </span>
               <span>
-                Stripe will show your exact charge before you confirm.
+                Stripe will show your exact charge before you confirm
               </span>
             </li>
           </ul>
