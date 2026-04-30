@@ -206,6 +206,17 @@ describe('stripMentionAnnotationsWithMetadata', () => {
     ]);
   });
 
+  it('reads the connection id from the trailing annotation field', () => {
+    const result = stripMentionAnnotationsWithMetadata(
+      'hi @prod ⟦ref: postgres "Prod id=wrong" id=abc123⟧ now',
+    );
+
+    expect(result.displayText).toBe('hi @prod now');
+    expect(result.annotatedMentions).toEqual([
+      { slug: 'prod', id: 'abc123' },
+    ]);
+  });
+
   it('does not mark random text before annotations as a mention slug', () => {
     const result = stripMentionAnnotationsWithMetadata(
       'hi my_prod_db ⟦ref: postgres "My Prod DB" id=abc123⟧ now',

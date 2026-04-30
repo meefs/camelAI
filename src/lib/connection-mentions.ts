@@ -234,7 +234,7 @@ export interface MentionAnnotationDisplay {
 }
 
 function annotationConnectionId(annotation: string): string | null {
-  const idMatch = annotation.match(/\sid=([^⟧\s]+)/);
+  const idMatch = annotation.match(/\sid=([^⟧\s]+)\s*⟧$/);
   return idMatch?.[1] ?? null;
 }
 
