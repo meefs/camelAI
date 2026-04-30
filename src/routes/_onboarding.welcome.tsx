@@ -193,6 +193,9 @@ export default function OnboardingWelcomeRoute() {
   const [awsRegion, setAwsRegion] = useState("us-east-1");
   const [byokDialogOpen, setByokDialogOpen] = useState(false);
   const [showProviderError, setShowProviderError] = useState(true);
+  const [legacyIntroOpen, setLegacyIntroOpen] = useState(
+    () => context.legacyMigration?.eligible ?? false,
+  );
   const completionStartedRef = useRef(false);
   const providerCompletionStartedRef = useRef(false);
   const verificationFetcher = useFetcher<{
@@ -204,6 +207,10 @@ export default function OnboardingWelcomeRoute() {
     error?: string;
   }>();
   const providerFetcher = useFetcher<{
+    success?: boolean;
+    error?: string;
+  }>();
+  const migrationFetcher = useFetcher<{
     success?: boolean;
     error?: string;
   }>();
@@ -241,6 +248,17 @@ export default function OnboardingWelcomeRoute() {
       : undefined;
   const isSavingProvider = providerFetcher.state !== "idle";
   const isStartingCheckout = checkoutFetcher.state !== "idle";
+  const isMigrating = migrationFetcher.state !== "idle";
+  const migrationError =
+    migrationFetcher.state === "idle"
+      ? migrationFetcher.data?.error
+      : undefined;
+  const pendingMigrationPlanValue = String(
+    migrationFetcher.formData?.get("plan") || "",
+  );
+  const pendingMigrationPlan = isTrialPlan(pendingMigrationPlanValue)
+    ? pendingMigrationPlanValue
+    : null;
 
   useEffect(() => {
     if (
@@ -251,6 +269,13 @@ export default function OnboardingWelcomeRoute() {
     }
     window.location.assign(checkoutFetcher.data.checkoutUrl);
   }, [checkoutFetcher.data, checkoutFetcher.state]);
+
+  useEffect(() => {
+    if (migrationFetcher.state !== "idle" || !migrationFetcher.data?.success) {
+      return;
+    }
+    window.location.reload();
+  }, [migrationFetcher.data, migrationFetcher.state]);
 
   useEffect(() => {
     if (
@@ -389,12 +414,19 @@ export default function OnboardingWelcomeRoute() {
           </Alert>
         ) : null}
 
+        {migrationError ? (
+          <Alert variant="destructive" className="text-left">
+            <AlertDescription>{migrationError}</AlertDescription>
+          </Alert>
+        ) : null}
+
         {isBillingChoiceRequired ? (
           <div className="space-y-5 text-left">
             {context.legacyMigration?.eligible ? (
               <LegacyMigrationDialog
                 migration={context.legacyMigration}
-                variant="embedded"
+                open={legacyIntroOpen}
+                onOpenChange={setLegacyIntroOpen}
               />
             ) : null}
 
@@ -402,17 +434,46 @@ export default function OnboardingWelcomeRoute() {
               defaultBillingMode="individual"
               heading={{
                 title: "Choose your plan",
-                subtitle: trialAvailable
-                  ? "Start a free trial with model credits, or use your own API key."
-                  : "Choose a plan, or use your own API key.",
+                subtitle: context.legacyMigration?.eligible
+                  ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
+                  : trialAvailable
+                    ? "Start a free trial with model credits, or use your own API key."
+                    : "Choose a plan, or use your own API key.",
               }}
               trialAvailable={trialAvailable}
-              pendingPlan={isStartingCheckout ? pendingCheckoutPlan : null}
+              legacyMigration={context.legacyMigration}
+              disabledReason={
+                context.legacyMigration?.eligible &&
+                context.legacyMigration.activeLegacySubscriptionCount > 1
+                  ? "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing."
+                  : null
+              }
+              onLegacyWhyClick={() => setLegacyIntroOpen(true)}
+              pendingPlan={
+                isStartingCheckout
+                  ? pendingCheckoutPlan
+                  : isMigrating
+                    ? pendingMigrationPlan
+                    : null
+              }
               onSelectPlan={(cta) => {
                 setError(null);
                 if (cta.kind === "byok") {
                   setShowProviderError(false);
                   setByokDialogOpen(true);
+                  return;
+                }
+                if (cta.kind === "migrate") {
+                  if (isMigrating) {
+                    return;
+                  }
+                  migrationFetcher.submit(
+                    { plan: cta.plan },
+                    {
+                      method: "post",
+                      action: "/api/billing/legacy-migration",
+                    },
+                  );
                   return;
                 }
                 if (cta.kind === "trial") {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Tabs,
   TabsContent,
@@ -7,6 +8,7 @@ import {
 } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { BillingPlan } from "@/types";
+import type { LegacyMigrationDialogData } from "./legacy-migration-dialog";
 import { PlanPickerCard, type PlanCardState } from "./plan-picker-card";
 import {
   INDIVIDUAL_PLANS,
@@ -17,6 +19,7 @@ import {
 export type PlanPickerCta =
   | { kind: "byok" }
   | { kind: "trial"; plan: "starter" | "pro" | "team" }
+  | { kind: "migrate"; plan: "starter" | "pro" | "team" }
   | { kind: "contact" }
   | { kind: "downgrade"; plan: BillingPlan };
 
@@ -28,7 +31,9 @@ export interface PlanPickerProps {
   heading?: { title: string; subtitle?: string } | null;
   showFooter?: boolean;
   trialAvailable?: boolean;
+  legacyMigration?: LegacyMigrationDialogData | null;
   onSelectPlan: (cta: PlanPickerCta) => void;
+  onLegacyWhyClick?: () => void;
   pendingPlan?: BillingPlan | null;
 }
 
@@ -44,6 +49,10 @@ const PLAN_RANK: Record<BillingPlan, number> = {
   team: 3,
   enterprise: 4,
 };
+
+function isMigratePlan(plan: BillingPlan): plan is "starter" | "pro" | "team" {
+  return plan === "starter" || plan === "pro" || plan === "team";
+}
 
 function resolveCardState(
   plan: BillingPlan,
@@ -69,6 +78,7 @@ function resolveCardState(
 function ctaForPlan(
   plan: BillingPlan,
   state: PlanCardState,
+  legacyMode: boolean,
 ): PlanPickerCta {
   if (state.kind === "downgrade") {
     return { kind: "downgrade", plan };
@@ -77,7 +87,10 @@ function ctaForPlan(
   if (ctaKind === "byok") return { kind: "byok" };
   if (ctaKind === "contact") return { kind: "contact" };
   if (ctaKind === "trial") {
-    if (plan === "starter" || plan === "pro" || plan === "team") {
+    if (isMigratePlan(plan)) {
+      if (legacyMode) {
+        return { kind: "migrate", plan };
+      }
       return { kind: "trial", plan };
     }
   }
@@ -92,14 +105,22 @@ export function PlanPicker({
   heading = DEFAULT_HEADING,
   showFooter = true,
   trialAvailable = true,
+  legacyMigration = null,
   onSelectPlan,
+  onLegacyWhyClick,
   pendingPlan = null,
 }: PlanPickerProps) {
   const [billingMode, setBillingMode] = useState<"individual" | "team">(
     defaultBillingMode,
   );
 
-  const individualHighlight = highlightedPlan ?? "pro";
+  const legacyMode = Boolean(legacyMigration?.eligible);
+  const legacyDefault = legacyMigration?.defaultPlan;
+  const individualHighlight =
+    highlightedPlan ??
+    (legacyMode && legacyDefault && legacyDefault !== "team"
+      ? legacyDefault
+      : "pro");
   const teamHighlight = highlightedPlan ?? "team";
   const isDisabled = Boolean(disabledReason);
 
@@ -114,9 +135,9 @@ export function PlanPicker({
     >
       {plans.map((plan) => {
         const state = resolveCardState(plan, highlight, currentPlan);
-        const cta = ctaForPlan(plan, state);
+        const cta = ctaForPlan(plan, state, legacyMode);
         const disabled =
-          cta.kind === "trial" &&
+          (cta.kind === "trial" || cta.kind === "migrate") &&
           (isDisabled || (pendingPlan !== null && pendingPlan !== plan));
         return (
           <PlanPickerCard
@@ -126,6 +147,7 @@ export function PlanPicker({
             pending={pendingPlan === plan}
             disabled={disabled}
             trialAvailable={trialAvailable}
+            legacyMode={legacyMode}
             onSelect={() => onSelectPlan(cta)}
           />
         );
@@ -140,9 +162,23 @@ export function PlanPicker({
           <h2 className="font-[family-name:var(--font-display)] text-3xl font-normal tracking-tight">
             {heading.title}
           </h2>
-          {heading.subtitle ? (
+          {heading.subtitle || (legacyMode && onLegacyWhyClick) ? (
             <p className="text-base text-muted-foreground">
-              {heading.subtitle}
+              {heading.subtitle ? <span>{heading.subtitle}</span> : null}
+              {legacyMode && onLegacyWhyClick ? (
+                <>
+                  {heading.subtitle ? " " : null}
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="h-auto px-0 align-baseline text-base"
+                    onClick={onLegacyWhyClick}
+                  >
+                    Why am I seeing this?
+                  </Button>
+                </>
+              ) : null}
             </p>
           ) : null}
         </div>
@@ -183,9 +219,11 @@ export function PlanPicker({
             </p>
           </div>
           <p className="text-center text-sm text-muted-foreground">
-            {trialAvailable
-              ? "All paid plans include one 7-day free trial per org."
-              : "Your free trial has already been used for this org."}
+            {legacyMode
+              ? "Picking a paid plan cancels your old subscription and applies unused balance."
+              : trialAvailable
+                ? "All paid plans include one 7-day free trial per org."
+                : "Your free trial has already been used for this org."}
           </p>
         </div>
       ) : null}
