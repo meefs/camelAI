@@ -28,6 +28,7 @@ export interface MentionMatch {
 }
 
 const SLUG_CHARSET = /[a-z0-9_]/;
+const MENTION_ANNOTATION_REGEX = /\s*⟦ref:[^⟧]*⟧/g;
 
 /**
  * Convert a connection name to its slug form. Stable on both client and server
@@ -143,6 +144,73 @@ function isWordBoundaryChar(ch: string | undefined): boolean {
 
 function isSlugChar(ch: string): boolean {
   return SLUG_CHARSET.test(ch) || ch === '-';
+}
+
+function mentionSlugBefore(body: string, index: number): string | null {
+  let end = index;
+  while (end > 0 && /\s/.test(body[end - 1] ?? '')) {
+    end--;
+  }
+
+  let start = end;
+  while (start > 0 && isSlugChar(body[start - 1] ?? '')) {
+    start--;
+  }
+
+  if (start === end || body[start - 1] !== '@') {
+    return null;
+  }
+
+  if (!isWordBoundaryChar(body[start - 2])) {
+    return null;
+  }
+
+  return body.slice(start, end).toLowerCase();
+}
+
+export interface AnnotatedMentionRef {
+  slug: string;
+  id: string | null;
+}
+
+export interface MentionAnnotationDisplay {
+  displayText: string;
+  annotatedMentions: AnnotatedMentionRef[];
+}
+
+function annotationConnectionId(annotation: string): string | null {
+  const idMatch = annotation.match(/\sid=([^⟧\s]+)/);
+  return idMatch?.[1] ?? null;
+}
+
+export function stripMentionAnnotationsWithMetadata(
+  body: string,
+): MentionAnnotationDisplay {
+  const annotatedMentions: AnnotatedMentionRef[] = [];
+  let displayText = '';
+  let cursor = 0;
+
+  for (const match of body.matchAll(MENTION_ANNOTATION_REGEX)) {
+    const annotation = match[0];
+    const index = match.index ?? 0;
+    const slug = mentionSlugBefore(body, index);
+    if (slug) {
+      annotatedMentions.push({
+        slug,
+        id: annotationConnectionId(annotation),
+      });
+    }
+
+    displayText += body.slice(cursor, index);
+    cursor = index + annotation.length;
+  }
+
+  displayText += body.slice(cursor);
+  return { displayText, annotatedMentions };
+}
+
+export function stripMentionAnnotations(body: string): string {
+  return stripMentionAnnotationsWithMetadata(body).displayText;
 }
 
 /**

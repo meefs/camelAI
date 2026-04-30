@@ -12,6 +12,10 @@ import { GetHelpDialog } from '@/components/get-help-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
+import {
+  buildSlugMap,
+  slugForIntegration,
+} from '@/lib/connection-mentions';
 import { AnimatedPlaceholder } from './animated-placeholder';
 import { BetaNotice } from './beta-notice';
 import { createSeededRandom, hashStringToSeed } from './deterministic-random';
@@ -341,6 +345,10 @@ export function WelcomeScreen({
   const [helpOpen, setHelpOpen] = useState(false);
   const hasConnections = connections.length > 0;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const connectionSlugMap = useMemo(
+    () => buildSlugMap(connections) as Map<string, Integration>,
+    [connections],
+  );
 
   const focusInput = useCallback(() => {
     textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -386,9 +394,11 @@ export function WelcomeScreen({
   }, [onPromptChange, focusInput]);
 
   const handleConnectionSelect = useCallback((connection: Integration) => {
-    onPromptChange(`Use my ${connection.name || connection.integration_type} connection to `);
+    const computedSlug = slugForIntegration(connection, connectionSlugMap);
+    if (!computedSlug) return;
+    onPromptChange(`@${computedSlug} `);
     focusInput();
-  }, [onPromptChange, focusInput]);
+  }, [connectionSlugMap, onPromptChange, focusInput]);
 
   const handleIntegrationSelect = useCallback((integration: { type: string; displayName: string }) => {
     onPromptChange(`Let's connect ${integration.displayName}`);

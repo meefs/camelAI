@@ -20,7 +20,11 @@ import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
 import { MentionChip } from '@/components/connection-mention-menu/mention-chip';
-import { parseMentions } from '@/lib/connection-mentions';
+import {
+  parseMentions,
+  type AnnotatedMentionRef,
+  type MentionMatch,
+} from '@/lib/connection-mentions';
 import type { Integration } from '@/types';
 
 interface MarkdownRendererProps {
@@ -29,6 +33,7 @@ interface MarkdownRendererProps {
   isStreaming?: boolean;
   variant?: 'default' | 'user';
   mentionSlugMap?: Map<string, Integration>;
+  annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>;
 }
 
 const CODEX_CITATION_REGEX = /cite[^]+/g;
@@ -147,14 +152,47 @@ function isOpaqueElement(element: ReactElement): boolean {
   return false;
 }
 
+function buildAnnotatedIdsBySlug(
+  annotatedMentions: ReadonlyArray<AnnotatedMentionRef> | undefined,
+): Map<string, Set<string | null>> {
+  const idsBySlug = new Map<string, Set<string | null>>();
+  for (const mention of annotatedMentions ?? []) {
+    const ids = idsBySlug.get(mention.slug) ?? new Set<string | null>();
+    ids.add(mention.id);
+    idsBySlug.set(mention.slug, ids);
+  }
+  return idsBySlug;
+}
+
+function resolveMentionChipIntegration(
+  match: MentionMatch,
+  annotatedIdsBySlug: ReadonlyMap<string, ReadonlySet<string | null>>,
+): Integration | null {
+  const currentIntegration = match.integration as Integration | null;
+  const annotatedIds = annotatedIdsBySlug.get(match.slug);
+
+  if (!annotatedIds) {
+    return currentIntegration;
+  }
+
+  if (currentIntegration && annotatedIds.has(currentIntegration.id)) {
+    return currentIntegration;
+  }
+
+  return null;
+}
+
 function replaceMentionsInText(
   text: string,
   slugMap: Map<string, Integration>,
+  annotatedIdsBySlug: ReadonlyMap<string, ReadonlySet<string | null>>,
   keyPrefix: string,
 ): ReactNode[] {
-  // Only render chips for slugs we recognize; unknown `@words` stay as plain
-  // text so random non-mention `@foo` doesn't get visually highlighted.
-  const matches = parseMentions(text, slugMap).filter((m) => m.integration !== null);
+  // Render chips for live slugs and for slugs whose stripped annotation proves
+  // they were once real mentions. Random unknown `@words` stay as plain text.
+  const matches = parseMentions(text, slugMap).filter((m) =>
+    m.integration !== null || annotatedIdsBySlug.has(m.slug),
+  );
   if (matches.length === 0) return [text];
 
   const out: ReactNode[] = [];
@@ -168,7 +206,7 @@ function replaceMentionsInText(
       <MentionChip
         key={`${keyPrefix}-m${i}`}
         slug={m.slug}
-        integration={m.integration as Integration}
+        integration={resolveMentionChipIntegration(m, annotatedIdsBySlug)}
       />,
     );
     cursor = m.index + m.length;
@@ -182,10 +220,16 @@ function replaceMentionsInText(
 function withMentionChips(
   children: ReactNode,
   slugMap: Map<string, Integration>,
+  annotatedIdsBySlug: ReadonlyMap<string, ReadonlySet<string | null>>,
   keyPrefix = 'mc',
 ): ReactNode {
   if (typeof children === 'string') {
-    const parts = replaceMentionsInText(children, slugMap, keyPrefix);
+    const parts = replaceMentionsInText(
+      children,
+      slugMap,
+      annotatedIdsBySlug,
+      keyPrefix,
+    );
     if (parts.length === 1 && parts[0] === children) return children;
     return parts.map((part, i) => (
       <Fragment key={`${keyPrefix}-${i}`}>{part}</Fragment>
@@ -193,14 +237,18 @@ function withMentionChips(
   }
   if (Array.isArray(children)) {
     return Children.map(children, (child, i) =>
-      withMentionChips(child, slugMap, `${keyPrefix}-${i}`),
+      withMentionChips(child, slugMap, annotatedIdsBySlug, `${keyPrefix}-${i}`),
     );
   }
   if (isValidElement(children)) {
     if (isOpaqueElement(children)) return children;
     const c = children as ReactElement<{ children?: ReactNode }>;
     if (c.props && c.props.children !== undefined) {
-      return cloneElement(c, undefined, withMentionChips(c.props.children, slugMap, keyPrefix));
+      return cloneElement(
+        c,
+        undefined,
+        withMentionChips(c.props.children, slugMap, annotatedIdsBySlug, keyPrefix),
+      );
     }
     return children;
   }
@@ -211,9 +259,15 @@ function withMentionChips(
 const createComponents = (
   variant: 'default' | 'user',
   mentionSlugMap?: Map<string, Integration>,
+  annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>,
 ): Components => {
+  const annotatedIdsBySlug = buildAnnotatedIdsBySlug(annotatedMentions);
+  const canRenderMentions = Boolean(mentionSlugMap || annotatedIdsBySlug.size);
+  const slugMap = mentionSlugMap ?? new Map<string, Integration>();
   const wrap = (children: ReactNode, keyPrefix: string) =>
-    mentionSlugMap ? withMentionChips(children, mentionSlugMap, keyPrefix) : children;
+    canRenderMentions
+      ? withMentionChips(children, slugMap, annotatedIdsBySlug, keyPrefix)
+      : children;
   return ({
   // Paragraphs
   p: ({ children }) => (
@@ -337,6 +391,7 @@ function MarkdownRendererBase({
   isStreaming = false,
   variant = 'default',
   mentionSlugMap,
+  annotatedMentions,
 }: MarkdownRendererProps) {
   // Process content for streaming - auto-close unclosed code fences
   const processedContent = useMemo(() => {
@@ -353,8 +408,8 @@ function MarkdownRendererBase({
   }, [content, isStreaming]);
 
   const components = useMemo(
-    () => createComponents(variant, mentionSlugMap),
-    [variant, mentionSlugMap],
+    () => createComponents(variant, mentionSlugMap, annotatedMentions),
+    [variant, mentionSlugMap, annotatedMentions],
   );
 
   return (
@@ -382,7 +437,8 @@ export const MarkdownRenderer = memo(MarkdownRendererBase, (prev, next) => {
     prev.className === next.className &&
     prev.isStreaming === next.isStreaming &&
     prev.variant === next.variant &&
-    prev.mentionSlugMap === next.mentionSlugMap
+    prev.mentionSlugMap === next.mentionSlugMap &&
+    prev.annotatedMentions === next.annotatedMentions
   );
 });
 

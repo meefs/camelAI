@@ -21,6 +21,11 @@ import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
 import { isSupportedSlashCommand } from '@/lib/slash-commands';
+import {
+  type AnnotatedMentionRef,
+  stripMentionAnnotations,
+  stripMentionAnnotationsWithMetadata,
+} from '@/lib/connection-mentions';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -91,7 +96,7 @@ interface ParsedMessage {
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
-const MENTION_ANNOTATION_REGEX = /\s*⟦ref:[^⟧]*⟧/g;
+const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 
 /**
  * Strip camelAI system message tags from content.
@@ -99,14 +104,28 @@ const MENTION_ANNOTATION_REGEX = /\s*⟦ref:[^⟧]*⟧/g;
  * be shown verbosely to users.
  */
 function stripSystemMessageTags(text: string): string {
-  return text
-    .replace(/<camelai system message>[\s\S]*?<\/camelai system message>/g, '')
-    .replace(MENTION_ANNOTATION_REGEX, '')
-    .trim();
+  return stripMentionAnnotations(stripSystemMessageTagsOnly(text)).trim();
+}
+
+function stripSystemMessageTagsOnly(text: string): string {
+  return text.replace(SYSTEM_MESSAGE_TAG_REGEX, '').trim();
+}
+
+function prepareDisplayText(text: string): {
+  displayText: string;
+  annotatedMentions: AnnotatedMentionRef[];
+} {
+  const { displayText, annotatedMentions } = stripMentionAnnotationsWithMetadata(
+    stripSystemMessageTagsOnly(text),
+  );
+  return {
+    displayText: displayText.trim(),
+    annotatedMentions,
+  };
 }
 
 function parseMessageAuthor(rawContent: string): ParsedMessage {
-  const content = stripSystemMessageTags(rawContent);
+  const content = stripSystemMessageTagsOnly(rawContent);
   // Match [Name (email)]: or [email]: at the start of the message
   // Pattern: [Name (email)]: or [Name]: or [email]:
   const matchWithEmail = content.match(AUTHOR_PREFIX_WITH_EMAIL_REGEX);
@@ -266,9 +285,16 @@ interface ContentBlockRendererProps {
 export function ContentBlockRenderer({ content, messageId, isStreaming = false, skillSheets, mentionSlugMap }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
-    const displayContent = stripSystemMessageTags(content);
+    const { displayText: displayContent, annotatedMentions } = prepareDisplayText(content);
     if (!displayContent) return null;
-    return <MarkdownRenderer content={displayContent} isStreaming={isStreaming} mentionSlugMap={mentionSlugMap} />;
+    return (
+      <MarkdownRenderer
+        content={displayContent}
+        isStreaming={isStreaming}
+        mentionSlugMap={mentionSlugMap}
+        annotatedMentions={annotatedMentions}
+      />
+    );
   }
 
   // Empty content
@@ -292,7 +318,7 @@ export function ContentBlockRenderer({ content, messageId, isStreaming = false, 
 
   content.forEach((block, index) => {
     if (block.type === 'text') {
-      const displayText = stripSystemMessageTags(block.text);
+      const { displayText, annotatedMentions } = prepareDisplayText(block.text);
       // Skip empty text blocks after stripping system messages
       if (!displayText) return;
       items.push({
@@ -300,7 +326,12 @@ export function ContentBlockRenderer({ content, messageId, isStreaming = false, 
         key: `text-${index}`,
         node: (
           <div className="max-w-none">
-            <MarkdownRenderer content={displayText} isStreaming={isStreaming} mentionSlugMap={mentionSlugMap} />
+            <MarkdownRenderer
+              content={displayText}
+              isStreaming={isStreaming}
+              mentionSlugMap={mentionSlugMap}
+              annotatedMentions={annotatedMentions}
+            />
           </div>
         ),
       });
@@ -546,7 +577,8 @@ export function MessageBubble({
         .filter(Boolean)
         .join('\n');
 
-    const bugReport = rawText ? parseBugReport(rawText) : null;
+    const bugReportText = rawText ? stripSystemMessageTags(rawText) : '';
+    const bugReport = bugReportText ? parseBugReport(bugReportText) : null;
 
     const uploadInfo = typeof displayContent === 'string'
       ? parseUploadRefs(displayContent)

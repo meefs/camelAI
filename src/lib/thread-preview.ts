@@ -1,16 +1,13 @@
 import type { ContentBlock, Message } from '@/types';
+import { stripMentionAnnotations } from '@/lib/connection-mentions';
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
 const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
-const MENTION_ANNOTATION_REGEX = /\s*⟦ref:[^⟧]*⟧/g;
 const MAX_FIRST_USER_MESSAGE_LENGTH = 500;
 
 function stripSystemMessageTags(text: string): string {
-  return text
-    .replace(SYSTEM_MESSAGE_TAG_REGEX, '')
-    .replace(MENTION_ANNOTATION_REGEX, '')
-    .trim();
+  return stripMentionAnnotations(text.replace(SYSTEM_MESSAGE_TAG_REGEX, '')).trim();
 }
 
 function stripAuthorPrefix(text: string): string {

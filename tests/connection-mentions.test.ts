@@ -6,6 +6,7 @@ import {
   rankMentionableConnections,
   slug,
   slugForIntegration,
+  stripMentionAnnotationsWithMetadata,
   type MentionableIntegration,
 } from '@/lib/connection-mentions';
 
@@ -158,5 +159,38 @@ describe('expandMentions', () => {
   it('returns input unchanged for empty body or empty map', () => {
     expect(expandMentions('', map)).toBe('');
     expect(expandMentions('hi @x', new Map())).toBe('hi @x');
+  });
+});
+
+describe('stripMentionAnnotationsWithMetadata', () => {
+  it('strips annotations and remembers the annotated slug', () => {
+    const result = stripMentionAnnotationsWithMetadata(
+      'hi @my_prod_db ⟦ref: postgres "My Prod DB" id=abc123⟧ now',
+    );
+
+    expect(result.displayText).toBe('hi @my_prod_db now');
+    expect(result.annotatedMentions).toEqual([
+      { slug: 'my_prod_db', id: 'abc123' },
+    ]);
+  });
+
+  it('does not mark random text before annotations as a mention slug', () => {
+    const result = stripMentionAnnotationsWithMetadata(
+      'hi my_prod_db ⟦ref: postgres "My Prod DB" id=abc123⟧ now',
+    );
+
+    expect(result.displayText).toBe('hi my_prod_db now');
+    expect(result.annotatedMentions).toEqual([]);
+  });
+
+  it('uses null ids for malformed legacy annotations', () => {
+    const result = stripMentionAnnotationsWithMetadata(
+      'hi @my_prod_db ⟦ref: postgres "My Prod DB"⟧ now',
+    );
+
+    expect(result.displayText).toBe('hi @my_prod_db now');
+    expect(result.annotatedMentions).toEqual([
+      { slug: 'my_prod_db', id: null },
+    ]);
   });
 });
