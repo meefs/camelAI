@@ -1,7 +1,16 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { Bug, ChevronDown, Download, ExternalLink, Globe, Loader2, RefreshCw } from 'lucide-react';
+import {
+  Bug,
+  ChevronDown,
+  Download,
+  ExternalLink,
+  FileText,
+  Globe,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -16,7 +25,7 @@ import { cn } from '@/lib/utils';
 import type { PreviewTarget } from '@/types';
 import { getFileExtension } from '@/components/chat-file-preview/file-type-utils';
 import type { NotebookPreviewLoadState } from '@/components/chat-file-preview';
-import { getToolbarFileType } from './preview-utils';
+import { getToolbarFileType, type ToolbarFileType } from './preview-utils';
 
 interface PreviewToolbarProps {
   activeTarget: PreviewTarget;
@@ -57,6 +66,7 @@ function ToolbarButton({
           size="icon-sm"
           onClick={onClick}
           className={className}
+          aria-label={tooltip}
           {...props}
         >
           <Icon className="h-4 w-4" />
@@ -126,6 +136,72 @@ function ClickToCopyUrlBar({
         </button>
       </TooltipTrigger>
       <TooltipContent>Live app link</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function getFileDisplayName(target: Extract<PreviewTarget, { kind: 'file' }>) {
+  return target.filename || target.path.split('/').filter(Boolean).pop() || 'file';
+}
+
+function ClickToCopyFileChip({
+  target,
+}: {
+  target: Extract<PreviewTarget, { kind: 'file' }>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const displayName = getFileDisplayName(target);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(target.path);
+      setCopied(true);
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = setTimeout(() => {
+        setCopied(false);
+        timeoutRef.current = null;
+      }, 1500);
+    } catch {
+      // Clipboard access can fail in unsupported browser contexts.
+    }
+  };
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className={cn(
+            'group/file flex max-w-[300px] min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-mono transition-colors',
+            copied ? 'bg-green-500/10' : 'bg-muted/50 hover:bg-muted'
+          )}
+          title={target.path}
+        >
+          <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+          <span className="truncate text-muted-foreground">
+            {copied ? 'Copied!' : displayName}
+          </span>
+          {!copied ? (
+            <span className="shrink-0 text-[10px] text-muted-foreground/60 opacity-0 transition-opacity group-hover/file:opacity-100">
+              Copy
+            </span>
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>Copy file path</TooltipContent>
     </Tooltip>
   );
 }
@@ -324,11 +400,16 @@ function DownloadButton({
 function AppToolbarActions({
   vanityUrl,
   vanityHost,
+  onOpenExternal,
   onBugReport,
   appShareButton,
-}: Pick<PreviewToolbarProps, 'vanityUrl' | 'vanityHost' | 'onBugReport' | 'appShareButton'>) {
+}: Pick<
+  PreviewToolbarProps,
+  'vanityUrl' | 'vanityHost' | 'onOpenExternal' | 'onBugReport' | 'appShareButton'
+>) {
   return (
     <>
+      <ToolbarButton icon={ExternalLink} tooltip="Open in new tab" onClick={onOpenExternal} />
       <ClickToCopyUrlBar url={vanityUrl ?? ''} displayHost={vanityHost ?? ''} />
       {appShareButton}
       {onBugReport ? (
@@ -344,84 +425,114 @@ function AppToolbarActions({
 function NotebookToolbarActions({
   notebookViewMode,
   onNotebookViewModeChange,
-  activeTarget,
-  filePreviewOpenUrl,
-  notebookState,
-  isNotebookPdfExporting,
-  onNotebookReportPdfDownload,
 }: Pick<
   PreviewToolbarProps,
   | 'notebookViewMode'
   | 'onNotebookViewModeChange'
-  | 'activeTarget'
-  | 'filePreviewOpenUrl'
-  | 'notebookState'
-  | 'isNotebookPdfExporting'
-  | 'onNotebookReportPdfDownload'
 >) {
   return (
-    <>
-      <Tabs
-        value={notebookViewMode ?? 'report'}
-        onValueChange={(value) => {
-          if (value === 'report' || value === 'notebook') {
-            onNotebookViewModeChange?.(value);
-          }
-        }}
-        className="shrink-0 gap-0"
-      >
-        <TabsList variant="outline" className="h-7">
-          <TabsTrigger value="report" className="h-6 px-3 text-xs">
-            Report
-          </TabsTrigger>
-          <TabsTrigger value="notebook" className="h-6 px-3 text-xs">
-            Notebook
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-      <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
-      <DownloadButton
-        activeTarget={activeTarget}
-        filePreviewOpenUrl={filePreviewOpenUrl}
-        notebookState={notebookState}
-        isNotebookPdfExporting={isNotebookPdfExporting}
-        onNotebookReportPdfDownload={onNotebookReportPdfDownload}
-      />
-    </>
+    <Tabs
+      value={notebookViewMode ?? 'report'}
+      onValueChange={(value) => {
+        if (value === 'report' || value === 'notebook') {
+          onNotebookViewModeChange?.(value);
+        }
+      }}
+      className="shrink-0 gap-0"
+    >
+      <TabsList variant="outline" className="h-7">
+        <TabsTrigger value="report" className="h-6 px-3 text-xs">
+          Report
+        </TabsTrigger>
+        <TabsTrigger value="notebook" className="h-6 px-3 text-xs">
+          Notebook
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
   );
 }
 
 function MarkdownToolbarActions({
   markdownViewMode,
   onMarkdownViewModeChange,
-  activeTarget,
-  filePreviewOpenUrl,
 }: Pick<
   PreviewToolbarProps,
-  'markdownViewMode' | 'onMarkdownViewModeChange' | 'activeTarget' | 'filePreviewOpenUrl'
+  'markdownViewMode' | 'onMarkdownViewModeChange'
+>) {
+  return (
+    <Tabs
+      value={markdownViewMode ?? 'rendered'}
+      onValueChange={(value) => {
+        if (value === 'rendered' || value === 'source') {
+          onMarkdownViewModeChange?.(value);
+        }
+      }}
+      className="shrink-0 gap-0"
+    >
+      <TabsList variant="outline" className="h-7">
+        <TabsTrigger value="rendered" className="h-6 px-3 text-xs">
+          Rendered
+        </TabsTrigger>
+        <TabsTrigger value="source" className="h-6 px-3 text-xs">
+          Source
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
+  );
+}
+
+function FileToolbarActions({
+  activeTarget,
+  fileType,
+  notebookViewMode,
+  onNotebookViewModeChange,
+  markdownViewMode,
+  onMarkdownViewModeChange,
+  filePreviewOpenUrl,
+  notebookState,
+  isNotebookPdfExporting,
+  onNotebookReportPdfDownload,
+  onOpenExternal,
+}: {
+  activeTarget: Extract<PreviewTarget, { kind: 'file' }>;
+  fileType: ToolbarFileType;
+} & Pick<
+  PreviewToolbarProps,
+  | 'notebookViewMode'
+  | 'onNotebookViewModeChange'
+  | 'markdownViewMode'
+  | 'onMarkdownViewModeChange'
+  | 'filePreviewOpenUrl'
+  | 'notebookState'
+  | 'isNotebookPdfExporting'
+  | 'onNotebookReportPdfDownload'
+  | 'onOpenExternal'
 >) {
   return (
     <>
-      <Tabs
-        value={markdownViewMode ?? 'rendered'}
-        onValueChange={(value) => {
-          if (value === 'rendered' || value === 'source') {
-            onMarkdownViewModeChange?.(value);
-          }
-        }}
-        className="shrink-0 gap-0"
-      >
-        <TabsList variant="outline" className="h-7">
-          <TabsTrigger value="rendered" className="h-6 px-3 text-xs">
-            Rendered
-          </TabsTrigger>
-          <TabsTrigger value="source" className="h-6 px-3 text-xs">
-            Source
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <ClickToCopyFileChip target={activeTarget} />
       <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
-      <DownloadButton activeTarget={activeTarget} filePreviewOpenUrl={filePreviewOpenUrl} />
+      {fileType === 'notebook' ? (
+        <NotebookToolbarActions
+          notebookViewMode={notebookViewMode}
+          onNotebookViewModeChange={onNotebookViewModeChange}
+        />
+      ) : fileType === 'markdown' ? (
+        <MarkdownToolbarActions
+          markdownViewMode={markdownViewMode}
+          onMarkdownViewModeChange={onMarkdownViewModeChange}
+        />
+      ) : null}
+      <div className="ml-auto flex items-center gap-1">
+        <ToolbarButton icon={ExternalLink} tooltip="Open in new tab" onClick={onOpenExternal} />
+        <DownloadButton
+          activeTarget={activeTarget}
+          filePreviewOpenUrl={filePreviewOpenUrl}
+          notebookState={notebookState}
+          isNotebookPdfExporting={isNotebookPdfExporting}
+          onNotebookReportPdfDownload={onNotebookReportPdfDownload}
+        />
+      </div>
     </>
   );
 }
@@ -451,34 +562,30 @@ function PreviewToolbarComponent({
 
       <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
 
-      <ToolbarButton icon={ExternalLink} tooltip="Open in new tab" onClick={onOpenExternal} />
-
       {fileType === 'app' ? (
         <AppToolbarActions
           vanityUrl={vanityUrl}
           vanityHost={vanityHost}
+          onOpenExternal={onOpenExternal}
           onBugReport={onBugReport}
           appShareButton={appShareButton}
         />
-      ) : fileType === 'notebook' ? (
-        <NotebookToolbarActions
+      ) : activeTarget.kind === 'file' ? (
+        <FileToolbarActions
+          activeTarget={activeTarget}
+          fileType={fileType}
           notebookViewMode={notebookViewMode}
           onNotebookViewModeChange={onNotebookViewModeChange}
-          activeTarget={activeTarget}
+          markdownViewMode={markdownViewMode}
+          onMarkdownViewModeChange={onMarkdownViewModeChange}
           filePreviewOpenUrl={filePreviewOpenUrl}
           notebookState={notebookState}
           isNotebookPdfExporting={isNotebookPdfExporting}
           onNotebookReportPdfDownload={onNotebookReportPdfDownload}
-        />
-      ) : fileType === 'markdown' ? (
-        <MarkdownToolbarActions
-          markdownViewMode={markdownViewMode}
-          onMarkdownViewModeChange={onMarkdownViewModeChange}
-          activeTarget={activeTarget}
-          filePreviewOpenUrl={filePreviewOpenUrl}
+          onOpenExternal={onOpenExternal}
         />
       ) : (
-        <DownloadButton activeTarget={activeTarget} filePreviewOpenUrl={filePreviewOpenUrl} />
+        null
       )}
     </div>
   );

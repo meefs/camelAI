@@ -3,6 +3,7 @@ import {
   getFileCategory,
   getPreviewType,
   getShikiLanguage,
+  isBinarySpreadsheet,
 } from '@/components/chat-file-preview/file-type-utils';
 
 describe('file-type-utils', () => {
@@ -34,15 +35,30 @@ describe('file-type-utils', () => {
     expect(getPreviewType('notes.log')).toBe('text');
   });
 
-  it('falls back for binary excel formats', () => {
-    expect(getPreviewType('report.xlsx')).toBe('other');
-    expect(getPreviewType('report.xls')).toBe('other');
+  it('routes binary excel formats to spreadsheet preview', () => {
+    expect(getPreviewType('report.xlsx')).toBe('spreadsheet');
+    expect(getPreviewType('report.xls')).toBe('spreadsheet');
     expect(
       getPreviewType(
         'report.xlsx',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
       )
-    ).toBe('other');
+    ).toBe('spreadsheet');
+    expect(isBinarySpreadsheet('report.xlsx')).toBe(true);
+    expect(isBinarySpreadsheet('report.xls')).toBe(true);
+    expect(isBinarySpreadsheet('data.csv', 'text/csv')).toBe(false);
+    expect(isBinarySpreadsheet('data.csv', 'application/vnd.ms-excel')).toBe(false);
+    expect(isBinarySpreadsheet('data.tsv', 'application/vnd.ms-excel')).toBe(false);
+  });
+
+  it('does not route unsupported spreadsheet formats to the spreadsheet preview', () => {
+    expect(getFileCategory('budget.ods')).toBe('other');
+    expect(getFileCategory('budget.ods', 'application/vnd.oasis.opendocument.spreadsheet')).toBe(
+      'spreadsheet'
+    );
+    expect(getPreviewType('budget.ods', 'application/vnd.oasis.opendocument.spreadsheet')).toBe(
+      'other'
+    );
   });
 
   it('maps file extensions to shiki languages', () => {

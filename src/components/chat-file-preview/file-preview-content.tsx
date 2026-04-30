@@ -1,17 +1,20 @@
 'use client';
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { CodePreview } from './code-preview';
-import { getPreviewType } from './file-type-utils';
+import { getPreviewType, isBinarySpreadsheet } from './file-type-utils';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
-import { SpreadsheetPreview } from './spreadsheet-preview';
+import type { SpreadsheetToolbarState } from './spreadsheet';
 
 const MAX_TEXT_LINES = 500;
 const MAX_SPREADSHEET_LINES = 500;
+const SpreadsheetPreview = lazy(() =>
+  import('./spreadsheet').then((module) => ({ default: module.SpreadsheetPreview }))
+);
 
 type PreviewLayout = 'dialog' | 'panel';
 
@@ -96,6 +99,7 @@ export interface FilePreviewContentProps {
   notebookViewMode?: 'report' | 'notebook';
   markdownViewMode?: 'rendered' | 'source';
   onNotebookStateChange?: (state: NotebookPreviewLoadState) => void;
+  onSpreadsheetToolbarStateChange?: (state: SpreadsheetToolbarState | null) => void;
 }
 
 export interface NotebookPreviewLoadState {
@@ -111,6 +115,7 @@ function FilePreviewContentComponent({
   notebookViewMode,
   markdownViewMode,
   onNotebookStateChange,
+  onSpreadsheetToolbarStateChange,
 }: FilePreviewContentProps) {
   const previewType = useMemo(
     () => getPreviewType(filename, contentType),
@@ -118,6 +123,7 @@ function FilePreviewContentComponent({
   );
 
   const [textPreview, setTextPreview] = useState('');
+  const [spreadsheetBinary, setSpreadsheetBinary] = useState<ArrayBuffer | null>(null);
   const [textStatus, setTextStatus] = useState<TextStatus>('idle');
   const [textErrorMessage, setTextErrorMessage] = useState('Unable to preview this file.');
   const [notebook, setNotebook] = useState<NotebookFile | null>(null);
@@ -128,6 +134,10 @@ function FilePreviewContentComponent({
     totalLines: 0,
   });
   const notebookStateChangeRef = useRef(onNotebookStateChange);
+  const binarySpreadsheet = useMemo(
+    () => previewType === 'spreadsheet' && isBinarySpreadsheet(filename, contentType),
+    [contentType, filename, previewType]
+  );
 
   useEffect(() => {
     notebookStateChangeRef.current = onNotebookStateChange;
@@ -155,6 +165,9 @@ function FilePreviewContentComponent({
 
     setTextStatus('loading');
     setTextErrorMessage(getPreviewErrorMessage(previewType));
+    setTextPreview('');
+    setSpreadsheetBinary(null);
+    setLineInfo({ truncated: false, totalLines: 0 });
     setNotebook(null);
     if (previewType === 'notebook') {
       notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
@@ -167,6 +180,14 @@ function FilePreviewContentComponent({
           error.status = response.status;
           throw error;
         }
+        if (previewType === 'spreadsheet' && binarySpreadsheet) {
+          const bodyBuffer = await response.arrayBuffer();
+          if (cancelled) return;
+          setSpreadsheetBinary(bodyBuffer);
+          setTextStatus('ready');
+          return;
+        }
+
         const bodyText = await response.text();
         if (previewType === 'notebook') {
           let parsed: NotebookFile | null = null;
@@ -214,7 +235,7 @@ function FilePreviewContentComponent({
       cancelled = true;
       controller.abort();
     };
-  }, [previewType, previewUrl]);
+  }, [binarySpreadsheet, previewType, previewUrl]);
 
   useEffect(() => {
     if (previewType === 'pdf' || previewType === 'audio' || previewType === 'video') {
@@ -374,14 +395,23 @@ function FilePreviewContentComponent({
             <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && (
-            <SpreadsheetPreview
-              content={textPreview}
-              filename={filename}
-              contentType={contentType}
-              layout={layout}
-            />
+            <Suspense
+              fallback={
+                <div className="flex min-h-[200px] items-center justify-center">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              }
+            >
+              <SpreadsheetPreview
+                content={spreadsheetBinary ?? textPreview}
+                filename={filename}
+                contentType={contentType}
+                layout={layout}
+                onToolbarStateChange={onSpreadsheetToolbarStateChange}
+              />
+            </Suspense>
           )}
-          {textStatus === 'ready' && lineInfo.truncated && (
+          {textStatus === 'ready' && !binarySpreadsheet && lineInfo.truncated && (
             <p className="mt-2 px-4 text-xs text-muted-foreground">
               Showing first {MAX_SPREADSHEET_LINES} of {lineInfo.totalLines} lines.
             </p>
@@ -469,7 +499,8 @@ function areFilePreviewContentPropsEqual(
     prev.contentType === next.contentType &&
     prev.layout === next.layout &&
     prev.notebookViewMode === next.notebookViewMode &&
-    prev.markdownViewMode === next.markdownViewMode
+    prev.markdownViewMode === next.markdownViewMode &&
+    prev.onSpreadsheetToolbarStateChange === next.onSpreadsheetToolbarStateChange
   );
 }
 
