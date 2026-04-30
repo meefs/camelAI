@@ -1,73 +1,51 @@
-import { Form, redirect, useLoaderData } from "react-router";
+import { useState } from "react";
+import {
+  Form,
+  redirect,
+  useFetcher,
+  useLoaderData,
+} from "react-router";
+import { ArrowLeft, CreditCard } from "lucide-react";
 import type { Route } from "./+types/_app.settings.organization.billing";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   createBillingPortalSession,
-  createCreditsCheckoutSession,
-  createSubscriptionCheckoutSession,
-  fetchConfiguredCreditPacks,
-  fetchConfiguredSubscriptionPlans,
   getOrgBillingOverview,
+  getStripeDefaultPaymentMethodSummary,
+  getStripeSubscriptionSummary,
   isStripeBillingConfigured,
+  listStripeInvoicesForOrg,
 } from "@/lib/billing.server";
-import { BILLING_PLAN_LIMITS, isBillingPlan } from "@/lib/billing-plans";
+import { BILLING_PLAN_LIMITS, normalizeBillingPlan } from "@/lib/billing-plans";
 import type { BillingPlan } from "@/types";
-import {
-  billingStatusBadgeVariant,
-  billingStatusLabel,
-  formatCreditBalance,
-  getBillingStatusDescription,
-} from "@/lib/billing";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
+import { PlanPicker, type PlanPickerCta } from "@/components/billing/plan-picker";
+import {
+  InvoicesTable,
+  type InvoiceRow,
+} from "@/components/billing/invoices-table";
+import { CancelPlanDialog } from "@/components/billing/cancel-plan-dialog";
 
-function formatTimestamp(value: number | null | undefined): string | null {
-  if (!value) return null;
-  return new Date(value).toLocaleString();
-}
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+});
 
-function formatPriceLabel(
-  price: {
-    unit_amount: number | null;
-    currency: string;
-    recurring?: { interval: string; interval_count?: number } | null;
-  } | null,
-): string | null {
-  if (!price?.unit_amount) return null;
-
-  const amount = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: price.currency.toUpperCase(),
-  }).format(price.unit_amount / 100);
-
-  if (!price.recurring) {
-    return amount;
+function planSubtitle(plan: BillingPlan): string {
+  switch (plan) {
+    case "free":
+      return "Bring your own API key. No included credits.";
+    case "starter":
+      return "$10/month in hosted credits.";
+    case "pro":
+      return "$30/month in hosted credits.";
+    case "team":
+      return "$10/seat/month in hosted credits.";
+    case "enterprise":
+      return "Custom enterprise plan billed outside Stripe.";
   }
-
-  const intervalCount = price.recurring.interval_count ?? 1;
-  const intervalLabel =
-    intervalCount === 1
-      ? price.recurring.interval
-      : `${intervalCount} ${price.recurring.interval}s`;
-  return `${amount}/${intervalLabel}`;
-}
-
-function formatCreditPackLabel(price: {
-  unit_amount: number | null;
-  currency: string;
-}): string | null {
-  if (!price.unit_amount) return null;
-  return `${(price.unit_amount / 100).toFixed(2)} credits`;
 }
 
 export function meta() {
@@ -75,7 +53,7 @@ export function meta() {
     { title: "Billing - Settings - camelAI" },
     {
       name: "description",
-      content: "Manage billing, subscription status, and usage credits.",
+      content: "Manage your plan, payment method, and invoices.",
     },
   ];
 }
@@ -85,35 +63,62 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
 
-  const [overview, subscriptionPlans, creditPacks] = await Promise.all([
+  const stripeConfigured = isStripeBillingConfigured(env);
+
+  const [overview, paymentMethod, invoices, subscription] = await Promise.all([
     getOrgBillingOverview(env, authContext.currentOrg),
-    fetchConfiguredSubscriptionPlans(env),
-    fetchConfiguredCreditPacks(env),
+    stripeConfigured
+      ? getStripeDefaultPaymentMethodSummary(env, authContext.currentOrg).catch(
+          () => null,
+        )
+      : Promise.resolve(null),
+    stripeConfigured
+      ? listStripeInvoicesForOrg(env, authContext.currentOrg).catch(() => [])
+      : Promise.resolve([]),
+    stripeConfigured
+      ? getStripeSubscriptionSummary(env, authContext.currentOrg).catch(
+          () => null,
+        )
+      : Promise.resolve(null),
   ]);
+
+  const invoiceRows: InvoiceRow[] = invoices.map((invoice) => ({
+    id: invoice.id,
+    createdAtMs: (invoice.created ?? 0) * 1000,
+    amountPaidCents: invoice.amount_paid ?? 0,
+    currency: invoice.currency ?? "usd",
+    status: invoice.status ?? "",
+    hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
+  }));
 
   return {
     org: authContext.currentOrg,
     overview,
-    stripeConfigured: isStripeBillingConfigured(env),
-    subscriptionPlans: subscriptionPlans.map((plan) => ({
-      plan: plan.plan,
-      label: plan.limits.label,
-      priceLabel: formatPriceLabel(plan.price),
-      includedCreditsLabel: formatCreditBalance(
-        plan.limits.includedCreditCentsBase ||
-          plan.limits.includedCreditCentsPerSeat,
-      ),
-      minimumSeats: plan.limits.minimumSeats,
-      emailInbox: plan.limits.emailInbox,
-    })),
-    creditPacks: creditPacks.map((pack) => ({
-      id: pack.id,
-      priceLabel: formatPriceLabel(pack),
-      creditsLabel: formatCreditPackLabel(pack),
-    })),
+    stripeConfigured,
+    paymentMethod,
+    invoices: invoiceRows,
+    subscription,
   };
 }
 
+// FIXME(billing-stripe): Plan upgrades, downgrades, and cancellations are not
+// wired to Stripe yet. Today this route:
+//   - Disables the per-card CTA in <PlanPicker> when stripeConfigured is false
+//     (see ManagePlanView's `disabledReason`).
+//   - Stubs `changePlan` and `cancelSubscription` to redirect-only (below).
+//
+// To complete the wiring, the next engineer needs to:
+//   1. Implement createSubscriptionCheckoutSession() / upgradeSubscription() /
+//      downgradeSubscription() helpers in src/lib/billing.server.ts and call
+//      them from the `changePlan` case.
+//   2. Implement cancelStripeSubscription() (cancel at period end) and call it
+//      from the `cancelSubscription` case.
+//   3. Once those helpers exist, remove the `disabledReason` argument from
+//      <ManagePlanView>'s <PlanPicker> render so the card CTAs are enabled
+//      whenever stripeConfigured is true (or remove the gate entirely if the
+//      Stripe wiring is mandatory).
+//   4. Verify webhook handling in `/api/billing/stripe/webhook` updates
+//      org.billing_plan / billing_status correctly after each transition.
 export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
@@ -122,50 +127,8 @@ export async function action({ request, context }: Route.ActionArgs) {
   const intent = String(formData.get("intent") || "");
 
   const billingUrl = new URL("/settings/organization/billing", request.url);
-  const successUrl = new URL(
-    "/settings/organization/billing?checkout=success",
-    request.url,
-  ).toString();
-  const cancelUrl = new URL(
-    "/settings/organization/billing?checkout=cancelled",
-    request.url,
-  ).toString();
 
   switch (intent) {
-    case "startSubscription": {
-      const rawPlan = String(formData.get("plan") || "starter");
-      const plan: BillingPlan = isBillingPlan(rawPlan) ? rawPlan : "starter";
-      const orgStub = env.ORG.get(
-        env.ORG.idFromName(authContext.currentOrg.id),
-      );
-      const memberCount = await orgStub.getMemberCount();
-      const seatCount =
-        plan === "team"
-          ? Math.max(BILLING_PLAN_LIMITS.team.minimumSeats, memberCount)
-          : 1;
-      const url = await createSubscriptionCheckoutSession({
-        env,
-        org: authContext.currentOrg,
-        customerEmail: authContext.user.email,
-        successUrl,
-        cancelUrl,
-        plan,
-        seatCount,
-      });
-      throw redirect(url);
-    }
-    case "buyCredits": {
-      const selectedPriceId = String(formData.get("priceId") || "");
-      const url = await createCreditsCheckoutSession({
-        env,
-        org: authContext.currentOrg,
-        customerEmail: authContext.user.email,
-        successUrl,
-        cancelUrl,
-        priceId: selectedPriceId,
-      });
-      throw redirect(url);
-    }
     case "manageBilling": {
       const url = await createBillingPortalSession({
         env,
@@ -175,228 +138,256 @@ export async function action({ request, context }: Route.ActionArgs) {
       });
       throw redirect(url);
     }
+    case "changePlan": {
+      // FIXME(billing-stripe): see top-of-file FIXME block. Currently a no-op
+      // redirect — implement the actual Stripe subscription transition here.
+      throw redirect(billingUrl.toString());
+    }
+    case "cancelSubscription": {
+      // FIXME(billing-stripe): see top-of-file FIXME block. Currently a no-op
+      // redirect — implement Stripe cancel-at-period-end here.
+      throw redirect(billingUrl.toString());
+    }
     default:
       return { error: "Unknown billing action" };
   }
 }
 
-export default function BillingPage() {
-  const { org, overview, stripeConfigured, subscriptionPlans, creditPacks } =
-    useLoaderData<typeof loader>();
+type View = "overview" | "manage";
 
-  const trialEndsLabel = formatTimestamp(overview.billing_trial_ends_at);
+export default function BillingPage() {
+  const {
+    org,
+    overview,
+    stripeConfigured,
+    paymentMethod,
+    invoices,
+    subscription,
+  } = useLoaderData<typeof loader>();
+
+  const [view, setView] = useState<View>("overview");
+  const [cancelOpen, setCancelOpen] = useState(false);
+
   const isEnterprise = org.billing_status === "enterprise";
+  const plan: BillingPlan = normalizeBillingPlan(
+    overview.billing_plan,
+    overview.billing_status,
+  );
+  const planLimits = BILLING_PLAN_LIMITS[plan];
+
+  const subscriptionStatus = overview.billing_subscription_status;
+  const hasActiveSubscription =
+    !isEnterprise &&
+    (subscriptionStatus === "active" ||
+      subscriptionStatus === "trialing" ||
+      subscriptionStatus === "past_due");
+
+  const renewalLabel = subscription?.current_period_end_ms
+    ? dateFormatter.format(new Date(subscription.current_period_end_ms))
+    : null;
+  const cancelAtPeriodEnd = subscription?.cancel_at_period_end ?? false;
+
+  const planSummarySubtitle = (() => {
+    if (isEnterprise) {
+      return planSubtitle("enterprise");
+    }
+    const baseline = planSubtitle(plan);
+    if (cancelAtPeriodEnd && renewalLabel) {
+      return `${baseline} Cancels on ${renewalLabel}.`;
+    }
+    if (hasActiveSubscription && renewalLabel) {
+      return `${baseline} Renews ${renewalLabel}.`;
+    }
+    return baseline;
+  })();
+
+  if (view === "manage") {
+    return (
+      <ManagePlanView
+        currentPlan={plan}
+        stripeConfigured={stripeConfigured}
+        onBack={() => setView("overview")}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
       <SettingsHeader
         title="Billing"
-        description="Start your subscription, buy credits, and manage payment details."
+        description="Manage your plan, payment method, and invoices."
       />
       <Separator />
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardDescription>Subscription</CardDescription>
-            <CardTitle className="flex items-center gap-3 text-xl">
-              <span>{billingStatusLabel(org.billing_status)}</span>
-              <Badge variant={billingStatusBadgeVariant(org.billing_status)}>
-                {billingStatusLabel(org.billing_status)}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
+      <section className="space-y-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold">{planLimits.label} plan</h2>
             <p className="text-sm text-muted-foreground">
-              {getBillingStatusDescription(org)}
+              {planSummarySubtitle}
             </p>
-            {trialEndsLabel ? (
-              <p className="text-sm text-muted-foreground">
-                Trial ends {trialEndsLabel}.
-              </p>
-            ) : null}
-            <p className="text-sm text-muted-foreground">
-              Plan: {BILLING_PLAN_LIMITS[overview.billing_plan].label}
-            </p>
-          </CardContent>
-        </Card>
+          </div>
+          {isEnterprise ? null : (
+            <Button variant="outline" onClick={() => setView("manage")}>
+              {plan === "free" ? "Choose a plan" : "Manage plan"}
+            </Button>
+          )}
+        </div>
+      </section>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardDescription>Available Credits</CardDescription>
-            <CardTitle className="text-xl">
-              {formatCreditBalance(overview.available_credits_cents)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <p>
-              Purchased:{" "}
-              {formatCreditBalance(
-                overview.billing_credit_purchase_total_cents,
-              )}
-            </p>
-            <p>
-              Included:{" "}
-              {formatCreditBalance(overview.billing_credit_grant_total_cents)}
-            </p>
-            <p>
-              Billable usage:{" "}
-              {formatCreditBalance(overview.chargeable_usage_cents)}
-            </p>
-            {creditPacks.length > 0 ? (
-              <p>{creditPacks.length} credit pack options available.</p>
-            ) : null}
-            <p>
-              Subscription grant:{" "}
-              {formatCreditBalance(overview.subscription_included_credit_cents)}
-              /billing period.
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardDescription>Lifetime Usage</CardDescription>
-            <CardTitle className="text-xl">
-              {formatCreditBalance(overview.lifetime_spend_cents)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <p>
-              Chargeable requests:{" "}
-              {overview.chargeable_request_count.toLocaleString()}
-            </p>
-            <p>
-              {isEnterprise
-                ? "Enterprise access bypasses Stripe subscription and credit deductions."
-                : `Trial includes ${formatCreditBalance(
-                    overview.trial_credit_allowance_cents,
-                  )} in hosted LLM credits.`}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Plans</CardTitle>
-          <CardDescription>
-            {isEnterprise
-              ? "This organization is billed outside Stripe."
-              : `Use Free with your own API key, or start a paid plan for capped hosted LLM credits.`}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
-          {isEnterprise ? (
-            <p className="text-sm text-muted-foreground">
-              Hosted usage is enabled without a Stripe subscription or credit
-              balance for this organization.
-            </p>
-          ) : (
-            <>
-              {subscriptionPlans.map((plan) => (
-                <Form
-                  method="post"
-                  key={plan.plan}
-                  className="rounded-lg border p-4"
-                >
+      {!isEnterprise ? (
+        <>
+          <Separator />
+          <section className="space-y-3">
+            <h2 className="text-base font-semibold">Payment</h2>
+            {paymentMethod ? (
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3 text-sm">
+                  <CreditCard
+                    className="size-5 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <span className="capitalize">{paymentMethod.brand}</span>{" "}
+                    ending in {paymentMethod.last4}
+                  </span>
+                </div>
+                <Form method="post">
                   <input
                     type="hidden"
                     name="intent"
-                    value="startSubscription"
+                    value="manageBilling"
                   />
-                  <input type="hidden" name="plan" value={plan.plan} />
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium">{plan.label}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {plan.priceLabel ?? "Not configured"}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {plan.plan === "team"
-                        ? `${plan.includedCreditsLabel}/seat in hosted credits`
-                        : `${plan.includedCreditsLabel}/month in hosted credits`}
-                    </p>
-                    {plan.minimumSeats > 1 ? (
-                      <p className="text-sm text-muted-foreground">
-                        {plan.minimumSeats} seat minimum.
-                      </p>
-                    ) : null}
-                  </div>
                   <Button
                     type="submit"
+                    variant="outline"
                     disabled={!stripeConfigured}
-                    className="mt-4 w-full"
                   >
-                    Start {plan.label}
+                    Update
                   </Button>
                 </Form>
-              ))}
-            </>
-          )}
-        </CardContent>
-      </Card>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">
+                  No payment method on file.
+                </p>
+                {stripeConfigured && hasActiveSubscription ? (
+                  <Form method="post">
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="manageBilling"
+                    />
+                    <Button type="submit" variant="outline">
+                      Add payment method
+                    </Button>
+                  </Form>
+                ) : null}
+              </div>
+            )}
+          </section>
 
-      {!isEnterprise ? (
-        <Form method="post">
-          <input type="hidden" name="intent" value="manageBilling" />
-          <Button type="submit" variant="outline" disabled={!stripeConfigured}>
-            Open Billing Portal
-          </Button>
-        </Form>
-      ) : null}
+          <Separator />
+          <section className="space-y-3">
+            <h2 className="text-base font-semibold">Invoices</h2>
+            <InvoicesTable invoices={invoices} />
+          </section>
 
-      {!isEnterprise ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Buy Credits</CardTitle>
-            <CardDescription>
-              Choose how many credits to add. Credits are consumed by chargeable
-              hosted model usage once included credits are used.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-3">
-            {creditPacks.map((pack) => (
-              <Form
-                method="post"
-                key={pack.id}
-                className="rounded-lg border p-4"
-              >
-                <input type="hidden" name="intent" value="buyCredits" />
-                <input type="hidden" name="priceId" value={pack.id} />
-                <div className="space-y-1">
-                  <p className="text-sm font-medium">
-                    {pack.creditsLabel ?? "Credits"}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {pack.priceLabel ?? pack.id}
-                  </p>
+          {hasActiveSubscription && !cancelAtPeriodEnd ? (
+            <>
+              <Separator />
+              <section className="space-y-3">
+                <h2 className="text-base font-semibold">Cancellation</h2>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-1">
+                    <p className="text-sm">Cancel plan</p>
+                    <p className="text-xs text-muted-foreground">
+                      Your plan stays active until the end of the current
+                      billing period.
+                    </p>
+                  </div>
+                  <Button
+                    variant="destructive"
+                    onClick={() => setCancelOpen(true)}
+                  >
+                    Cancel
+                  </Button>
                 </div>
-                <Button
-                  type="submit"
-                  variant="outline"
-                  disabled={!stripeConfigured}
-                  className="mt-4 w-full"
-                >
-                  Buy {pack.creditsLabel ?? "Credits"}
-                </Button>
-              </Form>
-            ))}
-            {creditPacks.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No credit packs are configured.
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
+              </section>
+            </>
+          ) : null}
+        </>
       ) : null}
 
-      {!stripeConfigured ? (
-        <p className="text-sm text-muted-foreground">
-          Stripe billing is not configured yet. Set `STRIPE_SECRET_KEY`,
-          subscription price IDs, `STRIPE_CREDIT_PRICE_IDS`, and
-          `STRIPE_WEBHOOK_SECRET` before using these actions.
-        </p>
-      ) : null}
+      <CancelPlanDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        planLabel={planLimits.label}
+        periodEndLabel={renewalLabel}
+      />
     </div>
   );
 }
+
+function ManagePlanView({
+  currentPlan,
+  stripeConfigured,
+  onBack,
+}: {
+  currentPlan: BillingPlan;
+  stripeConfigured: boolean;
+  onBack: () => void;
+}) {
+  const fetcher = useFetcher();
+  const isSubmitting = fetcher.state !== "idle";
+  const pendingPlan = isSubmitting
+    ? ((fetcher.formData?.get("plan") as BillingPlan | null) ?? null)
+    : null;
+
+  function handleSelectPlan(cta: PlanPickerCta) {
+    if (cta.kind === "contact") {
+      window.open("mailto:sales@camelai.com", "_blank");
+      return;
+    }
+    if (cta.kind === "byok") {
+      fetcher.submit(
+        { intent: "changePlan", plan: "free" },
+        { method: "post" },
+      );
+      return;
+    }
+    fetcher.submit(
+      { intent: "changePlan", plan: cta.plan },
+      { method: "post" },
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" aria-hidden="true" />
+        Back to billing
+      </button>
+
+      <PlanPicker
+        currentPlan={currentPlan}
+        onSelectPlan={handleSelectPlan}
+        pendingPlan={pendingPlan}
+        // FIXME(billing-stripe): `disabledReason` disables every paid-plan CTA when
+        // Stripe isn't configured locally. Once Stripe wiring is complete, either:
+        //   - keep this as-is (Stripe is required to upgrade), or
+        //   - drop the `disabledReason` prop entirely and rely on the action handler
+        //     to surface configuration errors via the fetcher's `data.error` channel.
+        disabledReason={
+          stripeConfigured ? null : "Stripe billing is not configured."
+        }
+      />
+    </div>
+  );
+}
+
