@@ -40,7 +40,7 @@ export function meta() {
     {
       name: "description",
       content:
-        "Bring your own API key to use camelAI without hosted credits.",
+        "Bring your own API key to use camelAI with your LLM provider.",
     },
   ];
 }
@@ -240,7 +240,7 @@ export default function AiProviderPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="AI Provider"
-        description="Bring your own API key to use camelAI without hosted credits."
+        description="Bring your own API key to use camelAI with your LLM provider."
       />
       <Separator />
 
