@@ -296,7 +296,7 @@ function AppDomainRow({
       </TableRow>
       {showDisclosure ? (
         <TableRow id={`dns-${app.name}`}>
-          <TableCell colSpan={4} className="bg-muted/30">
+          <TableCell colSpan={4} className="whitespace-normal bg-muted/30">
             <div className="space-y-2 px-2 py-3 text-sm">
               <DnsRecordLine
                 label={`DNS for ${app.hostname}`}
