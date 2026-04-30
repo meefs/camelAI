@@ -1,9 +1,13 @@
 import type { Route } from './+types/onboarding.complete';
-import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
+import {
+  getAuthEnv,
+  requireAuthContext,
+  type AuthContext,
+} from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { waitUntil } from '@/lib/wait-until';
-import type { ChatHarness, LlmModel, Organization } from '@/types';
+import type { ChatHarness, Organization } from '@/types';
 
 type OnboardingAccessChoice = 'byok' | 'existing' | null;
 
@@ -65,7 +69,9 @@ function getOnboardingSystemMessage(
   salesPrompt: string | null,
   provider: ChatHarness,
 ): string {
-  return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : getDefaultOnboardingSystemMessage(provider);
+  return salesPrompt
+    ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE
+    : getDefaultOnboardingSystemMessage(provider);
 }
 
 async function readAccessChoice(request: Request): Promise<OnboardingAccessChoice> {
@@ -97,6 +103,33 @@ function hasPaidBillingAccess(org: Organization | null | undefined): boolean {
     org?.billing_status === 'active' ||
     org?.billing_status === 'enterprise'
   );
+}
+
+async function hasUserThreadsAcrossOrgs(
+  authEnv: ReturnType<typeof getAuthEnv>,
+  authContext: AuthContext,
+): Promise<boolean> {
+  const orgIds = Array.from(
+    new Set([
+      authContext.currentOrg.id,
+      ...authContext.orgs.map((membership) => membership.org_id),
+    ]),
+  );
+
+  const results = await Promise.all(
+    orgIds.map(async (orgId) => {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      const result = await orgStub.getThreadsPaginated(
+        0,
+        1,
+        undefined,
+        authContext.user.id,
+      );
+      return result.total > 0 || result.items.length > 0;
+    }),
+  );
+
+  return results.some(Boolean);
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -134,7 +167,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     orgStub.getInfo(),
     orgStub.getLlmProviderConfig(),
   ]);
-  let onboardingModel: LlmModel | undefined;
 
   if (accessChoice === 'byok' && !llmProviderConfig) {
     return Response.json(
@@ -154,81 +186,40 @@ export async function action({ request, context }: Route.ActionArgs) {
     );
   }
 
-  const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
-  const onboardingThreadTitle = `${firstName}'s first chat`;
-
-  if (authContext.onboarding?.completed_at) {
-    // Already completed — find or recreate the onboarding thread.
-    let existingThread: Awaited<ReturnType<typeof chatDO.getThreadsPaginated>>['items'][number] | null = null;
-    try {
-      const { items } = await chatDO.getThreadsPaginated(context, workspaceId, {
-        offset: 0,
-        limit: 100,
-      });
-      existingThread =
-        items.find(
-          (thread) =>
-            thread.created_by === authContext.user.id &&
-            thread.title === onboardingThreadTitle
-        ) ?? null;
-    } catch (error) {
-      console.error('Failed to look up existing onboarding thread:', error);
-      return Response.json(
-        { error: 'Failed to recover your onboarding chat. Please try again.' },
-        { status: 503 }
-      );
-    }
-
-    if (existingThread) {
-      if (salesPrompt) {
-        await userStub.clearPendingSalesPrompt();
-        waitUntil(
-          chatDO.generateThreadTitle(context, existingThread.id, workspaceId, salesPrompt)
-        );
-      }
-      const onboardingSystemMessage = getOnboardingSystemMessage(
-        salesPrompt,
-        existingThread.provider ?? 'claude',
-      );
-      return Response.json({
-        success: true,
-        threadId: existingThread.id,
-        onboardingSystemMessage,
-        salesPrompt,
-        redirectTo: `/chat/${existingThread.id}?newThread=1`,
-      });
-    }
-
-    const recoveryThread = await chatDO.createThread(
-      context,
-      workspaceId,
-      onboardingThreadTitle,
-      authContext.user.id,
-      salesPrompt ?? undefined,
-      onboardingModel,
+  let hasExistingUserThreads = false;
+  try {
+    hasExistingUserThreads = await hasUserThreadsAcrossOrgs(
+      authEnv,
+      authContext,
     );
+  } catch (error) {
+    console.error('Failed to verify prior user threads for onboarding:', error);
+    return Response.json(
+      { error: 'Failed to verify your onboarding status. Please try again.' },
+      { status: 503 },
+    );
+  }
 
+  if (hasExistingUserThreads) {
+    if (!authContext.onboarding?.completed_at) {
+      await userStub.updateOnboarding({ completed_at: Date.now() });
+    }
     if (salesPrompt) {
       await userStub.clearPendingSalesPrompt();
-      waitUntil(
-        chatDO.generateThreadTitle(context, recoveryThread.id, workspaceId, salesPrompt)
-      );
     }
-    const onboardingSystemMessage = getOnboardingSystemMessage(
-      salesPrompt,
-      recoveryThread.provider ?? 'claude',
-    );
 
     return Response.json({
       success: true,
-      threadId: recoveryThread.id,
-      onboardingSystemMessage,
-      salesPrompt,
-      redirectTo: `/chat/${recoveryThread.id}?newThread=1`,
+      redirectTo: '/chat',
     });
   }
 
-  await userStub.updateOnboarding({ completed_at: Date.now() });
+  const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
+  const onboardingThreadTitle = `${firstName}'s first chat`;
+
+  if (!authContext.onboarding?.completed_at) {
+    await userStub.updateOnboarding({ completed_at: Date.now() });
+  }
 
   const thread = await chatDO.createThread(
     context,
@@ -236,7 +227,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     onboardingThreadTitle,
     authContext.user.id,
     salesPrompt ?? undefined,
-    onboardingModel,
   );
 
   if (salesPrompt) {

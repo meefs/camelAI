@@ -169,7 +169,10 @@ export default function OnboardingRoute() {
       const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
       const salesPrompt = data.salesPrompt?.trim();
 
+      let shouldShowBootModal = false;
+
       if (threadId && onboardingSystemMessage) {
+        shouldShowBootModal = true;
         try {
           const pendingMessage = salesPrompt
             ? `<camelai system message>${onboardingSystemMessage}</camelai system message>\n\n${salesPrompt}`
@@ -186,10 +189,19 @@ export default function OnboardingRoute() {
         }
       }
 
-      try {
-        sessionStorage.setItem("showBootModal", "1");
-      } catch {
-        // Ignore storage failures.
+      if (shouldShowBootModal) {
+        try {
+          sessionStorage.setItem("showBootModal", "1");
+        } catch {
+          // Ignore storage failures.
+        }
+      } else {
+        try {
+          sessionStorage.removeItem("showBootModal");
+          sessionStorage.removeItem(PENDING_NEW_THREAD_MESSAGE_KEY);
+        } catch {
+          // Ignore storage failures.
+        }
       }
 
       navigate(data.redirectTo || "/chat");
