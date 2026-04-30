@@ -37,6 +37,19 @@ const PDF_EXTENSIONS = new Set(['pdf']);
 const NOTEBOOK_EXTENSIONS = new Set(['ipynb']);
 const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xlsx', 'xls']);
 const DELIMITED_SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv']);
+const BINARY_SPREADSHEET_EXTENSIONS = new Set(['xlsx', 'xls']);
+const DELIMITED_SPREADSHEET_CONTENT_TYPES = new Set([
+  'text/csv',
+  'text/tab-separated-values',
+  'application/csv',
+  'application/tab-separated-values',
+]);
+const BINARY_SPREADSHEET_CONTENT_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-excel.sheet.binary.macroenabled.12',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+]);
 const CODE_EXTENSIONS = new Set([
   'txt',
   'json',
@@ -105,15 +118,17 @@ export function getFileExtension(filename: string): string {
 export function getFileCategory(filename: string, contentType?: string): FileCategory {
   if (contentType) {
     const normalizedContentType = contentType.toLowerCase();
+    const baseContentType = normalizedContentType.split(';', 1)[0]?.trim() ?? normalizedContentType;
     if (normalizedContentType.startsWith('image/')) return 'image';
     if (normalizedContentType.startsWith('audio/')) return 'audio';
     if (normalizedContentType.startsWith('video/')) return 'video';
-    if (normalizedContentType === 'application/pdf') return 'pdf';
+    if (baseContentType === 'application/pdf') return 'pdf';
     if (normalizedContentType.includes('ipynb')) return 'notebook';
     if (
       normalizedContentType.includes('csv') ||
       normalizedContentType.includes('tab-separated-values') ||
-      normalizedContentType.includes('spreadsheet')
+      normalizedContentType.includes('spreadsheet') ||
+      BINARY_SPREADSHEET_CONTENT_TYPES.has(baseContentType)
     ) {
       return 'spreadsheet';
     }
@@ -141,11 +156,6 @@ export function getShikiLanguage(filename: string): string | null {
 export function getPreviewType(filename: string, contentType?: string): PreviewType {
   const category = getFileCategory(filename, contentType);
   const extension = getFileExtension(filename);
-  const normalizedContentType = contentType?.toLowerCase();
-  const isDelimitedSpreadsheet =
-    DELIMITED_SPREADSHEET_EXTENSIONS.has(extension) ||
-    normalizedContentType?.includes('csv') ||
-    normalizedContentType?.includes('tab-separated-values');
 
   if (category === 'image') return 'image';
   if (category === 'pdf') return 'pdf';
@@ -154,10 +164,28 @@ export function getPreviewType(filename: string, contentType?: string): PreviewT
   if (category === 'video') return 'video';
   if (extension === 'md') return 'markdown';
   if (getShikiLanguage(filename) !== null) return 'code';
-  if (isDelimitedSpreadsheet) return 'spreadsheet';
-  if (category === 'spreadsheet') return 'other';
+  if (isSpreadsheetPreviewSupported(filename, contentType)) return 'spreadsheet';
   if (category === 'code' || category === 'text') return 'text';
   return 'other';
+}
+
+export function isSpreadsheetPreviewSupported(filename: string, contentType?: string): boolean {
+  const extension = getFileExtension(filename);
+  if (SPREADSHEET_EXTENSIONS.has(extension)) return true;
+  const normalizedContentType = contentType?.toLowerCase().split(';', 1)[0]?.trim();
+  if (!normalizedContentType) return false;
+  return (
+    DELIMITED_SPREADSHEET_CONTENT_TYPES.has(normalizedContentType) ||
+    BINARY_SPREADSHEET_CONTENT_TYPES.has(normalizedContentType)
+  );
+}
+
+export function isBinarySpreadsheet(filename: string, contentType?: string): boolean {
+  const extension = getFileExtension(filename);
+  if (DELIMITED_SPREADSHEET_EXTENSIONS.has(extension)) return false;
+  if (BINARY_SPREADSHEET_EXTENSIONS.has(extension)) return true;
+  const normalizedContentType = contentType?.toLowerCase().split(';', 1)[0]?.trim();
+  return normalizedContentType ? BINARY_SPREADSHEET_CONTENT_TYPES.has(normalizedContentType) : false;
 }
 
 export function getFileIcon(category: FileCategory): LucideIcon {

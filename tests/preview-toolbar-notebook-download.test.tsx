@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { PreviewToolbar } from '@/components/preview-panel/preview-toolbar';
@@ -33,6 +33,28 @@ function renderToolbar(overrides?: Partial<React.ComponentProps<typeof PreviewTo
 }
 
 describe('PreviewToolbar notebook downloads', () => {
+  it('shows the active file name in the toolbar and copies its path', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      writable: true,
+      value: {
+        writeText,
+      },
+    });
+
+    renderToolbar();
+
+    const fileChip = screen.getByRole('button', { name: /analysis\.ipynb/i });
+    expect(fileChip).toBeInTheDocument();
+
+    fireEvent.click(fileChip);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith('/reports/analysis.ipynb');
+    });
+  });
+
   it('shows notebook and report PDF download actions', async () => {
     const user = userEvent.setup();
     renderToolbar();
@@ -41,6 +63,16 @@ describe('PreviewToolbar notebook downloads', () => {
 
     expect(screen.getByRole('menuitem', { name: /download notebook \(.ipynb\)/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /download report as pdf/i })).toBeInTheDocument();
+  });
+
+  it('keeps the open-in-new-tab action for file previews', async () => {
+    const user = userEvent.setup();
+    const onOpenExternal = vi.fn();
+    renderToolbar({ onOpenExternal });
+
+    await user.click(screen.getByRole('button', { name: /open in new tab/i }));
+
+    expect(onOpenExternal).toHaveBeenCalledTimes(1);
   });
 
   it('disables the PDF export action while the notebook is still loading', async () => {

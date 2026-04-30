@@ -85,6 +85,7 @@
 		"sonner": "^2.0.7",
 		"tailwind-merge": "^3.4.0",
 		"unified": "^11.0.5",
+		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
 		"zod": "^4.3.5"
 	},
 	"devDependencies": {
