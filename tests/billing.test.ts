@@ -1560,7 +1560,10 @@ describe("billing helpers", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      syncTeamSubscriptionSeatCount(env as never, "org_team"),
+      syncTeamSubscriptionSeatCount(env as never, "org_team", {
+        itemUpdateIdempotencyKey: "team-seat-sync:org_team:4:batch_1",
+        prorationBehavior: "always_invoice",
+      }),
     ).resolves.toMatchObject({ billing_seat_count: 4 });
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -1570,7 +1573,10 @@ describe("billing helpers", () => {
     );
     const itemParams = new URLSearchParams(itemUpdate[1]?.body as string);
     expect(itemParams.get("quantity")).toBe("4");
-    expect(itemParams.get("proration_behavior")).toBe("create_prorations");
+    expect(itemParams.get("proration_behavior")).toBe("always_invoice");
+    expect((itemUpdate[1]?.headers as Headers).get("Idempotency-Key")).toBe(
+      "team-seat-sync:org_team:4:batch_1",
+    );
 
     const subscriptionUpdate = fetchMock.mock.calls[2];
     expect(String(subscriptionUpdate[0])).toBe(
