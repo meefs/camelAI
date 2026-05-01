@@ -80,8 +80,13 @@ export const OrgsQuerySchema = PaginationQuerySchema.extend({
   exclude_internal_domains: z.string().optional(),
   include_usage: booleanQueryParam,
   include_spend_30d: booleanQueryParam,
+  include_llm_provider: booleanQueryParam,
   sort_by: z.enum(['created_at', 'name']).optional().default('created_at'),
   sort_dir: z.enum(['asc', 'desc']).optional().default('desc'),
+});
+
+export const OrgLlmProvidersQuerySchema = PaginationQuerySchema.extend({
+  provider: z.enum(['anthropic', 'bedrock', 'openai', 'openrouter']).optional(),
 });
 
 export const WorkspacesQuerySchema = PaginationQuerySchema.extend({
@@ -222,6 +227,7 @@ export const OrgDetailSchema = z.object({
   archived: z.boolean(),
   member_count: z.number().int(),
   workspace_count: z.number().int(),
+  has_llm_provider: z.boolean(),
   llm_provider: LlmProviderConfigSchema.nullable(),
   threads: z.array(z.any()),
   apps: z.array(z.any()),
@@ -440,6 +446,13 @@ export const AdminOrgListItemSchema = OrgSchema.extend({
   total_cost_usd: z.number().optional(),
   spend_30d: z.number().optional(),
   windows: z.array(WindowSpendSchema).optional(),
+  has_llm_provider: z.boolean().optional(),
+  llm_provider: LlmProviderConfigSchema.nullable().optional(),
+});
+
+export const AdminOrgLlmProviderListItemSchema = OrgSchema.extend({
+  has_llm_provider: z.literal(true),
+  llm_provider: LlmProviderConfigSchema,
 });
 
 export const DashboardTopOrgsQuerySchema = z.object({

@@ -63,6 +63,15 @@ export const BYOK_PROVIDER_ORDER: OnboardingByokProvider[] = [
   "bedrock",
 ];
 
+export function getByokProviderLabel(
+  provider: string | null | undefined,
+): string | null {
+  if (!provider || !(provider in BYOK_PROVIDERS)) {
+    return null;
+  }
+  return BYOK_PROVIDERS[provider as OnboardingByokProvider].label;
+}
+
 export const AWS_REGIONS = [
   { value: "us-east-1", label: "US East (N. Virginia)" },
   { value: "us-east-2", label: "US East (Ohio)" },

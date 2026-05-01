@@ -29,6 +29,7 @@ export interface PlanPickerCardProps {
   pending: boolean;
   disabled: boolean;
   trialAvailable: boolean;
+  byokProviderLabel?: string | null;
   legacyMode?: boolean;
   onSelect: (cta: { kind: PlanPickerCtaKind; plan: BillingPlan }) => void;
 }
@@ -39,6 +40,7 @@ export function PlanPickerCard({
   pending,
   disabled,
   trialAvailable,
+  byokProviderLabel = null,
   legacyMode = false,
   onSelect,
 }: PlanPickerCardProps) {
@@ -49,8 +51,14 @@ export function PlanPickerCard({
   const isCurrent = state.kind === "current";
   const isDowngrade = state.kind === "downgrade";
 
-  const ctaKind: PlanPickerCtaKind = isDowngrade ? "downgrade" : content.ctaKind;
+  const ctaKind: PlanPickerCtaKind = isDowngrade
+    ? "downgrade"
+    : content.ctaKind;
   const isPaidLegacyCta = legacyMode && ctaKind === "trial";
+  const freeByokCtaLabel =
+    plan === "free" && byokProviderLabel
+      ? `Continue with ${byokProviderLabel}`
+      : content.ctaLabel;
   const ctaLabel = isCurrent
     ? "Current plan"
     : isDowngrade
@@ -63,7 +71,7 @@ export function PlanPickerCard({
           ? `Switch to ${limits.label}`
           : ctaKind === "trial" && !trialAvailable
             ? "Choose plan"
-            : content.ctaLabel;
+            : freeByokCtaLabel;
   const ctaVariant: "default" | "outline" | "secondary" = isCurrent
     ? "secondary"
     : isHighlighted

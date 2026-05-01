@@ -41,6 +41,8 @@ export interface OrgFilters {
 export interface OrgDirectoryFilters extends OrgFilters {
   exclude_org_ids?: string[];
   exclude_creator_domains?: string[];
+  has_llm_provider?: boolean;
+  llm_provider?: string;
 }
 
 export interface AdminOrgDirectoryRow {
@@ -137,6 +139,7 @@ export type AdminEventType =
   | { type: 'user_upsert'; payload: any }
   | { type: 'user_delete'; payload: { id: string } }
   | { type: 'org_upsert'; payload: any }
+  | { type: 'org_llm_provider_update'; payload: { org_id: string; provider: string | null; updated_at: number | null } }
   | { type: 'workspace_upsert'; payload: any }
   | { type: 'thread_upsert'; payload: any }
   | { type: 'app_upsert'; payload: any }
@@ -314,7 +317,9 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         billing_status TEXT,
         created_by TEXT,
         member_count INTEGER DEFAULT 0,
-        workspace_count INTEGER DEFAULT 0
+        workspace_count INTEGER DEFAULT 0,
+        llm_provider TEXT,
+        llm_provider_updated_at INTEGER
       );
       CREATE TABLE IF NOT EXISTS workspaces (
         id TEXT PRIMARY KEY,
@@ -452,6 +457,15 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         )
       `);
     }
+    if (!orgColumns.has('llm_provider')) {
+      this.sql.exec('ALTER TABLE orgs ADD COLUMN llm_provider TEXT');
+    }
+    if (!orgColumns.has('llm_provider_updated_at')) {
+      this.sql.exec('ALTER TABLE orgs ADD COLUMN llm_provider_updated_at INTEGER');
+    }
+    this.sql.exec(
+      'CREATE INDEX IF NOT EXISTS idx_orgs_llm_provider_created_at ON orgs(llm_provider, created_at DESC)',
+    );
     this.sql.exec('UPDATE orgs SET member_count = 0 WHERE member_count IS NULL');
     this.sql.exec('UPDATE orgs SET workspace_count = 0 WHERE workspace_count IS NULL');
 
@@ -603,6 +617,20 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
               member_count=COALESCE(excluded.member_count, orgs.member_count),
               workspace_count=COALESCE(excluded.workspace_count, orgs.workspace_count)
           `, o.id, o.name, slug, o.id, o.created_at, o.archived ? 1 : 0, o.billing_status, o.created_by, memberCount, o.id, workspaceCount, o.id);
+          break;
+        }
+        case 'org_llm_provider_update': {
+          const payload = event.payload;
+          this.sql.exec(
+            `
+              UPDATE orgs
+              SET llm_provider = ?, llm_provider_updated_at = ?
+              WHERE id = ?
+            `,
+            payload.provider,
+            payload.updated_at,
+            payload.org_id,
+          );
           break;
         }
         case 'workspace_upsert': {
@@ -1093,6 +1121,13 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       conditions.push('o.archived = ?');
       params.push(filters.archived ? 1 : 0);
     }
+    if (filters?.has_llm_provider === true) {
+      conditions.push('o.llm_provider IS NOT NULL');
+    }
+    if (filters?.llm_provider !== undefined) {
+      conditions.push('o.llm_provider = ?');
+      params.push(filters.llm_provider);
+    }
     const excludedOrgIds = normalizeSqlStringList(filters?.exclude_org_ids);
     if (excludedOrgIds.length > 0) {
       conditions.push(`
@@ -1168,6 +1203,18 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     ).next().value?.count || 0;
 
     return { items, total, offset, limit };
+  }
+
+  async getOrgLlmProviderDirectoryPaginated(
+    offset: number,
+    limit: number,
+    search?: string,
+    provider?: string,
+  ) {
+    return this.getOrgDirectoryPaginated(offset, limit, search, {
+      has_llm_provider: true,
+      llm_provider: provider?.trim() || undefined,
+    });
   }
 
   async getOrgDirectoryByIds(orgIds: string[]): Promise<AdminOrgDirectoryRow[]> {

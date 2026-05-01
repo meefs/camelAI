@@ -1,11 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { BillingPlan } from "@/types";
 import type { LegacyMigrationDialogData } from "./legacy-migration-dialog";
@@ -31,6 +26,7 @@ export interface PlanPickerProps {
   heading?: { title: string; subtitle?: string } | null;
   showFooter?: boolean;
   trialAvailable?: boolean;
+  byokProviderLabel?: string | null;
   legacyMigration?: LegacyMigrationDialogData | null;
   onSelectPlan: (cta: PlanPickerCta) => void;
   onLegacyWhyClick?: () => void;
@@ -105,6 +101,7 @@ export function PlanPicker({
   heading = DEFAULT_HEADING,
   showFooter = true,
   trialAvailable = true,
+  byokProviderLabel = null,
   legacyMigration = null,
   onSelectPlan,
   onLegacyWhyClick,
@@ -147,6 +144,7 @@ export function PlanPicker({
             pending={pendingPlan === plan}
             disabled={disabled}
             trialAvailable={trialAvailable}
+            byokProviderLabel={byokProviderLabel}
             legacyMode={legacyMode}
             onSelect={() => onSelectPlan(cta)}
           />
@@ -211,11 +209,14 @@ export function PlanPicker({
         <div className="space-y-4">
           <div className="rounded-xl bg-muted/40 px-5 py-4">
             <p className="text-base font-semibold text-foreground">
-              Use Claude, Codex, Open Routner, or your own API key
+              {byokProviderLabel
+                ? `${byokProviderLabel} API key connected`
+                : "Use Claude, Codex, OpenRouter, or your own API key"}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Top up credits to use any model through us at cost, no
-              markup. Or bring your own API key anytime.
+              {byokProviderLabel
+                ? "Stay on Free using your own key, or start a paid plan to use hosted credits through camelAI."
+                : "Top up credits to use any model through us at cost, no markup. Or bring your own API key anytime."}
             </p>
           </div>
           <p className="text-center text-sm text-muted-foreground">

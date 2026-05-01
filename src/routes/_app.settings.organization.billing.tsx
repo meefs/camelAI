@@ -33,6 +33,7 @@ import {
   normalizeBillingPlan,
   normalizeSeatCount,
 } from "@/lib/billing-plans";
+import { getByokProviderLabel } from "@/lib/byok-providers";
 import type { BillingPlan, Organization } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -151,25 +152,29 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const env = getEnv(context);
+  const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
 
   const stripeConfigured = isStripeBillingConfigured(env);
 
-  const [overview, paymentMethod, invoices, subscription] = await Promise.all([
-    getOrgBillingOverview(env, authContext.currentOrg),
-    stripeConfigured
-      ? getStripeDefaultPaymentMethodSummary(env, authContext.currentOrg).catch(
-          () => null,
-        )
-      : Promise.resolve(null),
-    stripeConfigured
-      ? listStripeInvoicesForOrg(env, authContext.currentOrg).catch(() => [])
-      : Promise.resolve([]),
-    stripeConfigured
-      ? getStripeSubscriptionSummary(env, authContext.currentOrg).catch(
-          () => null,
-        )
-      : Promise.resolve(null),
-  ]);
+  const [overview, paymentMethod, invoices, subscription, llmProviderConfig] =
+    await Promise.all([
+      getOrgBillingOverview(env, authContext.currentOrg),
+      stripeConfigured
+        ? getStripeDefaultPaymentMethodSummary(
+            env,
+            authContext.currentOrg,
+          ).catch(() => null)
+        : Promise.resolve(null),
+      stripeConfigured
+        ? listStripeInvoicesForOrg(env, authContext.currentOrg).catch(() => [])
+        : Promise.resolve([]),
+      stripeConfigured
+        ? getStripeSubscriptionSummary(env, authContext.currentOrg).catch(
+            () => null,
+          )
+        : Promise.resolve(null),
+      orgStub.getLlmProviderConfig().catch(() => null),
+    ]);
 
   const invoiceRows: InvoiceRow[] = invoices.map((invoice) => ({
     id: invoice.id,
@@ -188,6 +193,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     invoices: invoiceRows,
     subscription,
     trialAvailable: !hasOrgUsedSubscriptionTrial(overview),
+    byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
     legacyMigration: getLegacyStripeMigrationEligibility({
       env,
       org: authContext.currentOrg,
@@ -521,6 +527,7 @@ export default function BillingPage() {
     invoices,
     subscription,
     trialAvailable,
+    byokProviderLabel,
     legacyMigration,
   } = useLoaderData<typeof loader>();
   const [searchParams] = useSearchParams();
@@ -583,6 +590,7 @@ export default function BillingPage() {
         currentPlan={plan}
         stripeConfigured={stripeConfigured}
         trialAvailable={trialAvailable}
+        byokProviderLabel={byokProviderLabel}
         legacyMigration={legacyMigration}
         onBack={() => setView("overview")}
       />
@@ -704,12 +712,14 @@ function ManagePlanView({
   currentPlan,
   stripeConfigured,
   trialAvailable,
+  byokProviderLabel,
   legacyMigration,
   onBack,
 }: {
   currentPlan: BillingPlan;
   stripeConfigured: boolean;
   trialAvailable: boolean;
+  byokProviderLabel: string | null;
   legacyMigration: LegacyMigrationDialogData | null;
   onBack: () => void;
 }) {
@@ -791,6 +801,7 @@ function ManagePlanView({
         onSelectPlan={handleSelectPlan}
         pendingPlan={pendingPlan}
         trialAvailable={trialAvailable}
+        byokProviderLabel={byokProviderLabel}
         legacyMigration={legacyMigration}
         heading={
           legacyMigration?.eligible

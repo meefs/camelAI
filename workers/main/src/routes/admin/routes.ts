@@ -71,6 +71,7 @@ import {
   UsersQuerySchema,
   ThreadsQuerySchema,
   OrgsQuerySchema,
+  OrgLlmProvidersQuerySchema,
   WorkspacesQuerySchema,
   AppsQuerySchema,
   OrgUsageSpendSchema,
@@ -79,6 +80,7 @@ import {
   OrgUsageLogSumSchema,
   SpamOrgIdsResponseSchema,
   AdminOrgListItemSchema,
+  AdminOrgLlmProviderListItemSchema,
   DashboardTopOrgsQuerySchema,
   DashboardTopOrgsResponseSchema,
   DashboardDailySpendQuerySchema,
@@ -186,6 +188,17 @@ type AdminOrgDirectoryLookup = {
     offset: number;
     limit: number;
   }>;
+  getOrgLlmProviderDirectoryPaginated(
+    offset: number,
+    limit: number,
+    search?: string,
+    provider?: string,
+  ): Promise<{
+    items: AdminOrgDirectoryRow[];
+    total: number;
+    offset: number;
+    limit: number;
+  }>;
   getUsersByOrgIds(orgIds: string[]): Promise<AdminUserSummaryRow[]>;
   getThreadsByOrgIds(orgIds: string[]): Promise<AdminThreadListRow[]>;
   getAppsByOrgIds(orgIds: string[]): Promise<AdminAppListRow[]>;
@@ -202,10 +215,15 @@ function enrichOrgListItems(
   options: {
     includeUsage: boolean;
     includeSpend30d: boolean;
+    llmProviderByOrgId?: Map<
+      string,
+      Awaited<ReturnType<typeof getAdminOrgLlmProvider>>
+    >;
   },
 ) {
   return orgs.map((org) => {
     const usage = usageByOrgId.get(org.id);
+    const llmProvider = options.llmProviderByOrgId?.get(org.id);
     return {
       id: org.id,
       name: org.name,
@@ -219,6 +237,12 @@ function enrichOrgListItems(
       billing_status: org.billing_status ?? null,
       member_count: org.member_count,
       workspace_count: org.workspace_count,
+      ...(options.llmProviderByOrgId
+        ? {
+            has_llm_provider: Boolean(llmProvider),
+            llm_provider: llmProvider ?? null,
+          }
+        : {}),
       ...(options.includeUsage
         ? {
             total_requests: usage?.total_requests ?? 0,
@@ -264,6 +288,16 @@ async function getAdminOrgLlmProvider(env: Env, orgId: string) {
   if (!record) return null;
 
   return buildPublicLlmProviderConfig(record, env.INTEGRATION_SECRET_KEY);
+}
+
+async function getAdminOrgLlmProviderMap(env: Env, orgIds: string[]) {
+  const entries = await Promise.all(
+    orgIds.map(async (orgId) => [
+      orgId,
+      await getAdminOrgLlmProvider(env, orgId),
+    ] as const),
+  );
+  return new Map(entries);
 }
 
 async function notifyThreadMetadataChange(
@@ -735,6 +769,7 @@ routes.get(
         exclude_internal_domains,
         include_usage,
         include_spend_30d,
+        include_llm_provider,
         sort_by,
         sort_dir,
       } = c.req.valid('query');
@@ -761,11 +796,16 @@ routes.get(
             { includeWindows: include_usage === true },
           )
         : new Map<string, OrgUsageAnalyticsItem>();
+      const llmProviderByOrgId =
+        include_llm_provider === true
+          ? await getAdminOrgLlmProviderMap(c.env, pagedOrgs.map((org) => org.id))
+          : undefined;
 
       return c.json({
         items: enrichOrgListItems(pagedOrgs, usageByOrgId, {
           includeUsage: include_usage === true,
           includeSpend30d: include_spend_30d === true,
+          llmProviderByOrgId,
         }),
         total: result.total,
         offset: result.offset,
@@ -773,6 +813,84 @@ routes.get(
       });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Failed to load organizations' }, 502);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /orgs/llm-providers
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/orgs/llm-providers',
+  openApi({
+    summary: 'List orgs with bring-your-own-key LLM providers configured',
+    request: {
+      query: OrgLlmProvidersQuerySchema,
+    },
+    responses: {
+      200: paginatedList(AdminOrgLlmProviderListItemSchema),
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    try {
+      const { limit, offset, search, provider } = c.req.valid('query');
+      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const result = await adminIndex.getOrgLlmProviderDirectoryPaginated(
+        offset,
+        limit,
+        search,
+        provider,
+      );
+      const orgs = result.items;
+      const providerByOrgId = await getAdminOrgLlmProviderMap(
+        c.env,
+        orgs.map((org) => org.id),
+      );
+      const configuredOrgs = orgs
+        .map((org) => ({ org, llmProvider: providerByOrgId.get(org.id) }))
+        .filter(
+          (
+            row,
+          ): row is {
+            org: AdminOrgDirectoryRow;
+            llmProvider: NonNullable<
+              Awaited<ReturnType<typeof getAdminOrgLlmProvider>>
+            >;
+          } =>
+            Boolean(row.llmProvider) &&
+            (!provider || row.llmProvider?.provider === provider),
+        );
+
+      return c.json({
+        items: configuredOrgs.map(({ org, llmProvider }) => ({
+          id: org.id,
+          name: org.name,
+          slug: org.slug ?? null,
+          created_by: org.created_by,
+          created_at: org.created_at,
+          archived: org.archived,
+          billing_status: org.billing_status ?? null,
+          member_count: org.member_count,
+          workspace_count: org.workspace_count,
+          has_llm_provider: true,
+          llm_provider: llmProvider,
+        })),
+        total: result.total,
+        offset: result.offset,
+        limit: result.limit,
+      });
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Failed to load BYOK organizations',
+        },
+        502,
+      );
     }
   },
 );
@@ -814,6 +932,7 @@ routes.get(
       archived: orgInfo.archived,
       member_count: orgInfo.member_count ?? 0,
       workspace_count: orgInfo.workspace_count ?? 0,
+      has_llm_provider: Boolean(llmProvider),
       llm_provider: llmProvider,
       threads: activity.threads,
       apps: activity.apps,

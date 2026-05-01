@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useFetcher, useLoaderData, useOutletContext } from "react-router";
 import type { Route } from "./+types/_onboarding.welcome";
 import {
@@ -19,7 +19,10 @@ import { PlanPicker } from "@/components/billing/plan-picker";
 import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import type { OnboardingByokProvider } from "@/lib/byok-providers";
+import {
+  getByokProviderLabel,
+  type OnboardingByokProvider,
+} from "@/lib/byok-providers";
 import type { OnboardingRouteContext } from "./_onboarding";
 
 interface TeamContext {
@@ -33,6 +36,7 @@ interface WelcomeLoaderData {
   orgName: string;
   teamContext: TeamContext;
   trialAvailable: boolean;
+  byokProviderLabel: string | null;
 }
 
 const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
@@ -51,14 +55,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const orgId = sessionContext.session.org_id;
   const workspaceId = sessionContext.session.workspace_id;
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const orgInfo = await orgStub.getInfo().catch(() => null);
+  const [orgInfo, llmProviderConfig] = await Promise.all([
+    orgStub.getInfo().catch(() => null),
+    orgStub.getLlmProviderConfig().catch(() => null),
+  ]);
   const trialAvailable = orgInfo ? !hasOrgUsedSubscriptionTrial(orgInfo) : true;
+  const byokProviderLabel = getByokProviderLabel(llmProviderConfig?.provider);
 
   if (!teamMode) {
     return {
       orgId,
       orgName: "camelAI",
       trialAvailable,
+      byokProviderLabel,
       teamContext: {
         memberCount: 0,
         appCount: 0,
@@ -87,6 +96,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgId,
     orgName,
     trialAvailable,
+    byokProviderLabel,
     teamContext: {
       memberCount,
       appCount: workerScripts.length,
@@ -214,9 +224,8 @@ export default function OnboardingWelcomeRoute() {
     success?: boolean;
     error?: string;
   }>();
-  const { orgId, orgName, teamContext, trialAvailable } = useLoaderData<
-    typeof loader
-  >() as WelcomeLoaderData;
+  const { orgId, orgName, teamContext, trialAvailable, byokProviderLabel } =
+    useLoaderData<typeof loader>() as WelcomeLoaderData;
 
   const isTeamWelcome = context.teamMode;
   const isBillingChoiceRequired =
@@ -277,12 +286,8 @@ export default function OnboardingWelcomeRoute() {
     window.location.reload();
   }, [migrationFetcher.data, migrationFetcher.state]);
 
-  useEffect(() => {
-    if (
-      providerFetcher.state !== "idle" ||
-      !providerFetcher.data?.success ||
-      providerCompletionStartedRef.current
-    ) {
+  const completeWithByok = useCallback(() => {
+    if (providerCompletionStartedRef.current) {
       return;
     }
     providerCompletionStartedRef.current = true;
@@ -298,7 +303,14 @@ export default function OnboardingWelcomeRoute() {
           : "Failed to complete onboarding",
       );
     });
-  }, [context, providerFetcher.data, providerFetcher.state]);
+  }, [context]);
+
+  useEffect(() => {
+    if (providerFetcher.state !== "idle" || !providerFetcher.data?.success) {
+      return;
+    }
+    completeWithByok();
+  }, [completeWithByok, providerFetcher.data, providerFetcher.state]);
 
   const saveProviderAndContinue = () => {
     if (!providerApiKey.trim()) {
@@ -436,11 +448,14 @@ export default function OnboardingWelcomeRoute() {
                 title: "Choose your plan",
                 subtitle: context.legacyMigration?.eligible
                   ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
-                  : trialAvailable
-                    ? "Start a free trial with model credits, or use your own API key."
-                    : "Choose a plan, or use your own API key.",
+                  : byokProviderLabel
+                    ? `Your ${byokProviderLabel} API key is connected. Continue on Free, or start a paid plan for hosted credits.`
+                    : trialAvailable
+                      ? "Start a free trial with model credits, or use your own API key."
+                      : "Choose a plan, or use your own API key.",
               }}
               trialAvailable={trialAvailable}
+              byokProviderLabel={byokProviderLabel}
               legacyMigration={context.legacyMigration}
               disabledReason={
                 context.legacyMigration?.eligible &&
@@ -459,6 +474,10 @@ export default function OnboardingWelcomeRoute() {
               onSelectPlan={(cta) => {
                 setError(null);
                 if (cta.kind === "byok") {
+                  if (byokProviderLabel) {
+                    completeWithByok();
+                    return;
+                  }
                   setShowProviderError(false);
                   setByokDialogOpen(true);
                   return;

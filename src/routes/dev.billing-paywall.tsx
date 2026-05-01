@@ -19,6 +19,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  BYOK_PROVIDER_ORDER,
+  getByokProviderLabel,
+  type OnboardingByokProvider,
+} from "@/lib/byok-providers";
 import type { BillingPlan } from "@/types";
 
 type PreviewState =
@@ -26,6 +31,7 @@ type PreviewState =
   | "legacy"
   | "legacy-multiple"
   | "trial-used"
+  | "byok-configured"
   | "current-starter"
   | "current-pro"
   | "team";
@@ -37,6 +43,7 @@ interface PreviewConfig {
   currentPlan: BillingPlan | null;
   defaultBillingMode: "individual" | "team";
   disabledReason: string | null;
+  byokProviderLabel: string | null;
 }
 
 const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
@@ -44,6 +51,7 @@ const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
   { value: "legacy", label: "Legacy migration" },
   { value: "legacy-multiple", label: "Manual migration" },
   { value: "trial-used", label: "Trial used" },
+  { value: "byok-configured", label: "BYOK connected" },
   { value: "current-starter", label: "Starter upgrade" },
   { value: "current-pro", label: "Pro downgrade" },
   { value: "team", label: "Team default" },
@@ -60,7 +68,16 @@ function parsePreviewState(value: string | null): PreviewState {
     : "legacy";
 }
 
-function getPreviewConfig(state: PreviewState): PreviewConfig {
+function parseByokProvider(value: string | null): OnboardingByokProvider {
+  return BYOK_PROVIDER_ORDER.includes(value as OnboardingByokProvider)
+    ? (value as OnboardingByokProvider)
+    : "openrouter";
+}
+
+function getPreviewConfig(
+  state: PreviewState,
+  byokProvider: OnboardingByokProvider,
+): PreviewConfig {
   const base: PreviewConfig = {
     description:
       "A new org must choose hosted billing or bring their own API key before continuing.",
@@ -69,6 +86,7 @@ function getPreviewConfig(state: PreviewState): PreviewConfig {
     currentPlan: null,
     defaultBillingMode: "individual",
     disabledReason: null,
+    byokProviderLabel: null,
   };
 
   switch (state) {
@@ -104,6 +122,13 @@ function getPreviewConfig(state: PreviewState): PreviewConfig {
         description:
           "After the one org trial has been used, the CTA copy no longer promises another trial.",
         trialAvailable: false,
+      };
+    case "byok-configured":
+      return {
+        ...base,
+        description:
+          "An org with an existing BYOK provider sees Free as a continue path instead of another setup prompt.",
+        byokProviderLabel: getByokProviderLabel(byokProvider),
       };
     case "current-starter":
       return {
@@ -162,7 +187,8 @@ export function meta(_: Route.MetaArgs) {
 export default function DevBillingPaywallPreviewRoute() {
   const [searchParams] = useSearchParams();
   const state = parsePreviewState(searchParams.get("state"));
-  const config = getPreviewConfig(state);
+  const byokProvider = parseByokProvider(searchParams.get("provider"));
+  const config = getPreviewConfig(state, byokProvider);
   const [lastAction, setLastAction] = useState<string | null>(null);
   const [introOpen, setIntroOpen] = useState(
     config.migration?.eligible ?? false,
@@ -206,11 +232,38 @@ export default function DevBillingPaywallPreviewRoute() {
               asChild
               variant={previewState.value === state ? "default" : "outline"}
             >
-              <Link to={`/dev/billing-paywall?state=${previewState.value}`}>
+              <Link
+                to={
+                  previewState.value === "byok-configured"
+                    ? `/dev/billing-paywall?state=${previewState.value}&provider=${byokProvider}`
+                    : `/dev/billing-paywall?state=${previewState.value}`
+                }
+              >
                 {previewState.label}
               </Link>
             </Button>
           ))}
+          {state === "byok-configured" ? (
+            <div className="ml-0 flex w-full flex-wrap gap-2 pt-2">
+              {BYOK_PROVIDER_ORDER.map((provider) => {
+                const label = getByokProviderLabel(provider) ?? provider;
+                return (
+                  <Button
+                    key={provider}
+                    asChild
+                    variant={provider === byokProvider ? "default" : "outline"}
+                    size="sm"
+                  >
+                    <Link
+                      to={`/dev/billing-paywall?state=byok-configured&provider=${provider}`}
+                    >
+                      {label}
+                    </Link>
+                  </Button>
+                );
+              })}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -237,12 +290,15 @@ export default function DevBillingPaywallPreviewRoute() {
             title: "Choose your plan",
             subtitle: config.migration?.eligible
               ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
-              : config.trialAvailable
-                ? "Start a free trial with model credits, or use your own API key."
-                : "Choose a plan, or use your own API key.",
+              : config.byokProviderLabel
+                ? `Your ${config.byokProviderLabel} API key is connected. Continue on Free, or start a paid plan for hosted credits.`
+                : config.trialAvailable
+                  ? "Start a free trial with model credits, or use your own API key."
+                  : "Choose a plan, or use your own API key.",
           }}
           highlightedPlan={state === "team" ? "team" : undefined}
           trialAvailable={config.trialAvailable}
+          byokProviderLabel={config.byokProviderLabel}
           legacyMigration={config.migration}
           onLegacyWhyClick={() => setIntroOpen(true)}
           onSelectPlan={(cta) => setLastAction(describeCta(cta))}

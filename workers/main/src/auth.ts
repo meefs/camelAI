@@ -4303,10 +4303,24 @@ export class OrgDO extends DurableObject<DOEnv> {
       now,
       now,
     );
+    const info = this.getInfoSync();
+    if (info) {
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "org_llm_provider_update",
+        payload: { org_id: info.id, provider, updated_at: now },
+      });
+    }
   }
 
   deleteLlmProviderConfig(): boolean {
     this.sql.exec("DELETE FROM llm_provider_config WHERE id = 'active'");
+    const info = this.getInfoSync();
+    if (info) {
+      dispatchAdminEvent(this.ctx, this.env, {
+        type: "org_llm_provider_update",
+        payload: { org_id: info.id, provider: null, updated_at: null },
+      });
+    }
     return true;
   }
 

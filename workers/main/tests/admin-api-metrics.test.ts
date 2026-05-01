@@ -4,6 +4,7 @@ import { handleAdminApi } from '../src/routes/admin/index';
 import type { Env as WorkerEnv } from '../src/types';
 import { createOrg, createUser, type TestEnv } from './test-helpers';
 import { DAY_MS } from '../src/admin-dashboard-metrics';
+import { encryptCredentials } from '../../../src/lib/integration-crypto';
 
 type AdminIndexTestEnv = TestEnv & {
   ADMIN_INDEX: DurableObjectNamespace<any>;
@@ -420,6 +421,28 @@ async function waitForAdminIndexOrgBillingStatus(
   throw new Error(`Timed out waiting for billing status ${billingStatus} on org ${orgId}`);
 }
 
+async function waitForAdminIndexOrgLlmProvider(
+  orgId: string,
+  provider: string,
+): Promise<void> {
+  const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const rows = await adminIndex.getOrgLlmProviderDirectoryPaginated(
+      0,
+      100,
+      undefined,
+      provider,
+    );
+    if (rows.items.some((org: { id: string }) => org.id === orgId)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  throw new Error(`Timed out waiting for LLM provider ${provider} on org ${orgId}`);
+}
+
 async function waitForAdminIndexSpamSummary(orgIds: string[], expected: {
   users: number;
   threads: number;
@@ -650,6 +673,9 @@ describe('admin API metrics routes', () => {
         orgs: sql.exec<{ name: string }>('PRAGMA table_info(orgs)')
           .toArray()
           .map((column) => column.name),
+        orgIndexes: sql.exec<{ name: string }>('PRAGMA index_list(orgs)')
+          .toArray()
+          .map((index) => index.name),
         workspaces: sql.exec<{ name: string }>('PRAGMA table_info(workspaces)')
           .toArray()
           .map((column) => column.name),
@@ -658,6 +684,9 @@ describe('admin API metrics routes', () => {
 
     expect(migratedColumns.orgs).toContain('member_count');
     expect(migratedColumns.orgs).toContain('workspace_count');
+    expect(migratedColumns.orgs).toContain('llm_provider');
+    expect(migratedColumns.orgs).toContain('llm_provider_updated_at');
+    expect(migratedColumns.orgIndexes).toContain('idx_orgs_llm_provider_created_at');
     expect(migratedColumns.workspaces).toContain('thread_count');
     expect(migratedColumns.workspaces).toContain('integration_count');
 
@@ -929,6 +958,148 @@ describe('admin API metrics routes', () => {
       limit: 50,
     });
     expect(sandboxFetch).toHaveBeenCalledOnce();
+  });
+
+  it('exposes BYOK provider status for admin org listing', async () => {
+    const secretKey = testEnv.INTEGRATION_SECRET_KEY ?? 'admin-byok-test-secret';
+    const { userId } = await createUser(
+      testEnv,
+      uniqueEmail(),
+      'password123',
+      'Admin BYOK User',
+    );
+    const searchPrefix = `Admin BYOK ${crypto.randomUUID().slice(0, 8)}`;
+    const { org } = await createOrg(testEnv, `${searchPrefix} One`, userId);
+    const { org: secondOrg } = await createOrg(
+      testEnv,
+      `${searchPrefix} Two`,
+      userId,
+    );
+    await waitForAdminIndexOrgIds([org.id]);
+    await waitForAdminIndexOrgIds([secondOrg.id]);
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const secondOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(secondOrg.id));
+    const encrypted = await encryptCredentials(
+      { api_key: 'sk-or-admin-byok-visible' },
+      secretKey,
+    );
+    const secondEncrypted = await encryptCredentials(
+      { api_key: 'sk-or-admin-byok-visible-2' },
+      secretKey,
+    );
+    await orgStub.setLlmProviderConfig(
+      'openrouter',
+      encrypted,
+      JSON.stringify({}),
+      userId,
+    );
+    await secondOrgStub.setLlmProviderConfig(
+      'openrouter',
+      secondEncrypted,
+      JSON.stringify({}),
+      userId,
+    );
+    await waitForAdminIndexOrgLlmProvider(org.id, 'openrouter');
+    await waitForAdminIndexOrgLlmProvider(secondOrg.id, 'openrouter');
+
+    const sandboxFetch = vi.fn(async () => Response.json({}));
+    const adminEnv = {
+      ...testEnv,
+      ADMIN_API_KEY: 'test-admin-api-key',
+      INTEGRATION_SECRET_KEY: secretKey,
+      SANDBOX_HOST: { fetch: sandboxFetch },
+    } as unknown as WorkerEnv;
+
+    const byokResponse = await callAdminApi(
+      new Request(
+        `http://example/api/admin/orgs/llm-providers?search=${encodeURIComponent(org.slug)}`,
+        {
+          headers: { Authorization: 'Bearer test-admin-api-key' },
+        },
+      ),
+      sandboxFetch,
+      adminEnv,
+    );
+    expect(byokResponse?.status).toBe(200);
+    const byokBody = await byokResponse!.json() as {
+      items: Array<{
+        id: string;
+        has_llm_provider: boolean;
+        llm_provider: { provider: string; key_hint: string };
+      }>;
+      total: number;
+    };
+    expect(byokBody.total).toBe(1);
+    expect(byokBody.items).toEqual([
+      expect.objectContaining({
+        id: org.id,
+        has_llm_provider: true,
+        llm_provider: expect.objectContaining({
+          provider: 'openrouter',
+          key_hint: 'sk-or-ad...',
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(byokBody)).not.toContain('credentials_encrypted');
+
+    const paginatedByokResponse = await callAdminApi(
+      new Request(
+        `http://example/api/admin/orgs/llm-providers?search=${encodeURIComponent(searchPrefix)}&limit=1&offset=1`,
+        {
+          headers: { Authorization: 'Bearer test-admin-api-key' },
+        },
+      ),
+      sandboxFetch,
+      adminEnv,
+    );
+    expect(paginatedByokResponse?.status).toBe(200);
+    const paginatedByokBody = await paginatedByokResponse!.json() as {
+      items: Array<{ id: string; has_llm_provider: boolean }>;
+      total: number;
+      offset: number;
+      limit: number;
+    };
+    expect(paginatedByokBody).toEqual({
+      items: [
+        expect.objectContaining({
+          id: expect.stringMatching(
+            new RegExp(`^(${org.id}|${secondOrg.id})$`),
+          ),
+          has_llm_provider: true,
+        }),
+      ],
+      total: 2,
+      offset: 1,
+      limit: 1,
+    });
+
+    const orgsResponse = await callAdminApi(
+      new Request(
+        `http://example/api/admin/orgs?search=${encodeURIComponent(org.slug)}&include_llm_provider=1`,
+        {
+          headers: { Authorization: 'Bearer test-admin-api-key' },
+        },
+      ),
+      sandboxFetch,
+      adminEnv,
+    );
+    expect(orgsResponse?.status).toBe(200);
+    await expect(orgsResponse!.json()).resolves.toEqual({
+      items: [
+        expect.objectContaining({
+          id: org.id,
+          has_llm_provider: true,
+          llm_provider: expect.objectContaining({
+            provider: 'openrouter',
+            key_hint: 'sk-or-ad...',
+          }),
+        }),
+      ],
+      total: 1,
+      offset: 0,
+      limit: 50,
+    });
   });
 
   it('serves dashboard daily spend with internal orgs included and enriched top-org metadata', async () => {
