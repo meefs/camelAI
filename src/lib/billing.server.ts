@@ -135,6 +135,12 @@ export interface StripeInvoice {
   subscription_details?: {
     metadata?: Record<string, string>;
   } | null;
+  lines?: {
+    data?: Array<{
+      quantity?: number | null;
+      price?: string | StripePriceSummary | null;
+    }>;
+  } | null;
 }
 
 export interface StripeWebhookEvent<T = unknown> {
@@ -182,6 +188,8 @@ const LEGACY_MIGRATION_PRICE_IDS = new Set([
   ...LEGACY_INDIVIDUAL_PRICE_IDS,
   ...LEGACY_TEAM_PRICE_IDS,
 ]);
+
+const STRIPE_CHECKOUT_MAX_ADJUSTABLE_QUANTITY = 999_999;
 
 interface UsageLogSumResponse {
   total_cost_usd: number;
@@ -1326,6 +1334,17 @@ export async function createSubscriptionCheckoutSession(args: {
   }
   body.set("line_items[0][price]", priceId);
   body.set("line_items[0][quantity]", String(seatCount));
+  if (plan === "team") {
+    body.set("line_items[0][adjustable_quantity][enabled]", "true");
+    body.set(
+      "line_items[0][adjustable_quantity][minimum]",
+      String(seatCount),
+    );
+    body.set(
+      "line_items[0][adjustable_quantity][maximum]",
+      String(STRIPE_CHECKOUT_MAX_ADJUSTABLE_QUANTITY),
+    );
+  }
   if (trialEligible) {
     body.set(
       "subscription_data[trial_period_days]",
@@ -2177,6 +2196,23 @@ function getInvoiceMetadata(
   );
 }
 
+function getInvoiceLineItemSeatQuantity(
+  env: StripeBillingEnv,
+  invoice: StripeInvoice,
+  plan: BillingPlan,
+): number | null {
+  if (plan === "free" || plan === "enterprise") return null;
+  const priceId = getConfiguredSubscriptionPriceId(env, plan);
+  const lines = invoice.lines?.data ?? [];
+  const matchingLine = priceId
+    ? lines.find((line) => getStripePriceId(line.price) === priceId)
+    : null;
+  const quantity = matchingLine?.quantity ?? lines[0]?.quantity;
+  return typeof quantity === "number" && Number.isFinite(quantity)
+    ? quantity
+    : null;
+}
+
 function isPaidInvoice(invoice: StripeInvoice): boolean {
   return invoice.status === "paid" || invoice.paid === true;
 }
@@ -2233,17 +2269,23 @@ export async function applySubscriptionIncludedCreditsFromInvoice(
   }
   const invoiceMetadata = getInvoiceMetadata(invoice);
   const plan = getMetadataBillingPlan(invoiceMetadata, existing.billing_status);
-  const seatCount = getMetadataSeatCount(
-    invoiceMetadata,
-    plan,
-    existing.billing_seat_count,
-  );
-  const includedCreditCents = getMetadataSubscriptionIncludedCreditCents(
-    invoiceMetadata,
+  const invoiceLineSeatQuantity = getInvoiceLineItemSeatQuantity(
     env,
+    invoice,
     plan,
-    seatCount,
   );
+  const seatCount = invoiceLineSeatQuantity
+    ? normalizeSeatCount(plan, invoiceLineSeatQuantity)
+    : getMetadataSeatCount(invoiceMetadata, plan, existing.billing_seat_count);
+  const includedCreditCents =
+    invoiceLineSeatQuantity !== null
+      ? getSubscriptionIncludedCreditCentsForPlan(env, plan, seatCount)
+      : getMetadataSubscriptionIncludedCreditCents(
+          invoiceMetadata,
+          env,
+          plan,
+          seatCount,
+        );
   if (includedCreditCents <= 0) {
     await markIncludedCreditInvoiceProcessed(env, invoice.id);
     return existing;

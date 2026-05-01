@@ -1333,6 +1333,15 @@ describe("billing helpers", () => {
     const params = new URLSearchParams(checkoutRequestBody ?? "");
     expect(params.get("line_items[0][price]")).toBe("price_team");
     expect(params.get("line_items[0][quantity]")).toBe("3");
+    expect(
+      params.get("line_items[0][adjustable_quantity][enabled]"),
+    ).toBe("true");
+    expect(
+      params.get("line_items[0][adjustable_quantity][minimum]"),
+    ).toBe("3");
+    expect(
+      params.get("line_items[0][adjustable_quantity][maximum]"),
+    ).toBe("999999");
     expect(params.get("subscription_data[metadata][billing_plan]")).toBe(
       "team",
     );
@@ -1411,6 +1420,15 @@ describe("billing helpers", () => {
 
     const params = new URLSearchParams(checkoutRequestBody ?? "");
     expect(params.get("line_items[0][quantity]")).toBe("25");
+    expect(
+      params.get("line_items[0][adjustable_quantity][enabled]"),
+    ).toBe("true");
+    expect(
+      params.get("line_items[0][adjustable_quantity][minimum]"),
+    ).toBe("25");
+    expect(
+      params.get("line_items[0][adjustable_quantity][maximum]"),
+    ).toBe("999999");
     expect(params.get("subscription_data[metadata][trial_credit_cents]")).toBe(
       "1000",
     );
@@ -1419,6 +1437,51 @@ describe("billing helpers", () => {
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
     ).toBe("25000");
+  });
+
+  it("sets a Team checkout adjustable maximum above large starting quantities", async () => {
+    let checkoutRequestBody: string | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init) => {
+        checkoutRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://checkout.stripe.test/session" }),
+        };
+      }),
+    );
+
+    await createSubscriptionCheckoutSession({
+      env: {
+        ORG: {} as never,
+        STRIPE_MODE: "test",
+        STRIPE_SECRET_KEY: "sk_test_123",
+        STRIPE_TEAM_PRICE_ID: "price_team",
+      },
+      org: {
+        id: "org_123",
+        name: "Test Org",
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_123",
+      } as never,
+      customerEmail: "owner@example.com",
+      successUrl: "https://camelai.dev/success",
+      cancelUrl: "https://camelai.dev/cancel",
+      plan: "team",
+      seatCount: 125,
+    });
+
+    const params = new URLSearchParams(checkoutRequestBody ?? "");
+    expect(params.get("line_items[0][quantity]")).toBe("125");
+    expect(
+      params.get("line_items[0][adjustable_quantity][minimum]"),
+    ).toBe("125");
+    expect(
+      params.get("line_items[0][adjustable_quantity][maximum]"),
+    ).toBe("999999");
   });
 
   it("omits Stripe trial days after the org has already used a trial", async () => {
@@ -1521,6 +1584,61 @@ describe("billing helpers", () => {
         billing_plan: "pro",
         billing_credit_grant_total_cents: 3000,
         billing_last_included_credit_invoice_id: "in_initial_paid",
+      }),
+    );
+  });
+
+  it("uses invoice line quantity for initial team included credits", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "team",
+        billing_seat_count: 3,
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 3,
+    });
+
+    await expect(
+      applySubscriptionIncludedCreditsFromInvoice(env as never, {
+        id: "in_initial_team_paid",
+        customer: "cus_team",
+        subscription: {
+          id: "sub_team",
+          status: "active",
+          metadata: {
+            org_id: "org_team",
+            billing_plan: "team",
+            seat_count: "3",
+            subscription_included_credit_cents: "3000",
+            initial_included_credit_cents: "3000",
+          },
+        },
+        lines: {
+          data: [
+            {
+              price: "price_team",
+              quantity: 8,
+            },
+          ],
+        },
+        status: "paid",
+        paid: true,
+        amount_paid: 40000,
+        billing_reason: "subscription_create",
+      }),
+    ).resolves.toMatchObject({
+      billing_credit_grant_total_cents: 8000,
+      billing_last_included_credit_invoice_id: "in_initial_team_paid",
+      billing_seat_count: 8,
+    });
+
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_plan: "team",
+        billing_seat_count: 8,
+        billing_credit_grant_total_cents: 8000,
+        billing_last_included_credit_invoice_id: "in_initial_team_paid",
       }),
     );
   });
