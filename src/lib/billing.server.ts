@@ -198,6 +198,7 @@ export interface StripePriceSummary {
   unit_amount: number | null;
   currency: string;
   active?: boolean;
+  product?: string | { id?: string | null } | null;
   recurring?: {
     interval: string;
     interval_count?: number;
@@ -357,6 +358,13 @@ function getStripePriceId(
   price: string | StripePriceSummary | null | undefined,
 ) {
   return typeof price === "string" ? price : (price?.id ?? null);
+}
+
+function getStripeProductId(price: StripePriceSummary | null | undefined) {
+  const product = price?.product;
+  if (!product) return null;
+  if (typeof product === "string") return product;
+  return product.id?.trim() || null;
 }
 
 function getStripeSubscriptionSeatQuantity(
@@ -1450,6 +1458,63 @@ export async function createBillingPortalSession(args: {
   return session.url;
 }
 
+async function createTeamSubscriptionUpdatePortalConfiguration(args: {
+  env: StripeBillingEnv;
+  priceId: string;
+  minimumSeatCount: number;
+}): Promise<string> {
+  const { env, priceId, minimumSeatCount } = args;
+  const minimumQuantity = Math.max(
+    getMinimumSeats("team"),
+    Math.floor(minimumSeatCount),
+  );
+  const price = await fetchStripePriceSummary(env, priceId);
+  const productId = getStripeProductId(price);
+  if (!productId) {
+    throw new Error("Stripe Team price does not include a product.");
+  }
+
+  const body = new URLSearchParams();
+  body.set("business_profile[headline]", "Manage your camelAI subscription");
+  body.set("features[invoice_history][enabled]", "true");
+  body.set("features[payment_method_update][enabled]", "true");
+  body.set("features[subscription_cancel][enabled]", "true");
+  body.set("features[subscription_update][enabled]", "true");
+  body.append(
+    "features[subscription_update][default_allowed_updates][]",
+    "price",
+  );
+  body.append(
+    "features[subscription_update][default_allowed_updates][]",
+    "quantity",
+  );
+  body.set("features[subscription_update][products][0][product]", productId);
+  body.append("features[subscription_update][products][0][prices][]", priceId);
+  body.set(
+    "features[subscription_update][products][0][adjustable_quantity][enabled]",
+    "true",
+  );
+  body.set(
+    "features[subscription_update][products][0][adjustable_quantity][minimum]",
+    String(minimumQuantity),
+  );
+
+  const configuration = await stripeRequest<{ id?: string | null }>(
+    env,
+    "/billing_portal/configurations",
+    {
+      method: "POST",
+      body,
+      idempotencyKey: `team-portal-config:${priceId}:${minimumQuantity}`,
+    },
+  );
+  const configurationId = configuration.id?.trim();
+  if (!configurationId) {
+    throw new Error("Stripe did not return a billing portal configuration.");
+  }
+  return configurationId;
+}
+
 export async function createSubscriptionUpdatePortalSession(args: {
   env: StripeBillingEnv;
   org: Organization;
@@ -1478,15 +1543,6 @@ export async function createSubscriptionUpdatePortalSession(args: {
     args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
   );
   const subscription = await fetchStripeSubscription(env, subscriptionId);
-  const currentPlan = getOrgBillingPlan(latestOrg);
-  const currentPriceId =
-    currentPlan === "free" || currentPlan === "enterprise"
-      ? null
-      : getConfiguredSubscriptionPriceId(env, currentPlan);
-  const item = getStripeSubscriptionItemForPlanChange(
-    subscription,
-    currentPriceId,
-  );
 
   const customerId = getStripeCustomerId(subscription.customer);
   if (!customerId) {
@@ -1507,22 +1563,50 @@ export async function createSubscriptionUpdatePortalSession(args: {
   const body = new URLSearchParams();
   body.set("customer", customerId);
   body.set("return_url", returnUrl);
-  body.set("flow_data[type]", "subscription_update_confirm");
-  body.set(
-    "flow_data[subscription_update_confirm][subscription]",
-    subscriptionId,
-  );
-  body.set("flow_data[subscription_update_confirm][items][0][id]", item.id);
-  body.set("flow_data[subscription_update_confirm][items][0][price]", priceId);
-  body.set(
-    "flow_data[subscription_update_confirm][items][0][quantity]",
-    String(seatCount),
-  );
+  if (plan === "team") {
+    // The interactive subscription_update flow lets the customer choose the
+    // Team price and seat quantity from the portal. Use a per-seat-floor
+    // configuration so Stripe cannot confirm fewer seats than the org already
+    // bills for locally.
+    const portalConfigurationId =
+      await createTeamSubscriptionUpdatePortalConfiguration({
+        env,
+        priceId,
+        minimumSeatCount: seatCount,
+      });
+    body.set("configuration", portalConfigurationId);
+    body.set("flow_data[type]", "subscription_update");
+    body.set("flow_data[subscription_update][subscription]", subscriptionId);
+  } else {
+    const currentPlan = getOrgBillingPlan(latestOrg);
+    const currentPriceId =
+      currentPlan === "free" || currentPlan === "enterprise"
+        ? null
+        : getConfiguredSubscriptionPriceId(env, currentPlan);
+    const item = getStripeSubscriptionItemForPlanChange(
+      subscription,
+      currentPriceId,
+    );
+    body.set("flow_data[type]", "subscription_update_confirm");
+    body.set(
+      "flow_data[subscription_update_confirm][subscription]",
+      subscriptionId,
+    );
+    body.set("flow_data[subscription_update_confirm][items][0][id]", item.id);
+    body.set(
+      "flow_data[subscription_update_confirm][items][0][price]",
+      priceId,
+    );
+    body.set(
+      "flow_data[subscription_update_confirm][items][0][quantity]",
+      String(seatCount),
+    );
+  }
   body.set("flow_data[after_completion][type]", "redirect");
   body.set("flow_data[after_completion][redirect][return_url]", returnUrl);
   const portalConfigurationId =
     env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
-  if (portalConfigurationId) {
+  if (portalConfigurationId && !body.has("configuration")) {
     body.set("configuration", portalConfigurationId);
   }
 

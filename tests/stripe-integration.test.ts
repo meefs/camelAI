@@ -159,6 +159,7 @@ async function createPortalConfiguration(args: {
   params.set("features[subscription_cancel][enabled]", "true");
   params.set("features[subscription_update][enabled]", "true");
   params.append("features[subscription_update][default_allowed_updates][]", "price");
+  params.append("features[subscription_update][default_allowed_updates][]", "quantity");
   params.set(
     "features[subscription_update][products][0][product]",
     args.starterProduct,
@@ -182,6 +183,14 @@ async function createPortalConfiguration(args: {
   params.append(
     "features[subscription_update][products][2][prices][]",
     args.teamPrice,
+  );
+  params.set(
+    "features[subscription_update][products][2][adjustable_quantity][enabled]",
+    "true",
+  );
+  params.set(
+    "features[subscription_update][products][2][adjustable_quantity][minimum]",
+    "3",
   );
 
   return stripePost<StripeBillingPortalConfiguration>(

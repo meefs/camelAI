@@ -484,7 +484,7 @@ describe("billing helpers", () => {
     ).toBe("https://camelai.dev/settings/organization/billing");
   });
 
-  it("creates a Stripe portal confirmation session for existing plan changes", async () => {
+  it("creates an interactive Stripe portal update session for Team plan changes", async () => {
     const { env, org } = makeBillingOrgEnv({
       org: {
         billing_status: "active",
@@ -501,6 +501,7 @@ describe("billing helpers", () => {
       STRIPE_BILLING_PORTAL_CONFIGURATION_ID: "bpc_v2",
     });
 
+    let portalConfigRequestBody: string | null = null;
     let portalRequestBody: string | null = null;
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
@@ -517,6 +518,143 @@ describe("billing helpers", () => {
                   id: "si_pro",
                   quantity: 1,
                   price: { id: "price_pro" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/prices/price_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "price_team",
+            unit_amount: 5000,
+            currency: "usd",
+            product: "prod_team",
+            recurring: { interval: "month" },
+          }),
+        };
+      }
+      if (url.endsWith("/billing_portal/configurations")) {
+        portalConfigRequestBody = init?.body as string;
+        expect((init?.headers as Headers).get("Idempotency-Key")).toBe(
+          "team-portal-config:price_team:8",
+        );
+        return {
+          ok: true,
+          json: async () => ({ id: "bpc_team_dynamic" }),
+        };
+      }
+      if (url.endsWith("/billing_portal/sessions")) {
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createSubscriptionUpdatePortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+        plan: "team",
+        seatCount: 8,
+      }),
+    ).resolves.toBe("https://billing.stripe.test/session");
+
+    const portalConfigParams = new URLSearchParams(
+      portalConfigRequestBody ?? "",
+    );
+    expect(
+      portalConfigParams.get(
+        "features[subscription_update][products][0][product]",
+      ),
+    ).toBe("prod_team");
+    expect(
+      portalConfigParams.getAll(
+        "features[subscription_update][default_allowed_updates][]",
+      ),
+    ).toEqual(["price", "quantity"]);
+    expect(
+      portalConfigParams.get(
+        "features[subscription_update][products][0][adjustable_quantity][enabled]",
+      ),
+    ).toBe("true");
+    expect(
+      portalConfigParams.get(
+        "features[subscription_update][products][0][adjustable_quantity][minimum]",
+      ),
+    ).toBe("8");
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.get("customer")).toBe("cus_123");
+    expect(portalParams.get("configuration")).toBe("bpc_team_dynamic");
+    expect(portalParams.get("flow_data[type]")).toBe("subscription_update");
+    expect(
+      portalParams.get("flow_data[subscription_update][subscription]"),
+    ).toBe("sub_team");
+    // Team upgrades stay on the interactive portal flow so customers can pick
+    // more seats. The server-calculated billable seat floor is enforced by the
+    // dynamic portal configuration adjustable_quantity minimum, not confirm items.
+    expect(
+      portalParams.has("flow_data[subscription_update_confirm][items][0][id]"),
+    ).toBe(false);
+    expect(
+      portalParams.has(
+        "flow_data[subscription_update_confirm][items][0][quantity]",
+      ),
+    ).toBe(false);
+    expect(portalParams.get("flow_data[after_completion][type]")).toBe(
+      "redirect",
+    );
+    expect(
+      portalParams.get("flow_data[after_completion][redirect][return_url]"),
+    ).toBe("https://camelai.dev/settings/organization/billing");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("creates a Stripe portal confirmation session for individual plan changes", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "starter",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_123",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_STARTER_PRICE_ID: "price_starter",
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      STRIPE_BILLING_PORTAL_CONFIGURATION_ID: "bpc_v2",
+    });
+
+    let portalRequestBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_123",
+            metadata: { org_id: "org_team", billing_plan: "starter" },
+            items: {
+              data: [
+                {
+                  id: "si_starter",
+                  quantity: 1,
+                  price: { id: "price_starter" },
                 },
               ],
             },
@@ -543,8 +681,8 @@ describe("billing helpers", () => {
         org,
         customerEmail: "owner@example.com",
         returnUrl: "https://camelai.dev/settings/organization/billing",
-        plan: "team",
-        seatCount: 3,
+        plan: "pro",
+        seatCount: 1,
       }),
     ).resolves.toBe("https://billing.stripe.test/session");
 
@@ -559,24 +697,20 @@ describe("billing helpers", () => {
     ).toBe("sub_team");
     expect(
       portalParams.get("flow_data[subscription_update_confirm][items][0][id]"),
-    ).toBe("si_pro");
+    ).toBe("si_starter");
     expect(
       portalParams.get(
         "flow_data[subscription_update_confirm][items][0][price]",
       ),
-    ).toBe("price_team");
+    ).toBe("price_pro");
     expect(
       portalParams.get(
         "flow_data[subscription_update_confirm][items][0][quantity]",
       ),
-    ).toBe("3");
+    ).toBe("1");
     expect(portalParams.get("flow_data[after_completion][type]")).toBe(
       "redirect",
     );
-    expect(
-      portalParams.get("flow_data[after_completion][redirect][return_url]"),
-    ).toBe("https://camelai.dev/settings/organization/billing");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("uses the subscription customer for existing plan change portal sessions", async () => {
@@ -617,6 +751,24 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.endsWith("/prices/price_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "price_team",
+            unit_amount: 5000,
+            currency: "usd",
+            product: "prod_team",
+            recurring: { interval: "month" },
+          }),
+        };
+      }
+      if (url.endsWith("/billing_portal/configurations")) {
+        return {
+          ok: true,
+          json: async () => ({ id: "bpc_team_dynamic" }),
+        };
+      }
       if (url.endsWith("/billing_portal/sessions")) {
         portalRequestBody = init?.body as string;
         return {
@@ -641,6 +793,7 @@ describe("billing helpers", () => {
 
     const portalParams = new URLSearchParams(portalRequestBody ?? "");
     expect(portalParams.get("customer")).toBe("cus_subscription");
+    expect(portalParams.get("configuration")).toBe("bpc_team_dynamic");
     expect(orgStub.updateBillingState).toHaveBeenCalledWith({
       billing_customer_id: "cus_subscription",
     });
