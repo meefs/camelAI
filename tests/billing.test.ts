@@ -32,6 +32,8 @@ import {
   migrateLegacyStripeSubscription,
   parseStripePriceIdList,
   syncTeamSubscriptionSeatCount,
+  syncOrgSubscriptionFromStripe,
+  updateStripeSubscriptionPlan,
 } from "@/lib/billing.server";
 import type { Organization } from "@/types";
 
@@ -62,6 +64,12 @@ describe("billing helpers", () => {
         Object.assign(org, updates);
         return org;
       }),
+      syncSubscriptionBillingState: vi.fn(
+        async (updates: Partial<Organization>) => {
+          Object.assign(org, updates);
+          return { org, trialCreditGranted: false };
+        },
+      ),
     };
     const env = {
       ORG: {
@@ -471,6 +479,167 @@ describe("billing helpers", () => {
     expect(
       portalParams.get("flow_data[after_completion][redirect][return_url]"),
     ).toBe("https://camelai.dev/settings/organization/billing");
+  });
+
+  it("updates an existing Stripe subscription to a configured v2 plan price", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_123",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 3,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      STRIPE_TEAM_PRICE_ID: "price_team",
+    });
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_123",
+            metadata: { org_id: "org_team", billing_plan: "pro" },
+            items: {
+              data: [
+                {
+                  id: "si_pro",
+                  quantity: 1,
+                  price: { id: "price_pro" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/subscriptions/sub_team") && init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_123",
+            metadata: {
+              org_id: "org_team",
+              billing_plan: "team",
+              seat_count: "3",
+              subscription_included_credit_cents: "3000",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_pro",
+                  quantity: 3,
+                  price: { id: "price_team" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          id: "si_pro",
+          quantity: 3,
+          price: { id: "price_team" },
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      updateStripeSubscriptionPlan({
+        env: env as never,
+        org,
+        plan: "team",
+        seatCount: 3,
+      }),
+    ).resolves.toMatchObject({ billing_plan: "team", billing_seat_count: 3 });
+
+    const itemUpdate = fetchMock.mock.calls[1];
+    expect(String(itemUpdate[0])).toBe(
+      "https://api.stripe.com/v1/subscription_items/si_pro",
+    );
+    const itemParams = new URLSearchParams(itemUpdate[1]?.body as string);
+    expect(itemParams.get("price")).toBe("price_team");
+    expect(itemParams.get("quantity")).toBe("3");
+    expect(itemParams.get("proration_behavior")).toBe("create_prorations");
+
+    const subscriptionUpdate = fetchMock.mock.calls[2];
+    const subscriptionParams = new URLSearchParams(
+      subscriptionUpdate[1]?.body as string,
+    );
+    expect(subscriptionParams.get("metadata[billing_plan]")).toBe("team");
+    expect(subscriptionParams.get("metadata[seat_count]")).toBe("3");
+    expect(
+      subscriptionParams.get("metadata[subscription_included_credit_cents]"),
+    ).toBe("3000");
+    expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_plan: "team",
+        billing_seat_count: 3,
+      }),
+      1000,
+    );
+  });
+
+  it("infers subscription plan from configured Stripe item price when metadata is stale", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      memberCount: 4,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      STRIPE_TEAM_PRICE_ID: "price_team",
+    });
+
+    await expect(
+      syncOrgSubscriptionFromStripe(env as never, {
+        id: "sub_team",
+        status: "active",
+        customer: "cus_123",
+        metadata: {
+          org_id: "org_team",
+          billing_plan: "pro",
+          seat_count: "1",
+        },
+        items: {
+          data: [
+            {
+              id: "si_team",
+              quantity: 4,
+              price: {
+                id: "price_team",
+                unit_amount: 5000,
+                currency: "usd",
+              },
+            },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({
+      billing_plan: "team",
+      billing_seat_count: 4,
+    });
+
+    expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_plan: "team",
+        billing_seat_count: 4,
+      }),
+      1000,
+    );
   });
 
   it("uses tier-specific subscription price, quantity, and included credit metadata", async () => {

@@ -22,6 +22,7 @@ import {
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
   migrateLegacyStripeSubscription,
+  updateStripeSubscriptionPlan,
 } from "@/lib/billing.server";
 import {
   BILLING_PLAN_LIMITS,
@@ -56,6 +57,13 @@ const EXISTING_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "incomplete",
 ]);
 
+const DIRECTLY_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+]);
+
 const NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "canceled",
   "incomplete_expired",
@@ -78,6 +86,18 @@ function hasRecoverableStripeSubscription(
   return (
     EXISTING_STRIPE_SUBSCRIPTION_STATUSES.has(rawStatus ?? "") ||
     EXISTING_STRIPE_SUBSCRIPTION_STATUSES.has(org.billing_status)
+  );
+}
+
+function canDirectlyUpdateStripeSubscription(
+  org: Pick<Organization, "billing_subscription_status" | "billing_status">,
+): boolean {
+  const rawStatus = org.billing_subscription_status?.trim();
+  if (rawStatus) {
+    return DIRECTLY_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES.has(rawStatus);
+  }
+  return DIRECTLY_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES.has(
+    org.billing_status,
   );
 }
 
@@ -227,6 +247,41 @@ export async function action({ request, context }: Route.ActionArgs) {
         hasRecoverableStripeSubscription(billingOrg);
 
       if (hasActiveStripeSubscription) {
+        if (
+          rawPlan !== "free" &&
+          canDirectlyUpdateStripeSubscription(billingOrg)
+        ) {
+          try {
+            const seatCount =
+              rawPlan === "team"
+                ? await getBillableTeamSeatCountForOrg(
+                    env,
+                    authContext.currentOrg.id,
+                  )
+                : getMinimumSeats(rawPlan);
+            await updateStripeSubscriptionPlan({
+              env,
+              org: billingOrg,
+              plan: rawPlan,
+              seatCount,
+            });
+            return { planChanged: true };
+          } catch (error) {
+            console.error(
+              "[billing] failed to update Stripe subscription plan",
+              {
+                orgId: billingOrg.id,
+                plan: rawPlan,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+            return {
+              error:
+                "We couldn't change your plan. Please try again in a moment.",
+            };
+          }
+        }
+
         try {
           const url = await createBillingPortalSession({
             env,
@@ -312,11 +367,14 @@ export async function action({ request, context }: Route.ActionArgs) {
         });
         return { billingPortalUrl: url };
       } catch (error) {
-        console.error("[billing] failed to create cancellation portal session", {
-          orgId: billingOrg.id,
-          subscriptionId: billingOrg.billing_subscription_id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        console.error(
+          "[billing] failed to create cancellation portal session",
+          {
+            orgId: billingOrg.id,
+            subscriptionId: billingOrg.billing_subscription_id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
         return {
           error:
             "We couldn't open your cancellation flow. Please try again in a moment.",

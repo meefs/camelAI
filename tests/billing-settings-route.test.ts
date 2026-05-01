@@ -6,6 +6,7 @@ const getEnvMock = vi.fn();
 const createBillingPortalSessionMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
 const migrateLegacyStripeSubscriptionMock = vi.fn();
+const updateStripeSubscriptionPlanMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -23,6 +24,7 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     createBillingPortalSession: createBillingPortalSessionMock,
     createSubscriptionCheckoutSession: createSubscriptionCheckoutSessionMock,
     migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
+    updateStripeSubscriptionPlan: updateStripeSubscriptionPlanMock,
   };
 });
 
@@ -81,6 +83,7 @@ describe("billing settings plan changes", () => {
       "https://checkout.stripe.test/session",
     );
     migrateLegacyStripeSubscriptionMock.mockResolvedValue({});
+    updateStripeSubscriptionPlanMock.mockResolvedValue({});
   });
 
   it("creates Checkout for a free org selecting a paid plan", async () => {
@@ -201,7 +204,7 @@ describe("billing settings plan changes", () => {
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("uses the Billing Portal for unpaid subscribers changing plans", async () => {
+  it("updates the existing Stripe subscription for unpaid subscribers changing plans", async () => {
     const org = {
       id: "org_123",
       name: "Unpaid Org",
@@ -224,9 +227,88 @@ describe("billing settings plan changes", () => {
     } as never);
 
     expect(result).toEqual({
+      planChanged: true,
+    });
+    expect(updateStripeSubscriptionPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        plan: "team",
+        seatCount: 3,
+      }),
+    );
+    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+    expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("updates the existing Stripe subscription directly for paid plan changes", async () => {
+    const org = {
+      id: "org_123",
+      name: "Paid Org",
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_123",
+      billing_subscription_status: "active",
+    };
+    const env = makeEnv(org, 2, [{ expires_at: Date.now() + 60_000 }]);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+
+    const result = await action({
+      request: makeFormRequest("team"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({ planChanged: true });
+    expect(updateStripeSubscriptionPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        plan: "team",
+        seatCount: 3,
+      }),
+    );
+    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+    expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the Billing Portal for incomplete subscriptions changing paid plans", async () => {
+    const org = {
+      id: "org_123",
+      name: "Incomplete Org",
+      billing_status: "past_due",
+      billing_plan: "starter",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_incomplete",
+      billing_subscription_status: "incomplete",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+
+    const result = await action({
+      request: makeFormRequest("pro"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({
       billingPortalUrl: "https://billing.stripe.test/session",
     });
-    expect(createBillingPortalSessionMock).toHaveBeenCalled();
+    expect(createBillingPortalSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        customerEmail: "owner@example.com",
+      }),
+    );
+    expect(updateStripeSubscriptionPlanMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
