@@ -581,20 +581,15 @@ describe("billing helpers", () => {
     ).resolves.toBe("https://billing.stripe.test/session");
 
     const customerParams = new URLSearchParams(customerRequestBody ?? "");
-    expect(customerParams.get("metadata[pending_legacy_migration_org_id]")).toBe(
-      "org_team",
-    );
+    expect(customerParams.get("metadata[v2_mig_org]")).toBe("org_team");
+    expect(customerParams.get("metadata[v2_mig_sub]")).toBe("sub_legacy");
+    expect(customerParams.get("metadata[v2_mig_plan]")).toBe("pro");
+    expect(customerParams.get("metadata[v2_mig_credits]")).toBe("3000");
     expect(
-      customerParams.get("metadata[pending_legacy_migration_subscription_id]"),
-    ).toBe("sub_legacy");
-    expect(
-      customerParams.get("metadata[pending_legacy_migration_target_plan]"),
-    ).toBe("pro");
-    expect(
-      customerParams.get(
+      customerParams.has(
         "metadata[pending_legacy_migration_included_credit_cents]",
       ),
-    ).toBe("3000");
+    ).toBe(false);
 
     const portalParams = new URLSearchParams(portalRequestBody ?? "");
     expect(portalParams.get("customer")).toBe("cus_123");
@@ -644,10 +639,10 @@ describe("billing helpers", () => {
             id: "cus_123",
             metadata: {
               org_id: "org_stale",
-              pending_legacy_migration_org_id: "org_team",
-              pending_legacy_migration_subscription_id: "sub_legacy",
-              pending_legacy_migration_target_plan: "pro",
-              pending_legacy_migration_included_credit_cents: "3000",
+              v2_mig_org: "org_team",
+              v2_mig_sub: "sub_legacy",
+              v2_mig_plan: "pro",
+              v2_mig_credits: "3000",
             },
           }),
         };
@@ -708,9 +703,15 @@ describe("billing helpers", () => {
     expect(subscriptionParams.get("metadata[billing_plan]")).toBe("pro");
     const customerParams = new URLSearchParams(customerClearBody ?? "");
     expect(customerParams.get("metadata[org_id]")).toBe("org_team");
+    expect(customerParams.get("metadata[v2_mig_org]")).toBe("");
     expect(customerParams.get("metadata[pending_legacy_migration_org_id]")).toBe(
       "",
     );
+    expect(
+      customerParams.has(
+        "metadata[pending_legacy_migration_included_credit_cents]",
+      ),
+    ).toBe(false);
   });
 
   it("respects zero included-credit override for portal-confirmed legacy migrations", async () => {

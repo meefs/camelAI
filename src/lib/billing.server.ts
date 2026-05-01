@@ -16,6 +16,12 @@ const STRIPE_API_VERSION = "2026-02-25.clover";
 export const STRIPE_SUBSCRIPTION_TRIAL_DAYS = 7;
 const CREDIT_CHECKOUT_EVENT_PREFIX = "stripe_checkout_credits:";
 const INCLUDED_CREDIT_INVOICE_EVENT_PREFIX = "stripe_invoice_included_credit:";
+const LEGACY_MIGRATION_META_ORG_ID = "v2_mig_org";
+const LEGACY_MIGRATION_META_SUBSCRIPTION_ID = "v2_mig_sub";
+const LEGACY_MIGRATION_META_TARGET_PLAN = "v2_mig_plan";
+const LEGACY_MIGRATION_META_SEAT_COUNT = "v2_mig_seats";
+const LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS = "v2_mig_credits";
+const LEGACY_MIGRATION_META_SOURCE_PRICE_ID = "v2_mig_price";
 export const DEFAULT_TRIAL_CREDIT_CENTS = 1000;
 export const DEFAULT_SUBSCRIPTION_INCLUDED_CREDIT_CENTS = 1000;
 
@@ -2091,22 +2097,22 @@ export async function createLegacyStripeMigrationPortalSession(args: {
     });
 
   const customerBody = new URLSearchParams();
-  customerBody.set("metadata[pending_legacy_migration_org_id]", latestOrg.id);
+  customerBody.set(`metadata[${LEGACY_MIGRATION_META_ORG_ID}]`, latestOrg.id);
   customerBody.set(
-    "metadata[pending_legacy_migration_subscription_id]",
+    `metadata[${LEGACY_MIGRATION_META_SUBSCRIPTION_ID}]`,
     selection.subscription.id,
   );
-  customerBody.set("metadata[pending_legacy_migration_target_plan]", plan);
+  customerBody.set(`metadata[${LEGACY_MIGRATION_META_TARGET_PLAN}]`, plan);
   customerBody.set(
-    "metadata[pending_legacy_migration_seat_count]",
+    `metadata[${LEGACY_MIGRATION_META_SEAT_COUNT}]`,
     String(seatCount),
   );
   customerBody.set(
-    "metadata[pending_legacy_migration_included_credit_cents]",
+    `metadata[${LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS}]`,
     String(includedCreditCents),
   );
   customerBody.set(
-    "metadata[pending_legacy_migration_source_price_id]",
+    `metadata[${LEGACY_MIGRATION_META_SOURCE_PRICE_ID}]`,
     selection.priceId,
   );
   await stripeRequest<StripeCustomer>(
@@ -2321,12 +2327,16 @@ interface PendingLegacyMigrationCustomerMetadata {
 function getPendingLegacyMigrationCustomerMetadata(
   metadata: Record<string, string> | null | undefined,
 ): PendingLegacyMigrationCustomerMetadata | null {
-  const orgId = metadata?.pending_legacy_migration_org_id?.trim();
+  const orgId =
+    metadata?.[LEGACY_MIGRATION_META_ORG_ID]?.trim() ||
+    metadata?.pending_legacy_migration_org_id?.trim();
   const subscriptionId =
+    metadata?.[LEGACY_MIGRATION_META_SUBSCRIPTION_ID]?.trim() ||
     metadata?.pending_legacy_migration_subscription_id?.trim();
   if (!orgId || !subscriptionId) return null;
   const targetPlan = normalizeBillingPlan(
-    metadata?.pending_legacy_migration_target_plan,
+    metadata?.[LEGACY_MIGRATION_META_TARGET_PLAN] ||
+      metadata?.pending_legacy_migration_target_plan,
   );
   if (targetPlan === "free" || targetPlan === "enterprise") return null;
   return {
@@ -2335,7 +2345,8 @@ function getPendingLegacyMigrationCustomerMetadata(
     targetPlan,
     includedCreditCents:
       parsePositiveInteger(
-        metadata?.pending_legacy_migration_included_credit_cents,
+        metadata?.[LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS] ||
+          metadata?.pending_legacy_migration_included_credit_cents,
       ) ?? 0,
   };
 }
@@ -2350,11 +2361,16 @@ async function bestEffortClearPendingLegacyMigrationCustomerMetadata(args: {
 
   const body = new URLSearchParams();
   body.set("metadata[org_id]", args.orgId);
+  body.set(`metadata[${LEGACY_MIGRATION_META_ORG_ID}]`, "");
+  body.set(`metadata[${LEGACY_MIGRATION_META_SUBSCRIPTION_ID}]`, "");
+  body.set(`metadata[${LEGACY_MIGRATION_META_TARGET_PLAN}]`, "");
+  body.set(`metadata[${LEGACY_MIGRATION_META_SEAT_COUNT}]`, "");
+  body.set(`metadata[${LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS}]`, "");
+  body.set(`metadata[${LEGACY_MIGRATION_META_SOURCE_PRICE_ID}]`, "");
   body.set("metadata[pending_legacy_migration_org_id]", "");
   body.set("metadata[pending_legacy_migration_subscription_id]", "");
   body.set("metadata[pending_legacy_migration_target_plan]", "");
   body.set("metadata[pending_legacy_migration_seat_count]", "");
-  body.set("metadata[pending_legacy_migration_included_credit_cents]", "");
   body.set("metadata[pending_legacy_migration_source_price_id]", "");
 
   try {
