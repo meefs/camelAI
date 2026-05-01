@@ -123,7 +123,6 @@ export function TeamTable({
   const lastActionRef = useRef<string | null>(null)
   const upgradeCurrentPlan: "free" | "starter" | "pro" =
     currentPlan === "starter" || currentPlan === "pro" ? currentPlan : "free"
-  const legacyMigrationEligible = Boolean(legacyMigration?.eligible)
 
   // Handle fetcher response - show toasts and handle special cases
   useEffect(() => {
@@ -704,7 +703,7 @@ export function TeamTable({
         currentPlan={upgradeCurrentPlan}
         trialAvailable={trialAvailable}
         stripeConfigured={stripeConfigured}
-        legacyMigrationEligible={legacyMigrationEligible}
+        legacyMigration={legacyMigration}
       />
       <ConfirmDialog
         open={Boolean(pendingRemoveMemberId)}

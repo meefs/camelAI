@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OrgRole, User, WorkspaceAccessLevel } from '@/types';
@@ -9,6 +10,9 @@ const { toastSuccessMock, toastErrorMock } = vi.hoisted(() => ({
 }));
 
 const fetcherSubmitMock = vi.fn();
+const inviteDialogOpenSpy = vi.fn();
+const upgradeDialogOpenSpy = vi.fn();
+const upgradeDialogPropsSpy = vi.fn();
 
 vi.mock('react-router', () => ({
   useFetcher: () => ({
@@ -35,7 +39,19 @@ vi.mock('@/hooks/use-auth-actions', () => ({
 }));
 
 vi.mock('@/components/settings/invite-member-dialog', () => ({
-  InviteMemberDialog: () => null,
+  InviteMemberDialog: ({ open }: { open: boolean }) => {
+    inviteDialogOpenSpy(open);
+    return null;
+  },
+}));
+
+vi.mock('@/components/settings/team-upgrade-dialog', () => ({
+  TeamUpgradeDialog: (props: { open: boolean; legacyMigration?: unknown }) => {
+    upgradeDialogPropsSpy(props);
+    const { open } = props;
+    upgradeDialogOpenSpy(open);
+    return null;
+  },
 }));
 
 vi.mock('@/components/settings/workspace-access-tags', () => ({
@@ -68,7 +84,7 @@ function buildUser(overrides: Partial<User> = {}): User {
   };
 }
 
-function renderTeamTable() {
+function renderTeamTable(extraProps: Partial<React.ComponentProps<typeof TeamTable>> = {}) {
   return render(
     <TeamTable
       orgId={ORG_ID}
@@ -93,6 +109,7 @@ function renderTeamTable() {
         },
       ]}
       workspaces={[]}
+      {...extraProps}
     />
   );
 }
@@ -102,6 +119,9 @@ describe('TeamTable - copy invite link', () => {
     toastSuccessMock.mockClear();
     toastErrorMock.mockClear();
     fetcherSubmitMock.mockClear();
+    inviteDialogOpenSpy.mockClear();
+    upgradeDialogOpenSpy.mockClear();
+    upgradeDialogPropsSpy.mockClear();
 
     Object.defineProperty(window, 'location', {
       configurable: true,
@@ -161,6 +181,44 @@ describe('TeamTable - copy invite link', () => {
     expect(fetcherSubmitMock).toHaveBeenCalledWith(
       { intent: 'deleteInvitation', invitationId: INVITATION_ID },
       { method: 'POST' }
+    );
+  });
+
+  it('opens the InviteMemberDialog when requiresTeamUpgrade is false', () => {
+    renderTeamTable();
+
+    fireEvent.click(screen.getAllByText('Invite member')[0]);
+
+    expect(inviteDialogOpenSpy).toHaveBeenLastCalledWith(true);
+    expect(upgradeDialogOpenSpy).not.toHaveBeenCalledWith(true);
+  });
+
+  it('opens the TeamUpgradeDialog when requiresTeamUpgrade is true', () => {
+    renderTeamTable({ requiresTeamUpgrade: true });
+
+    fireEvent.click(screen.getAllByText('Invite member')[0]);
+
+    expect(upgradeDialogOpenSpy).toHaveBeenLastCalledWith(true);
+    expect(inviteDialogOpenSpy).not.toHaveBeenCalledWith(true);
+  });
+
+  it('passes legacy migration details to the TeamUpgradeDialog', () => {
+    const legacyMigration = {
+      eligible: true,
+      customerId: 'cus_test',
+      activeLegacySubscriptionCount: 2,
+      defaultPlan: 'team' as const,
+    };
+
+    renderTeamTable({ requiresTeamUpgrade: true, legacyMigration });
+
+    fireEvent.click(screen.getAllByText('Invite member')[0]);
+
+    expect(upgradeDialogPropsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        open: true,
+        legacyMigration,
+      }),
     );
   });
 });
