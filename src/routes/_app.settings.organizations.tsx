@@ -3,6 +3,7 @@ import type { Route } from "./+types/_app.settings.organizations";
 import { requireAuthContext, getAuthEnv } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import * as authDO from "@/lib/auth-do";
+import { normalizeBillingPlan } from "@/lib/billing-plans";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
 import { OrgMembershipsList } from "@/components/settings/org-memberships-list";
@@ -48,7 +49,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  // Fetch member counts, workspace counts, and billing status for each org in parallel
+  // Fetch member counts, workspace counts, and billing plan for each org in parallel
   const orgSummaries = await Promise.all(
     authContext.orgs.map(async (org) => {
       const [members, workspaces, orgInfo] = await Promise.all([
@@ -62,7 +63,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         org_name: org.org_name,
         role: org.role,
         joined_at: org.joined_at,
-        billing_status: orgInfo?.billing_status ?? "inactive",
+        billing_plan: normalizeBillingPlan(
+          orgInfo?.billing_plan,
+          orgInfo?.billing_status ?? "inactive",
+        ),
         member_count: members.length,
         workspace_count: workspaces.length,
       };

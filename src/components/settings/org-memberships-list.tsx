@@ -31,15 +31,15 @@ import {
 import { useAuthData } from "@/hooks/use-auth-data"
 import { useSwitchOrg } from "@/hooks/use-auth-actions"
 import { CreateOrgDialog } from "@/components/settings/create-org-dialog"
-import { billingStatusBadgeVariant, billingStatusLabel } from "@/lib/billing"
-import type { BillingStatus, OrgRole } from "@/types"
+import { BILLING_PLAN_LIMITS } from "@/lib/billing-plans"
+import type { BillingPlan, OrgRole } from "@/types"
 
 interface OrgMembershipSummary {
   org_id: string
   org_name: string
   role: OrgRole
   joined_at: number
-  billing_status: BillingStatus
+  billing_plan: BillingPlan
   member_count: number
   workspace_count: number
 }
@@ -51,6 +51,14 @@ interface OrgMembershipsListProps {
 
 function formatDate(value: number) {
   return new Date(value).toLocaleDateString()
+}
+
+function billingPlanBadgeVariant(
+  plan: BillingPlan,
+): "default" | "secondary" | "outline" {
+  if (plan === "enterprise") return "default"
+  if (plan === "free") return "secondary"
+  return "outline"
 }
 
 export function OrgMembershipsList({
@@ -126,8 +134,8 @@ export function OrgMembershipsList({
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={billingStatusBadgeVariant(org.billing_status)}>
-                    {billingStatusLabel(org.billing_status)}
+                  <Badge variant={billingPlanBadgeVariant(org.billing_plan)}>
+                    {BILLING_PLAN_LIMITS[org.billing_plan].label}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm">
@@ -178,8 +186,8 @@ export function OrgMembershipsList({
                 </Badge>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <Badge variant={billingStatusBadgeVariant(org.billing_status)}>
-                  {billingStatusLabel(org.billing_status)}
+                <Badge variant={billingPlanBadgeVariant(org.billing_plan)}>
+                  {BILLING_PLAN_LIMITS[org.billing_plan].label}
                 </Badge>
                 <span>
                   {org.member_count} members / {org.workspace_count} workspaces
