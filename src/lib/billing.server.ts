@@ -972,6 +972,9 @@ export async function syncTeamSubscriptionSeatCount(
   orgId: string,
   options: {
     pendingReservedSeatDelta?: number;
+    targetSeatCount?: number;
+    itemUpdateIdempotencyKey?: string;
+    prorationBehavior?: "create_prorations" | "always_invoice" | "none";
   } = {},
 ): Promise<Organization | null> {
   const orgStub = getOrgStub(env, orgId);
@@ -979,11 +982,14 @@ export async function syncTeamSubscriptionSeatCount(
   if (!org) return null;
   if (!shouldSyncTeamSeats(org)) return org;
 
-  const seatCount = await getBillableTeamSeatCount(
-    env,
-    orgId,
-    options.pendingReservedSeatDelta ?? 0,
-  );
+  const seatCount =
+    options.targetSeatCount === undefined
+      ? await getBillableTeamSeatCount(
+          env,
+          orgId,
+          options.pendingReservedSeatDelta ?? 0,
+        )
+      : normalizeSeatCount("team", options.targetSeatCount);
   if (!seatCount) return org;
 
   if (org.billing_seat_count === seatCount) {
@@ -999,13 +1005,17 @@ export async function syncTeamSubscriptionSeatCount(
 
   const itemBody = new URLSearchParams();
   itemBody.set("quantity", String(seatCount));
-  itemBody.set("proration_behavior", "create_prorations");
+  itemBody.set(
+    "proration_behavior",
+    options.prorationBehavior ?? "create_prorations",
+  );
   await stripeRequest<StripeSubscriptionItem>(
     env,
     `/subscription_items/${item.id}`,
     {
       method: "POST",
       body: itemBody,
+      idempotencyKey: options.itemUpdateIdempotencyKey,
     },
   );
 

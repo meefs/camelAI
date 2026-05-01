@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { inviteEmailSchema, MAX_INVITE_EMAILS } from '@/lib/invite-emails';
 
 // Profile - form fields only (for client-side validation)
 export const profileFormSchema = z.object({
@@ -58,7 +59,7 @@ export const createOrgSchema = createOrgFormSchema.extend({
 
 // Invite member - form fields only
 export const inviteMemberFormSchema = z.object({
-  email: z.string().email('Please enter a valid email address'),
+  emails: z.array(inviteEmailSchema).min(1, 'At least one email is required').max(MAX_INVITE_EMAILS, `Invite up to ${MAX_INVITE_EMAILS} people at a time`),
   role: z.enum(['admin', 'member', 'viewer']).default('member'),
 });
 

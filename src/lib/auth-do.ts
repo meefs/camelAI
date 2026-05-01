@@ -1058,6 +1058,28 @@ export async function createInvitation(
   return { id: invitation.id, expires_at: invitation.expires_at };
 }
 
+export async function createInvitations(
+  env: AuthEnv,
+  orgId: string,
+  emails: string[],
+  role: OrgRole,
+  invitedBy: string,
+  options: { pendingBillingSeatAllowance?: number } = {},
+): Promise<Array<{ id: string; email: string; expires_at: number }>> {
+  if (role === "owner") {
+    throw new Error("Cannot invite as owner");
+  }
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  const invitations = await stub.createInvitations(emails, role, invitedBy, {
+    pendingBillingSeatAllowance: options.pendingBillingSeatAllowance,
+  });
+  return invitations.map((invitation) => ({
+    id: invitation.id,
+    email: invitation.email,
+    expires_at: invitation.expires_at,
+  }));
+}
+
 export async function getInvitation(
   env: AuthEnv,
   orgId: string,

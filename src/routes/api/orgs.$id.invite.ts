@@ -7,7 +7,8 @@ import {
   getInvitation,
   isOrgAdmin,
 } from '@/lib/auth-do';
-import { inviteMemberFormSchema } from '@/lib/schemas';
+import { inviteEmailSchema } from '@/lib/invite-emails';
+import { z } from 'zod';
 import {
   buildInvitationUrl,
   resolveAppBaseUrl,
@@ -16,6 +17,11 @@ import {
 import {
   bestEffortSyncTeamSubscriptionSeatCount,
 } from '@/lib/billing.server';
+
+const legacyInviteMemberFormSchema = z.object({
+  email: inviteEmailSchema,
+  role: z.enum(['admin', 'member', 'viewer']).default('member'),
+});
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   const orgId = params.id;
@@ -34,7 +40,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   if (request.method === 'POST') {
     try {
       const body = await request.json();
-      const parsed = inviteMemberFormSchema.safeParse(body);
+      const parsed = legacyInviteMemberFormSchema.safeParse(body);
       if (!parsed.success) {
         return Response.json({ error: 'Valid email and role are required' }, { status: 400 });
       }

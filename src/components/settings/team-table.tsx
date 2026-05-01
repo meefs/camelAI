@@ -49,7 +49,7 @@ import { TeamUpgradeDialog } from "@/components/settings/team-upgrade-dialog"
 import { WorkspaceAccessTags } from "@/components/settings/workspace-access-tags"
 import { getContrastTextColor } from "@/lib/avatar"
 import type {
-  BillableTeamInviteSeatChange,
+  TeamInviteBillingContext,
 } from "@/lib/billing-plans"
 import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog"
 import type {
@@ -86,12 +86,12 @@ interface TeamTableProps {
   members: MemberWithAccess[]
   invitations: TeamInvitation[]
   workspaces: Workspace[]
-  teamSeatBillingNotice?: BillableTeamInviteSeatChange | null
   requiresTeamUpgrade?: boolean
   currentPlan?: "free" | "starter" | "pro" | "team" | "enterprise"
   trialAvailable?: boolean
   stripeConfigured?: boolean
   legacyMigration?: LegacyMigrationDialogData | null
+  teamInviteBillingContext?: TeamInviteBillingContext | null
 }
 
 function formatDate(value: number) {
@@ -105,12 +105,12 @@ export function TeamTable({
   members,
   invitations,
   workspaces,
-  teamSeatBillingNotice = null,
   requiresTeamUpgrade = false,
   currentPlan = "free",
   trialAvailable = true,
   stripeConfigured = true,
   legacyMigration = null,
+  teamInviteBillingContext = null,
 }: TeamTableProps) {
   const { logout } = useLogout()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
@@ -695,7 +695,9 @@ export function TeamTable({
       <InviteMemberDialog
         open={inviteOpen}
         onOpenChange={setInviteOpen}
-        teamSeatBillingNotice={teamSeatBillingNotice}
+        teamInviteBillingContext={teamInviteBillingContext}
+        knownMemberEmails={members.map((member) => member.user.email.toLowerCase())}
+        knownInvitedEmails={invitations.map((invitation) => invitation.email.toLowerCase())}
       />
       <TeamUpgradeDialog
         open={upgradeOpen}
