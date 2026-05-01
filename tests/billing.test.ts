@@ -25,6 +25,7 @@ import {
   getBillingAllowanceConfig,
   getConfiguredSubscriptionPriceId,
   getLegacyStripeMigrationEligibility,
+  getStripeDefaultPaymentMethodSummary,
   hasOrgUsedSubscriptionTrial,
   isConfiguredEnterpriseOrg,
   isRecurringSubscriptionInvoice,
@@ -640,6 +641,161 @@ describe("billing helpers", () => {
       }),
       1000,
     );
+  });
+
+  it("reads payment method summary from the subscription default payment method", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/customers/cus_123?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "cus_123",
+            invoice_settings: { default_payment_method: null },
+          }),
+        };
+      }
+      if (url.includes("/subscriptions/sub_123?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_123",
+            status: "active",
+            default_payment_method: {
+              id: "pm_123",
+              type: "card",
+              card: { brand: "visa", last4: "4242" },
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ data: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      getStripeDefaultPaymentMethodSummary(
+        {
+          ORG: {} as never,
+          STRIPE_MODE: "test",
+          STRIPE_SECRET_KEY: "sk_test_123",
+        },
+        {
+          id: "org_123",
+          name: "Test Org",
+          billing_customer_id: "cus_123",
+          billing_subscription_id: "sub_123",
+        } as never,
+      ),
+    ).resolves.toEqual({ brand: "visa", last4: "4242" });
+  });
+
+  it("falls back to attached customer card payment methods", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/customers/cus_123?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "cus_123",
+            invoice_settings: { default_payment_method: null },
+          }),
+        };
+      }
+      if (url.includes("/payment_methods?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [
+              {
+                id: "pm_123",
+                type: "card",
+                card: { brand: "mastercard", last4: "4444" },
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ data: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      getStripeDefaultPaymentMethodSummary(
+        {
+          ORG: {} as never,
+          STRIPE_MODE: "test",
+          STRIPE_SECRET_KEY: "sk_test_123",
+        },
+        {
+          id: "org_123",
+          name: "Test Org",
+          billing_customer_id: "cus_123",
+        } as never,
+      ),
+    ).resolves.toEqual({ brand: "mastercard", last4: "4444" });
+
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes("/payment_methods?"),
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to legacy customer default source cards", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/customers/cus_123?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "cus_123",
+            invoice_settings: { default_payment_method: null },
+            default_source: "card_123",
+          }),
+        };
+      }
+      if (url.includes("/payment_methods?")) {
+        return {
+          ok: true,
+          json: async () => ({ data: [] }),
+        };
+      }
+      if (url.includes("/customers/cus_123/sources/card_123")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "card_123",
+            object: "card",
+            brand: "visa",
+            last4: "4242",
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ data: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      getStripeDefaultPaymentMethodSummary(
+        {
+          ORG: {} as never,
+          STRIPE_MODE: "test",
+          STRIPE_SECRET_KEY: "sk_test_123",
+        },
+        {
+          id: "org_123",
+          name: "Test Org",
+          billing_customer_id: "cus_123",
+        } as never,
+      ),
+    ).resolves.toEqual({ brand: "visa", last4: "4242" });
   });
 
   it("uses tier-specific subscription price, quantity, and included credit metadata", async () => {

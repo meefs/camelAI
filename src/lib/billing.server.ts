@@ -50,6 +50,7 @@ export interface StripeSubscription {
   customer?: string | StripeCustomer | null;
   metadata?: Record<string, string>;
   quantity?: number | null;
+  default_payment_method?: string | StripePaymentMethod | null;
   trial_start?: number | null;
   trial_end?: number | null;
   current_period_end?: number | null;
@@ -2110,6 +2111,9 @@ export async function listStripeInvoicesForOrg(
 
 interface StripePaymentMethod {
   id: string;
+  type?: string | null;
+  brand?: string | null;
+  last4?: string | null;
   card?: {
     brand?: string | null;
     last4?: string | null;
@@ -2121,6 +2125,44 @@ interface StripeCustomerWithPaymentMethod extends StripeCustomer {
     default_payment_method?: string | StripePaymentMethod | null;
   } | null;
   default_source?: string | null;
+}
+
+function getPaymentMethodSummary(
+  paymentMethod: StripePaymentMethod | null | undefined,
+): StripePaymentMethodSummary | null {
+  const last4 = paymentMethod?.card?.last4 ?? paymentMethod?.last4 ?? null;
+  if (!last4) return null;
+  return {
+    brand:
+      paymentMethod?.card?.brand?.trim() ||
+      paymentMethod?.brand?.trim() ||
+      "card",
+    last4,
+  };
+}
+
+async function fetchPaymentMethodSummary(
+  env: StripeBillingEnv,
+  paymentMethodId: string | null | undefined,
+): Promise<StripePaymentMethodSummary | null> {
+  const trimmedPaymentMethodId = paymentMethodId?.trim();
+  if (!trimmedPaymentMethodId) return null;
+  const expanded = await stripeRequest<StripePaymentMethod>(
+    env,
+    `/payment_methods/${trimmedPaymentMethodId}`,
+  );
+  return getPaymentMethodSummary(expanded);
+}
+
+async function getExpandedPaymentMethodSummary(
+  env: StripeBillingEnv,
+  paymentMethod: string | StripePaymentMethod | null | undefined,
+): Promise<StripePaymentMethodSummary | null> {
+  if (!paymentMethod) return null;
+  if (typeof paymentMethod === "object") {
+    return getPaymentMethodSummary(paymentMethod);
+  }
+  return fetchPaymentMethodSummary(env, paymentMethod);
 }
 
 export async function getStripeDefaultPaymentMethodSummary(
@@ -2137,24 +2179,44 @@ export async function getStripeDefaultPaymentMethodSummary(
   );
 
   const defaultPm = customer.invoice_settings?.default_payment_method;
-  if (defaultPm && typeof defaultPm === "object" && defaultPm.card?.last4) {
-    return {
-      brand: defaultPm.card.brand?.trim() || "card",
-      last4: defaultPm.card.last4,
-    };
-  }
-  if (typeof defaultPm === "string" && defaultPm) {
-    const expanded = await stripeRequest<StripePaymentMethod>(
+  const customerSummary = await getExpandedPaymentMethodSummary(env, defaultPm);
+  if (customerSummary) return customerSummary;
+
+  const subscriptionId = org.billing_subscription_id?.trim();
+  if (subscriptionId) {
+    const subscription = await stripeRequest<StripeSubscription>(
       env,
-      `/payment_methods/${defaultPm}`,
-    );
-    if (expanded.card?.last4) {
-      return {
-        brand: expanded.card.brand?.trim() || "card",
-        last4: expanded.card.last4,
-      };
+      `/subscriptions/${subscriptionId}?expand[]=default_payment_method`,
+    ).catch(() => null);
+    if (subscription) {
+      const subscriptionSummary = await getExpandedPaymentMethodSummary(
+        env,
+        subscription.default_payment_method,
+      );
+      if (subscriptionSummary) return subscriptionSummary;
     }
   }
+
+  const params = new URLSearchParams();
+  params.set("customer", org.billing_customer_id);
+  params.set("type", "card");
+  params.set("limit", "1");
+  const paymentMethods = await stripeRequest<
+    StripeListResponse<StripePaymentMethod>
+  >(env, `/payment_methods?${params.toString()}`);
+  const attachedSummary = getPaymentMethodSummary(
+    paymentMethods.data?.[0] ?? null,
+  );
+  if (attachedSummary) return attachedSummary;
+
+  if (customer.default_source) {
+    const source = await stripeRequest<StripePaymentMethod>(
+      env,
+      `/customers/${org.billing_customer_id}/sources/${customer.default_source}`,
+    );
+    return getPaymentMethodSummary(source);
+  }
+
   return null;
 }
 
