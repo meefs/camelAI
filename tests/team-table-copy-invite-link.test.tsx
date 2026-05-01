@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import * as React from 'react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OrgRole, User, WorkspaceAccessLevel } from '@/types';
@@ -38,7 +39,35 @@ vi.mock('@/components/settings/workspace-access-tags', () => ({
 }));
 
 vi.mock('@/components/ui/confirm-dialog', () => ({
-  ConfirmDialog: () => null,
+  ConfirmDialog: ({
+    open,
+    title,
+    description,
+    confirmLabel,
+    onConfirm,
+    onOpenChange,
+  }: {
+    open: boolean;
+    title: string;
+    description: React.ReactNode;
+    confirmLabel?: string;
+    onConfirm: () => void;
+    onOpenChange: (open: boolean) => void;
+  }) =>
+    open ? (
+      <div role="alertdialog" aria-label={title}>
+        <p>{description}</p>
+        <button
+          type="button"
+          onClick={() => {
+            onConfirm();
+            onOpenChange(false);
+          }}
+        >
+          {confirmLabel ?? 'Confirm'}
+        </button>
+      </div>
+    ) : null,
 }));
 
 import { TeamTable } from '@/components/settings/team-table';
@@ -148,14 +177,111 @@ describe('TeamTable - copy invite link', () => {
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
-  it('uses the cancel-invitation fetcher submit when "Cancel invitation" is clicked', () => {
+  it('opens a confirmation dialog and submits the fetcher when "Cancel invitation" is confirmed', () => {
     renderTeamTable();
 
     fireEvent.click(screen.getAllByText('Cancel invitation')[0]);
+
+    expect(fetcherSubmitMock).not.toHaveBeenCalled();
+
+    const dialog = screen.getByRole('alertdialog', {
+      name: 'Cancel pending invitation?',
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel invitation' }));
 
     expect(fetcherSubmitMock).toHaveBeenCalledWith(
       { intent: 'deleteInvitation', invitationId: INVITATION_ID },
       { method: 'POST' }
     );
+  });
+
+  it('shows the seat-decrease billing note for a syncable Team-plan org', () => {
+    render(
+      <TeamTable
+        orgId={ORG_ID}
+        currentUserId="user_self"
+        canManageMembers={true}
+        members={[
+          {
+            user: buildUser(),
+            role: 'owner' as OrgRole,
+            joined_at: 1700000000000,
+            workspaceAccess: {} as Record<string, WorkspaceAccessLevel>,
+          },
+        ]}
+        invitations={[
+          {
+            id: INVITATION_ID,
+            email: 'invitee@example.com',
+            role: 'member' as OrgRole,
+            created_at: 1700000000000,
+            expires_at: 1800000000000,
+            workspace_access: {},
+          },
+        ]}
+        workspaces={[]}
+        teamInviteBillingContext={{
+          occupiedSeatCount: 5,
+          coveredSeatCount: 5,
+          unitMonthlyAmountCents: 5000,
+          minimumSeats: 3,
+          syncable: true,
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getAllByText('Cancel invitation')[0]);
+
+    const dialog = screen.getByRole('alertdialog', {
+      name: 'Cancel pending invitation?',
+    });
+    expect(
+      within(dialog).getByText(/Your Team plan will go from 5 to 4 seats\. You'll get a prorated credit on your next invoice\./)
+    ).toBeInTheDocument();
+  });
+
+  it('omits the billing note when the org is at the Team minimum seat count', () => {
+    render(
+      <TeamTable
+        orgId={ORG_ID}
+        currentUserId="user_self"
+        canManageMembers={true}
+        members={[
+          {
+            user: buildUser(),
+            role: 'owner' as OrgRole,
+            joined_at: 1700000000000,
+            workspaceAccess: {} as Record<string, WorkspaceAccessLevel>,
+          },
+        ]}
+        invitations={[
+          {
+            id: INVITATION_ID,
+            email: 'invitee@example.com',
+            role: 'member' as OrgRole,
+            created_at: 1700000000000,
+            expires_at: 1800000000000,
+            workspace_access: {},
+          },
+        ]}
+        workspaces={[]}
+        teamInviteBillingContext={{
+          occupiedSeatCount: 3,
+          coveredSeatCount: 3,
+          unitMonthlyAmountCents: 5000,
+          minimumSeats: 3,
+          syncable: true,
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getAllByText('Cancel invitation')[0]);
+
+    const dialog = screen.getByRole('alertdialog', {
+      name: 'Cancel pending invitation?',
+    });
+    expect(
+      within(dialog).getByText(/Your Team plan stays at the 3-seat minimum, so this won't change your bill\./)
+    ).toBeInTheDocument();
   });
 });
