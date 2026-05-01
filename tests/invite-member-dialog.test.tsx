@@ -29,13 +29,17 @@ describe("InviteMemberDialog", () => {
       <InviteMemberDialog
         open={true}
         onOpenChange={vi.fn()}
-        showTeamSeatBillingNotice={true}
+        teamSeatBillingNotice={{
+          coveredSeatCount: 3,
+          nextSeatCount: 4,
+          addedSeatCount: 1,
+        }}
       />,
     )
 
     expect(screen.getByText("Billing seat will be added")).toBeInTheDocument()
     expect(
-      screen.getByText(/Sending this invite adds one paid Team seat/),
+      screen.getByText(/Sending this invite increases billing from 3 to 4 Team seats/),
     ).toBeInTheDocument()
   })
 

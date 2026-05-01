@@ -34,18 +34,22 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useIsMobile } from "@/hooks/use-mobile"
+import {
+  getMinimumSeats,
+  type BillableTeamInviteSeatChange,
+} from "@/lib/billing-plans"
 import { inviteMemberFormSchema } from "@/lib/schemas"
 
 interface InviteMemberDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  showTeamSeatBillingNotice?: boolean
+  teamSeatBillingNotice?: BillableTeamInviteSeatChange | null
 }
 
 export function InviteMemberDialog({
   open,
   onOpenChange,
-  showTeamSeatBillingNotice = false,
+  teamSeatBillingNotice = null,
 }: InviteMemberDialogProps) {
   const isMobile = useIsMobile()
   const fetcher = useFetcher<{
@@ -56,6 +60,7 @@ export function InviteMemberDialog({
     invitation_url?: string;
   }>()
   const saving = fetcher.state !== "idle"
+  const teamMinimumSeats = getMinimumSeats("team")
 
   const [selectedRole, setSelectedRole] = useState<string>("member")
 
@@ -97,12 +102,15 @@ export function InviteMemberDialog({
     <fetcher.Form method="post" {...getFormProps(form)} className="space-y-4">
       <input type="hidden" name="intent" value="createInvitation" />
 
-      {showTeamSeatBillingNotice ? (
+      {teamSeatBillingNotice ? (
         <Alert>
           <AlertTitle>Billing seat will be added</AlertTitle>
           <AlertDescription>
-            Sending this invite adds one paid Team seat. If you cancel the
-            invite or remove the member, billing updates automatically.
+            Sending this invite increases billing from{" "}
+            {teamSeatBillingNotice.coveredSeatCount} to{" "}
+            {teamSeatBillingNotice.nextSeatCount} Team seats. Canceling the
+            invite or removing the member later syncs billing back down, subject
+            to the {teamMinimumSeats}-seat minimum.
           </AlertDescription>
         </Alert>
       ) : null}

@@ -194,6 +194,71 @@ export function getOrgSeatLimit(
   return 1;
 }
 
+function isTeamSeatSyncableStatus(status: string | null | undefined): boolean {
+  switch (status?.trim().toLowerCase()) {
+    case "trialing":
+    case "active":
+    case "past_due":
+    case "paying":
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function isTeamSeatBillingSyncable(
+  org: Pick<
+    Organization,
+    | "billing_status"
+    | "billing_plan"
+    | "billing_subscription_id"
+    | "billing_subscription_status"
+  >,
+): boolean {
+  if (getOrgBillingPlan(org) !== "team") return false;
+  if (org.billing_status === "enterprise") return false;
+  if (!org.billing_subscription_id?.trim()) return false;
+
+  const stripeSubscriptionStatus = org.billing_subscription_status?.trim();
+  if (stripeSubscriptionStatus) {
+    return isTeamSeatSyncableStatus(stripeSubscriptionStatus);
+  }
+
+  return isTeamSeatSyncableStatus(org.billing_status);
+}
+
+export interface BillableTeamInviteSeatChange {
+  coveredSeatCount: number;
+  nextSeatCount: number;
+  addedSeatCount: number;
+}
+
+export function getBillableTeamInviteSeatChange(
+  org: Pick<
+    Organization,
+    | "billing_status"
+    | "billing_plan"
+    | "billing_seat_count"
+    | "billing_subscription_id"
+    | "billing_subscription_status"
+  >,
+  occupiedSeatCount: number,
+): BillableTeamInviteSeatChange | null {
+  if (!isTeamSeatBillingSyncable(org)) return null;
+
+  const coveredSeatCount = getOrgSeatCount(org);
+  const nextSeatCount = normalizeSeatCount("team", occupiedSeatCount + 1);
+  const addedSeatCount = Math.max(0, nextSeatCount - coveredSeatCount);
+
+  if (addedSeatCount === 0) return null;
+
+  return {
+    coveredSeatCount,
+    nextSeatCount,
+    addedSeatCount,
+  };
+}
+
 export function formatLimitCount(value: number | null, noun: string): string {
   if (value === null) return `unlimited ${noun}`;
   return `${value.toLocaleString()} ${noun}`;

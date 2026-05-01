@@ -31,6 +31,7 @@ import {
   getMinimumSeats,
   isBillingPlan,
   normalizeBillingPlan,
+  normalizeSeatCount,
 } from "@/lib/billing-plans";
 import type { BillingPlan, Organization } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -536,6 +537,13 @@ export default function BillingPage() {
     overview.billing_status,
   );
   const planLimits = BILLING_PLAN_LIMITS[plan];
+  const planHeading =
+    plan === "team"
+      ? `${planLimits.label} plan - ${normalizeSeatCount(
+          "team",
+          overview.billing_seat_count,
+        ).toLocaleString()} seats`
+      : `${planLimits.label} plan`;
 
   const subscriptionStatus = overview.billing_subscription_status;
   const hasActiveSubscription =
@@ -592,7 +600,7 @@ export default function BillingPage() {
       <section className="space-y-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold">{planLimits.label} plan</h2>
+            <h2 className="text-lg font-semibold">{planHeading}</h2>
             <p className="text-sm text-muted-foreground">
               {planSummarySubtitle}
             </p>
