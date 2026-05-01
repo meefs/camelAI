@@ -180,6 +180,8 @@ const RECURRING_INCLUDED_CREDIT_BILLING_REASONS = new Set([
 const LEGACY_INDIVIDUAL_PRICE_IDS = new Set([
   "price_1QIfnqGvliMKf4vHaDTMG2Mu",
   "price_1QIfnqGvliMKf4vHOeGHG69q",
+  // Stripe test-mode fixture for staging legacy migration QA.
+  "price_1TSMnnGvliMKf4vHrdn58Izi",
 ]);
 
 const LEGACY_TEAM_PRICE_IDS = new Set(["price_1S6NRLGvliMKf4vHtFDiA07o"]);
