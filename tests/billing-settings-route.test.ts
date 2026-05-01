@@ -28,14 +28,23 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
 
 const { action } = await import("@/routes/_app.settings.organization.billing");
 
-function makeFormRequest(plan: string) {
+function makeIntentRequest(
+  intent: string,
+  fields: Record<string, string> = {},
+) {
   const formData = new FormData();
-  formData.set("intent", "changePlan");
-  formData.set("plan", plan);
+  formData.set("intent", intent);
+  for (const [key, value] of Object.entries(fields)) {
+    formData.set(key, value);
+  }
   return new Request("https://camelai.test/settings/organization/billing", {
     method: "POST",
     body: formData,
   });
+}
+
+function makeFormRequest(plan: string) {
+  return makeIntentRequest("changePlan", { plan });
 }
 
 function makeEnv(
@@ -316,5 +325,40 @@ describe("billing settings plan changes", () => {
       error:
         "We couldn't start checkout for that plan. Please try again in a moment.",
     });
+  });
+
+  it("opens a Stripe cancellation portal flow for active subscriptions", async () => {
+    const org = {
+      id: "org_123",
+      name: "Paid Org",
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_123",
+      billing_subscription_status: "active",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+
+    const result = await action({
+      request: makeIntentRequest("cancelSubscription"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/session",
+    });
+    expect(createBillingPortalSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        customerEmail: "owner@example.com",
+        cancellationSubscriptionId: "sub_123",
+      }),
+    );
   });
 });

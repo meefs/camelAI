@@ -24,18 +24,27 @@ export function CancelPlanDialog({
   planLabel,
   periodEndLabel,
 }: CancelPlanDialogProps) {
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<{
+    billingPortalUrl?: string;
+    error?: string;
+  }>();
   const isCancelling = fetcher.state !== "idle";
   const succeeded =
     fetcher.state === "idle" &&
     fetcher.data &&
-    !(fetcher.data as { error?: string }).error;
+    !fetcher.data.error &&
+    !fetcher.data.billingPortalUrl;
 
   useEffect(() => {
+    if (fetcher.state !== "idle") return;
+    if (fetcher.data?.billingPortalUrl) {
+      window.location.assign(fetcher.data.billingPortalUrl);
+      return;
+    }
     if (succeeded && open) {
       onOpenChange(false);
     }
-  }, [succeeded, open, onOpenChange]);
+  }, [fetcher.data, fetcher.state, succeeded, open, onOpenChange]);
 
   return (
     <AlertDialog
@@ -54,6 +63,11 @@ export function CancelPlanDialog({
               ? `Your plan stays active until ${periodEndLabel} and then switches to Free.`
               : "Your plan stays active until the end of the current billing period and then switches to Free."}
           </AlertDialogDescription>
+          {fetcher.data?.error ? (
+            <p className="pt-2 text-sm text-destructive">
+              {fetcher.data.error}
+            </p>
+          ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isCancelling}>

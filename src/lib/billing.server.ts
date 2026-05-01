@@ -1338,12 +1338,23 @@ export async function createBillingPortalSession(args: {
   org: Organization;
   customerEmail: string | null | undefined;
   returnUrl: string;
+  cancellationSubscriptionId?: string | null;
 }): Promise<string> {
-  const { env, org, customerEmail, returnUrl } = args;
+  const { env, org, customerEmail, returnUrl, cancellationSubscriptionId } =
+    args;
   const customerId = await ensureStripeCustomerForOrg(env, org, customerEmail);
   const body = new URLSearchParams();
   body.set("customer", customerId);
   body.set("return_url", returnUrl);
+  if (cancellationSubscriptionId?.trim()) {
+    body.set("flow_data[type]", "subscription_cancel");
+    body.set(
+      "flow_data[subscription_cancel][subscription]",
+      cancellationSubscriptionId.trim(),
+    );
+    body.set("flow_data[after_completion][type]", "redirect");
+    body.set("flow_data[after_completion][redirect][return_url]", returnUrl);
+  }
   const portalConfigurationId =
     env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
   if (portalConfigurationId) {

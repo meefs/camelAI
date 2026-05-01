@@ -296,9 +296,32 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
     }
     case "cancelSubscription": {
-      // FIXME(billing-stripe): see top-of-file FIXME block. Currently a no-op
-      // redirect — implement Stripe cancel-at-period-end here.
-      throw redirect(billingUrl.toString());
+      if (!billingOrg.billing_subscription_id?.trim()) {
+        return {
+          error:
+            "We couldn't find an active Stripe subscription for this organization.",
+        };
+      }
+      try {
+        const url = await createBillingPortalSession({
+          env,
+          org: billingOrg,
+          customerEmail: authContext.user.email,
+          returnUrl: billingUrl.toString(),
+          cancellationSubscriptionId: billingOrg.billing_subscription_id,
+        });
+        return { billingPortalUrl: url };
+      } catch (error) {
+        console.error("[billing] failed to create cancellation portal session", {
+          orgId: billingOrg.id,
+          subscriptionId: billingOrg.billing_subscription_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return {
+          error:
+            "We couldn't open your cancellation flow. Please try again in a moment.",
+        };
+      }
     }
     default:
       return { error: "Unknown billing action" };

@@ -428,6 +428,51 @@ describe("billing helpers", () => {
     expect(portalParams.get("configuration")).toBe("bpc_v2");
   });
 
+  it("can deep-link billing portal sessions to subscription cancellation", async () => {
+    let portalRequestBody: string | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init) => {
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }),
+    );
+
+    await expect(
+      createBillingPortalSession({
+        env: {
+          ORG: {} as never,
+          STRIPE_MODE: "test",
+          STRIPE_SECRET_KEY: "sk_test_123",
+        },
+        org: {
+          id: "org_123",
+          name: "Test Org",
+          billing_customer_id: "cus_123",
+        } as never,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+        cancellationSubscriptionId: " sub_123 ",
+      }),
+    ).resolves.toBe("https://billing.stripe.test/session");
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.get("customer")).toBe("cus_123");
+    expect(portalParams.get("flow_data[type]")).toBe("subscription_cancel");
+    expect(
+      portalParams.get("flow_data[subscription_cancel][subscription]"),
+    ).toBe("sub_123");
+    expect(portalParams.get("flow_data[after_completion][type]")).toBe(
+      "redirect",
+    );
+    expect(
+      portalParams.get("flow_data[after_completion][redirect][return_url]"),
+    ).toBe("https://camelai.dev/settings/organization/billing");
+  });
+
   it("uses tier-specific subscription price, quantity, and included credit metadata", async () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
