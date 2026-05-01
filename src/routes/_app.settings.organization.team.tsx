@@ -7,7 +7,11 @@ import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { TeamTable } from '@/components/settings/team-table';
 import type { OrgRole, WorkspaceAccessLevel } from '@/types';
-import { getBillableTeamInviteSeatChange } from '@/lib/billing-plans';
+import {
+  getBillableTeamInviteSeatChange,
+  getOrgBillingPlan,
+  getOrgSeatLimit,
+} from '@/lib/billing-plans';
 import {
   buildInvitationUrl,
   resolveAppBaseUrl,
@@ -15,6 +19,10 @@ import {
 } from '@/lib/email.server';
 import {
   bestEffortSyncTeamSubscriptionSeatCount,
+  getLegacyStripeMigrationEligibility,
+  getOrgBillingOverview,
+  hasOrgUsedSubscriptionTrial,
+  isStripeBillingConfigured,
 } from '@/lib/billing.server';
 
 export function meta() {
@@ -189,6 +197,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUserRole = currentMember?.role ?? 'member';
   const canManageMembers = currentUserRole === 'owner' || currentUserRole === 'admin';
 
+  const seatLimit = getOrgSeatLimit(authContext.currentOrg);
+  const requiresTeamUpgrade =
+    canManageMembers && seatLimit !== null && seatLimit <= 1;
+
+  const stripeConfigured = isStripeBillingConfigured(env);
+  const overview = requiresTeamUpgrade
+    ? await getOrgBillingOverview(env, authContext.currentOrg).catch(() => null)
+    : null;
+  const trialAvailable = overview ? !hasOrgUsedSubscriptionTrial(overview) : true;
+  const legacyMigration = requiresTeamUpgrade
+    ? getLegacyStripeMigrationEligibility({
+        env,
+        org: authContext.currentOrg,
+        userEmail: authContext.user.email,
+      })
+    : null;
+  const currentPlan = getOrgBillingPlan(authContext.currentOrg);
+
   return {
     org: authContext.currentOrg,
     members,
@@ -200,6 +226,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     workspaces,
     currentUserId: authContext.user.id,
     canManageMembers,
+    requiresTeamUpgrade,
+    currentPlan,
+    trialAvailable,
+    stripeConfigured,
+    legacyMigration,
   };
 }
 
@@ -212,6 +243,11 @@ export default function TeamPage() {
     workspaces,
     currentUserId,
     canManageMembers,
+    requiresTeamUpgrade,
+    currentPlan,
+    trialAvailable,
+    stripeConfigured,
+    legacyMigration,
   } =
     useLoaderData<typeof loader>();
 
@@ -230,6 +266,11 @@ export default function TeamPage() {
         invitations={invitations}
         workspaces={workspaces}
         teamSeatBillingNotice={teamInviteSeatChange}
+        requiresTeamUpgrade={requiresTeamUpgrade}
+        currentPlan={currentPlan}
+        trialAvailable={trialAvailable}
+        stripeConfigured={stripeConfigured}
+        legacyMigration={legacyMigration}
       />
     </div>
   );

@@ -16,6 +16,11 @@ vi.mock('react-router', () => ({
     data: undefined,
     submit: fetcherSubmitMock,
   }),
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode } & Record<string, unknown>) => (
+    <a href={typeof to === 'string' ? to : '#'} {...props}>
+      {children}
+    </a>
+  ),
 }));
 
 vi.mock('sonner', () => ({
