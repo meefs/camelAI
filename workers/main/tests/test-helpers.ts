@@ -186,15 +186,22 @@ export async function handleOrphanedUserLogin(
 
 // ============ Organization Operations ============
 
+type TestBillingPlan = 'free' | 'starter' | 'pro' | 'team' | 'enterprise';
+
 export async function createOrg(
   env: TestEnv,
   name: string,
-  createdBy: string
+  createdBy: string,
+  options: { billingPlan?: TestBillingPlan } = {},
 ): Promise<{ org: { id: string; name: string; slug: string; created_by: string }; defaultWorkspaceId: string }> {
   const orgId = generateId();
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
 
   const { org, defaultWorkspaceId } = await orgStub.createOrg(orgId, name, createdBy);
+  const billingPlan = options.billingPlan ?? 'enterprise';
+  if (billingPlan !== org.billing_plan) {
+    await orgStub.updateBillingState({ billing_plan: billingPlan });
+  }
 
   // Add org to user's orgs
   // Note: Org members have 'full' workspace access by default (no explicit record needed)
