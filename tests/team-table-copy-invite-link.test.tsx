@@ -261,6 +261,27 @@ describe('TeamTable - copy invite link', () => {
     ).toBeInTheDocument();
   });
 
+  it('warns when removing an invite still leaves the org above covered seats', () => {
+    renderTeamTable({
+      teamInviteBillingContext: {
+        occupiedSeatCount: 5,
+        coveredSeatCount: 3,
+        unitMonthlyAmountCents: 5000,
+        minimumSeats: 3,
+        syncable: true,
+      },
+    });
+
+    fireEvent.click(screen.getAllByText('Cancel invitation')[0]);
+
+    const dialog = screen.getByRole('alertdialog', {
+      name: 'Cancel pending invitation?',
+    });
+    expect(
+      within(dialog).getByText(/Your Team plan will sync from 3 to 4 seats after this change, so your bill may increase\./)
+    ).toBeInTheDocument();
+  });
+
   it('opens the InviteMemberDialog when requiresTeamUpgrade is false', () => {
     renderTeamTable();
 

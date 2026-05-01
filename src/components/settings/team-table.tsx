@@ -134,7 +134,10 @@ export function TeamTable({
     if (!teamInviteBillingContext.syncable) return null
     const { coveredSeatCount, occupiedSeatCount, minimumSeats } = teamInviteBillingContext
     const projectedSeatCount = Math.max(minimumSeats, occupiedSeatCount - 1)
-    if (projectedSeatCount >= coveredSeatCount) {
+    if (projectedSeatCount > coveredSeatCount) {
+      return `Your Team plan will sync from ${coveredSeatCount} to ${projectedSeatCount} seats after this change, so your bill may increase.`
+    }
+    if (projectedSeatCount === coveredSeatCount) {
       if (coveredSeatCount <= minimumSeats) {
         return `Your Team plan stays at the ${minimumSeats}-seat minimum, so this won't change your bill.`
       }
