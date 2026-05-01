@@ -71,6 +71,55 @@ describe("InviteMemberDialog", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("allows invites during paused billing when paid seats already cover them", async () => {
+    const user = userEvent.setup()
+    render(
+      <InviteMemberDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        teamInviteBillingContext={{
+          occupiedSeatCount: 2,
+          coveredSeatCount: 3,
+          unitMonthlyAmountCents: 5000,
+          minimumSeats: 3,
+          syncable: false,
+        }}
+      />,
+    )
+
+    await user.type(screen.getByPlaceholderText("Type or paste emails..."), "ana@example.com{enter}")
+
+    expect(screen.getByText("No billing change")).toBeInTheDocument()
+    expect(screen.queryByText("Billing update is paused")).not.toBeInTheDocument()
+    expect(
+      screen.getAllByRole("button", { name: "Send invite" }).every((button) => !button.hasAttribute("disabled")),
+    ).toBe(true)
+  })
+
+  it("blocks invites during paused billing when they would add paid seats", async () => {
+    const user = userEvent.setup()
+    render(
+      <InviteMemberDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        teamInviteBillingContext={{
+          occupiedSeatCount: 3,
+          coveredSeatCount: 3,
+          unitMonthlyAmountCents: 5000,
+          minimumSeats: 3,
+          syncable: false,
+        }}
+      />,
+    )
+
+    await user.type(screen.getByPlaceholderText("Type or paste emails..."), "ana@example.com{enter}")
+
+    expect(screen.getByText("Billing update is paused")).toBeInTheDocument()
+    expect(
+      screen.getAllByRole("button", { name: "Send invite" }).every((button) => button.hasAttribute("disabled")),
+    ).toBe(true)
+  })
+
   it("renders pasted valid emails as chips and rejects invalid tokens", async () => {
     render(<InviteMemberDialog open={true} onOpenChange={vi.fn()} />)
 

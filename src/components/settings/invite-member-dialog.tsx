@@ -141,8 +141,12 @@ export function InviteMemberDialog({
   )
   const visibleBilling = staleBilling ?? liveBilling
   const billingPaused =
-    requestedInviteCount > 0 &&
-    Boolean(teamInviteBillingContext && !teamInviteBillingContext.syncable)
+    Boolean(
+      teamInviteBillingContext &&
+        !teamInviteBillingContext.syncable &&
+        liveBilling &&
+        liveBilling.addedSeatCount > 0,
+    )
   const submitDisabled =
     saving ||
     requestedInviteCount === 0 ||
