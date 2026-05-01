@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { getBillableTeamInviteSeatChange } from "@/lib/billing-plans";
+import {
+  BILLING_PLAN_LIMITS,
+  getBillableTeamInviteSeatChange,
+  getBillableTeamInviteSeatChangeForCount,
+} from "@/lib/billing-plans";
 
 const teamOrg = (seatCount: number) => ({
   billing_status: "active" as const,
@@ -11,6 +15,10 @@ const teamOrg = (seatCount: number) => ({
 });
 
 describe("getBillableTeamInviteSeatChange", () => {
+  it("returns null when no invites are requested", () => {
+    expect(getBillableTeamInviteSeatChangeForCount(teamOrg(3), 3, 0)).toBeNull();
+  });
+
   it("does not charge for an invite covered by the Team 3-seat minimum", () => {
     expect(getBillableTeamInviteSeatChange(teamOrg(3), 2)).toBeNull();
   });
@@ -18,8 +26,23 @@ describe("getBillableTeamInviteSeatChange", () => {
   it("detects when the next invite exceeds covered Team seats", () => {
     expect(getBillableTeamInviteSeatChange(teamOrg(3), 3)).toEqual({
       coveredSeatCount: 3,
+      occupiedSeatCount: 3,
+      requestedInviteCount: 1,
       nextSeatCount: 4,
       addedSeatCount: 1,
+      addedMonthlyAmountCents: BILLING_PLAN_LIMITS.team.monthlyPriceCents,
+    });
+  });
+
+  it("detects a batch crossing from 3 to 6 seats", () => {
+    expect(getBillableTeamInviteSeatChangeForCount(teamOrg(3), 3, 3)).toEqual({
+      coveredSeatCount: 3,
+      occupiedSeatCount: 3,
+      requestedInviteCount: 3,
+      nextSeatCount: 6,
+      addedSeatCount: 3,
+      addedMonthlyAmountCents:
+        3 * (BILLING_PLAN_LIMITS.team.monthlyPriceCents ?? 0),
     });
   });
 
@@ -41,8 +64,11 @@ describe("getBillableTeamInviteSeatChange", () => {
       ),
     ).toEqual({
       coveredSeatCount: 3,
+      occupiedSeatCount: 3,
+      requestedInviteCount: 1,
       nextSeatCount: 4,
       addedSeatCount: 1,
+      addedMonthlyAmountCents: BILLING_PLAN_LIMITS.team.monthlyPriceCents,
     });
   });
 

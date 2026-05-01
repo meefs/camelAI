@@ -48,7 +48,7 @@ import { InviteMemberDialog } from "@/components/settings/invite-member-dialog"
 import { WorkspaceAccessTags } from "@/components/settings/workspace-access-tags"
 import { getContrastTextColor } from "@/lib/avatar"
 import type {
-  BillableTeamInviteSeatChange,
+  TeamInviteBillingContext,
 } from "@/lib/billing-plans"
 import type {
   OrgRole,
@@ -84,7 +84,7 @@ interface TeamTableProps {
   members: MemberWithAccess[]
   invitations: TeamInvitation[]
   workspaces: Workspace[]
-  teamSeatBillingNotice?: BillableTeamInviteSeatChange | null
+  teamInviteBillingContext?: TeamInviteBillingContext | null
 }
 
 function formatDate(value: number) {
@@ -98,7 +98,7 @@ export function TeamTable({
   members,
   invitations,
   workspaces,
-  teamSeatBillingNotice = null,
+  teamInviteBillingContext = null,
 }: TeamTableProps) {
   const { logout } = useLogout()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
@@ -672,7 +672,9 @@ export function TeamTable({
       <InviteMemberDialog
         open={inviteOpen}
         onOpenChange={setInviteOpen}
-        teamSeatBillingNotice={teamSeatBillingNotice}
+        teamInviteBillingContext={teamInviteBillingContext}
+        knownMemberEmails={members.map((member) => member.user.email.toLowerCase())}
+        knownInvitedEmails={invitations.map((invitation) => invitation.email.toLowerCase())}
       />
       <ConfirmDialog
         open={Boolean(pendingRemoveMemberId)}

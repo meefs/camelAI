@@ -229,8 +229,54 @@ export function isTeamSeatBillingSyncable(
 
 export interface BillableTeamInviteSeatChange {
   coveredSeatCount: number;
+  occupiedSeatCount: number;
+  requestedInviteCount: number;
   nextSeatCount: number;
   addedSeatCount: number;
+  addedMonthlyAmountCents: number;
+}
+
+export interface TeamInviteBillingContext {
+  occupiedSeatCount: number;
+  coveredSeatCount: number;
+  unitMonthlyAmountCents: number;
+  minimumSeats: number;
+  syncable: boolean;
+}
+
+export function getBillableTeamInviteSeatChangeForCount(
+  org: Pick<
+    Organization,
+    | "billing_status"
+    | "billing_plan"
+    | "billing_seat_count"
+    | "billing_subscription_id"
+    | "billing_subscription_status"
+  >,
+  occupiedSeatCount: number,
+  requestedInviteCount: number,
+): BillableTeamInviteSeatChange | null {
+  if (requestedInviteCount <= 0) return null;
+  if (!isTeamSeatBillingSyncable(org)) return null;
+
+  const coveredSeatCount = getOrgSeatCount(org);
+  const nextSeatCount = normalizeSeatCount(
+    "team",
+    occupiedSeatCount + requestedInviteCount,
+  );
+  const addedSeatCount = Math.max(0, nextSeatCount - coveredSeatCount);
+
+  if (addedSeatCount === 0) return null;
+
+  return {
+    coveredSeatCount,
+    occupiedSeatCount,
+    requestedInviteCount,
+    nextSeatCount,
+    addedSeatCount,
+    addedMonthlyAmountCents:
+      addedSeatCount * (BILLING_PLAN_LIMITS.team.monthlyPriceCents ?? 0),
+  };
 }
 
 export function getBillableTeamInviteSeatChange(
@@ -244,19 +290,7 @@ export function getBillableTeamInviteSeatChange(
   >,
   occupiedSeatCount: number,
 ): BillableTeamInviteSeatChange | null {
-  if (!isTeamSeatBillingSyncable(org)) return null;
-
-  const coveredSeatCount = getOrgSeatCount(org);
-  const nextSeatCount = normalizeSeatCount("team", occupiedSeatCount + 1);
-  const addedSeatCount = Math.max(0, nextSeatCount - coveredSeatCount);
-
-  if (addedSeatCount === 0) return null;
-
-  return {
-    coveredSeatCount,
-    nextSeatCount,
-    addedSeatCount,
-  };
+  return getBillableTeamInviteSeatChangeForCount(org, occupiedSeatCount, 1);
 }
 
 export function formatLimitCount(value: number | null, noun: string): string {

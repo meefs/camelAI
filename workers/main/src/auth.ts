@@ -2464,11 +2464,27 @@ export class OrgDO extends DurableObject<DOEnv> {
     reservedInvitations?: number,
     pendingBillingSeatAllowance = 0,
   ): Promise<void> {
+    await this.assertSeatCapacityForAdditionalMembers(
+      1,
+      reservedInvitations,
+      pendingBillingSeatAllowance,
+    );
+  }
+
+  private async assertSeatCapacityForAdditionalMembers(
+    additionalSeatCount: number,
+    reservedInvitations?: number,
+    pendingBillingSeatAllowance = 0,
+  ): Promise<void> {
     const info = await this.getInfo();
     if (!info) return;
 
     const seatLimit = getOrgSeatLimit(info);
     if (seatLimit === null) return;
+    const normalizedAdditionalSeatCount = Math.max(
+      0,
+      Math.floor(additionalSeatCount),
+    );
 
     const currentMembers =
       this.sql.exec<{ count: number }>("SELECT COUNT(*) as count FROM members")
@@ -2483,7 +2499,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         .next().value?.count ??
         0);
     if (
-      currentMembers + activeInvitations >=
+      currentMembers + activeInvitations + normalizedAdditionalSeatCount >
       seatLimit + pendingBillingSeatAllowance
     ) {
       throw new Error(
@@ -2720,6 +2736,95 @@ export class OrgDO extends DurableObject<DOEnv> {
         payload: { ...invitation, org_id: info.id },
       });
     return invitation;
+  }
+
+  async createInvitations(
+    emails: string[],
+    role: OrgRole,
+    invitedBy: string,
+    options: {
+      workspaceAccess?: Record<string, "full" | "none"> | null;
+      pendingBillingSeatAllowance?: number;
+    } = {},
+  ): Promise<OrgInvitation[]> {
+    if (role === "owner") {
+      throw new Error("Cannot invite as owner");
+    }
+
+    const normalizedEmails = emails.map((email) => email.toLowerCase().trim());
+    const seen = new Set<string>();
+    for (const email of normalizedEmails) {
+      if (!email || seen.has(email)) {
+        throw new Error("Invitation emails must be unique");
+      }
+      seen.add(email);
+    }
+
+    const now = Date.now();
+    const activeInvitations =
+      this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+          now,
+        )
+        .next().value?.count ?? 0;
+    await this.assertSeatCapacityForAdditionalMembers(
+      normalizedEmails.length,
+      activeInvitations,
+      options.pendingBillingSeatAllowance ?? 0,
+    );
+
+    for (const email of normalizedEmails) {
+      const existing = this.sql
+        .exec<{ id: string }>(
+          "SELECT id FROM invitations WHERE email = ? AND expires_at > ? LIMIT 1",
+          email,
+          now,
+        )
+        .next().value;
+      if (existing) {
+        throw new Error(`An active invitation already exists for ${email}`);
+      }
+    }
+
+    const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
+    const workspaceAccess = options.workspaceAccess ?? null;
+    const invitations = normalizedEmails.map((email) => ({
+      id: crypto.randomUUID(),
+      email,
+      role,
+      invited_by: invitedBy,
+      created_at: now,
+      expires_at: expiresAt,
+      workspace_access: workspaceAccess,
+    })) satisfies OrgInvitation[];
+
+    this.ctx.storage.transactionSync(() => {
+      for (const invitation of invitations) {
+        this.sql.exec(
+          "INSERT INTO invitations (id, email, role, invited_by, created_at, expires_at, workspace_access) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          invitation.id,
+          invitation.email,
+          invitation.role,
+          invitation.invited_by,
+          invitation.created_at,
+          invitation.expires_at,
+          workspaceAccess ? JSON.stringify(workspaceAccess) : null,
+        );
+      }
+    });
+
+    const info = await this.getInfo();
+    if (info) {
+      for (const invitation of invitations) {
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "invitation_upsert",
+          payload: { ...invitation, org_id: info.id },
+        });
+      }
+    }
+
+    return invitations;
   }
 
   async deleteInvitation(id: string): Promise<void> {

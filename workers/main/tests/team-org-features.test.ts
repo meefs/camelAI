@@ -546,6 +546,62 @@ describe('Billing status from OrgDO', () => {
       createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
     ).rejects.toThrow('Your current billing plan includes 3 seats.');
   });
+
+  it('creates team invitations in a batch after seat preflight expansion', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createBaseOrg(testEnv, 'Team Batch Invite Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: 'active',
+      billing_plan: 'team',
+      billing_seat_count: 5,
+      billing_subscription_id: 'sub_team',
+      billing_subscription_status: 'active',
+    });
+
+    await expect(
+      orgStub.createInvitations(
+        [testEmail(), testEmail(), testEmail(), testEmail()],
+        'member',
+        ownerId,
+      ),
+    ).resolves.toHaveLength(4);
+
+    await expect(orgStub.getInvitations()).resolves.toHaveLength(4);
+  });
+
+  it('does not insert any invitations when a batch exceeds seat capacity', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createBaseOrg(testEnv, 'Team Batch Atomic Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: 'active',
+      billing_plan: 'team',
+      billing_seat_count: 3,
+      billing_subscription_id: 'sub_team',
+      billing_subscription_status: 'active',
+    });
+
+    let error: unknown;
+    try {
+      await orgStub.createInvitations(
+        [testEmail(), testEmail(), testEmail()],
+        'member',
+        ownerId,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(
+      'Your current billing plan includes 3 seats.',
+    );
+
+    await expect(orgStub.getInvitations()).resolves.toHaveLength(0);
+  });
 });
 
 describe('Connection duplication', () => {
