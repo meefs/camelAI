@@ -237,7 +237,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         newEmails,
         role,
         actorId,
-        { pendingBillingSeatAllowance: billingExpanded ? newEmails.length : 0 },
+        { pendingBillingSeatAllowance: 0 },
       );
     } catch (error) {
       if (billingExpanded) {

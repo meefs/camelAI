@@ -183,6 +183,51 @@ describe("InviteMemberDialog", () => {
     expect(document.querySelectorAll('input[name="emails"]')).toHaveLength(3)
   })
 
+  it("uses the server billing snapshot when resubmitting after stale billing", async () => {
+    const user = userEvent.setup()
+    const dialogProps = {
+      open: true,
+      onOpenChange: vi.fn(),
+      teamInviteBillingContext: {
+        occupiedSeatCount: 3,
+        coveredSeatCount: 3,
+        unitMonthlyAmountCents: 5000,
+        minimumSeats: 3,
+        syncable: true,
+      },
+    }
+    const view = render(<InviteMemberDialog {...dialogProps} />)
+
+    await user.type(screen.getByPlaceholderText("Type or paste emails..."), "ana@example.com{enter}")
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="disclosed_added_seat_count"]')?.value,
+    ).toBe("1")
+
+    fetcherMock.data = {
+      success: false,
+      error: "stale_billing_context",
+      billing: {
+        coveredSeatCount: 3,
+        occupiedSeatCount: 4,
+        requestedInviteCount: 1,
+        nextSeatCount: 5,
+        addedSeatCount: 2,
+        addedMonthlyAmountCents: 10000,
+      },
+    }
+    view.rerender(<InviteMemberDialog {...dialogProps} />)
+
+    expect(await screen.findByText("Billing changed since you opened this")).toBeInTheDocument()
+    fireEvent.submit(document.querySelector("form")!)
+
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="disclosed_added_seat_count"]')?.value,
+    ).toBe("2")
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="disclosed_next_seat_count"]')?.value,
+    ).toBe("5")
+  })
+
   it("closes after invitations are created even when email delivery fails", () => {
     const onOpenChange = vi.fn()
     fetcherMock.data = {

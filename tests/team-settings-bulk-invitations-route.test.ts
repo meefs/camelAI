@@ -251,4 +251,65 @@ describe("team settings bulk invitation action", () => {
     expect(createInvitationsMock).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
+
+  it("does not pass extra invite allowance after paid seat sync succeeds", async () => {
+    const org = makeOrg({ billing_seat_count: 3 });
+    const orgStub = { getInfo: vi.fn(async () => org) };
+    const env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      currentOrg: org,
+      user: { id: "owner_123", email: "owner@example.com" },
+    });
+    getOrgMembersWithWorkspaceAccessMock.mockResolvedValue([
+      { user: { id: "owner_123", email: "owner@example.com" }, role: "owner" },
+      { user: { id: "a", email: "a@example.com" }, role: "member" },
+      { user: { id: "b", email: "b@example.com" }, role: "member" },
+    ]);
+    getOrgInvitationsMock.mockResolvedValue([]);
+    syncTeamSubscriptionSeatCountMock.mockResolvedValue(undefined);
+    createInvitationsMock.mockResolvedValue([
+      { id: "inv_new", email: "new@example.com", expires_at: 123 },
+    ]);
+
+    const result = await action({
+      request: makeRequest({
+        emails: ["new@example.com"],
+        disclosed_next_seat_count: "4",
+        disclosed_added_seat_count: "1",
+      }),
+      context: {},
+    } as never);
+
+    expect(syncTeamSubscriptionSeatCountMock).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      expect.objectContaining({
+        pendingReservedSeatDelta: 1,
+        prorationBehavior: "always_invoice",
+        itemUpdateIdempotencyKey: expect.stringMatching(
+          /^team-seat-sync:org_123:4:/,
+        ),
+      }),
+    );
+    expect(createInvitationsMock).toHaveBeenCalledWith(
+      env,
+      "org_123",
+      ["new@example.com"],
+      "member",
+      "owner_123",
+      { pendingBillingSeatAllowance: 0 },
+    );
+    expect(result).toMatchObject({
+      success: true,
+      invited: [{ email: "new@example.com", invitation_id: "inv_new" }],
+      skipped: [],
+      failed: [],
+    });
+  });
 });

@@ -206,14 +206,22 @@ export function InviteMemberDialog({
     setStaleBilling(null)
   }, [fetcher.state])
 
+  useEffect(() => {
+    if (!staleBilling) return
+    if (staleBilling.requestedInviteCount === requestedInviteCount) return
+    setStaleBilling(null)
+  }, [requestedInviteCount, staleBilling])
+
   const handleSubmit = () => {
     let committedChips = chips
     flushSync(() => {
       committedChips = emailInputRef.current?.commitPending() ?? chips
     })
-    const committedBilling = getBillingForInviteCount(
-      committedChips.filter((chip) => chip.state === "valid").length,
-    )
+    const committedInviteCount = committedChips.filter((chip) => chip.state === "valid").length
+    const committedBilling =
+      staleBilling?.requestedInviteCount === committedInviteCount
+        ? staleBilling
+        : getBillingForInviteCount(committedInviteCount)
     if (disclosedNextSeatCountRef.current) {
       disclosedNextSeatCountRef.current.value = String(committedBilling?.nextSeatCount ?? 0)
     }
