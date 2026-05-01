@@ -6,7 +6,7 @@ import { createInvitations, removeOrgMember, updateOrgMemberRole, transferOrgOwn
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { TeamTable } from '@/components/settings/team-table';
-import type { OrgRole, WorkspaceAccessLevel } from '@/types';
+import type { OrgRole, Organization, WorkspaceAccessLevel } from '@/types';
 import {
   BILLING_PLAN_LIMITS,
   getBillableTeamInviteSeatChangeForCount,
@@ -52,6 +52,60 @@ function getInviteRequestEmails(formData: FormData) {
     submittedEmails.push(legacyEmail);
   }
   return parseSubmittedInviteEmails(submittedEmails);
+}
+
+function getInviteBillingSnapshot(
+  org: Organization,
+  occupiedSeatCount: number,
+  requestedInviteCount: number,
+  isTeamSeatManaged: boolean,
+) {
+  if (!isTeamSeatManaged) {
+    const seatCount = getOrgSeatCount(org);
+    return {
+      coveredSeatCount: seatCount,
+      occupiedSeatCount,
+      requestedInviteCount,
+      nextSeatCount: seatCount,
+      addedSeatCount: 0,
+      addedMonthlyAmountCents: 0,
+    };
+  }
+
+  const billingChange = getBillableTeamInviteSeatChangeForCount(
+    org,
+    occupiedSeatCount,
+    requestedInviteCount,
+  );
+  if (billingChange) return billingChange;
+
+  const coveredSeatCount = getOrgSeatCount(org);
+  const nextSeatCount = normalizeSeatCount(
+    'team',
+    occupiedSeatCount + requestedInviteCount,
+  );
+  const addedSeatCount = Math.max(0, nextSeatCount - coveredSeatCount);
+  return {
+    coveredSeatCount,
+    occupiedSeatCount,
+    requestedInviteCount,
+    nextSeatCount,
+    addedSeatCount,
+    addedMonthlyAmountCents:
+      addedSeatCount * (BILLING_PLAN_LIMITS.team.monthlyPriceCents ?? 0),
+  };
+}
+
+function isStaleBillingDisclosure(
+  billingSnapshot: ReturnType<typeof getInviteBillingSnapshot>,
+  disclosedNextSeatCount: number,
+  disclosedAddedSeatCount: number,
+) {
+  return (
+    billingSnapshot.addedSeatCount > disclosedAddedSeatCount ||
+    (billingSnapshot.addedSeatCount > 0 &&
+      billingSnapshot.nextSeatCount > disclosedNextSeatCount)
+  );
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -150,28 +204,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     const isTeamSeatManaged =
       getOrgBillingPlan(freshOrg) === 'team' &&
       freshOrg.billing_status !== 'enterprise';
-    const billingChange = isTeamSeatManaged
-      ? getBillableTeamInviteSeatChangeForCount(
-          freshOrg,
-          occupiedSeatCount,
-          newEmails.length,
-        )
-      : null;
-    const nextSeatCount = isTeamSeatManaged
-      ? normalizeSeatCount('team', occupiedSeatCount + newEmails.length)
-      : getOrgSeatCount(freshOrg);
-    const addedSeatCount = isTeamSeatManaged
-      ? Math.max(0, nextSeatCount - getOrgSeatCount(freshOrg))
-      : 0;
-    const billingSnapshot = billingChange ?? {
-      coveredSeatCount: getOrgSeatCount(freshOrg),
+    const billingSnapshot = getInviteBillingSnapshot(
+      freshOrg,
       occupiedSeatCount,
-      requestedInviteCount: newEmails.length,
-      nextSeatCount,
-      addedSeatCount,
-      addedMonthlyAmountCents:
-        addedSeatCount * (BILLING_PLAN_LIMITS.team.monthlyPriceCents ?? 0),
-    };
+      newEmails.length,
+      isTeamSeatManaged,
+    );
     const disclosedNextSeatCount = readNumberField(
       formData,
       'disclosed_next_seat_count',
@@ -182,9 +220,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     );
 
     if (
-      billingSnapshot.addedSeatCount > disclosedAddedSeatCount ||
-      (billingSnapshot.addedSeatCount > 0 &&
-        billingSnapshot.nextSeatCount > disclosedNextSeatCount)
+      isStaleBillingDisclosure(
+        billingSnapshot,
+        disclosedNextSeatCount,
+        disclosedAddedSeatCount,
+      )
     ) {
       return {
         success: false,
@@ -209,13 +249,57 @@ export async function action({ request, context }: Route.ActionArgs) {
     const batchId = crypto.randomUUID();
     let billingExpanded = false;
     try {
-      if (billingChange && billingChange.addedSeatCount > 0) {
-        await syncTeamSubscriptionSeatCount(env, orgId, {
-          pendingReservedSeatDelta: newEmails.length,
-          itemUpdateIdempotencyKey: `team-seat-sync:${orgId}:${billingChange.nextSeatCount}:${batchId}`,
-          prorationBehavior: 'always_invoice',
-        });
-        billingExpanded = true;
+      if (isTeamSeatManaged && billingSnapshot.addedSeatCount > 0) {
+        const latestOrg = await orgStub.getInfo();
+        if (!latestOrg) {
+          return { error: 'Organization not found' };
+        }
+
+        const [latestMembers, latestInvitations] = await Promise.all([
+          getOrgMembersWithWorkspaceAccess(authEnv, orgId),
+          getOrgInvitations(authEnv, orgId),
+        ]);
+        const latestBillingSnapshot = getInviteBillingSnapshot(
+          latestOrg,
+          latestMembers.length + latestInvitations.length,
+          newEmails.length,
+          true,
+        );
+
+        if (
+          isStaleBillingDisclosure(
+            latestBillingSnapshot,
+            disclosedNextSeatCount,
+            disclosedAddedSeatCount,
+          )
+        ) {
+          return {
+            success: false,
+            error: 'stale_billing_context',
+            billing: latestBillingSnapshot,
+          };
+        }
+
+        if (
+          latestBillingSnapshot.addedSeatCount > 0 &&
+          !isTeamSeatBillingSyncable(latestOrg)
+        ) {
+          return {
+            success: false,
+            error: 'billing_update_paused',
+            message:
+              'Your subscription needs attention before we can add seats. Resolve billing first.',
+          };
+        }
+
+        if (latestBillingSnapshot.addedSeatCount > 0) {
+          await syncTeamSubscriptionSeatCount(env, orgId, {
+            targetSeatCount: latestBillingSnapshot.nextSeatCount,
+            itemUpdateIdempotencyKey: `team-seat-sync:${orgId}:${latestBillingSnapshot.nextSeatCount}:${batchId}`,
+            prorationBehavior: 'always_invoice',
+          });
+          billingExpanded = true;
+        }
       }
     } catch (error) {
       console.error('Bulk invitation billing sync failed', {

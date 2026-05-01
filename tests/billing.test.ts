@@ -1595,6 +1595,54 @@ describe("billing helpers", () => {
     });
   });
 
+  it("uses an explicit target count for team seat sync when provided", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: { billing_seat_count: 3 },
+      memberCount: 10,
+      invitations: [{ expires_at: Date.now() + 60_000 }],
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            items: {
+              data: [
+                {
+                  id: "si_team",
+                  quantity: 3,
+                  price: { id: "price_team" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          id: url.includes("subscription_items") ? "si_team" : "sub_team",
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      syncTeamSubscriptionSeatCount(env as never, "org_team", {
+        targetSeatCount: 4,
+      }),
+    ).resolves.toMatchObject({ billing_seat_count: 4 });
+
+    expect(orgStub.getMemberCount).not.toHaveBeenCalled();
+    expect(orgStub.getInvitations).not.toHaveBeenCalled();
+    const itemParams = new URLSearchParams(
+      fetchMock.mock.calls[1][1]?.body as string,
+    );
+    expect(itemParams.get("quantity")).toBe("4");
+  });
+
   it("does not update a Stripe subscription item when the configured team price is missing", async () => {
     const { env, orgStub } = makeBillingOrgEnv({
       org: { billing_seat_count: 3 },

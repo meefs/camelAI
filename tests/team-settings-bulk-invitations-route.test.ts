@@ -241,7 +241,7 @@ describe("team settings bulk invitation action", () => {
       env,
       "org_123",
       expect.objectContaining({
-        pendingReservedSeatDelta: 1,
+        targetSeatCount: 4,
         prorationBehavior: "always_invoice",
         itemUpdateIdempotencyKey: expect.stringMatching(
           /^team-seat-sync:org_123:4:/,
@@ -250,6 +250,52 @@ describe("team settings bulk invitation action", () => {
     );
     expect(createInvitationsMock).not.toHaveBeenCalled();
     consoleError.mockRestore();
+  });
+
+  it("revalidates billing disclosures immediately before paid seat sync", async () => {
+    const org = makeOrg({ billing_seat_count: 3 });
+    const orgStub = { getInfo: vi.fn(async () => org) };
+    const env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      currentOrg: org,
+      user: { id: "owner_123", email: "owner@example.com" },
+    });
+    getOrgMembersWithWorkspaceAccessMock
+      .mockResolvedValueOnce([
+        { user: { id: "owner_123", email: "owner@example.com" }, role: "owner" },
+        { user: { id: "a", email: "a@example.com" }, role: "member" },
+        { user: { id: "b", email: "b@example.com" }, role: "member" },
+      ])
+      .mockResolvedValueOnce([
+        { user: { id: "owner_123", email: "owner@example.com" }, role: "owner" },
+        { user: { id: "a", email: "a@example.com" }, role: "member" },
+        { user: { id: "b", email: "b@example.com" }, role: "member" },
+        { user: { id: "c", email: "c@example.com" }, role: "member" },
+      ]);
+    getOrgInvitationsMock.mockResolvedValue([]);
+
+    const result = await action({
+      request: makeRequest({
+        emails: ["new@example.com"],
+        disclosed_next_seat_count: "4",
+        disclosed_added_seat_count: "1",
+      }),
+      context: {},
+    } as never);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "stale_billing_context",
+      billing: { addedSeatCount: 2, nextSeatCount: 5 },
+    });
+    expect(syncTeamSubscriptionSeatCountMock).not.toHaveBeenCalled();
+    expect(createInvitationsMock).not.toHaveBeenCalled();
   });
 
   it("does not pass extra invite allowance after paid seat sync succeeds", async () => {
@@ -290,7 +336,7 @@ describe("team settings bulk invitation action", () => {
       env,
       "org_123",
       expect.objectContaining({
-        pendingReservedSeatDelta: 1,
+        targetSeatCount: 4,
         prorationBehavior: "always_invoice",
         itemUpdateIdempotencyKey: expect.stringMatching(
           /^team-seat-sync:org_123:4:/,

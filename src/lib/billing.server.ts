@@ -964,6 +964,7 @@ export async function syncTeamSubscriptionSeatCount(
   orgId: string,
   options: {
     pendingReservedSeatDelta?: number;
+    targetSeatCount?: number;
     itemUpdateIdempotencyKey?: string;
     prorationBehavior?: "create_prorations" | "always_invoice" | "none";
   } = {},
@@ -973,11 +974,14 @@ export async function syncTeamSubscriptionSeatCount(
   if (!org) return null;
   if (!shouldSyncTeamSeats(org)) return org;
 
-  const seatCount = await getBillableTeamSeatCount(
-    env,
-    orgId,
-    options.pendingReservedSeatDelta ?? 0,
-  );
+  const seatCount =
+    options.targetSeatCount === undefined
+      ? await getBillableTeamSeatCount(
+          env,
+          orgId,
+          options.pendingReservedSeatDelta ?? 0,
+        )
+      : normalizeSeatCount("team", options.targetSeatCount);
   if (!seatCount) return org;
 
   if (org.billing_seat_count === seatCount) {
