@@ -45,6 +45,10 @@ import {
 } from "@/components/billing/plan-picker";
 import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog";
 import {
+  LegacyMigrationConfirmDialog,
+  type LegacyMigrationConfirmation,
+} from "@/components/billing/legacy-migration-confirm-dialog";
+import {
   InvoicesTable,
   type InvoiceRow,
 } from "@/components/billing/invoices-table";
@@ -248,7 +252,7 @@ export async function action({ request, context }: Route.ActionArgs) {
                   authContext.currentOrg.id,
                 )
               : getMinimumSeats(rawPlan);
-          const url = await createLegacyStripeMigrationPortalSession({
+          const migrationSession = await createLegacyStripeMigrationPortalSession({
             env,
             org: billingOrg,
             userEmail: authContext.user.email,
@@ -256,7 +260,10 @@ export async function action({ request, context }: Route.ActionArgs) {
             plan: rawPlan,
             seatCount,
           });
-          return { billingPortalUrl: url };
+          return {
+            billingPortalUrl: migrationSession.billingPortalUrl,
+            legacyMigrationPreview: migrationSession.preview,
+          };
         } catch (error) {
           console.error("[billing] failed to migrate legacy subscription", {
             orgId: billingOrg.id,
@@ -728,10 +735,13 @@ function ManagePlanView({
   const fetcher = useFetcher<{
     checkoutUrl?: string;
     billingPortalUrl?: string;
+    legacyMigrationPreview?: LegacyMigrationConfirmation["preview"];
     planChanged?: boolean;
     success?: boolean;
     error?: string;
   }>();
+  const [legacyConfirmation, setLegacyConfirmation] =
+    useState<LegacyMigrationConfirmation | null>(null);
   const isSubmitting = fetcher.state !== "idle";
   const pendingPlan = isSubmitting
     ? ((fetcher.formData?.get("plan") as BillingPlan | null) ?? null)
@@ -768,6 +778,19 @@ function ManagePlanView({
   useEffect(() => {
     if (fetcher.state !== "idle") return;
     const nextUrl = fetcher.data?.checkoutUrl ?? fetcher.data?.billingPortalUrl;
+    if (
+      fetcher.data?.billingPortalUrl &&
+      Object.prototype.hasOwnProperty.call(
+        fetcher.data,
+        "legacyMigrationPreview",
+      )
+    ) {
+      setLegacyConfirmation({
+        billingPortalUrl: fetcher.data.billingPortalUrl,
+        preview: fetcher.data.legacyMigrationPreview ?? null,
+      });
+      return;
+    }
     if (nextUrl) {
       window.location.assign(nextUrl);
       return;
@@ -818,6 +841,17 @@ function ManagePlanView({
           legacyDisabledReason ??
           (stripeConfigured ? null : "Stripe billing is not configured.")
         }
+      />
+      <LegacyMigrationConfirmDialog
+        confirmation={legacyConfirmation}
+        onOpenChange={(open) => {
+          if (!open) setLegacyConfirmation(null);
+        }}
+        onContinue={() => {
+          if (legacyConfirmation?.billingPortalUrl) {
+            window.location.assign(legacyConfirmation.billingPortalUrl);
+          }
+        }}
       />
       {fetcher.data &&
       typeof fetcher.data === "object" &&

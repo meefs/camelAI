@@ -92,9 +92,19 @@ describe("billing settings plan changes", () => {
     createSubscriptionUpdatePortalSessionMock.mockResolvedValue(
       "https://billing.stripe.test/update-session",
     );
-    createLegacyStripeMigrationPortalSessionMock.mockResolvedValue(
-      "https://billing.stripe.test/legacy-migration",
-    );
+    createLegacyStripeMigrationPortalSessionMock.mockResolvedValue({
+      billingPortalUrl: "https://billing.stripe.test/legacy-migration",
+      preview: {
+        plan: "pro",
+        seatCount: 1,
+        currency: "usd",
+        monthlyPriceCents: 15000,
+        amountDueTodayCents: 11996,
+        legacyCreditCents: 3004,
+        newPlanProrationCents: 15000,
+        includedCreditCents: 3000,
+      },
+    });
     updateTrialingStripeSubscriptionPlanMock.mockResolvedValue({});
   });
 
@@ -162,6 +172,16 @@ describe("billing settings plan changes", () => {
 
     expect(result).toEqual({
       billingPortalUrl: "https://billing.stripe.test/legacy-migration",
+      legacyMigrationPreview: {
+        plan: "pro",
+        seatCount: 1,
+        currency: "usd",
+        monthlyPriceCents: 15000,
+        amountDueTodayCents: 11996,
+        legacyCreditCents: 3004,
+        newPlanProrationCents: 15000,
+        includedCreditCents: 3000,
+      },
     });
     expect(createLegacyStripeMigrationPortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({

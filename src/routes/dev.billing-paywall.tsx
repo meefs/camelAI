@@ -6,6 +6,10 @@ import {
   type LegacyMigrationDialogData,
 } from "@/components/billing/legacy-migration-dialog";
 import {
+  LegacyMigrationConfirmDialog,
+  type LegacyMigrationConfirmation,
+} from "@/components/billing/legacy-migration-confirm-dialog";
+import {
   PlanPicker,
   type PlanPickerCta,
 } from "@/components/billing/plan-picker";
@@ -172,6 +176,28 @@ function describeCta(cta: PlanPickerCta): string {
   }
 }
 
+function makeLegacyConfirmation(
+  plan: "starter" | "pro" | "team",
+): LegacyMigrationConfirmation {
+  const monthlyPriceCents =
+    plan === "starter" ? 4000 : plan === "pro" ? 15000 : 15000;
+  const legacyCreditCents = plan === "starter" ? 3004 : 3004;
+  return {
+    billingPortalUrl: "https://billing.stripe.test/portal-preview",
+    preview: {
+      plan,
+      seatCount: plan === "team" ? 3 : 1,
+      currency: "usd",
+      monthlyPriceCents,
+      amountDueTodayCents: Math.max(0, monthlyPriceCents - legacyCreditCents),
+      legacyCreditCents,
+      newPlanProrationCents: monthlyPriceCents,
+      includedCreditCents:
+        plan === "starter" ? 1000 : plan === "pro" ? 3000 : 3000,
+    },
+  };
+}
+
 export async function loader({ request }: Route.LoaderArgs) {
   if (!isLocalPreviewRequest(request)) {
     throw new Response("Not found", { status: 404 });
@@ -190,6 +216,8 @@ export default function DevBillingPaywallPreviewRoute() {
   const byokProvider = parseByokProvider(searchParams.get("provider"));
   const config = getPreviewConfig(state, byokProvider);
   const [lastAction, setLastAction] = useState<string | null>(null);
+  const [legacyConfirmation, setLegacyConfirmation] =
+    useState<LegacyMigrationConfirmation | null>(null);
   const [introOpen, setIntroOpen] = useState(
     config.migration?.eligible ?? false,
   );
@@ -197,6 +225,7 @@ export default function DevBillingPaywallPreviewRoute() {
   useEffect(() => {
     setIntroOpen(config.migration?.eligible ?? false);
     setLastAction(null);
+    setLegacyConfirmation(null);
   }, [config.migration?.eligible, state]);
 
   return (
@@ -275,11 +304,23 @@ export default function DevBillingPaywallPreviewRoute() {
 
       <section className="space-y-5 text-left">
         {config.migration?.eligible ? (
-          <LegacyMigrationDialog
-            migration={config.migration}
-            open={introOpen}
-            onOpenChange={setIntroOpen}
-          />
+          <>
+            <LegacyMigrationDialog
+              migration={config.migration}
+              open={introOpen}
+              onOpenChange={setIntroOpen}
+            />
+            <LegacyMigrationConfirmDialog
+              confirmation={legacyConfirmation}
+              onOpenChange={(open) => {
+                if (!open) setLegacyConfirmation(null);
+              }}
+              onContinue={() => {
+                setLastAction("Continue to Stripe selected");
+                setLegacyConfirmation(null);
+              }}
+            />
+          </>
         ) : null}
 
         <PlanPicker
@@ -301,7 +342,12 @@ export default function DevBillingPaywallPreviewRoute() {
           byokProviderLabel={config.byokProviderLabel}
           legacyMigration={config.migration}
           onLegacyWhyClick={() => setIntroOpen(true)}
-          onSelectPlan={(cta) => setLastAction(describeCta(cta))}
+          onSelectPlan={(cta) => {
+            setLastAction(describeCta(cta));
+            if (cta.kind === "migrate") {
+              setLegacyConfirmation(makeLegacyConfirmation(cta.plan));
+            }
+          }}
         />
       </section>
     </main>

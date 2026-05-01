@@ -1,6 +1,7 @@
 import type { BillingPlan, BillingStatus, Organization } from "@/types";
 import type { OrgDO } from "../../workers/main/src/auth";
 import {
+  BILLING_PLAN_LIMITS,
   type BillingPlanLimits,
   getBillingPlanLimits,
   getIncludedCreditCentsForPlan,
@@ -80,6 +81,17 @@ export interface LegacyStripeMigrationEligibility {
   defaultPlan: Exclude<BillingPlan, "free" | "enterprise">;
 }
 
+export interface LegacyStripeMigrationPreview {
+  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  seatCount: number;
+  currency: string;
+  monthlyPriceCents: number | null;
+  amountDueTodayCents: number | null;
+  legacyCreditCents: number | null;
+  newPlanProrationCents: number | null;
+  includedCreditCents: number;
+}
+
 interface LegacyStripeMigrationCandidate {
   email: string;
   customerId: string;
@@ -143,8 +155,17 @@ export interface StripeInvoice {
   } | null;
   lines?: {
     data?: Array<{
+      amount?: number | null;
+      currency?: string | null;
+      description?: string | null;
       quantity?: number | null;
       price?: string | StripePriceSummary | null;
+      proration?: boolean | null;
+      parent?: {
+        subscription_item_details?: {
+          proration?: boolean | null;
+        } | null;
+      } | null;
     }>;
   } | null;
 }
@@ -1995,6 +2016,73 @@ async function prepareLegacyStripeMigration(args: {
   };
 }
 
+function getPlanMonthlyPriceCents(
+  plan: Exclude<BillingPlan, "free" | "enterprise">,
+  seatCount: number,
+): number | null {
+  const monthlyPriceCents = BILLING_PLAN_LIMITS[plan].monthlyPriceCents;
+  if (typeof monthlyPriceCents !== "number") return null;
+  return monthlyPriceCents * (plan === "team" ? seatCount : 1);
+}
+
+function isStripeProrationLine(
+  line: NonNullable<NonNullable<StripeInvoice["lines"]>["data"]>[number],
+): boolean {
+  return Boolean(
+    line.proration || line.parent?.subscription_item_details?.proration,
+  );
+}
+
+async function createLegacyStripeMigrationPreview(args: {
+  env: StripeBillingEnv;
+  selection: LegacySubscriptionSelection;
+  candidate: LegacyStripeMigrationCandidate;
+  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  priceId: string;
+  seatCount: number;
+  includedCreditCents: number;
+}): Promise<LegacyStripeMigrationPreview> {
+  const params = new URLSearchParams();
+  params.set("customer", args.candidate.customerId);
+  params.set("subscription", args.selection.subscription.id);
+  params.set("subscription_details[proration_behavior]", "always_invoice");
+  params.set("subscription_details[items][0][id]", args.selection.item.id);
+  params.set("subscription_details[items][0][price]", args.priceId);
+  params.set(
+    "subscription_details[items][0][quantity]",
+    String(args.seatCount),
+  );
+
+  const invoice = await stripeRequest<StripeInvoice>(
+    args.env,
+    `/invoices/create_preview?${params.toString()}`,
+  );
+  const lines = invoice.lines?.data ?? [];
+  const prorationLines = lines.filter(isStripeProrationLine);
+  const legacyCreditCents = Math.abs(
+    prorationLines
+      .filter((line) => (line.amount ?? 0) < 0)
+      .reduce((sum, line) => sum + (line.amount ?? 0), 0),
+  );
+  const newPlanProrationCents = prorationLines
+    .filter((line) => (line.amount ?? 0) > 0)
+    .reduce((sum, line) => sum + (line.amount ?? 0), 0);
+
+  return {
+    plan: args.plan,
+    seatCount: args.seatCount,
+    currency:
+      invoice.lines?.data?.find((line) => line.currency)?.currency ??
+      "usd",
+    monthlyPriceCents: getPlanMonthlyPriceCents(args.plan, args.seatCount),
+    amountDueTodayCents: invoice.amount_due ?? invoice.total ?? null,
+    legacyCreditCents: legacyCreditCents > 0 ? legacyCreditCents : null,
+    newPlanProrationCents:
+      newPlanProrationCents > 0 ? newPlanProrationCents : null,
+    includedCreditCents: args.includedCreditCents,
+  };
+}
+
 export async function migrateLegacyStripeSubscription(args: {
   env: StripeBillingEnv;
   org: Organization;
@@ -2073,7 +2161,10 @@ export async function createLegacyStripeMigrationPortalSession(args: {
   returnUrl: string;
   plan: BillingPlan;
   seatCount?: number | null;
-}): Promise<string> {
+}): Promise<{
+  billingPortalUrl: string;
+  preview: LegacyStripeMigrationPreview | null;
+}> {
   const { env } = args;
   const {
     latestOrg,
@@ -2124,41 +2215,42 @@ export async function createLegacyStripeMigrationPortalSession(args: {
     },
   );
 
+  const preview = await createLegacyStripeMigrationPreview({
+    env,
+    candidate,
+    selection,
+    plan,
+    priceId,
+    seatCount,
+    includedCreditCents,
+  }).catch((error) => {
+    console.error("[billing] failed to preview legacy migration invoice", {
+      orgId: latestOrg.id,
+      customerId: candidate.customerId,
+      subscriptionId: selection.subscription.id,
+      plan,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  });
+
   const body = new URLSearchParams();
   body.set("customer", candidate.customerId);
   body.set("return_url", args.returnUrl);
-  if (plan === "team") {
-    const portalConfigurationId =
-      await createTeamSubscriptionUpdatePortalConfiguration({
-        env,
-        priceId,
-        minimumSeatCount: seatCount,
-      });
-    body.set("configuration", portalConfigurationId);
-    body.set("flow_data[type]", "subscription_update");
-    body.set(
-      "flow_data[subscription_update][subscription]",
-      selection.subscription.id,
-    );
-  } else {
-    body.set("flow_data[type]", "subscription_update_confirm");
-    body.set(
-      "flow_data[subscription_update_confirm][subscription]",
-      selection.subscription.id,
-    );
-    body.set(
-      "flow_data[subscription_update_confirm][items][0][id]",
-      selection.item.id,
-    );
-    body.set(
-      "flow_data[subscription_update_confirm][items][0][price]",
-      priceId,
-    );
-    body.set(
-      "flow_data[subscription_update_confirm][items][0][quantity]",
-      String(seatCount),
-    );
-  }
+  body.set("flow_data[type]", "subscription_update_confirm");
+  body.set(
+    "flow_data[subscription_update_confirm][subscription]",
+    selection.subscription.id,
+  );
+  body.set(
+    "flow_data[subscription_update_confirm][items][0][id]",
+    selection.item.id,
+  );
+  body.set("flow_data[subscription_update_confirm][items][0][price]", priceId);
+  body.set(
+    "flow_data[subscription_update_confirm][items][0][quantity]",
+    String(seatCount),
+  );
   body.set("flow_data[after_completion][type]", "redirect");
   body.set(
     "flow_data[after_completion][redirect][return_url]",
@@ -2183,7 +2275,7 @@ export async function createLegacyStripeMigrationPortalSession(args: {
     throw new Error("Stripe did not return a billing portal URL");
   }
 
-  return session.url;
+  return { billingPortalUrl: session.url, preview };
 }
 
 async function fetchStripeCustomerMetadata(

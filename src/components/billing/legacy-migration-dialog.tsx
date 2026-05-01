@@ -95,7 +95,8 @@ export function LegacyMigrationDialog({
                 ✓
               </span>
               <span>
-                Apply your unused balance as credit on your first invoice
+                Show the unused legacy subscription credit and amount due today
+                before you confirm
               </span>
             </li>
             <li className="flex items-start gap-2">
@@ -103,7 +104,8 @@ export function LegacyMigrationDialog({
                 ✓
               </span>
               <span>
-                Stripe will show your exact charge before you confirm
+                Prevent the old subscription from renewing or billing again next
+                month
               </span>
             </li>
           </ul>

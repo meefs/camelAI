@@ -37,6 +37,8 @@ const DEFAULT_HEADING = {
   title: "Choose your plan",
   subtitle: "Pick the plan that fits how you build.",
 };
+const LEGACY_FOOTER_COPY =
+  "Picking a paid plan starts a subscription switch: your old subscription is canceled, unused balance is credited, and you see the estimate before Stripe.";
 
 const PLAN_RANK: Record<BillingPlan, number> = {
   free: 0,
@@ -221,7 +223,7 @@ export function PlanPicker({
           </div>
           <p className="text-center text-sm text-muted-foreground">
             {legacyMode
-              ? "Picking a paid plan cancels your old subscription and applies unused balance."
+              ? LEGACY_FOOTER_COPY
               : trialAvailable
                 ? "All paid plans include one 7-day free trial per org."
                 : "Your free trial has already been used for this org."}

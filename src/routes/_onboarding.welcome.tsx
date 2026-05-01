@@ -15,6 +15,10 @@ import { isBillingPlan } from "@/lib/billing-plans";
 import { getEnv } from "@/lib/cloudflare.server";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
 import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
+import {
+  LegacyMigrationConfirmDialog,
+  type LegacyMigrationConfirmation,
+} from "@/components/billing/legacy-migration-confirm-dialog";
 import { PlanPicker } from "@/components/billing/plan-picker";
 import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -206,6 +210,8 @@ export default function OnboardingWelcomeRoute() {
   const [legacyIntroOpen, setLegacyIntroOpen] = useState(
     () => context.legacyMigration?.eligible ?? false,
   );
+  const [legacyConfirmation, setLegacyConfirmation] =
+    useState<LegacyMigrationConfirmation | null>(null);
   const completionStartedRef = useRef(false);
   const providerCompletionStartedRef = useRef(false);
   const verificationFetcher = useFetcher<{
@@ -222,6 +228,7 @@ export default function OnboardingWelcomeRoute() {
   }>();
   const migrationFetcher = useFetcher<{
     billingPortalUrl?: string;
+    legacyMigrationPreview?: LegacyMigrationConfirmation["preview"];
     success?: boolean;
     error?: string;
   }>();
@@ -285,7 +292,10 @@ export default function OnboardingWelcomeRoute() {
       return;
     }
     if (migrationFetcher.data?.billingPortalUrl) {
-      window.location.assign(migrationFetcher.data.billingPortalUrl);
+      setLegacyConfirmation({
+        billingPortalUrl: migrationFetcher.data.billingPortalUrl,
+        preview: migrationFetcher.data.legacyMigrationPreview ?? null,
+      });
       return;
     }
     if (!migrationFetcher.data?.success) {
@@ -443,11 +453,26 @@ export default function OnboardingWelcomeRoute() {
         {isBillingChoiceRequired ? (
           <div className="space-y-5 text-left">
             {context.legacyMigration?.eligible ? (
-              <LegacyMigrationDialog
-                migration={context.legacyMigration}
-                open={legacyIntroOpen}
-                onOpenChange={setLegacyIntroOpen}
-              />
+              <>
+                <LegacyMigrationDialog
+                  migration={context.legacyMigration}
+                  open={legacyIntroOpen}
+                  onOpenChange={setLegacyIntroOpen}
+                />
+                <LegacyMigrationConfirmDialog
+                  confirmation={legacyConfirmation}
+                  onOpenChange={(open) => {
+                    if (!open) setLegacyConfirmation(null);
+                  }}
+                  onContinue={() => {
+                    if (legacyConfirmation?.billingPortalUrl) {
+                      window.location.assign(
+                        legacyConfirmation.billingPortalUrl,
+                      );
+                    }
+                  }}
+                />
+              </>
             ) : null}
 
             <PlanPicker

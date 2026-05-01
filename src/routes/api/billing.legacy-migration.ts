@@ -50,7 +50,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
     }
     returnUrl.searchParams.set("legacy_migration", "returned");
-    const billingPortalUrl = await createLegacyStripeMigrationPortalSession({
+    const migrationSession = await createLegacyStripeMigrationPortalSession({
       env,
       org: latestOrg,
       userEmail: authContext.user.email,
@@ -60,7 +60,8 @@ export async function action({ request, context }: Route.ActionArgs) {
     });
 
     return Response.json({
-      billingPortalUrl,
+      billingPortalUrl: migrationSession.billingPortalUrl,
+      legacyMigrationPreview: migrationSession.preview,
     });
   } catch (error) {
     console.error("[billing] legacy migration failed", {

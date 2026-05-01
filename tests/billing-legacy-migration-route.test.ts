@@ -59,9 +59,19 @@ describe("legacy billing migration route", () => {
       user: { id: "user_123", email: "owner@example.com" },
       currentOrg: org,
     });
-    createLegacyStripeMigrationPortalSessionMock.mockResolvedValue(
-      "https://billing.stripe.test/legacy-migration",
-    );
+    createLegacyStripeMigrationPortalSessionMock.mockResolvedValue({
+      billingPortalUrl: "https://billing.stripe.test/legacy-migration",
+      preview: {
+        plan: "team",
+        seatCount: 3,
+        currency: "usd",
+        monthlyPriceCents: 15000,
+        amountDueTodayCents: 11996,
+        legacyCreditCents: 3004,
+        newPlanProrationCents: 15000,
+        includedCreditCents: 3000,
+      },
+    });
 
     const response = await action({
       request: new Request("https://camelai.test/api/billing/legacy-migration", {
@@ -81,6 +91,16 @@ describe("legacy billing migration route", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       billingPortalUrl: "https://billing.stripe.test/legacy-migration",
+      legacyMigrationPreview: {
+        plan: "team",
+        seatCount: 3,
+        currency: "usd",
+        monthlyPriceCents: 15000,
+        amountDueTodayCents: 11996,
+        legacyCreditCents: 3004,
+        newPlanProrationCents: 15000,
+        includedCreditCents: 3000,
+      },
     });
     expect(createLegacyStripeMigrationPortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({

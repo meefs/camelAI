@@ -556,6 +556,29 @@ describe("billing helpers", () => {
           json: async () => ({ id: "cus_123", metadata: {} }),
         };
       }
+      if (url.includes("/invoices/create_preview?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            amount_due: 996,
+            total: 996,
+            lines: {
+              data: [
+                {
+                  amount: -3004,
+                  currency: "usd",
+                  proration: true,
+                },
+                {
+                  amount: 4000,
+                  currency: "usd",
+                  proration: true,
+                },
+              ],
+            },
+          }),
+        };
+      }
       if (url.endsWith("/billing_portal/sessions")) {
         portalRequestBody = init?.body as string;
         return {
@@ -578,7 +601,19 @@ describe("billing helpers", () => {
         returnUrl: "https://camelai.test/onboarding",
         plan: "pro",
       }),
-    ).resolves.toBe("https://billing.stripe.test/session");
+    ).resolves.toMatchObject({
+      billingPortalUrl: "https://billing.stripe.test/session",
+      preview: {
+        amountDueTodayCents: 996,
+        currency: "usd",
+        includedCreditCents: 3000,
+        legacyCreditCents: 3004,
+        monthlyPriceCents: 15000,
+        newPlanProrationCents: 4000,
+        plan: "pro",
+        seatCount: 1,
+      },
+    });
 
     const customerParams = new URLSearchParams(customerRequestBody ?? "");
     expect(customerParams.get("metadata[v2_mig_org]")).toBe("org_team");
@@ -613,6 +648,103 @@ describe("billing helpers", () => {
     expect(orgStub.updateBillingState).toHaveBeenCalledWith({
       billing_customer_id: "cus_123",
     });
+  });
+
+  it("uses the direct Stripe confirmation page for Team legacy migrations", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+      },
+      memberCount: 5,
+    });
+    Object.assign(env, {
+      STRIPE_TEAM_PRICE_ID: "price_team",
+      LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids,total_legacy_quantity\nowner@example.com,cus_123,1,sub_legacy,si_legacy,price_1S6NRLGvliMKf4vHtFDiA07o,5",
+    });
+
+    let portalRequestBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_legacy") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_legacy",
+            status: "active",
+            customer: "cus_123",
+            metadata: {},
+            items: {
+              data: [
+                {
+                  id: "si_legacy",
+                  quantity: 5,
+                  price: "price_1S6NRLGvliMKf4vHtFDiA07o",
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/customers/cus_123")) {
+        return {
+          ok: true,
+          json: async () => ({ id: "cus_123", metadata: {} }),
+        };
+      }
+      if (url.includes("/invoices/create_preview?")) {
+        return {
+          ok: true,
+          json: async () => ({ amount_due: 0, total: 0, lines: { data: [] } }),
+        };
+      }
+      if (url.endsWith("/billing_portal/configurations")) {
+        throw new Error("legacy migration should not create a Team picker");
+      }
+      if (url.endsWith("/billing_portal/sessions")) {
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createLegacyStripeMigrationPortalSession({
+      env: env as never,
+      org,
+      userEmail: "owner@example.com",
+      returnUrl: "https://camelai.test/onboarding",
+      plan: "team",
+    });
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.has("configuration")).toBe(false);
+    expect(portalParams.get("flow_data[type]")).toBe(
+      "subscription_update_confirm",
+    );
+    expect(
+      portalParams.get("flow_data[subscription_update_confirm][subscription]"),
+    ).toBe("sub_legacy");
+    expect(
+      portalParams.get("flow_data[subscription_update_confirm][items][0][id]"),
+    ).toBe("si_legacy");
+    expect(
+      portalParams.get(
+        "flow_data[subscription_update_confirm][items][0][price]",
+      ),
+    ).toBe("price_team");
+    expect(
+      portalParams.get(
+        "flow_data[subscription_update_confirm][items][0][quantity]",
+      ),
+    ).toBe("5");
   });
 
   it("syncs portal-confirmed legacy migrations and grants current-period credits once", async () => {

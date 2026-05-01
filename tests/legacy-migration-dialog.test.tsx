@@ -39,7 +39,10 @@ describe("LegacyMigrationDialog", () => {
       screen.getByText(/cancel your existing subscription/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/stripe will show your exact charge before you confirm/i),
+      screen.getByText(/unused legacy subscription credit/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/prevent the old subscription from renewing/i),
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/existing subscriber/i),
