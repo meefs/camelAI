@@ -45,11 +45,13 @@ import {
 } from "@/components/ui/tooltip"
 import { useLogout } from "@/hooks/use-auth-actions"
 import { InviteMemberDialog } from "@/components/settings/invite-member-dialog"
+import { TeamUpgradeDialog } from "@/components/settings/team-upgrade-dialog"
 import { WorkspaceAccessTags } from "@/components/settings/workspace-access-tags"
 import { getContrastTextColor } from "@/lib/avatar"
 import type {
   TeamInviteBillingContext,
 } from "@/lib/billing-plans"
+import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog"
 import type {
   OrgRole,
   User,
@@ -84,6 +86,11 @@ interface TeamTableProps {
   members: MemberWithAccess[]
   invitations: TeamInvitation[]
   workspaces: Workspace[]
+  requiresTeamUpgrade?: boolean
+  currentPlan?: "free" | "starter" | "pro" | "team" | "enterprise"
+  trialAvailable?: boolean
+  stripeConfigured?: boolean
+  legacyMigration?: LegacyMigrationDialogData | null
   teamInviteBillingContext?: TeamInviteBillingContext | null
 }
 
@@ -98,16 +105,24 @@ export function TeamTable({
   members,
   invitations,
   workspaces,
+  requiresTeamUpgrade = false,
+  currentPlan = "free",
+  trialAvailable = true,
+  stripeConfigured = true,
+  legacyMigration = null,
   teamInviteBillingContext = null,
 }: TeamTableProps) {
   const { logout } = useLogout()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [inviteOpen, setInviteOpen] = useState(false)
+  const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [editingWorkspaceAccess, setEditingWorkspaceAccess] = useState(false)
   const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null)
   const [pendingTransferUserId, setPendingTransferUserId] = useState<string | null>(null)
   const [leaveOrgOpen, setLeaveOrgOpen] = useState(false)
   const lastActionRef = useRef<string | null>(null)
+  const upgradeCurrentPlan: "free" | "starter" | "pro" =
+    currentPlan === "starter" || currentPlan === "pro" ? currentPlan : "free"
 
   // Handle fetcher response - show toasts and handle special cases
   useEffect(() => {
@@ -259,7 +274,15 @@ export function TeamTable({
               {editingWorkspaceAccess ? "Done editing" : "Edit access"}
             </Button>
           ) : null}
-          <Button onClick={() => setInviteOpen(true)}>
+          <Button
+            onClick={() => {
+              if (requiresTeamUpgrade) {
+                setUpgradeOpen(true)
+              } else {
+                setInviteOpen(true)
+              }
+            }}
+          >
             <Plus className="mr-2 size-4" />
             Invite member
           </Button>
@@ -675,6 +698,14 @@ export function TeamTable({
         teamInviteBillingContext={teamInviteBillingContext}
         knownMemberEmails={members.map((member) => member.user.email.toLowerCase())}
         knownInvitedEmails={invitations.map((invitation) => invitation.email.toLowerCase())}
+      />
+      <TeamUpgradeDialog
+        open={upgradeOpen}
+        onOpenChange={setUpgradeOpen}
+        currentPlan={upgradeCurrentPlan}
+        trialAvailable={trialAvailable}
+        stripeConfigured={stripeConfigured}
+        legacyMigration={legacyMigration}
       />
       <ConfirmDialog
         open={Boolean(pendingRemoveMemberId)}
