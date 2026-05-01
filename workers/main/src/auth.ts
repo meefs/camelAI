@@ -29,6 +29,7 @@ import {
   getBillingPlanLimits,
   getOrgBillingPlan,
   getOrgSeatLimit,
+  isTeamSeatBillingSyncable,
   normalizeBillingPlan,
   normalizeSeatCount,
 } from "../../../src/lib/billing-plans";
@@ -2492,16 +2493,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   private getPendingBillingSeatAllowance(info: Organization): number {
-    if (getOrgBillingPlan(info) !== "team") return 0;
-    if (!info.billing_subscription_id?.trim()) return 0;
-    if (
-      info.billing_status !== "trialing" &&
-      info.billing_status !== "active" &&
-      info.billing_status !== "past_due"
-    ) {
-      return 0;
-    }
-    return 1;
+    return isTeamSeatBillingSyncable(info) ? 1 : 0;
   }
 
   async removeMember(userId: string, actorId: string): Promise<void> {

@@ -463,6 +463,49 @@ describe('Billing status from OrgDO', () => {
       acceptInvitation(testEnv, org.id, acceptedInvitationId, acceptedUserId),
     ).resolves.toBe(true);
   });
+
+  it('uses Stripe subscription status for team seat expansion when billing status is stale', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createBaseOrg(testEnv, 'Team Stale Status Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: 'inactive',
+      billing_plan: 'team',
+      billing_seat_count: 3,
+      billing_subscription_id: 'sub_team',
+      billing_subscription_status: 'active',
+    });
+
+    const memberOneEmail = testEmail();
+    const { userId: memberOneId } = await createUser(testEnv, memberOneEmail, 'password', 'Member One');
+    const { id: memberOneInvitationId } = await createInvitation(
+      testEnv,
+      org.id,
+      memberOneEmail,
+      'member',
+      ownerId,
+    );
+    await acceptInvitation(testEnv, org.id, memberOneInvitationId, memberOneId);
+
+    const memberTwoEmail = testEmail();
+    const { userId: memberTwoId } = await createUser(testEnv, memberTwoEmail, 'password', 'Member Two');
+    const { id: memberTwoInvitationId } = await createInvitation(
+      testEnv,
+      org.id,
+      memberTwoEmail,
+      'member',
+      ownerId,
+    );
+    await acceptInvitation(testEnv, org.id, memberTwoInvitationId, memberTwoId);
+
+    await expect(
+      createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
+    ).resolves.toEqual(expect.objectContaining({ id: expect.any(String) }));
+    await expect(
+      createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
+    ).rejects.toThrow('Your current billing plan includes 3 seats.');
+  });
 });
 
 describe('Connection duplication', () => {

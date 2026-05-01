@@ -6,6 +6,7 @@ import {
   getIncludedCreditCentsForPlan,
   getMinimumSeats,
   getOrgBillingPlan,
+  isTeamSeatBillingSyncable,
   normalizeBillingPlan,
   normalizeSeatCount,
 } from "@/lib/billing-plans";
@@ -915,14 +916,7 @@ function getSubscriptionPlanFromItems(
 }
 
 function shouldSyncTeamSeats(org: Organization): boolean {
-  if (getOrgBillingPlan(org) !== "team") return false;
-  if (org.billing_status === "enterprise") return false;
-  if (!org.billing_subscription_id?.trim()) return false;
-  return (
-    org.billing_status === "trialing" ||
-    org.billing_status === "active" ||
-    org.billing_status === "past_due"
-  );
+  return isTeamSeatBillingSyncable(org);
 }
 
 export async function getBillableTeamSeatCount(

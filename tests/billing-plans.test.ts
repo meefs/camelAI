@@ -7,6 +7,7 @@ const teamOrg = (seatCount: number) => ({
   billing_plan: "team" as const,
   billing_seat_count: seatCount,
   billing_subscription_id: "sub_team",
+  billing_subscription_status: "active",
 });
 
 describe("getBillableTeamInviteSeatChange", () => {
@@ -26,6 +27,25 @@ describe("getBillableTeamInviteSeatChange", () => {
     expect(getBillableTeamInviteSeatChange(teamOrg(5), 4)).toBeNull();
   });
 
+  it("uses Stripe subscription status when top-level billing status is stale", () => {
+    expect(
+      getBillableTeamInviteSeatChange(
+        {
+          billing_status: "inactive",
+          billing_plan: "team",
+          billing_seat_count: 3,
+          billing_subscription_id: "sub_team",
+          billing_subscription_status: "active",
+        },
+        3,
+      ),
+    ).toEqual({
+      coveredSeatCount: 3,
+      nextSeatCount: 4,
+      addedSeatCount: 1,
+    });
+  });
+
   it("does not warn for non-Team plans or Team orgs without an active Stripe subscription", () => {
     expect(
       getBillableTeamInviteSeatChange(
@@ -34,6 +54,7 @@ describe("getBillableTeamInviteSeatChange", () => {
           billing_plan: "pro",
           billing_seat_count: 1,
           billing_subscription_id: "sub_pro",
+          billing_subscription_status: "active",
         },
         1,
       ),
@@ -46,6 +67,7 @@ describe("getBillableTeamInviteSeatChange", () => {
           billing_plan: "team",
           billing_seat_count: 3,
           billing_subscription_id: null,
+          billing_subscription_status: null,
         },
         3,
       ),

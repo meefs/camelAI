@@ -194,6 +194,40 @@ export function getOrgSeatLimit(
   return 1;
 }
 
+function isTeamSeatSyncableStatus(status: string | null | undefined): boolean {
+  switch (status?.trim().toLowerCase()) {
+    case "trialing":
+    case "active":
+    case "past_due":
+    case "unpaid":
+    case "paying":
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function isTeamSeatBillingSyncable(
+  org: Pick<
+    Organization,
+    | "billing_status"
+    | "billing_plan"
+    | "billing_subscription_id"
+    | "billing_subscription_status"
+  >,
+): boolean {
+  if (getOrgBillingPlan(org) !== "team") return false;
+  if (org.billing_status === "enterprise") return false;
+  if (!org.billing_subscription_id?.trim()) return false;
+
+  const stripeSubscriptionStatus = org.billing_subscription_status?.trim();
+  if (stripeSubscriptionStatus) {
+    return isTeamSeatSyncableStatus(stripeSubscriptionStatus);
+  }
+
+  return isTeamSeatSyncableStatus(org.billing_status);
+}
+
 export interface BillableTeamInviteSeatChange {
   coveredSeatCount: number;
   nextSeatCount: number;
@@ -207,18 +241,11 @@ export function getBillableTeamInviteSeatChange(
     | "billing_plan"
     | "billing_seat_count"
     | "billing_subscription_id"
+    | "billing_subscription_status"
   >,
   occupiedSeatCount: number,
 ): BillableTeamInviteSeatChange | null {
-  if (getOrgBillingPlan(org) !== "team") return null;
-  if (!org.billing_subscription_id?.trim()) return null;
-  if (
-    org.billing_status !== "trialing" &&
-    org.billing_status !== "active" &&
-    org.billing_status !== "past_due"
-  ) {
-    return null;
-  }
+  if (!isTeamSeatBillingSyncable(org)) return null;
 
   const coveredSeatCount = getOrgSeatCount(org);
   const nextSeatCount = normalizeSeatCount("team", occupiedSeatCount + 1);
