@@ -7,6 +7,7 @@ import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { TeamTable } from '@/components/settings/team-table';
 import type { OrgRole, WorkspaceAccessLevel } from '@/types';
+import { getBillableTeamInviteSeatChange } from '@/lib/billing-plans';
 import {
   buildInvitationUrl,
   resolveAppBaseUrl,
@@ -192,6 +193,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     org: authContext.currentOrg,
     members,
     invitations,
+    teamInviteSeatChange: getBillableTeamInviteSeatChange(
+      authContext.currentOrg,
+      members.length + invitations.length,
+    ),
     workspaces,
     currentUserId: authContext.user.id,
     canManageMembers,
@@ -199,12 +204,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function TeamPage() {
-  const { org, members, invitations, workspaces, currentUserId, canManageMembers } =
+  const {
+    org,
+    members,
+    invitations,
+    teamInviteSeatChange,
+    workspaces,
+    currentUserId,
+    canManageMembers,
+  } =
     useLoaderData<typeof loader>();
-  const showsTeamSeatBillingNotice =
-    org.billing_plan === 'team' &&
-    org.billing_subscription_id &&
-    ['active', 'trialing', 'past_due'].includes(org.billing_status);
 
   return (
     <div className="space-y-6">
@@ -220,7 +229,7 @@ export default function TeamPage() {
         members={members}
         invitations={invitations}
         workspaces={workspaces}
-        showTeamSeatBillingNotice={Boolean(showsTeamSeatBillingNotice)}
+        teamSeatBillingNotice={teamInviteSeatChange}
       />
     </div>
   );

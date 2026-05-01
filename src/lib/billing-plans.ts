@@ -194,6 +194,45 @@ export function getOrgSeatLimit(
   return 1;
 }
 
+export interface BillableTeamInviteSeatChange {
+  coveredSeatCount: number;
+  nextSeatCount: number;
+  addedSeatCount: number;
+}
+
+export function getBillableTeamInviteSeatChange(
+  org: Pick<
+    Organization,
+    | "billing_status"
+    | "billing_plan"
+    | "billing_seat_count"
+    | "billing_subscription_id"
+  >,
+  occupiedSeatCount: number,
+): BillableTeamInviteSeatChange | null {
+  if (getOrgBillingPlan(org) !== "team") return null;
+  if (!org.billing_subscription_id?.trim()) return null;
+  if (
+    org.billing_status !== "trialing" &&
+    org.billing_status !== "active" &&
+    org.billing_status !== "past_due"
+  ) {
+    return null;
+  }
+
+  const coveredSeatCount = getOrgSeatCount(org);
+  const nextSeatCount = normalizeSeatCount("team", occupiedSeatCount + 1);
+  const addedSeatCount = Math.max(0, nextSeatCount - coveredSeatCount);
+
+  if (addedSeatCount === 0) return null;
+
+  return {
+    coveredSeatCount,
+    nextSeatCount,
+    addedSeatCount,
+  };
+}
+
 export function formatLimitCount(value: number | null, noun: string): string {
   if (value === null) return `unlimited ${noun}`;
   return `${value.toLocaleString()} ${noun}`;
