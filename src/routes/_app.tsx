@@ -10,7 +10,7 @@ import { AppSidebar } from "@/components/sidebar/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import type { AuthState } from "@/types";
 import {
-  getLegacyStripeMigrationEligibility,
+  getVerifiedLegacyStripeMigrationEligibility,
   isConfiguredEnterpriseOrg,
 } from "@/lib/billing.server";
 
@@ -90,7 +90,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   };
 
   let showLegacyBanner = false;
-  const legacyMigration = getLegacyStripeMigrationEligibility({
+  const legacyMigration = await getVerifiedLegacyStripeMigrationEligibility({
     env,
     org: currentOrg,
     userEmail: authContext.user.email,

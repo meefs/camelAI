@@ -19,6 +19,7 @@ import {
   applySubscriptionIncludedCreditsFromInvoice,
   bestEffortSyncTeamSubscriptionSeatCount,
   createBillingPortalSession,
+  createLegacyStripeMigrationPortalSession,
   createSubscriptionCheckoutSession,
   createSubscriptionUpdatePortalSession,
   getBillableTeamSeatCount,
@@ -28,6 +29,7 @@ import {
   getLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
   hasOrgUsedSubscriptionTrial,
+  getVerifiedLegacyStripeMigrationEligibility,
   isConfiguredEnterpriseOrg,
   isRecurringSubscriptionInvoice,
   isStripeSecretKeyAllowedForMode,
@@ -71,6 +73,17 @@ describe("billing helpers", () => {
         async (updates: Partial<Organization>) => {
           Object.assign(org, updates);
           return { org, trialCreditGranted: false };
+        },
+      ),
+      applyManualCreditGrant: vi.fn(
+        async (
+          amountCents: number,
+          _reason?: string | null,
+          _idempotencyKey?: string | null,
+        ) => {
+          org.billing_credit_grant_total_cents =
+            (org.billing_credit_grant_total_cents ?? 0) + amountCents;
+          return { org };
         },
       ),
     };
@@ -278,6 +291,30 @@ describe("billing helpers", () => {
     ).toBe("team");
   });
 
+  it("treats blank legacy active subscription count as unknown", () => {
+    expect(
+      getLegacyStripeMigrationEligibility({
+        env: {
+          LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+            "email,customer_id,active_legacy_subscription_count\nowner@example.com,cus_123,",
+        },
+        org: {
+          id: "org_123",
+          name: "Org",
+          slug: "org",
+          billing_status: "inactive",
+          billing_plan: "free",
+          billing_subscription_id: null,
+        } as Organization,
+        userEmail: "owner@example.com",
+      }),
+    ).toMatchObject({
+      eligible: true,
+      customerId: "cus_123",
+      activeLegacySubscriptionCount: 1,
+    });
+  });
+
   it("does not offer legacy migration to orgs already on v2 billing", () => {
     expect(
       getLegacyStripeMigrationEligibility({
@@ -298,12 +335,121 @@ describe("billing helpers", () => {
     ).toBeNull();
   });
 
+  it("does not offer legacy migration when the allowlist has no active legacy subscriptions", () => {
+    expect(
+      getLegacyStripeMigrationEligibility({
+        env: {
+          LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+            "email,customer_id,active_legacy_subscription_count\nowner@example.com,cus_123,0",
+        },
+        org: {
+          id: "org_123",
+          name: "Org",
+          slug: "org",
+          billing_status: "inactive",
+          billing_plan: "free",
+          billing_subscription_id: null,
+        } as Organization,
+        userEmail: "owner@example.com",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not verify legacy migration eligibility when Stripe only has trialing legacy subscriptions", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids\nowner@example.com,cus_123,1,sub_trial,si_trial,price_1QIfnqGvliMKf4vHaDTMG2Mu",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          id: "sub_trial",
+          status: "trialing",
+          customer: "cus_123",
+          items: {
+            data: [
+              {
+                id: "si_trial",
+                quantity: 1,
+                price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+              },
+            ],
+          },
+        }),
+      })),
+    );
+
+    await expect(
+      getVerifiedLegacyStripeMigrationEligibility({
+        env: env as never,
+        org,
+        userEmail: "owner@example.com",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("requires manual migration for multiple active legacy subscriptions", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids\nowner@example.com,cus_123,2,sub_a|sub_b,si_a|si_b,price_1QIfnqGvliMKf4vHaDTMG2Mu",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () => ({
+          id: url.endsWith("/subscriptions/sub_a") ? "sub_a" : "sub_b",
+          status: "active",
+          customer: "cus_123",
+          metadata: {},
+          items: {
+            data: [
+              {
+                id: url.endsWith("/subscriptions/sub_a") ? "si_a" : "si_b",
+                quantity: 1,
+                price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+              },
+            ],
+          },
+        }),
+      })),
+    );
+
+    await expect(
+      migrateLegacyStripeSubscription({
+        env: env as never,
+        org,
+        userEmail: "owner@example.com",
+        plan: "pro",
+      }),
+    ).rejects.toThrow("multiple active legacy subscriptions");
+  });
+
+  it("rejects legacy migration when the allowlist has no active legacy subscriptions", async () => {
     await expect(
       migrateLegacyStripeSubscription({
         env: {
           LEGACY_STRIPE_MIGRATION_CUSTOMERS:
-            "email,customer_id,active_legacy_subscription_count\nowner@example.com,cus_123,2",
+            "email,customer_id,active_legacy_subscription_count\nowner@example.com,cus_123,0",
         } as never,
         org: {
           id: "org_123",
@@ -316,7 +462,441 @@ describe("billing helpers", () => {
         userEmail: "owner@example.com",
         plan: "pro",
       }),
-    ).rejects.toThrow("multiple active legacy subscriptions");
+    ).rejects.toThrow("not eligible");
+  });
+
+  it("does not migrate trialing legacy subscriptions", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+      },
+      memberCount: 1,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          id: "sub_legacy_trial",
+          status: "trialing",
+          customer: "cus_123",
+          metadata: {},
+          items: {
+            data: [
+              {
+                id: "si_legacy_trial",
+                quantity: 1,
+                price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+              },
+            ],
+          },
+        }),
+      })),
+    );
+
+    await expect(
+      migrateLegacyStripeSubscription({
+        env: {
+          ...env,
+          STRIPE_PRO_PRICE_ID: "price_pro",
+          LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+            "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids\nowner@example.com,cus_123,1,sub_legacy_trial,si_legacy_trial,price_1QIfnqGvliMKf4vHaDTMG2Mu",
+        } as never,
+        org,
+        userEmail: "owner@example.com",
+        plan: "pro",
+      }),
+    ).rejects.toThrow("No active legacy subscription");
+  });
+
+  it("creates a Stripe portal confirmation session for legacy migrations", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      LEGACY_STRIPE_MIGRATION_CUSTOMERS:
+        "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_ids\nowner@example.com,cus_123,2,sub_legacy,si_legacy,price_1QIfnqGvliMKf4vHaDTMG2Mu",
+    });
+
+    let customerRequestBody: string | null = null;
+    let portalRequestBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_legacy") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_legacy",
+            status: "active",
+            customer: "cus_123",
+            metadata: {},
+            items: {
+              data: [
+                {
+                  id: "si_legacy",
+                  quantity: 1,
+                  price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/customers/cus_123")) {
+        customerRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ id: "cus_123", metadata: {} }),
+        };
+      }
+      if (url.endsWith("/billing_portal/sessions")) {
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createLegacyStripeMigrationPortalSession({
+        env: env as never,
+        org,
+        userEmail: "owner@example.com",
+        returnUrl: "https://camelai.test/onboarding",
+        plan: "pro",
+      }),
+    ).resolves.toBe("https://billing.stripe.test/session");
+
+    const customerParams = new URLSearchParams(customerRequestBody ?? "");
+    expect(customerParams.get("metadata[pending_legacy_migration_org_id]")).toBe(
+      "org_team",
+    );
+    expect(
+      customerParams.get("metadata[pending_legacy_migration_subscription_id]"),
+    ).toBe("sub_legacy");
+    expect(
+      customerParams.get("metadata[pending_legacy_migration_target_plan]"),
+    ).toBe("pro");
+    expect(
+      customerParams.get(
+        "metadata[pending_legacy_migration_included_credit_cents]",
+      ),
+    ).toBe("3000");
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.get("customer")).toBe("cus_123");
+    expect(portalParams.get("flow_data[type]")).toBe(
+      "subscription_update_confirm",
+    );
+    expect(
+      portalParams.get("flow_data[subscription_update_confirm][subscription]"),
+    ).toBe("sub_legacy");
+    expect(
+      portalParams.get("flow_data[subscription_update_confirm][items][0][id]"),
+    ).toBe("si_legacy");
+    expect(
+      portalParams.get(
+        "flow_data[subscription_update_confirm][items][0][price]",
+      ),
+    ).toBe("price_pro");
+    expect(
+      portalParams.get("flow_data[after_completion][redirect][return_url]"),
+    ).toBe("https://camelai.test/onboarding");
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith({
+      billing_customer_id: "cus_123",
+    });
+  });
+
+  it("syncs portal-confirmed legacy migrations and grants current-period credits once", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+    });
+
+    let subscriptionMetadataBody: string | null = null;
+    let customerClearBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/customers/cus_123") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "cus_123",
+            metadata: {
+              org_id: "org_stale",
+              pending_legacy_migration_org_id: "org_team",
+              pending_legacy_migration_subscription_id: "sub_legacy",
+              pending_legacy_migration_target_plan: "pro",
+              pending_legacy_migration_included_credit_cents: "3000",
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/subscriptions/sub_legacy") && init?.body) {
+        subscriptionMetadataBody = init.body as string;
+        return {
+          ok: true,
+          json: async () => ({ id: "sub_legacy" }),
+        };
+      }
+      if (url.endsWith("/customers/cus_123") && init?.body) {
+        customerClearBody = init.body as string;
+        return {
+          ok: true,
+          json: async () => ({ id: "cus_123" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      syncOrgSubscriptionFromStripe(env as never, {
+        id: "sub_legacy",
+        status: "active",
+        customer: "cus_123",
+        metadata: {},
+        items: {
+          data: [
+            {
+              id: "si_pro",
+              quantity: 1,
+              price: { id: "price_pro", unit_amount: 15000, currency: "usd" },
+            },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_subscription_id: "sub_legacy",
+      billing_credit_grant_total_cents: 3000,
+    });
+
+    expect(orgStub.applyManualCreditGrant).toHaveBeenCalledWith(
+      3000,
+      "Legacy Stripe migration current-period included credits",
+      "legacy-migration:org_team:sub_legacy:pro:current-period-included-credits",
+    );
+    const subscriptionParams = new URLSearchParams(
+      subscriptionMetadataBody ?? "",
+    );
+    expect(subscriptionParams.get("metadata[org_id]")).toBe("org_team");
+    expect(subscriptionParams.get("metadata[billing_plan]")).toBe("pro");
+    const customerParams = new URLSearchParams(customerClearBody ?? "");
+    expect(customerParams.get("metadata[org_id]")).toBe("org_team");
+    expect(customerParams.get("metadata[pending_legacy_migration_org_id]")).toBe(
+      "",
+    );
+  });
+
+  it("respects zero included-credit override for portal-confirmed legacy migrations", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS: "0",
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/customers/cus_123") && !init?.body) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "cus_123",
+              metadata: {
+                pending_legacy_migration_org_id: "org_team",
+                pending_legacy_migration_subscription_id: "sub_legacy",
+                pending_legacy_migration_target_plan: "pro",
+                pending_legacy_migration_included_credit_cents: "3000",
+              },
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({ id: "ok" }),
+        };
+      }),
+    );
+
+    await expect(
+      syncOrgSubscriptionFromStripe(env as never, {
+        id: "sub_legacy",
+        status: "active",
+        customer: "cus_123",
+        metadata: {},
+        items: {
+          data: [
+            {
+              id: "si_pro",
+              quantity: 1,
+              price: { id: "price_pro", unit_amount: 15000, currency: "usd" },
+            },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_credit_grant_total_cents: 0,
+    });
+
+    expect(orgStub.applyManualCreditGrant).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve pending legacy migration metadata before the subscription has a v2 price", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/customers/cus_123") && !init?.body) {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "cus_123",
+              metadata: {
+                pending_legacy_migration_org_id: "org_team",
+                pending_legacy_migration_subscription_id: "sub_legacy",
+                pending_legacy_migration_target_plan: "pro",
+                pending_legacy_migration_included_credit_cents: "3000",
+              },
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    await expect(
+      syncOrgSubscriptionFromStripe(env as never, {
+        id: "sub_legacy",
+        status: "active",
+        customer: "cus_123",
+        metadata: {},
+        items: {
+          data: [
+            {
+              id: "si_legacy",
+              quantity: 1,
+              price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+            },
+          ],
+        },
+      }),
+    ).resolves.toBeNull();
+
+    expect(orgStub.syncSubscriptionBillingState).not.toHaveBeenCalled();
+    expect(orgStub.applyManualCreditGrant).not.toHaveBeenCalled();
+  });
+
+  it("grants Team legacy migration credits from the confirmed Stripe seat quantity", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "inactive",
+        billing_plan: "free",
+        billing_subscription_id: null,
+        billing_credit_grant_total_cents: 0,
+      },
+      memberCount: 1,
+    });
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/customers/cus_123") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "cus_123",
+            metadata: {
+              pending_legacy_migration_org_id: "org_team",
+              pending_legacy_migration_subscription_id: "sub_legacy",
+              pending_legacy_migration_target_plan: "team",
+              pending_legacy_migration_included_credit_cents: "3000",
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ id: "ok" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      syncOrgSubscriptionFromStripe(env as never, {
+        id: "sub_legacy",
+        status: "active",
+        customer: "cus_123",
+        metadata: {},
+        items: {
+          data: [
+            {
+              id: "si_team",
+              quantity: 5,
+              price: { id: "price_team", unit_amount: 5000, currency: "usd" },
+            },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({
+      billing_plan: "team",
+      billing_seat_count: 5,
+      billing_credit_grant_total_cents: 5000,
+    });
+
+    expect(orgStub.applyManualCreditGrant).toHaveBeenCalledWith(
+      5000,
+      "Legacy Stripe migration current-period included credits",
+      "legacy-migration:org_team:sub_legacy:team:current-period-included-credits",
+    );
   });
 
   it("treats configured enterprise org slugs as enterprise", () => {
@@ -915,7 +1495,9 @@ describe("billing helpers", () => {
     expect(
       updateParams.get("metadata[subscription_included_credit_cents]"),
     ).toBe("3000");
-    expect(updateRequestHeaders?.get("Idempotency-Key")).toBeNull();
+    expect(
+      (updateRequestHeaders as Headers | null)?.get("Idempotency-Key") ?? null,
+    ).toBeNull();
     expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
       expect.objectContaining({
         billing_status: "trialing",

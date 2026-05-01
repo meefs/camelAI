@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const requireAuthContextMock = vi.fn();
 const requireOrgAdminMock = vi.fn();
 const getEnvMock = vi.fn();
-const migrateLegacyStripeSubscriptionMock = vi.fn();
+const createLegacyStripeMigrationPortalSessionMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -18,20 +18,12 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/billing.server")>();
   return {
     ...actual,
-    migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
+    createLegacyStripeMigrationPortalSession:
+      createLegacyStripeMigrationPortalSessionMock,
   };
 });
 
 const { action } = await import("@/routes/api/billing.legacy-migration");
-
-function makeRequest(plan: string) {
-  const formData = new FormData();
-  formData.set("plan", plan);
-  return new Request("https://camelai.test/api/billing/legacy-migration", {
-    method: "POST",
-    body: formData,
-  });
-}
 
 describe("legacy billing migration route", () => {
   beforeEach(() => {
@@ -67,24 +59,36 @@ describe("legacy billing migration route", () => {
       user: { id: "user_123", email: "owner@example.com" },
       currentOrg: org,
     });
-    migrateLegacyStripeSubscriptionMock.mockResolvedValue({
-      ...org,
-      billing_status: "active",
-      billing_plan: "team",
-      billing_seat_count: 3,
-    });
+    createLegacyStripeMigrationPortalSessionMock.mockResolvedValue(
+      "https://billing.stripe.test/legacy-migration",
+    );
 
     const response = await action({
-      request: makeRequest("team"),
+      request: new Request("https://camelai.test/api/billing/legacy-migration", {
+        method: "POST",
+        headers: {
+          referer: "https://camelai.test/settings/organization/team",
+        },
+        body: (() => {
+          const formData = new FormData();
+          formData.set("plan", "team");
+          return formData;
+        })(),
+      }),
       context: {},
     } as never);
 
     expect(response.status).toBe(200);
-    expect(migrateLegacyStripeSubscriptionMock).toHaveBeenCalledWith(
+    await expect(response.json()).resolves.toEqual({
+      billingPortalUrl: "https://billing.stripe.test/legacy-migration",
+    });
+    expect(createLegacyStripeMigrationPortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
         userEmail: "owner@example.com",
+        returnUrl:
+          "https://camelai.test/settings/organization/team?legacy_migration=returned",
         plan: "team",
         seatCount: 3,
       }),

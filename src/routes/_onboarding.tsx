@@ -5,7 +5,7 @@ import type { Route } from "./+types/_onboarding";
 import { getAuthEnv, requireSession } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
-  getLegacyStripeMigrationEligibility,
+  getVerifiedLegacyStripeMigrationEligibility,
   isConfiguredEnterpriseOrg,
 } from "@/lib/billing.server";
 import { hasCompletedOnboarding } from "@/lib/onboarding";
@@ -125,7 +125,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     emailVerificationRequired,
     emailVerified: emailVerificationStatus.verified,
     legacyMigration: orgInfo
-      ? getLegacyStripeMigrationEligibility({
+      ? await getVerifiedLegacyStripeMigrationEligibility({
           env,
           org: orgInfo,
           userEmail: authBootstrap.profile.email,

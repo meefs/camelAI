@@ -4,9 +4,9 @@ const requireAuthContextMock = vi.fn();
 const requireOrgAdminMock = vi.fn();
 const getEnvMock = vi.fn();
 const createBillingPortalSessionMock = vi.fn();
+const createLegacyStripeMigrationPortalSessionMock = vi.fn();
 const createSubscriptionUpdatePortalSessionMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
-const migrateLegacyStripeSubscriptionMock = vi.fn();
 const updateTrialingStripeSubscriptionPlanMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
@@ -23,10 +23,11 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   return {
     ...actual,
     createBillingPortalSession: createBillingPortalSessionMock,
+    createLegacyStripeMigrationPortalSession:
+      createLegacyStripeMigrationPortalSessionMock,
     createSubscriptionUpdatePortalSession:
       createSubscriptionUpdatePortalSessionMock,
     createSubscriptionCheckoutSession: createSubscriptionCheckoutSessionMock,
-    migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
     updateTrialingStripeSubscriptionPlan:
       updateTrialingStripeSubscriptionPlanMock,
   };
@@ -91,7 +92,9 @@ describe("billing settings plan changes", () => {
     createSubscriptionUpdatePortalSessionMock.mockResolvedValue(
       "https://billing.stripe.test/update-session",
     );
-    migrateLegacyStripeSubscriptionMock.mockResolvedValue({});
+    createLegacyStripeMigrationPortalSessionMock.mockResolvedValue(
+      "https://billing.stripe.test/legacy-migration",
+    );
     updateTrialingStripeSubscriptionPlanMock.mockResolvedValue({});
   });
 
@@ -130,7 +133,7 @@ describe("billing settings plan changes", () => {
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
   });
 
-  it("migrates legacy-eligible paid plan selections instead of creating new Checkout", async () => {
+  it("opens Stripe portal for legacy-eligible paid plan selections instead of creating new Checkout", async () => {
     const org = {
       id: "org_123",
       name: "Legacy Org",
@@ -152,24 +155,20 @@ describe("billing settings plan changes", () => {
       user: { id: "user_123", email: "owner@example.com" },
       currentOrg: org,
     });
-    migrateLegacyStripeSubscriptionMock.mockResolvedValue({
-      ...org,
-      billing_status: "active",
-      billing_plan: "pro",
-      billing_subscription_id: "sub_legacy",
-    });
-
     const result = await action({
       request: makeFormRequest("pro"),
       context: {},
     } as never);
 
-    expect(result).toEqual({ planChanged: true });
-    expect(migrateLegacyStripeSubscriptionMock).toHaveBeenCalledWith(
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/legacy-migration",
+    });
+    expect(createLegacyStripeMigrationPortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
         userEmail: "owner@example.com",
+        returnUrl: "https://camelai.test/settings/organization/billing",
         plan: "pro",
         seatCount: 1,
       }),

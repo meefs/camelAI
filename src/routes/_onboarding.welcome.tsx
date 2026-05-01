@@ -221,6 +221,7 @@ export default function OnboardingWelcomeRoute() {
     error?: string;
   }>();
   const migrationFetcher = useFetcher<{
+    billingPortalUrl?: string;
     success?: boolean;
     error?: string;
   }>();
@@ -280,7 +281,14 @@ export default function OnboardingWelcomeRoute() {
   }, [checkoutFetcher.data, checkoutFetcher.state]);
 
   useEffect(() => {
-    if (migrationFetcher.state !== "idle" || !migrationFetcher.data?.success) {
+    if (migrationFetcher.state !== "idle") {
+      return;
+    }
+    if (migrationFetcher.data?.billingPortalUrl) {
+      window.location.assign(migrationFetcher.data.billingPortalUrl);
+      return;
+    }
+    if (!migrationFetcher.data?.success) {
       return;
     }
     window.location.reload();

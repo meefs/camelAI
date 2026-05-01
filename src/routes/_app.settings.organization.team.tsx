@@ -24,7 +24,7 @@ import {
 } from '@/lib/email.server';
 import {
   bestEffortSyncTeamSubscriptionSeatCount,
-  getLegacyStripeMigrationEligibility,
+  getVerifiedLegacyStripeMigrationEligibility,
   getOrgBillingOverview,
   hasOrgUsedSubscriptionTrial,
   isStripeBillingConfigured,
@@ -476,7 +476,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : null;
   const trialAvailable = overview ? !hasOrgUsedSubscriptionTrial(overview) : true;
   const legacyMigration = requiresTeamUpgrade
-    ? getLegacyStripeMigrationEligibility({
+    ? await getVerifiedLegacyStripeMigrationEligibility({
         env,
         org: authContext.currentOrg,
         userEmail: authContext.user.email,

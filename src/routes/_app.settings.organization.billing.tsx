@@ -12,18 +12,19 @@ import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   createBillingPortalSession,
+  createLegacyStripeMigrationPortalSession,
   createSubscriptionUpdatePortalSession,
   createSubscriptionCheckoutSession,
   getBillableTeamSeatCountForOrg,
   getOrgBillingOverview,
   getLegacyStripeMigrationEligibility,
+  getVerifiedLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
   getStripeSubscriptionSummary,
   hasOrgUsedSubscriptionTrial,
   isStaleTrialingSubscriptionStatusError,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
-  migrateLegacyStripeSubscription,
   updateTrialingStripeSubscriptionPlan,
 } from "@/lib/billing.server";
 import {
@@ -194,7 +195,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     subscription,
     trialAvailable: !hasOrgUsedSubscriptionTrial(overview),
     byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
-    legacyMigration: getLegacyStripeMigrationEligibility({
+    legacyMigration: await getVerifiedLegacyStripeMigrationEligibility({
       env,
       org: authContext.currentOrg,
       userEmail: authContext.user.email,
@@ -247,14 +248,15 @@ export async function action({ request, context }: Route.ActionArgs) {
                   authContext.currentOrg.id,
                 )
               : getMinimumSeats(rawPlan);
-          await migrateLegacyStripeSubscription({
+          const url = await createLegacyStripeMigrationPortalSession({
             env,
             org: billingOrg,
             userEmail: authContext.user.email,
+            returnUrl: billingUrl.toString(),
             plan: rawPlan,
             seatCount,
           });
-          return { planChanged: true };
+          return { billingPortalUrl: url };
         } catch (error) {
           console.error("[billing] failed to migrate legacy subscription", {
             orgId: billingOrg.id,

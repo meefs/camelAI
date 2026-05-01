@@ -18,6 +18,7 @@ const { loader } = await import("@/routes/_onboarding");
 describe("onboarding legacy migration loader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     requireSessionMock.mockResolvedValue({
       session: {
         user_id: "user_123",
@@ -65,11 +66,33 @@ describe("onboarding legacy migration loader", () => {
     };
     const env = {
       ...authEnv,
+      STRIPE_MODE: "test",
+      STRIPE_SECRET_KEY: "sk_test_123",
       LEGACY_STRIPE_MIGRATION_CUSTOMERS:
         "email,customer_id,active_legacy_subscription_count,legacy_subscription_ids,legacy_subscription_item_ids,legacy_price_names,legacy_price_ids,total_legacy_quantity,customer_name,customer_user_id\nlegacy@example.com,cus_123,1,sub_123,si_123,Individual,price_1QIfnqGvliMKf4vHaDTMG2Mu,1,Legacy,user_123",
     };
     getAuthEnvMock.mockReturnValue(authEnv);
     getEnvMock.mockReturnValue(env);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          id: "sub_123",
+          status: "active",
+          customer: "cus_123",
+          items: {
+            data: [
+              {
+                id: "si_123",
+                quantity: 1,
+                price: "price_1QIfnqGvliMKf4vHaDTMG2Mu",
+              },
+            ],
+          },
+        }),
+      })),
+    );
 
     const result = await loader({
       request: new Request("https://camelai.dev/onboarding"),

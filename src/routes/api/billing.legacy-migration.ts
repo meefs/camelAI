@@ -2,8 +2,8 @@ import type { Route } from "./+types/billing.legacy-migration";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
+  createLegacyStripeMigrationPortalSession,
   getBillableTeamSeatCountForOrg,
-  migrateLegacyStripeSubscription,
 } from "@/lib/billing.server";
 import { getMinimumSeats, isBillingPlan } from "@/lib/billing-plans";
 
@@ -36,22 +36,31 @@ export async function action({ request, context }: Route.ActionArgs) {
       rawPlan === "team"
         ? await getBillableTeamSeatCountForOrg(env, authContext.currentOrg.id)
         : getMinimumSeats(rawPlan);
-    const org = await migrateLegacyStripeSubscription({
+    const requestUrl = new URL(request.url);
+    let returnUrl = new URL("/onboarding", request.url);
+    const referer = request.headers.get("referer");
+    if (referer) {
+      try {
+        const refererUrl = new URL(referer);
+        if (refererUrl.origin === requestUrl.origin) {
+          returnUrl = refererUrl;
+        }
+      } catch {
+        // Ignore malformed Referer headers and use the onboarding fallback.
+      }
+    }
+    returnUrl.searchParams.set("legacy_migration", "returned");
+    const billingPortalUrl = await createLegacyStripeMigrationPortalSession({
       env,
       org: latestOrg,
       userEmail: authContext.user.email,
+      returnUrl: returnUrl.toString(),
       plan: rawPlan,
       seatCount,
     });
 
     return Response.json({
-      success: true,
-      org: {
-        id: org.id,
-        billing_status: org.billing_status,
-        billing_plan: org.billing_plan,
-        billing_seat_count: org.billing_seat_count,
-      },
+      billingPortalUrl,
     });
   } catch (error) {
     console.error("[billing] legacy migration failed", {

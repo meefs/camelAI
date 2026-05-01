@@ -536,6 +536,15 @@ function parsePositiveIntegerOrNull(
   return Math.floor(parsed);
 }
 
+function parseNonNegativeIntegerOrNull(
+  value: string | null | undefined,
+): number | null {
+  if (!value?.trim()) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.floor(parsed);
+}
+
 function parseCsvLine(line: string): string[] {
   const values: string[] = [];
   let current = "";
@@ -600,7 +609,7 @@ function parseLegacyMigrationCsv(
         legacyPriceIds: splitMultiValue(values[priceIdsIndex]),
         totalLegacyQuantity: parsePositiveIntegerOrNull(values[quantityIndex]),
         activeLegacySubscriptionCount:
-          parsePositiveIntegerOrNull(values[activeCountIndex]) ?? 1,
+          parseNonNegativeIntegerOrNull(values[activeCountIndex]) ?? 1,
       },
     ];
   });
@@ -658,7 +667,7 @@ function parseLegacyMigrationJson(
           String(record.total_legacy_quantity ?? ""),
         ),
         activeLegacySubscriptionCount:
-          parsePositiveIntegerOrNull(
+          parseNonNegativeIntegerOrNull(
             String(record.active_legacy_subscription_count ?? ""),
           ) ?? 1,
       },
@@ -722,6 +731,7 @@ export function getLegacyStripeMigrationEligibility(args: {
     args.userEmail,
   );
   if (!candidate?.customerId) return null;
+  if (candidate.activeLegacySubscriptionCount < 1) return null;
 
   return {
     eligible: true,
@@ -729,6 +739,42 @@ export function getLegacyStripeMigrationEligibility(args: {
     activeLegacySubscriptionCount: candidate.activeLegacySubscriptionCount,
     defaultPlan: getDefaultLegacyMigrationPlan(candidate),
   };
+}
+
+export async function getVerifiedLegacyStripeMigrationEligibility(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  userEmail: string | null | undefined;
+}): Promise<LegacyStripeMigrationEligibility | null> {
+  const eligibility = getLegacyStripeMigrationEligibility(args);
+  if (!eligibility) return null;
+
+  const candidate = getLegacyMigrationCandidateForEmail(
+    args.env,
+    args.userEmail,
+  );
+  if (!candidate) return null;
+
+  try {
+    const subscriptions = await fetchLegacyCandidateSubscriptions(
+      args.env,
+      candidate,
+    );
+    const activeLegacySubscriptionCount =
+      getActiveLegacySubscriptionCount(subscriptions);
+    if (activeLegacySubscriptionCount < 1) return null;
+    return {
+      ...eligibility,
+      activeLegacySubscriptionCount,
+    };
+  } catch (error) {
+    console.error("[billing] failed to verify legacy migration eligibility", {
+      orgId: args.org.id,
+      customerId: candidate.customerId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 function configuredEnterpriseTokens(
@@ -1745,7 +1791,7 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
     getStripeCustomerId(subscription.customer) ??
     latestOrg.billing_customer_id ??
     null;
-  return getOrgStub(env, latestOrg.id).updateBillingState({
+  const updatedOrg = await getOrgStub(env, latestOrg.id).updateBillingState({
     billing_status: mapStripeSubscriptionStatus(updatedSubscription.status),
     billing_plan: plan,
     billing_seat_count: seatCount,
@@ -1759,6 +1805,10 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
       ? updatedSubscription.trial_end * 1000
       : latestOrg.billing_trial_ends_at,
   });
+  if (!updatedOrg) {
+    throw new Error("Failed to update organization billing state.");
+  }
+  return updatedOrg;
 }
 
 interface LegacySubscriptionSelection {
@@ -1770,7 +1820,7 @@ interface LegacySubscriptionSelection {
 function isLegacyMigrationSubscriptionStatus(
   status: string | null | undefined,
 ) {
-  return status === "active" || status === "trialing" || status === "past_due";
+  return status === "active" || status === "past_due";
 }
 
 function getLegacyMigrationSelection(
@@ -1848,13 +1898,24 @@ function getActiveLegacySubscriptionCount(
   return activeLegacySubscriptionIds.size;
 }
 
-export async function migrateLegacyStripeSubscription(args: {
+interface PreparedLegacyStripeMigration {
+  orgStub: DurableObjectStub<OrgDO>;
+  latestOrg: Organization;
+  candidate: LegacyStripeMigrationCandidate;
+  selection: LegacySubscriptionSelection;
+  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  priceId: string;
+  seatCount: number;
+  includedCreditCents: number;
+}
+
+async function prepareLegacyStripeMigration(args: {
   env: StripeBillingEnv;
   org: Organization;
   userEmail: string | null | undefined;
   plan: BillingPlan;
   seatCount?: number | null;
-}): Promise<Organization> {
+}): Promise<PreparedLegacyStripeMigration> {
   const { env, org, userEmail } = args;
   const candidate = getLegacyMigrationCandidateForEmail(env, userEmail);
   if (!candidate?.customerId) {
@@ -1862,12 +1923,11 @@ export async function migrateLegacyStripeSubscription(args: {
       "This account is not eligible for legacy billing migration.",
     );
   }
-  if (candidate.activeLegacySubscriptionCount > 1) {
+  if (candidate.activeLegacySubscriptionCount < 1) {
     throw new Error(
-      "This account has multiple active legacy subscriptions. Contact support to migrate without double billing.",
+      "This account is not eligible for legacy billing migration.",
     );
   }
-
   const plan = normalizeBillingPlan(args.plan, org.billing_status);
   if (plan === "free" || plan === "enterprise") {
     throw new Error("Choose Starter, Pro, or Team for migration.");
@@ -1886,7 +1946,7 @@ export async function migrateLegacyStripeSubscription(args: {
     latestOrg.billing_status === "trialing" ||
     latestOrg.billing_subscription_id
   ) {
-    return latestOrg;
+    throw new Error("This organization already has v2 billing.");
   }
 
   const subscriptions = await fetchLegacyCandidateSubscriptions(env, candidate);
@@ -1916,6 +1976,37 @@ export async function migrateLegacyStripeSubscription(args: {
     plan,
     seatCount,
   );
+
+  return {
+    orgStub,
+    latestOrg,
+    candidate,
+    selection,
+    plan,
+    priceId,
+    seatCount,
+    includedCreditCents,
+  };
+}
+
+export async function migrateLegacyStripeSubscription(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  userEmail: string | null | undefined;
+  plan: BillingPlan;
+  seatCount?: number | null;
+}): Promise<Organization> {
+  const { env, org } = args;
+  const {
+    orgStub,
+    latestOrg,
+    candidate,
+    selection,
+    plan,
+    priceId,
+    seatCount,
+    includedCreditCents,
+  } = await prepareLegacyStripeMigration(args);
   const idempotencyKeyPrefix = `legacy-migration:${org.id}:${selection.subscription.id}:${plan}`;
 
   const body = new URLSearchParams();
@@ -1969,10 +2060,130 @@ export async function migrateLegacyStripeSubscription(args: {
   return grantResult?.org ?? synced ?? latestOrg;
 }
 
-async function resolveOrgIdFromStripeCustomer(
+export async function createLegacyStripeMigrationPortalSession(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  userEmail: string | null | undefined;
+  returnUrl: string;
+  plan: BillingPlan;
+  seatCount?: number | null;
+}): Promise<string> {
+  const { env } = args;
+  const {
+    latestOrg,
+    orgStub,
+    candidate,
+    selection,
+    plan,
+    priceId,
+    seatCount,
+    includedCreditCents,
+  } = await prepareLegacyStripeMigration(args);
+
+  await orgStub
+    .updateBillingState({ billing_customer_id: candidate.customerId })
+    .catch((error) => {
+      console.error("[billing] failed to store legacy migration customer id", {
+        orgId: latestOrg.id,
+        customerId: candidate.customerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+  const customerBody = new URLSearchParams();
+  customerBody.set("metadata[pending_legacy_migration_org_id]", latestOrg.id);
+  customerBody.set(
+    "metadata[pending_legacy_migration_subscription_id]",
+    selection.subscription.id,
+  );
+  customerBody.set("metadata[pending_legacy_migration_target_plan]", plan);
+  customerBody.set(
+    "metadata[pending_legacy_migration_seat_count]",
+    String(seatCount),
+  );
+  customerBody.set(
+    "metadata[pending_legacy_migration_included_credit_cents]",
+    String(includedCreditCents),
+  );
+  customerBody.set(
+    "metadata[pending_legacy_migration_source_price_id]",
+    selection.priceId,
+  );
+  await stripeRequest<StripeCustomer>(
+    env,
+    `/customers/${candidate.customerId}`,
+    {
+      method: "POST",
+      body: customerBody,
+    },
+  );
+
+  const body = new URLSearchParams();
+  body.set("customer", candidate.customerId);
+  body.set("return_url", args.returnUrl);
+  if (plan === "team") {
+    const portalConfigurationId =
+      await createTeamSubscriptionUpdatePortalConfiguration({
+        env,
+        priceId,
+        minimumSeatCount: seatCount,
+      });
+    body.set("configuration", portalConfigurationId);
+    body.set("flow_data[type]", "subscription_update");
+    body.set(
+      "flow_data[subscription_update][subscription]",
+      selection.subscription.id,
+    );
+  } else {
+    body.set("flow_data[type]", "subscription_update_confirm");
+    body.set(
+      "flow_data[subscription_update_confirm][subscription]",
+      selection.subscription.id,
+    );
+    body.set(
+      "flow_data[subscription_update_confirm][items][0][id]",
+      selection.item.id,
+    );
+    body.set(
+      "flow_data[subscription_update_confirm][items][0][price]",
+      priceId,
+    );
+    body.set(
+      "flow_data[subscription_update_confirm][items][0][quantity]",
+      String(seatCount),
+    );
+  }
+  body.set("flow_data[after_completion][type]", "redirect");
+  body.set(
+    "flow_data[after_completion][redirect][return_url]",
+    args.returnUrl,
+  );
+  const portalConfigurationId =
+    env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
+  if (portalConfigurationId && !body.has("configuration")) {
+    body.set("configuration", portalConfigurationId);
+  }
+
+  const session = await stripeRequest<{ url?: string | null }>(
+    env,
+    "/billing_portal/sessions",
+    {
+      method: "POST",
+      body,
+    },
+  );
+
+  if (!session.url) {
+    throw new Error("Stripe did not return a billing portal URL");
+  }
+
+  return session.url;
+}
+
+async function fetchStripeCustomerMetadata(
   env: StripeBillingEnv,
   customerId: string | null | undefined,
-): Promise<string | null> {
+): Promise<Record<string, string> | null> {
   const trimmedCustomerId = customerId?.trim();
   if (!trimmedCustomerId) return null;
 
@@ -1980,7 +2191,22 @@ async function resolveOrgIdFromStripeCustomer(
     env,
     `/customers/${trimmedCustomerId}`,
   );
-  return customer.metadata?.org_id?.trim() || null;
+  return customer.metadata ?? null;
+}
+
+function resolveOrgIdFromStripeCustomerMetadata(
+  metadata: Record<string, string> | null | undefined,
+): string | null {
+  return metadata?.org_id?.trim() || null;
+}
+
+async function resolveOrgIdFromStripeCustomer(
+  env: StripeBillingEnv,
+  customerId: string | null | undefined,
+): Promise<string | null> {
+  return resolveOrgIdFromStripeCustomerMetadata(
+    await fetchStripeCustomerMetadata(env, customerId),
+  );
 }
 
 function parsePositiveInteger(value: string | null | undefined): number | null {
@@ -2085,14 +2311,100 @@ async function bestEffortSyncStripeSubscriptionBillingMetadata(args: {
   }
 }
 
+interface PendingLegacyMigrationCustomerMetadata {
+  orgId: string;
+  subscriptionId: string;
+  targetPlan: BillingPlan;
+  includedCreditCents: number;
+}
+
+function getPendingLegacyMigrationCustomerMetadata(
+  metadata: Record<string, string> | null | undefined,
+): PendingLegacyMigrationCustomerMetadata | null {
+  const orgId = metadata?.pending_legacy_migration_org_id?.trim();
+  const subscriptionId =
+    metadata?.pending_legacy_migration_subscription_id?.trim();
+  if (!orgId || !subscriptionId) return null;
+  const targetPlan = normalizeBillingPlan(
+    metadata?.pending_legacy_migration_target_plan,
+  );
+  if (targetPlan === "free" || targetPlan === "enterprise") return null;
+  return {
+    orgId,
+    subscriptionId,
+    targetPlan,
+    includedCreditCents:
+      parsePositiveInteger(
+        metadata?.pending_legacy_migration_included_credit_cents,
+      ) ?? 0,
+  };
+}
+
+async function bestEffortClearPendingLegacyMigrationCustomerMetadata(args: {
+  env: StripeBillingEnv;
+  customerId: string | null | undefined;
+  orgId: string;
+}): Promise<void> {
+  const trimmedCustomerId = args.customerId?.trim();
+  if (!trimmedCustomerId) return;
+
+  const body = new URLSearchParams();
+  body.set("metadata[org_id]", args.orgId);
+  body.set("metadata[pending_legacy_migration_org_id]", "");
+  body.set("metadata[pending_legacy_migration_subscription_id]", "");
+  body.set("metadata[pending_legacy_migration_target_plan]", "");
+  body.set("metadata[pending_legacy_migration_seat_count]", "");
+  body.set("metadata[pending_legacy_migration_included_credit_cents]", "");
+  body.set("metadata[pending_legacy_migration_source_price_id]", "");
+
+  try {
+    await stripeRequest<StripeCustomer>(
+      args.env,
+      `/customers/${trimmedCustomerId}`,
+      {
+        method: "POST",
+        body,
+      },
+    );
+  } catch (error) {
+    console.error(
+      "[billing] failed to clear legacy migration customer metadata",
+      {
+        orgId: args.orgId,
+        customerId: trimmedCustomerId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
+}
+
 export async function syncOrgSubscriptionFromStripe(
   env: StripeBillingEnv,
   subscription: StripeSubscription,
 ): Promise<Organization | null> {
   const directOrgId = subscription.metadata?.org_id?.trim();
   const customerId = getStripeCustomerId(subscription.customer);
+  let customerMetadata =
+    typeof subscription.customer === "object"
+      ? (subscription.customer?.metadata ?? null)
+      : null;
+  if (!directOrgId && customerId && !customerMetadata) {
+    customerMetadata = await fetchStripeCustomerMetadata(env, customerId);
+  }
+  const itemPlan = getSubscriptionPlanFromItems(env, subscription);
+  const pendingLegacyMigration =
+    getPendingLegacyMigrationCustomerMetadata(customerMetadata);
+  const pendingLegacyMigrationOrgId =
+    pendingLegacyMigration &&
+    pendingLegacyMigration.subscriptionId === subscription.id &&
+    itemPlan &&
+    pendingLegacyMigration.targetPlan === itemPlan.plan
+      ? pendingLegacyMigration.orgId
+      : null;
   const orgId =
-    directOrgId || (await resolveOrgIdFromStripeCustomer(env, customerId));
+    directOrgId ||
+    pendingLegacyMigrationOrgId ||
+    resolveOrgIdFromStripeCustomerMetadata(customerMetadata);
   if (!orgId) {
     return null;
   }
@@ -2104,7 +2416,6 @@ export async function syncOrgSubscriptionFromStripe(
   const nextStatus = mapStripeSubscriptionStatus(subscription.status);
   const nextBillingStatus =
     existing.billing_status === "enterprise" ? "enterprise" : nextStatus;
-  const itemPlan = getSubscriptionPlanFromItems(env, subscription);
   const nextPlan =
     existing.billing_status === "enterprise"
       ? "enterprise"
@@ -2156,7 +2467,37 @@ export async function syncOrgSubscriptionFromStripe(
     trialCreditCents,
   );
 
-  return result?.org ?? null;
+  const syncedOrg = result?.org ?? null;
+  if (
+    syncedOrg &&
+    itemPlan &&
+    pendingLegacyMigration &&
+    pendingLegacyMigration.orgId === orgId &&
+    pendingLegacyMigration.subscriptionId === subscription.id &&
+    pendingLegacyMigration.targetPlan === nextPlan
+  ) {
+    const amountCents = getSubscriptionIncludedCreditCentsForPlan(
+      env,
+      nextPlan,
+      seatCount,
+    );
+    const grantResult =
+      amountCents > 0
+        ? await orgStub.applyManualCreditGrant(
+            amountCents,
+            "Legacy Stripe migration current-period included credits",
+            `legacy-migration:${orgId}:${subscription.id}:${nextPlan}:current-period-included-credits`,
+          )
+        : null;
+    await bestEffortClearPendingLegacyMigrationCustomerMetadata({
+      env,
+      customerId,
+      orgId,
+    });
+    return grantResult?.org ?? syncedOrg;
+  }
+
+  return syncedOrg;
 }
 
 async function hasProcessedIncludedCreditInvoice(
