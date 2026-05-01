@@ -46,6 +46,21 @@ describe("getBillableTeamInviteSeatChange", () => {
     });
   });
 
+  it("does not allow paid seat expansion for unpaid Stripe subscriptions", () => {
+    expect(
+      getBillableTeamInviteSeatChange(
+        {
+          billing_status: "past_due",
+          billing_plan: "team",
+          billing_seat_count: 3,
+          billing_subscription_id: "sub_team",
+          billing_subscription_status: "unpaid",
+        },
+        3,
+      ),
+    ).toBeNull();
+  });
+
   it("does not warn for non-Team plans or Team orgs without an active Stripe subscription", () => {
     expect(
       getBillableTeamInviteSeatChange(

@@ -199,7 +199,6 @@ function isTeamSeatSyncableStatus(status: string | null | undefined): boolean {
     case "trialing":
     case "active":
     case "past_due":
-    case "unpaid":
     case "paying":
       return true;
     default:
