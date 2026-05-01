@@ -20,6 +20,7 @@ import {
   bestEffortSyncTeamSubscriptionSeatCount,
   createBillingPortalSession,
   createSubscriptionCheckoutSession,
+  createSubscriptionUpdatePortalSession,
   getBillableTeamSeatCount,
   getBillableTeamSeatCountForOrg,
   getBillingAllowanceConfig,
@@ -32,9 +33,10 @@ import {
   isStripeSecretKeyAllowedForMode,
   migrateLegacyStripeSubscription,
   parseStripePriceIdList,
+  StaleTrialingSubscriptionStatusError,
   syncTeamSubscriptionSeatCount,
   syncOrgSubscriptionFromStripe,
-  updateStripeSubscriptionPlan,
+  updateTrialingStripeSubscriptionPlan,
 } from "@/lib/billing.server";
 import type { Organization } from "@/types";
 
@@ -482,8 +484,8 @@ describe("billing helpers", () => {
     ).toBe("https://camelai.dev/settings/organization/billing");
   });
 
-  it("updates an existing Stripe subscription to a configured v2 plan price", async () => {
-    const { env, org, orgStub } = makeBillingOrgEnv({
+  it("creates a Stripe portal confirmation session for existing plan changes", async () => {
+    const { env, org } = makeBillingOrgEnv({
       org: {
         billing_status: "active",
         billing_plan: "pro",
@@ -496,8 +498,10 @@ describe("billing helpers", () => {
     Object.assign(env, {
       STRIPE_PRO_PRICE_ID: "price_pro",
       STRIPE_TEAM_PRICE_ID: "price_team",
+      STRIPE_BILLING_PORTAL_CONFIGURATION_ID: "bpc_v2",
     });
 
+    let portalRequestBody: string | null = null;
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
         return {
@@ -519,7 +523,340 @@ describe("billing helpers", () => {
           }),
         };
       }
+      if (url.endsWith("/billing_portal/sessions")) {
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createSubscriptionUpdatePortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+        plan: "team",
+        seatCount: 3,
+      }),
+    ).resolves.toBe("https://billing.stripe.test/session");
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.get("customer")).toBe("cus_123");
+    expect(portalParams.get("configuration")).toBe("bpc_v2");
+    expect(portalParams.get("flow_data[type]")).toBe(
+      "subscription_update_confirm",
+    );
+    expect(
+      portalParams.get("flow_data[subscription_update_confirm][subscription]"),
+    ).toBe("sub_team");
+    expect(
+      portalParams.get("flow_data[subscription_update_confirm][items][0][id]"),
+    ).toBe("si_pro");
+    expect(
+      portalParams.get(
+        "flow_data[subscription_update_confirm][items][0][price]",
+      ),
+    ).toBe("price_team");
+    expect(
+      portalParams.get(
+        "flow_data[subscription_update_confirm][items][0][quantity]",
+      ),
+    ).toBe("3");
+    expect(portalParams.get("flow_data[after_completion][type]")).toBe(
+      "redirect",
+    );
+    expect(
+      portalParams.get("flow_data[after_completion][redirect][return_url]"),
+    ).toBe("https://camelai.dev/settings/organization/billing");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the subscription customer for existing plan change portal sessions", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_stale",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 3,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      STRIPE_TEAM_PRICE_ID: "price_team",
+    });
+
+    let portalRequestBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_subscription",
+            metadata: { org_id: "org_team", billing_plan: "pro" },
+            items: {
+              data: [
+                {
+                  id: "si_pro",
+                  quantity: 1,
+                  price: { id: "price_pro" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/billing_portal/sessions")) {
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createSubscriptionUpdatePortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+        plan: "team",
+        seatCount: 3,
+      }),
+    ).resolves.toBe("https://billing.stripe.test/session");
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.get("customer")).toBe("cus_subscription");
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith({
+      billing_customer_id: "cus_subscription",
+    });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/customers")),
+    ).toBe(false);
+  });
+
+  it("updates trialing subscription plans directly without ending the trial", async () => {
+    const trialStart = 1_761_000_000;
+    const trialEnd = 1_761_604_800;
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "trialing",
+        billing_plan: "starter",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_trial",
+        billing_subscription_id: "sub_trial",
+        billing_trial_started_at: trialStart * 1000,
+        billing_trial_ends_at: trialEnd * 1000,
+        billing_trial_credit_grant_cents: 1000,
+        billing_trial_credit_granted_at: Date.now(),
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_STARTER_PRICE_ID: "price_starter",
+      STRIPE_PRO_PRICE_ID: "price_pro",
+    });
+
+    let updateRequestBody: string | null = null;
+    let updateRequestHeaders: Headers | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_trial") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_trial",
+            status: "trialing",
+            customer: "cus_trial",
+            trial_start: trialStart,
+            trial_end: trialEnd,
+            metadata: {
+              org_id: "org_team",
+              billing_plan: "starter",
+              seat_count: "1",
+              trial_credit_cents: "1000",
+              subscription_included_credit_cents: "1000",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_starter",
+                  quantity: 1,
+                  price: { id: "price_starter" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/subscriptions/sub_trial") && init?.body) {
+        updateRequestBody = init.body as string;
+        updateRequestHeaders =
+          init.headers instanceof Headers
+            ? init.headers
+            : new Headers(init.headers);
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_trial",
+            status: "trialing",
+            customer: "cus_trial",
+            trial_start: trialStart,
+            trial_end: trialEnd,
+            metadata: {
+              org_id: "org_team",
+              billing_plan: "pro",
+              seat_count: "1",
+              trial_credit_cents: "1000",
+              subscription_included_credit_cents: "3000",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_starter",
+                  quantity: 1,
+                  price: { id: "price_pro" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      updateTrialingStripeSubscriptionPlan({
+        env: env as never,
+        org,
+        plan: "pro",
+        seatCount: 1,
+      }),
+    ).resolves.toMatchObject({
+      billing_status: "trialing",
+      billing_plan: "pro",
+      billing_subscription_id: "sub_trial",
+    });
+
+    const updateParams = new URLSearchParams(updateRequestBody ?? "");
+    expect(updateParams.get("items[0][id]")).toBe("si_starter");
+    expect(updateParams.get("items[0][price]")).toBe("price_pro");
+    expect(updateParams.get("items[0][quantity]")).toBe("1");
+    expect(updateParams.get("proration_behavior")).toBe("none");
+    expect(updateParams.get("trial_end")).toBeNull();
+    expect(updateParams.get("metadata[trial_credit_cents]")).toBe("1000");
+    expect(
+      updateParams.get("metadata[subscription_included_credit_cents]"),
+    ).toBe("3000");
+    expect(updateRequestHeaders?.get("Idempotency-Key")).toBeNull();
+    expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_status: "trialing",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_subscription_id: "sub_trial",
+      }),
+      1000,
+    );
+  });
+
+  it("syncs and reports stale local trial state when Stripe is no longer trialing", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "trialing",
+        billing_plan: "starter",
+        billing_seat_count: 1,
+        billing_customer_id: "cus_trial",
+        billing_subscription_id: "sub_trial",
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_STARTER_PRICE_ID: "price_starter",
+      STRIPE_PRO_PRICE_ID: "price_pro",
+    });
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_trial") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_trial",
+            status: "active",
+            customer: "cus_trial",
+            metadata: {
+              org_id: "org_team",
+              billing_plan: "starter",
+              seat_count: "1",
+              subscription_included_credit_cents: "1000",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_starter",
+                  quantity: 1,
+                  price: { id: "price_starter" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      updateTrialingStripeSubscriptionPlan({
+        env: env as never,
+        org,
+        plan: "pro",
+        seatCount: 1,
+      }),
+    ).rejects.toBeInstanceOf(StaleTrialingSubscriptionStatusError);
+
+    expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_status: "active",
+        billing_plan: "starter",
+        billing_subscription_id: "sub_trial",
+      }),
+      1000,
+    );
+  });
+
+  it("syncs corrected Stripe subscription metadata when item price changed through the portal", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      memberCount: 4,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      STRIPE_TEAM_PRICE_ID: "price_team",
+    });
+
+    let subscriptionRequestBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/subscriptions/sub_team") && init?.body) {
+        subscriptionRequestBody = init.body as string;
         return {
           ok: true,
           json: async () => ({
@@ -529,63 +866,61 @@ describe("billing helpers", () => {
             metadata: {
               org_id: "org_team",
               billing_plan: "team",
-              seat_count: "3",
-              subscription_included_credit_cents: "3000",
-            },
-            items: {
-              data: [
-                {
-                  id: "si_pro",
-                  quantity: 3,
-                  price: { id: "price_team" },
-                },
-              ],
+              seat_count: "4",
+              subscription_included_credit_cents: "4000",
             },
           }),
         };
       }
       return {
         ok: true,
-        json: async () => ({
-          id: "si_pro",
-          quantity: 3,
-          price: { id: "price_team" },
-        }),
+        json: async () => ({}),
       };
     });
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      updateStripeSubscriptionPlan({
-        env: env as never,
-        org,
-        plan: "team",
-        seatCount: 3,
+      syncOrgSubscriptionFromStripe(env as never, {
+        id: "sub_team",
+        status: "active",
+        customer: "cus_123",
+        metadata: {
+          org_id: "org_team",
+          billing_plan: "pro",
+          seat_count: "1",
+          subscription_included_credit_cents: "3000",
+        },
+        items: {
+          data: [
+            {
+              id: "si_team",
+              quantity: 4,
+              price: {
+                id: "price_team",
+                unit_amount: 5000,
+                currency: "usd",
+              },
+            },
+          ],
+        },
       }),
-    ).resolves.toMatchObject({ billing_plan: "team", billing_seat_count: 3 });
+    ).resolves.toMatchObject({
+      billing_plan: "team",
+      billing_seat_count: 4,
+    });
 
-    const itemUpdate = fetchMock.mock.calls[1];
-    expect(String(itemUpdate[0])).toBe(
-      "https://api.stripe.com/v1/subscription_items/si_pro",
-    );
-    const itemParams = new URLSearchParams(itemUpdate[1]?.body as string);
-    expect(itemParams.get("price")).toBe("price_team");
-    expect(itemParams.get("quantity")).toBe("3");
-    expect(itemParams.get("proration_behavior")).toBe("create_prorations");
-
-    const subscriptionUpdate = fetchMock.mock.calls[2];
     const subscriptionParams = new URLSearchParams(
-      subscriptionUpdate[1]?.body as string,
+      subscriptionRequestBody ?? "",
     );
     expect(subscriptionParams.get("metadata[billing_plan]")).toBe("team");
-    expect(subscriptionParams.get("metadata[seat_count]")).toBe("3");
+    expect(subscriptionParams.get("metadata[seat_count]")).toBe("4");
     expect(
       subscriptionParams.get("metadata[subscription_included_credit_cents]"),
-    ).toBe("3000");
+    ).toBe("4000");
     expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
       expect.objectContaining({
         billing_plan: "team",
-        billing_seat_count: 3,
+        billing_seat_count: 4,
       }),
       1000,
     );
@@ -604,6 +939,13 @@ describe("billing helpers", () => {
       STRIPE_PRO_PRICE_ID: "price_pro",
       STRIPE_TEAM_PRICE_ID: "price_team",
     });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({}),
+      })),
+    );
 
     await expect(
       syncOrgSubscriptionFromStripe(env as never, {

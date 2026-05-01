@@ -201,6 +201,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export default function TeamPage() {
   const { org, members, invitations, workspaces, currentUserId, canManageMembers } =
     useLoaderData<typeof loader>();
+  const showsTeamSeatBillingNotice =
+    org.billing_plan === 'team' &&
+    org.billing_subscription_id &&
+    ['active', 'trialing', 'past_due'].includes(org.billing_status);
 
   return (
     <div className="space-y-6">
@@ -216,6 +220,7 @@ export default function TeamPage() {
         members={members}
         invitations={invitations}
         workspaces={workspaces}
+        showTeamSeatBillingNotice={Boolean(showsTeamSeatBillingNotice)}
       />
     </div>
   );

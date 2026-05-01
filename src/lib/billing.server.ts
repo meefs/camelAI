@@ -144,6 +144,28 @@ export interface StripeWebhookEvent<T = unknown> {
   };
 }
 
+export class StaleTrialingSubscriptionStatusError extends Error {
+  stripeSubscriptionStatus: string | null | undefined;
+
+  constructor(stripeSubscriptionStatus: string | null | undefined) {
+    super("Stripe subscription is no longer trialing.");
+    this.name = "StaleTrialingSubscriptionStatusError";
+    this.stripeSubscriptionStatus = stripeSubscriptionStatus;
+  }
+}
+
+export function isStaleTrialingSubscriptionStatusError(
+  error: unknown,
+): error is StaleTrialingSubscriptionStatusError {
+  return (
+    error instanceof StaleTrialingSubscriptionStatusError ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { name?: unknown }).name ===
+        "StaleTrialingSubscriptionStatusError")
+  );
+}
+
 const RECURRING_INCLUDED_CREDIT_BILLING_REASONS = new Set([
   "subscription_cycle",
 ]);
@@ -471,6 +493,12 @@ export function parseStripePriceIdList(
 
 function normalizeEmail(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? "";
+}
+
+function getStripeCustomerId(
+  customer: string | StripeCustomer | null | undefined,
+): string | null {
+  return typeof customer === "string" ? customer : (customer?.id ?? null);
 }
 
 function splitMultiValue(value: string | null | undefined): string[] {
@@ -1428,26 +1456,27 @@ export async function createBillingPortalSession(args: {
   return session.url;
 }
 
-export async function updateStripeSubscriptionPlan(args: {
+export async function createSubscriptionUpdatePortalSession(args: {
   env: StripeBillingEnv;
   org: Organization;
+  customerEmail: string | null | undefined;
+  returnUrl: string;
   plan: Exclude<BillingPlan, "free" | "enterprise">;
   seatCount?: number | null;
-}): Promise<Organization | null> {
-  const { env, org, plan } = args;
-  const orgStub = getOrgStub(env, org.id);
-  const latestOrg = (await orgStub.getInfo().catch(() => null)) ?? org;
+}): Promise<string> {
+  const { env, org, returnUrl, plan } = args;
+  const latestOrg = await getLatestOrgInfo(env, org);
   const subscriptionId = latestOrg.billing_subscription_id?.trim();
   if (!subscriptionId) {
     throw new Error("This organization does not have a Stripe subscription.");
   }
-  if (latestOrg.billing_status === "enterprise") {
+  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
     throw new Error("Enterprise organizations are billed outside Stripe.");
   }
 
   const priceId = getConfiguredSubscriptionPriceId(env, plan);
   if (!priceId) {
-    throw new Error(`Stripe price is not configured for ${plan}.`);
+    throw new Error(`Stripe ${plan} subscription price is not configured`);
   }
 
   const seatCount = normalizeSeatCount(
@@ -1464,47 +1493,163 @@ export async function updateStripeSubscriptionPlan(args: {
     subscription,
     currentPriceId,
   );
-  const currentItemPriceId = getStripePriceId(item.price);
 
-  if (currentItemPriceId !== priceId || item.quantity !== seatCount) {
-    const itemBody = new URLSearchParams();
-    itemBody.set("price", priceId);
-    itemBody.set("quantity", String(seatCount));
-    itemBody.set("proration_behavior", "create_prorations");
-    await stripeRequest<StripeSubscriptionItem>(
-      env,
-      `/subscription_items/${item.id}`,
-      {
-        method: "POST",
-        body: itemBody,
-      },
-    );
+  const customerId = getStripeCustomerId(subscription.customer);
+  if (!customerId) {
+    throw new Error("Stripe subscription does not have a customer.");
+  }
+  if (latestOrg.billing_customer_id !== customerId) {
+    await getOrgStub(env, latestOrg.id)
+      .updateBillingState({ billing_customer_id: customerId })
+      .catch((error) => {
+        console.error("[billing] failed to sync subscription customer id", {
+          orgId: latestOrg.id,
+          subscriptionId,
+          customerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+  const body = new URLSearchParams();
+  body.set("customer", customerId);
+  body.set("return_url", returnUrl);
+  body.set("flow_data[type]", "subscription_update_confirm");
+  body.set(
+    "flow_data[subscription_update_confirm][subscription]",
+    subscriptionId,
+  );
+  body.set("flow_data[subscription_update_confirm][items][0][id]", item.id);
+  body.set("flow_data[subscription_update_confirm][items][0][price]", priceId);
+  body.set(
+    "flow_data[subscription_update_confirm][items][0][quantity]",
+    String(seatCount),
+  );
+  body.set("flow_data[after_completion][type]", "redirect");
+  body.set("flow_data[after_completion][redirect][return_url]", returnUrl);
+  const portalConfigurationId =
+    env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
+  if (portalConfigurationId) {
+    body.set("configuration", portalConfigurationId);
   }
 
+  const session = await stripeRequest<{ url?: string | null }>(
+    env,
+    "/billing_portal/sessions",
+    {
+      method: "POST",
+      body,
+    },
+  );
+
+  if (!session.url) {
+    throw new Error("Stripe did not return a billing portal URL");
+  }
+
+  return session.url;
+}
+
+export async function updateTrialingStripeSubscriptionPlan(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  seatCount?: number | null;
+}): Promise<Organization> {
+  const { env, org, plan } = args;
+  const latestOrg = await getLatestOrgInfo(env, org);
+  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+    throw new Error("Enterprise organizations are billed outside Stripe.");
+  }
+  const subscriptionId = latestOrg.billing_subscription_id?.trim();
+  if (!subscriptionId) {
+    throw new Error("This organization does not have a Stripe subscription.");
+  }
+  const priceId = getConfiguredSubscriptionPriceId(env, plan);
+  if (!priceId) {
+    throw new Error(`Stripe ${plan} subscription price is not configured`);
+  }
+
+  const subscription = await fetchStripeSubscription(env, subscriptionId);
+  if (subscription.status !== "trialing") {
+    await syncOrgSubscriptionFromStripe(env, subscription).catch((error) => {
+      console.error("[billing] failed to sync stale trialing subscription", {
+        orgId: latestOrg.id,
+        subscriptionId,
+        stripeStatus: subscription.status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    throw new StaleTrialingSubscriptionStatusError(subscription.status);
+  }
+
+  const seatCount = normalizeSeatCount(
+    plan,
+    args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
+  );
+  const currentPlan = getOrgBillingPlan(latestOrg);
+  const currentPriceId =
+    currentPlan === "free" || currentPlan === "enterprise"
+      ? null
+      : getConfiguredSubscriptionPriceId(env, currentPlan);
+  const item = getStripeSubscriptionItemForPlanChange(
+    subscription,
+    currentPriceId,
+  );
   const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
     env,
     plan,
     seatCount,
   );
-  const subscriptionBody = new URLSearchParams();
-  subscriptionBody.set("metadata[org_id]", latestOrg.id);
-  subscriptionBody.set("metadata[billing_plan]", plan);
-  subscriptionBody.set("metadata[seat_count]", String(seatCount));
-  subscriptionBody.set(
+  const trialCreditCents =
+    parsePositiveInteger(subscription.metadata?.trial_credit_cents) ??
+    (latestOrg.billing_trial_credit_grant_cents > 0
+      ? latestOrg.billing_trial_credit_grant_cents
+      : getTrialCreditCentsForPlan(env, plan, seatCount));
+
+  const body = new URLSearchParams();
+  body.set("items[0][id]", item.id);
+  body.set("items[0][price]", priceId);
+  body.set("items[0][quantity]", String(seatCount));
+  body.set("proration_behavior", "none");
+  body.set("metadata[org_id]", latestOrg.id);
+  body.set("metadata[billing_plan]", plan);
+  body.set("metadata[seat_count]", String(seatCount));
+  body.set("metadata[trial_credit_cents]", String(trialCreditCents));
+  body.set(
     "metadata[subscription_included_credit_cents]",
     String(includedCreditCents),
   );
+
   const updatedSubscription = await stripeRequest<StripeSubscription>(
     env,
     `/subscriptions/${subscriptionId}`,
     {
       method: "POST",
-      body: subscriptionBody,
+      body,
     },
   );
 
   const synced = await syncOrgSubscriptionFromStripe(env, updatedSubscription);
-  return synced ?? orgStub.getInfo();
+  if (synced) return synced;
+
+  const customerId =
+    getStripeCustomerId(updatedSubscription.customer) ??
+    getStripeCustomerId(subscription.customer) ??
+    latestOrg.billing_customer_id ??
+    null;
+  return getOrgStub(env, latestOrg.id).updateBillingState({
+    billing_status: mapStripeSubscriptionStatus(updatedSubscription.status),
+    billing_plan: plan,
+    billing_seat_count: seatCount,
+    billing_customer_id: customerId,
+    billing_subscription_id: updatedSubscription.id,
+    billing_subscription_status: updatedSubscription.status ?? null,
+    billing_trial_started_at: updatedSubscription.trial_start
+      ? updatedSubscription.trial_start * 1000
+      : latestOrg.billing_trial_started_at,
+    billing_trial_ends_at: updatedSubscription.trial_end
+      ? updatedSubscription.trial_end * 1000
+      : latestOrg.billing_trial_ends_at,
+  });
 }
 
 interface LegacySubscriptionSelection {
@@ -1778,15 +1923,65 @@ function getMetadataSubscriptionIncludedCreditCents(
   );
 }
 
+async function bestEffortSyncStripeSubscriptionBillingMetadata(args: {
+  env: StripeBillingEnv;
+  subscription: StripeSubscription;
+  orgId: string;
+  plan: BillingPlan;
+  seatCount: number;
+}): Promise<void> {
+  const { env, subscription, orgId, plan, seatCount } = args;
+  if (plan === "free" || plan === "enterprise") return;
+
+  const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
+    env,
+    plan,
+    seatCount,
+  );
+  const metadata = subscription.metadata ?? {};
+  if (
+    metadata.org_id === orgId &&
+    metadata.billing_plan === plan &&
+    metadata.seat_count === String(seatCount) &&
+    metadata.subscription_included_credit_cents === String(includedCreditCents)
+  ) {
+    return;
+  }
+
+  const body = new URLSearchParams();
+  body.set("metadata[org_id]", orgId);
+  body.set("metadata[billing_plan]", plan);
+  body.set("metadata[seat_count]", String(seatCount));
+  body.set(
+    "metadata[subscription_included_credit_cents]",
+    String(includedCreditCents),
+  );
+
+  try {
+    await stripeRequest<StripeSubscription>(
+      env,
+      `/subscriptions/${subscription.id}`,
+      {
+        method: "POST",
+        body,
+      },
+    );
+  } catch (error) {
+    console.error("[billing] failed to sync Stripe subscription metadata", {
+      orgId,
+      subscriptionId: subscription.id,
+      plan,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function syncOrgSubscriptionFromStripe(
   env: StripeBillingEnv,
   subscription: StripeSubscription,
 ): Promise<Organization | null> {
   const directOrgId = subscription.metadata?.org_id?.trim();
-  const customerId =
-    typeof subscription.customer === "string"
-      ? subscription.customer
-      : (subscription.customer?.id ?? null);
+  const customerId = getStripeCustomerId(subscription.customer);
   const orgId =
     directOrgId || (await resolveOrgIdFromStripeCustomer(env, customerId));
   if (!orgId) {
@@ -1824,6 +2019,13 @@ export async function syncOrgSubscriptionFromStripe(
     nextPlan,
     seatCount,
   );
+  await bestEffortSyncStripeSubscriptionBillingMetadata({
+    env,
+    subscription,
+    orgId,
+    plan: nextPlan,
+    seatCount,
+  });
 
   const result = await orgStub.syncSubscriptionBillingState(
     {
@@ -1926,10 +2128,7 @@ export async function applySubscriptionIncludedCreditsFromInvoice(
   if (!isPaidInvoice(invoice)) return null;
   if (await hasProcessedIncludedCreditInvoice(env, invoice.id)) return null;
 
-  const customerId =
-    typeof invoice.customer === "string"
-      ? invoice.customer
-      : (invoice.customer?.id ?? null);
+  const customerId = getStripeCustomerId(invoice.customer);
   const orgId =
     invoice.metadata?.org_id?.trim() ||
     invoice.subscription_details?.metadata?.org_id?.trim() ||

@@ -7,6 +7,7 @@ import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Dialog,
   DialogContent,
@@ -38,11 +39,13 @@ import { inviteMemberFormSchema } from "@/lib/schemas"
 interface InviteMemberDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  showTeamSeatBillingNotice?: boolean
 }
 
 export function InviteMemberDialog({
   open,
   onOpenChange,
+  showTeamSeatBillingNotice = false,
 }: InviteMemberDialogProps) {
   const isMobile = useIsMobile()
   const fetcher = useFetcher<{
@@ -93,6 +96,16 @@ export function InviteMemberDialog({
   const formContent = (
     <fetcher.Form method="post" {...getFormProps(form)} className="space-y-4">
       <input type="hidden" name="intent" value="createInvitation" />
+
+      {showTeamSeatBillingNotice ? (
+        <Alert>
+          <AlertTitle>Billing seat will be added</AlertTitle>
+          <AlertDescription>
+            Sending this invite adds one paid Team seat. If you cancel the
+            invite or remove the member, billing updates automatically.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <div className="space-y-2">
         <Label htmlFor={fields.email.id}>Email</Label>

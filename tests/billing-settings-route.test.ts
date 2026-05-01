@@ -4,9 +4,10 @@ const requireAuthContextMock = vi.fn();
 const requireOrgAdminMock = vi.fn();
 const getEnvMock = vi.fn();
 const createBillingPortalSessionMock = vi.fn();
+const createSubscriptionUpdatePortalSessionMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
 const migrateLegacyStripeSubscriptionMock = vi.fn();
-const updateStripeSubscriptionPlanMock = vi.fn();
+const updateTrialingStripeSubscriptionPlanMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -22,13 +23,18 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   return {
     ...actual,
     createBillingPortalSession: createBillingPortalSessionMock,
+    createSubscriptionUpdatePortalSession:
+      createSubscriptionUpdatePortalSessionMock,
     createSubscriptionCheckoutSession: createSubscriptionCheckoutSessionMock,
     migrateLegacyStripeSubscription: migrateLegacyStripeSubscriptionMock,
-    updateStripeSubscriptionPlan: updateStripeSubscriptionPlanMock,
+    updateTrialingStripeSubscriptionPlan:
+      updateTrialingStripeSubscriptionPlanMock,
   };
 });
 
 const { action } = await import("@/routes/_app.settings.organization.billing");
+const { StaleTrialingSubscriptionStatusError } =
+  await import("@/lib/billing.server");
 
 function makeIntentRequest(
   intent: string,
@@ -82,8 +88,11 @@ describe("billing settings plan changes", () => {
     createSubscriptionCheckoutSessionMock.mockResolvedValue(
       "https://checkout.stripe.test/session",
     );
+    createSubscriptionUpdatePortalSessionMock.mockResolvedValue(
+      "https://billing.stripe.test/update-session",
+    );
     migrateLegacyStripeSubscriptionMock.mockResolvedValue({});
-    updateStripeSubscriptionPlanMock.mockResolvedValue({});
+    updateTrialingStripeSubscriptionPlanMock.mockResolvedValue({});
   });
 
   it("creates Checkout for a free org selecting a paid plan", async () => {
@@ -204,7 +213,7 @@ describe("billing settings plan changes", () => {
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("updates the existing Stripe subscription for unpaid subscribers changing plans", async () => {
+  it("uses the Stripe update portal for unpaid subscribers changing plans", async () => {
     const org = {
       id: "org_123",
       name: "Unpaid Org",
@@ -227,12 +236,13 @@ describe("billing settings plan changes", () => {
     } as never);
 
     expect(result).toEqual({
-      planChanged: true,
+      billingPortalUrl: "https://billing.stripe.test/update-session",
     });
-    expect(updateStripeSubscriptionPlanMock).toHaveBeenCalledWith(
+    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
+        customerEmail: "owner@example.com",
         plan: "team",
         seatCount: 3,
       }),
@@ -241,7 +251,7 @@ describe("billing settings plan changes", () => {
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
-  it("updates the existing Stripe subscription directly for paid plan changes", async () => {
+  it("uses the Stripe update portal for paid plan changes", async () => {
     const org = {
       id: "org_123",
       name: "Paid Org",
@@ -263,16 +273,137 @@ describe("billing settings plan changes", () => {
       context: {},
     } as never);
 
-    expect(result).toEqual({ planChanged: true });
-    expect(updateStripeSubscriptionPlanMock).toHaveBeenCalledWith(
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/update-session",
+    });
+    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
+        customerEmail: "owner@example.com",
         plan: "team",
         seatCount: 3,
       }),
     );
     expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+    expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("updates trialing subscriptions directly so Stripe does not end the trial in the portal", async () => {
+    const org = {
+      id: "org_123",
+      name: "Trial Org",
+      billing_status: "trialing",
+      billing_plan: "starter",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_trial",
+      billing_subscription_status: "trialing",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+
+    const result = await action({
+      request: makeFormRequest("pro"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({ planChanged: true });
+    expect(updateTrialingStripeSubscriptionPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        plan: "pro",
+        seatCount: 1,
+      }),
+    );
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
+    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+    expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the update portal when local trial status is stale", async () => {
+    const org = {
+      id: "org_123",
+      name: "Stale Trial Org",
+      billing_status: "trialing",
+      billing_plan: "starter",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_trial",
+      billing_subscription_status: "trialing",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+    updateTrialingStripeSubscriptionPlanMock.mockRejectedValueOnce(
+      new StaleTrialingSubscriptionStatusError("active"),
+    );
+
+    const result = await action({
+      request: makeFormRequest("pro"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/update-session",
+    });
+    expect(updateTrialingStripeSubscriptionPlanMock).toHaveBeenCalled();
+    expect(createSubscriptionUpdatePortalSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        customerEmail: "owner@example.com",
+        plan: "pro",
+        seatCount: 1,
+      }),
+    );
+    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+    expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the billing portal when stale trial status needs recovery", async () => {
+    const org = {
+      id: "org_123",
+      name: "Paused Trial Org",
+      billing_status: "trialing",
+      billing_plan: "starter",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_trial",
+      billing_subscription_status: "trialing",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+    updateTrialingStripeSubscriptionPlanMock.mockRejectedValueOnce(
+      new StaleTrialingSubscriptionStatusError("paused"),
+    );
+
+    const result = await action({
+      request: makeFormRequest("pro"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({
+      billingPortalUrl: "https://billing.stripe.test/session",
+    });
+    expect(updateTrialingStripeSubscriptionPlanMock).toHaveBeenCalled();
+    expect(createBillingPortalSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        org,
+        customerEmail: "owner@example.com",
+      }),
+    );
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
@@ -308,7 +439,7 @@ describe("billing settings plan changes", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(updateStripeSubscriptionPlanMock).not.toHaveBeenCalled();
+    expect(createSubscriptionUpdatePortalSessionMock).not.toHaveBeenCalled();
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });
 

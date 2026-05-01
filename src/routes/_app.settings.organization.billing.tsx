@@ -12,6 +12,7 @@ import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   createBillingPortalSession,
+  createSubscriptionUpdatePortalSession,
   createSubscriptionCheckoutSession,
   getBillableTeamSeatCountForOrg,
   getOrgBillingOverview,
@@ -19,10 +20,11 @@ import {
   getStripeDefaultPaymentMethodSummary,
   getStripeSubscriptionSummary,
   hasOrgUsedSubscriptionTrial,
+  isStaleTrialingSubscriptionStatusError,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
   migrateLegacyStripeSubscription,
-  updateStripeSubscriptionPlan,
+  updateTrialingStripeSubscriptionPlan,
 } from "@/lib/billing.server";
 import {
   BILLING_PLAN_LIMITS,
@@ -57,9 +59,8 @@ const EXISTING_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "incomplete",
 ]);
 
-const DIRECTLY_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
+const PORTAL_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "active",
-  "trialing",
   "past_due",
   "unpaid",
 ]);
@@ -89,16 +90,35 @@ function hasRecoverableStripeSubscription(
   );
 }
 
-function canDirectlyUpdateStripeSubscription(
+function canUpdateStripeSubscriptionInPortal(
   org: Pick<Organization, "billing_subscription_status" | "billing_status">,
 ): boolean {
   const rawStatus = org.billing_subscription_status?.trim();
   if (rawStatus) {
-    return DIRECTLY_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES.has(rawStatus);
+    return canUpdateStripeSubscriptionStatusInPortal(rawStatus);
   }
-  return DIRECTLY_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES.has(
-    org.billing_status,
-  );
+  return canUpdateStripeSubscriptionStatusInPortal(org.billing_status);
+}
+
+function canUpdateStripeSubscriptionStatusInPortal(
+  status: string | null | undefined,
+): boolean {
+  return PORTAL_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES.has(status ?? "");
+}
+
+function canRecoverStripeSubscriptionStatusInPortal(
+  status: string | null | undefined,
+): boolean {
+  return status === "paused" || status === "incomplete";
+}
+
+function isTrialingStripeSubscription(
+  org: Pick<Organization, "billing_subscription_status" | "billing_status">,
+): boolean {
+  const rawStatus = org.billing_subscription_status?.trim();
+  return rawStatus
+    ? rawStatus === "trialing"
+    : org.billing_status === "trialing";
 }
 
 function planSubtitle(plan: BillingPlan): string {
@@ -247,9 +267,110 @@ export async function action({ request, context }: Route.ActionArgs) {
         hasRecoverableStripeSubscription(billingOrg);
 
       if (hasActiveStripeSubscription) {
+        if (rawPlan !== "free" && isTrialingStripeSubscription(billingOrg)) {
+          try {
+            const seatCount =
+              rawPlan === "team"
+                ? await getBillableTeamSeatCountForOrg(
+                    env,
+                    authContext.currentOrg.id,
+                  )
+                : getMinimumSeats(rawPlan);
+            await updateTrialingStripeSubscriptionPlan({
+              env,
+              org: billingOrg,
+              plan: rawPlan,
+              seatCount,
+            });
+            return { planChanged: true };
+          } catch (error) {
+            if (
+              isStaleTrialingSubscriptionStatusError(error) &&
+              canUpdateStripeSubscriptionStatusInPortal(
+                error.stripeSubscriptionStatus,
+              )
+            ) {
+              try {
+                const seatCount =
+                  rawPlan === "team"
+                    ? await getBillableTeamSeatCountForOrg(
+                        env,
+                        authContext.currentOrg.id,
+                      )
+                    : getMinimumSeats(rawPlan);
+                const url = await createSubscriptionUpdatePortalSession({
+                  env,
+                  org: billingOrg,
+                  customerEmail: authContext.user.email,
+                  returnUrl: billingUrl.toString(),
+                  plan: rawPlan,
+                  seatCount,
+                });
+                return { billingPortalUrl: url };
+              } catch (portalError) {
+                console.error(
+                  "[billing] failed to create Stripe portal session after stale trial status",
+                  {
+                    orgId: billingOrg.id,
+                    plan: rawPlan,
+                    stripeStatus: error.stripeSubscriptionStatus,
+                    error:
+                      portalError instanceof Error
+                        ? portalError.message
+                        : String(portalError),
+                  },
+                );
+              }
+            }
+
+            if (
+              isStaleTrialingSubscriptionStatusError(error) &&
+              canRecoverStripeSubscriptionStatusInPortal(
+                error.stripeSubscriptionStatus,
+              )
+            ) {
+              try {
+                const url = await createBillingPortalSession({
+                  env,
+                  org: billingOrg,
+                  customerEmail: authContext.user.email,
+                  returnUrl: billingUrl.toString(),
+                });
+                return { billingPortalUrl: url };
+              } catch (portalError) {
+                console.error(
+                  "[billing] failed to create Stripe recovery portal session after stale trial status",
+                  {
+                    orgId: billingOrg.id,
+                    plan: rawPlan,
+                    stripeStatus: error.stripeSubscriptionStatus,
+                    error:
+                      portalError instanceof Error
+                        ? portalError.message
+                        : String(portalError),
+                  },
+                );
+              }
+            }
+
+            console.error(
+              "[billing] failed to update trialing Stripe subscription plan",
+              {
+                orgId: billingOrg.id,
+                plan: rawPlan,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+            return {
+              error:
+                "We couldn't change your trial plan. Please try again in a moment.",
+            };
+          }
+        }
+
         if (
           rawPlan !== "free" &&
-          canDirectlyUpdateStripeSubscription(billingOrg)
+          canUpdateStripeSubscriptionInPortal(billingOrg)
         ) {
           try {
             const seatCount =
@@ -259,16 +380,18 @@ export async function action({ request, context }: Route.ActionArgs) {
                     authContext.currentOrg.id,
                   )
                 : getMinimumSeats(rawPlan);
-            await updateStripeSubscriptionPlan({
+            const url = await createSubscriptionUpdatePortalSession({
               env,
               org: billingOrg,
+              customerEmail: authContext.user.email,
+              returnUrl: billingUrl.toString(),
               plan: rawPlan,
               seatCount,
             });
-            return { planChanged: true };
+            return { billingPortalUrl: url };
           } catch (error) {
             console.error(
-              "[billing] failed to update Stripe subscription plan",
+              "[billing] failed to create Stripe subscription update portal session",
               {
                 orgId: billingOrg.id,
                 plan: rawPlan,

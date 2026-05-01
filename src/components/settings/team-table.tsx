@@ -81,6 +81,7 @@ interface TeamTableProps {
   members: MemberWithAccess[]
   invitations: TeamInvitation[]
   workspaces: Workspace[]
+  showTeamSeatBillingNotice?: boolean
 }
 
 function formatDate(value: number) {
@@ -94,6 +95,7 @@ export function TeamTable({
   members,
   invitations,
   workspaces,
+  showTeamSeatBillingNotice = false,
 }: TeamTableProps) {
   const { logout } = useLogout()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
@@ -667,6 +669,7 @@ export function TeamTable({
       <InviteMemberDialog
         open={inviteOpen}
         onOpenChange={setInviteOpen}
+        showTeamSeatBillingNotice={showTeamSeatBillingNotice}
       />
       <ConfirmDialog
         open={Boolean(pendingRemoveMemberId)}
