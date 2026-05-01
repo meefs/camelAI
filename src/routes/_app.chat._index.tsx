@@ -136,8 +136,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       })
     : Promise.resolve([]);
 
-  const connectionsPromise: Promise<Integration[]> = workspaceId
-    ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
+  const workspaceNamespace = env.WORKSPACE;
+  const connectionsPromise: Promise<Integration[]> = workspaceId && workspaceNamespace
+    ? workspaceNamespace.get(workspaceNamespace.idFromName(workspaceId))
         .getIntegrations()
         .then((records) => records.map(integrationRecordToIntegration))
         .catch((error) => {

@@ -287,13 +287,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
     : buildPreviewChatDataPromise(context, authEnv, orgId, params.id);
-  const connections = await env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
-    .getIntegrations()
-    .then((records) => records.map(integrationRecordToIntegration))
-    .catch((error) => {
-      console.error('Failed to load workspace connections:', error);
-      return [] as Integration[];
-    });
+  const workspaceNamespace = env.WORKSPACE;
+  const connections = workspaceNamespace
+    ? await workspaceNamespace.get(workspaceNamespace.idFromName(workspaceId))
+        .getIntegrations()
+        .then((records) => records.map(integrationRecordToIntegration))
+        .catch((error) => {
+          console.error('Failed to load workspace connections:', error);
+          return [] as Integration[];
+        })
+    : [];
 
   return {
     threadId: params.id,

@@ -13,6 +13,7 @@ import {
   getMinimumSeats,
   getOrgBillingPlan,
   getOrgSeatCount,
+  getOrgSeatLimit,
   isTeamSeatBillingSyncable,
   normalizeSeatCount,
 } from '@/lib/billing-plans';
@@ -23,6 +24,10 @@ import {
 } from '@/lib/email.server';
 import {
   bestEffortSyncTeamSubscriptionSeatCount,
+  getLegacyStripeMigrationEligibility,
+  getOrgBillingOverview,
+  hasOrgUsedSubscriptionTrial,
+  isStripeBillingConfigured,
   syncTeamSubscriptionSeatCount,
 } from '@/lib/billing.server';
 import {
@@ -461,6 +466,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUserRole = currentMember?.role ?? 'member';
   const canManageMembers = currentUserRole === 'owner' || currentUserRole === 'admin';
 
+  const seatLimit = getOrgSeatLimit(authContext.currentOrg);
+  const requiresTeamUpgrade =
+    canManageMembers && seatLimit !== null && seatLimit <= 1;
+
+  const stripeConfigured = isStripeBillingConfigured(env);
+  const overview = requiresTeamUpgrade
+    ? await getOrgBillingOverview(env, authContext.currentOrg).catch(() => null)
+    : null;
+  const trialAvailable = overview ? !hasOrgUsedSubscriptionTrial(overview) : true;
+  const legacyMigration = requiresTeamUpgrade
+    ? getLegacyStripeMigrationEligibility({
+        env,
+        org: authContext.currentOrg,
+        userEmail: authContext.user.email,
+      })
+    : null;
+  const currentPlan = getOrgBillingPlan(authContext.currentOrg);
+
   return {
     org: authContext.currentOrg,
     members,
@@ -480,6 +503,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     workspaces,
     currentUserId: authContext.user.id,
     canManageMembers,
+    requiresTeamUpgrade,
+    currentPlan,
+    trialAvailable,
+    stripeConfigured,
+    legacyMigration,
   };
 }
 
@@ -492,6 +520,11 @@ export default function TeamPage() {
     workspaces,
     currentUserId,
     canManageMembers,
+    requiresTeamUpgrade,
+    currentPlan,
+    trialAvailable,
+    stripeConfigured,
+    legacyMigration,
   } =
     useLoaderData<typeof loader>();
 
@@ -509,6 +542,11 @@ export default function TeamPage() {
         members={members}
         invitations={invitations}
         workspaces={workspaces}
+        requiresTeamUpgrade={requiresTeamUpgrade}
+        currentPlan={currentPlan}
+        trialAvailable={trialAvailable}
+        stripeConfigured={stripeConfigured}
+        legacyMigration={legacyMigration}
         teamInviteBillingContext={teamInviteBillingContext}
       />
     </div>

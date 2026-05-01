@@ -1,5 +1,5 @@
-import * as React from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OrgRole, User, WorkspaceAccessLevel } from '@/types';
@@ -10,6 +10,9 @@ const { toastSuccessMock, toastErrorMock } = vi.hoisted(() => ({
 }));
 
 const fetcherSubmitMock = vi.fn();
+const inviteDialogOpenSpy = vi.fn();
+const upgradeDialogOpenSpy = vi.fn();
+const upgradeDialogPropsSpy = vi.fn();
 
 vi.mock('react-router', () => ({
   useFetcher: () => ({
@@ -17,6 +20,11 @@ vi.mock('react-router', () => ({
     data: undefined,
     submit: fetcherSubmitMock,
   }),
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode } & Record<string, unknown>) => (
+    <a href={typeof to === 'string' ? to : '#'} {...props}>
+      {children}
+    </a>
+  ),
 }));
 
 vi.mock('sonner', () => ({
@@ -31,7 +39,19 @@ vi.mock('@/hooks/use-auth-actions', () => ({
 }));
 
 vi.mock('@/components/settings/invite-member-dialog', () => ({
-  InviteMemberDialog: () => null,
+  InviteMemberDialog: ({ open }: { open: boolean }) => {
+    inviteDialogOpenSpy(open);
+    return null;
+  },
+}));
+
+vi.mock('@/components/settings/team-upgrade-dialog', () => ({
+  TeamUpgradeDialog: (props: { open: boolean; legacyMigration?: unknown }) => {
+    upgradeDialogPropsSpy(props);
+    const { open } = props;
+    upgradeDialogOpenSpy(open);
+    return null;
+  },
 }));
 
 vi.mock('@/components/settings/workspace-access-tags', () => ({
@@ -92,7 +112,7 @@ function buildUser(overrides: Partial<User> = {}): User {
   };
 }
 
-function renderTeamTable() {
+function renderTeamTable(extraProps: Partial<React.ComponentProps<typeof TeamTable>> = {}) {
   return render(
     <TeamTable
       orgId={ORG_ID}
@@ -117,6 +137,7 @@ function renderTeamTable() {
         },
       ]}
       workspaces={[]}
+      {...extraProps}
     />
   );
 }
@@ -126,6 +147,9 @@ describe('TeamTable - copy invite link', () => {
     toastSuccessMock.mockClear();
     toastErrorMock.mockClear();
     fetcherSubmitMock.mockClear();
+    inviteDialogOpenSpy.mockClear();
+    upgradeDialogOpenSpy.mockClear();
+    upgradeDialogPropsSpy.mockClear();
 
     Object.defineProperty(window, 'location', {
       configurable: true,
@@ -196,39 +220,15 @@ describe('TeamTable - copy invite link', () => {
   });
 
   it('shows the seat-decrease billing note for a syncable Team-plan org', () => {
-    render(
-      <TeamTable
-        orgId={ORG_ID}
-        currentUserId="user_self"
-        canManageMembers={true}
-        members={[
-          {
-            user: buildUser(),
-            role: 'owner' as OrgRole,
-            joined_at: 1700000000000,
-            workspaceAccess: {} as Record<string, WorkspaceAccessLevel>,
-          },
-        ]}
-        invitations={[
-          {
-            id: INVITATION_ID,
-            email: 'invitee@example.com',
-            role: 'member' as OrgRole,
-            created_at: 1700000000000,
-            expires_at: 1800000000000,
-            workspace_access: {},
-          },
-        ]}
-        workspaces={[]}
-        teamInviteBillingContext={{
-          occupiedSeatCount: 5,
-          coveredSeatCount: 5,
-          unitMonthlyAmountCents: 5000,
-          minimumSeats: 3,
-          syncable: true,
-        }}
-      />
-    );
+    renderTeamTable({
+      teamInviteBillingContext: {
+        occupiedSeatCount: 5,
+        coveredSeatCount: 5,
+        unitMonthlyAmountCents: 5000,
+        minimumSeats: 3,
+        syncable: true,
+      },
+    });
 
     fireEvent.click(screen.getAllByText('Cancel invitation')[0]);
 
@@ -241,39 +241,15 @@ describe('TeamTable - copy invite link', () => {
   });
 
   it('omits the billing note when the org is at the Team minimum seat count', () => {
-    render(
-      <TeamTable
-        orgId={ORG_ID}
-        currentUserId="user_self"
-        canManageMembers={true}
-        members={[
-          {
-            user: buildUser(),
-            role: 'owner' as OrgRole,
-            joined_at: 1700000000000,
-            workspaceAccess: {} as Record<string, WorkspaceAccessLevel>,
-          },
-        ]}
-        invitations={[
-          {
-            id: INVITATION_ID,
-            email: 'invitee@example.com',
-            role: 'member' as OrgRole,
-            created_at: 1700000000000,
-            expires_at: 1800000000000,
-            workspace_access: {},
-          },
-        ]}
-        workspaces={[]}
-        teamInviteBillingContext={{
-          occupiedSeatCount: 3,
-          coveredSeatCount: 3,
-          unitMonthlyAmountCents: 5000,
-          minimumSeats: 3,
-          syncable: true,
-        }}
-      />
-    );
+    renderTeamTable({
+      teamInviteBillingContext: {
+        occupiedSeatCount: 3,
+        coveredSeatCount: 3,
+        unitMonthlyAmountCents: 5000,
+        minimumSeats: 3,
+        syncable: true,
+      },
+    });
 
     fireEvent.click(screen.getAllByText('Cancel invitation')[0]);
 
@@ -283,5 +259,43 @@ describe('TeamTable - copy invite link', () => {
     expect(
       within(dialog).getByText(/Your Team plan stays at the 3-seat minimum, so this won't change your bill\./)
     ).toBeInTheDocument();
+  });
+
+  it('opens the InviteMemberDialog when requiresTeamUpgrade is false', () => {
+    renderTeamTable();
+
+    fireEvent.click(screen.getAllByText('Invite member')[0]);
+
+    expect(inviteDialogOpenSpy).toHaveBeenLastCalledWith(true);
+    expect(upgradeDialogOpenSpy).not.toHaveBeenCalledWith(true);
+  });
+
+  it('opens the TeamUpgradeDialog when requiresTeamUpgrade is true', () => {
+    renderTeamTable({ requiresTeamUpgrade: true });
+
+    fireEvent.click(screen.getAllByText('Invite member')[0]);
+
+    expect(upgradeDialogOpenSpy).toHaveBeenLastCalledWith(true);
+    expect(inviteDialogOpenSpy).not.toHaveBeenCalledWith(true);
+  });
+
+  it('passes legacy migration details to the TeamUpgradeDialog', () => {
+    const legacyMigration = {
+      eligible: true,
+      customerId: 'cus_test',
+      activeLegacySubscriptionCount: 2,
+      defaultPlan: 'team' as const,
+    };
+
+    renderTeamTable({ requiresTeamUpgrade: true, legacyMigration });
+
+    fireEvent.click(screen.getAllByText('Invite member')[0]);
+
+    expect(upgradeDialogPropsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        open: true,
+        legacyMigration,
+      }),
+    );
   });
 });
