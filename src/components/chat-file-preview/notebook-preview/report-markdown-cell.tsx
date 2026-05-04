@@ -19,7 +19,11 @@ export function ReportMarkdownCell({
     const container = containerRef.current;
     if (!container) return;
 
-    const headings = Array.from(container.querySelectorAll('h2, h3')) as HTMLElement[];
+    const headings = Array.from(
+      container.querySelectorAll(
+        'h2[data-markdown-heading="true"], h3[data-markdown-heading="true"]'
+      )
+    ) as HTMLElement[];
     headings.forEach((heading, index) => {
       const entry = entries[index];
       if (entry) {

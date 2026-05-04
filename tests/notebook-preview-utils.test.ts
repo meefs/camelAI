@@ -94,6 +94,24 @@ describe('notebook preview utils', () => {
       expect(render.markdown).toBe('# A\nBody');
     });
 
+    it('preserves semantic whitespace in text/markdown output', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/markdown': '    print("ready")\n',
+          'text/plain': '<IPython.core.display.Markdown object>',
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('markdown');
+      if (render.kind !== 'markdown') {
+        throw new Error(`Expected markdown output, got ${render.kind}`);
+      }
+      expect(render.markdown).toBe('    print("ready")\n');
+    });
+
     it('parses Vega specs from direct vegaEmbed(...) calls', () => {
       const output: NotebookOutput = {
         output_type: 'display_data',

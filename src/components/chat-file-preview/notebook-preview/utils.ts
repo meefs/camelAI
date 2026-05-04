@@ -929,8 +929,8 @@ function getMarkdownOutput(output: NotebookOutput): string | null {
     return null;
   }
 
-  const markdown = toText(data['text/markdown']).trim();
-  return markdown ? markdown : null;
+  const markdown = toText(data['text/markdown']);
+  return markdown.trim() ? markdown : null;
 }
 
 function getImageDataUrl(output: NotebookOutput): string | null {

@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 
 import { MarkdownRenderer, normalizeCodexCitationMarkers } from '@/components/markdown-renderer';
+import { ReportMarkdownCell } from '@/components/chat-file-preview/notebook-preview/report-markdown-cell';
 import type { Integration } from '@/types';
 
 function integration(fields: Pick<Integration, 'id' | 'integration_type' | 'name'>): Integration {
@@ -124,5 +125,26 @@ describe('MarkdownRenderer inline HTML', () => {
     expect(container.querySelector('script')).not.toBeInTheDocument();
     expect(mark).toHaveTextContent('highlight');
     expect(mark).not.toHaveAttribute('onclick');
+  });
+});
+
+describe('ReportMarkdownCell heading ids', () => {
+  it('skips raw HTML headings when assigning TOC ids', () => {
+    const { container } = render(
+      createElement(ReportMarkdownCell, {
+        source: ['## First', '', '<h2>Raw HTML</h2>', '', '## Second'].join('\n'),
+        entries: [
+          { id: 'toc-0', text: 'First', level: 2, cellIndex: 0 },
+          { id: 'toc-1', text: 'Second', level: 2, cellIndex: 0 },
+        ],
+      }),
+    );
+
+    const headings = Array.from(container.querySelectorAll('h2'));
+    expect(headings.map((heading) => [heading.textContent, heading.id])).toEqual([
+      ['First', 'toc-0'],
+      ['Raw HTML', ''],
+      ['Second', 'toc-1'],
+    ]);
   });
 });

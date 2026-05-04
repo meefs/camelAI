@@ -55,6 +55,27 @@ const NOTEBOOK_HTML_REHYPE_PLUGINS: PluggableList = [
   [rehypeSanitize, NOTEBOOK_HTML_SCHEMA],
 ];
 
+type SourcePositionedNode = {
+  position?: {
+    start?: {
+      offset?: number;
+    };
+  };
+};
+
+function isMarkdownHeadingNode(
+  node: unknown,
+  sourceContent: string,
+  level: 1 | 2 | 3 | 4
+): boolean {
+  const offset = (node as SourcePositionedNode | undefined)?.position?.start?.offset;
+  if (typeof offset !== 'number') return true;
+
+  const marker = '#'.repeat(level);
+  const sourceAtNode = sourceContent.slice(offset, offset + level + 5);
+  return new RegExp(`^ {0,3}${marker}(?:\\s|$)`).test(sourceAtNode);
+}
+
 export function normalizeCodexCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
     return content;
@@ -298,6 +319,7 @@ function withMentionChips(
 // Custom components for react-markdown
 const createComponents = (
   variant: 'default' | 'user',
+  sourceContent: string,
   mentionSlugMap?: Map<string, Integration>,
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>,
 ): Components => {
@@ -309,6 +331,10 @@ const createComponents = (
     canRenderMentions
       ? withMentionChips(children, slugMap, annotationCursor, keyPrefix)
       : children;
+  const markdownHeadingProps = (node: unknown, level: 1 | 2 | 3 | 4) =>
+    isMarkdownHeadingNode(node, sourceContent, level)
+      ? { 'data-markdown-heading': 'true' }
+      : {};
   return ({
   // Paragraphs
   p: ({ children }) => (
@@ -316,17 +342,37 @@ const createComponents = (
   ),
 
   // Headings
-  h1: ({ children }) => (
-    <h1 className="text-2xl font-bold mt-6 mb-4 first:mt-0">{wrap(children, 'h1')}</h1>
+  h1: ({ children, node }) => (
+    <h1
+      {...markdownHeadingProps(node, 1)}
+      className="text-2xl font-bold mt-6 mb-4 first:mt-0"
+    >
+      {wrap(children, 'h1')}
+    </h1>
   ),
-  h2: ({ children }) => (
-    <h2 className="text-xl font-bold mt-6 mb-3 first:mt-0">{wrap(children, 'h2')}</h2>
+  h2: ({ children, node }) => (
+    <h2
+      {...markdownHeadingProps(node, 2)}
+      className="text-xl font-bold mt-6 mb-3 first:mt-0"
+    >
+      {wrap(children, 'h2')}
+    </h2>
   ),
-  h3: ({ children }) => (
-    <h3 className="text-lg font-semibold mt-5 mb-2 first:mt-0">{wrap(children, 'h3')}</h3>
+  h3: ({ children, node }) => (
+    <h3
+      {...markdownHeadingProps(node, 3)}
+      className="text-lg font-semibold mt-5 mb-2 first:mt-0"
+    >
+      {wrap(children, 'h3')}
+    </h3>
   ),
-  h4: ({ children }) => (
-    <h4 className="text-base font-semibold mt-4 mb-2 first:mt-0">{wrap(children, 'h4')}</h4>
+  h4: ({ children, node }) => (
+    <h4
+      {...markdownHeadingProps(node, 4)}
+      className="text-base font-semibold mt-4 mb-2 first:mt-0"
+    >
+      {wrap(children, 'h4')}
+    </h4>
   ),
 
   // Inline code - simple styled span
@@ -459,7 +505,12 @@ function MarkdownRendererBase({
     return normalizedContent;
   }, [content, isStreaming]);
 
-  const components = createComponents(variant, mentionSlugMap, annotatedMentions);
+  const components = createComponents(
+    variant,
+    processedContent,
+    mentionSlugMap,
+    annotatedMentions,
+  );
 
   return (
     <div
