@@ -30,7 +30,7 @@ export function ReportMarkdownCell({
 
   return (
     <div ref={containerRef}>
-      <MarkdownRenderer content={source} />
+      <MarkdownRenderer content={source} allowInlineHtml />
     </div>
   );
 }

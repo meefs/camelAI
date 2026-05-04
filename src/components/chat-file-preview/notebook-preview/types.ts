@@ -87,5 +87,6 @@ export type NotebookOutputRender =
   | { kind: 'table'; table: ParsedTable }
   | { kind: 'html'; html: string }
   | { kind: 'image'; src: string }
+  | { kind: 'markdown'; markdown: string }
   | { kind: 'text'; text: string }
   | { kind: 'unsupported' };

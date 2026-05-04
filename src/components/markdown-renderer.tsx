@@ -14,8 +14,12 @@ import {
   type ReactNode,
 } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
+import type { Options as RehypeSanitizeSchema } from 'rehype-sanitize';
+import type { PluggableList } from 'unified';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
@@ -32,11 +36,24 @@ interface MarkdownRendererProps {
   className?: string;
   isStreaming?: boolean;
   variant?: 'default' | 'user';
+  allowInlineHtml?: boolean;
   mentionSlugMap?: Map<string, Integration>;
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>;
 }
 
 const CODEX_CITATION_REGEX = /cite[^]+/g;
+// Notebook markdown follows Jupyter's "markdown plus safe HTML" behavior. The
+// sanitizer runs over the full markdown tree, so keep the default safe schema
+// for standard markdown output and add the inline tags needed by notebooks.
+const NOTEBOOK_HTML_SCHEMA: RehypeSanitizeSchema = {
+  ...defaultSchema,
+  tagNames: Array.from(new Set([...(defaultSchema.tagNames ?? []), 'mark', 'sub', 'sup', 'br'])),
+};
+
+const NOTEBOOK_HTML_REHYPE_PLUGINS: PluggableList = [
+  rehypeRaw,
+  [rehypeSanitize, NOTEBOOK_HTML_SCHEMA],
+];
 
 export function normalizeCodexCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
@@ -397,6 +414,16 @@ const createComponents = (
   // Strikethrough
   del: ({ children }) => <del className="line-through">{wrap(children, 'del')}</del>,
 
+  // Safe opt-in inline HTML used by notebook markdown cells and outputs.
+  mark: ({ children }) => (
+    <mark className="rounded bg-yellow-200/70 px-0.5 text-yellow-950 dark:bg-yellow-300/30 dark:text-yellow-50">
+      {wrap(children, 'mark')}
+    </mark>
+  ),
+  sub: ({ children }) => <sub>{wrap(children, 'sub')}</sub>,
+  sup: ({ children }) => <sup>{wrap(children, 'sup')}</sup>,
+  br: () => <br />,
+
   // Images
   img: ({ src, alt }) => (
     // eslint-disable-next-line @next/next/no-img-element
@@ -414,6 +441,7 @@ function MarkdownRendererBase({
   className,
   isStreaming = false,
   variant = 'default',
+  allowInlineHtml = false,
   mentionSlugMap,
   annotatedMentions,
 }: MarkdownRendererProps) {
@@ -443,6 +471,7 @@ function MarkdownRendererBase({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={allowInlineHtml ? NOTEBOOK_HTML_REHYPE_PLUGINS : undefined}
         components={components}
       >
         {processedContent}
@@ -458,6 +487,7 @@ export const MarkdownRenderer = memo(MarkdownRendererBase, (prev, next) => {
     prev.className === next.className &&
     prev.isStreaming === next.isStreaming &&
     prev.variant === next.variant &&
+    prev.allowInlineHtml === next.allowInlineHtml &&
     prev.mentionSlugMap === next.mentionSlugMap &&
     prev.annotatedMentions === next.annotatedMentions
   );

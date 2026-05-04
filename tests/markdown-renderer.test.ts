@@ -86,3 +86,43 @@ describe('MarkdownRenderer mention chips', () => {
     expect(screen.getByText('Use @random now')).toBeInTheDocument();
   });
 });
+
+describe('MarkdownRenderer inline HTML', () => {
+  it('keeps raw HTML disabled by default', () => {
+    const { container } = render(
+      createElement(MarkdownRenderer, {
+        content: '<mark>highlight</mark>',
+      }),
+    );
+
+    expect(container.querySelector('mark')).not.toBeInTheDocument();
+    expect(container).toHaveTextContent('<mark>highlight</mark>');
+  });
+
+  it('renders allowed inline HTML when enabled', () => {
+    const { container } = render(
+      createElement(MarkdownRenderer, {
+        content: '<mark>highlight</mark> H<sub>2</sub> x<sup>3</sup>',
+        allowInlineHtml: true,
+      }),
+    );
+
+    expect(container.querySelector('mark')).toHaveTextContent('highlight');
+    expect(container.querySelector('sub')).toHaveTextContent('2');
+    expect(container.querySelector('sup')).toHaveTextContent('3');
+  });
+
+  it('sanitizes unsafe inline HTML when enabled', () => {
+    const { container } = render(
+      createElement(MarkdownRenderer, {
+        content: '<script>alert(1)</script><mark onclick="alert(2)">highlight</mark>',
+        allowInlineHtml: true,
+      }),
+    );
+
+    const mark = container.querySelector('mark');
+    expect(container.querySelector('script')).not.toBeInTheDocument();
+    expect(mark).toHaveTextContent('highlight');
+    expect(mark).not.toHaveAttribute('onclick');
+  });
+});

@@ -8,6 +8,7 @@ import {
   extractTocEntries,
   getNotebookCells,
   getOutputRender,
+  hasVisualOutput,
 } from '@/components/chat-file-preview/notebook-preview/utils';
 
 describe('notebook preview utils', () => {
@@ -57,6 +58,42 @@ describe('notebook preview utils', () => {
   });
 
   describe('getOutputRender', () => {
+    it('renders text/markdown before text/plain fallbacks', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/markdown': '## Summary\n\n**Ready**',
+          'text/plain': '<IPython.core.display.Markdown object>',
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('markdown');
+      if (render.kind !== 'markdown') {
+        throw new Error(`Expected markdown output, got ${render.kind}`);
+      }
+      expect(render.markdown).toBe('## Summary\n\n**Ready**');
+    });
+
+    it('joins array-valued text/markdown output before rendering', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/markdown': ['# A\n', 'Body'],
+          'text/plain': '<IPython.core.display.Markdown object>',
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('markdown');
+      if (render.kind !== 'markdown') {
+        throw new Error(`Expected markdown output, got ${render.kind}`);
+      }
+      expect(render.markdown).toBe('# A\nBody');
+    });
+
     it('parses Vega specs from direct vegaEmbed(...) calls', () => {
       const output: NotebookOutput = {
         output_type: 'display_data',
@@ -512,6 +549,35 @@ describe('notebook preview utils', () => {
 
       const render = getOutputRender(output);
       expect(render.kind).toBe('html');
+    });
+  });
+
+  describe('hasVisualOutput', () => {
+    it('counts markdown-only display outputs as visual output', () => {
+      expect(
+        hasVisualOutput([
+          {
+            output_type: 'display_data',
+            data: {
+              'text/markdown': '## Result',
+            },
+          },
+        ])
+      ).toBe(true);
+    });
+
+    it('does not count empty markdown display outputs as visual output', () => {
+      expect(
+        hasVisualOutput([
+          {
+            output_type: 'display_data',
+            data: {
+              'text/markdown': ['   ', '\n'],
+              'text/plain': '<IPython.core.display.Markdown object>',
+            },
+          },
+        ])
+      ).toBe(false);
     });
   });
 });
