@@ -1,5 +1,5 @@
-import { ExternalLink, Info } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ByokProviderInfoCard } from "@/components/byok/byok-provider-info-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -96,21 +96,12 @@ export function ByokKeyForm({
         </ToggleGroup>
       </div>
 
+      <ByokProviderInfoCard provider={provider} />
+
       <div className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <Label htmlFor="byok-api-key" className="text-sm">
-            {provider.fieldLabel}
-          </Label>
-          <a
-            href={provider.getKeyUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex shrink-0 items-center gap-1 text-sm text-primary hover:underline"
-          >
-            Get a key
-            <ExternalLink className="size-3.5" aria-hidden="true" />
-          </a>
-        </div>
+        <Label htmlFor="byok-api-key" className="text-sm">
+          {provider.fieldLabel}
+        </Label>
         <Input
           id="byok-api-key"
           type="password"
@@ -142,11 +133,6 @@ export function ByokKeyForm({
             </Select>
           </div>
         ) : null}
-
-        <p className="inline-flex items-start gap-1.5 text-xs text-muted-foreground">
-          <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-          <span>{provider.modelCoverage}</span>
-        </p>
       </div>
 
       {errorMessage ? (
