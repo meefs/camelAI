@@ -923,6 +923,16 @@ export function getOutputText(output: NotebookOutput): string {
   return '';
 }
 
+function getMarkdownOutput(output: NotebookOutput): string | null {
+  const data = output.data ?? {};
+  if (typeof data['text/markdown'] === 'undefined') {
+    return null;
+  }
+
+  const markdown = toText(data['text/markdown']);
+  return markdown.trim() ? markdown : null;
+}
+
 function getImageDataUrl(output: NotebookOutput): string | null {
   const data = output.data ?? {};
   const png = data['image/png'];
@@ -970,6 +980,11 @@ export function getOutputRender(output: NotebookOutput): NotebookOutputRender {
   const imageOutput = getImageDataUrl(output);
   if (imageOutput) {
     return { kind: 'image', src: imageOutput };
+  }
+
+  const markdownOutput = getMarkdownOutput(output);
+  if (markdownOutput) {
+    return { kind: 'markdown', markdown: markdownOutput };
   }
 
   const textOutput = getOutputText(output);
@@ -1034,6 +1049,7 @@ export function hasVisualOutput(outputs: NotebookOutput[]): boolean {
       'image/png' in data ||
       'image/jpeg' in data ||
       'image/svg+xml' in data ||
+      getMarkdownOutput(output) !== null ||
       'text/html' in data
     );
   });

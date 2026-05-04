@@ -76,4 +76,36 @@ describe('notebook report export model', () => {
       text: 'ready\n',
     });
   });
+
+  it('keeps markdown display outputs as markdown report blocks', () => {
+    const notebook: NotebookFile = {
+      cells: [
+        {
+          cell_type: 'code',
+          source: [
+            'from IPython.display import Markdown',
+            'from IPython.display import display',
+          ].join('\n'),
+          outputs: [
+            {
+              output_type: 'display_data',
+              data: {
+                'text/markdown': '## Result',
+                'text/plain': '<IPython.core.display.Markdown object>',
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const model = buildNotebookReportExportModel(notebook);
+
+    expect(model.blocks).toEqual([
+      expect.objectContaining({
+        kind: 'markdown',
+        markdown: '## Result',
+      }),
+    ]);
+  });
 });

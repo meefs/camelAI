@@ -14,8 +14,12 @@ import {
   type ReactNode,
 } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
+import type { Options as RehypeSanitizeSchema } from 'rehype-sanitize';
+import type { PluggableList } from 'unified';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
@@ -32,11 +36,45 @@ interface MarkdownRendererProps {
   className?: string;
   isStreaming?: boolean;
   variant?: 'default' | 'user';
+  allowInlineHtml?: boolean;
   mentionSlugMap?: Map<string, Integration>;
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>;
 }
 
 const CODEX_CITATION_REGEX = /cite[^]+/g;
+// Notebook markdown follows Jupyter's "markdown plus safe HTML" behavior. The
+// sanitizer runs over the full markdown tree, so keep the default safe schema
+// for standard markdown output and add the inline tags needed by notebooks.
+const NOTEBOOK_HTML_SCHEMA: RehypeSanitizeSchema = {
+  ...defaultSchema,
+  tagNames: Array.from(new Set([...(defaultSchema.tagNames ?? []), 'mark', 'sub', 'sup', 'br'])),
+};
+
+const NOTEBOOK_HTML_REHYPE_PLUGINS: PluggableList = [
+  rehypeRaw,
+  [rehypeSanitize, NOTEBOOK_HTML_SCHEMA],
+];
+
+type SourcePositionedNode = {
+  position?: {
+    start?: {
+      offset?: number;
+    };
+  };
+};
+
+function isMarkdownHeadingNode(
+  node: unknown,
+  sourceContent: string,
+  level: 1 | 2 | 3 | 4
+): boolean {
+  const offset = (node as SourcePositionedNode | undefined)?.position?.start?.offset;
+  if (typeof offset !== 'number') return true;
+
+  const marker = '#'.repeat(level);
+  const sourceAtNode = sourceContent.slice(offset, offset + level + 5);
+  return new RegExp(`^ {0,3}${marker}(?:\\s|$)`).test(sourceAtNode);
+}
 
 export function normalizeCodexCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
@@ -281,6 +319,7 @@ function withMentionChips(
 // Custom components for react-markdown
 const createComponents = (
   variant: 'default' | 'user',
+  sourceContent: string,
   mentionSlugMap?: Map<string, Integration>,
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>,
 ): Components => {
@@ -292,6 +331,10 @@ const createComponents = (
     canRenderMentions
       ? withMentionChips(children, slugMap, annotationCursor, keyPrefix)
       : children;
+  const markdownHeadingProps = (node: unknown, level: 1 | 2 | 3 | 4) =>
+    isMarkdownHeadingNode(node, sourceContent, level)
+      ? { 'data-markdown-heading': 'true' }
+      : {};
   return ({
   // Paragraphs
   p: ({ children }) => (
@@ -299,17 +342,37 @@ const createComponents = (
   ),
 
   // Headings
-  h1: ({ children }) => (
-    <h1 className="text-2xl font-bold mt-6 mb-4 first:mt-0">{wrap(children, 'h1')}</h1>
+  h1: ({ children, node }) => (
+    <h1
+      {...markdownHeadingProps(node, 1)}
+      className="text-2xl font-bold mt-6 mb-4 first:mt-0"
+    >
+      {wrap(children, 'h1')}
+    </h1>
   ),
-  h2: ({ children }) => (
-    <h2 className="text-xl font-bold mt-6 mb-3 first:mt-0">{wrap(children, 'h2')}</h2>
+  h2: ({ children, node }) => (
+    <h2
+      {...markdownHeadingProps(node, 2)}
+      className="text-xl font-bold mt-6 mb-3 first:mt-0"
+    >
+      {wrap(children, 'h2')}
+    </h2>
   ),
-  h3: ({ children }) => (
-    <h3 className="text-lg font-semibold mt-5 mb-2 first:mt-0">{wrap(children, 'h3')}</h3>
+  h3: ({ children, node }) => (
+    <h3
+      {...markdownHeadingProps(node, 3)}
+      className="text-lg font-semibold mt-5 mb-2 first:mt-0"
+    >
+      {wrap(children, 'h3')}
+    </h3>
   ),
-  h4: ({ children }) => (
-    <h4 className="text-base font-semibold mt-4 mb-2 first:mt-0">{wrap(children, 'h4')}</h4>
+  h4: ({ children, node }) => (
+    <h4
+      {...markdownHeadingProps(node, 4)}
+      className="text-base font-semibold mt-4 mb-2 first:mt-0"
+    >
+      {wrap(children, 'h4')}
+    </h4>
   ),
 
   // Inline code - simple styled span
@@ -397,6 +460,16 @@ const createComponents = (
   // Strikethrough
   del: ({ children }) => <del className="line-through">{wrap(children, 'del')}</del>,
 
+  // Safe opt-in inline HTML used by notebook markdown cells and outputs.
+  mark: ({ children }) => (
+    <mark className="rounded bg-yellow-200/70 px-0.5 text-yellow-950 dark:bg-yellow-300/30 dark:text-yellow-50">
+      {wrap(children, 'mark')}
+    </mark>
+  ),
+  sub: ({ children }) => <sub>{wrap(children, 'sub')}</sub>,
+  sup: ({ children }) => <sup>{wrap(children, 'sup')}</sup>,
+  br: () => <br />,
+
   // Images
   img: ({ src, alt }) => (
     // eslint-disable-next-line @next/next/no-img-element
@@ -414,6 +487,7 @@ function MarkdownRendererBase({
   className,
   isStreaming = false,
   variant = 'default',
+  allowInlineHtml = false,
   mentionSlugMap,
   annotatedMentions,
 }: MarkdownRendererProps) {
@@ -431,7 +505,12 @@ function MarkdownRendererBase({
     return normalizedContent;
   }, [content, isStreaming]);
 
-  const components = createComponents(variant, mentionSlugMap, annotatedMentions);
+  const components = createComponents(
+    variant,
+    processedContent,
+    mentionSlugMap,
+    annotatedMentions,
+  );
 
   return (
     <div
@@ -443,6 +522,7 @@ function MarkdownRendererBase({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={allowInlineHtml ? NOTEBOOK_HTML_REHYPE_PLUGINS : undefined}
         components={components}
       >
         {processedContent}
@@ -458,6 +538,7 @@ export const MarkdownRenderer = memo(MarkdownRendererBase, (prev, next) => {
     prev.className === next.className &&
     prev.isStreaming === next.isStreaming &&
     prev.variant === next.variant &&
+    prev.allowInlineHtml === next.allowInlineHtml &&
     prev.mentionSlugMap === next.mentionSlugMap &&
     prev.annotatedMentions === next.annotatedMentions
   );

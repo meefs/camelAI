@@ -135,6 +135,13 @@ export function buildNotebookReportExportModel(
             title,
           });
           return;
+        case 'markdown':
+          blocks.push({
+            id,
+            kind: 'markdown',
+            markdown: render.markdown,
+          });
+          return;
         case 'text':
           if (render.text.trim()) {
             blocks.push({

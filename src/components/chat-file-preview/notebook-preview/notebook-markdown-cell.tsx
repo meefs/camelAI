@@ -12,7 +12,7 @@ export function NotebookMarkdownCell({ cell }: NotebookMarkdownCellProps) {
   return (
     <div className="rounded-lg border border-border bg-background p-4">
       <div className="mb-2 text-[11px] font-medium text-muted-foreground">Markdown</div>
-      <MarkdownRenderer content={source || '_Empty cell_'} />
+      <MarkdownRenderer content={source || '_Empty cell_'} allowInlineHtml />
     </div>
   );
 }

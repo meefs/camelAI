@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { cn } from '@/lib/utils';
 import type { NotebookOutput, ParsedTable } from './types';
 import { getOutputRender } from './utils';
@@ -167,6 +168,19 @@ export function OutputRenderer({
         alt={title}
         className="w-auto max-w-full rounded"
       />
+    );
+  }
+
+  if (render.kind === 'markdown') {
+    return (
+      <div
+        className={cn(
+          'notebook-output-markdown min-w-0',
+          mode === 'notebook' && 'rounded-md bg-background p-4'
+        )}
+      >
+        <MarkdownRenderer content={render.markdown} allowInlineHtml />
+      </div>
     );
   }
 
