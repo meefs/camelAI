@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, production]
   pull_request:
     branches: [main]
 
@@ -19,7 +19,7 @@ jobs:
       - run: bun run test:all
 
   deploy-sandbox-image:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production')
     needs: tests
     runs-on: ubuntu-latest
     steps:
@@ -28,6 +28,29 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run build:renderer
+
+      - name: Resolve deploy target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${GITHUB_REF}" in
+            refs/heads/main)
+              echo "host_ip=172.206.70.242" >> "$GITHUB_OUTPUT"
+              echo "acr_name=crchiridionstaging" >> "$GITHUB_OUTPUT"
+              echo "acr_login_server=crchiridionstaging.azurecr.io" >> "$GITHUB_OUTPUT"
+              ;;
+            refs/heads/production)
+              echo "host_ip=20.46.233.68" >> "$GITHUB_OUTPUT"
+              echo "acr_name=crchiridionprod" >> "$GITHUB_OUTPUT"
+              echo "acr_login_server=crchiridionprod.azurecr.io" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported deploy branch: ${GITHUB_REF}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Setup SSH
         run: |
@@ -40,17 +63,17 @@ jobs:
         run: |
           rsync -az --delete \
             sandbox/ \
-            chiridion@20.46.233.68:/opt/chiridion/sandbox/
+            chiridion@${{ steps.target.outputs.host_ip }}:/opt/chiridion/sandbox/
           rsync -az \
             services/sandbox-host/Dockerfile.sandbox \
-            chiridion@20.46.233.68:/opt/chiridion/Dockerfile.sandbox
+            chiridion@${{ steps.target.outputs.host_ip }}:/opt/chiridion/Dockerfile.sandbox
 
       - name: Build and push image to ACR
         run: |
-          ssh chiridion@20.46.233.68 '
+          ssh chiridion@${{ steps.target.outputs.host_ip }} '
             cd /opt/chiridion &&
             sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox . &&
-            sudo az acr login --name crchiridionprod &&
-            sudo docker tag chiridion-sandbox:latest crchiridionprod.azurecr.io/chiridion-sandbox:latest &&
-            sudo docker push crchiridionprod.azurecr.io/chiridion-sandbox:latest
+            sudo az acr login --name ${{ steps.target.outputs.acr_name }} &&
+            sudo docker tag chiridion-sandbox:latest ${{ steps.target.outputs.acr_login_server }}/chiridion-sandbox:latest &&
+            sudo docker push ${{ steps.target.outputs.acr_login_server }}/chiridion-sandbox:latest
           '
