@@ -1,27 +1,36 @@
-import { useLoaderData } from "react-router";
+import { useEffect, useState } from "react";
+import {
+  Link,
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useSearchParams,
+} from "react-router";
 import type { Route } from "./+types/_app.settings.organization.usage";
-import { requireAuthContext } from "@/lib/auth.server";
+import {
+  requireAuthContext,
+  requireOrgAdmin,
+  getAuthEnv,
+} from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
+  createCreditsCheckoutSession,
+  fetchConfiguredCreditPacks,
   fetchSandboxHostApi,
   getOrgBillingOverview,
+  isStripeBillingConfigured,
 } from "@/lib/billing.server";
 import {
-  billingStatusBadgeVariant,
-  billingStatusLabel,
   formatCreditBalance,
   formatCreditsFromUsd,
+  formatUsdFromCents,
 } from "@/lib/billing";
+import { BYOK_PROVIDERS } from "@/lib/byok-providers";
+import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -30,15 +39,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn } from "@/lib/utils";
-
-interface WindowSpend {
-  label: string;
-  window_ms: number;
-  limit_usd: number;
-  spent_usd: number;
-  exceeded: boolean;
-}
+import {
+  TopUpDialog,
+  type TopUpDialogPack,
+} from "@/components/billing/top-up-dialog";
+import type { LlmProvider } from "@/types";
 
 interface UsageLogEntry {
   id: number;
@@ -51,272 +56,344 @@ interface UsageLogEntry {
   created_at_ms: number;
 }
 
-export function meta() {
-  return [
-    { title: "Usage - Settings - camelAI" },
-    { name: "description", content: "View AI usage and spend limits" },
-  ];
-}
-
-interface LoaderData {
-  orgName: string;
-  overview: Awaited<ReturnType<typeof getOrgBillingOverview>> | null;
-  spend: {
-    total_cost_usd: number;
-    total_requests: number;
-    windows: WindowSpend[];
-  } | null;
-  log: { entries: UsageLogEntry[] } | null;
-}
-
-export async function loader({
-  request,
-  context,
-}: Route.LoaderArgs): Promise<LoaderData> {
-  const authContext = await requireAuthContext(request, context);
-  const env = getEnv(context);
-  const orgId = authContext.currentOrg.id;
-
-  let overview: LoaderData["overview"] = null;
-  let spend: LoaderData["spend"] = null;
-  let log: LoaderData["log"] = null;
-
-  if (env.SANDBOX_HOST || env.SANDBOX_HOST_URL) {
-    const [overviewResp, spendResp, logResp] = await Promise.all([
-      getOrgBillingOverview(env, authContext.currentOrg).catch(() => null),
-      fetchSandboxHostApi(
-        env,
-        `/v1/usage/orgs/${encodeURIComponent(orgId)}/spend`,
-      )
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null),
-      fetchSandboxHostApi(
-        env,
-        `/v1/usage/orgs/${encodeURIComponent(orgId)}/log?limit=20`,
-      )
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null),
-    ]);
-    overview = overviewResp as LoaderData["overview"];
-    spend = spendResp as LoaderData["spend"];
-    log = logResp as LoaderData["log"];
-  }
-
-  return { orgName: authContext.currentOrg.name, overview, spend, log };
-}
-
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
   timeStyle: "short",
 });
 
+const renewalDateFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+});
+
+export function meta() {
+  return [
+    { title: "Usage - Settings - camelAI" },
+    {
+      name: "description",
+      content: "Track camelAI credit consumption.",
+    },
+  ];
+}
+
+function formatPriceLabel(
+  price: {
+    unit_amount: number | null;
+    currency: string;
+    recurring?: { interval: string; interval_count?: number } | null;
+  } | null,
+): string | null {
+  if (!price?.unit_amount) return null;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: price.currency.toUpperCase(),
+  }).format(price.unit_amount / 100);
+}
+
+function formatCreditPackLabel(price: {
+  unit_amount: number | null;
+}): string | null {
+  if (!price.unit_amount) return null;
+  return `${(price.unit_amount / 100).toFixed(2)} credits`;
+}
+
+function getByokProviderLabel(provider: LlmProvider): string {
+  if (
+    provider === "anthropic" ||
+    provider === "openai" ||
+    provider === "openrouter" ||
+    provider === "bedrock"
+  ) {
+    return BYOK_PROVIDERS[provider].label;
+  }
+  return provider;
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+  const orgId = authContext.currentOrg.id;
+
+  const currentUserOrg = authContext.orgs.find((o) => o.org_id === orgId);
+  const isOrgAdmin =
+    currentUserOrg?.role === "owner" || currentUserOrg?.role === "admin";
+
+  const stripeConfigured = isStripeBillingConfigured(env);
+
+  const [overview, log, creditPacks, llmProviderConfig] = await Promise.all([
+    getOrgBillingOverview(env, authContext.currentOrg).catch(() => null),
+    fetchSandboxHostApi(
+      env,
+      `/v1/usage/orgs/${encodeURIComponent(orgId)}/log?limit=20`,
+    )
+      .then((response) =>
+        response.ok
+          ? (response.json() as Promise<{ entries: UsageLogEntry[] }>)
+          : null,
+      )
+      .catch(() => null),
+    stripeConfigured
+      ? fetchConfiguredCreditPacks(env).catch(() => [])
+      : Promise.resolve([]),
+    (async () => {
+      try {
+        const authEnv = getAuthEnv(env);
+        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+        const record = await orgStub.getLlmProviderConfig();
+        if (!record) return null;
+        return await buildPublicLlmProviderConfig(
+          record,
+          env.INTEGRATION_SECRET_KEY,
+        );
+      } catch {
+        return null;
+      }
+    })(),
+  ]);
+
+  return {
+    orgName: authContext.currentOrg.name,
+    overview,
+    log,
+    stripeConfigured,
+    isOrgAdmin,
+    creditPacks: creditPacks.map((pack) => ({
+      id: pack.id,
+      priceLabel: formatPriceLabel(pack),
+      creditsLabel: formatCreditPackLabel(pack),
+    })),
+    llmProviderConfig,
+  };
+}
+
+export async function action({ request, context }: Route.ActionArgs) {
+  const authContext = await requireAuthContext(request, context);
+  await requireOrgAdmin(request, context, authContext.currentOrg.id);
+  const env = getEnv(context);
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+
+  const successUrl = new URL(
+    "/settings/organization/usage?checkout=success",
+    request.url,
+  ).toString();
+  const cancelUrl = new URL(
+    "/settings/organization/usage?checkout=cancelled",
+    request.url,
+  ).toString();
+
+  switch (intent) {
+    case "buyCredits": {
+      const selectedPriceId = String(formData.get("priceId") || "");
+      const url = await createCreditsCheckoutSession({
+        env,
+        org: authContext.currentOrg,
+        customerEmail: authContext.user.email,
+        successUrl,
+        cancelUrl,
+        priceId: selectedPriceId,
+      });
+      throw redirect(url);
+    }
+    default:
+      return { error: "Unknown usage action" };
+  }
+}
+
 export default function OrganizationUsagePage() {
-  const { orgName, overview, spend, log } = useLoaderData() as LoaderData;
+  const {
+    orgName,
+    overview,
+    log,
+    stripeConfigured,
+    isOrgAdmin,
+    creditPacks,
+    llmProviderConfig,
+  } = useLoaderData<typeof loader>();
+
+  const topUpFetcher = useFetcher();
+  const [topUpOpen, setTopUpOpen] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const topUpSubmitting = topUpFetcher.state !== "idle";
+
+  useEffect(() => {
+    if (searchParams.get("action") !== "topup") return;
+    setTopUpOpen(true);
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  if (!overview) {
+    return (
+      <div className="space-y-6">
+        <SettingsHeader
+          title="Usage"
+          description={`Track camelAI credit consumption for ${orgName}.`}
+        />
+        <Separator />
+        <p className="text-sm text-muted-foreground">
+          Usage tracking is not available. The sandbox host may be unreachable.
+        </p>
+      </div>
+    );
+  }
+
+  const isEnterprise = overview.billing_status === "enterprise";
+
+  const totalLimitCents = overview.total_credit_limit_cents;
+  const usageCents = overview.chargeable_usage_cents;
+  const availableCents = overview.available_credits_cents;
+  const usagePercent =
+    totalLimitCents > 0 ? Math.min(100, (usageCents / totalLimitCents) * 100) : 0;
+
+  const renewalLabel = overview.billing_trial_ends_at
+    ? renewalDateFormatter.format(new Date(overview.billing_trial_ends_at))
+    : null;
+
+  const topUpUnavailable = !stripeConfigured || creditPacks.length === 0;
+  const topUpDisabled = topUpUnavailable || topUpSubmitting;
+  const topUpPacks: TopUpDialogPack[] = creditPacks;
+
+  function handleTopUpClick() {
+    if (topUpPacks.length === 1) {
+      topUpFetcher.submit(
+        { intent: "buyCredits", priceId: topUpPacks[0].id },
+        { method: "post" },
+      );
+      return;
+    }
+    setTopUpOpen(true);
+  }
 
   return (
     <div className="space-y-6">
       <SettingsHeader
         title="Usage"
-        description={`Usage and credit consumption for ${orgName}.`}
+        description={`Track camelAI credit consumption for ${orgName}.`}
       />
       <Separator />
 
-      {!overview ? (
-        <p className="text-sm text-muted-foreground">
-          Usage tracking is not available. The sandbox host may be unreachable.
-        </p>
-      ) : (
-        <div className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Lifetime Usage</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatCreditBalance(overview.lifetime_spend_cents)}
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Available Credits</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {formatCreditBalance(overview.available_credits_cents)}
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Subscription</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Badge
-                  variant={billingStatusBadgeVariant(overview.billing_status)}
-                  className="px-3 py-1 text-base"
-                >
-                  {billingStatusLabel(overview.billing_status)}
-                </Badge>
-              </CardContent>
-            </Card>
+      <section className="space-y-3">
+        <h2 className="text-base font-semibold">Credit balance</h2>
+        {isEnterprise ? (
+          <div className="space-y-1">
+            <p className="text-3xl font-semibold">Enterprise</p>
+            <p className="text-sm text-muted-foreground">
+              Hosted usage and tool calls are billed outside camelAI credits
+              for this organization.
+            </p>
           </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <p className="text-3xl font-semibold">
+                {formatCreditBalance(availableCents)}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Available this billing period
+              </p>
+            </div>
+            <Progress value={usagePercent} className="h-2" />
+            <p className="text-sm text-muted-foreground">
+              {formatUsdFromCents(usageCents)} used of{" "}
+              {formatUsdFromCents(totalLimitCents)} included.
+              {renewalLabel ? ` Resets ${renewalLabel}.` : ""}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Credits cover hosted LLM calls and built-in tools like web search.
+              Bringing your own LLM key only avoids the LLM cost.
+            </p>
+            {llmProviderConfig ? (
+              <p className="text-sm text-muted-foreground">
+                Using your{" "}
+                {getByokProviderLabel(llmProviderConfig.provider)} key for LLM
+                turns. Built-in tools still draw from credits.{" "}
+                <Link
+                  to="/settings/organization/ai-provider"
+                  className="text-primary hover:underline"
+                >
+                  Manage in AI Provider →
+                </Link>
+              </p>
+            ) : null}
+          </div>
+        )}
+      </section>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Chargeable Usage</CardTitle>
-              <CardDescription>
-                Hosted model usage is deducted from included and purchased
-                credits.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="rounded-lg border p-4">
-                  <p className="text-sm font-medium">Billable usage</p>
-                  <p className="mt-2 text-2xl font-semibold">
-                    {formatCreditBalance(overview.chargeable_usage_cents)}
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {overview.chargeable_request_count.toLocaleString()}{" "}
-                    chargeable requests
-                  </p>
-                </div>
-                <div className="rounded-lg border p-4">
-                  <p className="text-sm font-medium">Total credits</p>
-                  <p className="mt-2 text-2xl font-semibold">
-                    {formatCreditBalance(overview.total_credit_limit_cents)}
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {formatCreditBalance(
-                      overview.billing_credit_grant_total_cents,
-                    )}{" "}
-                    included,{" "}
-                    {formatCreditBalance(
-                      overview.billing_credit_purchase_total_cents,
-                    )}{" "}
-                    purchased.
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+      {!isEnterprise && isOrgAdmin ? (
+        <>
+          <Separator />
+          <section className="space-y-3">
+            <h2 className="text-base font-semibold">Top up</h2>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <p className="text-sm text-muted-foreground">
+                Top up any time. Credits never expire and roll over alongside
+                your monthly included balance.
+              </p>
+              <Button
+                type="button"
+                onClick={handleTopUpClick}
+                disabled={topUpDisabled}
+              >
+                {topUpSubmitting ? "Opening Stripe…" : "Top up credits"}
+              </Button>
+            </div>
+            {topUpUnavailable ? (
+              <p className="text-xs text-muted-foreground">
+                Top-up is not configured yet.
+              </p>
+            ) : null}
+            {topUpPacks.length > 0 ? (
+              <TopUpDialog
+                open={topUpOpen}
+                onOpenChange={setTopUpOpen}
+                packs={topUpPacks}
+              />
+            ) : null}
+          </section>
+        </>
+      ) : null}
 
-          {spend && spend.windows.length > 0 ? (
-            <>
-              <Separator />
-              <div className="space-y-3">
-                <div>
-                  <h3 className="text-lg font-medium">Usage Windows</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Rolling time windows with usage caps.
-                  </p>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {spend.windows.map((w) => (
-                    <div
-                      key={w.label}
-                      className={cn(
-                        "rounded-lg border p-4",
-                        w.exceeded
-                          ? "border-destructive/50 bg-destructive/5"
-                          : "border-border",
-                      )}
-                    >
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="text-sm font-medium">
-                          {w.label} window
-                        </span>
-                        {w.exceeded ? (
-                          <Badge variant="destructive">Exceeded</Badge>
-                        ) : (
-                          <Badge variant="outline">OK</Badge>
-                        )}
-                      </div>
-                      <div className="text-2xl font-semibold">
-                        {formatCreditsFromUsd(w.spent_usd, 2)}{" "}
-                        <span className="text-sm font-normal text-muted-foreground">
-                          / {formatCreditsFromUsd(w.limit_usd, 0)}
-                        </span>
-                      </div>
-                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className={cn(
-                            "h-full rounded-full transition-all",
-                            w.exceeded ? "bg-destructive" : "bg-primary",
-                          )}
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              (w.spent_usd / w.limit_usd) * 100,
-                            )}%`,
-                          }}
-                        />
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {((w.spent_usd / w.limit_usd) * 100).toFixed(1)}% used
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          ) : null}
-
-          {log && log.entries.length > 0 ? (
-            <>
-              <Separator />
-              <div className="space-y-3">
-                <div>
-                  <h3 className="text-lg font-medium">Recent Requests</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Last {log.entries.length} AI requests.
-                  </p>
-                </div>
-                <div className="rounded-md border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Model</TableHead>
-                        <TableHead>Input</TableHead>
-                        <TableHead>Output</TableHead>
-                        <TableHead>Credits</TableHead>
-                        <TableHead>Time</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {log.entries.map((entry) => (
-                        <TableRow key={entry.id}>
-                          <TableCell className="font-mono text-xs">
-                            {entry.model
-                              .replace("claude-", "")
-                              .replace(/-\d{8}$/, "")}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {entry.input_tokens.toLocaleString()}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {entry.output_tokens.toLocaleString()}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {formatCreditsFromUsd(entry.cost_usd)}
-                          </TableCell>
-                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                            {dateFormatter.format(
-                              new Date(entry.created_at_ms),
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-            </>
-          ) : null}
-        </div>
-      )}
+      {log && log.entries.length > 0 ? (
+        <>
+          <Separator />
+          <section className="space-y-3">
+            <h2 className="text-base font-semibold">Recent requests</h2>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Model</TableHead>
+                  <TableHead>Input</TableHead>
+                  <TableHead>Output</TableHead>
+                  <TableHead>Credits</TableHead>
+                  <TableHead>Time</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {log.entries.map((entry) => (
+                  <TableRow key={entry.id}>
+                    <TableCell className="font-mono text-xs">
+                      {entry.model
+                        .replace("claude-", "")
+                        .replace(/-\d{8}$/, "")}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {entry.input_tokens.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {entry.output_tokens.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {formatCreditsFromUsd(entry.cost_usd)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                      {dateFormatter.format(new Date(entry.created_at_ms))}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }
