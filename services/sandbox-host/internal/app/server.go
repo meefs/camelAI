@@ -377,11 +377,14 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 	if messages, err := readHostPiSessionMessages(s.cfg.HostPiSessionRoot, threadID); err != nil {
 		log.Printf("[SandboxHost] host Pi message history unavailable thread=%s sessionRoot=%s: %v", threadID, s.cfg.HostPiSessionRoot, err)
 	} else if len(messages) > 0 {
+		log.Printf("[SandboxHost] chat messages loaded from host Pi thread=%s messages=%d", threadID, len(messages))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":  true,
 			"messages": messages,
 		})
 		return nil
+	} else {
+		log.Printf("[SandboxHost] host Pi message history empty thread=%s sessionRoot=%s; checking legacy history", threadID, s.cfg.HostPiSessionRoot)
 	}
 
 	sessionIDs := []string{threadID}
@@ -389,35 +392,43 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		sessionIDs = append(sessionIDs, claudeSessionID)
 	}
 
+	log.Printf("[SandboxHost] chat messages scanning Claude legacy history thread=%s container=%s claudeSession=%s candidateSessions=%d", threadID, name, claudeSessionID, len(sessionIDs))
 	for _, sessionID := range sessionIDs {
 		jsonlPath := fmt.Sprintf("/home/claude/.claude/projects/-home-claude/%s.jsonl", sessionID)
 		info, err := s.fs.ReadInfo(name, jsonlPath)
 		if err != nil {
 			lower := strings.ToLower(err.Error())
 			if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
+				log.Printf("[SandboxHost] chat messages Claude candidate missing thread=%s session=%s path=%s", threadID, sessionID, jsonlPath)
 				continue
 			}
+			log.Printf("[SandboxHost] chat messages Claude candidate stat failed thread=%s session=%s path=%s: %v", threadID, sessionID, jsonlPath, err)
 			return s.handleFSError(w, err, "Chat messages unavailable")
 		}
 
 		file, err := os.Open(info.HostPath)
 		if err != nil {
 			if os.IsNotExist(err) {
+				log.Printf("[SandboxHost] chat messages Claude candidate host file missing thread=%s session=%s containerPath=%s hostPath=%s", threadID, sessionID, jsonlPath, info.HostPath)
 				continue
 			}
+			log.Printf("[SandboxHost] chat messages Claude candidate open failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
 			return err
 		}
 		defer file.Close()
 
 		content, err := io.ReadAll(file)
 		if err != nil {
+			log.Printf("[SandboxHost] chat messages Claude candidate read failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
 			return err
 		}
 		messages := parseClaudeJSONLMessages(string(content), threadID)
 		if len(messages) == 0 {
+			log.Printf("[SandboxHost] chat messages Claude candidate parsed empty thread=%s session=%s path=%s bytes=%d", threadID, sessionID, jsonlPath, len(content))
 			continue
 		}
 
+		log.Printf("[SandboxHost] chat messages loaded from Claude legacy thread=%s session=%s path=%s bytes=%d messages=%d", threadID, sessionID, jsonlPath, len(content), len(messages))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":  true,
 			"messages": messages,
@@ -430,26 +441,33 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		errorJSON(w, err.Error(), http.StatusBadRequest)
 		return nil
 	}
+	log.Printf("[SandboxHost] chat messages scanning Codex legacy history thread=%s container=%s codexSession=%s candidatePaths=%d", threadID, name, codexSessionID, len(codexThreadPaths))
 	for _, codexThreadPath := range codexThreadPaths {
 		info, err := s.fs.ReadInfo(name, codexThreadPath)
 		if err != nil {
 			lower := strings.ToLower(err.Error())
 			if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
+				log.Printf("[SandboxHost] chat messages Codex candidate missing thread=%s path=%s", threadID, codexThreadPath)
 				continue
 			}
+			log.Printf("[SandboxHost] chat messages Codex candidate stat failed thread=%s path=%s: %v", threadID, codexThreadPath, err)
 			return s.handleFSError(w, err, "Chat messages unavailable")
 		}
 		if messages, err := readCodexStateMessages(req.Context(), info.HostPath, threadID, codexSessionID); err != nil {
-			log.Printf("[SandboxHost] codex state message history unavailable thread=%s state=%s: %v", threadID, info.HostPath, err)
+			log.Printf("[SandboxHost] chat messages Codex candidate read failed thread=%s path=%s hostPath=%s codexSession=%s: %v", threadID, codexThreadPath, info.HostPath, codexSessionID, err)
 		} else if len(messages) > 0 {
+			log.Printf("[SandboxHost] chat messages loaded from Codex legacy thread=%s path=%s hostPath=%s codexSession=%s messages=%d", threadID, codexThreadPath, info.HostPath, codexSessionID, len(messages))
 			writeJSON(w, http.StatusOK, map[string]any{
 				"success":  true,
 				"messages": messages,
 			})
 			return nil
+		} else {
+			log.Printf("[SandboxHost] chat messages Codex candidate parsed empty thread=%s path=%s hostPath=%s codexSession=%s", threadID, codexThreadPath, info.HostPath, codexSessionID)
 		}
 	}
 
+	log.Printf("[SandboxHost] chat messages found no history thread=%s container=%s claudeSession=%s codexSession=%s", threadID, name, claudeSessionID, codexSessionID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":  true,
 		"messages": []parsedChatMessage{},
