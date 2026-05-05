@@ -38,28 +38,40 @@ function findPriorUser(message: Message, messages: Message[]): Message | null {
 function findMatchingServerUserForLocalUser(
   localUser: Message,
   serverMessages: Message[],
+  consumedServerUserIds = new Set<string>(),
 ): Message | null {
   const localText = turnText(localUser.content);
   if (!localText) return null;
 
-  return (
-    serverMessages.find(
-      (message) =>
-        message.role === "user" &&
-        turnText(message.content) === localText &&
-        Math.abs(message.created_at - localUser.created_at) <= 1000,
-    ) ?? null
-  );
+  let best: Message | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const message of serverMessages) {
+    if (message.role !== "user") continue;
+    if (consumedServerUserIds.has(message.id)) continue;
+    if (turnText(message.content) !== localText) continue;
+
+    const offset = message.created_at - localUser.created_at;
+    if (offset < -1000 || offset > 5 * 60 * 1000) continue;
+
+    const distance = Math.abs(offset);
+    if (distance < bestDistance) {
+      best = message;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
 }
 
 function hasServerAssistantForLocalTurn(
   localAssistant: Message,
   localMessages: Message[],
   serverMessages: Message[],
+  matchedServerUsersByLocalId: Map<string, Message>,
 ): boolean {
   const localUser = findPriorUser(localAssistant, localMessages);
   if (!localUser) return false;
-  const serverUser = findMatchingServerUserForLocalUser(localUser, serverMessages);
+  const serverUser = matchedServerUsersByLocalId.get(localUser.id);
   if (!serverUser) return false;
 
   return serverMessages.some(
@@ -75,12 +87,35 @@ export function mergeServerAndLocalMessages(
   localMessages: Message[],
 ): Message[] {
   const serverIds = new Set(serverMessages.map((msg) => msg.id));
+  const consumedServerUserIds = new Set<string>();
+  const matchedServerUsersByLocalId = new Map<string, Message>();
+
+  for (const msg of [...localMessages].sort((a, b) => a.created_at - b.created_at)) {
+    if (serverIds.has(msg.id) || msg.role !== "user") continue;
+    const serverUser = findMatchingServerUserForLocalUser(
+      msg,
+      serverMessages,
+      consumedServerUserIds,
+    );
+    if (!serverUser) continue;
+    consumedServerUserIds.add(serverUser.id);
+    matchedServerUsersByLocalId.set(msg.id, serverUser);
+  }
+
   const unsyncedLocalMessages = localMessages.filter((msg) => {
     if (serverIds.has(msg.id)) return false;
-    if (msg.role === "user" && findMatchingServerUserForLocalUser(msg, serverMessages)) {
+    if (msg.role === "user" && matchedServerUsersByLocalId.has(msg.id)) {
       return false;
     }
-    if (msg.role === "assistant" && hasServerAssistantForLocalTurn(msg, localMessages, serverMessages)) {
+    if (
+      msg.role === "assistant" &&
+      hasServerAssistantForLocalTurn(
+        msg,
+        localMessages,
+        serverMessages,
+        matchedServerUsersByLocalId,
+      )
+    ) {
       return false;
     }
     return true;

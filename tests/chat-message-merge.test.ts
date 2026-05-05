@@ -105,4 +105,40 @@ describe("mergeServerAndLocalMessages", () => {
       "local-assistant-repeat",
     ]);
   });
+
+  it("drops an optimistic local user when the persisted Pi user arrives later with a different id", () => {
+    const promptText = "Start the task";
+    const serverMessages = [
+      message({
+        id: "server-user",
+        role: "user",
+        createdAt: 3500,
+        content: [{ type: "text", text: `[Miguel]: ${promptText}` }],
+      }),
+      message({
+        id: "server-assistant",
+        role: "assistant",
+        createdAt: 6000,
+        content: [{ type: "text", text: "Done" }],
+      }),
+    ];
+    const localMessages = [
+      message({
+        id: "local-user",
+        role: "user",
+        createdAt: 1000,
+        content: [{ type: "text", text: promptText }],
+      }),
+      message({
+        id: "local-assistant",
+        role: "assistant",
+        createdAt: 6100,
+        content: [{ type: "text", text: "Done" }],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged.map((entry) => entry.id)).toEqual(["server-user", "server-assistant"]);
+  });
 });

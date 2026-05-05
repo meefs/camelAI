@@ -425,7 +425,20 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		return nil
 	}
 
-	if info, err := s.fs.ReadInfo(name, fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", threadID)); err == nil {
+	codexThreadPaths, err := legacyCodexStatePathCandidates(threadID, codexSessionID)
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	for _, codexThreadPath := range codexThreadPaths {
+		info, err := s.fs.ReadInfo(name, codexThreadPath)
+		if err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
+				continue
+			}
+			return s.handleFSError(w, err, "Chat messages unavailable")
+		}
 		if messages, err := readCodexStateMessages(req.Context(), info.HostPath, threadID, codexSessionID); err != nil {
 			log.Printf("[SandboxHost] codex state message history unavailable thread=%s state=%s: %v", threadID, info.HostPath, err)
 		} else if len(messages) > 0 {
@@ -434,11 +447,6 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 				"messages": messages,
 			})
 			return nil
-		}
-	} else if err != nil {
-		lower := strings.ToLower(err.Error())
-		if !strings.Contains(lower, "no such file") && !strings.Contains(lower, "not exist") {
-			return s.handleFSError(w, err, "Chat messages unavailable")
 		}
 	}
 

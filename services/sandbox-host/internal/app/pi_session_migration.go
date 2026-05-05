@@ -108,13 +108,24 @@ func (s *Server) readLegacyMessagesForHostPiMigration(containerName, threadID st
 		}
 	}
 
-	codexThreadPath := fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", threadID)
-	if info, err := s.fs.ReadInfo(containerName, codexThreadPath); err == nil {
+	codexSessionID := strings.TrimSpace(sessionEnv["CHIRIDION_CODEX_SESSION_ID"])
+	codexThreadPaths, err := legacyCodexStatePathCandidates(threadID, codexSessionID)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, codexThreadPath := range codexThreadPaths {
+		info, err := s.fs.ReadInfo(containerName, codexThreadPath)
+		if err != nil {
+			if isNotFoundError(err) {
+				continue
+			}
+			return nil, "", err
+		}
 		messages, err := readCodexStateMessages(
 			context.Background(),
 			info.HostPath,
 			threadID,
-			strings.TrimSpace(sessionEnv["CHIRIDION_CODEX_SESSION_ID"]),
+			codexSessionID,
 		)
 		if err != nil {
 			return nil, "", err
@@ -122,11 +133,32 @@ func (s *Server) readLegacyMessagesForHostPiMigration(containerName, threadID st
 		if len(messages) > 0 {
 			return messages, "codex", nil
 		}
-	} else if err != nil && !isNotFoundError(err) {
-		return nil, "", err
 	}
 
 	return nil, "", nil
+}
+
+func legacyCodexStatePathCandidates(threadID, codexSessionID string) ([]string, error) {
+	threadID = strings.TrimSpace(threadID)
+	codexSessionID = strings.TrimSpace(codexSessionID)
+	if threadID == "" {
+		return nil, nil
+	}
+	if strings.ContainsAny(threadID, `/\`) {
+		return nil, fmt.Errorf("invalid thread id")
+	}
+	ids := []string{threadID}
+	if codexSessionID != "" && codexSessionID != threadID {
+		if strings.ContainsAny(codexSessionID, `/\`) {
+			return nil, fmt.Errorf("invalid legacy Codex session id")
+		}
+		ids = append(ids, codexSessionID)
+	}
+	paths := make([]string, 0, len(ids))
+	for _, id := range ids {
+		paths = append(paths, fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", id))
+	}
+	return paths, nil
 }
 
 func isNotFoundError(err error) bool {

@@ -3519,7 +3519,10 @@ export default function Chat({
             return prev;
           });
         } else if (data.type === "streaming_state") {
-          setLoading(Boolean(data.isStreaming));
+          const nextIsStreaming = Boolean(data.isStreaming);
+          if (nextIsStreaming || pendingMessagesRef.current.length === 0) {
+            setLoading(nextIsStreaming);
+          }
         } else if (data.type === "result") {
           if (id) {
             for (const delay of [1000, 3000]) {

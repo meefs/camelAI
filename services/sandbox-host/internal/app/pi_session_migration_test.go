@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -366,6 +367,20 @@ func TestHostPiSessionDirHasJSONL(t *testing.T) {
 	}
 	if !has {
 		t.Fatal("expected session dir to have Pi JSONL")
+	}
+}
+
+func TestLegacyCodexStatePathCandidatesIncludesStoredCodexSessionID(t *testing.T) {
+	paths, err := legacyCodexStatePathCandidates("camel-thread", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"/home/claude/.codex/threads/camel-thread/state_5.sqlite",
+		"/home/claude/.codex/threads/codex-session/state_5.sqlite",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
 	}
 }
 
