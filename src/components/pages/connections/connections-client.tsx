@@ -332,8 +332,9 @@ export default function ConnectionsClient({
   const handleNewChat = (connection: Integration) => {
     if (!currentWorkspace) return;
     const computedSlug = slugForIntegration(connection, connectionSlugMap);
-    if (!computedSlug) return;
-    const text = `@${computedSlug} `;
+    const text = computedSlug
+      ? `@${computedSlug} `
+      : `Use my ${connection.name || connection.integration_type} connection to create `;
     writeDraft(currentWorkspace.id, null, text, []);
     navigate('/chat');
   };
