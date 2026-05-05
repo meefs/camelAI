@@ -52,25 +52,40 @@ jobs:
               ;;
           esac
 
-      - name: Setup SSH
+      - name: Configure SSH
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.SANDBOX_VM_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          echo "${{ secrets.SANDBOX_VM_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.SANDBOX_GO_DEPLOY_SSH_KEY }}" > ~/.ssh/sandbox_go_deploy
+          chmod 600 ~/.ssh/sandbox_go_deploy
+          printf '%s\n' "${{ secrets.SANDBOX_GO_DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host sandbox-image-deploy
+            HostName ${{ steps.target.outputs.host_ip }}
+            User chiridion
+            IdentityFile ~/.ssh/sandbox_go_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH
+        run: ssh sandbox-image-deploy 'whoami && hostname'
 
       - name: Rsync sandbox files to VM
         run: |
           rsync -az --delete \
             sandbox/ \
-            chiridion@${{ steps.target.outputs.host_ip }}:/opt/chiridion/sandbox/
+            sandbox-image-deploy:/opt/chiridion/sandbox/
           rsync -az \
             services/sandbox-host/Dockerfile.sandbox \
-            chiridion@${{ steps.target.outputs.host_ip }}:/opt/chiridion/Dockerfile.sandbox
+            sandbox-image-deploy:/opt/chiridion/Dockerfile.sandbox
 
       - name: Build and push image to ACR
         run: |
-          ssh chiridion@${{ steps.target.outputs.host_ip }} '
+          ssh sandbox-image-deploy '
             cd /opt/chiridion &&
             sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox . &&
             sudo az acr login --name ${{ steps.target.outputs.acr_name }} &&
