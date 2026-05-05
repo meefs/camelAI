@@ -1,6 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useRef, type RefObject } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react';
 import { Plus } from 'lucide-react';
 import {
   Command,
@@ -48,6 +55,7 @@ export function ConnectionMentionMenu({
   onAddNewClick,
 }: ConnectionMentionMenuProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
+  const [anchorWidth, setAnchorWidth] = useState<number | null>(null);
   const mentionableConnections = useMemo(
     () => filterMentionableConnections(connections),
     [connections],
@@ -75,6 +83,17 @@ export function ConnectionMentionMenu({
       onActiveIdChange(filtered[0]!.id);
     }
   }, [open, filtered, activeId, onActiveIdChange, showAddRow]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const el = anchorRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const update = () => setAnchorWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [open, anchorRef]);
 
   useEffect(() => {
     if (!open || !activeId) return;
@@ -115,7 +134,8 @@ export function ConnectionMentionMenu({
             e.preventDefault();
           }
         }}
-        className="w-[280px] p-0 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md"
+        style={anchorWidth ? { width: `${anchorWidth}px` } : undefined}
+        className="min-w-[240px] p-0 overflow-hidden rounded-md ring-1 ring-foreground/10 bg-popover text-popover-foreground shadow-md"
       >
         <Command
           shouldFilter={false}
@@ -132,7 +152,7 @@ export function ConnectionMentionMenu({
                     onAddNewClick();
                     onClose();
                   }}
-                  className="flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer"
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer"
                 >
                   <Plus className="size-4 shrink-0" />
                   <span className="font-medium">Add a connection</span>
@@ -145,15 +165,15 @@ export function ConnectionMentionMenu({
                       key={c.id}
                       value={c.id}
                       onSelect={() => onSelect(c)}
-                      className="flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer"
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer"
                     >
                       <IntegrationIcon
                         type={c.integration_type}
                         size={16}
                         className="size-4 shrink-0"
                       />
-                      <span className="min-w-0 truncate font-medium">{c.name}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
+                      <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
+                      <span className="shrink-0 pl-3 text-xs text-muted-foreground">
                         {def?.displayName ?? c.integration_type}
                       </span>
                     </CommandItem>
