@@ -15,6 +15,6 @@ export async function action({ request, context }: Route.ActionArgs) {
   const body = await request.json() as { path: string; content_base64: string };
   if (!body.path || !body.content_base64) return err('path and content_base64 are required');
 
-  const container = getContainer(env, authResult);
+  const container = getContainer(env, authResult as import('@/lib/ext-api.server').TokenGrantRecord);
   return Response.json(await container.writeBinaryFile(body.path, body.content_base64));
 }

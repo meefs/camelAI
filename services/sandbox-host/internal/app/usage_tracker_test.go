@@ -118,6 +118,43 @@ func TestCopyResponsesSSEStreamWithUsage(t *testing.T) {
 	}
 }
 
+func TestCopyOpenRouterChatCompletionSSEStreamWithUsage(t *testing.T) {
+	sseStream := strings.Join([]string{
+		`: OPENROUTER PROCESSING`,
+		`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"~moonshotai/kimi-latest","provider":"MoonshotAI","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}],"usage":null}`,
+		"",
+		`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"~moonshotai/kimi-latest","provider":"MoonshotAI","choices":[],"usage":{"prompt_tokens":194,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},"completion_tokens":2,"completion_tokens_details":{"reasoning_tokens":0},"total_tokens":196,"cost":0.95}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	w := httptest.NewRecorder()
+	usage, err := copySSEStreamWithUsage(w, strings.NewReader(sseStream))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if usage.Model != "~moonshotai/kimi-latest" {
+		t.Errorf("expected model ~moonshotai/kimi-latest, got %s", usage.Model)
+	}
+	if usage.InputTokens != 164 {
+		t.Errorf("expected 164 uncached input tokens, got %d", usage.InputTokens)
+	}
+	if usage.CacheReadInputTokens != 20 {
+		t.Errorf("expected 20 cached input tokens, got %d", usage.CacheReadInputTokens)
+	}
+	if usage.CacheCreationInputTokens != 10 {
+		t.Errorf("expected 10 cache write tokens, got %d", usage.CacheCreationInputTokens)
+	}
+	if usage.OutputTokens != 2 {
+		t.Errorf("expected 2 output tokens, got %d", usage.OutputTokens)
+	}
+	if !strings.Contains(w.Body.String(), `"cost":0.95`) {
+		t.Fatal("expected stream body to be forwarded unchanged")
+	}
+}
+
 func TestCopyNonStreamingWithUsage_OpenAIResponses(t *testing.T) {
 	jsonBody := `{"id":"resp_01","object":"response","model":"gpt-5.4","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":200},"output_tokens":300,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":1500}}`
 

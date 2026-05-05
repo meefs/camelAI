@@ -44,7 +44,6 @@ const TOOL_GET_BAN = "get_ban";
 const TOOL_BLOCK_SIGNUP_IP = "block_signup_ip";
 const TOOL_UNBLOCK_SIGNUP_IP = "unblock_signup_ip";
 const TOOL_GET_ORG_USAGE = "get_org_usage";
-const TOOL_SET_USER_CREDITS = "set_user_credits";
 
 function getBaseUrl(req: Request): string {
   const url = new URL(req.url);
@@ -407,24 +406,6 @@ function adminTools() {
       },
     },
     {
-      name: TOOL_SET_USER_CREDITS,
-      description:
-        "Set credits for a user's organization. Pass available_credits_cents to set the visible remaining balance, or override raw purchase/grant totals. org_id is required if the user belongs to multiple orgs.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          user_id: { type: "string" },
-          org_id: { type: "string" },
-          available_credits_cents: { type: "number", minimum: 0 },
-          billing_credit_purchase_total_cents: { type: "number" },
-          billing_credit_grant_total_cents: { type: "number" },
-          billing_credit_usage_started_at: { type: ["number", "null"] },
-        },
-        required: ["user_id"],
-        additionalProperties: false,
-      },
-    },
-    {
       name: TOOL_ADMIN_API_REQUEST,
       description:
         "Call a camelAI admin API endpoint. The path must start with /api/admin/ and cannot target OAuth or MCP endpoints.",
@@ -762,21 +743,6 @@ async function callTool(
       });
     }
     return toolText({ error: "view must be one of spend, limits, log, or log_sum" }, true);
-  }
-  if (name === TOOL_SET_USER_CREDITS) {
-    const userId = requiredStringArg(input, "user_id");
-    if (typeof userId !== "string") return toolText(userId, true);
-    return fetchAdminApiTool(req, env, grant, {
-      method: "PUT",
-      path: `/api/admin/users/${encodeURIComponent(userId)}/credits`,
-      body: pickBody(input, [
-        "org_id",
-        "available_credits_cents",
-        "billing_credit_purchase_total_cents",
-        "billing_credit_grant_total_cents",
-        "billing_credit_usage_started_at",
-      ]),
-    });
   }
   if (name === TOOL_ADMIN_API_REQUEST) {
     return fetchAdminApiTool(req, env, grant, args);

@@ -17,6 +17,15 @@ bun run dev
 This runs React Router dev with Cloudflare bindings.
 Default app URL: `http://localhost:3001` (override with `VITE_DEV_PORT`).
 
+For local end-to-end testing without OAuth, run:
+
+```bash
+bun run dev:local-auth
+```
+
+This enables `LOCAL_AUTH_BYPASS=1` for localhost only and seeds a default `Local Dev`
+user, organization, and workspace in the local Durable Object state.
+
 ## Build
 
 ```bash

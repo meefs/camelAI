@@ -186,4 +186,3 @@ mentionSlugMap: new Map([['camel', integrationWithId('same_conn')]])
 expect(screen.getByText('@camel')).toHaveClass('bg-muted');
 expect(screen.getByText('@camel')).not.toHaveClass('bg-muted/60');
 ```
-

@@ -30,12 +30,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return blockBetaFileEdit();
 
     const formData = await request.formData();
-    const file = formData.get('file') as File | null;
+    const fileEntry = formData.get('file');
     const targetDir = formData.get('path') as string | null;
 
-    if (!file) {
+    if (!(fileEntry instanceof File)) {
       return Response.json({ error: 'No file provided' }, { status: 400 });
     }
+    const file = fileEntry as File;
 
     if (file.size > MAX_FILE_SIZE) {
       const sizeMB = Math.round(file.size / 1024 / 1024);

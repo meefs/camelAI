@@ -59,18 +59,15 @@ ENV UV_LINK_MODE=hardlink
 # Wrangler CLI (npm puts binaries in /usr/local/bin/ — accessible to all users)
 RUN npm install -g wrangler --loglevel=warn
 
-# pi coding agent
-RUN npm install -g @mariozechner/pi-coding-agent --loglevel=warn
-
 # Directories (R2 mount points are bind-mounted from host)
-RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /etc/codex /usr/local/lib/create-worker \
+RUN mkdir -p /opt/chiridion /opt/chiridion-host-pi/skills /usr/local/lib/create-worker \
     /mnt/user-uploads /mnt/user-outputs && \
     chown 1001:1001 /mnt/user-uploads /mnt/user-outputs
 
-# Claude Agent SDK + Playwright
+# Playwright runtime support for generated apps and tests.
 RUN cd /opt/chiridion && \
     echo '{"name":"chiridion-sandbox-runner","private":true,"type":"module"}' > package.json && \
-    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.78 @openai/codex playwright@1.58.2 zod
+    bun install --no-progress playwright@1.58.2
 
 # Playwright: install Chromium system deps + browser binary.
 # PLAYWRIGHT_BROWSERS_PATH keeps the browser outside /home/claude (bind-mounted at runtime).
@@ -82,19 +79,15 @@ RUN cd /opt/chiridion && npx playwright install-deps chromium && \
     chmod -R o+rx /opt/playwright-browsers
 
 # Copy sandbox files
-COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs
-COPY sandbox/team-poll-controller.mjs /opt/chiridion/team-poll-controller.mjs
-COPY sandbox/team-poll-state.mjs /opt/chiridion/team-poll-state.mjs
 COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
-COPY sandbox/skills/ /etc/claude-code/.claude/skills/
-RUN ln -s /etc/claude-code/.claude/skills /etc/codex/skills
+COPY sandbox/skills/ /opt/chiridion-host-pi/skills/
 COPY sandbox/create-worker/ /usr/local/lib/create-worker/
-RUN chmod 755 /opt/chiridion/control-plane.mjs && \
-    chmod 644 /opt/chiridion/team-poll-controller.mjs && \
-    chmod 644 /opt/chiridion/team-poll-state.mjs && \
-    chmod +x /opt/chiridion/entrypoint.sh && \
+COPY sandbox/integrations-cli.mjs /usr/local/bin/camelai-integrations
+RUN chmod +x /opt/chiridion/entrypoint.sh && \
+    chmod +x /usr/local/bin/camelai-integrations && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
     chmod +x /usr/local/lib/create-worker/publish.mjs && \
+    ln -sf /usr/local/bin/camelai-integrations /usr/local/bin/integrations && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
     ln -sf /usr/local/lib/create-worker/publish.mjs /usr/local/bin/publish
 COPY sandbox/validate-notebook.py /usr/local/bin/validate-notebook

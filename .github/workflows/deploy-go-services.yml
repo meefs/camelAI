@@ -1,0 +1,121 @@
+name: Deploy Go Services
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/sandbox-host/**"
+      - "sandbox/skills/**"
+      - "scripts/deploy-go-services.sh"
+      - "scripts/install-host-pi.sh"
+      - ".github/workflows/deploy-go-services.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        required: true
+        default: staging
+        options:
+          - staging
+          - prod
+      target:
+        description: "Service target"
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - sandbox-host
+          - data-proxy
+      confirm_prod:
+        description: 'For prod, type "deploy-prod"'
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: go-services-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'staging' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/sandbox-host/go.mod
+          cache-dependency-path: services/sandbox-host/go.sum
+
+      - name: Test Go services
+        run: go test ./...
+        working-directory: services/sandbox-host
+
+      - name: Resolve target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            deploy_env="${{ inputs.environment }}"
+            deploy_target="${{ inputs.target }}"
+            if [[ "$deploy_env" == "prod" && "${{ inputs.confirm_prod }}" != "deploy-prod" ]]; then
+              echo 'For prod deploys, confirm_prod must be exactly "deploy-prod".' >&2
+              exit 1
+            fi
+          else
+            deploy_env="staging"
+            deploy_target="all"
+          fi
+
+          case "$deploy_env" in
+            staging)
+              host_ip="172.206.70.242"
+              ;;
+            prod)
+              host_ip="20.46.233.68"
+              ;;
+            *)
+              echo "Unknown deploy environment: $deploy_env" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "environment=$deploy_env" >> "$GITHUB_OUTPUT"
+          echo "target=$deploy_target" >> "$GITHUB_OUTPUT"
+          echo "host_ip=$host_ip" >> "$GITHUB_OUTPUT"
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SANDBOX_GO_DEPLOY_SSH_KEY }}" > ~/.ssh/sandbox_go_deploy
+          chmod 600 ~/.ssh/sandbox_go_deploy
+          printf '%s\n' "${{ secrets.SANDBOX_GO_DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host sandbox-go-deploy
+            HostName ${{ steps.target.outputs.host_ip }}
+            User chiridion
+            IdentityFile ~/.ssh/sandbox_go_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH
+        run: ssh sandbox-go-deploy 'whoami && hostname'
+
+      - name: Deploy Go services
+        env:
+          SANDBOX_GO_DEPLOY_HOST: sandbox-go-deploy
+        run: |
+          bash scripts/deploy-go-services.sh \
+            --env "${{ steps.target.outputs.environment }}" \
+            "${{ steps.target.outputs.target }}"

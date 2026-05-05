@@ -1,4 +1,4 @@
-import { WorkerEntrypoint } from 'cloudflare:workers';
+import { WorkerEntrypoint } from "cloudflare:workers";
 
 interface AIVirtualBindingEnv {
   CF_ACCOUNT_ID?: string;
@@ -14,7 +14,7 @@ interface AIVirtualBindingProps {
   userId?: string;
 }
 
-const DYNAMIC_MODEL_ALIASES = new Set(['auto', 'auto_search', 'auto_image']);
+const DYNAMIC_MODEL_ALIASES = new Set(["auto", "auto_search", "auto_image"]);
 
 /**
  * Resolve a model string to its gateway representation.
@@ -25,10 +25,16 @@ const DYNAMIC_MODEL_ALIASES = new Set(['auto', 'auto_search', 'auto_image']);
  */
 export function resolveModel(model: string): string {
   const trimmed = model.trim();
+  if (trimmed === "kimi-k2.6" || trimmed === "kimi-latest") {
+    return "~moonshotai/kimi-latest";
+  }
+  if (trimmed === "grok-4.3" || trimmed === "grok-latest") {
+    return "x-ai/grok-4.3";
+  }
   if (DYNAMIC_MODEL_ALIASES.has(trimmed)) {
     return `dynamic/${trimmed}`;
   }
-  return trimmed || 'dynamic/auto';
+  return trimmed || "dynamic/auto";
 }
 
 /**
@@ -37,7 +43,7 @@ export function resolveModel(model: string): string {
  * compat endpoint (`/compat/`).
  */
 export function isOpenRouterModel(resolvedModel: string): boolean {
-  return !resolvedModel.startsWith('dynamic/');
+  return !resolvedModel.startsWith("dynamic/");
 }
 
 /**
@@ -46,9 +52,17 @@ export function isOpenRouterModel(resolvedModel: string): boolean {
  * User workers can declare a native `ai` binding, and deploy-time rewriting
  * maps it to this entrypoint for tenant-safe routing through the platform worker.
  */
-export class AIVirtualBinding extends WorkerEntrypoint<AIVirtualBindingEnv, AIVirtualBindingProps> {
-  async run(model: string, input: unknown, _options?: unknown): Promise<unknown> {
-    const { model: inputModel, input: sanitizedInput } = extractModelFromInput(input);
+export class AIVirtualBinding extends WorkerEntrypoint<
+  AIVirtualBindingEnv,
+  AIVirtualBindingProps
+> {
+  async run(
+    model: string,
+    input: unknown,
+    _options?: unknown,
+  ): Promise<unknown> {
+    const { model: inputModel, input: sanitizedInput } =
+      extractModelFromInput(input);
     const envDefault = resolveVirtualModel(this.env);
 
     // Resolve model: caller param → input body model → env default — first non-empty wins
@@ -58,18 +72,28 @@ export class AIVirtualBinding extends WorkerEntrypoint<AIVirtualBindingEnv, AIVi
     const gatewaySettings = resolveGatewaySettings(this.env);
     if (!gatewaySettings) {
       throw new Error(
-        'AI gateway is not configured. Required: CF_ACCOUNT_ID, CF_GATEWAY_NAME, and CF_GATEWAY_TOKEN or AI_GATEWAY_AUTH_TOKEN.'
+        "AI gateway is not configured. Required: CF_ACCOUNT_ID, CF_GATEWAY_NAME, and CF_GATEWAY_TOKEN or AI_GATEWAY_AUTH_TOKEN.",
       );
     }
 
-    const provider: GatewayProvider = isOpenRouterModel(resolvedModelName) ? 'openrouter' : 'compat';
-    return runViaGatewayHTTP(gatewaySettings, this.ctx.props, sanitizedInput, resolvedModelName, provider);
+    const provider: GatewayProvider = isOpenRouterModel(resolvedModelName)
+      ? "openrouter"
+      : "compat";
+    return runViaGatewayHTTP(
+      gatewaySettings,
+      this.ctx.props,
+      sanitizedInput,
+      resolvedModelName,
+      provider,
+    );
   }
 }
 
-const DEFAULT_VIRTUAL_MODEL = 'auto';
+const DEFAULT_VIRTUAL_MODEL = "auto";
 
-export function resolveVirtualModel(env: Pick<AIVirtualBindingEnv, 'AI_VIRTUAL_MODEL'>): string {
+export function resolveVirtualModel(
+  env: Pick<AIVirtualBindingEnv, "AI_VIRTUAL_MODEL">,
+): string {
   const configured = env.AI_VIRTUAL_MODEL?.trim();
   return configured || DEFAULT_VIRTUAL_MODEL;
 }
@@ -82,17 +106,20 @@ function pickModel(...candidates: (string | undefined)[]): string {
   return DEFAULT_VIRTUAL_MODEL;
 }
 
-export function extractModelFromInput(input: unknown): { model: string | undefined; input: unknown } {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+export function extractModelFromInput(input: unknown): {
+  model: string | undefined;
+  input: unknown;
+} {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { model: undefined, input };
   }
   const obj = input as Record<string, unknown>;
-  if (!('model' in obj)) {
+  if (!("model" in obj)) {
     return { model: undefined, input };
   }
 
   const { model, ...rest } = obj;
-  return { model: typeof model === 'string' ? model : undefined, input: rest };
+  return { model: typeof model === "string" ? model : undefined, input: rest };
 }
 
 export interface GatewaySettings {
@@ -101,7 +128,9 @@ export interface GatewaySettings {
   authToken: string;
 }
 
-function resolveGatewayAuthToken(env: Pick<AIVirtualBindingEnv, 'AI_GATEWAY_AUTH_TOKEN' | 'CF_GATEWAY_TOKEN'>): string | undefined {
+function resolveGatewayAuthToken(
+  env: Pick<AIVirtualBindingEnv, "AI_GATEWAY_AUTH_TOKEN" | "CF_GATEWAY_TOKEN">,
+): string | undefined {
   const explicitToken = env.AI_GATEWAY_AUTH_TOKEN?.trim();
   if (explicitToken) return explicitToken;
 
@@ -112,7 +141,13 @@ function resolveGatewayAuthToken(env: Pick<AIVirtualBindingEnv, 'AI_GATEWAY_AUTH
 }
 
 export function resolveGatewaySettings(
-  env: Pick<AIVirtualBindingEnv, 'CF_ACCOUNT_ID' | 'CF_GATEWAY_NAME' | 'AI_GATEWAY_AUTH_TOKEN' | 'CF_GATEWAY_TOKEN'>
+  env: Pick<
+    AIVirtualBindingEnv,
+    | "CF_ACCOUNT_ID"
+    | "CF_GATEWAY_NAME"
+    | "AI_GATEWAY_AUTH_TOKEN"
+    | "CF_GATEWAY_TOKEN"
+  >,
 ): GatewaySettings | undefined {
   const accountID = env.CF_ACCOUNT_ID?.trim();
   const gatewayID = env.CF_GATEWAY_NAME?.trim();
@@ -144,9 +179,13 @@ function buildGatewayMetadata(props: AIVirtualBindingProps): string {
   });
 }
 
-export type GatewayProvider = 'compat' | 'openrouter';
+export type GatewayProvider = "compat" | "openrouter";
 
-function buildGatewayURL(accountID: string, gatewayID: string, provider: GatewayProvider = 'compat'): string {
+function buildGatewayURL(
+  accountID: string,
+  gatewayID: string,
+  provider: GatewayProvider = "compat",
+): string {
   return `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountID)}/${encodeURIComponent(gatewayID)}/${provider}/chat/completions`;
 }
 
@@ -154,31 +193,36 @@ export async function runViaGatewayHTTP(
   settings: GatewaySettings,
   props: AIVirtualBindingProps,
   input: unknown,
-  model: string = 'dynamic/auto',
-  provider: GatewayProvider = 'compat'
+  model: string = "dynamic/auto",
+  provider: GatewayProvider = "compat",
 ): Promise<unknown> {
   const headers = new Headers();
-  headers.set('Authorization', `Bearer ${settings.authToken}`);
-  headers.set('Content-Type', 'application/json');
-  headers.set('cf-aig-metadata', buildGatewayMetadata(props));
+  headers.set("Authorization", `Bearer ${settings.authToken}`);
+  headers.set("Content-Type", "application/json");
+  headers.set("cf-aig-metadata", buildGatewayMetadata(props));
   const payload = toGatewayPayload(input, model);
 
-  const resp = await fetch(buildGatewayURL(settings.accountID, settings.gatewayID, provider), {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
+  const resp = await fetch(
+    buildGatewayURL(settings.accountID, settings.gatewayID, provider),
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+  );
 
   const streamRequested = payload.stream === true;
   if (resp.ok && shouldPassthroughStream(resp, streamRequested)) {
     if (!resp.body) {
-      throw new Error('AI Gateway returned an empty streaming response');
+      throw new Error("AI Gateway returned an empty streaming response");
     }
     return resp.body;
   }
 
   const responseText = await resp.text();
-  const responsePayload = responseText ? safeJsonParse(responseText) : undefined;
+  const responsePayload = responseText
+    ? safeJsonParse(responseText)
+    : undefined;
   if (!resp.ok) {
     const message =
       extractGatewayErrorMessage(responsePayload) ??
@@ -192,23 +236,29 @@ export async function runViaGatewayHTTP(
   }
 
   if (responseText.trim()) {
-    throw new Error('AI Gateway returned a non-JSON non-streaming response');
+    throw new Error("AI Gateway returned a non-JSON non-streaming response");
   }
   return {};
 }
 
-function toGatewayPayload(input: unknown, model: string): Record<string, unknown> {
-  if (input && typeof input === 'object' && !Array.isArray(input)) {
+function toGatewayPayload(
+  input: unknown,
+  model: string,
+): Record<string, unknown> {
+  if (input && typeof input === "object" && !Array.isArray(input)) {
     const asObject = input as Record<string, unknown>;
     return { ...asObject, model };
   }
   return { model };
 }
 
-function shouldPassthroughStream(resp: Response, streamRequested: boolean): boolean {
+function shouldPassthroughStream(
+  resp: Response,
+  streamRequested: boolean,
+): boolean {
   if (!streamRequested) return false;
-  const contentType = (resp.headers.get('content-type') ?? '').toLowerCase();
-  if (contentType.includes('text/event-stream')) return true;
+  const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+  if (contentType.includes("text/event-stream")) return true;
   return !!resp.body;
 }
 
@@ -221,22 +271,22 @@ function safeJsonParse(raw: string): unknown {
 }
 
 function extractGatewayErrorMessage(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return undefined;
   }
 
   const error = (payload as { error?: unknown }).error;
-  if (error && typeof error === 'object' && !Array.isArray(error)) {
+  if (error && typeof error === "object" && !Array.isArray(error)) {
     const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message;
+    if (typeof message === "string" && message.trim()) return message;
   }
 
   const errors = (payload as { errors?: unknown }).errors;
   if (Array.isArray(errors) && errors.length > 0) {
     const first = errors[0];
-    if (first && typeof first === 'object' && !Array.isArray(first)) {
+    if (first && typeof first === "object" && !Array.isArray(first)) {
       const message = (first as { message?: unknown }).message;
-      if (typeof message === 'string' && message.trim()) return message;
+      if (typeof message === "string" && message.trim()) return message;
     }
   }
 

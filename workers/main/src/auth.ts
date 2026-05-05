@@ -22,6 +22,7 @@ import { WorkspaceDO } from "./workspace";
 import {
   DEFAULT_LLM_MODEL,
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+  getProviderForModel,
   normalizeLlmModel,
   parseOrganizationExperimentalSettings,
 } from "../../../src/lib/llm-provider-config";
@@ -2175,11 +2176,6 @@ export class OrgDO extends DurableObject<DOEnv> {
         ...updates,
       };
       let trialCreditGranted = false;
-      const existingTrialUsed = Boolean(
-        existingOrg.billing_trial_started_at ||
-          existingOrg.billing_trial_ends_at ||
-          existingOrg.billing_trial_credit_granted_at,
-      );
 
       if (
         normalizedTrialCreditGrantCents > 0 &&
@@ -2187,7 +2183,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         updates.billing_status === "trialing" &&
         updates.billing_trial_started_at &&
         updates.billing_trial_ends_at &&
-        !existingTrialUsed
+        !existingOrg.billing_trial_credit_granted_at
       ) {
         nextInfo.billing_credit_grant_total_cents =
           (existingOrg.billing_credit_grant_total_cents ?? 0) +
@@ -2481,10 +2477,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     const seatLimit = getOrgSeatLimit(info);
     if (seatLimit === null) return;
-    const normalizedAdditionalSeatCount = Math.max(
-      0,
-      Math.floor(additionalSeatCount),
-    );
+    const normalizedAdditionalSeatCount = Math.max(0, additionalSeatCount);
 
     const currentMembers =
       this.sql.exec<{ count: number }>("SELECT COUNT(*) as count FROM members")
@@ -4166,17 +4159,51 @@ export class OrgDO extends DurableObject<DOEnv> {
     id: string,
     model: LlmModel,
     actorId?: string,
+    provider: "claude" | "codex" = getProviderForModel(model),
   ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
-    const normalizedModel = normalizeLlmModel(
-      model,
-      existing.provider ?? "claude",
-    );
-    if (normalizedModel !== existing.model) {
+    const normalizedProvider: "claude" | "codex" =
+      provider === "codex" ? "codex" : "claude";
+    const normalizedModel = normalizeLlmModel(model, normalizedProvider);
+    if (
+      normalizedModel === existing.model &&
+      normalizedProvider === (existing.provider ?? "claude")
+    ) {
       return existing;
     }
-    return existing;
+    const now = Date.now();
+    this.sql.exec(
+      "UPDATE threads SET provider = ?, model = ?, updated_at = ? WHERE id = ?",
+      normalizedProvider,
+      normalizedModel,
+      now,
+      id,
+    );
+    if (actorId) {
+      this.log("thread_model_updated", actorId, id, {
+        provider: normalizedProvider,
+        model: normalizedModel,
+      });
+    }
+    const updated: OrgThread = {
+      ...existing,
+      provider: normalizedProvider,
+      model: normalizedModel,
+      updated_at: now,
+    };
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync thread model update to AdminIndex", err);
+      });
+    return updated;
   }
 
   /**

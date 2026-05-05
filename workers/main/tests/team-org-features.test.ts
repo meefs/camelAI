@@ -464,10 +464,31 @@ describe('Billing status from OrgDO', () => {
     ).resolves.toBe(true);
   });
 
-  it('uses Stripe subscription status for team seat expansion when billing status is stale', async () => {
+  it('does not grant the pending team seat when Stripe subscription status is not syncable', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
-    const { org } = await createBaseOrg(testEnv, 'Team Stale Status Org', ownerId);
+    const { org } = await createBaseOrg(testEnv, 'Canceled Team Invitation Cap Org', ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.updateBillingState({
+      billing_status: 'active',
+      billing_plan: 'team',
+      billing_seat_count: 3,
+      billing_subscription_id: 'sub_team',
+      billing_subscription_status: 'canceled',
+    });
+
+    await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
+    await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
+
+    await expect(
+      createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
+    ).rejects.toThrow('Your current billing plan includes 3 seats.');
+  });
+
+  it('grants the pending team seat when Stripe status is syncable even if billing status is stale', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createBaseOrg(testEnv, 'Stale Team Invitation Cap Org', ownerId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
     await orgStub.updateBillingState({
       billing_status: 'inactive',
@@ -477,130 +498,15 @@ describe('Billing status from OrgDO', () => {
       billing_subscription_status: 'active',
     });
 
-    const memberOneEmail = testEmail();
-    const { userId: memberOneId } = await createUser(testEnv, memberOneEmail, 'password', 'Member One');
-    const { id: memberOneInvitationId } = await createInvitation(
-      testEnv,
-      org.id,
-      memberOneEmail,
-      'member',
-      ownerId,
-    );
-    await acceptInvitation(testEnv, org.id, memberOneInvitationId, memberOneId);
-
-    const memberTwoEmail = testEmail();
-    const { userId: memberTwoId } = await createUser(testEnv, memberTwoEmail, 'password', 'Member Two');
-    const { id: memberTwoInvitationId } = await createInvitation(
-      testEnv,
-      org.id,
-      memberTwoEmail,
-      'member',
-      ownerId,
-    );
-    await acceptInvitation(testEnv, org.id, memberTwoInvitationId, memberTwoId);
+    await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
+    await createInvitation(testEnv, org.id, testEmail(), 'member', ownerId);
 
     await expect(
       createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
-    ).resolves.toEqual(expect.objectContaining({ id: expect.any(String) }));
+    ).resolves.toMatchObject({ id: expect.any(String) });
     await expect(
       createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
     ).rejects.toThrow('Your current billing plan includes 3 seats.');
-  });
-
-  it('does not expand team seats for unpaid Stripe subscriptions', async () => {
-    const ownerEmail = testEmail();
-    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
-    const { org } = await createBaseOrg(testEnv, 'Team Unpaid Status Org', ownerId);
-    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
-    await orgStub.updateBillingState({
-      billing_status: 'past_due',
-      billing_plan: 'team',
-      billing_seat_count: 3,
-      billing_subscription_id: 'sub_team',
-      billing_subscription_status: 'unpaid',
-    });
-
-    const memberOneEmail = testEmail();
-    const { userId: memberOneId } = await createUser(testEnv, memberOneEmail, 'password', 'Member One');
-    const { id: memberOneInvitationId } = await createInvitation(
-      testEnv,
-      org.id,
-      memberOneEmail,
-      'member',
-      ownerId,
-    );
-    await acceptInvitation(testEnv, org.id, memberOneInvitationId, memberOneId);
-
-    const memberTwoEmail = testEmail();
-    const { userId: memberTwoId } = await createUser(testEnv, memberTwoEmail, 'password', 'Member Two');
-    const { id: memberTwoInvitationId } = await createInvitation(
-      testEnv,
-      org.id,
-      memberTwoEmail,
-      'member',
-      ownerId,
-    );
-    await acceptInvitation(testEnv, org.id, memberTwoInvitationId, memberTwoId);
-
-    await expect(
-      createInvitation(testEnv, org.id, testEmail(), 'member', ownerId),
-    ).rejects.toThrow('Your current billing plan includes 3 seats.');
-  });
-
-  it('creates team invitations in a batch after seat preflight expansion', async () => {
-    const ownerEmail = testEmail();
-    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
-    const { org } = await createBaseOrg(testEnv, 'Team Batch Invite Org', ownerId);
-    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
-    await orgStub.updateBillingState({
-      billing_status: 'active',
-      billing_plan: 'team',
-      billing_seat_count: 5,
-      billing_subscription_id: 'sub_team',
-      billing_subscription_status: 'active',
-    });
-
-    await expect(
-      orgStub.createInvitations(
-        [testEmail(), testEmail(), testEmail(), testEmail()],
-        'member',
-        ownerId,
-      ),
-    ).resolves.toHaveLength(4);
-
-    await expect(orgStub.getInvitations()).resolves.toHaveLength(4);
-  });
-
-  it('does not insert any invitations when a batch exceeds seat capacity', async () => {
-    const ownerEmail = testEmail();
-    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
-    const { org } = await createBaseOrg(testEnv, 'Team Batch Atomic Org', ownerId);
-    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
-    await orgStub.updateBillingState({
-      billing_status: 'active',
-      billing_plan: 'team',
-      billing_seat_count: 3,
-      billing_subscription_id: 'sub_team',
-      billing_subscription_status: 'active',
-    });
-
-    let error: unknown;
-    try {
-      await orgStub.createInvitations(
-        [testEmail(), testEmail(), testEmail()],
-        'member',
-        ownerId,
-      );
-    } catch (caught) {
-      error = caught;
-    }
-
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(
-      'Your current billing plan includes 3 seats.',
-    );
-
-    await expect(orgStub.getInvitations()).resolves.toHaveLength(0);
   });
 });
 

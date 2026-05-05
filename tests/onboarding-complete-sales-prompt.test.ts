@@ -131,7 +131,8 @@ describe('onboarding complete sales prompt flow', () => {
       'ws_123',
       "Illiana's first chat",
       'user_123',
-      'Build me a CRM'
+      'Build me a CRM',
+      undefined,
     );
     expect(generateThreadTitleMock).toHaveBeenCalledWith(
       {},
@@ -184,6 +185,32 @@ describe('onboarding complete sales prompt flow', () => {
       threadId: 'thread_123',
       salesPrompt: null,
     });
+  });
+
+  it('allows configured enterprise org slugs through the onboarding billing gate', async () => {
+    orgStubs.set('org_123', {
+      ...createOrgStub({ billingStatus: 'inactive' }),
+      getInfo: vi.fn().mockResolvedValue({
+        id: 'org_123',
+        name: 'Enterprise Customer',
+        slug: 'enterprise-customer',
+        billing_status: 'inactive',
+        billing_plan: 'free',
+      }),
+    });
+    getEnvMock.mockReturnValue({
+      BILLING_ENTERPRISE_ORG_SLUGS: 'enterprise-customer',
+    });
+
+    const response = await action({
+      request: new Request('https://camelai.dev/api/onboarding/complete', {
+        method: 'POST',
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(createThreadMock).toHaveBeenCalled();
   });
 
   it('does not start the first-chat flow for BYOK when the user already has a chat', async () => {

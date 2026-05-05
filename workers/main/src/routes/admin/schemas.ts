@@ -81,12 +81,12 @@ export const OrgsQuerySchema = PaginationQuerySchema.extend({
   include_usage: booleanQueryParam,
   include_spend_30d: booleanQueryParam,
   include_llm_provider: booleanQueryParam,
-  sort_by: z.enum(['created_at', 'name']).optional().default('created_at'),
-  sort_dir: z.enum(['asc', 'desc']).optional().default('desc'),
+  sort_by: z.enum(["created_at", "name"]).optional().default("created_at"),
+  sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
 });
 
 export const OrgLlmProvidersQuerySchema = PaginationQuerySchema.extend({
-  provider: z.enum(['anthropic', 'bedrock', 'openai', 'openrouter']).optional(),
+  provider: z.enum(["anthropic", "bedrock", "openai", "openrouter"]).optional(),
 });
 
 export const WorkspacesQuerySchema = PaginationQuerySchema.extend({
@@ -132,7 +132,17 @@ export const UpdateUserCreditsBodySchema = z.object({
 export const UpdateThreadBodySchema = z.object({
   title: z.string().optional(),
   created_by: z.string().optional(),
-  model: z.enum(['haiku', 'sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']).optional(),
+  model: z
+    .enum([
+      "haiku",
+      "sonnet",
+      "opus",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "kimi-k2.6",
+      "grok-4.3",
+    ])
+    .optional(),
 });
 
 export const CreateBanBodySchema = z.object({
@@ -205,10 +215,18 @@ export const OrgSchema = z.object({
   workspace_count: z.number().int(),
 });
 
-export const LlmModelSchema = z.enum(['haiku', 'sonnet', 'opus', 'gpt-5.4', 'gpt-5.4-mini']);
+export const LlmModelSchema = z.enum([
+  "haiku",
+  "sonnet",
+  "opus",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "kimi-k2.6",
+  "grok-4.3",
+]);
 
 export const LlmProviderConfigSchema = z.object({
-  provider: z.enum(['anthropic', 'bedrock', 'openai', 'openrouter']),
+  provider: z.enum(["anthropic", "bedrock", "openai", "openrouter"]),
   config: z.object({
     aws_region: z.string().optional(),
   }),
@@ -266,7 +284,7 @@ export const RefreshOrgCustomDomainBodySchema = z.object({
 const RefreshOrgCustomDomainAppSchema = z.object({
   script_name: z.string(),
   hostname: z.string(),
-  action: z.enum(['skipped_active', 'refreshed', 'failed']),
+  action: z.enum(["skipped_active", "refreshed", "failed"]),
   cf_hostname_id: z.string().nullable(),
   status: z.string().nullable(),
   ssl_status: z.string().nullable(),
@@ -459,7 +477,10 @@ export const DashboardTopOrgsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(25),
   exclude_spam: booleanQueryParam,
   exclude_internal_domains: z.string().optional(),
-  sort_by: z.enum(['spend_7d', 'spend_30d', 'member_count']).optional().default('spend_7d'),
+  sort_by: z
+    .enum(["spend_7d", "spend_30d", "member_count"])
+    .optional()
+    .default("spend_7d"),
 });
 
 const DateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -480,7 +501,7 @@ export const DashboardRetentionQuerySchema = z.object({
   exclude_internal_domains: z.string().optional(),
 });
 
-const NormalizedBillingStatusSchema = z.enum(['active', 'free']);
+const NormalizedBillingStatusSchema = z.enum(["active", "free"]);
 
 export const DashboardTopOrgSchema = z.object({
   org_id: z.string(),
@@ -504,7 +525,7 @@ export const DashboardTopOrgsResponseSchema = z.object({
   items: z.array(DashboardTopOrgSchema),
   count: z.number().int(),
   limit: z.number().int(),
-  sort_by: z.enum(['spend_7d', 'spend_30d', 'member_count']),
+  sort_by: z.enum(["spend_7d", "spend_30d", "member_count"]),
 });
 
 export const DashboardSpamOrgSchema = z.object({

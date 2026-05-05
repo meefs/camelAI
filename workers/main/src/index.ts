@@ -9,7 +9,8 @@
  * - /api/integrations/slack/events → Slack Events API webhook
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
- * - /ws/:workspace → Chat WebSocket (forwarded to ChatThreadDO)
+ * - /ws/:workspace → Chat side-channel WebSocket (ChatThreadDO)
+ * - /ws/runner/:workspace → Chat runner WebSocket (bridged directly to sandbox-host)
  * - * → React Router SSR
  */
 
@@ -22,6 +23,7 @@ import type { SlackEventQueueMessage } from './slack-types.js';
 // Route handlers
 import { handleCfProxy } from './routes/cf-proxy.js';
 import { handleMcp } from './routes/mcp.js';
+import { handleIntegrationsMcp } from './routes/integrations-mcp.js';
 import { handleAdminMcp } from './routes/admin-mcp.js';
 import { handleThreadPreview } from './routes/threads.js';
 import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
@@ -34,7 +36,7 @@ import {
   handleSalesforceOAuthStart,
   handleSalesforceOAuthCallback,
 } from './routes/integrations.js';
-import { handleChatWebSocket } from './routes/websocket.js';
+import { handleChatRunnerWebSocket, handleChatWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known.js';
 import {
@@ -157,6 +159,9 @@ const routes: Route[] = [
   // Resend email proxy (for sandbox containers)
   { method: 'POST', path: /^\/api\/resend\/emails$/, handler: handleResendProxy },
 
+  // Integrations MCP (internal - sandbox tools)
+  { method: 'ALL', path: /^\/mcp\/integrations(\/|$)/, handler: handleIntegrationsMcp },
+
   // MCP (internal - sandbox agent)
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },
 
@@ -185,6 +190,7 @@ const routes: Route[] = [
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
+  { method: 'GET', path: /^\/ws\/runner\/[^/]+$/, handler: handleChatRunnerWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/[^/]+$/, handler: handleChatWebSocket, websocket: true },
 ];
 

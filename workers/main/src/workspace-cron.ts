@@ -335,7 +335,10 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         this.sql
           .exec<{
             count: number;
-          }>("SELECT COUNT(*) AS count FROM scheduled_prompts WHERE id != ?", existingPromptId ?? "")
+          }>(
+            "SELECT COUNT(*) AS count FROM scheduled_prompts WHERE id != ?",
+            existingPromptId ?? "",
+          )
           .toArray()[0]?.count ?? 0;
       if (count >= limits.maxCronJobsPerWorkspace) {
         throw new Error(
@@ -365,7 +368,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       `Scheduled: ${name}`,
       createdBy || "system",
       prompt.slice(0, 500),
-      getDefaultLlmModel(provider),
+      getDefaultLlmModel(provider, llmProviderConfig?.provider),
       provider,
     )) as OrgThread;
     return created.id;
@@ -396,7 +399,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       `Scheduled: ${prompt.name}`,
       "system",
       prompt.prompt.slice(0, 500),
-      getDefaultLlmModel(provider),
+      getDefaultLlmModel(provider, llmProviderConfig?.provider),
       provider,
     )) as OrgThread;
 
@@ -429,7 +432,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     const threadId = await this.ensureRunnableThread(prompt, workspace);
     const chatThreadStub = this.env.CHAT_THREAD.get(
       this.env.CHAT_THREAD.idFromName(threadId),
-    ) as DurableObjectStub<ExternalMessageRpc>;
+    ) as unknown as ExternalMessageRpc;
 
     try {
       const payload = await chatThreadStub.externalMessage({

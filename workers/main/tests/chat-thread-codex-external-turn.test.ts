@@ -2,12 +2,41 @@ import { describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO } from '../src/durable-objects';
 
 describe('ChatThreadDO Codex external turn completion', () => {
+  it('persists and broadcasts todo state from direct runner events', async () => {
+    const put = vi.fn();
+    const deleteKey = vi.fn();
+    const sent: string[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.currentTodos = [];
+    fake.ctx = {
+      storage: { kv: { put, delete: deleteKey } },
+      getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
+    };
+    fake.trace = vi.fn();
+
+    await ChatThreadDO.prototype.setTodoState.call(fake, [
+      { content: 'Check state', status: 'in_progress' },
+    ]);
+
+    expect(put).toHaveBeenCalledWith('chatTodos', [
+      { content: 'Check state', status: 'in_progress' },
+    ]);
+    expect(sent.map((message) => JSON.parse(message))).toContainEqual({
+      type: 'todo_state',
+      todos: [{ content: 'Check state', status: 'in_progress' }],
+    });
+
+    await ChatThreadDO.prototype.setTodoState.call(fake, []);
+
+    expect(deleteKey).toHaveBeenCalledWith('chatTodos');
+  });
+
   it('waits for the final result event instead of resolving on turn/completed', () => {
     const resolve = vi.fn();
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
     fake.lastRunnerSeq = 0;
-    fake.runnerActivityGeneration = 0;
     fake.pendingQuestions = new Map();
     fake.pendingExternalTurn = {
       resolve,
@@ -63,8 +92,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.chatIsStreaming = false;
     fake.pendingExternalTurn = null;
     fake.pendingQuestions = new Map();
-    fake.runnerActivityGeneration = 0;
-    fake.runnerIntentionalIdleDisconnect = false;
     fake.ctx = {
       storage: { kv: { put: vi.fn() } },
       waitUntil: vi.fn(),

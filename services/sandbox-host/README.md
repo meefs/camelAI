@@ -71,6 +71,7 @@ Local-mode defaults (non-Linux):
 - `WORKSPACES_ROOT=.sandbox-host/workspaces`
 - `SANDBOX_HOST_STATE_DB=.sandbox-host/state.db`
 - `CONTAINER_PROXY_BASE_URL=http://host.docker.internal:${SANDBOX_PROXY_PORT}/proxy` (override if your Docker gateway differs)
+- `CONTAINER_IDLE_TIMEOUT_MS=300000` by default. Workspace containers are stopped after five minutes without proxy/tool work; open chat websockets alone do not keep a container alive. `IDLE_TIMEOUT_MS` remains supported as a legacy alias.
 
 Run locally:
 
@@ -85,6 +86,22 @@ bun run dev:sandbox-host
 - watches sandbox image inputs and rebuilds on change by default (`SANDBOX_WATCH_IMAGE=0` to disable)
 - loads local secrets from process env first, then `.dev.vars`, then `infra/terraform.tfvars`/`infra/*.auto.tfvars` when present
 - `publish` builds the renderer bundle at runtime inside the container (no prebuilt `sandbox/create-worker/renderer-dist` required)
+- installs Pi into `.sandbox-host/host-pi` and uses `services/sandbox-host/pi/container-tools.ts` as the local Pi extension and `sandbox/skills` as the local Pi skill bundle
+
+The agent process runs on the host, while the extension dispatches `bash`, `read`, `write`, `edit`,
+`ls`, `grep`, and `find` into the Docker workspace container. The sandbox image mirrors the same platform skills at
+`/opt/chiridion-host-pi/skills`; read-only file tools translate host skill paths to that container
+mirror so bundled skill resources are still read from inside the sandbox. `WebSearch` and `WebFetch` call
+sandbox-host's loopback web proxy, which rotates across Firecrawl, Parallel, and Exa with fallback; set
+`FIRECRAWL_API_KEY`, `PARALLEL_API_KEY`, and/or `EXA_API_KEY` in process env or `.dev.vars` for local use.
+Firecrawl usage is charged internally at the same fixed estimates as Parallel (`$0.005` search,
+`$0.001` fetch), regardless of Firecrawl credit-pack pricing.
+`Explore`/`Agent` spawn isolated
+host-side Pi subprocesses that load the same container-scoped extension and shared platform skill
+bundle; read-only explore agents expose only container read/search/fetch tools and default to
+`gpt-5.4-mini` for Codex sessions or Haiku for Claude sessions. By default, the host Pi runner uses
+the thread's selected model; set `HOST_PI_MODEL` only when you want to force a specific Pi
+provider/model id for local debugging.
 
 Force local image refresh options:
 

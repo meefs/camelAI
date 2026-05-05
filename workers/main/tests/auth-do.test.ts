@@ -266,7 +266,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.first_user_message).toBe('hello');
     });
 
-    it('locks per-thread model after creation', async () => {
+    it('persists per-thread model changes after creation', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
@@ -274,12 +274,32 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus');
       expect(thread.model).toBe('opus');
+      expect(thread.provider).toBe('claude');
 
       const updated = await orgStub.updateThreadModel(thread.id, 'sonnet', userId);
-      expect(updated?.model).toBe('opus');
+      expect(updated?.model).toBe('sonnet');
+      expect(updated?.provider).toBe('claude');
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('opus');
+      expect(stored?.model).toBe('sonnet');
+      expect(stored?.provider).toBe('claude');
+    });
+
+    it('persists model family changes on the active thread', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus');
+      const updated = await orgStub.updateThreadModel(thread.id, 'gpt-5.4-mini', userId);
+
+      expect(updated?.model).toBe('gpt-5.4-mini');
+      expect(updated?.provider).toBe('codex');
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.model).toBe('gpt-5.4-mini');
+      expect(stored?.provider).toBe('codex');
     });
   });
 

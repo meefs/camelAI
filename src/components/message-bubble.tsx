@@ -1,7 +1,7 @@
 'use client';
 
-import { Copy, Check } from 'lucide-react';
-import type { Integration, Message, ContentBlock, ToolResultBlock } from '@/types';
+import { Copy, Check, GitFork } from 'lucide-react';
+import type { Message, ContentBlock, ToolResultBlock, Integration } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -478,6 +478,8 @@ interface MessageBubbleProps {
   message: Message;
   onCopy: (id: string, content: string) => void;
   copiedId: string | null;
+  onFork?: (id: string) => void;
+  forkingId?: string | null;
   /** Whether to show the streaming loading indicator (only true for the last streaming message) */
   showStreamingIndicator?: boolean;
   /** Keep the message in "running" visual state and hide finalized actions (used during compaction). */
@@ -492,6 +494,8 @@ export function MessageBubble({
   message,
   onCopy,
   copiedId,
+  onFork,
+  forkingId = null,
   showStreamingIndicator = false,
   suppressFinalizedState = false,
   skillSheets,
@@ -550,6 +554,7 @@ export function MessageBubble({
 
   const { currentWorkspace } = useAuthData();
   const isCopied = copiedId === message.id;
+  const isForking = forkingId === message.id;
   const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
   const hasContent = typeof message.content === 'string'
     ? message.content.length > 0
@@ -745,6 +750,24 @@ export function MessageBubble({
           <span className="text-muted-foreground text-xs mr-1">
             {formatMessageTime(assistantTimestamp)}
           </span>
+          {onFork && !isStreaming && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground"
+                  disabled={isForking}
+                  onClick={() => onFork(message.id)}
+                >
+                  <GitFork />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {isForking ? 'Forking...' : 'Fork from here'}
+              </TooltipContent>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

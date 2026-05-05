@@ -36,6 +36,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         content: entry.avatar.content,
       },
       is_orphaned: entry.is_orphaned,
+      signup_ip: entry.signup_ip,
     })),
     total_users: overview.total_users,
     total_orgs: overview.total_orgs,

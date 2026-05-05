@@ -1,29 +1,77 @@
-import { useEffect, useRef } from 'react';
-import { useLoaderData, useRevalidator } from 'react-router';
-import type { Route } from './+types/_app.chat._index';
-import { requireAuthContext, requireSessionWorkspaceAccess } from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import { getOrgBillingOverview } from '@/lib/billing.server';
+import { useEffect, useRef } from "react";
+import { useLoaderData, useRevalidator } from "react-router";
+import type { Route } from "./+types/_app.chat._index";
 import {
-  applyDevBillingCreditStatusOverride,
-  buildBillingCreditStatus,
-  getDevChatInitialError,
-} from '@/lib/chat-credit-status';
-import { waitUntil } from '@/lib/wait-until';
-import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
-import { getWorkerScript } from '@/lib/auth-do';
+  requireAuthContext,
+  requireSessionWorkspaceAccess,
+} from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import {
+  getOrgBillingOverview,
+  type OrgBillingOverview,
+} from "@/lib/billing.server";
+import { waitUntil } from "@/lib/wait-until";
+import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
+import { getWorkerScript } from "@/lib/auth-do";
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getDefaultThreadProvider,
   isLlmModelAllowedForNewThread,
-} from '@/lib/llm-provider-config';
-import * as chatDO from '@/lib/chat-do.server';
-import { consumeSalesPrompt, getPromptKeyFromUrl } from '@/lib/sales-prompt.server';
-import Chat from '@/components/Chat';
-import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { ChatHarness, Integration, LlmModel, LlmProvider, Thread, WorkerScriptWithCreator } from '@/types';
-import { useAuthData } from '@/hooks/use-auth-data';
+} from "@/lib/llm-provider-config";
+import * as chatDO from "@/lib/chat-do.server";
+import {
+  consumeSalesPrompt,
+  getPromptKeyFromUrl,
+} from "@/lib/sales-prompt.server";
+import Chat from "@/components/Chat";
+import { NoWorkspacesError } from "@/components/no-workspaces-error";
+import type {
+  ChatHarness,
+  Integration,
+  LlmModel,
+  LlmProvider,
+  Thread,
+  WorkerScriptWithCreator,
+} from "@/types";
+import { useAuthData } from "@/hooks/use-auth-data";
+
+function buildBillingCreditStatus(
+  overview: OrgBillingOverview | null,
+  hasByokProvider: boolean,
+) {
+  if (!overview || overview.billing_status === "enterprise") {
+    return null;
+  }
+  if (overview.total_credit_limit_cents <= 0) {
+    return null;
+  }
+
+  const usedPercent = Math.min(
+    100,
+    Math.max(
+      0,
+      Math.round(
+        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
+          100,
+      ),
+    ),
+  );
+  const isExhausted = overview.available_credits_cents <= 0;
+  const isLow = !isExhausted && usedPercent >= 80;
+  if (!isLow && !isExhausted) {
+    return null;
+  }
+
+  return {
+    availableCreditsCents: overview.available_credits_cents,
+    totalCreditLimitCents: overview.total_credit_limit_cents,
+    usedPercent,
+    isLow,
+    isExhausted,
+    hasByokProvider,
+  };
+}
 
 /**
  * Skip loader revalidation after createThread — the user is navigating away
@@ -36,14 +84,14 @@ export function shouldRevalidate({
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
-  if (formData?.get('intent') === 'createThread') return false;
+  if (formData?.get("intent") === "createThread") return false;
   return defaultShouldRevalidate;
 }
 
 export function meta() {
   return [
-    { title: 'New Chat - camelAI' },
-    { name: 'description', content: 'Start a new AI chat' },
+    { title: "New Chat - camelAI" },
+    { name: "description", content: "Start a new AI chat" },
   ];
 }
 
@@ -53,7 +101,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authEnv = getAuthEnv(env);
   const url = new URL(request.url);
   const promptKey = getPromptKeyFromUrl(url);
-  const hostname = request.headers.get('host')?.split(':')[0] || undefined;
+  const hostname = request.headers.get("host")?.split(":")[0] || undefined;
   const workspaceId = authContext.currentWorkspace?.id;
   const userId = authContext.user?.id ?? null;
   const userName = authContext.user?.name ?? null;
@@ -68,81 +116,94 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     try {
       salesPrompt = await consumeSalesPrompt(env.APP_KV, promptKey);
     } catch (error) {
-      console.error('Failed to consume sales prompt for welcome screen:', error);
+      console.error(
+        "Failed to consume sales prompt for welcome screen:",
+        error,
+      );
     }
   }
 
-  const allAppsPromise: Promise<WorkerScriptWithCreator[]> = workspaceId && authContext.currentOrg?.id
-    ? (async () => {
-        const scripts = await authEnv.ORG.get(
-          authEnv.ORG.idFromName(authContext.currentOrg.id)
-        ).listWorkerScripts();
+  const allAppsPromise: Promise<WorkerScriptWithCreator[]> =
+    workspaceId && authContext.currentOrg?.id
+      ? (async () => {
+          const scripts = await authEnv.ORG.get(
+            authEnv.ORG.idFromName(authContext.currentOrg.id),
+          ).listWorkerScripts();
 
-        const filteredScripts = scripts
-          .filter((script) => script.workspace_id === workspaceId)
-          .sort((a, b) => b.updated_at - a.updated_at);
+          const filteredScripts = scripts
+            .filter((script) => script.workspace_id === workspaceId)
+            .sort((a, b) => b.updated_at - a.updated_at);
 
-        const creatorIds = Array.from(
-          new Set(filteredScripts.map((script) => script.created_by).filter(Boolean))
-        );
-        const creatorProfiles = await Promise.all(
-          creatorIds.map(async (id) => {
-            const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
-            return [id, profile] as const;
-          })
-        );
-        const creatorMap = new Map(creatorProfiles.filter(([, profile]) => profile !== null));
+          const creatorIds = Array.from(
+            new Set(
+              filteredScripts
+                .map((script) => script.created_by)
+                .filter(Boolean),
+            ),
+          );
+          const creatorProfiles = await Promise.all(
+            creatorIds.map(async (id) => {
+              const profile = await authEnv.USER.get(
+                authEnv.USER.idFromName(id),
+              ).getProfile();
+              return [id, profile] as const;
+            }),
+          );
+          const creatorMap = new Map(
+            creatorProfiles.filter(([, profile]) => profile !== null),
+          );
 
-        return filteredScripts.map((script) => {
-          const creator = creatorMap.get(script.created_by);
-          return {
-            script_name: script.script_name,
-            workspace_id: script.workspace_id,
-            created_by: script.created_by,
-            created_at: script.created_at,
-            updated_at: script.updated_at,
-            is_public: script.is_public,
-            preview_key: script.preview_key,
-            preview_updated_at: script.preview_updated_at,
-            preview_status: script.preview_status,
-            preview_error: script.preview_error,
-            config_path: script.config_path,
-            custom_domain_hostname: script.custom_domain_hostname,
-            custom_domain_cf_hostname_id: script.custom_domain_cf_hostname_id,
-            custom_domain_status: script.custom_domain_status,
-            custom_domain_ssl_status: script.custom_domain_ssl_status,
-            custom_domain_error: script.custom_domain_error,
-            custom_domain_updated_at: script.custom_domain_updated_at,
-            creator: creator
-              ? {
-                  id: creator.id,
-                  name: creator.name,
-                  email: creator.email,
-                  avatar: creator.avatar,
-                }
-              : undefined,
-          };
-        });
-      })().catch((error) => {
-        console.error('Failed to load workspace apps:', error);
-        return [];
-      })
-    : Promise.resolve([]);
+          return filteredScripts.map((script) => {
+            const creator = creatorMap.get(script.created_by);
+            return {
+              script_name: script.script_name,
+              workspace_id: script.workspace_id,
+              created_by: script.created_by,
+              created_at: script.created_at,
+              updated_at: script.updated_at,
+              is_public: script.is_public,
+              preview_key: script.preview_key,
+              preview_updated_at: script.preview_updated_at,
+              preview_status: script.preview_status,
+              preview_error: script.preview_error,
+              config_path: script.config_path,
+              custom_domain_hostname: script.custom_domain_hostname,
+              custom_domain_cf_hostname_id: script.custom_domain_cf_hostname_id,
+              custom_domain_status: script.custom_domain_status,
+              custom_domain_ssl_status: script.custom_domain_ssl_status,
+              custom_domain_error: script.custom_domain_error,
+              custom_domain_updated_at: script.custom_domain_updated_at,
+              creator: creator
+                ? {
+                    id: creator.id,
+                    name: creator.name,
+                    email: creator.email,
+                    avatar: creator.avatar,
+                  }
+                : undefined,
+            };
+          });
+        })().catch((error) => {
+          console.error("Failed to load workspace apps:", error);
+          return [];
+        })
+      : Promise.resolve([]);
 
   const recentThreadsPromise: Promise<Thread[]> = workspaceId
-    ? chatDO.getRecentThreads(context, workspaceId, 6, userId ?? undefined).catch((error) => {
-        console.error('Failed to load recent threads:', error);
-        return [];
-      })
+    ? chatDO
+        .getRecentThreads(context, workspaceId, 6, userId ?? undefined)
+        .catch((error) => {
+          console.error("Failed to load recent threads:", error);
+          return [];
+        })
     : Promise.resolve([]);
 
-  const workspaceNamespace = env.WORKSPACE;
-  const connectionsPromise: Promise<Integration[]> = workspaceId && workspaceNamespace
-    ? workspaceNamespace.get(workspaceNamespace.idFromName(workspaceId))
+  const connectionsPromise: Promise<Integration[]> = workspaceId
+    ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
         .getIntegrations()
         .then((records) => records.map(integrationRecordToIntegration))
         .catch((error) => {
-          console.error('Failed to load workspace connections:', error);
+          console.error("Failed to load workspace connections:", error);
           return [];
         })
     : Promise.resolve([]);
@@ -152,23 +213,26 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     recentThreadsPromise,
     connectionsPromise,
   ]);
-  const orgStub = workspaceId && authContext.currentOrg?.id
-    ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
-    : null;
+  const orgStub =
+    workspaceId && authContext.currentOrg?.id
+      ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
+      : null;
   const [llmProviderConfig, experimentalSettings, orgInfo] = orgStub
     ? await Promise.all([
         orgStub.getLlmProviderConfig().catch(() => null),
-        orgStub.getExperimentalSettings().catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
+        orgStub
+          .getExperimentalSettings()
+          .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
         orgStub.getInfo().catch(() => null),
       ])
-    : [null, DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null] as const;
+    : ([null, DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null] as const);
   const threadProvider: ChatHarness = getDefaultThreadProvider(
     llmProviderConfig?.provider,
     experimentalSettings,
   );
   const billingOverview = orgInfo
     ? await getOrgBillingOverview(env, orgInfo).catch((error) => {
-        console.warn('Failed to load billing overview for chat:', error);
+        console.warn("Failed to load billing overview for chat:", error);
         return null;
       })
     : null;
@@ -176,16 +240,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return {
     workspaceId: workspaceId ?? null,
     threadProvider,
-    threadModel: getDefaultLlmModel(threadProvider),
-    allowedThreadModels: null,
-    billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(
-        billingOverview,
-        Boolean(llmProviderConfig),
-      ),
-      url.searchParams,
+    threadModel: getDefaultLlmModel(
+      threadProvider,
+      llmProviderConfig?.provider,
     ),
-    initialChatError: getDevChatInitialError(url.searchParams),
+    allowedThreadModels: null,
+    billingCreditStatus: buildBillingCreditStatus(
+      billingOverview,
+      Boolean(llmProviderConfig),
+    ),
     llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     experimentalSettings,
     hostname,
@@ -202,31 +265,42 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export async function action({ request, context }: Route.ActionArgs) {
   // Security-critical write path: validate current workspace membership/access
   // without loading full auth context.
-  const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(request, context, undefined, {
-    requireWrite: true,
-  });
+  const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
+    request,
+    context,
+    undefined,
+    {
+      requireWrite: true,
+    },
+  );
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
   const formData = await request.formData();
-  const intent = formData.get('intent');
+  const intent = formData.get("intent");
 
-  if (intent === 'createThread') {
+  if (intent === "createThread") {
     try {
-      const initialTitle = formData.get('initialTitle') as string | null;
-      const firstMessage = formData.get('firstMessage') as string | null;
-      const previewAppsRaw = formData.get('previewApps') as string | null;
-      const rawModel = formData.get('model');
-      const model = typeof rawModel === 'string' ? rawModel : null;
+      const initialTitle = formData.get("initialTitle") as string | null;
+      const firstMessage = formData.get("firstMessage") as string | null;
+      const previewAppsRaw = formData.get("previewApps") as string | null;
+      const rawModel = formData.get("model");
+      const model = typeof rawModel === "string" ? rawModel : null;
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       const llmProviderConfig = await orgStub.getLlmProviderConfig();
       const experimentalSettings = await orgStub.getExperimentalSettings();
-      if (model !== null && !isLlmModelAllowedForNewThread(
-        model,
-        llmProviderConfig?.provider,
-        experimentalSettings,
-      )) {
-        return Response.json({ error: 'Invalid thread model' }, { status: 400 });
+      if (
+        model !== null &&
+        !isLlmModelAllowedForNewThread(
+          model,
+          llmProviderConfig?.provider,
+          experimentalSettings,
+        )
+      ) {
+        return Response.json(
+          { error: "Invalid thread model" },
+          { status: 400 },
+        );
       }
 
       const thread = await chatDO.createThread(
@@ -235,17 +309,17 @@ export async function action({ request, context }: Route.ActionArgs) {
         initialTitle || undefined,
         userId,
         firstMessage || undefined,
-        (model as LlmModel | null) ?? undefined
+        (model as LlmModel | null) ?? undefined,
       );
 
       // Set preview apps if provided (for "chat with this app" flow)
       if (previewAppsRaw) {
-        const previewApps = previewAppsRaw.split(',').filter(Boolean);
+        const previewApps = previewAppsRaw.split(",").filter(Boolean);
         if (previewApps.length > 0) {
           const scriptName = previewApps[0];
           const script = await getWorkerScript(authEnv, orgId, scriptName);
           await chatDO.setThreadPreviewTarget(context, thread.id, {
-            kind: 'app',
+            kind: "app",
             scriptName,
             isPublic: script?.is_public ?? false,
           });
@@ -259,20 +333,24 @@ export async function action({ request, context }: Route.ActionArgs) {
             context,
             thread.id,
             workspaceId,
-            firstMessage
-          )
+            firstMessage,
+          ),
         );
       }
 
       return Response.json({ thread });
     } catch (error) {
-      console.error('Failed to create thread:', error);
-      const message = error instanceof Error ? error.message : 'Failed to create thread';
-      return Response.json({ error: message || 'Failed to create thread' }, { status: 500 });
+      console.error("Failed to create thread:", error);
+      const message =
+        error instanceof Error ? error.message : "Failed to create thread";
+      return Response.json(
+        { error: message || "Failed to create thread" },
+        { status: 500 },
+      );
     }
   }
 
-  return Response.json({ error: 'Unknown intent' }, { status: 400 });
+  return Response.json({ error: "Unknown intent" }, { status: 400 });
 }
 
 export default function NewChatPage() {
@@ -283,7 +361,6 @@ export default function NewChatPage() {
     threadModel,
     allowedThreadModels,
     billingCreditStatus,
-    initialChatError,
     hostname,
     userId,
     userName,
@@ -328,7 +405,6 @@ export default function NewChatPage() {
       threadModel={threadModel}
       allowedThreadModels={allowedThreadModels}
       billingCreditStatus={billingCreditStatus}
-      initialError={initialChatError}
       initialWelcomeInput={salesPrompt}
     />
   );

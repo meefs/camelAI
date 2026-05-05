@@ -268,7 +268,7 @@ class MockWebSocket {
 }
 
 function getMainSocket(): MockWebSocket {
-  const socket = MockWebSocket.instances.find((s) => s.url.includes('/ws/ws-1'));
+  const socket = MockWebSocket.instances.find((s) => s.url.includes('/ws/runner/ws-1'));
   if (!socket) throw new Error('Main chat WebSocket was not created');
   return socket;
 }
@@ -320,6 +320,7 @@ function emitCompactionSummaryBlock(socket: MockWebSocket, summary: string) {
 }
 
 const OriginalWebSocket = globalThis.WebSocket;
+const OriginalFetch = globalThis.fetch;
 
 beforeAll(() => {
   for (const method of ['scrollTo', 'scrollIntoView']) {
@@ -335,11 +336,18 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(
+    new Response(JSON.stringify({ messages: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  )) as unknown as typeof fetch;
 });
 
 afterEach(() => {
   vi.useRealTimers();
   globalThis.WebSocket = OriginalWebSocket;
+  globalThis.fetch = OriginalFetch;
 });
 
 // ---------------------------------------------------------------------------

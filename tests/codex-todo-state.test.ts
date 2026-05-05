@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import { applyRuntimeEventToMessages } from '@/lib/runtime-message-state';
-import type { Message } from '@/types';
+import type { ContentBlock, Message } from '@/types';
+
+function findToolUse(messages: Message[], id: string) {
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    const block = (message.content as ContentBlock[]).find(
+      (entry) => entry.type === 'tool_use' && entry.id === id,
+    );
+    if (block?.type === 'tool_use') return block;
+  }
+  return undefined;
+}
 
 describe('Codex todo state integration', () => {
   it('maps turn/plan/updated to a TodoWrite tool block', () => {
@@ -30,17 +41,7 @@ describe('Codex todo state integration', () => {
     expect(message.isStreaming).toBe(true);
     expect(Array.isArray(message.content)).toBe(true);
 
-    const toolUse = (message.content as Message['content'] & Array<unknown>).find(
-      (block) => block && typeof block === 'object' && (block as { type?: unknown }).type === 'tool_use',
-    ) as {
-      type: 'tool_use';
-      id: string;
-      name: string;
-      input: {
-        explanation?: string;
-        todos?: Array<{ content: string; status: string; activeForm: string }>;
-      };
-    } | undefined;
+    const toolUse = findToolUse(messages, 'turn:plan:todo');
 
     expect(toolUse?.name).toBe('TodoWrite');
     expect(toolUse?.id).toBe('turn:plan:todo');
@@ -50,5 +51,157 @@ describe('Codex todo state integration', () => {
       { content: 'Patch proxy env', status: 'in_progress', activeForm: 'Patch proxy env' },
       { content: 'Retry deploy', status: 'pending', activeForm: 'Retry deploy' },
     ]);
+  });
+
+  it('canonicalizes Pi dynamic tool aliases for live tool cards', () => {
+    const streamingIds: Record<string, string | null> = {};
+
+    let messages = applyRuntimeEventToMessages(
+      [],
+      'thread-1',
+      'codex',
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'tool-web-search',
+            type: 'dynamicToolCall',
+            tool: 'web_search',
+            arguments: { query: 'Pi coding agent docs' },
+            status: 'running',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'tool-todo',
+            type: 'dynamicToolCall',
+            tool: 'todo_write',
+            arguments: {
+              todos: [{ content: 'Check aliases', status: 'completed', activeForm: 'Checking aliases' }],
+            },
+            status: 'completed',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    const webSearch = findToolUse(messages, 'tool-web-search');
+    expect(webSearch?.name).toBe('WebSearch');
+    expect(webSearch?.input.query).toBe('Pi coding agent docs');
+    expect(webSearch?.input.rawToolName).toBe('web_search');
+
+    const todo = findToolUse(messages, 'tool-todo');
+    expect(todo?.name).toBe('TodoWrite');
+    expect(todo?.input.todos).toEqual([
+      { content: 'Check aliases', status: 'completed', activeForm: 'Checking aliases' },
+    ]);
+    expect(todo?.input.rawToolName).toBe('todo_write');
+  });
+
+  it('preserves Pi dynamic tool input when completion omits arguments', () => {
+    const streamingIds: Record<string, string | null> = {};
+
+    let messages = applyRuntimeEventToMessages(
+      [],
+      'thread-1',
+      'codex',
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'tool-web-fetch',
+            type: 'dynamicToolCall',
+            tool: 'web_fetch',
+            arguments: { url: 'https://example.com' },
+            status: 'running',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'tool-web-fetch',
+            type: 'dynamicToolCall',
+            tool: 'web_fetch',
+            status: 'completed',
+            result: 'ok',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    const webFetch = findToolUse(messages, 'tool-web-fetch');
+    expect(webFetch?.name).toBe('WebFetch');
+    expect(webFetch?.input.url).toBe('https://example.com');
+    expect(webFetch?.input.status).toBe('completed');
+    expect(webFetch?.input.rawToolName).toBe('web_fetch');
+  });
+
+  it('preserves command descriptions when completion omits optional fields', () => {
+    const streamingIds: Record<string, string | null> = {};
+
+    let messages = applyRuntimeEventToMessages(
+      [],
+      'thread-1',
+      'codex',
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'tool-bash',
+            type: 'commandExecution',
+            command: 'pwd',
+            description: 'Check workspace directory',
+            status: 'running',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'tool-bash',
+            type: 'commandExecution',
+            command: 'pwd',
+            status: 'completed',
+            aggregatedOutput: '/home/claude\n',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    const bash = findToolUse(messages, 'tool-bash');
+    expect(bash?.name).toBe('Bash');
+    expect(bash?.input.command).toBe('pwd');
+    expect(bash?.input.description).toBe('Check workspace directory');
+    expect(bash?.input.status).toBe('completed');
   });
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync, watch } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const repoRoot = process.cwd();
@@ -13,10 +13,21 @@ const imageTag = process.env.SANDBOX_IMAGE
   ? configuredImageTag
   : (imageVersion ? `chiridion-sandbox:${imageVersion}` : configuredImageTag);
 const localPersistRoot = resolve(repoRoot, '.sandbox-host');
+const localHostPiRoot = resolve(localPersistRoot, 'host-pi');
+const localHostPiPackagePath = resolve(localHostPiRoot, 'package.json');
+const localHostPiBinPath = resolve(localHostPiRoot, 'node_modules/.bin/pi');
+const localHostPiExtensionDir = resolve(localHostPiRoot, 'extensions');
+const localHostPiExtensionPath = resolve(localHostPiExtensionDir, 'container-tools.ts');
+const localHostPiSkillsPath = resolve(localHostPiRoot, 'skills');
+const sourceHostPiExtensionPath = resolve(repoRoot, 'services/sandbox-host/pi/container-tools.ts');
+const sourceHostPiSkillsPath = resolve(repoRoot, 'sandbox/skills');
+const piCodingAgentVersion = (process.env.PI_CODING_AGENT_VERSION || '0.73.0').trim() || '0.73.0';
+const typeboxVersion = (process.env.TYPEBOX_VERSION || '1.1.37').trim() || '1.1.37';
 
 const watchImage = process.env.SANDBOX_WATCH_IMAGE !== '0';
 const watchDebounceMs = Number.parseInt(process.env.SANDBOX_WATCH_DEBOUNCE_MS || '1500', 10) || 1500;
 const buildNoCache = process.env.SANDBOX_BUILD_NO_CACHE === '1';
+const skipImageBuild = process.env.SANDBOX_SKIP_IMAGE_BUILD === '1';
 
 let shuttingDown = false;
 let sandboxHostProc = null;
@@ -27,9 +38,6 @@ let debounceTimer = null;
 
 const watchTargets = [
   dockerfilePath,
-  resolve(repoRoot, 'sandbox/control-plane.mjs'),
-  resolve(repoRoot, 'sandbox/team-poll-controller.mjs'),
-  resolve(repoRoot, 'sandbox/team-poll-state.mjs'),
   resolve(repoRoot, 'sandbox/memory-logger.mjs'),
   resolve(repoRoot, 'sandbox/entrypoint.sh'),
   resolve(repoRoot, 'sandbox/skills'),
@@ -38,6 +46,9 @@ const watchTargets = [
   resolve(repoRoot, 'src/components/chat-file-preview'),
   resolve(repoRoot, 'src/styles/globals.css'),
   resolve(repoRoot, 'vite.renderer.config.ts'),
+];
+const ignoredWatchPathSegments = [
+  `${resolve(repoRoot, 'sandbox/create-worker/renderer-dist')}/`,
 ];
 
 function stripWrappingQuotes(value) {
@@ -173,8 +184,34 @@ async function buildImage(reason) {
   }
 }
 
+async function ensureLocalHostPi() {
+  mkdirSync(localHostPiExtensionDir, { recursive: true });
+  writeFileSync(localHostPiPackagePath, JSON.stringify({
+    name: 'chiridion-local-host-pi',
+    private: true,
+    type: 'module',
+    dependencies: {
+      '@mariozechner/pi-coding-agent': piCodingAgentVersion,
+      typebox: typeboxVersion,
+    },
+  }, null, 2) + '\n');
+  copyFileSync(sourceHostPiExtensionPath, localHostPiExtensionPath);
+  cpSync(sourceHostPiSkillsPath, localHostPiSkillsPath, { recursive: true });
+
+  console.log(`[dev:sandbox-host] Installing local host Pi into ${localHostPiRoot}...`);
+  await spawnStreaming('npm', ['install', '--prefix', localHostPiRoot, '--omit=dev', '--loglevel=warn'], {
+    cwd: repoRoot,
+  });
+}
+
 function scheduleRebuild(event, filename, targetPath) {
   if (shuttingDown) return;
+  const changedPath = filename
+    ? resolve(targetPath, String(filename))
+    : targetPath;
+  if (ignoredWatchPathSegments.some((ignored) => `${changedPath}/`.startsWith(ignored))) {
+    return;
+  }
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
@@ -234,15 +271,31 @@ async function main() {
   if (buildNoCache) {
     console.log('[dev:sandbox-host] Docker build cache disabled (SANDBOX_BUILD_NO_CACHE=1).');
   }
-  await buildImage('startup');
+  if (skipImageBuild) {
+    console.log(`[dev:sandbox-host] Skipping sandbox image build; using existing ${imageTag}.`);
+  } else {
+    await buildImage('startup');
+  }
 
-  const closeWatchers = startWatchers();
+  const closeWatchers = skipImageBuild ? [] : startWatchers();
 
   const env = { ...process.env, SANDBOX_IMAGE: imageTag };
   const { devVars, tfVars } = loadLocalEnvHints();
 
   if (!env.WORKSPACES_ROOT) env.WORKSPACES_ROOT = resolve(localPersistRoot, 'workspaces');
   if (!env.SANDBOX_HOST_STATE_DB) env.SANDBOX_HOST_STATE_DB = resolve(localPersistRoot, 'state.db');
+  if (!env.GODEBUG) {
+    env.GODEBUG = 'netdns=go';
+  } else if (!env.GODEBUG.split(',').some((entry) => entry.trim().startsWith('netdns='))) {
+    env.GODEBUG = `${env.GODEBUG},netdns=go`;
+  }
+
+  await ensureLocalHostPi();
+  if (!env.HOST_PI_PATH) env.HOST_PI_PATH = localHostPiBinPath;
+  if (!env.HOST_PI_EXTENSION_PATH) env.HOST_PI_EXTENSION_PATH = localHostPiExtensionPath;
+  if (!env.HOST_PI_SKILLS_PATH) env.HOST_PI_SKILLS_PATH = localHostPiSkillsPath;
+  if (!env.HOST_PI_SESSION_ROOT) env.HOST_PI_SESSION_ROOT = resolve(localPersistRoot, 'pi-sessions');
+  console.log(`[dev:sandbox-host] Host Pi runner enabled (${env.HOST_PI_PATH})`);
 
   const loadedSandboxProxyFromDevVars = applyEnvFallback(env, 'SANDBOX_PROXY_SECRET', devVars.SANDBOX_PROXY_SECRET);
   const loadedSandboxProxyFromTfvars = !loadedSandboxProxyFromDevVars
@@ -286,6 +339,23 @@ async function main() {
     }
   }
 
+  const webProviderMappings = [
+    ['FIRECRAWL_API_KEY', 'firecrawl_api_key'],
+    ['PARALLEL_API_KEY', 'parallel_api_key'],
+    ['EXA_API_KEY', 'exa_api_key'],
+  ];
+  const loadedWebProvidersFromDevVars = [];
+  const loadedWebProvidersFromTfvars = [];
+  for (const [envKey, tfKey] of webProviderMappings) {
+    if (applyEnvFallback(env, envKey, devVars[envKey])) {
+      loadedWebProvidersFromDevVars.push(envKey);
+      continue;
+    }
+    if (applyEnvFallback(env, envKey, tfVars[tfKey])) {
+      loadedWebProvidersFromTfvars.push(envKey);
+    }
+  }
+
   if (loadedSandboxProxyFromDevVars) {
     console.log('[dev:sandbox-host] Loaded SANDBOX_PROXY_SECRET from .dev.vars');
   } else if (loadedSandboxProxyFromTfvars) {
@@ -302,6 +372,12 @@ async function main() {
   } else if (loadedGatewayFromTfvars) {
     console.log('[dev:sandbox-host] Loaded AI Gateway vars from infra tfvars');
   }
+  if (loadedWebProvidersFromDevVars.length > 0) {
+    console.log(`[dev:sandbox-host] Loaded web provider vars from .dev.vars: ${loadedWebProvidersFromDevVars.join(', ')}`);
+  }
+  if (loadedWebProvidersFromTfvars.length > 0) {
+    console.log(`[dev:sandbox-host] Loaded web provider vars from infra tfvars: ${loadedWebProvidersFromTfvars.join(', ')}`);
+  }
   if (!env.SANDBOX_PROXY_SECRET) {
     console.warn('[dev:sandbox-host] SANDBOX_PROXY_SECRET is not set; proxy calls from sandbox to worker will fail.');
   }
@@ -311,6 +387,9 @@ async function main() {
   }
   if (!env.OPENAI_PROXY_AUTH_TOKEN && !env.CF_GATEWAY_TOKEN) {
     console.warn('[dev:sandbox-host] OPENAI proxy auth token is not set; OPENAI proxy requests will fail.');
+  }
+  if (!env.FIRECRAWL_API_KEY && !env.PARALLEL_API_KEY && !env.EXA_API_KEY) {
+    console.warn('[dev:sandbox-host] No web provider API key is set; WebSearch/WebFetch will fail until FIRECRAWL_API_KEY, PARALLEL_API_KEY, or EXA_API_KEY is configured.');
   }
 
   dataProxyProc = spawn('go', ['run', './cmd/data-proxy'], {

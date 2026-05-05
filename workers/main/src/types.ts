@@ -20,8 +20,8 @@ export interface Env
     DOEnv,
     WorkspaceContainerEnv,
     DataProxyEnv,
-    CfApiProxyEnv,
-    McpEnv {
+    Omit<CfApiProxyEnv, "CHAT_THREAD">,
+    Omit<McpEnv, "CHAT_THREAD" | "MCP_OBJECT"> {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
@@ -61,6 +61,10 @@ export interface Env
   BILLING_ENTERPRISE_ORG_SLUGS?: string;
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
+  LOCAL_AUTH_BYPASS?: string;
+  LOCAL_AUTH_USER_EMAIL?: string;
+  LOCAL_AUTH_USER_NAME?: string;
+  LOCAL_WORKER_BASE_URL?: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;

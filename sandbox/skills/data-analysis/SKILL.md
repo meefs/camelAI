@@ -359,33 +359,6 @@ mysql_engine = create_engine("mysql+pymysql://user:pass@host/db")
 mysql_df = pd.read_sql("SELECT * FROM orders", mysql_engine)
 ```
 
-### BigQuery
-
-**Important:** BigQuery connections in camelAI use **OAuth access tokens**, not service account JSON files directly. The platform automatically generates short-lived access tokens from the user's service account JSON key and exposes them as environment variables. Always use this token-based approach.
-
-When a BigQuery integration named e.g. "Production" is connected, these env vars are available:
-- `INT_BIGQUERY_PRODUCTION_ACCESS_TOKEN` — short-lived OAuth token (auto-refreshed by the platform)
-- `INT_BIGQUERY_PRODUCTION_PROJECT_ID` — the GCP project ID
-
-```python
-import os
-from google.cloud import bigquery
-from google.oauth2.credentials import Credentials
-
-# Get the access token and project from environment variables.
-# Replace PRODUCTION with the actual integration name (uppercased, non-alphanumeric → underscores).
-access_token = os.environ["INT_BIGQUERY_PRODUCTION_ACCESS_TOKEN"]
-project_id = os.environ["INT_BIGQUERY_PRODUCTION_PROJECT_ID"]
-
-# Create client using the OAuth access token — do NOT use from_service_account_json()
-credentials = Credentials(token=access_token)
-client = bigquery.Client(project=project_id, credentials=credentials)
-
-df = client.query("SELECT * FROM dataset.table").to_dataframe()
-```
-
-**Do NOT** use `bigquery.Client.from_service_account_json()` or try to read a service account JSON file. The raw service account key is never available in the container — only the derived access token is exposed.
-
 ## File Formats
 
 | Package | Purpose | Status |
@@ -424,7 +397,7 @@ When the user wants a **live dashboard**, **data app**, or any interactive web U
 - shadcn/ui components for charts, tables, and UI
 - Deployment via `bun deploy`
 
-Database connection credentials are available as environment variables in deployed workers (same `INT_*` env vars documented above), so dashboards can query databases directly at runtime.
+Database connection credentials are available as secrets in deployed workers, so dashboards can query databases directly at runtime.
 
 ## Additional Packages
 

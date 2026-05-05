@@ -31,3 +31,6 @@ r2_bucket_name            = "chiridion-sandbox"
 cf_account_id             = "85bbd288051330fb51ee1c86031a299b"
 cf_gateway_name           = "chiridion"
 cf_gateway_token          = "replace-with-cf-gateway-token"
+
+# Exa credentials for host-side Pi WebSearch/WebFetch tools
+exa_api_key               = "replace-with-exa-api-key"

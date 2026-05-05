@@ -51,6 +51,10 @@ export interface McpEnv extends WorkspaceContainerEnv {
   CF_API_TOKEN?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
   CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
+  ASSETS?: Fetcher;
+  IMAGES?: ImagesBinding;
+  NEXTJS_ENV?: string;
+  WORKER_SELF_REFERENCE?: Fetcher;
 }
 
 // Headers used to pass auth context to the MCP DO
@@ -88,7 +92,13 @@ interface ParsedFilePreviewPath {
 /**
  * MCP Agent implementation with deployment management tools
  */
-export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Record<string, unknown>> {
+export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<string, unknown>> {
+  declare env: McpEnv;
+
+  // agents currently depends on a nested MCP SDK version, while the Worker uses
+  // the app-level SDK package. Runtime shapes match; keep the app-level import
+  // so tool registration remains strongly typed in this file.
+  // @ts-expect-error SDK private fields differ across package copies.
   server = new McpServer({
     name: 'chiridion-mcp',
     version: '1.0.0',

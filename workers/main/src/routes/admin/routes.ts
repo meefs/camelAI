@@ -12,14 +12,14 @@
  * in index.ts — they only handle routing and business logic.
  */
 
-import { Hono } from 'hono';
-import { openApi } from 'hono-zod-openapi';
-import { z } from 'zod';
-import type { Env } from '../../types.js';
+import { Hono } from "hono";
+import { openApi } from "hono-zod-openapi";
+import { z } from "zod";
+import type { Env } from "../../types.js";
 import {
   buildPublicLlmProviderConfig,
   THREAD_MODEL_LOCK_MESSAGE,
-} from '../../../../../src/lib/llm-provider-config.js';
+} from "../../../../../src/lib/llm-provider-config.js";
 import type {
   UserFilters,
   ThreadFilters,
@@ -30,13 +30,13 @@ import type {
   AdminUserSummaryRow,
   AdminThreadListRow,
   AdminAppListRow,
-} from '../../admin-index-do.js';
+} from "../../admin-index-do.js";
 import type {
   DashboardRetentionOptions,
   DashboardRetentionResponse,
   DashboardSummaryOptions,
   DashboardSummaryResponse,
-} from '../../admin-dashboard-metrics.js';
+} from "../../admin-dashboard-metrics.js";
 import {
   ErrorSchema,
   StatsResponseSchema,
@@ -105,12 +105,12 @@ import {
   normalizeInternalDomains,
   type OrgUsageAnalyticsItem,
   type DailySpendDashboardResponse,
-} from './metrics.js';
-import { parseDateOnlyUtc } from '../../admin-dashboard-metrics.js';
+} from "./metrics.js";
+import { parseDateOnlyUtc } from "../../admin-dashboard-metrics.js";
 import {
   getBlocklistDomainsFromKV,
   setBlocklistInKV,
-} from '../../../../../src/lib/email-domain-blocklist.js';
+} from "../../../../../src/lib/email-domain-blocklist.js";
 import {
   getAdminIndexStub,
   getOrgStub,
@@ -156,7 +156,10 @@ function centsFromUsd(value: number): number {
   return Math.round(value * 100);
 }
 
-async function fetchChargeableUsageCents(env: Env, orgId: string): Promise<number> {
+async function fetchChargeableUsageCents(
+  env: Env,
+  orgId: string,
+): Promise<number> {
   const response = await fetchSandboxHostUsage(
     env,
     `/v1/usage/orgs/${encodeURIComponent(orgId)}/log/sum?from=0&to=${Date.now()}&chargeable_only=1`,
@@ -164,7 +167,7 @@ async function fetchChargeableUsageCents(env: Env, orgId: string): Promise<numbe
   if (!response.ok) {
     throw new Error(`Sandbox host returned ${response.status}`);
   }
-  const data = await response.json() as { total_cost_usd?: number };
+  const data = (await response.json()) as { total_cost_usd?: number };
   return centsFromUsd(Number(data.total_cost_usd ?? 0));
 }
 
@@ -177,8 +180,8 @@ type AdminOrgDirectoryLookup = {
     search?: string,
     filters?: {
       archived?: boolean;
-      sort_by?: 'created_at' | 'name';
-      sort_dir?: 'asc' | 'desc';
+      sort_by?: "created_at" | "name";
+      sort_dir?: "asc" | "desc";
       exclude_org_ids?: string[];
       exclude_creator_domains?: string[];
     },
@@ -205,8 +208,12 @@ type AdminOrgDirectoryLookup = {
 };
 
 type DashboardMetricsLookup = {
-  computeDashboardSummary(options: DashboardSummaryOptions): Promise<DashboardSummaryResponse>;
-  computeRetentionData(options?: DashboardRetentionOptions): Promise<DashboardRetentionResponse>;
+  computeDashboardSummary(
+    options: DashboardSummaryOptions,
+  ): Promise<DashboardSummaryResponse>;
+  computeRetentionData(
+    options?: DashboardRetentionOptions,
+  ): Promise<DashboardRetentionResponse>;
 };
 
 function enrichOrgListItems(
@@ -292,10 +299,10 @@ async function getAdminOrgLlmProvider(env: Env, orgId: string) {
 
 async function getAdminOrgLlmProviderMap(env: Env, orgIds: string[]) {
   const entries = await Promise.all(
-    orgIds.map(async (orgId) => [
-      orgId,
-      await getAdminOrgLlmProvider(env, orgId),
-    ] as const),
+    orgIds.map(
+      async (orgId) =>
+        [orgId, await getAdminOrgLlmProvider(env, orgId)] as const,
+    ),
   );
   return new Map(entries);
 }
@@ -303,16 +310,41 @@ async function getAdminOrgLlmProviderMap(env: Env, orgIds: string[]) {
 async function notifyThreadMetadataChange(
   env: Env,
   threadId: string,
-  updates: { title?: string; model?: 'haiku' | 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini' }
+  updates: {
+    title?: string;
+    model?:
+      | "haiku"
+      | "sonnet"
+      | "opus"
+      | "gpt-5.4"
+      | "gpt-5.4-mini"
+      | "kimi-k2.6"
+      | "grok-4.3";
+  },
 ): Promise<void> {
-  if (!env.CHAT_THREAD || typeof env.CHAT_THREAD.get !== 'function' || typeof env.CHAT_THREAD.idFromName !== 'function') {
+  if (
+    !env.CHAT_THREAD ||
+    typeof env.CHAT_THREAD.get !== "function" ||
+    typeof env.CHAT_THREAD.idFromName !== "function"
+  ) {
     return;
   }
 
   try {
-    const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId)) as unknown as {
+    const chatThread = env.CHAT_THREAD.get(
+      env.CHAT_THREAD.idFromName(threadId),
+    ) as unknown as {
       setTitle(title: string): Promise<void>;
-      setModel(model: 'haiku' | 'sonnet' | 'opus' | 'gpt-5.4' | 'gpt-5.4-mini'): Promise<void>;
+      setModel(
+        model:
+          | "haiku"
+          | "sonnet"
+          | "opus"
+          | "gpt-5.4"
+          | "gpt-5.4-mini"
+          | "kimi-k2.6"
+          | "grok-4.3",
+      ): Promise<void>;
       refreshRunnerConfig(): Promise<void>;
     };
 
@@ -324,16 +356,24 @@ async function notifyThreadMetadataChange(
       await chatThread.refreshRunnerConfig();
     }
   } catch (error) {
-    console.error('[admin api] failed to notify ChatThreadDO of thread metadata change', {
-      threadId,
-      updates,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    console.error(
+      "[admin api] failed to notify ChatThreadDO of thread metadata change",
+      {
+        threadId,
+        updates,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
   }
 }
 
 function toDailySpendBillingPlan(status: string | null | undefined): string {
-  return status === 'paying' || status === 'active' || status === 'trialing' || status === 'enterprise' ? 'pro' : 'free';
+  return status === "paying" ||
+    status === "active" ||
+    status === "trialing" ||
+    status === "enterprise"
+    ? "pro"
+    : "free";
 }
 
 function toDailySpendPct(value: number, total: number): number {
@@ -468,11 +508,19 @@ routes.put(
     const userId = c.req.param("id");
     const body = c.req.valid("json");
     const hasAvailableOverride = body.available_credits_cents !== undefined;
-    const hasPurchaseOverride = body.billing_credit_purchase_total_cents !== undefined;
-    const hasGrantOverride = body.billing_credit_grant_total_cents !== undefined;
-    const hasUsageStartOverride = body.billing_credit_usage_started_at !== undefined;
+    const hasPurchaseOverride =
+      body.billing_credit_purchase_total_cents !== undefined;
+    const hasGrantOverride =
+      body.billing_credit_grant_total_cents !== undefined;
+    const hasUsageStartOverride =
+      body.billing_credit_usage_started_at !== undefined;
 
-    if (!hasAvailableOverride && !hasPurchaseOverride && !hasGrantOverride && !hasUsageStartOverride) {
+    if (
+      !hasAvailableOverride &&
+      !hasPurchaseOverride &&
+      !hasGrantOverride &&
+      !hasUsageStartOverride
+    ) {
       return c.json(
         {
           error:
@@ -489,15 +537,23 @@ routes.put(
     }
 
     const memberships = await userStub.getOrgs();
-    const targetOrgId = body.org_id?.trim() || (memberships.length === 1 ? memberships[0]?.org_id : null);
+    const targetOrgId =
+      body.org_id?.trim() ||
+      (memberships.length === 1 ? memberships[0]?.org_id : null);
     if (!targetOrgId) {
       return c.json(
-        { error: "org_id is required when the user belongs to zero or multiple organizations" },
+        {
+          error:
+            "org_id is required when the user belongs to zero or multiple organizations",
+        },
         400,
       );
     }
     if (!memberships.some((membership) => membership.org_id === targetOrgId)) {
-      return c.json({ error: "User is not a member of the target organization" }, 400);
+      return c.json(
+        { error: "User is not a member of the target organization" },
+        400,
+      );
     }
 
     const orgStub = getOrgStub(c.env, targetOrgId);
@@ -508,7 +564,10 @@ routes.put(
 
     let chargeableUsageCents: number;
     try {
-      chargeableUsageCents = await fetchChargeableUsageCents(c.env, targetOrgId);
+      chargeableUsageCents = await fetchChargeableUsageCents(
+        c.env,
+        targetOrgId,
+      );
     } catch (error) {
       return c.json(
         {
@@ -524,7 +583,10 @@ routes.put(
     const previousPurchase = orgInfo.billing_credit_purchase_total_cents ?? 0;
     const previousGrant = orgInfo.billing_credit_grant_total_cents ?? 0;
     const previousTotal = previousPurchase + previousGrant;
-    const previousAvailable = Math.max(0, previousTotal - chargeableUsageCents);
+    const previousAvailable = Math.max(
+      0,
+      previousTotal - chargeableUsageCents,
+    );
 
     const nextPurchase = hasPurchaseOverride
       ? body.billing_credit_purchase_total_cents!
@@ -534,17 +596,20 @@ routes.put(
       : previousGrant;
 
     if (hasAvailableOverride) {
-      // Preserve the purchased-credit accounting field and use grant total as
-      // the admin adjustment so the visible available balance reaches the
-      // requested value after already-chargeable usage is deducted.
-      nextGrant = body.available_credits_cents! + chargeableUsageCents - nextPurchase;
+      // Preserve purchased-credit accounting and apply the balance correction
+      // through grants so available credits match after chargeable usage.
+      nextGrant =
+        body.available_credits_cents! + chargeableUsageCents - nextPurchase;
     }
 
     const nextOrg = await orgStub.updateBillingState({
       billing_credit_purchase_total_cents: nextPurchase,
       billing_credit_grant_total_cents: nextGrant,
       ...(hasUsageStartOverride
-        ? { billing_credit_usage_started_at: body.billing_credit_usage_started_at ?? null }
+        ? {
+            billing_credit_usage_started_at:
+              body.billing_credit_usage_started_at ?? null,
+          }
         : {}),
     });
     if (!nextOrg) {
@@ -558,17 +623,24 @@ routes.put(
       user_id: userId,
       org_id: targetOrgId,
       chargeable_usage_cents: chargeableUsageCents,
-      available_credits_cents: Math.max(0, totalCreditLimitCents - chargeableUsageCents),
+      available_credits_cents: Math.max(
+        0,
+        totalCreditLimitCents - chargeableUsageCents,
+      ),
       total_credit_limit_cents: totalCreditLimitCents,
-      billing_credit_purchase_total_cents: nextOrg.billing_credit_purchase_total_cents ?? 0,
-      billing_credit_grant_total_cents: nextOrg.billing_credit_grant_total_cents ?? 0,
-      billing_credit_usage_started_at: nextOrg.billing_credit_usage_started_at ?? null,
+      billing_credit_purchase_total_cents:
+        nextOrg.billing_credit_purchase_total_cents ?? 0,
+      billing_credit_grant_total_cents:
+        nextOrg.billing_credit_grant_total_cents ?? 0,
+      billing_credit_usage_started_at:
+        nextOrg.billing_credit_usage_started_at ?? null,
       previous: {
         available_credits_cents: previousAvailable,
         total_credit_limit_cents: previousTotal,
         billing_credit_purchase_total_cents: previousPurchase,
         billing_credit_grant_total_cents: previousGrant,
-        billing_credit_usage_started_at: orgInfo.billing_credit_usage_started_at ?? null,
+        billing_credit_usage_started_at:
+          orgInfo.billing_credit_usage_started_at ?? null,
       },
     });
   },
@@ -579,9 +651,9 @@ routes.put(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/spam/org-ids',
+  "/spam/org-ids",
   openApi({
-    summary: 'List spam org IDs from effective spend limits',
+    summary: "List spam org IDs from effective spend limits",
     responses: {
       200: SpamOrgIdsResponseSchema,
       502: ErrorSchema,
@@ -592,7 +664,15 @@ routes.get(
       const orgIds = await fetchSpamOrgIds(c.env);
       return c.json({ org_ids: orgIds, count: orgIds.length });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : 'Failed to load spam org IDs' }, 502);
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load spam org IDs",
+        },
+        502,
+      );
     }
   },
 );
@@ -772,21 +852,28 @@ routes.get(
         include_llm_provider,
         sort_by,
         sort_dir,
-      } = c.req.valid('query');
-      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      } = c.req.valid("query");
+      const adminIndex = getAdminIndexStub(
+        c.env,
+      ) as unknown as AdminOrgDirectoryLookup;
       const internalDomains = exclude_internal_domains
         ? Array.from(normalizeInternalDomains(exclude_internal_domains))
         : [];
       // /orgs is an additive admin list endpoint, so internal-domain filtering
       // stays opt-in here instead of defaulting to camelai.com.
       const spamOrgIds = exclude_spam ? await fetchSpamOrgIds(c.env) : [];
-      const result = await adminIndex.getOrgDirectoryPaginated(offset, limit, search, {
-        archived,
-        sort_by,
-        sort_dir,
-        exclude_creator_domains: internalDomains,
-        exclude_org_ids: spamOrgIds,
-      });
+      const result = await adminIndex.getOrgDirectoryPaginated(
+        offset,
+        limit,
+        search,
+        {
+          archived,
+          sort_by,
+          sort_dir,
+          exclude_creator_domains: internalDomains,
+          exclude_org_ids: spamOrgIds,
+        },
+      );
       const pagedOrgs = result.items;
       const needsUsage = include_usage === true || include_spend_30d === true;
       const usageByOrgId = needsUsage
@@ -798,7 +885,10 @@ routes.get(
         : new Map<string, OrgUsageAnalyticsItem>();
       const llmProviderByOrgId =
         include_llm_provider === true
-          ? await getAdminOrgLlmProviderMap(c.env, pagedOrgs.map((org) => org.id))
+          ? await getAdminOrgLlmProviderMap(
+              c.env,
+              pagedOrgs.map((org) => org.id),
+            )
           : undefined;
 
       return c.json({
@@ -812,7 +902,15 @@ routes.get(
         limit: result.limit,
       });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : 'Failed to load organizations' }, 502);
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load organizations",
+        },
+        502,
+      );
     }
   },
 );
@@ -822,9 +920,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/orgs/llm-providers',
+  "/orgs/llm-providers",
   openApi({
-    summary: 'List orgs with bring-your-own-key LLM providers configured',
+    summary: "List orgs with bring-your-own-key LLM providers configured",
     request: {
       query: OrgLlmProvidersQuerySchema,
     },
@@ -835,8 +933,10 @@ routes.get(
   }),
   async (c) => {
     try {
-      const { limit, offset, search, provider } = c.req.valid('query');
-      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const { limit, offset, search, provider } = c.req.valid("query");
+      const adminIndex = getAdminIndexStub(
+        c.env,
+      ) as unknown as AdminOrgDirectoryLookup;
       const result = await adminIndex.getOrgLlmProviderDirectoryPaginated(
         offset,
         limit,
@@ -887,7 +987,7 @@ routes.get(
           error:
             error instanceof Error
               ? error.message
-              : 'Failed to load BYOK organizations',
+              : "Failed to load BYOK organizations",
         },
         502,
       );
@@ -1034,7 +1134,8 @@ routes.post(
 routes.post(
   "/orgs/:id/custom-domain/refresh",
   openApi({
-    summary: "Refresh Cloudflare custom hostname validation for an org custom domain",
+    summary:
+      "Refresh Cloudflare custom hostname validation for an org custom domain",
     request: {
       json: RefreshOrgCustomDomainBodySchema,
     },
@@ -1049,9 +1150,13 @@ routes.post(
     const body = c.req.valid("json");
 
     try {
-      const result = await refreshOrgCustomDomainHostnamesForAdmin(c.env, orgId, {
-        includeActive: body.include_active,
-      });
+      const result = await refreshOrgCustomDomainHostnamesForAdmin(
+        c.env,
+        orgId,
+        {
+          includeActive: body.include_active,
+        },
+      );
       if (!result) {
         return c.json({ error: "Organization not found" }, 404);
       }
@@ -1117,9 +1222,9 @@ routes.post(
 // ---------------------------------------------------------------------------
 
 routes.put(
-  '/signup-blocked-ips/:ip',
+  "/signup-blocked-ips/:ip",
   openApi({
-    summary: 'Block signup attempts from an IP address',
+    summary: "Block signup attempts from an IP address",
     request: {
       json: BlockSignupIpBodySchema,
     },
@@ -1129,13 +1234,13 @@ routes.put(
     },
   }),
   async (c) => {
-    const rawIp = decodeURIComponent(c.req.param('ip'));
+    const rawIp = decodeURIComponent(c.req.param("ip"));
     const normalizedIp = rawIp.trim().toLowerCase();
     if (!normalizedIp) {
-      return c.json({ error: 'IP required' }, 400);
+      return c.json({ error: "IP required" }, 400);
     }
 
-    const body = c.req.valid('json');
+    const body = c.req.valid("json");
     const blockedBy = body.blocked_by?.trim() || null;
     const reason = body.reason?.trim() || null;
     const blockedAt = Date.now();
@@ -1158,19 +1263,19 @@ routes.put(
 // ---------------------------------------------------------------------------
 
 routes.delete(
-  '/signup-blocked-ips/:ip',
+  "/signup-blocked-ips/:ip",
   openApi({
-    summary: 'Remove an IP address from the signup blocklist',
+    summary: "Remove an IP address from the signup blocklist",
     responses: {
       200: BlockedSignupIpSchema,
       400: ErrorSchema,
     },
   }),
   async (c) => {
-    const rawIp = decodeURIComponent(c.req.param('ip'));
+    const rawIp = decodeURIComponent(c.req.param("ip"));
     const normalizedIp = rawIp.trim().toLowerCase();
     if (!normalizedIp) {
-      return c.json({ error: 'IP required' }, 400);
+      return c.json({ error: "IP required" }, 400);
     }
 
     const adminIndex = getAdminIndexStub(c.env);
@@ -1255,7 +1360,7 @@ routes.get(
 routes.patch(
   "/threads/:id",
   openApi({
-    summary: 'Update thread title, model, or creator',
+    summary: "Update thread title, model, or creator",
     request: {
       json: UpdateThreadBodySchema,
     },
@@ -1271,7 +1376,10 @@ routes.patch(
     const body = c.req.valid("json");
 
     if (!body.title && !body.created_by && !body.model) {
-      return c.json({ error: 'At least one of title, created_by, or model is required' }, 400);
+      return c.json(
+        { error: "At least one of title, created_by, or model is required" },
+        400,
+      );
     }
 
     // Try AdminIndexDO first (fast single-SQL lookup)
@@ -1286,7 +1394,7 @@ routes.patch(
       }
       let result;
       try {
-        result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+        result = await orgStub.adminUpdateThread(threadId, body, "admin-api");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message === THREAD_MODEL_LOCK_MESSAGE) {
@@ -1310,7 +1418,7 @@ routes.patch(
       }
       let result;
       try {
-        result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+        result = await orgStub.adminUpdateThread(threadId, body, "admin-api");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message === THREAD_MODEL_LOCK_MESSAGE) {
@@ -1408,9 +1516,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/dashboard/top-orgs',
+  "/dashboard/top-orgs",
   openApi({
-    summary: 'Top orgs ranked by spend or member count',
+    summary: "Top orgs ranked by spend or member count",
     request: {
       query: DashboardTopOrgsQuerySchema,
     },
@@ -1421,17 +1529,20 @@ routes.get(
   }),
   async (c) => {
     try {
-      const {
-        limit,
-        exclude_spam,
-        exclude_internal_domains,
-        sort_by,
-      } = c.req.valid('query');
+      const { limit, exclude_spam, exclude_internal_domains, sort_by } =
+        c.req.valid("query");
 
-      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const adminIndex = getAdminIndexStub(
+        c.env,
+      ) as unknown as AdminOrgDirectoryLookup;
       let orgs = await adminIndex.getOrgDirectoryRows();
-      const internalDomains = normalizeInternalDomains(exclude_internal_domains, ['camelai.com']);
-      orgs = orgs.filter((org) => !isOrgExcludedByInternalDomains(org, internalDomains));
+      const internalDomains = normalizeInternalDomains(
+        exclude_internal_domains,
+        ["camelai.com"],
+      );
+      orgs = orgs.filter(
+        (org) => !isOrgExcludedByInternalDomains(org, internalDomains),
+      );
 
       if (exclude_spam !== false) {
         const spamOrgIds = new Set(await fetchSpamOrgIds(c.env));
@@ -1453,7 +1564,7 @@ routes.get(
       const ranked = orgs
         .map((org) => ({ org, usage: rankingUsage.get(org.id) }))
         .sort((left, right) => {
-          if (sort_by === 'member_count') {
+          if (sort_by === "member_count") {
             if (right.org.member_count !== left.org.member_count) {
               return right.org.member_count - left.org.member_count;
             }
@@ -1465,12 +1576,14 @@ routes.get(
             return left.org.id.localeCompare(right.org.id);
           }
 
-          const leftSpend = sort_by === 'spend_30d'
-            ? (left.usage?.spend_30d ?? 0)
-            : (left.usage?.spend_7d ?? 0);
-          const rightSpend = sort_by === 'spend_30d'
-            ? (right.usage?.spend_30d ?? 0)
-            : (right.usage?.spend_7d ?? 0);
+          const leftSpend =
+            sort_by === "spend_30d"
+              ? (left.usage?.spend_30d ?? 0)
+              : (left.usage?.spend_7d ?? 0);
+          const rightSpend =
+            sort_by === "spend_30d"
+              ? (right.usage?.spend_30d ?? 0)
+              : (right.usage?.spend_7d ?? 0);
           if (rightSpend !== leftSpend) {
             return rightSpend - leftSpend;
           }
@@ -1482,9 +1595,12 @@ routes.get(
         .slice(0, limit);
 
       const topOrgIds = ranked.map(({ org }) => org.id);
-      const windowUsage = topOrgIds.length > 0
-        ? await fetchOrgUsageAnalytics(c.env, topOrgIds, { includeWindows: true })
-        : new Map<string, OrgUsageAnalyticsItem>();
+      const windowUsage =
+        topOrgIds.length > 0
+          ? await fetchOrgUsageAnalytics(c.env, topOrgIds, {
+              includeWindows: true,
+            })
+          : new Map<string, OrgUsageAnalyticsItem>();
 
       const items = ranked.map(({ org }) =>
         toDashboardTopOrgItem(org, windowUsage.get(org.id)),
@@ -1497,7 +1613,13 @@ routes.get(
         sort_by,
       });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : 'Failed to load top orgs' }, 502);
+      return c.json(
+        {
+          error:
+            error instanceof Error ? error.message : "Failed to load top orgs",
+        },
+        502,
+      );
     }
   },
 );
@@ -1507,9 +1629,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/dashboard/daily-spend',
+  "/dashboard/daily-spend",
   openApi({
-    summary: 'Cross-org daily spend dashboard metrics',
+    summary: "Cross-org daily spend dashboard metrics",
     request: {
       query: DashboardDailySpendQuerySchema,
     },
@@ -1520,14 +1642,16 @@ routes.get(
     },
   }),
   async (c) => {
-    const { date, top_orgs_limit } = c.req.valid('query');
+    const { date, top_orgs_limit } = c.req.valid("query");
     const selectedDate = date ?? new Date().toISOString().slice(0, 10);
     if (parseDateOnlyUtc(selectedDate) === null) {
-      return c.json({ error: 'Invalid date. Expected YYYY-MM-DD.' }, 400);
+      return c.json({ error: "Invalid date. Expected YYYY-MM-DD." }, 400);
     }
 
     try {
-      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const adminIndex = getAdminIndexStub(
+        c.env,
+      ) as unknown as AdminOrgDirectoryLookup;
       const includedOrgs = await adminIndex.getOrgDirectoryRows();
       const orgById = new Map(includedOrgs.map((org) => [org.id, org]));
 
@@ -1541,7 +1665,10 @@ routes.get(
         ...dailySpend,
         model_breakdown: dailySpend.model_breakdown.map((item) => ({
           ...item,
-          pct_of_total: toDailySpendPct(item.spend_usd, dailySpend.total_spend_usd),
+          pct_of_total: toDailySpendPct(
+            item.spend_usd,
+            dailySpend.total_spend_usd,
+          ),
         })),
         top_orgs: dailySpend.top_orgs.map((item) => {
           const org = orgById.get(item.org_id);
@@ -1560,7 +1687,12 @@ routes.get(
       return c.json(response);
     } catch (error) {
       return c.json(
-        { error: error instanceof Error ? error.message : 'Failed to load daily spend metrics' },
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load daily spend metrics",
+        },
         502,
       );
     }
@@ -1572,9 +1704,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/dashboard/summary',
+  "/dashboard/summary",
   openApi({
-    summary: 'Dashboard summary',
+    summary: "Dashboard summary",
     request: {
       query: DashboardSummaryQuerySchema,
     },
@@ -1585,17 +1717,21 @@ routes.get(
     },
   }),
   async (c) => {
-    const { date, exclude_spam, exclude_internal_domains } = c.req.valid('query');
+    const { date, exclude_spam, exclude_internal_domains } =
+      c.req.valid("query");
     const selectedDate = date ?? new Date().toISOString().slice(0, 10);
     if (parseDateOnlyUtc(selectedDate) === null) {
-      return c.json({ error: 'Invalid date. Expected YYYY-MM-DD.' }, 400);
+      return c.json({ error: "Invalid date. Expected YYYY-MM-DD." }, 400);
     }
 
     try {
-      const adminIndex = getAdminIndexStub(c.env) as unknown as DashboardMetricsLookup;
-      const spamOrgIds = exclude_spam !== false ? await fetchSpamOrgIds(c.env) : [];
+      const adminIndex = getAdminIndexStub(
+        c.env,
+      ) as unknown as DashboardMetricsLookup;
+      const spamOrgIds =
+        exclude_spam !== false ? await fetchSpamOrgIds(c.env) : [];
       const internalDomains = Array.from(
-        normalizeInternalDomains(exclude_internal_domains, ['camelai.com']),
+        normalizeInternalDomains(exclude_internal_domains, ["camelai.com"]),
       );
 
       const summary = await adminIndex.computeDashboardSummary({
@@ -1606,7 +1742,12 @@ routes.get(
       return c.json(summary);
     } catch (error) {
       return c.json(
-        { error: error instanceof Error ? error.message : 'Failed to load dashboard summary' },
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load dashboard summary",
+        },
         502,
       );
     }
@@ -1618,9 +1759,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/dashboard/retention',
+  "/dashboard/retention",
   openApi({
-    summary: 'Dashboard retention',
+    summary: "Dashboard retention",
     request: {
       query: DashboardRetentionQuerySchema,
     },
@@ -1630,13 +1771,16 @@ routes.get(
     },
   }),
   async (c) => {
-    const { exclude_spam, exclude_internal_domains } = c.req.valid('query');
+    const { exclude_spam, exclude_internal_domains } = c.req.valid("query");
 
     try {
-      const adminIndex = getAdminIndexStub(c.env) as unknown as DashboardMetricsLookup;
-      const spamOrgIds = exclude_spam !== false ? await fetchSpamOrgIds(c.env) : [];
+      const adminIndex = getAdminIndexStub(
+        c.env,
+      ) as unknown as DashboardMetricsLookup;
+      const spamOrgIds =
+        exclude_spam !== false ? await fetchSpamOrgIds(c.env) : [];
       const internalDomains = Array.from(
-        normalizeInternalDomains(exclude_internal_domains, ['camelai.com']),
+        normalizeInternalDomains(exclude_internal_domains, ["camelai.com"]),
       );
 
       const retention = await adminIndex.computeRetentionData({
@@ -1646,7 +1790,12 @@ routes.get(
       return c.json(retention);
     } catch (error) {
       return c.json(
-        { error: error instanceof Error ? error.message : 'Failed to load dashboard retention' },
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load dashboard retention",
+        },
         502,
       );
     }
@@ -1658,9 +1807,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/dashboard/spam-summary',
+  "/dashboard/spam-summary",
   openApi({
-    summary: 'Dashboard spam summary for spam-flagged orgs',
+    summary: "Dashboard spam summary for spam-flagged orgs",
     responses: {
       200: DashboardSpamSummaryResponseSchema,
       502: ErrorSchema,
@@ -1668,7 +1817,9 @@ routes.get(
   }),
   async (c) => {
     try {
-      const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+      const adminIndex = getAdminIndexStub(
+        c.env,
+      ) as unknown as AdminOrgDirectoryLookup;
       const spamOrgIds = await fetchSpamOrgIds(c.env);
 
       const [users, threads, apps, orgs, usageByOrgId] = await Promise.all([
@@ -1711,7 +1862,15 @@ routes.get(
         org_usage,
       });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : 'Failed to load spam summary' }, 502);
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load spam summary",
+        },
+        502,
+      );
     }
   },
 );
@@ -2009,9 +2168,9 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.get(
-  '/email-domain-blocklist',
+  "/email-domain-blocklist",
   openApi({
-    summary: 'Get email domain blocklist from KV',
+    summary: "Get email domain blocklist from KV",
     responses: {
       200: EmailDomainBlocklistSchema,
     },
@@ -2027,16 +2186,16 @@ routes.get(
 // ---------------------------------------------------------------------------
 
 routes.put(
-  '/email-domain-blocklist',
+  "/email-domain-blocklist",
   openApi({
-    summary: 'Replace email domain blocklist in KV',
+    summary: "Replace email domain blocklist in KV",
     request: { json: EmailDomainBlocklistSchema },
     responses: {
       200: EmailDomainBlocklistSchema,
     },
   }),
   async (c) => {
-    const body = c.req.valid('json');
+    const body = c.req.valid("json");
     const domains = await setBlocklistInKV(c.env.APP_KV, body.domains);
     return c.json({ domains });
   },
@@ -2047,18 +2206,21 @@ routes.put(
 // ---------------------------------------------------------------------------
 
 routes.post(
-  '/email-domain-blocklist',
+  "/email-domain-blocklist",
   openApi({
-    summary: 'Add a domain to the email domain blocklist in KV',
+    summary: "Add a domain to the email domain blocklist in KV",
     request: { json: AddEmailDomainBodySchema },
     responses: {
       200: EmailDomainBlocklistSchema,
     },
   }),
   async (c) => {
-    const body = c.req.valid('json');
+    const body = c.req.valid("json");
     const existing = await getBlocklistDomainsFromKV(c.env.APP_KV);
-    const domains = await setBlocklistInKV(c.env.APP_KV, [...existing, body.domain]);
+    const domains = await setBlocklistInKV(c.env.APP_KV, [
+      ...existing,
+      body.domain,
+    ]);
     return c.json({ domains });
   },
 );
@@ -2068,19 +2230,23 @@ routes.post(
 // ---------------------------------------------------------------------------
 
 routes.delete(
-  '/email-domain-blocklist/:domain',
+  "/email-domain-blocklist/:domain",
   openApi({
-    summary: 'Remove a domain from the email domain blocklist in KV',
+    summary: "Remove a domain from the email domain blocklist in KV",
     responses: {
       200: EmailDomainBlocklistSchema,
       404: ErrorSchema,
     },
   }),
   async (c) => {
-    const domainToRemove = decodeURIComponent(c.req.param('domain')).trim().toLowerCase().replace(/^@+/, '').replace(/\.+$/, '');
+    const domainToRemove = decodeURIComponent(c.req.param("domain"))
+      .trim()
+      .toLowerCase()
+      .replace(/^@+/, "")
+      .replace(/\.+$/, "");
     const existing = await getBlocklistDomainsFromKV(c.env.APP_KV);
     if (!existing.includes(domainToRemove)) {
-      return c.json({ error: 'Domain not found in blocklist' }, 404);
+      return c.json({ error: "Domain not found in blocklist" }, 404);
     }
     const filtered = existing.filter((d) => d !== domainToRemove);
     const domains = await setBlocklistInKV(c.env.APP_KV, filtered);

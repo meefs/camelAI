@@ -13,46 +13,12 @@ import (
 	"github.com/chiridion/sandbox-host/internal/container"
 )
 
-// Integration tests for direct Claude API forwarding (Bedrock + Anthropic).
+// Integration tests for hosted Claude API forwarding through OpenRouter on AI Gateway.
 // Requires real credentials — skipped when env vars are absent.
 //
-// Run with Anthropic:
-//   ANTHROPIC_API_KEY=... go test -run TestDirect -v -count=1 ./internal/app/
-//
-// Run with Bedrock:
-//   BEDROCK_ACCESS_TOKEN=... BEDROCK_REGION=us-west-2 go test -run TestDirect -v -count=1 ./internal/app/
-//
-// Run OpenAI gateway:
+// Run gateway tests:
 //   CF_ACCOUNT_ID=... CF_GATEWAY_NAME=... CF_GATEWAY_TOKEN=... \
 //     go test -run TestGateway -v -count=1 ./internal/app/
-
-func directTestServer(t *testing.T) *Server {
-	t.Helper()
-	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
-	bedrockToken := os.Getenv("BEDROCK_ACCESS_TOKEN")
-	bedrockRegion := os.Getenv("BEDROCK_REGION")
-	if bedrockRegion == "" {
-		bedrockRegion = "us-west-2"
-	}
-
-	if anthropicKey == "" && bedrockToken == "" {
-		t.Skip("Skipping: ANTHROPIC_API_KEY or BEDROCK_ACCESS_TOKEN required")
-	}
-
-	cfg := Config{
-		AnthropicAPIKey:    anthropicKey,
-		BedrockAccessToken: bedrockToken,
-		BedrockRegion:      bedrockRegion,
-		TraceSandboxHost:   true,
-	}
-
-	return &Server{
-		cfg:          cfg,
-		containers:   container.NewTestManager(),
-		httpClient:   &http.Client{Timeout: 120 * time.Second},
-		proxyThreads: make(map[string]*ProxyThreadContext),
-	}
-}
 
 func gatewayTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -67,7 +33,6 @@ func gatewayTestServer(t *testing.T) *Server {
 	cfg := Config{
 		AIGatewayBaseURL: "https://gateway.ai.cloudflare.com/v1/" + accountID + "/" + gatewayName,
 		AIGatewayToken:   gatewayToken,
-		AWSRegionName:    "us-west-2",
 		TraceSandboxHost: true,
 	}
 
@@ -93,8 +58,8 @@ func testCaller() *container.ContainerRecord {
 	return &container.ContainerRecord{Name: "test-container"}
 }
 
-func TestDirectClaudeNonStreaming(t *testing.T) {
-	s := directTestServer(t)
+func TestGatewayClaudeNonStreaming(t *testing.T) {
+	s := gatewayTestServer(t)
 
 	body := `{
 		"model": "claude-sonnet-4-5-20250929",
@@ -107,7 +72,7 @@ func TestDirectClaudeNonStreaming(t *testing.T) {
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	rec := httptest.NewRecorder()
-	s.forwardClaudeDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-1", time.Now())
+	s.forwardClaudeToOpenRouterGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-1", time.Now())
 
 	resp := rec.Result()
 	respBody, _ := io.ReadAll(resp.Body)
@@ -127,8 +92,8 @@ func TestDirectClaudeNonStreaming(t *testing.T) {
 	}
 }
 
-func TestDirectClaudeStreaming(t *testing.T) {
-	s := directTestServer(t)
+func TestGatewayClaudeStreaming(t *testing.T) {
+	s := gatewayTestServer(t)
 
 	body := `{
 		"model": "claude-sonnet-4-5-20250929",
@@ -142,7 +107,7 @@ func TestDirectClaudeStreaming(t *testing.T) {
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	rec := httptest.NewRecorder()
-	s.forwardClaudeDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-2", time.Now())
+	s.forwardClaudeToOpenRouterGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-2", time.Now())
 
 	resp := rec.Result()
 	respBody, _ := io.ReadAll(resp.Body)
@@ -157,36 +122,6 @@ func TestDirectClaudeStreaming(t *testing.T) {
 	bodyStr := string(respBody)
 	if !strings.Contains(bodyStr, "event:") && !strings.Contains(bodyStr, "data:") {
 		t.Fatalf("expected SSE events in response body, got: %.500s", bodyStr)
-	}
-}
-
-func TestDirectClaudeCountTokens(t *testing.T) {
-	s := directTestServer(t)
-
-	// count_tokens only works with Anthropic direct (not Bedrock).
-	if s.cfg.AnthropicAPIKey == "" {
-		t.Skip("Skipping: count_tokens requires ANTHROPIC_API_KEY")
-	}
-
-	body := `{
-		"model": "claude-sonnet-4-5-20250929",
-		"messages": [{"role": "user", "content": "Hello world"}]
-	}`
-
-	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/claude/v1/messages/count_tokens", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	rec := httptest.NewRecorder()
-	s.forwardClaudeDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages/count_tokens"}, testThreadContext(), testCaller(), "test-req-3", time.Now())
-
-	resp := rec.Result()
-	respBody, _ := io.ReadAll(resp.Body)
-	t.Logf("Status: %d", resp.StatusCode)
-	t.Logf("Body: %s", string(respBody))
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(respBody))
 	}
 }
 

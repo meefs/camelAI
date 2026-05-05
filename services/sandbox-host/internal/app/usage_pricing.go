@@ -46,6 +46,12 @@ var modelPricingTable = map[string]ModelPricing{
 		CacheCreationPerToken: 0.00000125,
 		CacheReadPerToken:     0.0000001,
 	},
+	"anthropic/claude-haiku-4.5": {
+		InputPerToken:         0.000001,
+		OutputPerToken:        0.000005,
+		CacheCreationPerToken: 0.00000125,
+		CacheReadPerToken:     0.0000001,
+	},
 	// Claude 4
 	"claude-sonnet-4-20250514": {
 		InputPerToken:         0.000003,
@@ -83,6 +89,28 @@ var modelPricingTable = map[string]ModelPricing{
 		OutputPerToken:    0.0000045,
 		CacheReadPerToken: 0.000000075,
 	},
+	// OpenRouter Kimi K2.6
+	"~moonshotai/kimi-latest": {
+		InputPerToken:  0.0000007448,
+		OutputPerToken: 0.000004655,
+	},
+	"moonshotai/kimi-k2.6": {
+		InputPerToken:  0.0000007448,
+		OutputPerToken: 0.000004655,
+	},
+	"kimi-k2.6": {
+		InputPerToken:  0.0000007448,
+		OutputPerToken: 0.000004655,
+	},
+	// OpenRouter xAI Grok 4.3
+	"x-ai/grok-4.3": {
+		InputPerToken:  0.00000125,
+		OutputPerToken: 0.0000025,
+	},
+	"grok-4.3": {
+		InputPerToken:  0.00000125,
+		OutputPerToken: 0.0000025,
+	},
 }
 
 // lookupPricing returns pricing for a model. Snapshot-style model names fall back
@@ -96,6 +124,12 @@ func lookupPricing(model string) ModelPricing {
 		return modelPricingTable["gpt-5.4-mini"]
 	case strings.HasPrefix(model, "gpt-5.4"):
 		return modelPricingTable["gpt-5.4"]
+	case strings.Contains(model, "kimi-k2.6") || strings.Contains(model, "kimi-latest"):
+		return modelPricingTable["~moonshotai/kimi-latest"]
+	case strings.Contains(model, "grok-4.3"):
+		return modelPricingTable["x-ai/grok-4.3"]
+	case strings.Contains(model, "claude-haiku-4.5"):
+		return modelPricingTable["anthropic/claude-haiku-4.5"]
 	}
 	// Fallback: Sonnet-tier pricing
 	return modelPricingTable["claude-sonnet-4-5-20250929"]

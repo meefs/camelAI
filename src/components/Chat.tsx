@@ -1,10 +1,31 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, memo } from 'react';
-import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
-import { useNavigate, useFetcher, useLocation, useRevalidator } from 'react-router';
-import { ArrowDown, CircleAlert, RefreshCw, X, ChevronDown, Globe, Lock } from 'lucide-react';
-import { toast } from 'sonner';
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  useLayoutEffect,
+  memo,
+} from "react";
+import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
+import {
+  useNavigate,
+  useFetcher,
+  useLocation,
+  useRevalidator,
+} from "react-router";
+import {
+  AlertTriangle,
+  ArrowDown,
+  RefreshCw,
+  X,
+  ChevronDown,
+  Globe,
+  Lock,
+} from "lucide-react";
+import { toast } from "sonner";
 import type {
   ChatHarness,
   Message,
@@ -19,36 +40,45 @@ import type {
   PreviewTarget,
   PreviewTab,
   OrganizationExperimentalSettings,
-} from '@/types';
-import { useAuthData } from '@/hooks/use-auth-data';
-import { useIsMobile } from '@/hooks/use-mobile';
+} from "@/types";
+import { useAuthData } from "@/hooks/use-auth-data";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { PageHeader } from '@/components/page-header';
-import { PromptInput } from '@/components/prompt-input';
-import { FloatingTodoList, type TodoItem, type TodoStatus } from '@/components/floating-todo';
-import { AskUserQuestion, type AskUserQuestionData } from '@/components/ask-user-question';
+} from "@/components/ui/tooltip";
+import { PageHeader } from "@/components/page-header";
+import { PromptInput } from "@/components/prompt-input";
+import {
+  FloatingTodoList,
+  type TodoItem,
+  type TodoStatus,
+} from "@/components/floating-todo";
+import {
+  AskUserQuestion,
+  type AskUserQuestionData,
+} from "@/components/ask-user-question";
 import {
   ConnectionSetupPrompt,
   type ConnectionSetupPromptData,
   type ConnectionSetupResponse,
-} from '@/components/connection-setup-prompt';
-import { BugReportDialog, type BugReportStatus } from '@/components/bug-report-dialog';
-import { FreeTierModal } from '@/components/free-tier-modal';
-import { OnboardingLoadingModal } from '@/components/onboarding-loading-modal';
-import type { Attachment } from '@/components/attachment-list';
-import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+} from "@/components/connection-setup-prompt";
+import {
+  BugReportDialog,
+  type BugReportStatus,
+} from "@/components/bug-report-dialog";
+import { FreeTierModal } from "@/components/free-tier-modal";
+import { OnboardingLoadingModal } from "@/components/onboarding-loading-modal";
+import type { Attachment } from "@/components/attachment-list";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
-} from '@/components/ui/resizable';
+} from "@/components/ui/resizable";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,20 +86,28 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { MessageBubble, isInterruptMessage, parseSlashCommand, parseLocalCommandStdout } from '@/components/message-bubble';
-import { LoadingDots } from '@/components/loading-dots';
-import { Skeleton } from '@/components/ui/skeleton';
-import { CompactingIndicator } from '@/components/compacting-indicator';
-import { WelcomeScreen } from '@/components/welcome-screen';
-import { FilePreviewContent, isImageFile, type NotebookPreviewLoadState } from '@/components/chat-file-preview';
-import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
-import { PreviewTabRow } from '@/components/preview-panel/preview-tabs';
-import { PreviewToolbar } from '@/components/preview-panel/preview-toolbar';
-import { getPreviewTabId } from '@/components/preview-panel/preview-utils';
-import { cn } from '@/lib/utils';
-import { buildSetAppPublicPayload } from '@/lib/app-visibility';
-import { buildSlugMap } from '@/lib/connection-mentions';
+} from "@/components/ui/dropdown-menu";
+import {
+  MessageBubble,
+  isInterruptMessage,
+  parseSlashCommand,
+  parseLocalCommandStdout,
+} from "@/components/message-bubble";
+import { LoadingDots } from "@/components/loading-dots";
+import { Skeleton } from "@/components/ui/skeleton";
+import { CompactingIndicator } from "@/components/compacting-indicator";
+import { WelcomeScreen } from "@/components/welcome-screen";
+import {
+  FilePreviewContent,
+  isImageFile,
+  type NotebookPreviewLoadState,
+} from "@/components/chat-file-preview";
+import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
+import { PreviewTabRow } from "@/components/preview-panel/preview-tabs";
+import { PreviewToolbar } from "@/components/preview-panel/preview-toolbar";
+import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
+import { cn } from "@/lib/utils";
+import { buildSetAppPublicPayload } from "@/lib/app-visibility";
 import {
   type SDKEvent,
   applyStreamingEventToMessage,
@@ -79,27 +117,32 @@ import {
   mergeTaskNotifications,
   normalizeToolResultMessages,
   mergeTeammateMessages,
-} from '@/lib/streaming';
-import { applyRuntimeEventToMessages } from '@/lib/runtime-message-state';
-import { getAppUrl, getVanityDomain, getIframeDomain, buildAppLabel } from '@/lib/app-url';
-import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
-import { isManualCompactCommand } from '@/lib/slash-commands';
-import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
-import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
+} from "@/lib/streaming";
+import { applyRuntimeEventToMessages } from "@/lib/runtime-message-state";
+import { mergeServerAndLocalMessages } from "@/lib/chat-message-merge";
+import {
+  getAppUrl,
+  getVanityDomain,
+  getIframeDomain,
+  buildAppLabel,
+} from "@/lib/app-url";
+import { uploadWorkspaceFile } from "@/lib/workspace-upload.client";
+import { isManualCompactCommand } from "@/lib/slash-commands";
+import { getFirstThreadPreviewUserMessage } from "@/lib/thread-preview";
+import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
 import {
   getDefaultLlmModel,
+  getProviderForModel,
   getVisibleLlmModelOptions,
   isLlmModel,
-  THREAD_MODEL_LOCK_MESSAGE,
-} from '@/lib/llm-provider-config';
-import type { BillingCreditStatus } from '@/lib/chat-credit-status';
+} from "@/lib/llm-provider-config";
 import {
   loadDraft,
   removeDraft,
   useDraftPersistence,
   writeDraft,
   type DraftData,
-} from '@/hooks/use-draft-persistence';
+} from "@/hooks/use-draft-persistence";
 
 interface ChatProps {
   threadId?: string;
@@ -111,7 +154,6 @@ interface ChatProps {
   llmProvider?: LlmProvider | null;
   allowedThreadModels?: LlmModel[] | null;
   billingCreditStatus?: BillingCreditStatus | null;
-  initialError?: string | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
@@ -126,8 +168,6 @@ interface ChatProps {
   /** Superuser admin read-only viewer */
   readOnly?: boolean;
   initialWelcomeInput?: string | null;
-  /** Connections available for @-mentions in the composer and message chips. */
-  connections?: Integration[];
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -138,6 +178,15 @@ interface ChatProps {
   };
 }
 
+interface BillingCreditStatus {
+  availableCreditsCents: number;
+  totalCreditLimitCents: number;
+  usedPercent: number;
+  isLow: boolean;
+  isExhausted: boolean;
+  hasByokProvider: boolean;
+}
+
 interface PendingNewThreadMessagePayload {
   message?: string;
   threadId?: string;
@@ -146,32 +195,31 @@ interface PendingNewThreadMessagePayload {
   threadProvider?: ChatHarness;
   workspaceId?: string;
   orgSlug?: string;
-  connections?: Integration[];
 }
 
 function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
-  if (typeof window === 'undefined' || !isNewThread) return false;
+  if (typeof window === "undefined" || !isNewThread) return false;
 
   try {
-    return Boolean(sessionStorage.getItem('showBootModal'));
+    return Boolean(sessionStorage.getItem("showBootModal"));
   } catch {
     return false;
   }
 }
 
 function readPendingNewThreadMessage(): PendingNewThreadMessagePayload | null {
-  if (typeof window === 'undefined') {
+  if (typeof window === "undefined") {
     return null;
   }
 
   try {
-    const stored = sessionStorage.getItem('pendingMessage:newThread');
+    const stored = sessionStorage.getItem("pendingMessage:newThread");
     if (!stored) {
       return null;
     }
 
     const parsed = JSON.parse(stored) as PendingNewThreadMessagePayload;
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
     return null;
   }
@@ -185,12 +233,15 @@ function shouldHydrateThreadDraft(threadId?: string): boolean {
   return readPendingNewThreadMessage()?.threadId !== threadId;
 }
 
-function isComposerVisiblyEmpty(text: string, attachments: Attachment[]): boolean {
+function isComposerVisiblyEmpty(
+  text: string,
+  attachments: Attachment[],
+): boolean {
   return text.trim().length === 0 && attachments.length === 0;
 }
 
 function getCompletedAttachments(attachments: Attachment[]): Attachment[] {
-  return attachments.filter((attachment) => attachment.status === 'complete');
+  return attachments.filter((attachment) => attachment.status === "complete");
 }
 
 function buildMessageContent(text: string, attachments: Attachment[]): string {
@@ -202,23 +253,29 @@ function buildMessageContent(text: string, attachments: Attachment[]): string {
 
   const fileRefs = completedAttachments
     .map((attachment) => `(user uploaded file to ${attachment.path})`)
-    .join('\n');
+    .join("\n");
   return rawContent ? `${rawContent}\n\n${fileRefs}` : fileRefs;
 }
 
-const FREE_TIER_MODAL_SEEN_PREFIX = 'freeTierModalSeen:';
-const FREE_TIER_MSG_COUNT_PREFIX = 'freeTierMsgCount:';
+const FREE_TIER_MODAL_SEEN_PREFIX = "freeTierModalSeen:";
+const FREE_TIER_MSG_COUNT_PREFIX = "freeTierMsgCount:";
 
 function shouldShowFreeTierModal(userId: string | undefined): boolean {
-  if (!userId || typeof window === 'undefined') {
+  if (!userId || typeof window === "undefined") {
     return false;
   }
 
   try {
-    if (window.localStorage.getItem(`${FREE_TIER_MODAL_SEEN_PREFIX}${userId}`) === 'true') {
+    if (
+      window.localStorage.getItem(`${FREE_TIER_MODAL_SEEN_PREFIX}${userId}`) ===
+      "true"
+    ) {
       return false;
     }
-    const count = Number(window.localStorage.getItem(`${FREE_TIER_MSG_COUNT_PREFIX}${userId}`) || '0');
+    const count = Number(
+      window.localStorage.getItem(`${FREE_TIER_MSG_COUNT_PREFIX}${userId}`) ||
+        "0",
+    );
     return count >= 3;
   } catch {
     return false;
@@ -227,11 +284,11 @@ function shouldShowFreeTierModal(userId: string | undefined): boolean {
 
 function incrementFreeTierCount(userId: string | undefined): number {
   try {
-    if (!userId || typeof window === 'undefined') {
+    if (!userId || typeof window === "undefined") {
       return 0;
     }
     const key = `${FREE_TIER_MSG_COUNT_PREFIX}${userId}`;
-    const next = Number(window.localStorage.getItem(key) || '0') + 1;
+    const next = Number(window.localStorage.getItem(key) || "0") + 1;
     window.localStorage.setItem(key, String(next));
     return next;
   } catch {
@@ -241,17 +298,20 @@ function incrementFreeTierCount(userId: string | undefined): number {
 
 function markFreeTierModalSeen(userId: string | undefined): void {
   try {
-    if (!userId || typeof window === 'undefined') {
+    if (!userId || typeof window === "undefined") {
       return;
     }
-    window.localStorage.setItem(`${FREE_TIER_MODAL_SEEN_PREFIX}${userId}`, 'true');
+    window.localStorage.setItem(
+      `${FREE_TIER_MODAL_SEEN_PREFIX}${userId}`,
+      "true",
+    );
   } catch {
     // Ignore storage failures; the modal remains dismissible in-memory.
   }
 }
 
 function safeJsonStringify(value: unknown): string {
-  if (typeof value === 'string') return value;
+  if (typeof value === "string") return value;
   try {
     return JSON.stringify(value, null, 2);
   } catch {
@@ -260,16 +320,16 @@ function safeJsonStringify(value: unknown): string {
 }
 
 function isContentBlock(value: unknown): value is ContentBlock {
-  if (!value || typeof value !== 'object' || !('type' in value)) return false;
+  if (!value || typeof value !== "object" || !("type" in value)) return false;
   const type = (value as { type?: string }).type;
   return (
-    type === 'text' ||
-    type === 'tool_use' ||
-    type === 'tool_result' ||
-    type === 'thinking' ||
-    type === 'redacted_thinking' ||
-    type === 'teammate_message' ||
-    type === 'task_notification'
+    type === "text" ||
+    type === "tool_use" ||
+    type === "tool_result" ||
+    type === "thinking" ||
+    type === "redacted_thinking" ||
+    type === "teammate_message" ||
+    type === "task_notification"
   );
 }
 
@@ -280,17 +340,19 @@ function coerceContentBlocks(value: unknown): ContentBlock[] | null {
 }
 
 // Parse message content - handles both plain string and JSON-encoded ContentBlock[]
-function parseMessageContent(content: string | ContentBlock[]): string | ContentBlock[] {
+function parseMessageContent(
+  content: string | ContentBlock[],
+): string | ContentBlock[] {
   const directBlocks = coerceContentBlocks(content);
   if (directBlocks) return directBlocks;
 
-  if (typeof content !== 'string') return safeJsonStringify(content);
+  if (typeof content !== "string") return safeJsonStringify(content);
 
   // Try to parse as JSON array of content blocks
   const trimmed = content.trim();
   if (
-    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
-    (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+    (trimmed.startsWith("{") && trimmed.endsWith("}"))
   ) {
     try {
       const parsed = JSON.parse(trimmed);
@@ -305,19 +367,6 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
   return content;
 }
 
-function mergeServerAndLocalMessages(
-  serverMessages: Message[],
-  localMessages: Message[]
-): Message[] {
-  const serverIds = new Set(serverMessages.map((msg) => msg.id));
-  const unsyncedLocalMessages = localMessages.filter((msg) => !serverIds.has(msg.id));
-  if (unsyncedLocalMessages.length === 0) {
-    return serverMessages;
-  }
-  return [...serverMessages, ...unsyncedLocalMessages]
-    .sort((a, b) => a.created_at - b.created_at);
-}
-
 /**
  * True when the message was directly authored by the user — not a
  * system-generated message that happens to carry `role: 'user'`
@@ -325,7 +374,7 @@ function mergeServerAndLocalMessages(
  * slash commands, local-command-stdout).
  */
 function isDirectUserMessage(msg: Message): boolean {
-  if (msg.role !== 'user' || msg.isCompactSummary) return false;
+  if (msg.role !== "user" || msg.isCompactSummary) return false;
   if (isInterruptMessage(msg.content)) return false;
   if (parseSlashCommand(msg.content)) return false;
   if (parseLocalCommandStdout(msg.content)) return false;
@@ -337,31 +386,37 @@ function isDirectUserMessage(msg: Message): boolean {
  * Slash commands count; compact summaries and synthetic stdout/interrupt rows do not.
  */
 function isUserTurnAnchorMessage(msg: Message): boolean {
-  if (msg.role !== 'user' || msg.isCompactSummary) return false;
+  if (msg.role !== "user" || msg.isCompactSummary) return false;
   if (isInterruptMessage(msg.content)) return false;
   if (parseLocalCommandStdout(msg.content)) return false;
   return true;
 }
 
 function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
-  return Boolean(msg && (msg.role === 'assistant' || msg.isCompactSummary));
+  return Boolean(msg && (msg.role === "assistant" || msg.isCompactSummary));
 }
 
 const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
   notebook: null,
-  status: 'idle',
+  status: "idle",
 };
 
-function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
+function extractMetaInfo(event: SDKEvent): {
+  isMeta: boolean;
+  sourceToolUseID?: string;
+} {
   const record = event as unknown as Record<string, unknown>;
-  const messageRecord = (event.message ?? {}) as unknown as Record<string, unknown>;
+  const messageRecord = (event.message ?? {}) as unknown as Record<
+    string,
+    unknown
+  >;
   const isMeta = Boolean(
     record.isMeta ??
     record.is_meta ??
     messageRecord.isMeta ??
-    messageRecord.is_meta
+    messageRecord.is_meta,
   );
-  const sourceToolUseID = (
+  const sourceToolUseID =
     record.sourceToolUseID ??
     record.sourceToolUseId ??
     record.source_tool_use_id ??
@@ -369,16 +424,19 @@ function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: 
     messageRecord.sourceToolUseID ??
     messageRecord.sourceToolUseId ??
     messageRecord.source_tool_use_id ??
-    messageRecord.parent_tool_use_id
-  );
-  return { isMeta, sourceToolUseID: typeof sourceToolUseID === 'string' ? sourceToolUseID : undefined };
+    messageRecord.parent_tool_use_id;
+  return {
+    isMeta,
+    sourceToolUseID:
+      typeof sourceToolUseID === "string" ? sourceToolUseID : undefined,
+  };
 }
 
 function getLastToolUseId(message?: Message): string | undefined {
   if (!message || !Array.isArray(message.content)) return undefined;
   for (let i = message.content.length - 1; i >= 0; i -= 1) {
     const block = message.content[i];
-    if (block && block.type === 'tool_use' && block.id) return block.id;
+    if (block && block.type === "tool_use" && block.id) return block.id;
   }
   return undefined;
 }
@@ -392,32 +450,36 @@ function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
 }
 
 function coercePreviewTarget(value: unknown): PreviewTarget | null {
-  if (!value || typeof value !== 'object') return null;
+  if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  if (record.kind === 'app') {
-    if (typeof record.scriptName !== 'string') return null;
+  if (record.kind === "app") {
+    if (typeof record.scriptName !== "string") return null;
     return {
-      kind: 'app',
+      kind: "app",
       scriptName: record.scriptName,
       isPublic: Boolean(record.isPublic),
     };
   }
 
-  if (record.kind === 'file') {
+  if (record.kind === "file") {
     if (
-      typeof record.workspaceId !== 'string' ||
-      typeof record.path !== 'string' ||
-      (record.source !== 'workspace' && record.source !== 'upload' && record.source !== 'output')
+      typeof record.workspaceId !== "string" ||
+      typeof record.path !== "string" ||
+      (record.source !== "workspace" &&
+        record.source !== "upload" &&
+        record.source !== "output")
     ) {
       return null;
     }
     return {
-      kind: 'file',
+      kind: "file",
       source: record.source,
       workspaceId: record.workspaceId,
       path: record.path,
-      filename: typeof record.filename === 'string' ? record.filename : undefined,
-      contentType: typeof record.contentType === 'string' ? record.contentType : undefined,
+      filename:
+        typeof record.filename === "string" ? record.filename : undefined,
+      contentType:
+        typeof record.contentType === "string" ? record.contentType : undefined,
     };
   }
 
@@ -433,7 +495,7 @@ interface PreviewSessionState {
 function normalizePreviewSessionState(
   tabsInput: unknown,
   activeTabIdInput: unknown,
-  fallbackTarget: unknown
+  fallbackTarget: unknown,
 ): PreviewSessionState {
   const tabs: PreviewTab[] = [];
   const tabIndexById = new Map<string, number>();
@@ -463,11 +525,10 @@ function normalizePreviewSessionState(
     upsert(fallbackTarget);
   }
 
-  const activeTabId = (
-    typeof activeTabIdInput === 'string' && tabIndexById.has(activeTabIdInput)
-  )
-    ? activeTabIdInput
-    : (tabs[0]?.id ?? null);
+  const activeTabId =
+    typeof activeTabIdInput === "string" && tabIndexById.has(activeTabIdInput)
+      ? activeTabIdInput
+      : (tabs[0]?.id ?? null);
   const target = activeTabId
     ? (tabs.find((tab) => tab.id === activeTabId)?.target ?? null)
     : null;
@@ -479,21 +540,27 @@ function MobileViewSwitcher({
   value,
   onChange,
 }: {
-  value: 'chat' | 'preview';
-  onChange: (value: 'chat' | 'preview') => void;
+  value: "chat" | "preview";
+  onChange: (value: "chat" | "preview") => void;
 }) {
   return (
     <div className="w-full bg-background px-4 py-3">
       <Tabs
         value={value}
-        onValueChange={(nextValue) => onChange(nextValue as 'chat' | 'preview')}
+        onValueChange={(nextValue) => onChange(nextValue as "chat" | "preview")}
         className="w-full"
       >
         <TabsList className="grid w-full grid-cols-2 overflow-hidden rounded-lg bg-muted/80 p-1 shadow-inner !h-11">
-          <TabsTrigger value="chat" className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9">
+          <TabsTrigger
+            value="chat"
+            className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9"
+          >
             Chat
           </TabsTrigger>
-          <TabsTrigger value="preview" className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9">
+          <TabsTrigger
+            value="preview"
+            className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9"
+          >
             Preview
           </TabsTrigger>
         </TabsList>
@@ -502,19 +569,8 @@ function MobileViewSwitcher({
   );
 }
 
-const CREDIT_SEND_BLOCKED_MESSAGE = 'Message not sent — top up credits or add an API key to continue.';
-
-const creditFormatter = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 2,
-});
-
 function formatCredits(cents: number): string {
-  // Keep this numeric-only; BillingCreditNotice owns the surrounding "credits" copy.
-  return creditFormatter.format(Math.max(0, cents) / 100);
-}
-
-function isHostedCreditExhaustedMessage(lowerMessage: string): boolean {
-  return lowerMessage.includes('credits are used up');
+  return `${(Math.max(0, cents) / 100).toFixed(2)} credits`;
 }
 
 function extractChatErrorMessage(error: unknown): string {
@@ -522,22 +578,22 @@ function extractChatErrorMessage(error: unknown): string {
     return extractChatErrorMessage(error.message);
   }
 
-  if (typeof error !== 'string') {
-    return '';
+  if (typeof error !== "string") {
+    return "";
   }
 
   const trimmed = error.trim();
   if (!trimmed) {
-    return '';
+    return "";
   }
 
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (
       parsed &&
-      typeof parsed === 'object' &&
-      'error' in parsed &&
-      typeof parsed.error === 'string'
+      typeof parsed === "object" &&
+      "error" in parsed &&
+      typeof parsed.error === "string"
     ) {
       return parsed.error;
     }
@@ -545,16 +601,18 @@ function extractChatErrorMessage(error: unknown): string {
     // Raw SDK/proxy errors often wrap JSON inside a larger message.
   }
 
-  const jsonStart = trimmed.indexOf('{');
-  const jsonEnd = trimmed.lastIndexOf('}');
+  const jsonStart = trimmed.indexOf("{");
+  const jsonEnd = trimmed.lastIndexOf("}");
   if (jsonStart !== -1 && jsonEnd > jsonStart) {
     try {
-      const parsed = JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1)) as unknown;
+      const parsed = JSON.parse(
+        trimmed.slice(jsonStart, jsonEnd + 1),
+      ) as unknown;
       if (
         parsed &&
-        typeof parsed === 'object' &&
-        'error' in parsed &&
-        typeof parsed.error === 'string'
+        typeof parsed === "object" &&
+        "error" in parsed &&
+        typeof parsed.error === "string"
       ) {
         return parsed.error;
       }
@@ -563,31 +621,34 @@ function extractChatErrorMessage(error: unknown): string {
     }
   }
 
-  return trimmed.replace(/^Error:\s*/i, '');
+  return trimmed.replace(/^Error:\s*/i, "");
 }
 
 function normalizeChatErrorMessage(error: unknown): string {
-  const message = extractChatErrorMessage(error) || 'An unknown error occurred';
+  const message = extractChatErrorMessage(error) || "An unknown error occurred";
   const lower = message.toLowerCase();
   const isBillingOrCreditError =
-    lower.includes('credit') ||
-    lower.includes('billing') ||
-    lower.includes('payment required') ||
-    lower.includes('subscription') ||
-    lower.includes('spend limit') ||
-    lower.includes('spending limit') ||
-    lower.includes('usage limit') ||
-    lower.includes('hosted model');
+    lower.includes("credit") ||
+    lower.includes("billing") ||
+    lower.includes("payment required") ||
+    lower.includes("subscription") ||
+    lower.includes("spend limit") ||
+    lower.includes("spending limit") ||
+    lower.includes("usage limit") ||
+    lower.includes("hosted model");
 
   if (isBillingOrCreditError) {
-    if (isHostedCreditExhaustedMessage(lower)) {
-      return CREDIT_SEND_BLOCKED_MESSAGE;
-    }
-
-    return message;
+    const alreadyActionable =
+      lower.includes("settings") ||
+      lower.includes("buy credits") ||
+      lower.includes("api key") ||
+      lower.includes("subscription");
+    return alreadyActionable
+      ? message
+      : `${message} Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider.`;
   }
 
-  if (lower.includes('429') || lower.includes('rate limit')) {
+  if (lower.includes("429") || lower.includes("rate limit")) {
     return `${message} Wait a minute and try again. If this is from hosted model spend limits, check Settings -> Billing.`;
   }
 
@@ -596,100 +657,76 @@ function normalizeChatErrorMessage(error: unknown): string {
 
 export function BillingCreditNotice({
   status,
+  onOpenBilling,
+  onOpenProviderSettings,
   onOpenUsage,
   onTopUp,
-  canTopUp = true,
   className,
 }: {
   status: BillingCreditStatus;
-  onOpenUsage: () => void;
-  onTopUp: () => void;
+  onOpenBilling?: () => void;
+  onOpenProviderSettings?: () => void;
+  onOpenUsage?: () => void;
+  onTopUp?: () => void;
   canTopUp?: boolean;
   className?: string;
 }) {
-  const usedCreditsCents = Math.max(
-    0,
-    status.totalCreditLimitCents - status.availableCreditsCents,
-  );
-  const usedPercent = Math.min(100, Math.max(0, status.usedPercent));
-
-  if (status.isExhausted) {
-    const description = status.hasByokProvider
-      ? canTopUp
-        ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
-        : "This thread uses a hosted model that isn't covered by your API key. Ask an organization admin to top up credits, or switch to a model your key supports."
-      : canTopUp
-        ? 'Top up to keep going, or use your own API key.'
-        : 'Ask an organization admin to top up credits, or use your own API key.';
-
-    return (
-      <div className={cn("mx-auto w-full max-w-3xl px-4 pt-3 md:px-6", className)}>
-        <div className="rounded-lg bg-foreground px-4 py-3 text-background">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <p className="text-sm font-semibold">You&apos;re out of hosted credits this month</p>
-              <p className="mt-0.5 text-xs text-background/80">
-                {description}
-              </p>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="border-background/40 bg-transparent text-background hover:bg-background/10 hover:text-background"
-                onClick={onOpenUsage}
-              >
-                View usage
-              </Button>
-              {canTopUp ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  className="bg-background text-foreground hover:bg-background/90"
-                  onClick={onTopUp}
-                >
-                  Top up
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const title = status.isExhausted
+    ? "Hosted model credits are used up"
+    : "Hosted model credits are running low";
+  const description = status.isExhausted
+    ? "Buy credits or add your own API key before sending more hosted-model messages."
+    : `${formatCredits(status.availableCreditsCents)} left of ${formatCredits(status.totalCreditLimitCents)}.`;
 
   return (
     <div className={cn("mx-auto w-full max-w-3xl px-4 pt-3 md:px-6", className)}>
-      <div className="rounded-lg border bg-card px-4 py-3 text-card-foreground">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div
+        className={cn(
+          "flex flex-col gap-3 rounded-lg border px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between",
+          status.isExhausted
+            ? "border-destructive/30 bg-destructive/10 text-destructive"
+            : "border-amber-300/50 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100",
+        )}
+      >
+        <div className="flex min-w-0 items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0">
-            <p className="text-sm font-medium">
-              {formatCredits(usedCreditsCents)} of {formatCredits(status.totalCreditLimitCents)} credits used this month
+            <p className="font-medium">{title}</p>
+            <p
+              className={cn(
+                "text-xs",
+                status.isExhausted
+                  ? "text-destructive/80"
+                  : "text-amber-900/80 dark:text-amber-100/80",
+              )}
+            >
+              {description}
+              {status.hasByokProvider
+                ? " Own-key threads do not use hosted credits."
+                : null}
             </p>
-            {status.hasByokProvider ? (
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                This thread uses a hosted model that isn&apos;t covered by your API key, so it&apos;s drawing from hosted credits.
-              </p>
-            ) : null}
           </div>
-          <div className="flex shrink-0 gap-2">
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            type="button"
+            variant={status.isExhausted ? "destructive" : "outline"}
+            size="sm"
+            onClick={onTopUp ?? onOpenBilling ?? onOpenUsage}
+          >
+            {onTopUp ? "Top up" : "Billing"}
+          </Button>
+          {!status.hasByokProvider ? (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={onOpenUsage}
+              onClick={onOpenProviderSettings ?? onOpenUsage}
             >
-              View usage
+              Use own key
             </Button>
-            {canTopUp ? (
-              <Button type="button" size="sm" onClick={onTopUp}>
-                Top up
-              </Button>
-            ) : null}
-          </div>
+          ) : null}
         </div>
-        <Progress value={usedPercent} className="mt-2 h-2" />
       </div>
     </div>
   );
@@ -703,85 +740,15 @@ export function ChatErrorNotice({
   onDismiss?: () => void;
 }) {
   return (
-    <div className="flex items-center gap-2 px-1 py-1.5 text-sm text-muted-foreground">
-      <CircleAlert className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <p className="min-w-0 flex-1 text-sm text-muted-foreground">{error}</p>
-      {onDismiss ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={onDismiss}
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
-      ) : null}
-    </div>
-  );
-}
-
-function DevChatCreditControls({
-  search,
-  onNavigate,
-}: {
-  search: string;
-  onNavigate: (nextSearch: string) => void;
-}) {
-  if (!import.meta.env.DEV) return null;
-
-  const params = new URLSearchParams(search);
-  const isEnabled = params.get('devCreditTest') === '1' || params.has('devCreditState') || params.has('devChatError');
-  if (!isEnabled) return null;
-
-  const current = params.get('devCreditState') ?? 'normal';
-  const currentError = params.get('devChatError');
-  const setState = (nextState: string | null, nextError?: string | null) => {
-    const nextParams = new URLSearchParams(search);
-    nextParams.set('devCreditTest', '1');
-    if (nextState) {
-      nextParams.set('devCreditState', nextState);
-    } else {
-      nextParams.delete('devCreditState');
-    }
-    if (nextError) {
-      nextParams.set('devChatError', nextError);
-    } else {
-      nextParams.delete('devChatError');
-    }
-    const nextSearch = nextParams.toString();
-    onNavigate(nextSearch ? `?${nextSearch}` : '');
-  };
-  const buttonVariant = (state: string, error?: string) => (
-    current === state && (error ? currentError === error : !currentError)
-      ? 'default'
-      : 'outline'
-  );
-
-  return (
-    <div className="mx-auto w-full max-w-3xl px-4 pt-3 md:px-6">
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">Credit test</span>
-        <Button type="button" size="sm" variant={buttonVariant('normal')} onClick={() => setState(null)}>
-          Normal
-        </Button>
-        <Button type="button" size="sm" variant={buttonVariant('low')} onClick={() => setState('low')}>
-          Low credits
-        </Button>
-        <Button type="button" size="sm" variant={buttonVariant('low-byok')} onClick={() => setState('low-byok')}>
-          Low + BYOK
-        </Button>
-        <Button type="button" size="sm" variant={buttonVariant('exhausted')} onClick={() => setState('exhausted')}>
-          No credits
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant('exhausted', 'out-of-credits')}
-          onClick={() => setState('exhausted', 'out-of-credits')}
-        >
-          Send failure
-        </Button>
+    <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <p className="min-w-0 flex-1">{normalizeChatErrorMessage(error)}</p>
+        {onDismiss ? (
+          <Button type="button" variant="ghost" size="icon-sm" onClick={onDismiss}>
+            <X />
+          </Button>
+        ) : null}
       </div>
     </div>
   );
@@ -806,15 +773,16 @@ function ShareStatusButton({
 }: ShareStatusButtonProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const pendingValueRef = useRef<boolean | null>(null);
-  const isPending = fetcher.state !== 'idle';
-  const optimisticIsPublic = isPending && fetcher.formData
-    ? fetcher.formData.get('isPublic') === 'true'
-    : (fetcher.data?.success && pendingValueRef.current !== null
+  const isPending = fetcher.state !== "idle";
+  const optimisticIsPublic =
+    isPending && fetcher.formData
+      ? fetcher.formData.get("isPublic") === "true"
+      : fetcher.data?.success && pendingValueRef.current !== null
         ? pendingValueRef.current
-        : isPublic);
+        : isPublic;
 
   useEffect(() => {
-    if (fetcher.state !== 'idle' || !fetcher.data) return;
+    if (fetcher.state !== "idle" || !fetcher.data) return;
 
     if (fetcher.data.success && pendingValueRef.current !== null) {
       onStatusChange?.(pendingValueRef.current);
@@ -833,7 +801,7 @@ function ShareStatusButton({
     if (!isAdmin || disabled || isPending) return;
     if (!scriptName) return;
 
-    const nextIsPublic = value === 'true';
+    const nextIsPublic = value === "true";
     if (nextIsPublic === isPublic) return;
 
     pendingValueRef.current = nextIsPublic;
@@ -843,7 +811,7 @@ function ShareStatusButton({
         isPublic: nextIsPublic,
         threadId,
       }),
-      { method: 'POST', action: '/apps' }
+      { method: "POST", action: "/apps" },
     );
   };
 
@@ -860,7 +828,7 @@ function ShareStatusButton({
                 "h-6 gap-1.5 rounded-md border px-2 text-xs font-medium",
                 optimisticIsPublic
                   ? "border-primary/20 bg-primary/5 text-primary hover:bg-primary/10 dark:border-primary/30 dark:bg-primary/10 dark:text-primary dark:hover:bg-primary/20"
-                  : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                  : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground",
               )}
             >
               {optimisticIsPublic ? (
@@ -868,7 +836,7 @@ function ShareStatusButton({
               ) : (
                 <Lock className="h-3.5 w-3.5" />
               )}
-              {optimisticIsPublic ? 'Public' : 'Private'}
+              {optimisticIsPublic ? "Public" : "Private"}
               <ChevronDown className="h-3 w-3 opacity-60" />
             </Button>
           </DropdownMenuTrigger>
@@ -878,7 +846,7 @@ function ShareStatusButton({
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>Visibility</DropdownMenuLabel>
         <DropdownMenuRadioGroup
-          value={optimisticIsPublic ? 'true' : 'false'}
+          value={optimisticIsPublic ? "true" : "false"}
           onValueChange={handleChange}
         >
           <DropdownMenuRadioItem
@@ -919,6 +887,8 @@ interface ChatMessagesViewProps {
   isLastMessageAssistantLike: boolean;
   copyMessage: (messageId: string, content: string) => void;
   copiedMessageId: string | null;
+  forkMessage?: (messageId: string) => void;
+  forkingMessageId?: string | null;
   assistantTurnActive: boolean;
   activeAssistantMessageId: string | null;
   skillSheetsByToolId: Map<string, string>;
@@ -936,7 +906,6 @@ interface ChatMessagesViewProps {
   assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
   assistantSpacerRef: RefObject<HTMLDivElement | null>;
   messagesEndRef: RefObject<HTMLDivElement | null>;
-  mentionSlugMap?: Map<string, Integration>;
 }
 
 const ChatMessagesView = memo(function ChatMessagesView({
@@ -947,6 +916,8 @@ const ChatMessagesView = memo(function ChatMessagesView({
   isLastMessageAssistantLike,
   copyMessage,
   copiedMessageId,
+  forkMessage,
+  forkingMessageId,
   assistantTurnActive,
   activeAssistantMessageId,
   skillSheetsByToolId,
@@ -964,7 +935,6 @@ const ChatMessagesView = memo(function ChatMessagesView({
   assistantPendingMeasureRef,
   assistantSpacerRef,
   messagesEndRef,
-  mentionSlugMap,
 }: ChatMessagesViewProps) {
   return (
     <>
@@ -991,12 +961,17 @@ const ChatMessagesView = memo(function ChatMessagesView({
         </>
       )}
 
-      {visibleMessages.map(msg => {
+      {visibleMessages.map((msg) => {
         const isLastUserMessage = msg.id === lastUserMessageId;
-        const isLastAssistantMessage = !isAwaitingAssistant && isLastMessageAssistantLike && msg.id === lastMessageId;
+        const isLastAssistantMessage =
+          !isAwaitingAssistant &&
+          isLastMessageAssistantLike &&
+          msg.id === lastMessageId;
         const messageRef = isLastUserMessage
           ? lastUserMessageRef
-          : (isLastAssistantMessage ? assistantMeasureRef : undefined);
+          : isLastAssistantMessage
+            ? assistantMeasureRef
+            : undefined;
         return (
           <div
             key={msg.id}
@@ -1008,19 +983,56 @@ const ChatMessagesView = memo(function ChatMessagesView({
               message={msg}
               onCopy={copyMessage}
               copiedId={copiedMessageId}
-              showStreamingIndicator={assistantTurnActive && msg.id === activeAssistantMessageId}
-              suppressFinalizedState={isCompacting && msg.id === compactingPriorMessageId}
+              onFork={forkMessage}
+              forkingId={forkingMessageId}
+              showStreamingIndicator={
+                assistantTurnActive && msg.id === activeAssistantMessageId
+              }
+              suppressFinalizedState={
+                isCompacting && msg.id === compactingPriorMessageId
+              }
               skillSheets={skillSheetsByToolId}
               hostname={hostname}
               orgSlug={orgSlug}
-              mentionSlugMap={mentionSlugMap}
             />
           </div>
         );
       })}
 
       {/* Error display */}
-      {error ? <ChatErrorNotice error={error} onDismiss={() => setError(null)} /> : null}
+      {error && (
+        <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
+          <div className="flex items-start gap-3">
+            <svg
+              className="w-5 h-5 text-destructive shrink-0 mt-0.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+              />
+            </svg>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-destructive mb-1">
+                Something went wrong
+              </p>
+              <p className="text-sm text-muted-foreground">{error}</p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={() => setError(null)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Compaction in-progress indicator */}
       {isCompacting && (
@@ -1037,7 +1049,11 @@ const ChatMessagesView = memo(function ChatMessagesView({
       )}
       {shouldRenderSpacer ? (
         <div className="flex flex-col">
-          <div ref={assistantSpacerRef} aria-hidden="true" className="pointer-events-none w-full shrink-0" />
+          <div
+            ref={assistantSpacerRef}
+            aria-hidden="true"
+            className="pointer-events-none w-full shrink-0"
+          />
           <div ref={messagesEndRef} />
         </div>
       ) : (
@@ -1059,8 +1075,8 @@ type TabRenderState = {
   filePreviewUrl: string;
   filePreviewOpenUrl: string;
   previewFileName: string;
-  notebookViewMode: 'report' | 'notebook';
-  markdownViewMode: 'rendered' | 'source';
+  notebookViewMode: "report" | "notebook";
+  markdownViewMode: "rendered" | "source";
   isNotebookPreview: boolean;
   isMarkdownPreview: boolean;
 };
@@ -1075,14 +1091,17 @@ interface PreviewPanelShellProps {
   onOpenExternal: () => void;
   onBugReportOpen: () => void;
   appShareButton?: ReactNode;
-  notebookViewMode: 'report' | 'notebook';
-  onNotebookViewModeChange: (mode: 'report' | 'notebook') => void;
-  markdownViewMode: 'rendered' | 'source';
-  onMarkdownViewModeChange: (mode: 'rendered' | 'source') => void;
+  notebookViewMode: "report" | "notebook";
+  onNotebookViewModeChange: (mode: "report" | "notebook") => void;
+  markdownViewMode: "rendered" | "source";
+  onMarkdownViewModeChange: (mode: "rendered" | "source") => void;
   filePreviewOpenUrl: string;
   activeNotebookState: NotebookPreviewLoadState;
   isNotebookPdfExporting: boolean;
-  onNotebookStateChange: (tabId: string, state: NotebookPreviewLoadState) => void;
+  onNotebookStateChange: (
+    tabId: string,
+    state: NotebookPreviewLoadState,
+  ) => void;
   onNotebookReportPdfDownload: () => void | Promise<void>;
   iframeRef: RefObject<HTMLIFrameElement | null>;
   tabRenderStates: TabRenderState[];
@@ -1145,8 +1164,12 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
         onMarkdownViewModeChange={onMarkdownViewModeChange}
         filePreviewOpenUrl={filePreviewOpenUrl}
         notebookState={isNotebookPreview ? activeNotebookState : undefined}
-        isNotebookPdfExporting={isNotebookPreview ? isNotebookPdfExporting : undefined}
-        onNotebookReportPdfDownload={isNotebookPreview ? onNotebookReportPdfDownload : undefined}
+        isNotebookPdfExporting={
+          isNotebookPreview ? isNotebookPdfExporting : undefined
+        }
+        onNotebookReportPdfDownload={
+          isNotebookPreview ? onNotebookReportPdfDownload : undefined
+        }
       />
 
       {tabRenderStates.map((state) => {
@@ -1154,21 +1177,26 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
         return (
           <div
             key={state.tabId}
-            className={cn('flex-1 min-h-0 overflow-hidden', !isActive && 'hidden')}
+            className={cn(
+              "flex-1 min-h-0 overflow-hidden",
+              !isActive && "hidden",
+            )}
           >
-            {state.target.kind === 'app' ? (
+            {state.target.kind === "app" ? (
               state.isLoading ? (
                 <div className="flex h-full w-full items-center justify-center bg-muted/30">
                   <div className="flex flex-col items-center gap-3">
                     <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">Loading preview...</span>
+                    <span className="text-sm text-muted-foreground">
+                      Loading preview...
+                    </span>
                   </div>
                 </div>
               ) : (
                 <iframe
                   ref={isActive ? iframeRef : null}
                   key={state.iframeKey}
-                  src={state.appPreviewUrl || 'about:blank'}
+                  src={state.appPreviewUrl || "about:blank"}
                   className="h-full w-full bg-white"
                   title="Deployed App Preview"
                 />
@@ -1180,11 +1208,18 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
                   previewUrl={state.filePreviewUrl}
                   contentType={state.target.contentType}
                   layout="panel"
-                  notebookViewMode={state.isNotebookPreview ? state.notebookViewMode : undefined}
-                  markdownViewMode={state.isMarkdownPreview ? state.markdownViewMode : undefined}
-                  onNotebookStateChange={state.isNotebookPreview
-                    ? (nextState) => onNotebookStateChange(state.tabId, nextState)
-                    : undefined}
+                  notebookViewMode={
+                    state.isNotebookPreview ? state.notebookViewMode : undefined
+                  }
+                  markdownViewMode={
+                    state.isMarkdownPreview ? state.markdownViewMode : undefined
+                  }
+                  onNotebookStateChange={
+                    state.isNotebookPreview
+                      ? (nextState) =>
+                          onNotebookStateChange(state.tabId, nextState)
+                      : undefined
+                  }
                 />
               </div>
             )}
@@ -1194,8 +1229,6 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
     </>
   );
 });
-
-
 
 export default function Chat({
   threadId,
@@ -1207,7 +1240,6 @@ export default function Chat({
   llmProvider,
   allowedThreadModels,
   billingCreditStatus,
-  initialError,
   experimentalSettings,
   initialPreviewTarget,
   initialPreviewTabs,
@@ -1218,67 +1250,95 @@ export default function Chat({
   isLoadingMessages = false,
   readOnly = false,
   initialWelcomeInput,
-  connections,
   welcomeData,
 }: ChatProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{
-    thread?: { id: string; title?: string; model: LlmModel; provider: ChatHarness };
+    thread?: {
+      id: string;
+      title?: string;
+      model: LlmModel;
+      provider: ChatHarness;
+    };
     error?: string;
   }>();
   const updateThreadModelFetcher = useFetcher<{
-    thread?: { id: string; model: LlmModel };
+    thread?: { id: string; model: LlmModel; provider: ChatHarness };
     error?: string;
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
-  const resolvedThreadProvider = threadProvider ?? 'claude';
-  const resolvedWorkspaceId = readOnly ? workspaceId : (currentWorkspace?.id ?? workspaceId);
+  const initialThreadProvider = threadProvider ?? "claude";
+  const resolvedWorkspaceId = readOnly
+    ? workspaceId
+    : (currentWorkspace?.id ?? workspaceId);
   // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
   // synchronous localStorage reads on every streaming re-render.
-  const initialDraftsRef = useRef<{ thread: DraftData | null; welcome: DraftData | null } | undefined>(undefined);
+  const initialDraftsRef = useRef<
+    { thread: DraftData | null; welcome: DraftData | null } | undefined
+  >(undefined);
   if (initialDraftsRef.current === undefined) {
     const shouldRestore = !readOnly && shouldHydrateThreadDraft(threadId);
     initialDraftsRef.current = {
-      thread: shouldRestore ? loadDraft(resolvedWorkspaceId, threadId ?? null) : null,
-      welcome: !readOnly && !threadId && !initialWelcomeInput
-        ? loadDraft(resolvedWorkspaceId, null)
+      thread: shouldRestore
+        ? loadDraft(resolvedWorkspaceId, threadId ?? null)
         : null,
+      welcome:
+        !readOnly && !threadId && !initialWelcomeInput
+          ? loadDraft(resolvedWorkspaceId, null)
+          : null,
     };
   }
   const initialThreadDraft = initialDraftsRef.current.thread;
   const initialWelcomeDraft = initialDraftsRef.current.welcome;
   // Anchor to last message for existing threads with messages (not new threads)
-  const shouldAnchorToLastMessage = !isNewThread && initialMessages && initialMessages.length > 0;
+  const shouldAnchorToLastMessage =
+    !isNewThread && initialMessages && initialMessages.length > 0;
 
   // Parse initial messages once
   const parsedInitialMessages = useMemo(
-    () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
-    [initialMessages]
+    () =>
+      (initialMessages ?? []).map((msg) => ({
+        ...msg,
+        content: parseMessageContent(msg.content),
+      })),
+    [initialMessages],
   );
   const initialPreviewSession = useMemo(
-    () => normalizePreviewSessionState(
-      initialPreviewTabs,
-      initialActiveTabId,
-      initialPreviewTarget
-    ),
-    [initialPreviewTabs, initialActiveTabId, initialPreviewTarget]
+    () =>
+      normalizePreviewSessionState(
+        initialPreviewTabs,
+        initialActiveTabId,
+        initialPreviewTarget,
+      ),
+    [initialPreviewTabs, initialActiveTabId, initialPreviewTarget],
   );
 
   // Local state for messages, streaming, and loading
-  const [messages, setMessagesState] = useState<Message[]>(parsedInitialMessages);
-  const [streamingMessageId, setStreamingMessageIdState] = useState<string | null>(null);
+  const [messages, setMessagesState] = useState<Message[]>(
+    parsedInitialMessages,
+  );
+  const [streamingMessageId, setStreamingMessageIdState] = useState<
+    string | null
+  >(null);
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
-  const [pendingQuestion, setPendingQuestion] = useState<AskUserQuestionData | null>(null);
-  const [connectionSetupPrompt, setConnectionSetupPrompt] = useState<ConnectionSetupPromptData | null>(null);
+  const [pendingQuestion, setPendingQuestion] =
+    useState<AskUserQuestionData | null>(null);
+  const [connectionSetupPrompt, setConnectionSetupPrompt] =
+    useState<ConnectionSetupPromptData | null>(null);
   const [bugReportOpen, setBugReportOpen] = useState(false);
-  const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
-  const [bootModalOpen, setBootModalOpen] = useState(() => shouldShowBootModalFromStorage(isNewThread));
-  const [showFreeTierModal, setShowFreeTierModal] = useState(() => shouldShowFreeTierModal(user?.id ?? undefined));
+  const [bugReportStatus, setBugReportStatus] =
+    useState<BugReportStatus>("idle");
+  const [bootModalOpen, setBootModalOpen] = useState(() =>
+    shouldShowBootModalFromStorage(isNewThread),
+  );
+  const [showFreeTierModal, setShowFreeTierModal] = useState(() =>
+    shouldShowFreeTierModal(user?.id ?? undefined),
+  );
   const [bugReportError, setBugReportError] = useState<string | null>(null);
 
   const handleFreeTierModalClose = useCallback(() => {
@@ -1289,7 +1349,7 @@ export default function Chat({
   useEffect(() => {
     if (!bootModalOpen) return;
     try {
-      sessionStorage.removeItem('showBootModal');
+      sessionStorage.removeItem("showBootModal");
     } catch {
       // Ignore storage failures; modal behavior should stay resilient.
     }
@@ -1325,20 +1385,26 @@ export default function Chat({
     if (threadId) {
       return;
     }
-    if (!location.search.includes('prompt_key=')) {
+    if (!location.search.includes("prompt_key=")) {
       return;
     }
 
     const url = new URL(window.location.href);
-    if (!url.searchParams.has('prompt_key')) {
+    if (!url.searchParams.has("prompt_key")) {
       return;
     }
 
-    url.searchParams.delete('prompt_key');
-    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    url.searchParams.delete("prompt_key");
+    window.history.replaceState(
+      null,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
   }, [location.search, threadId]);
 
-  const previousWelcomeWorkspaceIdRef = useRef<string | null>(resolvedWorkspaceId ?? null);
+  const previousWelcomeWorkspaceIdRef = useRef<string | null>(
+    resolvedWorkspaceId ?? null,
+  );
 
   useEffect(() => {
     if (threadId || readOnly) {
@@ -1355,8 +1421,10 @@ export default function Chat({
     pendingDeliveryDraftRef.current = null;
     skipNextEmptyDraftSaveRef.current = false;
 
-    const nextDraft = initialWelcomeInput ? null : loadDraft(nextWorkspaceId, null);
-    setWelcomeInput(initialWelcomeInput ?? nextDraft?.text ?? '');
+    const nextDraft = initialWelcomeInput
+      ? null
+      : loadDraft(nextWorkspaceId, null);
+    setWelcomeInput(initialWelcomeInput ?? nextDraft?.text ?? "");
     setAttachments(nextDraft?.attachments ?? []);
   }, [initialWelcomeInput, readOnly, resolvedWorkspaceId, threadId]);
 
@@ -1368,7 +1436,7 @@ export default function Chat({
   // Track compaction content block streaming (compaction summary arrives as a
   // content block of type 'compaction' with 'compaction_delta' deltas)
   const isInCompactionBlockRef = useRef(false);
-  const compactionContentRef = useRef('');
+  const compactionContentRef = useRef("");
   const hasCapturedCompactionSummaryRef = useRef(false);
   const pendingCompactionPlaceholderIdRef = useRef<string | null>(null);
   const queuedManualCompactionsRef = useRef(0);
@@ -1377,7 +1445,9 @@ export default function Chat({
   // ID of the assistant message that was active when compaction started.
   // Used to suppress finalized visuals until compaction is complete.
   const compactingPriorMessageIdRef = useRef<string | null>(null);
-  const [compactingPriorMessageId, setCompactingPriorMessageId] = useState<string | null>(null);
+  const [compactingPriorMessageId, setCompactingPriorMessageId] = useState<
+    string | null
+  >(null);
   const syncCompactionIndicator = useCallback(() => {
     const shouldShowIndicator =
       activeManualCompactionTurnRef.current ||
@@ -1390,7 +1460,10 @@ export default function Chat({
     syncCompactionIndicator();
   }, [syncCompactionIndicator]);
   const startQueuedManualCompactionIfNeeded = useCallback(() => {
-    if (activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current <= 0) {
+    if (
+      activeManualCompactionTurnRef.current ||
+      queuedManualCompactionsRef.current <= 0
+    ) {
       return;
     }
     queuedManualCompactionsRef.current -= 1;
@@ -1413,32 +1486,46 @@ export default function Chat({
     syncCompactionIndicator();
   }, [syncCompactionIndicator]);
   // MCP-triggered bug report capture
-  const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
+  const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{
+    requestId: string;
+    message?: string;
+  } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const normalizedMessages = useMemo(
-    () => mergeTaskNotifications(mergeTeammateMessages(normalizeToolResultMessages(messages))),
-    [messages]
+    () =>
+      mergeTaskNotifications(
+        mergeTeammateMessages(normalizeToolResultMessages(messages)),
+      ),
+    [messages],
   );
   const visibleMessages = useMemo(
-    () => normalizedMessages.filter(message => !message.isMeta && !message.sourceToolUseID),
-    [normalizedMessages]
+    () =>
+      normalizedMessages.filter(
+        (message) => !message.isMeta && !message.sourceToolUseID,
+      ),
+    [normalizedMessages],
   );
 
   // Refs to track current state for use in callbacks (avoids stale closures)
   const messagesRef = useRef(messages);
   const streamingMessageIdRef = useRef(streamingMessageId);
-  const runtimeStreamingMessageIdsRef = useRef<Record<string, string | null>>({});
+  const runtimeStreamingMessageIdsRef = useRef<Record<string, string | null>>(
+    {},
+  );
   const lastCompletedAssistantMessageIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
 
   // Wrapper setters that update both state and ref
-  const setMessages = useCallback((updater: Message[] | ((prev: Message[]) => Message[])) => {
-    setMessagesState(prev => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      messagesRef.current = next;
-      return next;
-    });
-  }, []);
+  const setMessages = useCallback(
+    (updater: Message[] | ((prev: Message[]) => Message[])) => {
+      setMessagesState((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        messagesRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   // Sync messages from loader revalidation when not streaming
   // Only sync on initial mount or explicit refresh, not during active chat
@@ -1452,7 +1539,7 @@ export default function Chat({
     if (!initialMessagesChanged) {
       return;
     }
-    if (streamingMessageIdRef.current || revalidator.state !== 'idle') {
+    if (streamingMessageIdRef.current || revalidator.state !== "idle") {
       return;
     }
     prevInitialMessagesRef.current = initialMessages;
@@ -1473,9 +1560,13 @@ export default function Chat({
       return;
     }
 
-    const nextMessages = (hasHadUserInteraction.current && wasAwaitingInitialHistory)
-      ? mergeServerAndLocalMessages(parsedInitialMessages, messagesRef.current)
-      : parsedInitialMessages;
+    const nextMessages =
+      hasHadUserInteraction.current && wasAwaitingInitialHistory
+        ? mergeServerAndLocalMessages(
+            parsedInitialMessages,
+            messagesRef.current,
+          )
+        : parsedInitialMessages;
 
     hasSyncedInitialLoaderMessagesRef.current = true;
     setMessages(nextMessages);
@@ -1486,27 +1577,30 @@ export default function Chat({
     setStreamingMessageIdState(id);
   }, []);
 
-  const setPendingMessages = useCallback((updater: Message[] | ((prev: Message[]) => Message[])) => {
-    setPendingMessagesState(prev => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      pendingMessagesRef.current = next;
-      return next;
-    });
-  }, []);
+  const setPendingMessages = useCallback(
+    (updater: Message[] | ((prev: Message[]) => Message[])) => {
+      setPendingMessagesState((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        pendingMessagesRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   const isStreaming = streamingMessageId !== null;
   const wasStreamingRef = useRef(isStreaming);
   const activeAssistantMessageId = useMemo(() => {
     if (streamingMessageId) {
       const trackedMessageExists = messages.some(
-        msg => msg.id === streamingMessageId && msg.role === 'assistant'
+        (msg) => msg.id === streamingMessageId && msg.role === "assistant",
       );
       if (trackedMessageExists) return streamingMessageId;
     }
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
-      if (msg.role === 'assistant' && msg.isStreaming) return msg.id;
+      if (msg.role === "assistant" && msg.isStreaming) return msg.id;
     }
 
     return null;
@@ -1519,65 +1613,75 @@ export default function Chat({
     const map = new Map<string, string>();
     for (const message of messages) {
       if (!message.sourceToolUseID) continue;
-      const content = typeof message.content === 'string'
-        ? message.content
-        : message.content
-            .map(block => (block?.type === 'text' ? block.text : ''))
-            .filter(Boolean)
-            .join('\n\n');
+      const content =
+        typeof message.content === "string"
+          ? message.content
+          : message.content
+              .map((block) => (block?.type === "text" ? block.text : ""))
+              .filter(Boolean)
+              .join("\n\n");
       if (content) {
         map.set(message.sourceToolUseID, content);
       }
     }
     return map;
   }, [messages]);
-  const availableThreadModels = useMemo(
-    () => {
-      const options = getVisibleLlmModelOptions(
-        resolvedThreadProvider,
-        experimentalSettings,
-        threadModel ?? getDefaultLlmModel(resolvedThreadProvider),
-        { allowModelFamilySwitch: !threadId, orgProvider: llmProvider },
-      );
-      return allowedThreadModels?.length
-        ? options.filter((option) => allowedThreadModels.includes(option.value))
-        : options;
-    },
-    [allowedThreadModels, resolvedThreadProvider, experimentalSettings, llmProvider, threadId, threadModel]
-  );
-
-  const [input, setInput] = useState(() => initialThreadDraft?.text ?? '');
+  const [input, setInput] = useState(() => initialThreadDraft?.text ?? "");
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(() => (
-    initialError ? normalizeChatErrorMessage(initialError) : null
-  ));
-  const [welcomeInput, setWelcomeInput] = useState(() => (
-    initialWelcomeInput ?? initialWelcomeDraft?.text ?? ''
-  ));
-  const [selectedThreadModel, setSelectedThreadModel] = useState<LlmModel>(
-    threadModel ?? getDefaultLlmModel(resolvedThreadProvider)
+  const [error, setError] = useState<string | null>(null);
+  const [welcomeInput, setWelcomeInput] = useState(
+    () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
   );
-  const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? '');
+  const [selectedThreadModel, setSelectedThreadModel] = useState<LlmModel>(
+    threadModel ?? getDefaultLlmModel(initialThreadProvider, llmProvider),
+  );
+  const [activeThreadProvider, setActiveThreadProvider] = useState<ChatHarness>(
+    initialThreadProvider,
+  );
+  const availableThreadModels = useMemo(() => {
+    const options = getVisibleLlmModelOptions(
+      activeThreadProvider,
+      experimentalSettings,
+      threadModel ?? getDefaultLlmModel(activeThreadProvider, llmProvider),
+      { allowModelFamilySwitch: true, orgProvider: llmProvider },
+    );
+    return allowedThreadModels?.length
+      ? options.filter((option) => allowedThreadModels.includes(option.value))
+      : options;
+  }, [
+    activeThreadProvider,
+    allowedThreadModels,
+    experimentalSettings,
+    llmProvider,
+    threadModel,
+  ]);
+  const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>(() => (
-    initialThreadDraft?.attachments ?? initialWelcomeDraft?.attachments ?? []
-  ));
-  const [contextUsedPercent, setContextUsedPercent] = useState<number | null>(null);
+  const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>(
+    () =>
+      initialThreadDraft?.attachments ?? initialWelcomeDraft?.attachments ?? [],
+  );
+  const [contextUsedPercent, setContextUsedPercent] = useState<number | null>(
+    null,
+  );
   const attachmentPreviewUrlsRef = useRef<Set<string>>(new Set());
   const inputRef = useRef(input);
   const welcomeInputRef = useRef(welcomeInput);
   const attachmentsRef = useRef(attachments);
   const prevErrorRef = useRef<string | null>(null);
   const skipNextEmptyDraftSaveRef = useRef(false);
-  const pendingDeliveryDraftRef = useRef<{ workspaceId: string; threadId: string | null } | null>(null);
+  const pendingDeliveryDraftRef = useRef<{
+    workspaceId: string;
+    threadId: string | null;
+  } | null>(null);
   const pendingDraftCountRef = useRef(0);
-
-  useEffect(() => {
-    setError(initialError ? normalizeChatErrorMessage(initialError) : null);
-  }, [initialError]);
-  const { saveDraft, flushDraft } = useDraftPersistence(resolvedWorkspaceId, threadId ?? null);
+  const { saveDraft, flushDraft } = useDraftPersistence(
+    resolvedWorkspaceId,
+    threadId ?? null,
+  );
   const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
@@ -1592,31 +1696,53 @@ export default function Chat({
     attachmentsRef.current = attachments;
   }, [attachments]);
 
-  const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(() => initialPreviewSession.tabs);
-  const [activeTabId, setActiveTabId] = useState<string | null>(() => initialPreviewSession.activeTabId);
+  const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(
+    () => initialPreviewSession.tabs,
+  );
+  const [activeTabId, setActiveTabId] = useState<string | null>(
+    () => initialPreviewSession.activeTabId,
+  );
   const previewTabsRef = useRef<PreviewTab[]>(previewTabs);
   const activeTabIdRef = useRef<string | null>(activeTabId);
   const activeTab = useMemo(
     () => previewTabs.find((tab) => tab.id === activeTabId) ?? null,
-    [previewTabs, activeTabId]
+    [previewTabs, activeTabId],
   );
   const previewTarget = activeTab?.target ?? null;
-  const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>({});
-  const [tabFilePreviewKeys, setTabFilePreviewKeys] = useState<Record<string, number>>({});
-  const [tabNotebookViewModes, setTabNotebookViewModes] = useState<Record<string, 'report' | 'notebook'>>({});
-  const [tabMarkdownViewModes, setTabMarkdownViewModes] = useState<Record<string, 'rendered' | 'source'>>({});
-  const [tabNotebookStates, setTabNotebookStates] = useState<Record<string, NotebookPreviewLoadState>>({});
-  const [tabNotebookPdfExporting, setTabNotebookPdfExporting] = useState<Record<string, boolean>>({});
-  const [tabAppLoading, setTabAppLoading] = useState<Record<string, boolean>>({});
-  const notebookViewMode = activeTabId ? (tabNotebookViewModes[activeTabId] ?? 'report') : 'report';
-  const markdownViewMode = activeTabId ? (tabMarkdownViewModes[activeTabId] ?? 'rendered') : 'rendered';
+  const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>(
+    {},
+  );
+  const [tabFilePreviewKeys, setTabFilePreviewKeys] = useState<
+    Record<string, number>
+  >({});
+  const [tabNotebookViewModes, setTabNotebookViewModes] = useState<
+    Record<string, "report" | "notebook">
+  >({});
+  const [tabMarkdownViewModes, setTabMarkdownViewModes] = useState<
+    Record<string, "rendered" | "source">
+  >({});
+  const [tabNotebookStates, setTabNotebookStates] = useState<
+    Record<string, NotebookPreviewLoadState>
+  >({});
+  const [tabNotebookPdfExporting, setTabNotebookPdfExporting] = useState<
+    Record<string, boolean>
+  >({});
+  const [tabAppLoading, setTabAppLoading] = useState<Record<string, boolean>>(
+    {},
+  );
+  const notebookViewMode = activeTabId
+    ? (tabNotebookViewModes[activeTabId] ?? "report")
+    : "report";
+  const markdownViewMode = activeTabId
+    ? (tabMarkdownViewModes[activeTabId] ?? "rendered")
+    : "rendered";
   const activeNotebookState = activeTabId
     ? (tabNotebookStates[activeTabId] ?? DEFAULT_NOTEBOOK_PREVIEW_STATE)
     : DEFAULT_NOTEBOOK_PREVIEW_STATE;
   const isNotebookPdfExporting = activeTabId
     ? Boolean(tabNotebookPdfExporting[activeTabId])
     : false;
-  const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
+  const [mobileView, setMobileView] = useState<"chat" | "preview">("chat");
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
   const supportsPreviewTabsStateRef = useRef<boolean>(false);
@@ -1633,9 +1759,16 @@ export default function Chat({
   const forceScrollOnNextUpdate = useRef(false);
   const splitStreamingMessageOnNextPartRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const iframeRefreshTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const oobWsRef = useRef<WebSocket | null>(null);
+  const questionResponseSocketRef = useRef<"runner" | "oob">("runner");
+  const lastRunnerModelSelectionRef = useRef<string | null>(null);
+  const iframeRefreshTimeoutsRef = useRef<
+    Record<string, ReturnType<typeof setTimeout>>
+  >({});
   const iframeRetryCountsRef = useRef<Record<string, number>>({});
-  const iframeRetryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const iframeRetryTimeoutsRef = useRef<
+    Record<string, ReturnType<typeof setTimeout>>
+  >({});
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -1695,7 +1828,7 @@ export default function Chat({
     previewVersionRef.current = 0;
     supportsPreviewTabsStateRef.current = false;
     clearAllIframeRefreshTimeouts();
-    setMobileView('chat');
+    setMobileView("chat");
   }, [threadId, clearAllIframeRefreshTimeouts]);
 
   useEffect(() => {
@@ -1724,9 +1857,10 @@ export default function Chat({
     function handlePreviewError(event: MessageEvent) {
       if (
         !event.data ||
-        event.data.type !== 'chiridion-preview-error' ||
-        typeof event.data.status !== 'number'
-      ) return;
+        event.data.type !== "chiridion-preview-error" ||
+        typeof event.data.status !== "number"
+      )
+        return;
       const status = event.data.status as number;
       if (status !== 404 && status !== 500 && status !== 503) return;
 
@@ -1734,7 +1868,7 @@ export default function Chat({
       const tabs = previewTabsRef.current;
       const matchedTab = iframeDomain
         ? tabs.find((tab) => {
-            if (tab.target.kind !== 'app') return false;
+            if (tab.target.kind !== "app") return false;
             const s = tab.target.scriptName;
             const host = orgSlug
               ? `${buildAppLabel(s, orgSlug)}.${iframeDomain}`
@@ -1759,8 +1893,8 @@ export default function Chat({
       }, IFRAME_RETRY_DELAY_MS);
     }
 
-    window.addEventListener('message', handlePreviewError);
-    return () => window.removeEventListener('message', handlePreviewError);
+    window.addEventListener("message", handlePreviewError);
+    return () => window.removeEventListener("message", handlePreviewError);
   }, [hostname, orgSlug]);
 
   const revokeAttachmentPreviewUrl = useCallback((url?: string) => {
@@ -1769,24 +1903,28 @@ export default function Chat({
     URL.revokeObjectURL(url);
   }, []);
 
-  const deployedApp = previewTarget?.kind === 'app' ? previewTarget.scriptName : null;
-  const appIsPublic = previewTarget?.kind === 'app' ? previewTarget.isPublic : false;
-  const setAppIsPublic = useCallback((isPublic: boolean) => {
-    if (!activeTabId) return;
-    setPreviewTabs((prev) => (
-      prev.map((tab) => {
-        if (tab.id !== activeTabId || tab.target.kind !== 'app') return tab;
-        return {
-          ...tab,
-          target: {
-            ...tab.target,
-            isPublic,
-          },
-        };
-      })
-    ));
-  }, [activeTabId]);
-
+  const deployedApp =
+    previewTarget?.kind === "app" ? previewTarget.scriptName : null;
+  const appIsPublic =
+    previewTarget?.kind === "app" ? previewTarget.isPublic : false;
+  const setAppIsPublic = useCallback(
+    (isPublic: boolean) => {
+      if (!activeTabId) return;
+      setPreviewTabs((prev) =>
+        prev.map((tab) => {
+          if (tab.id !== activeTabId || tab.target.kind !== "app") return tab;
+          return {
+            ...tab,
+            target: {
+              ...tab.target,
+              isPublic,
+            },
+          };
+        }),
+      );
+    },
+    [activeTabId],
+  );
 
   // Todo state comes directly from server via todo_state events
   // Clear todos when streaming starts (new message turn)
@@ -1799,10 +1937,15 @@ export default function Chat({
 
   useEffect(() => {
     if (!currentTodos.length || isStreaming) return;
-    const allComplete = currentTodos.every(todo => todo.status === 'completed');
-    const timeout = setTimeout(() => {
-      setCurrentTodos([]);
-    }, allComplete ? 1500 : 2000);
+    const allComplete = currentTodos.every(
+      (todo) => todo.status === "completed",
+    );
+    const timeout = setTimeout(
+      () => {
+        setCurrentTodos([]);
+      },
+      allComplete ? 1500 : 2000,
+    );
     return () => clearTimeout(timeout);
   }, [currentTodos, isStreaming]);
 
@@ -1812,13 +1955,18 @@ export default function Chat({
   }, [threadTitle]);
 
   useEffect(() => {
-    setSelectedThreadModel(threadModel ?? getDefaultLlmModel(resolvedThreadProvider));
-  }, [resolvedThreadProvider, threadId, threadModel]);
+    setActiveThreadProvider(initialThreadProvider);
+    setSelectedThreadModel(
+      threadModel ?? getDefaultLlmModel(initialThreadProvider, llmProvider),
+    );
+  }, [initialThreadProvider, llmProvider, threadId, threadModel]);
 
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
-  const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
+  const connectWebSocketRef = useRef<
+    ((id: string, isReconnect?: boolean) => void) | null
+  >(null);
   const resolvedWelcomeData = welcomeData ?? {
     userId: user?.id ?? null,
     userName: user?.name ?? null,
@@ -1827,41 +1975,42 @@ export default function Chat({
     recentThreads: [],
     renderedAt: fallbackRenderedAtRef.current,
   };
-  const mentionConnections = connections ?? resolvedWelcomeData.connections;
-  const mentionSlugMap = useMemo(
-    () => buildSlugMap(mentionConnections) as Map<string, Integration>,
-    [mentionConnections],
-  );
   // Use static key for pending messages - threadId in payload ensures correct matching
   // This avoids issues when workspace changes between welcome screen and chat page
-  const pendingMessageKey = 'pendingMessage:newThread';
-  const sessionStorageKey = useCallback((id: string) => {
-    const workspaceKey = resolvedWorkspaceId ?? 'unknown';
-    return `ws_session_${workspaceKey}_${id}`;
-  }, [resolvedWorkspaceId]);
+  const pendingMessageKey = "pendingMessage:newThread";
+  const sessionStorageKey = useCallback(
+    (id: string) => {
+      const workspaceKey = resolvedWorkspaceId ?? "unknown";
+      return `ws_session_${workspaceKey}_${id}`;
+    },
+    [resolvedWorkspaceId],
+  );
 
-  const preserveDraftBeforeOptimisticClear = useCallback((
-    draftThreadId: string | null,
-    text: string,
-    nextAttachments: Attachment[]
-  ) => {
-    if (!resolvedWorkspaceId) {
-      return;
-    }
+  const preserveDraftBeforeOptimisticClear = useCallback(
+    (
+      draftThreadId: string | null,
+      text: string,
+      nextAttachments: Attachment[],
+    ) => {
+      if (!resolvedWorkspaceId) {
+        return;
+      }
 
-    if (draftThreadId === (threadId ?? null)) {
-      flushDraft(text, nextAttachments);
-    } else {
-      writeDraft(resolvedWorkspaceId, draftThreadId, text, nextAttachments);
-    }
+      if (draftThreadId === (threadId ?? null)) {
+        flushDraft(text, nextAttachments);
+      } else {
+        writeDraft(resolvedWorkspaceId, draftThreadId, text, nextAttachments);
+      }
 
-    pendingDraftCountRef.current++;
-    pendingDeliveryDraftRef.current = {
-      workspaceId: resolvedWorkspaceId,
-      threadId: draftThreadId,
-    };
-    skipNextEmptyDraftSaveRef.current = true;
-  }, [flushDraft, resolvedWorkspaceId, threadId]);
+      pendingDraftCountRef.current++;
+      pendingDeliveryDraftRef.current = {
+        workspaceId: resolvedWorkspaceId,
+        threadId: draftThreadId,
+      };
+      skipNextEmptyDraftSaveRef.current = true;
+    },
+    [flushDraft, resolvedWorkspaceId, threadId],
+  );
 
   const clearPendingDeliveryDraft = useCallback(() => {
     const pendingDraft = pendingDeliveryDraftRef.current;
@@ -1873,7 +2022,10 @@ export default function Chat({
     // If multiple sends are in flight (sentDuringStreaming), only clear the
     // draft backup once the last turn completes — otherwise an earlier result
     // would delete the backup that a later, still-in-flight turn needs.
-    pendingDraftCountRef.current = Math.max(0, pendingDraftCountRef.current - 1);
+    pendingDraftCountRef.current = Math.max(
+      0,
+      pendingDraftCountRef.current - 1,
+    );
     if (pendingDraftCountRef.current > 0) {
       return;
     }
@@ -1900,7 +2052,10 @@ export default function Chat({
       return;
     }
 
-    const savedDraft = loadDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+    const savedDraft = loadDraft(
+      pendingDraft.workspaceId,
+      pendingDraft.threadId,
+    );
     if (!savedDraft) {
       return;
     }
@@ -1909,33 +2064,44 @@ export default function Chat({
     setAttachments(savedDraft.attachments);
   }, []);
 
-  const loadSessionState = useCallback((id: string) => {
-    try {
-      const stored = sessionStorage.getItem(sessionStorageKey(id));
-      if (stored) {
-        const parsed = JSON.parse(stored) as { sessionId?: string; lastEventId?: number };
-        sessionIdRef.current = typeof parsed.sessionId === 'string' ? parsed.sessionId : null;
-        lastEventIdRef.current = typeof parsed.lastEventId === 'number' ? parsed.lastEventId : 0;
-        return;
+  const loadSessionState = useCallback(
+    (id: string) => {
+      try {
+        const stored = sessionStorage.getItem(sessionStorageKey(id));
+        if (stored) {
+          const parsed = JSON.parse(stored) as {
+            sessionId?: string;
+            lastEventId?: number;
+          };
+          sessionIdRef.current =
+            typeof parsed.sessionId === "string" ? parsed.sessionId : null;
+          lastEventIdRef.current =
+            typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
+          return;
+        }
+      } catch (e) {
+        console.warn("Failed to load session state:", e);
       }
-    } catch (e) {
-      console.warn('Failed to load session state:', e);
-    }
-    sessionIdRef.current = null;
-    lastEventIdRef.current = 0;
-  }, [sessionStorageKey]);
+      sessionIdRef.current = null;
+      lastEventIdRef.current = 0;
+    },
+    [sessionStorageKey],
+  );
 
-  const persistSessionState = useCallback((id: string) => {
-    try {
-      const payload = {
-        sessionId: sessionIdRef.current,
-        lastEventId: lastEventIdRef.current,
-      };
-      sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
-    } catch (e) {
-      console.warn('Failed to persist session state:', e);
-    }
-  }, [sessionStorageKey]);
+  const persistSessionState = useCallback(
+    (id: string) => {
+      try {
+        const payload = {
+          sessionId: sessionIdRef.current,
+          lastEventId: lastEventIdRef.current,
+        };
+        sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
+      } catch (e) {
+        console.warn("Failed to persist session state:", e);
+      }
+    },
+    [sessionStorageKey],
+  );
 
   useEffect(() => {
     if (!threadId) {
@@ -1949,9 +2115,9 @@ export default function Chat({
   useEffect(() => {
     if (!isNewThread || !threadId) return;
     const url = new URL(window.location.href);
-    if (url.searchParams.get('newThread') !== '1') return;
-    url.searchParams.delete('newThread');
-    window.history.replaceState(null, '', url.toString());
+    if (url.searchParams.get("newThread") !== "1") return;
+    url.searchParams.delete("newThread");
+    window.history.replaceState(null, "", url.toString());
   }, [isNewThread, threadId]);
 
   useEffect(() => {
@@ -1989,99 +2155,129 @@ export default function Chat({
   // Fetch message history as a single JSON payload.
   // The worker route streams response bytes through from sandbox-host so the
   // worker itself does not need to buffer the whole payload.
-  const backfillThreadFirstUserMessage = useCallback(async (id: string, loadedMessages: Message[]) => {
-    if (readOnly) return;
-    if (!resolvedWorkspaceId) return;
-    if (firstUserMessageBackfillAttemptedRef.current.has(id)) return;
+  const backfillThreadFirstUserMessage = useCallback(
+    async (id: string, loadedMessages: Message[]) => {
+      if (readOnly) return;
+      if (!resolvedWorkspaceId) return;
+      if (firstUserMessageBackfillAttemptedRef.current.has(id)) return;
 
-    const firstUserMessage = getFirstThreadPreviewUserMessage(loadedMessages);
-    if (!firstUserMessage) return;
+      const firstUserMessage = getFirstThreadPreviewUserMessage(loadedMessages);
+      if (!firstUserMessage) return;
 
-    firstUserMessageBackfillAttemptedRef.current.add(id);
-    try {
-      const response = await fetch(
-        `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/first-user-message`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ firstUserMessage }),
+      firstUserMessageBackfillAttemptedRef.current.add(id);
+      try {
+        const response = await fetch(
+          `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/first-user-message`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ firstUserMessage }),
+          },
+        );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
         }
-      );
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        console.warn("Failed to backfill first user message:", error);
+        firstUserMessageBackfillAttemptedRef.current.delete(id);
       }
-    } catch (error) {
-      console.warn('Failed to backfill first user message:', error);
-      firstUserMessageBackfillAttemptedRef.current.delete(id);
-    }
-  }, [readOnly, resolvedWorkspaceId]);
+    },
+    [readOnly, resolvedWorkspaceId],
+  );
 
-  const fetchMessages = useCallback(async (id: string) => {
-    if (!readOnly && !resolvedWorkspaceId) return;
+  const fetchMessages = useCallback(
+    async (id: string) => {
+      if (!readOnly && !resolvedWorkspaceId) return;
 
-    historyFetchAbortRef.current?.abort();
-    const abortController = new AbortController();
-    historyFetchAbortRef.current = abortController;
+      historyFetchAbortRef.current?.abort();
+      const abortController = new AbortController();
+      historyFetchAbortRef.current = abortController;
 
-    setError(null);
+      setError(null);
 
-    try {
-      const url = readOnly
-        ? `/api/admin/threads/${encodeURIComponent(id)}/messages`
-        : `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/messages/stream`;
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal: abortController.signal,
-      });
+      try {
+        const url = readOnly
+          ? `/api/admin/threads/${encodeURIComponent(id)}/messages`
+          : `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/messages/stream`;
+        const response = await fetch(url, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          signal: abortController.signal,
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || `Failed to fetch messages (${response.status})`);
-      }
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            errorText || `Failed to fetch messages (${response.status})`,
+          );
+        }
 
-      const payload = await response.json() as {
-        success?: unknown;
-        messages?: unknown;
-        error?: unknown;
-      };
-      if (abortController.signal.aborted) return;
-
-      const rawMessages = Array.isArray(payload.messages) ? payload.messages : [];
-      const loadedMessages: Message[] = rawMessages.flatMap((raw) => {
-        if (!raw || typeof raw !== 'object') return [];
-        const item = raw as Record<string, unknown>;
-        const messageId = typeof item.id === 'string' ? item.id : null;
-        const role = item.role === 'assistant' ? 'assistant' : item.role === 'user' ? 'user' : null;
-        const createdAt = typeof item.created_at === 'number' ? item.created_at : null;
-        if (!messageId || !role || createdAt === null) return [];
-
-        const message: Message = {
-          id: messageId,
-          thread_id: typeof item.thread_id === 'string' ? item.thread_id : id,
-          role,
-          content: parseMessageContent((item.content ?? '') as string | ContentBlock[]),
-          created_at: createdAt,
-          isMeta: item.isMeta === true,
-          sourceToolUseID: typeof item.sourceToolUseID === 'string' ? item.sourceToolUseID : undefined,
-          isCompactSummary: item.isCompactSummary === true,
+        const payload = (await response.json()) as {
+          success?: unknown;
+          messages?: unknown;
+          error?: unknown;
         };
-        return [message];
-      });
+        if (abortController.signal.aborted) return;
 
-      const mergedMessages = mergeServerAndLocalMessages(loadedMessages, messagesRef.current);
-      setMessages(mergedMessages);
-      void backfillThreadFirstUserMessage(id, mergedMessages);
-    } catch (error) {
-      if (abortController.signal.aborted) return;
-      console.error('Failed to fetch message history stream:', error);
-      setError('Failed to load message history');
-    } finally {
-      if (historyFetchAbortRef.current === abortController) {
-        historyFetchAbortRef.current = null;
+        const rawMessages = Array.isArray(payload.messages)
+          ? payload.messages
+          : [];
+        const loadedMessages: Message[] = rawMessages.flatMap((raw) => {
+          if (!raw || typeof raw !== "object") return [];
+          const item = raw as Record<string, unknown>;
+          const messageId = typeof item.id === "string" ? item.id : null;
+          const role =
+            item.role === "assistant"
+              ? "assistant"
+              : item.role === "user"
+                ? "user"
+                : null;
+          const createdAt =
+            typeof item.created_at === "number" ? item.created_at : null;
+          if (!messageId || !role || createdAt === null) return [];
+
+          const message: Message = {
+            id: messageId,
+            thread_id: typeof item.thread_id === "string" ? item.thread_id : id,
+            role,
+            content: parseMessageContent(
+              (item.content ?? "") as string | ContentBlock[],
+            ),
+            created_at: createdAt,
+            isMeta: item.isMeta === true,
+            sourceToolUseID:
+              typeof item.sourceToolUseID === "string"
+                ? item.sourceToolUseID
+                : undefined,
+            isCompactSummary: item.isCompactSummary === true,
+          };
+          return [message];
+        });
+
+        const mergedMessages = mergeServerAndLocalMessages(
+          loadedMessages,
+          messagesRef.current,
+        );
+        setMessages(mergedMessages);
+        void backfillThreadFirstUserMessage(id, mergedMessages);
+      } catch (error) {
+        if (abortController.signal.aborted) return;
+        console.error("Failed to fetch message history stream:", error);
+        setError("Failed to load message history");
+      } finally {
+        if (historyFetchAbortRef.current === abortController) {
+          historyFetchAbortRef.current = null;
+        }
       }
-    }
-  }, [backfillThreadFirstUserMessage, readOnly, resolvedWorkspaceId, setError, setMessages]);
+    },
+    [
+      backfillThreadFirstUserMessage,
+      readOnly,
+      resolvedWorkspaceId,
+      setError,
+      setMessages,
+    ],
+  );
 
   const bumpIframeKey = useCallback((tabId: string) => {
     iframeRetryCountsRef.current[tabId] = 0;
@@ -2113,66 +2309,79 @@ export default function Chat({
     bumpFilePreviewKey(activeTabId);
   }, [activeTabId, bumpFilePreviewKey]);
 
-  const setActiveNotebookViewMode = useCallback((mode: 'report' | 'notebook') => {
-    if (!activeTabId) return;
-    setTabNotebookViewModes((prev) => ({
-      ...prev,
-      [activeTabId]: mode,
-    }));
-  }, [activeTabId]);
-
-  const setActiveMarkdownViewMode = useCallback((mode: 'rendered' | 'source') => {
-    if (!activeTabId) return;
-    setTabMarkdownViewModes((prev) => ({
-      ...prev,
-      [activeTabId]: mode,
-    }));
-  }, [activeTabId]);
-
-  const syncPreviewTargetBestEffort = useCallback((target: PreviewTarget | null) => {
-    if (!threadId) return;
-    const socket = wsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({
-      type: 'set_preview_target',
-      target,
-      threadId,
-    }));
-  }, [threadId]);
-
-  const syncPreviewTabsStateBestEffort = useCallback((
-    nextTabs: PreviewTab[],
-    nextActiveTabId: string | null
-  ) => {
-    if (!threadId) return;
-    const socket = wsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-
-    const nextActiveTarget = nextActiveTabId
-      ? (nextTabs.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
-      : null;
-
-    if (supportsPreviewTabsStateRef.current) {
-      socket.send(JSON.stringify({
-        type: 'set_preview_tabs_state',
-        tabs: nextTabs.map((tab) => tab.target),
-        activeTabId: nextActiveTabId,
-        threadId,
+  const setActiveNotebookViewMode = useCallback(
+    (mode: "report" | "notebook") => {
+      if (!activeTabId) return;
+      setTabNotebookViewModes((prev) => ({
+        ...prev,
+        [activeTabId]: mode,
       }));
-    } else {
-      syncPreviewTargetBestEffort(nextActiveTarget);
-    }
-  }, [threadId, syncPreviewTargetBestEffort]);
+    },
+    [activeTabId],
+  );
 
-  const setLocalPreviewSessionState = useCallback((
-    nextTabs: PreviewTab[],
-    nextActiveTabId: string | null
-  ) => {
-    previewTabsRef.current = nextTabs;
-    setPreviewTabs(nextTabs);
-    activeTabIdRef.current = nextActiveTabId;
-    setActiveTabId(nextActiveTabId);
-  }, []);
+  const setActiveMarkdownViewMode = useCallback(
+    (mode: "rendered" | "source") => {
+      if (!activeTabId) return;
+      setTabMarkdownViewModes((prev) => ({
+        ...prev,
+        [activeTabId]: mode,
+      }));
+    },
+    [activeTabId],
+  );
+
+  const syncPreviewTargetBestEffort = useCallback(
+    (target: PreviewTarget | null) => {
+      if (!threadId) return;
+      const socket = oobWsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      socket.send(
+        JSON.stringify({
+          type: "set_preview_target",
+          target,
+          threadId,
+        }),
+      );
+    },
+    [threadId],
+  );
+
+  const syncPreviewTabsStateBestEffort = useCallback(
+    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
+      if (!threadId) return;
+      const socket = oobWsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+      const nextActiveTarget = nextActiveTabId
+        ? (nextTabs.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
+        : null;
+
+      if (supportsPreviewTabsStateRef.current) {
+        socket.send(
+          JSON.stringify({
+            type: "set_preview_tabs_state",
+            tabs: nextTabs.map((tab) => tab.target),
+            activeTabId: nextActiveTabId,
+            threadId,
+          }),
+        );
+      } else {
+        syncPreviewTargetBestEffort(nextActiveTarget);
+      }
+    },
+    [threadId, syncPreviewTargetBestEffort],
+  );
+
+  const setLocalPreviewSessionState = useCallback(
+    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
+      previewTabsRef.current = nextTabs;
+      setPreviewTabs(nextTabs);
+      activeTabIdRef.current = nextActiveTabId;
+      setActiveTabId(nextActiveTabId);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!threadId || hasSyncedInitialPreviewRef.current) return;
@@ -2182,7 +2391,10 @@ export default function Chat({
     }
     if (initialPreviewSession.tabs.length === 0) return;
 
-    setLocalPreviewSessionState(initialPreviewSession.tabs, initialPreviewSession.activeTabId);
+    setLocalPreviewSessionState(
+      initialPreviewSession.tabs,
+      initialPreviewSession.activeTabId,
+    );
     hasSyncedInitialPreviewRef.current = true;
   }, [
     threadId,
@@ -2248,77 +2460,97 @@ export default function Chat({
     delete iframeRetryCountsRef.current[tabId];
   }, []);
 
-  const openTabForTarget = useCallback((target: PreviewTarget, options?: { sync?: boolean }) => {
-    const id = getPreviewTabId(target);
-    const prevTabs = previewTabsRef.current;
-    const existing = prevTabs.find((tab) => tab.id === id);
-    const nextTabs = existing
-      ? prevTabs.map((tab) => (tab.id === id ? { ...tab, target } : tab))
-      : [...prevTabs, { id, target }];
-    setLocalPreviewSessionState(nextTabs, id);
-    if (options?.sync) {
-      syncPreviewTabsStateBestEffort(nextTabs, id);
-    }
-  }, [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort]);
-
-  const selectTab = useCallback((tabId: string) => {
-    const nextActiveTab = previewTabsRef.current.find((tab) => tab.id === tabId);
-    if (!nextActiveTab) return;
-    setLocalPreviewSessionState(previewTabsRef.current, tabId);
-    syncPreviewTabsStateBestEffort(previewTabsRef.current, tabId);
-  }, [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort]);
-
-  const closeTab = useCallback((tabId: string) => {
-    const prevTabs = previewTabsRef.current;
-    const closingTabIndex = prevTabs.findIndex((tab) => tab.id === tabId);
-    if (closingTabIndex === -1) return;
-
-    const nextTabs = prevTabs.filter((tab) => tab.id !== tabId);
-    let nextActiveTabId = activeTabIdRef.current;
-
-    if (tabId === activeTabIdRef.current) {
-      if (!nextTabs.length) {
-        nextActiveTabId = null;
-        setMobileView('chat');
-      } else {
-        const nextIndex = Math.min(closingTabIndex, nextTabs.length - 1);
-        const nextActiveTab = nextTabs[nextIndex];
-        nextActiveTabId = nextActiveTab.id;
+  const openTabForTarget = useCallback(
+    (target: PreviewTarget, options?: { sync?: boolean }) => {
+      const id = getPreviewTabId(target);
+      const prevTabs = previewTabsRef.current;
+      const existing = prevTabs.find((tab) => tab.id === id);
+      const nextTabs = existing
+        ? prevTabs.map((tab) => (tab.id === id ? { ...tab, target } : tab))
+        : [...prevTabs, { id, target }];
+      setLocalPreviewSessionState(nextTabs, id);
+      if (options?.sync) {
+        syncPreviewTabsStateBestEffort(nextTabs, id);
       }
-    }
+    },
+    [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort],
+  );
 
-    setLocalPreviewSessionState(nextTabs, nextActiveTabId);
-    syncPreviewTabsStateBestEffort(nextTabs, nextActiveTabId);
-    cleanupClosedTabState(tabId);
-  }, [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort, cleanupClosedTabState]);
+  const selectTab = useCallback(
+    (tabId: string) => {
+      const nextActiveTab = previewTabsRef.current.find(
+        (tab) => tab.id === tabId,
+      );
+      if (!nextActiveTab) return;
+      setLocalPreviewSessionState(previewTabsRef.current, tabId);
+      syncPreviewTabsStateBestEffort(previewTabsRef.current, tabId);
+    },
+    [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort],
+  );
 
-  const handleTabNotebookStateChange = useCallback((
-    tabId: string,
-    state: NotebookPreviewLoadState
-  ) => {
-    setTabNotebookStates((prev) => {
-      const current = prev[tabId];
-      if (current?.status === state.status && current?.notebook === state.notebook) {
-        return prev;
+  const closeTab = useCallback(
+    (tabId: string) => {
+      const prevTabs = previewTabsRef.current;
+      const closingTabIndex = prevTabs.findIndex((tab) => tab.id === tabId);
+      if (closingTabIndex === -1) return;
+
+      const nextTabs = prevTabs.filter((tab) => tab.id !== tabId);
+      let nextActiveTabId = activeTabIdRef.current;
+
+      if (tabId === activeTabIdRef.current) {
+        if (!nextTabs.length) {
+          nextActiveTabId = null;
+          setMobileView("chat");
+        } else {
+          const nextIndex = Math.min(closingTabIndex, nextTabs.length - 1);
+          const nextActiveTab = nextTabs[nextIndex];
+          nextActiveTabId = nextActiveTab.id;
+        }
       }
-      return {
-        ...prev,
-        [tabId]: state,
-      };
-    });
-  }, []);
+
+      setLocalPreviewSessionState(nextTabs, nextActiveTabId);
+      syncPreviewTabsStateBestEffort(nextTabs, nextActiveTabId);
+      cleanupClosedTabState(tabId);
+    },
+    [
+      setLocalPreviewSessionState,
+      syncPreviewTabsStateBestEffort,
+      cleanupClosedTabState,
+    ],
+  );
+
+  const handleTabNotebookStateChange = useCallback(
+    (tabId: string, state: NotebookPreviewLoadState) => {
+      setTabNotebookStates((prev) => {
+        const current = prev[tabId];
+        if (
+          current?.status === state.status &&
+          current?.notebook === state.notebook
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [tabId]: state,
+        };
+      });
+    },
+    [],
+  );
 
   const handleNotebookReportPdfDownload = useCallback(async () => {
-    if (!activeTabId || previewTarget?.kind !== 'file') return;
+    if (!activeTabId || previewTarget?.kind !== "file") return;
     if (tabNotebookPdfExporting[activeTabId]) return;
 
-    const notebookState = tabNotebookStates[activeTabId] ?? DEFAULT_NOTEBOOK_PREVIEW_STATE;
-    if (notebookState.status !== 'ready' || !notebookState.notebook) {
+    const notebookState =
+      tabNotebookStates[activeTabId] ?? DEFAULT_NOTEBOOK_PREVIEW_STATE;
+    if (notebookState.status !== "ready" || !notebookState.notebook) {
       return;
     }
 
     const tabId = activeTabId;
-    const fallbackName = previewTarget.path.split('/').filter(Boolean).pop() || 'notebook.ipynb';
+    const fallbackName =
+      previewTarget.path.split("/").filter(Boolean).pop() || "notebook.ipynb";
     const filename = previewTarget.filename || fallbackName;
 
     setTabNotebookPdfExporting((prev) => ({
@@ -2327,17 +2559,17 @@ export default function Chat({
     }));
 
     try {
-      const { exportNotebookReportAsPdf } = await import(
-        '@/components/chat-file-preview/notebook-preview/pdf-export'
-      );
+      const { exportNotebookReportAsPdf } =
+        await import("@/components/chat-file-preview/notebook-preview/pdf-export");
       await exportNotebookReportAsPdf({
         notebook: notebookState.notebook,
         filename,
       });
     } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : 'Failed to export notebook report as PDF.';
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to export notebook report as PDF.";
       toast.error(message);
     } finally {
       setTabNotebookPdfExporting((prev) => {
@@ -2349,794 +2581,1052 @@ export default function Chat({
     }
   }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
-  const handleRealtimeSideChannelEvent = useCallback((data: any) => {
-    if (data.type === 'preview_state') {
-      const newVersion = typeof data.version === 'number' ? data.version : 0;
-      const hasVersionBump = newVersion > previewVersionRef.current;
-      previewVersionRef.current = newVersion;
-      const hasRefreshHint = data.refreshTabId !== undefined;
-      const refreshTabId = typeof data.refreshTabId === 'string' ? data.refreshTabId : null;
+  const handleRealtimeSideChannelEvent = useCallback(
+    (data: any) => {
+      if (data.type === "preview_state") {
+        const newVersion = typeof data.version === "number" ? data.version : 0;
+        const hasVersionBump = newVersion > previewVersionRef.current;
+        previewVersionRef.current = newVersion;
+        const hasRefreshHint = data.refreshTabId !== undefined;
+        const refreshTabId =
+          typeof data.refreshTabId === "string" ? data.refreshTabId : null;
 
-      const hasTabsPayload = Array.isArray(data.tabs) || data.activeTabId !== undefined;
-      supportsPreviewTabsStateRef.current = hasTabsPayload;
-      if (hasTabsPayload) {
-        const nextSession = normalizePreviewSessionState(data.tabs, data.activeTabId, data.target);
-        setLocalPreviewSessionState(nextSession.tabs, nextSession.activeTabId);
+        const hasTabsPayload =
+          Array.isArray(data.tabs) || data.activeTabId !== undefined;
+        supportsPreviewTabsStateRef.current = hasTabsPayload;
+        if (hasTabsPayload) {
+          const nextSession = normalizePreviewSessionState(
+            data.tabs,
+            data.activeTabId,
+            data.target,
+          );
+          setLocalPreviewSessionState(
+            nextSession.tabs,
+            nextSession.activeTabId,
+          );
 
-        if (!nextSession.target || !nextSession.activeTabId) {
+          if (!nextSession.target || !nextSession.activeTabId) {
+            return;
+          }
+
+          const nextActiveId = nextSession.activeTabId;
+          const shouldRefreshActiveTab = refreshTabId
+            ? refreshTabId === nextActiveId
+            : !hasRefreshHint && hasVersionBump;
+
+          if (nextSession.target.kind === "app" && shouldRefreshActiveTab) {
+            const existingTimeout =
+              iframeRefreshTimeoutsRef.current[nextActiveId];
+            if (existingTimeout) {
+              clearTimeout(existingTimeout);
+            }
+            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
+            iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
+              setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
+              bumpIframeKey(nextActiveId);
+              delete iframeRefreshTimeoutsRef.current[nextActiveId];
+            }, 1500);
+          } else if (
+            nextSession.target.kind === "file" &&
+            shouldRefreshActiveTab
+          ) {
+            bumpFilePreviewKey(nextActiveId);
+          }
           return;
         }
 
-        const nextActiveId = nextSession.activeTabId;
-        const shouldRefreshActiveTab = refreshTabId
-          ? refreshTabId === nextActiveId
-          : (!hasRefreshHint && hasVersionBump);
+        const nextTarget = coercePreviewTarget(data.target);
+        if (!nextTarget) {
+          // Keep client tab state even if the server has no active target.
+          return;
+        }
 
-        if (nextSession.target.kind === 'app' && shouldRefreshActiveTab) {
-          const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
+        openTabForTarget(nextTarget);
+        const nextTabId = getPreviewTabId(nextTarget);
+        const shouldRefreshTab = refreshTabId
+          ? refreshTabId === nextTabId
+          : !hasRefreshHint && hasVersionBump;
+
+        if (nextTarget.kind === "app" && shouldRefreshTab) {
+          const existingTimeout = iframeRefreshTimeoutsRef.current[nextTabId];
           if (existingTimeout) {
             clearTimeout(existingTimeout);
           }
-          setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
-          iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
-            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
-            bumpIframeKey(nextActiveId);
-            delete iframeRefreshTimeoutsRef.current[nextActiveId];
+          setTabAppLoading((prev) => ({ ...prev, [nextTabId]: true }));
+          iframeRefreshTimeoutsRef.current[nextTabId] = setTimeout(() => {
+            setTabAppLoading((prev) => ({ ...prev, [nextTabId]: false }));
+            bumpIframeKey(nextTabId);
+            delete iframeRefreshTimeoutsRef.current[nextTabId];
           }, 1500);
-        } else if (nextSession.target.kind === 'file' && shouldRefreshActiveTab) {
-          bumpFilePreviewKey(nextActiveId);
+        } else if (nextTarget.kind === "file" && shouldRefreshTab) {
+          bumpFilePreviewKey(nextTabId);
         }
+
         return;
       }
 
-      const nextTarget = coercePreviewTarget(data.target);
-      if (!nextTarget) {
-        // Keep client tab state even if the server has no active target.
+      if (data.type === "title_updated" && data.title) {
+        setCurrentTitle(data.title);
         return;
       }
 
-      openTabForTarget(nextTarget);
-      const nextTabId = getPreviewTabId(nextTarget);
-      const shouldRefreshTab = refreshTabId
-        ? refreshTabId === nextTabId
-        : (!hasRefreshHint && hasVersionBump);
-
-      if (nextTarget.kind === 'app' && shouldRefreshTab) {
-        const existingTimeout = iframeRefreshTimeoutsRef.current[nextTabId];
-        if (existingTimeout) {
-          clearTimeout(existingTimeout);
-        }
-        setTabAppLoading((prev) => ({ ...prev, [nextTabId]: true }));
-        iframeRefreshTimeoutsRef.current[nextTabId] = setTimeout(() => {
-          setTabAppLoading((prev) => ({ ...prev, [nextTabId]: false }));
-          bumpIframeKey(nextTabId);
-          delete iframeRefreshTimeoutsRef.current[nextTabId];
-        }, 1500);
-      } else if (nextTarget.kind === 'file' && shouldRefreshTab) {
-        bumpFilePreviewKey(nextTabId);
+      if (data.type === "thread_model_updated" && isLlmModel(data.model)) {
+        const nextProvider =
+          data.provider === "codex" || data.provider === "claude"
+            ? data.provider
+            : getProviderForModel(data.model, activeThreadProvider);
+        setActiveThreadProvider(nextProvider);
+        setSelectedThreadModel(data.model);
+        return;
       }
 
-      return;
-    }
+      if (
+        data.type === "connection_setup_prompt" &&
+        data.requestId &&
+        data.integrationType
+      ) {
+        setConnectionSetupPrompt({
+          requestId: data.requestId as string,
+          integrationType: data.integrationType as string,
+          suggestedName: data.suggestedName as string | undefined,
+          message: data.message as string | undefined,
+          instructions: data.instructions as string | undefined,
+          dynamicSchema:
+            data.dynamicSchema as ConnectionSetupPromptData["dynamicSchema"],
+          mcpDoId: data.mcpDoId as string | undefined,
+        });
+        return;
+      }
 
-    if (data.type === 'title_updated' && data.title) {
-      setCurrentTitle(data.title);
-      return;
-    }
-
-    if (data.type === 'thread_model_updated' && isLlmModel(data.model, resolvedThreadProvider)) {
-      setSelectedThreadModel(data.model);
-      return;
-    }
-
-    if (data.type === 'connection_setup_prompt' && data.requestId && data.integrationType) {
-      setConnectionSetupPrompt({
-        requestId: data.requestId as string,
-        integrationType: data.integrationType as string,
-        suggestedName: data.suggestedName as string | undefined,
-        message: data.message as string | undefined,
-        instructions: data.instructions as string | undefined,
-        dynamicSchema: data.dynamicSchema as ConnectionSetupPromptData['dynamicSchema'],
-        mcpDoId: data.mcpDoId as string | undefined,
-      });
-      return;
-    }
-
-    if (data.type === 'bug_report_prompt' && data.requestId) {
-      setMcpBugReportPrompt({
-        requestId: data.requestId as string,
-        message: data.message as string | undefined,
-      });
-    }
-  }, [
-    openTabForTarget,
-    resolvedThreadProvider,
-    setLocalPreviewSessionState,
-    bumpIframeKey,
-    bumpFilePreviewKey,
-  ]);
+      if (data.type === "bug_report_prompt" && data.requestId) {
+        setMcpBugReportPrompt({
+          requestId: data.requestId as string,
+          message: data.message as string | undefined,
+        });
+      }
+    },
+    [
+      openTabForTarget,
+      activeThreadProvider,
+      setLocalPreviewSessionState,
+      bumpIframeKey,
+      bumpFilePreviewKey,
+    ],
+  );
 
   // WebSocket connection management
-  const connectWebSocket = useCallback((id: string, isReconnect = false) => {
-    if (!id) {
-      return;
-    }
-    // Clear any pending reconnect
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    // Increment connection ID to invalidate any pending callbacks from old connections
-    const thisConnectionId = ++connectionIdRef.current;
-    connectionStartedAtRef.current.set(thisConnectionId, Date.now());
-
-    // Close existing connection regardless of state
-    // This prevents orphaned WebSockets from React StrictMode double-mounting
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
-    // Clear any existing ping interval
-    if (pingIntervalRef.current) {
-      clearInterval(pingIntervalRef.current);
-      pingIntervalRef.current = null;
-    }
-
-    setReady(false);
-    // Clear stale streaming state on reconnect; server sends the
-    // authoritative streaming_state immediately after ready.
-    setStreamingMessageId(null);
-    lastCompletedAssistantMessageIdRef.current = null;
-    compactingPriorMessageIdRef.current = null;
-    setCompactingPriorMessageId(null);
-    setLoading(false);
-    isAutoCompactingRef.current = false;
-    syncCompactionIndicator();
-    if (!isReconnect) {
-      reconnectAttempts.current = 0;
-    }
-
-    // Fetch existing messages from REST API unless this is a new thread
-    let shouldFetchMessages = !isNewThread && !isLoadingMessages;
-
-    // Check sessionStorage for welcome screen pending message (survives navigation)
-    const pendingPayload = readPendingNewThreadMessage();
-    if (pendingPayload?.threadId === id && typeof pendingPayload.message === 'string') {
-      shouldFetchMessages = false;
-      sessionStorage.removeItem(pendingMessageKey);
-      if (pendingPayload.threadTitle) {
-        setCurrentTitle(pendingPayload.threadTitle);
-      }
-      if (pendingPayload.threadModel) {
-        setSelectedThreadModel(pendingPayload.threadModel);
-      }
-      if (resolvedWorkspaceId) {
-        pendingDeliveryDraftRef.current = {
-          workspaceId: resolvedWorkspaceId,
-          threadId: id,
-        };
-      }
-
-      // Add to state (both messages and pending queue)
-      const optimisticUserMsg: Message = {
-        id: `local_${Date.now()}`,
-        thread_id: id,
-        role: 'user',
-        content: pendingPayload.message,
-        created_at: Date.now(),
-      };
-      setMessages([optimisticUserMsg]);
-      setPendingMessages(prev => [...prev, optimisticUserMsg]);
-      setLoading(true);
-    }
-
-    // Skip fetch if we have pending messages (use ref to avoid stale closure)
-    if (shouldFetchMessages && pendingMessagesRef.current.length > 0) {
-      shouldFetchMessages = false;
-    }
-
-    // Skip fetch if we already have messages (use ref to avoid stale closure)
-    if (shouldFetchMessages && messagesRef.current.length > 0) {
-      shouldFetchMessages = false;
-    }
-
-    if (shouldFetchMessages) {
-      fetchMessages(id);
-    }
-
-    // WebSocket connects at /ws/{workspace}?threadId={id}
-    // Worker validates thread scope and forwards to ChatThreadDO for sandbox chat transport.
-    const wsHost = window.location.host;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const workspaceIdForConnection = resolvedWorkspaceId;
-    const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      // Ignore if this connection was superseded
-      if (connectionIdRef.current !== thisConnectionId) {
+  const connectWebSocket = useCallback(
+    (id: string, isReconnect = false) => {
+      if (!id) {
         return;
       }
-      reconnectAttempts.current = 0;
-
-      // Start ping interval to detect connection issues early
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-      }
-      pingIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }));
-        }
-      }, 30000); // Ping every 30 seconds
-
-      // Send init message to container
-      ws.send(JSON.stringify({
-        type: 'init',
-        threadId: id,
-        sessionId: sessionIdRef.current,
-        lastEventId: lastEventIdRef.current,
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      // Ignore messages from stale WebSocket instances (e.g., from StrictMode double-mount)
-      if (wsRef.current !== ws) {
-        return;
+      // Clear any pending reconnect
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
 
-      const data = JSON.parse(event.data);
+      // Increment connection ID to invalidate any pending callbacks from old connections
+      const thisConnectionId = ++connectionIdRef.current;
+      connectionStartedAtRef.current.set(thisConnectionId, Date.now());
 
-      if (typeof data?.eventId === 'number') {
-        lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
-        if (id) {
-          persistSessionState(id);
-        }
+      // Close existing connection regardless of state
+      // This prevents orphaned WebSockets from React StrictMode double-mounting
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (oobWsRef.current) {
+        oobWsRef.current.close();
+        oobWsRef.current = null;
       }
 
-      if (data.type === 'ready') {
-        // Container is ready to receive messages
-        setReady(true);
-
-        // Get and clear queued messages
-        const queuedMessages = pendingMessagesRef.current;
-        if (queuedMessages.length > 0) {
-          setPendingMessages([]);
-          setLoading(true);
-
-          // Restore to state if missing (fetchMessages may have cleared them during reconnect)
-          const currentMessages = messagesRef.current;
-          const existingIds = new Set(currentMessages.map(m => m.id));
-          const missing = queuedMessages.filter(m => !existingIds.has(m.id));
-          if (missing.length > 0) {
-            setMessages([...currentMessages, ...missing]);
-          }
-
-          // Send all queued messages
-          for (const msg of queuedMessages) {
-            const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-            ws.send(JSON.stringify({
-              type: 'message',
-              content,
-              sessionId: sessionIdRef.current,
-              threadId: id,
-            }));
-          }
-        }
-      } else if (data.type === 'session' && typeof data.sessionId === 'string') {
-        const newSessionId = data.sessionId;
-        if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-          lastEventIdRef.current = 0;
-        }
-        sessionIdRef.current = newSessionId;
-        if (id) {
-          persistSessionState(id);
-        }
-      } else if (data.type === 'runtime_event') {
-        if (!id) {
-          return;
-        }
-        const runtimeEvent = data.event;
-        setMessages((prev) => {
-          const next = applyRuntimeEventToMessages(
-            prev,
-            id,
-            'codex',
-            runtimeEvent,
-            runtimeStreamingMessageIdsRef.current,
-          );
-          return next;
-        });
-        const nextStreamingId = runtimeStreamingMessageIdsRef.current[id] ?? null;
-        setStreamingMessageId(nextStreamingId);
-
-        if (
-          runtimeEvent &&
-          typeof runtimeEvent === 'object' &&
-          (runtimeEvent as { method?: unknown }).method === 'turn/completed'
-        ) {
-          lastCompletedAssistantMessageIdRef.current = nextStreamingId;
-          setStreamingMessageId(null);
-          setLoading(false);
-          clearPendingDeliveryDraft();
-          revalidator.revalidate();
-        }
-      } else if (data.type === 'sdk_event') {
-        // Handle SDK events for streaming
-        const sdkEvent = data.event as SDKEvent;
-        const currentStreamingId = streamingMessageIdRef.current;
-
-        if (sdkEvent.type === 'stream_event') {
-          const evt = sdkEvent.event;
-
-          // ── Compaction content block interception ──
-          // The API streams the compaction summary as a content block of type
-          // 'compaction' with a single 'compaction_delta' containing the full
-          // summary text. Intercept these events before they reach the normal
-          // streaming pipeline so the summary is rendered as a standalone
-          // CompactSummaryCard instead of being appended to the assistant message.
-          if (evt?.type === 'content_block_start' && evt?.content_block?.type === 'compaction') {
-            isInCompactionBlockRef.current = true;
-            compactionContentRef.current = '';
-            hasCapturedCompactionSummaryRef.current = false;
-            // Fallback trigger when system/status events are unavailable.
-            isAutoCompactingRef.current = true;
-            syncCompactionIndicator();
-            // Only capture once: status events are the primary source and this is
-            // a fallback path when those events are missing.
-            if (compactingPriorMessageIdRef.current === null) {
-              const priorId = streamingMessageIdRef.current
-                ?? lastCompletedAssistantMessageIdRef.current
-                ?? null;
-              compactingPriorMessageIdRef.current = priorId;
-              setCompactingPriorMessageId(priorId);
-            }
-            if (streamingMessageIdRef.current) {
-              setStreamingMessageId(null);
-            }
-            return;
-          }
-          if (isInCompactionBlockRef.current) {
-            if (evt?.type === 'content_block_delta' && evt?.delta?.type === 'compaction_delta') {
-              compactionContentRef.current += evt.delta.content || '';
-              return;
-            }
-            if (evt?.type === 'content_block_stop') {
-              const summary = compactionContentRef.current;
-              isInCompactionBlockRef.current = false;
-              compactionContentRef.current = '';
-              compactingPriorMessageIdRef.current = null;
-              setCompactingPriorMessageId(null);
-              if (summary) {
-                hasCapturedCompactionSummaryRef.current = true;
-                completeActiveManualCompaction();
-                isAutoCompactingRef.current = false;
-                syncCompactionIndicator();
-                const existingPlaceholderId = pendingCompactionPlaceholderIdRef.current;
-                const compactMsg: Message = {
-                  id: existingPlaceholderId || `compact_${Date.now()}`,
-                  thread_id: id,
-                  role: 'user',
-                  content: summary,
-                  created_at: Date.now(),
-                  isCompactSummary: true,
-                };
-                pendingCompactionPlaceholderIdRef.current = compactMsg.id;
-                setMessages(prev => {
-                  if (existingPlaceholderId) {
-                    const placeholderIndex = prev.findIndex(m => m.id === existingPlaceholderId);
-                    if (placeholderIndex !== -1) {
-                      const next = [...prev];
-                      next[placeholderIndex] = compactMsg;
-                      return next;
-                    }
-                  }
-                  const existingSummaryIndex = prev.findIndex(m => m.id === compactMsg.id);
-                  if (existingSummaryIndex !== -1) {
-                    const next = [...prev];
-                    next[existingSummaryIndex] = compactMsg;
-                    return next;
-                  }
-                  return [...prev, compactMsg];
-                });
-              }
-              return;
-            }
-          }
-
-          if (evt?.type === 'message_start') {
-            const currentMsgs = messagesRef.current;
-            const existingStreamingId = streamingMessageIdRef.current;
-            const existingStreamingMsg = existingStreamingId
-              ? currentMsgs.find(msg => msg.id === existingStreamingId)
-              : undefined;
-            const fallbackStreamingMsg = existingStreamingMsg
-              ? undefined
-              : currentMsgs.find(msg => msg.isStreaming);
-            const activeStreamingMsg = existingStreamingMsg ?? fallbackStreamingMsg;
-
-            if (splitStreamingMessageOnNextPartRef.current && activeStreamingMsg) {
-              splitStreamingMessageOnNextPartRef.current = false;
-              const nextMsgIdBase = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
-              const nextMsgId = currentMsgs.some(msg => msg.id === nextMsgIdBase)
-                ? `${nextMsgIdBase}_${Date.now()}`
-                : nextMsgIdBase;
-
-              setStreamingMessageId(nextMsgId);
-              setMessages(prev => {
-                const finalized = prev.map(msg =>
-                  msg.id === activeStreamingMsg.id ? finalizeStreamingMessage(msg) : msg
-                );
-                const newMsg: Message = {
-                  id: nextMsgId,
-                  thread_id: id,
-                  role: 'assistant',
-                  content: [],
-                  created_at: Date.now(),
-                  isStreaming: true,
-                };
-                if (finalized.some(msg => msg.id === nextMsgId)) {
-                  return finalized.map(msg =>
-                    msg.id === nextMsgId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-                  );
-                }
-                const withNew = [...finalized, newMsg];
-                return withNew.map(msg =>
-                  msg.id === nextMsgId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-                );
-              });
-              return;
-            }
-
-            if (existingStreamingMsg) {
-              // Claude emits a new message_start after each tool call; append to the active turn.
-              setMessages(prev => prev.map(msg =>
-                msg.id === existingStreamingId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-              ));
-              return;
-            }
-
-            if (fallbackStreamingMsg) {
-              setStreamingMessageId(fallbackStreamingMsg.id);
-              setMessages(prev => prev.map(msg =>
-                msg.id === fallbackStreamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-              ));
-              return;
-            }
-
-            // Add new assistant message with isStreaming: true
-            const msgId = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
-            setStreamingMessageId(msgId);
-            const newMsg: Message = {
-              id: msgId,
-              thread_id: id,
-              role: 'assistant',
-              content: [],
-              created_at: Date.now(),
-              isStreaming: true,
-            };
-            // Use functional update to avoid race conditions with rapid events
-            setMessages(prev => {
-              if (prev.some(m => m.id === msgId)) {
-                return prev;
-              }
-              return [...prev, newMsg];
-            });
-          } else if (currentStreamingId) {
-            // Apply streaming delta to the current message
-            setMessages(prev => prev.map(msg =>
-              msg.id === currentStreamingId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-            ));
-          } else {
-            // No streamingMessageId - try to restore from streaming message (reconnect scenario)
-            const currentMessages = messagesRef.current;
-            const streamingMsg = currentMessages.find(m => m.isStreaming);
-            if (streamingMsg) {
-              setStreamingMessageId(streamingMsg.id);
-              setMessages(prev => prev.map(msg =>
-                msg.id === streamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-              ));
-            }
-          }
-        } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-          // System init - reset the streaming message ID
-          splitStreamingMessageOnNextPartRef.current = false;
-          setStreamingMessageId(null);
-          startQueuedManualCompactionIfNeeded();
-        } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'status') {
-          const status = (sdkEvent as unknown as Record<string, unknown>).status;
-          if (status === 'compacting') {
-            isAutoCompactingRef.current = true;
-            syncCompactionIndicator();
-            const priorId = streamingMessageIdRef.current
-              ?? lastCompletedAssistantMessageIdRef.current
-              ?? null;
-            compactingPriorMessageIdRef.current = priorId;
-            setCompactingPriorMessageId(priorId);
-            if (streamingMessageIdRef.current) {
-              setStreamingMessageId(null);
-            }
-          } else if (status === null) {
-            isAutoCompactingRef.current = false;
-            syncCompactionIndicator();
-            compactingPriorMessageIdRef.current = null;
-            setCompactingPriorMessageId(null);
-          }
-        } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
-          // Compaction is complete — the compact_boundary event arrives AFTER the
-          // SDK finishes generating the summary (not before). Insert a compact
-          // summary card immediately. If the control plane later forwards the full
-          // summary (isCompactSummary user event), it will replace this placeholder.
-          completeActiveManualCompaction();
-          isAutoCompactingRef.current = false;
-          syncCompactionIndicator();
-          compactingPriorMessageIdRef.current = null;
-          setCompactingPriorMessageId(null);
-          if (hasCapturedCompactionSummaryRef.current) {
-            hasCapturedCompactionSummaryRef.current = false;
-            return;
-          }
-          const compactMsg: Message = {
-            id: `compact_${Date.now()}`,
-            thread_id: id,
-            role: 'user',
-            content: 'The conversation context was compacted to continue this session.',
-            created_at: Date.now(),
-            isCompactSummary: true,
-          };
-          pendingCompactionPlaceholderIdRef.current = compactMsg.id;
-          setMessages(prev => [...prev, compactMsg]);
-        } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Track message ID as fallback
-          if (!currentStreamingId) {
-            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
-            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
-            if (sdkUuid || sdkMsgId) {
-              setStreamingMessageId(sdkUuid || sdkMsgId || null);
-            }
-          }
-        } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
-          // Compact summary — system-generated context recap
-          const isCompactSummary = Boolean(
-            (sdkEvent as unknown as Record<string, unknown>).isCompactSummary
-          );
-          if (isCompactSummary) {
-            completeActiveManualCompaction();
-            isAutoCompactingRef.current = false;
-            syncCompactionIndicator();
-            compactingPriorMessageIdRef.current = null;
-            setCompactingPriorMessageId(null);
-            hasCapturedCompactionSummaryRef.current = false;
-            const placeholderId = pendingCompactionPlaceholderIdRef.current;
-            pendingCompactionPlaceholderIdRef.current = null;
-            const content = sdkEvent.message.content;
-            const compactMsg: Message = {
-              id: (sdkEvent as { uuid?: string }).uuid || `compact_${Date.now()}`,
-              thread_id: id,
-              role: 'user',
-              content,
-              created_at: Date.now(),
-              isCompactSummary: true,
-            };
-            // Replace only the currently tracked provisional compact card
-            // with the forwarded full summary.
-            setMessages(prev => {
-              const existingSummaryIndex = prev.findIndex(m => m.id === compactMsg.id);
-              const upsertBySummaryId = () => {
-                if (existingSummaryIndex === -1) {
-                  return [...prev, compactMsg];
-                }
-                const next = [...prev];
-                next[existingSummaryIndex] = compactMsg;
-                return next;
-              };
-              if (!placeholderId) {
-                return upsertBySummaryId();
-              }
-              const placeholderIndex = prev.findIndex(m => m.id === placeholderId);
-              if (placeholderIndex === -1) {
-                return upsertBySummaryId();
-              }
-              const next = [...prev];
-              next[placeholderIndex] = compactMsg;
-              return next;
-            });
-            return;
-          }
-
-          const contentBlocks = sdkEvent.message.content;
-          const isToolResultEvent =
-            Array.isArray(contentBlocks) &&
-            contentBlocks.length > 0 &&
-            contentBlocks.every(block => block?.type === 'tool_result');
-          const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
-
-          if (!isToolResultEvent) {
-            const shouldBeMeta = true;
-            const streamingMessage = streamingMessageIdRef.current
-              ? messagesRef.current.find(msg => msg.id === streamingMessageIdRef.current)
-              : undefined;
-            const fallbackToolUseId = shouldBeMeta && !sourceToolUseID
-              ? (getLastToolUseId(streamingMessage) || getLastToolUseIdFromMessages(messagesRef.current))
-              : undefined;
-            const resolvedToolUseId = sourceToolUseID || fallbackToolUseId;
-            const metaMsg: Message = {
-              id: `meta_${resolvedToolUseId ?? Date.now()}_${Date.now()}`,
-              thread_id: id,
-              role: 'user',
-              content: contentBlocks,
-              created_at: Date.now(),
-              isMeta: shouldBeMeta,
-              sourceToolUseID: resolvedToolUseId,
-            };
-            setMessages(prev => [...prev, metaMsg]);
-            return;
-          }
-
-          const toolResults = contentBlocks.filter(
-            (block): block is ToolResultBlock => block?.type === 'tool_result'
-          );
-          if (toolResults.length === 0) return;
-          const toolUseResultPrompt = (() => {
-            const toolUseResult = sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
-            return typeof toolUseResult?.prompt === 'string' ? toolUseResult.prompt : undefined;
-          })();
-          setMessages(prev => attachToolResultsToMessages(prev, toolResults, {
-            threadId: id,
-            parentToolUseId: sourceToolUseID,
-            parentToolPrompt: toolUseResultPrompt,
-          }));
-        } else if (sdkEvent.type === 'result') {
-          // Query complete - mark message as not streaming
-          // Finish streaming
-          splitStreamingMessageOnNextPartRef.current = false;
-          const msgId = streamingMessageIdRef.current;
-          lastCompletedAssistantMessageIdRef.current = msgId;
-          if (msgId) {
-            const parsedResultTimestamp = typeof sdkEvent.timestamp === 'string'
-              ? new Date(sdkEvent.timestamp).getTime()
-              : NaN;
-            const completedAt = Number.isFinite(parsedResultTimestamp)
-              ? parsedResultTimestamp
-              : Date.now();
-            setMessages(prev => prev.map(msg =>
-              msg.id === msgId ? { ...finalizeStreamingMessage(msg), created_at: completedAt } : msg
-            ));
-          }
-          setStreamingMessageId(null);
-          setLoading(false);
-          clearPendingDeliveryDraft();
-          revalidator.revalidate();
-          isAutoCompactingRef.current = false;
-          syncCompactionIndicator();
-          compactingPriorMessageIdRef.current = null;
-          setCompactingPriorMessageId(null);
-          if (activeManualCompactionTurnRef.current) {
-            completeActiveManualCompaction();
-          }
-          hasCapturedCompactionSummaryRef.current = false;
-        }
-      } else if (data.type === 'todo_state') {
-        // Direct todo state from server - no extraction needed
-        if (Array.isArray(data.todos)) {
-          setCurrentTodos(data.todos);
-        }
-      } else if (data.type === 'context_usage_state') {
-        if (data.usedPercent === null) {
-          setContextUsedPercent(null);
-        } else if (typeof data.usedPercent === 'number' && Number.isFinite(data.usedPercent)) {
-          setContextUsedPercent(Math.max(0, Math.min(100, Math.round(data.usedPercent))));
-        }
-      } else if (data.type === 'ask_user_question') {
-        // Claude is asking the user a question
-        if (data.questionId && Array.isArray(data.questions)) {
-          setPendingQuestion({
-            questionId: data.questionId,
-            toolUseId: data.toolUseId,
-            questions: data.questions,
-          });
-        }
-      } else if (data.type === 'question_answered') {
-        // Clear the pending question
-        setPendingQuestion((prev) => {
-          if (prev?.questionId === data.questionId) {
-            return null;
-          }
-          return prev;
-        });
-      } else if (data.type === 'streaming_state') {
-        setLoading(Boolean(data.isStreaming));
-      } else if (data.type === 'error') {
-        console.error('WebSocket error:', data.error);
-        setError(normalizeChatErrorMessage(data.error));
-        // Finish streaming on error
-        splitStreamingMessageOnNextPartRef.current = false;
-        const msgId = streamingMessageIdRef.current;
-        lastCompletedAssistantMessageIdRef.current = msgId;
-        if (msgId) {
-          setMessages(prev => prev.map(msg =>
-            msg.id === msgId ? finalizeStreamingMessage(msg) : msg
-          ));
-        }
-        setStreamingMessageId(null);
-        setLoading(false);
-        restorePendingDeliveryDraft();
-        isAutoCompactingRef.current = false;
-        compactingPriorMessageIdRef.current = null;
-        setCompactingPriorMessageId(null);
-        clearManualCompactionQueue();
-        hasCapturedCompactionSummaryRef.current = false;
-      } else if (
-        data.type === 'preview_state' ||
-        data.type === 'title_updated' ||
-        data.type === 'thread_model_updated' ||
-        data.type === 'connection_setup_prompt' ||
-        data.type === 'bug_report_prompt'
-      ) {
-        handleRealtimeSideChannelEvent(data);
-      }
-    };
-
-    ws.onclose = () => {
-      // Ignore if this connection was superseded by a new one
-      if (connectionIdRef.current !== thisConnectionId) {
-        return;
-      }
-
-      // Clear ping interval
+      // Clear any existing ping interval
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
       }
 
-      connectionStartedAtRef.current.delete(thisConnectionId);
       setReady(false);
-      wsRef.current = null;
+      // Clear stale streaming state on reconnect; server sends the
+      // authoritative streaming_state immediately after ready.
+      setStreamingMessageId(null);
+      lastCompletedAssistantMessageIdRef.current = null;
+      compactingPriorMessageIdRef.current = null;
+      setCompactingPriorMessageId(null);
+      setLoading(false);
+      isAutoCompactingRef.current = false;
+      syncCompactionIndicator();
+      if (!isReconnect) {
+        reconnectAttempts.current = 0;
+      }
 
-      // Auto-reconnect with exponential backoff
-      const maxAttempts = 5;
-      if (reconnectAttempts.current < maxAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
-        reconnectAttempts.current++;
-        reconnectTimeoutRef.current = setTimeout(() => {
-          // Check again that we haven't been superseded
-          if (connectionIdRef.current === thisConnectionId) {
-            connectWebSocket(id, true);
+      // Fetch existing messages from REST API unless this is a new thread
+      let shouldFetchMessages = !isNewThread && !isLoadingMessages;
+
+      // Check sessionStorage for welcome screen pending message (survives navigation)
+      const pendingPayload = readPendingNewThreadMessage();
+      if (
+        pendingPayload?.threadId === id &&
+        typeof pendingPayload.message === "string"
+      ) {
+        shouldFetchMessages = false;
+        sessionStorage.removeItem(pendingMessageKey);
+        if (pendingPayload.threadTitle) {
+          setCurrentTitle(pendingPayload.threadTitle);
+        }
+        if (pendingPayload.threadModel) {
+          setSelectedThreadModel(pendingPayload.threadModel);
+        }
+        if (resolvedWorkspaceId) {
+          pendingDeliveryDraftRef.current = {
+            workspaceId: resolvedWorkspaceId,
+            threadId: id,
+          };
+        }
+
+        // Add to state (both messages and pending queue)
+        const optimisticUserMsg: Message = {
+          id: `local_${Date.now()}`,
+          thread_id: id,
+          role: "user",
+          content: pendingPayload.message,
+          created_at: Date.now(),
+        };
+        setMessages([optimisticUserMsg]);
+        setPendingMessages((prev) => [...prev, optimisticUserMsg]);
+        setLoading(true);
+      }
+
+      // Skip fetch if we have pending messages (use ref to avoid stale closure)
+      if (shouldFetchMessages && pendingMessagesRef.current.length > 0) {
+        shouldFetchMessages = false;
+      }
+
+      // Skip fetch if we already have messages (use ref to avoid stale closure)
+      if (shouldFetchMessages && messagesRef.current.length > 0) {
+        shouldFetchMessages = false;
+      }
+
+      if (shouldFetchMessages) {
+        fetchMessages(id);
+      }
+
+      // Side-channel WebSocket stays on ChatThreadDO for preview, prompts, replay,
+      // and other out-of-band events.
+      const wsHost = window.location.host;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const workspaceIdForConnection = resolvedWorkspaceId;
+      const oobWsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
+      const oobWs = new WebSocket(oobWsUrl);
+      oobWsRef.current = oobWs;
+
+      oobWs.onopen = () => {
+        if (connectionIdRef.current !== thisConnectionId) {
+          return;
+        }
+        oobWs.send(
+          JSON.stringify({
+            type: "init",
+            mode: "side_channel",
+            threadId: id,
+            sessionId: sessionIdRef.current,
+            lastEventId: lastEventIdRef.current,
+          }),
+        );
+      };
+
+      oobWs.onmessage = (event) => {
+        if (oobWsRef.current !== oobWs) {
+          return;
+        }
+
+        const data = JSON.parse(event.data);
+
+        if (typeof data?.eventId === "number") {
+          lastEventIdRef.current = Math.max(
+            lastEventIdRef.current,
+            data.eventId,
+          );
+          if (id) {
+            persistSessionState(id);
           }
-        }, delay);
-      } else {
-        // Reconnect exhausted — clear stale compaction indicator.
-        restorePendingDeliveryDraft();
-        isAutoCompactingRef.current = false;
-        compactingPriorMessageIdRef.current = null;
-        setCompactingPriorMessageId(null);
-        lastCompletedAssistantMessageIdRef.current = null;
-        clearManualCompactionQueue();
-      }
-    };
+        }
 
-    ws.onerror = () => {
-      // Ignore errors from superseded connections
-      if (connectionIdRef.current !== thisConnectionId) {
-        return;
-      }
-    };
+        if (data.type === "session" && typeof data.sessionId === "string") {
+          const newSessionId = data.sessionId;
+          if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
+            lastEventIdRef.current = 0;
+          }
+          sessionIdRef.current = newSessionId;
+          if (id) {
+            persistSessionState(id);
+          }
+        } else if (data.type === "todo_state") {
+          if (Array.isArray(data.todos)) {
+            setCurrentTodos(data.todos);
+          }
+        } else if (data.type === "context_usage_state") {
+          if (data.usedPercent === null) {
+            setContextUsedPercent(null);
+          } else if (
+            typeof data.usedPercent === "number" &&
+            Number.isFinite(data.usedPercent)
+          ) {
+            setContextUsedPercent(
+              Math.max(0, Math.min(100, Math.round(data.usedPercent))),
+            );
+          }
+        } else if (data.type === "ask_user_question") {
+          if (data.questionId && Array.isArray(data.questions)) {
+            questionResponseSocketRef.current = "oob";
+            setPendingQuestion({
+              questionId: data.questionId,
+              toolUseId: data.toolUseId,
+              questions: data.questions,
+            });
+          }
+        } else if (data.type === "question_answered") {
+          setPendingQuestion((prev) => {
+            if (prev?.questionId === data.questionId) {
+              return null;
+            }
+            return prev;
+          });
+        } else if (
+          data.type === "preview_state" ||
+          data.type === "title_updated" ||
+          data.type === "thread_model_updated" ||
+          data.type === "connection_setup_prompt" ||
+          data.type === "bug_report_prompt"
+        ) {
+          handleRealtimeSideChannelEvent(data);
+        }
+      };
 
-  }, [
-    clearPendingDeliveryDraft,
-    fetchMessages,
-    isNewThread,
-    persistSessionState,
-    revalidator,
-    resolvedWorkspaceId,
-    restorePendingDeliveryDraft,
-    setMessages,
-    setPendingMessages,
-    setStreamingMessageId,
-    handleRealtimeSideChannelEvent,
-  ]);
+      oobWs.onclose = () => {
+        if (oobWsRef.current === oobWs) {
+          oobWsRef.current = null;
+        }
+      };
+
+      // Runner WebSocket bypasses ChatThreadDO and bridges directly to sandbox-host/Pi.
+      const wsUrl = `${protocol}//${wsHost}/ws/runner/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        // Ignore if this connection was superseded
+        if (connectionIdRef.current !== thisConnectionId) {
+          return;
+        }
+        reconnectAttempts.current = 0;
+
+        // Start ping interval to detect connection issues early
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+        }
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "ping" }));
+          }
+        }, 30000); // Ping every 30 seconds
+
+        // Send init message to container
+        ws.send(
+          JSON.stringify({
+            type: "init",
+            threadId: id,
+            sessionId: sessionIdRef.current,
+            lastEventId: lastEventIdRef.current,
+          }),
+        );
+      };
+
+      ws.onmessage = (event) => {
+        // Ignore messages from stale WebSocket instances (e.g., from StrictMode double-mount)
+        if (wsRef.current !== ws) {
+          return;
+        }
+
+        const data = JSON.parse(event.data);
+
+        if (typeof data?.eventId === "number") {
+          lastEventIdRef.current = Math.max(
+            lastEventIdRef.current,
+            data.eventId,
+          );
+          if (id) {
+            persistSessionState(id);
+          }
+        }
+
+        if (data.type === "ready") {
+          // Container is ready to receive messages
+          setReady(true);
+
+          // Get and clear queued messages
+          const queuedMessages = pendingMessagesRef.current;
+          if (queuedMessages.length > 0) {
+            setPendingMessages([]);
+            setLoading(true);
+
+            // Restore to state if missing (fetchMessages may have cleared them during reconnect)
+            const currentMessages = messagesRef.current;
+            const existingIds = new Set(currentMessages.map((m) => m.id));
+            const missing = queuedMessages.filter(
+              (m) => !existingIds.has(m.id),
+            );
+            if (missing.length > 0) {
+              setMessages([...currentMessages, ...missing]);
+            }
+
+            // Send all queued messages
+            for (const msg of queuedMessages) {
+              const content =
+                typeof msg.content === "string"
+                  ? msg.content
+                  : JSON.stringify(msg.content);
+              ws.send(
+                JSON.stringify({
+                  type: "message",
+                  content,
+                  sessionId: sessionIdRef.current,
+                  threadId: id,
+                }),
+              );
+            }
+          }
+        } else if (
+          data.type === "session" &&
+          typeof data.sessionId === "string"
+        ) {
+          const newSessionId = data.sessionId;
+          if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
+            lastEventIdRef.current = 0;
+          }
+          sessionIdRef.current = newSessionId;
+          if (id) {
+            persistSessionState(id);
+          }
+        } else if (data.type === "runtime_event") {
+          if (!id) {
+            return;
+          }
+          const runtimeEvent = data.event;
+          setMessages((prev) => {
+            const next = applyRuntimeEventToMessages(
+              prev,
+              id,
+              "codex",
+              runtimeEvent,
+              runtimeStreamingMessageIdsRef.current,
+            );
+            return next;
+          });
+          const nextStreamingId =
+            runtimeStreamingMessageIdsRef.current[id] ?? null;
+          setStreamingMessageId(nextStreamingId);
+
+          if (
+            runtimeEvent &&
+            typeof runtimeEvent === "object" &&
+            (runtimeEvent as { method?: unknown }).method === "turn/completed"
+          ) {
+            lastCompletedAssistantMessageIdRef.current = nextStreamingId;
+            setStreamingMessageId(null);
+            setLoading(false);
+            clearPendingDeliveryDraft();
+            revalidator.revalidate();
+            for (const delay of [1000, 3000]) {
+              window.setTimeout(() => {
+                void fetchMessages(id);
+              }, delay);
+            }
+          }
+        } else if (data.type === "sdk_event") {
+          // Handle SDK events for streaming
+          const sdkEvent = data.event as SDKEvent;
+          const currentStreamingId = streamingMessageIdRef.current;
+
+          if (sdkEvent.type === "stream_event") {
+            const evt = sdkEvent.event;
+
+            // ── Compaction content block interception ──
+            // The API streams the compaction summary as a content block of type
+            // 'compaction' with a single 'compaction_delta' containing the full
+            // summary text. Intercept these events before they reach the normal
+            // streaming pipeline so the summary is rendered as a standalone
+            // CompactSummaryCard instead of being appended to the assistant message.
+            if (
+              evt?.type === "content_block_start" &&
+              evt?.content_block?.type === "compaction"
+            ) {
+              isInCompactionBlockRef.current = true;
+              compactionContentRef.current = "";
+              hasCapturedCompactionSummaryRef.current = false;
+              // Fallback trigger when system/status events are unavailable.
+              isAutoCompactingRef.current = true;
+              syncCompactionIndicator();
+              // Only capture once: status events are the primary source and this is
+              // a fallback path when those events are missing.
+              if (compactingPriorMessageIdRef.current === null) {
+                const priorId =
+                  streamingMessageIdRef.current ??
+                  lastCompletedAssistantMessageIdRef.current ??
+                  null;
+                compactingPriorMessageIdRef.current = priorId;
+                setCompactingPriorMessageId(priorId);
+              }
+              if (streamingMessageIdRef.current) {
+                setStreamingMessageId(null);
+              }
+              return;
+            }
+            if (isInCompactionBlockRef.current) {
+              if (
+                evt?.type === "content_block_delta" &&
+                evt?.delta?.type === "compaction_delta"
+              ) {
+                compactionContentRef.current += evt.delta.content || "";
+                return;
+              }
+              if (evt?.type === "content_block_stop") {
+                const summary = compactionContentRef.current;
+                isInCompactionBlockRef.current = false;
+                compactionContentRef.current = "";
+                compactingPriorMessageIdRef.current = null;
+                setCompactingPriorMessageId(null);
+                if (summary) {
+                  hasCapturedCompactionSummaryRef.current = true;
+                  completeActiveManualCompaction();
+                  isAutoCompactingRef.current = false;
+                  syncCompactionIndicator();
+                  const existingPlaceholderId =
+                    pendingCompactionPlaceholderIdRef.current;
+                  const compactMsg: Message = {
+                    id: existingPlaceholderId || `compact_${Date.now()}`,
+                    thread_id: id,
+                    role: "user",
+                    content: summary,
+                    created_at: Date.now(),
+                    isCompactSummary: true,
+                  };
+                  pendingCompactionPlaceholderIdRef.current = compactMsg.id;
+                  setMessages((prev) => {
+                    if (existingPlaceholderId) {
+                      const placeholderIndex = prev.findIndex(
+                        (m) => m.id === existingPlaceholderId,
+                      );
+                      if (placeholderIndex !== -1) {
+                        const next = [...prev];
+                        next[placeholderIndex] = compactMsg;
+                        return next;
+                      }
+                    }
+                    const existingSummaryIndex = prev.findIndex(
+                      (m) => m.id === compactMsg.id,
+                    );
+                    if (existingSummaryIndex !== -1) {
+                      const next = [...prev];
+                      next[existingSummaryIndex] = compactMsg;
+                      return next;
+                    }
+                    return [...prev, compactMsg];
+                  });
+                }
+                return;
+              }
+            }
+
+            if (evt?.type === "message_start") {
+              const currentMsgs = messagesRef.current;
+              const existingStreamingId = streamingMessageIdRef.current;
+              const existingStreamingMsg = existingStreamingId
+                ? currentMsgs.find((msg) => msg.id === existingStreamingId)
+                : undefined;
+              const fallbackStreamingMsg = existingStreamingMsg
+                ? undefined
+                : currentMsgs.find((msg) => msg.isStreaming);
+              const activeStreamingMsg =
+                existingStreamingMsg ?? fallbackStreamingMsg;
+
+              if (
+                splitStreamingMessageOnNextPartRef.current &&
+                activeStreamingMsg
+              ) {
+                splitStreamingMessageOnNextPartRef.current = false;
+                const nextMsgIdBase =
+                  evt.message?.id ||
+                  (sdkEvent as { uuid?: string }).uuid ||
+                  `stream_${Date.now()}`;
+                const nextMsgId = currentMsgs.some(
+                  (msg) => msg.id === nextMsgIdBase,
+                )
+                  ? `${nextMsgIdBase}_${Date.now()}`
+                  : nextMsgIdBase;
+
+                setStreamingMessageId(nextMsgId);
+                setMessages((prev) => {
+                  const finalized = prev.map((msg) =>
+                    msg.id === activeStreamingMsg.id
+                      ? finalizeStreamingMessage(msg)
+                      : msg,
+                  );
+                  const newMsg: Message = {
+                    id: nextMsgId,
+                    thread_id: id,
+                    role: "assistant",
+                    content: [],
+                    created_at: Date.now(),
+                    isStreaming: true,
+                  };
+                  if (finalized.some((msg) => msg.id === nextMsgId)) {
+                    return finalized.map((msg) =>
+                      msg.id === nextMsgId
+                        ? applyStreamingEventToMessage(msg, sdkEvent)
+                        : msg,
+                    );
+                  }
+                  const withNew = [...finalized, newMsg];
+                  return withNew.map((msg) =>
+                    msg.id === nextMsgId
+                      ? applyStreamingEventToMessage(msg, sdkEvent)
+                      : msg,
+                  );
+                });
+                return;
+              }
+
+              if (existingStreamingMsg) {
+                // Claude emits a new message_start after each tool call; append to the active turn.
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === existingStreamingId
+                      ? applyStreamingEventToMessage(msg, sdkEvent)
+                      : msg,
+                  ),
+                );
+                return;
+              }
+
+              if (fallbackStreamingMsg) {
+                setStreamingMessageId(fallbackStreamingMsg.id);
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === fallbackStreamingMsg.id
+                      ? applyStreamingEventToMessage(msg, sdkEvent)
+                      : msg,
+                  ),
+                );
+                return;
+              }
+
+              // Add new assistant message with isStreaming: true
+              const msgId =
+                evt.message?.id ||
+                (sdkEvent as { uuid?: string }).uuid ||
+                `stream_${Date.now()}`;
+              setStreamingMessageId(msgId);
+              const newMsg: Message = {
+                id: msgId,
+                thread_id: id,
+                role: "assistant",
+                content: [],
+                created_at: Date.now(),
+                isStreaming: true,
+              };
+              // Use functional update to avoid race conditions with rapid events
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === msgId)) {
+                  return prev;
+                }
+                return [...prev, newMsg];
+              });
+            } else if (currentStreamingId) {
+              // Apply streaming delta to the current message
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === currentStreamingId
+                    ? applyStreamingEventToMessage(msg, sdkEvent)
+                    : msg,
+                ),
+              );
+            } else {
+              // No streamingMessageId - try to restore from streaming message (reconnect scenario)
+              const currentMessages = messagesRef.current;
+              const streamingMsg = currentMessages.find((m) => m.isStreaming);
+              if (streamingMsg) {
+                setStreamingMessageId(streamingMsg.id);
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === streamingMsg.id
+                      ? applyStreamingEventToMessage(msg, sdkEvent)
+                      : msg,
+                  ),
+                );
+              }
+            }
+          } else if (
+            sdkEvent.type === "system" &&
+            sdkEvent.subtype === "init"
+          ) {
+            // System init - reset the streaming message ID
+            splitStreamingMessageOnNextPartRef.current = false;
+            setStreamingMessageId(null);
+            startQueuedManualCompactionIfNeeded();
+          } else if (
+            sdkEvent.type === "system" &&
+            sdkEvent.subtype === "status"
+          ) {
+            const status = (sdkEvent as unknown as Record<string, unknown>)
+              .status;
+            if (status === "compacting") {
+              isAutoCompactingRef.current = true;
+              syncCompactionIndicator();
+              const priorId =
+                streamingMessageIdRef.current ??
+                lastCompletedAssistantMessageIdRef.current ??
+                null;
+              compactingPriorMessageIdRef.current = priorId;
+              setCompactingPriorMessageId(priorId);
+              if (streamingMessageIdRef.current) {
+                setStreamingMessageId(null);
+              }
+            } else if (status === null) {
+              isAutoCompactingRef.current = false;
+              syncCompactionIndicator();
+              compactingPriorMessageIdRef.current = null;
+              setCompactingPriorMessageId(null);
+            }
+          } else if (
+            sdkEvent.type === "system" &&
+            sdkEvent.subtype === "compact_boundary"
+          ) {
+            // Compaction is complete — the compact_boundary event arrives AFTER the
+            // SDK finishes generating the summary (not before). Insert a compact
+            // summary card immediately. If the control plane later forwards the full
+            // summary (isCompactSummary user event), it will replace this placeholder.
+            completeActiveManualCompaction();
+            isAutoCompactingRef.current = false;
+            syncCompactionIndicator();
+            compactingPriorMessageIdRef.current = null;
+            setCompactingPriorMessageId(null);
+            if (hasCapturedCompactionSummaryRef.current) {
+              hasCapturedCompactionSummaryRef.current = false;
+              return;
+            }
+            const compactMsg: Message = {
+              id: `compact_${Date.now()}`,
+              thread_id: id,
+              role: "user",
+              content:
+                "The conversation context was compacted to continue this session.",
+              created_at: Date.now(),
+              isCompactSummary: true,
+            };
+            pendingCompactionPlaceholderIdRef.current = compactMsg.id;
+            setMessages((prev) => [...prev, compactMsg]);
+          } else if (
+            sdkEvent.type === "assistant" &&
+            sdkEvent.message?.content
+          ) {
+            // Track message ID as fallback
+            if (!currentStreamingId) {
+              const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+              const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+              if (sdkUuid || sdkMsgId) {
+                setStreamingMessageId(sdkUuid || sdkMsgId || null);
+              }
+            }
+          } else if (sdkEvent.type === "user" && sdkEvent.message?.content) {
+            // Compact summary — system-generated context recap
+            const isCompactSummary = Boolean(
+              (sdkEvent as unknown as Record<string, unknown>).isCompactSummary,
+            );
+            if (isCompactSummary) {
+              completeActiveManualCompaction();
+              isAutoCompactingRef.current = false;
+              syncCompactionIndicator();
+              compactingPriorMessageIdRef.current = null;
+              setCompactingPriorMessageId(null);
+              hasCapturedCompactionSummaryRef.current = false;
+              const placeholderId = pendingCompactionPlaceholderIdRef.current;
+              pendingCompactionPlaceholderIdRef.current = null;
+              const content = sdkEvent.message.content;
+              const compactMsg: Message = {
+                id:
+                  (sdkEvent as { uuid?: string }).uuid ||
+                  `compact_${Date.now()}`,
+                thread_id: id,
+                role: "user",
+                content,
+                created_at: Date.now(),
+                isCompactSummary: true,
+              };
+              // Replace only the currently tracked provisional compact card
+              // with the forwarded full summary.
+              setMessages((prev) => {
+                const existingSummaryIndex = prev.findIndex(
+                  (m) => m.id === compactMsg.id,
+                );
+                const upsertBySummaryId = () => {
+                  if (existingSummaryIndex === -1) {
+                    return [...prev, compactMsg];
+                  }
+                  const next = [...prev];
+                  next[existingSummaryIndex] = compactMsg;
+                  return next;
+                };
+                if (!placeholderId) {
+                  return upsertBySummaryId();
+                }
+                const placeholderIndex = prev.findIndex(
+                  (m) => m.id === placeholderId,
+                );
+                if (placeholderIndex === -1) {
+                  return upsertBySummaryId();
+                }
+                const next = [...prev];
+                next[placeholderIndex] = compactMsg;
+                return next;
+              });
+              return;
+            }
+
+            const contentBlocks = sdkEvent.message.content;
+            const isToolResultEvent =
+              Array.isArray(contentBlocks) &&
+              contentBlocks.length > 0 &&
+              contentBlocks.every((block) => block?.type === "tool_result");
+            const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
+
+            if (!isToolResultEvent) {
+              const shouldBeMeta = true;
+              const streamingMessage = streamingMessageIdRef.current
+                ? messagesRef.current.find(
+                    (msg) => msg.id === streamingMessageIdRef.current,
+                  )
+                : undefined;
+              const fallbackToolUseId =
+                shouldBeMeta && !sourceToolUseID
+                  ? getLastToolUseId(streamingMessage) ||
+                    getLastToolUseIdFromMessages(messagesRef.current)
+                  : undefined;
+              const resolvedToolUseId = sourceToolUseID || fallbackToolUseId;
+              const metaMsg: Message = {
+                id: `meta_${resolvedToolUseId ?? Date.now()}_${Date.now()}`,
+                thread_id: id,
+                role: "user",
+                content: contentBlocks,
+                created_at: Date.now(),
+                isMeta: shouldBeMeta,
+                sourceToolUseID: resolvedToolUseId,
+              };
+              setMessages((prev) => [...prev, metaMsg]);
+              return;
+            }
+
+            const toolResults = contentBlocks.filter(
+              (block): block is ToolResultBlock =>
+                block?.type === "tool_result",
+            );
+            if (toolResults.length === 0) return;
+            const toolUseResultPrompt = (() => {
+              const toolUseResult =
+                sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
+              return typeof toolUseResult?.prompt === "string"
+                ? toolUseResult.prompt
+                : undefined;
+            })();
+            setMessages((prev) =>
+              attachToolResultsToMessages(prev, toolResults, {
+                threadId: id,
+                parentToolUseId: sourceToolUseID,
+                parentToolPrompt: toolUseResultPrompt,
+              }),
+            );
+          } else if (sdkEvent.type === "result") {
+            // Query complete - mark message as not streaming
+            // Finish streaming
+            splitStreamingMessageOnNextPartRef.current = false;
+            const msgId = streamingMessageIdRef.current;
+            lastCompletedAssistantMessageIdRef.current = msgId;
+            if (msgId) {
+              const parsedResultTimestamp =
+                typeof sdkEvent.timestamp === "string"
+                  ? new Date(sdkEvent.timestamp).getTime()
+                  : NaN;
+              const completedAt = Number.isFinite(parsedResultTimestamp)
+                ? parsedResultTimestamp
+                : Date.now();
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === msgId
+                    ? {
+                        ...finalizeStreamingMessage(msg),
+                        created_at: completedAt,
+                      }
+                    : msg,
+                ),
+              );
+            }
+            setStreamingMessageId(null);
+            setLoading(false);
+            clearPendingDeliveryDraft();
+            revalidator.revalidate();
+            isAutoCompactingRef.current = false;
+            syncCompactionIndicator();
+            compactingPriorMessageIdRef.current = null;
+            setCompactingPriorMessageId(null);
+            if (activeManualCompactionTurnRef.current) {
+              completeActiveManualCompaction();
+            }
+            hasCapturedCompactionSummaryRef.current = false;
+          }
+        } else if (data.type === "todo_state") {
+          // Direct todo state from server - no extraction needed
+          if (Array.isArray(data.todos)) {
+            setCurrentTodos(data.todos);
+          }
+        } else if (data.type === "context_usage_state") {
+          if (data.usedPercent === null) {
+            setContextUsedPercent(null);
+          } else if (
+            typeof data.usedPercent === "number" &&
+            Number.isFinite(data.usedPercent)
+          ) {
+            setContextUsedPercent(
+              Math.max(0, Math.min(100, Math.round(data.usedPercent))),
+            );
+          }
+        } else if (data.type === "ask_user_question") {
+          // Claude is asking the user a question
+          if (data.questionId && Array.isArray(data.questions)) {
+            questionResponseSocketRef.current = "runner";
+            setPendingQuestion({
+              questionId: data.questionId,
+              toolUseId: data.toolUseId,
+              questions: data.questions,
+            });
+          }
+        } else if (data.type === "question_answered") {
+          // Clear the pending question
+          setPendingQuestion((prev) => {
+            if (prev?.questionId === data.questionId) {
+              return null;
+            }
+            return prev;
+          });
+        } else if (data.type === "streaming_state") {
+          setLoading(Boolean(data.isStreaming));
+        } else if (data.type === "result") {
+          if (id) {
+            for (const delay of [1000, 3000]) {
+              window.setTimeout(() => {
+                void fetchMessages(id);
+              }, delay);
+            }
+          }
+        } else if (data.type === "error") {
+          console.error("WebSocket error:", data.error);
+          setError(normalizeChatErrorMessage(data.error));
+          // Finish streaming on error
+          splitStreamingMessageOnNextPartRef.current = false;
+          const msgId = streamingMessageIdRef.current;
+          lastCompletedAssistantMessageIdRef.current = msgId;
+          if (msgId) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
+              ),
+            );
+          }
+          setStreamingMessageId(null);
+          setLoading(false);
+          restorePendingDeliveryDraft();
+          isAutoCompactingRef.current = false;
+          compactingPriorMessageIdRef.current = null;
+          setCompactingPriorMessageId(null);
+          clearManualCompactionQueue();
+          hasCapturedCompactionSummaryRef.current = false;
+        } else if (
+          data.type === "preview_state" ||
+          data.type === "title_updated" ||
+          data.type === "thread_model_updated" ||
+          data.type === "connection_setup_prompt" ||
+          data.type === "bug_report_prompt"
+        ) {
+          handleRealtimeSideChannelEvent(data);
+        }
+      };
+
+      ws.onclose = () => {
+        // Ignore if this connection was superseded by a new one
+        if (connectionIdRef.current !== thisConnectionId) {
+          return;
+        }
+
+        // Clear ping interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+
+        connectionStartedAtRef.current.delete(thisConnectionId);
+        setReady(false);
+        wsRef.current = null;
+        if (oobWsRef.current) {
+          oobWsRef.current.close();
+          oobWsRef.current = null;
+        }
+
+        // Auto-reconnect with exponential backoff
+        const maxAttempts = 5;
+        if (reconnectAttempts.current < maxAttempts) {
+          const delay = Math.min(
+            1000 * Math.pow(2, reconnectAttempts.current),
+            30000,
+          );
+          reconnectAttempts.current++;
+          reconnectTimeoutRef.current = setTimeout(() => {
+            // Check again that we haven't been superseded
+            if (connectionIdRef.current === thisConnectionId) {
+              connectWebSocket(id, true);
+            }
+          }, delay);
+        } else {
+          // Reconnect exhausted — clear stale compaction indicator.
+          restorePendingDeliveryDraft();
+          isAutoCompactingRef.current = false;
+          compactingPriorMessageIdRef.current = null;
+          setCompactingPriorMessageId(null);
+          lastCompletedAssistantMessageIdRef.current = null;
+          clearManualCompactionQueue();
+        }
+      };
+
+      ws.onerror = () => {
+        // Ignore errors from superseded connections
+        if (connectionIdRef.current !== thisConnectionId) {
+          return;
+        }
+      };
+    },
+    [
+      clearPendingDeliveryDraft,
+      fetchMessages,
+      isNewThread,
+      persistSessionState,
+      revalidator,
+      resolvedWorkspaceId,
+      restorePendingDeliveryDraft,
+      setMessages,
+      setPendingMessages,
+      setStreamingMessageId,
+      handleRealtimeSideChannelEvent,
+    ],
+  );
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;
@@ -3166,8 +3656,13 @@ export default function Chat({
     // 1. We had a previous workspace (not initial render)
     // 2. Workspace actually changed
     // 3. We're currently viewing a thread
-    if (prevWorkspaceId && nextWorkspaceId && prevWorkspaceId !== nextWorkspaceId && threadId) {
-      navigate('/chat');
+    if (
+      prevWorkspaceId &&
+      nextWorkspaceId &&
+      prevWorkspaceId !== nextWorkspaceId &&
+      threadId
+    ) {
+      navigate("/chat");
     }
   }, [currentWorkspace?.id, threadId, navigate, readOnly]);
 
@@ -3187,6 +3682,10 @@ export default function Chat({
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
+      }
+      if (oobWsRef.current) {
+        oobWsRef.current.close();
+        oobWsRef.current = null;
       }
 
       if (reconnectTimeoutRef.current) {
@@ -3213,14 +3712,17 @@ export default function Chat({
   const lastMessage = visibleMessages[visibleMessages.length - 1];
   const isLastMessageAssistantLike = isAssistantLikeMessage(lastMessage);
   const showAssistantTail = loading || isStreaming;
-  const isAwaitingAssistant = showAssistantTail && Boolean(lastMessage) && !isLastMessageAssistantLike;
+  const isAwaitingAssistant =
+    showAssistantTail && Boolean(lastMessage) && !isLastMessageAssistantLike;
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
-      if (isUserTurnAnchorMessage(visibleMessages[i])) return visibleMessages[i];
+      if (isUserTurnAnchorMessage(visibleMessages[i]))
+        return visibleMessages[i];
     }
     return null;
   }, [visibleMessages]);
-  const shouldRenderSpacer = Boolean(lastUserMessage) &&
+  const shouldRenderSpacer =
+    Boolean(lastUserMessage) &&
     !lastUserMessage?.sentDuringStreaming &&
     !error &&
     (isAwaitingAssistant || isLastMessageAssistantLike);
@@ -3234,6 +3736,10 @@ export default function Chat({
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
+      }
+      if (oobWsRef.current) {
+        oobWsRef.current.close();
+        oobWsRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -3257,6 +3763,10 @@ export default function Chat({
           wsRef.current.close();
           wsRef.current = null;
         }
+        if (oobWsRef.current) {
+          oobWsRef.current.close();
+          oobWsRef.current = null;
+        }
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
           reconnectTimeoutRef.current = null;
@@ -3269,11 +3779,17 @@ export default function Chat({
     }
 
     const nextWorkspaceId = resolvedWorkspaceId;
-    const threadChanged = connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
-    const workspaceChanged = connectedWorkspaceIdRef.current && connectedWorkspaceIdRef.current !== nextWorkspaceId;
+    const threadChanged =
+      connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
+    const workspaceChanged =
+      connectedWorkspaceIdRef.current &&
+      connectedWorkspaceIdRef.current !== nextWorkspaceId;
 
     // Already connected to this thread+workspace? Nothing to do.
-    if (connectedThreadIdRef.current === threadId && connectedWorkspaceIdRef.current === nextWorkspaceId) {
+    if (
+      connectedThreadIdRef.current === threadId &&
+      connectedWorkspaceIdRef.current === nextWorkspaceId
+    ) {
       return;
     }
 
@@ -3284,6 +3800,10 @@ export default function Chat({
         if (wsRef.current) {
           wsRef.current.close();
           wsRef.current = null;
+        }
+        if (oobWsRef.current) {
+          oobWsRef.current.close();
+          oobWsRef.current = null;
         }
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -3309,6 +3829,10 @@ export default function Chat({
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
+      }
+      if (oobWsRef.current) {
+        oobWsRef.current.close();
+        oobWsRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -3352,11 +3876,19 @@ export default function Chat({
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (readOnly) return;
-      if (document.visibilityState === 'visible' && shouldShowChat && resolvedWorkspaceId) {
+      if (
+        document.visibilityState === "visible" &&
+        shouldShowChat &&
+        resolvedWorkspaceId
+      ) {
         // Check if main WebSocket is dead
-        const needsReconnect = !wsRef.current ||
+        const needsReconnect =
+          !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
-          wsRef.current.readyState === WebSocket.CLOSING;
+          wsRef.current.readyState === WebSocket.CLOSING ||
+          !oobWsRef.current ||
+          oobWsRef.current.readyState === WebSocket.CLOSED ||
+          oobWsRef.current.readyState === WebSocket.CLOSING;
 
         if (needsReconnect && threadId) {
           // Clear any stale reconnect timeout from before tab suspension
@@ -3371,14 +3903,15 @@ export default function Chat({
       }
     };
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [threadId, shouldShowChat, resolvedWorkspaceId, readOnly]);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = scrollContainerRef.current;
     if (container) {
-      if (behavior === 'auto') {
+      if (behavior === "auto") {
         container.scrollTop = container.scrollHeight;
         return;
       }
@@ -3394,7 +3927,10 @@ export default function Chat({
       if (container) {
         container.scrollTop = container.scrollHeight;
       } else {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+        messagesEndRef.current?.scrollIntoView({
+          behavior: "auto",
+          block: "end",
+        });
       }
     }
 
@@ -3408,18 +3944,28 @@ export default function Chat({
 
     if (shouldAnchorToLastMessage && lastMessage) {
       const container = scrollContainerRef.current;
-      const target = container?.querySelector(`[data-message-id="${lastMessage.id}"]`) as HTMLElement | null;
+      const target = container?.querySelector(
+        `[data-message-id="${lastMessage.id}"]`,
+      ) as HTMLElement | null;
       if (target) {
-        target.scrollIntoView({ behavior: 'auto', block: 'end' });
+        target.scrollIntoView({ behavior: "auto", block: "end" });
       } else {
-        scrollToBottom('auto');
+        scrollToBottom("auto");
       }
     } else {
-      scrollToBottom('auto');
+      scrollToBottom("auto");
     }
     setShowScrollButton(false);
     initialScrollDoneRef.current = true;
-  }, [shouldShowChat, threadId, visibleMessages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage, lastMessage?.id]);
+  }, [
+    shouldShowChat,
+    threadId,
+    visibleMessages.length,
+    scrollToBottom,
+    shouldAnchorToLastMessage,
+    lastMessage,
+    lastMessage?.id,
+  ]);
 
   useLayoutEffect(() => {
     if (!shouldRenderSpacer) {
@@ -3444,15 +3990,17 @@ export default function Chat({
 
       // Need at least a user message to calculate spacer
       if (!measureUser) {
-        spacer.style.height = '0px';
+        spacer.style.height = "0px";
         return;
       }
 
       const containerRect = container.getBoundingClientRect();
       const userRect = measureUser.getBoundingClientRect();
       const userStyle = getComputedStyle(measureUser);
-      const userMarginTopValue = parseFloat(userStyle.marginTop || '0');
-      const userMarginTop = Number.isNaN(userMarginTopValue) ? 0 : userMarginTopValue;
+      const userMarginTopValue = parseFloat(userStyle.marginTop || "0");
+      const userMarginTop = Number.isNaN(userMarginTopValue)
+        ? 0
+        : userMarginTopValue;
 
       let exchangeHeight: number;
 
@@ -3460,8 +4008,12 @@ export default function Chat({
         // Assistant message exists - calculate exchange height including both messages
         const assistantRect = measureAssistant.getBoundingClientRect();
         const assistantStyle = getComputedStyle(measureAssistant);
-        const assistantMarginBottomValue = parseFloat(assistantStyle.marginBottom || '0');
-        const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue) ? 0 : assistantMarginBottomValue;
+        const assistantMarginBottomValue = parseFloat(
+          assistantStyle.marginBottom || "0",
+        );
+        const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue)
+          ? 0
+          : assistantMarginBottomValue;
         const exchangeTop = userRect.top - userMarginTop;
         const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
@@ -3470,31 +4022,46 @@ export default function Chat({
         // (e.g. loading dots / compacting indicator) in the measured exchange.
         const pendingRect = measurePendingAssistant.getBoundingClientRect();
         const pendingStyle = getComputedStyle(measurePendingAssistant);
-        const pendingMarginBottomValue = parseFloat(pendingStyle.marginBottom || '0');
-        const pendingMarginBottom = Number.isNaN(pendingMarginBottomValue) ? 0 : pendingMarginBottomValue;
+        const pendingMarginBottomValue = parseFloat(
+          pendingStyle.marginBottom || "0",
+        );
+        const pendingMarginBottom = Number.isNaN(pendingMarginBottomValue)
+          ? 0
+          : pendingMarginBottomValue;
         const exchangeTop = userRect.top - userMarginTop;
         const exchangeBottom = pendingRect.bottom + pendingMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
       } else {
         // No assistant message yet (awaiting response) - just use user message height
-        const userMarginBottomValue = parseFloat(userStyle.marginBottom || '0');
-        const userMarginBottom = Number.isNaN(userMarginBottomValue) ? 0 : userMarginBottomValue;
+        const userMarginBottomValue = parseFloat(userStyle.marginBottom || "0");
+        const userMarginBottom = Number.isNaN(userMarginBottomValue)
+          ? 0
+          : userMarginBottomValue;
         exchangeHeight = userRect.height + userMarginTop + userMarginBottom;
       }
 
       const column = messageColumnRef.current;
       const columnStyle = column ? getComputedStyle(column) : null;
-      const gapValue = columnStyle ? parseFloat(columnStyle.rowGap || '0') : 0;
+      const gapValue = columnStyle ? parseFloat(columnStyle.rowGap || "0") : 0;
       const rowGap = Number.isNaN(gapValue) ? 0 : gapValue;
-      const paddingBottomValue = columnStyle ? parseFloat(columnStyle.paddingBottom || '0') : 0;
-      const paddingBottom = Number.isNaN(paddingBottomValue) ? 0 : paddingBottomValue;
+      const paddingBottomValue = columnStyle
+        ? parseFloat(columnStyle.paddingBottom || "0")
+        : 0;
+      const paddingBottom = Number.isNaN(paddingBottomValue)
+        ? 0
+        : paddingBottomValue;
 
-      const header = document.querySelector('header');
+      const header = document.querySelector("header");
       const headerRect = header ? header.getBoundingClientRect() : null;
-      const overlap = headerRect ? Math.max(0, headerRect.bottom - containerRect.top) : 0;
+      const overlap = headerRect
+        ? Math.max(0, headerRect.bottom - containerRect.top)
+        : 0;
       const availableHeight = container.clientHeight - overlap;
 
-      const height = Math.max(availableHeight - exchangeHeight - rowGap - paddingBottom, 0);
+      const height = Math.max(
+        availableHeight - exchangeHeight - rowGap - paddingBottom,
+        0,
+      );
       const nextHeight = Math.max(Math.round(height), 0);
       if (spacerHeightRef.current !== nextHeight) {
         spacer.style.height = `${nextHeight}px`;
@@ -3504,7 +4071,7 @@ export default function Chat({
 
     updateSpacer();
 
-    if (typeof ResizeObserver === 'undefined') return;
+    if (typeof ResizeObserver === "undefined") return;
 
     const observer = new ResizeObserver(() => {
       updateSpacer();
@@ -3524,7 +4091,15 @@ export default function Chat({
     return () => {
       observer.disconnect();
     };
-  }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, visibleMessages.length, isStreaming, loading]);
+  }, [
+    shouldRenderSpacer,
+    isAwaitingAssistant,
+    lastMessage?.id,
+    lastUserMessage?.id,
+    visibleMessages.length,
+    isStreaming,
+    loading,
+  ]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -3541,7 +4116,7 @@ export default function Chat({
     if (!shouldShowChat || !threadId) return;
 
     const column = messageColumnRef.current;
-    if (!column || typeof ResizeObserver === 'undefined') return;
+    if (!column || typeof ResizeObserver === "undefined") return;
 
     let frameId: number | null = null;
     const observer = new ResizeObserver(() => {
@@ -3551,7 +4126,7 @@ export default function Chat({
         cancelAnimationFrame(frameId);
       }
       frameId = requestAnimationFrame(() => {
-        scrollToBottom('auto');
+        scrollToBottom("auto");
       });
     });
 
@@ -3571,7 +4146,7 @@ export default function Chat({
 
     if (!initialScrollDoneRef.current && visibleMessages.length > 0) {
       initialScrollDoneRef.current = true;
-      scrollToBottom('auto');
+      scrollToBottom("auto");
       setShowScrollButton(false);
       return;
     }
@@ -3581,7 +4156,7 @@ export default function Chat({
 
     const container = scrollContainerRef.current;
     if (!container) {
-      scrollToBottom('smooth');
+      scrollToBottom("smooth");
       return;
     }
 
@@ -3590,101 +4165,161 @@ export default function Chat({
 
     // Always scroll when user sends a message, or if near bottom during streaming
     if (shouldForce || stickToBottomRef.current || distanceFromBottom < 150) {
-      scrollToBottom('smooth');
+      scrollToBottom("smooth");
     }
   }, [visibleMessages, scrollToBottom, shouldShowChat, threadId]);
 
-  const copyMessage = useCallback(async (messageId: string, content: string) => {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopiedMessageId(messageId);
-      setTimeout(() => setCopiedMessageId(null), 2000);
-    } catch (err) {
-      console.error('Failed to copy message:', err);
-    }
-  }, []);
-
-  const handleFilesSelected = useCallback(async (files: File[]) => {
-    if (!resolvedWorkspaceId) return;
-
-    for (const file of files) {
-      const id = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-
-      // Create a blob URL for browser-renderable image preview in the input field
-      const previewUrl = isImageFile(file.name, file.type || undefined)
-        ? URL.createObjectURL(file)
-        : undefined;
-      if (previewUrl) {
-        attachmentPreviewUrlsRef.current.add(previewUrl);
-      }
-
-      // Add to state as uploading
-      setAttachments(prev => [...prev, {
-        id,
-        name: file.name,
-        path: '',
-        size: file.size,
-        contentType: file.type || undefined,
-        originalName: file.name,
-        status: 'uploading',
-        progress: 0,
-        previewUrl,
-      }]);
-
+  const copyMessage = useCallback(
+    async (messageId: string, content: string) => {
       try {
-        const data = await uploadWorkspaceFile(resolvedWorkspaceId, file, {
-          onProgress: (progressPercent) => {
-            setAttachments(prev => prev.map(a =>
-              a.id === id
-                ? { ...a, progress: progressPercent }
-                : a
-            ));
-          },
-        });
-
-        // Update state to complete
-        setAttachments(prev => prev.map(a =>
-          a.id === id
-            ? {
-              ...a,
-              path: data.path,
-              size: data.size,
-              contentType: data.contentType ?? a.contentType,
-              originalName: data.originalName ?? a.originalName,
-              status: 'complete' as const,
-              progress: 100,
-            }
-            : a
-        ));
+        await navigator.clipboard.writeText(content);
+        setCopiedMessageId(messageId);
+        setTimeout(() => setCopiedMessageId(null), 2000);
       } catch (err) {
-        console.error('File upload failed:', err);
-        const errorMessage = err instanceof Error ? err.message : 'Upload failed';
-        // Update state to error
-        setAttachments(prev => prev.map(a =>
-          a.id === id
-            ? { ...a, status: 'error' as const, error: errorMessage, progress: undefined }
-            : a
-        ));
+        console.error("Failed to copy message:", err);
       }
-    }
-  }, [resolvedWorkspaceId]);
+    },
+    [],
+  );
 
-  const handleAttachmentRemove = useCallback((id: string) => {
-    setAttachments(prev => {
-      const removed = prev.find(a => a.id === id);
-      revokeAttachmentPreviewUrl(removed?.previewUrl);
-      return prev.filter(a => a.id !== id);
-    });
-  }, [revokeAttachmentPreviewUrl]);
+  const forkMessage = useCallback(
+    async (messageId: string) => {
+      if (!threadId || !resolvedWorkspaceId || readOnly) return;
+      setForkingMessageId(messageId);
+      setError(null);
+      try {
+        const response = await fetch(
+          `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(threadId)}/fork`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messageId }),
+          },
+        );
+        const data = (await response.json().catch(() => ({}))) as {
+          thread?: { id?: string };
+          error?: string;
+        };
+        if (!response.ok || !data.thread?.id) {
+          throw new Error(data.error || "Failed to fork chat");
+        }
+        toast.success("Forked chat");
+        navigate(`/chat/${data.thread.id}`);
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Failed to fork chat";
+        setError(message);
+        toast.error(message);
+      } finally {
+        setForkingMessageId(null);
+      }
+    },
+    [navigate, readOnly, resolvedWorkspaceId, setError, threadId],
+  );
+
+  const handleFilesSelected = useCallback(
+    async (files: File[]) => {
+      if (!resolvedWorkspaceId) return;
+
+      for (const file of files) {
+        const id = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+        // Create a blob URL for browser-renderable image preview in the input field
+        const previewUrl = isImageFile(file.name, file.type || undefined)
+          ? URL.createObjectURL(file)
+          : undefined;
+        if (previewUrl) {
+          attachmentPreviewUrlsRef.current.add(previewUrl);
+        }
+
+        // Add to state as uploading
+        setAttachments((prev) => [
+          ...prev,
+          {
+            id,
+            name: file.name,
+            path: "",
+            size: file.size,
+            contentType: file.type || undefined,
+            originalName: file.name,
+            status: "uploading",
+            progress: 0,
+            previewUrl,
+          },
+        ]);
+
+        try {
+          const data = await uploadWorkspaceFile(resolvedWorkspaceId, file, {
+            onProgress: (progressPercent) => {
+              setAttachments((prev) =>
+                prev.map((a) =>
+                  a.id === id ? { ...a, progress: progressPercent } : a,
+                ),
+              );
+            },
+          });
+
+          // Update state to complete
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === id
+                ? {
+                    ...a,
+                    path: data.path,
+                    size: data.size,
+                    contentType: data.contentType ?? a.contentType,
+                    originalName: data.originalName ?? a.originalName,
+                    status: "complete" as const,
+                    progress: 100,
+                  }
+                : a,
+            ),
+          );
+        } catch (err) {
+          console.error("File upload failed:", err);
+          const errorMessage =
+            err instanceof Error ? err.message : "Upload failed";
+          // Update state to error
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === id
+                ? {
+                    ...a,
+                    status: "error" as const,
+                    error: errorMessage,
+                    progress: undefined,
+                  }
+                : a,
+            ),
+          );
+        }
+      }
+    },
+    [resolvedWorkspaceId],
+  );
+
+  const handleAttachmentRemove = useCallback(
+    (id: string) => {
+      setAttachments((prev) => {
+        const removed = prev.find((a) => a.id === id);
+        revokeAttachmentPreviewUrl(removed?.previewUrl);
+        return prev.filter((a) => a.id !== id);
+      });
+    },
+    [revokeAttachmentPreviewUrl],
+  );
 
   // Drag-drop handlers for the whole chat area
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (resolvedWorkspaceId) {
-      setIsDragOver(true);
-    }
-  }, [resolvedWorkspaceId]);
+  const handleDragOver = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (resolvedWorkspaceId) {
+        setIsDragOver(true);
+      }
+    },
+    [resolvedWorkspaceId],
+  );
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -3698,18 +4333,21 @@ export default function Chat({
     }
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragOver(false);
 
-    if (!resolvedWorkspaceId) return;
+      if (!resolvedWorkspaceId) return;
 
-    const files = e.dataTransfer.files;
-    if (files && files.length > 0) {
-      handleFilesSelected(Array.from(files));
-    }
-  }, [resolvedWorkspaceId, handleFilesSelected]);
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) {
+        handleFilesSelected(Array.from(files));
+      }
+    },
+    [resolvedWorkspaceId, handleFilesSelected],
+  );
 
   // Track pending message for new thread creation (used by effect that handles fetcher response)
   const pendingNewChatRef = useRef<{
@@ -3722,23 +4360,38 @@ export default function Chat({
 
   // Handle fetcher response for thread creation
   useEffect(() => {
-    if (createThreadFetcher.state === 'idle' && createThreadFetcher.data) {
+    if (createThreadFetcher.state === "idle" && createThreadFetcher.data) {
       const data = createThreadFetcher.data;
       if (data.thread && pendingNewChatRef.current) {
         // Thread created successfully - store message and navigate
-        const { finalContent, threadTitle, draftText, draftAttachments } = pendingNewChatRef.current;
+        const { finalContent, threadTitle, draftText, draftAttachments } =
+          pendingNewChatRef.current;
         const messageWithContext = finalContent;
 
         pendingDeliveryDraftRef.current = null;
         pendingDraftCountRef.current = 0;
-        if (resolvedWorkspaceId && draftText !== undefined && draftAttachments) {
-          writeDraft(resolvedWorkspaceId, data.thread.id, draftText, draftAttachments);
+        if (
+          resolvedWorkspaceId &&
+          draftText !== undefined &&
+          draftAttachments
+        ) {
+          writeDraft(
+            resolvedWorkspaceId,
+            data.thread.id,
+            draftText,
+            draftAttachments,
+          );
           pendingDraftCountRef.current = 1;
           pendingDeliveryDraftRef.current = {
             workspaceId: resolvedWorkspaceId,
             threadId: data.thread.id,
           };
-          if (isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)) {
+          if (
+            isComposerVisiblyEmpty(
+              welcomeInputRef.current,
+              attachmentsRef.current,
+            )
+          ) {
             removeDraft(resolvedWorkspaceId, null);
           }
         }
@@ -3754,8 +4407,7 @@ export default function Chat({
               threadProvider: data.thread.provider,
               workspaceId: resolvedWorkspaceId,
               orgSlug: currentOrg?.slug,
-              connections: mentionConnections,
-            })
+            }),
           );
           navigate(`/chat/${data.thread.id}?newThread=1`);
         } else {
@@ -3772,15 +4424,21 @@ export default function Chat({
         pendingDraftCountRef.current = 0;
         if (
           pendingDraft &&
-          isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
+          isComposerVisiblyEmpty(
+            welcomeInputRef.current,
+            attachmentsRef.current,
+          )
         ) {
-          const savedDraft = loadDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+          const savedDraft = loadDraft(
+            pendingDraft.workspaceId,
+            pendingDraft.threadId,
+          );
           if (savedDraft) {
             setWelcomeInput(savedDraft.text);
             setAttachments(savedDraft.attachments);
           }
         }
-        console.error('Failed to create thread:', data.error);
+        console.error("Failed to create thread:", data.error);
         pendingNewChatRef.current = null;
       }
     }
@@ -3790,89 +4448,162 @@ export default function Chat({
     navigate,
     resolvedWorkspaceId,
     currentOrg,
-    mentionConnections,
   ]);
 
   useEffect(() => {
-    if (updateThreadModelFetcher.state !== 'idle' || !updateThreadModelFetcher.data) return;
+    if (
+      updateThreadModelFetcher.state !== "idle" ||
+      !updateThreadModelFetcher.data
+    )
+      return;
     if (updateThreadModelFetcher.data.error) {
-      setSelectedThreadModel(threadModel ?? getDefaultLlmModel(resolvedThreadProvider));
+      setActiveThreadProvider(initialThreadProvider);
+      setSelectedThreadModel(
+        threadModel ?? getDefaultLlmModel(initialThreadProvider, llmProvider),
+      );
       toast.error(updateThreadModelFetcher.data.error);
       return;
     }
     if (updateThreadModelFetcher.data.thread?.model) {
-      setSelectedThreadModel(updateThreadModelFetcher.data.thread.model);
+      const nextModel = updateThreadModelFetcher.data.thread.model;
+      const nextProvider = updateThreadModelFetcher.data.thread.provider;
+      const nextSelectionKey = `${nextProvider}/${nextModel}`;
+      setActiveThreadProvider(nextProvider);
+      setSelectedThreadModel(nextModel);
+      if (
+        lastRunnerModelSelectionRef.current !== nextSelectionKey &&
+        wsRef.current?.readyState === WebSocket.OPEN &&
+        ready
+      ) {
+        lastRunnerModelSelectionRef.current = nextSelectionKey;
+        wsRef.current.send(
+          JSON.stringify({
+            type: "set_model",
+            model: nextModel,
+            provider: nextProvider,
+            threadId,
+            sessionId: sessionIdRef.current,
+          }),
+        );
+      }
       revalidator.revalidate();
     }
-  }, [revalidator, resolvedThreadProvider, threadModel, updateThreadModelFetcher.state, updateThreadModelFetcher.data]);
+  }, [
+    initialThreadProvider,
+    llmProvider,
+    ready,
+    revalidator,
+    threadId,
+    threadModel,
+    updateThreadModelFetcher.state,
+    updateThreadModelFetcher.data,
+  ]);
 
-  const handleThreadModelChange = useCallback((nextModel: LlmModel) => {
-    if (!threadId) {
+  const handleThreadModelChange = useCallback(
+    (nextModel: LlmModel) => {
+      if (!threadId) {
+        setSelectedThreadModel(nextModel);
+        setActiveThreadProvider(
+          getProviderForModel(nextModel, initialThreadProvider),
+        );
+        return;
+      }
+      if (
+        nextModel === selectedThreadModel ||
+        updateThreadModelFetcher.state !== "idle"
+      ) {
+        return;
+      }
       setSelectedThreadModel(nextModel);
-      return;
-    }
-    if (nextModel !== selectedThreadModel) {
-      toast.error(THREAD_MODEL_LOCK_MESSAGE);
-    }
-    setSelectedThreadModel(threadModel ?? getDefaultLlmModel(resolvedThreadProvider));
-  }, [resolvedThreadProvider, selectedThreadModel, threadId, threadModel]);
+      setActiveThreadProvider(
+        getProviderForModel(nextModel, activeThreadProvider),
+      );
+      updateThreadModelFetcher.submit(
+        { intent: "updateThreadModel", model: nextModel },
+        { method: "post" },
+      );
+    },
+    [
+      activeThreadProvider,
+      initialThreadProvider,
+      selectedThreadModel,
+      threadId,
+      updateThreadModelFetcher,
+    ],
+  );
 
-  const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
-    if (!resolvedWorkspaceId) {
-      toast.error('No workspace selected');
-      return;
-    }
+  const handleStartChatForApp = useCallback(
+    (app: WorkerScriptWithCreator) => {
+      if (!resolvedWorkspaceId) {
+        toast.error("No workspace selected");
+        return;
+      }
 
-    if (app.workspace_id !== resolvedWorkspaceId) {
-      toast.error('App is in a different workspace. Please switch workspaces first.');
-      return;
-    }
+      if (app.workspace_id !== resolvedWorkspaceId) {
+        toast.error(
+          "App is in a different workspace. Please switch workspaces first.",
+        );
+        return;
+      }
 
-    if (createThreadFetcher.state !== 'idle' || isCreatingThread) return;
+      if (createThreadFetcher.state !== "idle" || isCreatingThread) return;
 
-    setIsCreatingThread(true);
+      setIsCreatingThread(true);
 
-    // Build the camelai system message
-    const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
-    const sourceInfo = app.config_path
-      ? ` The app's wrangler config is at "${app.config_path}".`
-      : ` The project location is unknown - search for it in the home folder. The project may have a different name than the app, and look for either wrangler.toml or wrangler.jsonc files.`;
-    const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
-    const threadTitle = buildAppThreadFallbackTitle(app.script_name);
+      // Build the camelai system message
+      const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
+      const sourceInfo = app.config_path
+        ? ` The app's wrangler config is at "${app.config_path}".`
+        : ` The project location is unknown - search for it in the home folder. The project may have a different name than the app, and look for either wrangler.toml or wrangler.jsonc files.`;
+      const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
+      const threadTitle = buildAppThreadFallbackTitle(app.script_name);
 
-    // Store pending message for the createThreadFetcher effect
-    pendingNewChatRef.current = {
-      finalContent: systemMessage,
-      threadTitle,
-      threadModel: selectedThreadModel,
-    };
+      // Store pending message for the createThreadFetcher effect
+      pendingNewChatRef.current = {
+        finalContent: systemMessage,
+        threadTitle,
+        threadModel: selectedThreadModel,
+      };
 
-    // Create thread with preview settings
-    createThreadFetcher.submit(
-      {
-        intent: 'createThread',
-        initialTitle: threadTitle,
-        previewApps: app.script_name,
-        model: selectedThreadModel,
-      },
-      { method: 'post', action: '/chat' }
-    );
-  }, [hostname, orgSlug, resolvedWorkspaceId, createThreadFetcher, isCreatingThread, selectedThreadModel]);
+      // Create thread with preview settings
+      createThreadFetcher.submit(
+        {
+          intent: "createThread",
+          initialTitle: threadTitle,
+          previewApps: app.script_name,
+          model: selectedThreadModel,
+        },
+        { method: "post", action: "/chat" },
+      );
+    },
+    [
+      hostname,
+      orgSlug,
+      resolvedWorkspaceId,
+      createThreadFetcher,
+      isCreatingThread,
+      selectedThreadModel,
+    ],
+  );
 
   function startNewChat() {
     const currentWelcomeInput = welcomeInputRef.current;
     const currentAttachments = attachmentsRef.current;
-    const hasCompletedAttachments = getCompletedAttachments(currentAttachments).length > 0;
+    const hasCompletedAttachments =
+      getCompletedAttachments(currentAttachments).length > 0;
 
     if (
       (!currentWelcomeInput.trim() && !hasCompletedAttachments) ||
       isCreatingThread ||
       !resolvedWorkspaceId ||
-      createThreadFetcher.state !== 'idle'
-    ) return;
+      createThreadFetcher.state !== "idle"
+    )
+      return;
 
     // Don't allow sending while uploads are in progress
-    const hasUploadingAttachments = currentAttachments.some(a => a.status === 'uploading');
+    const hasUploadingAttachments = currentAttachments.some(
+      (a) => a.status === "uploading",
+    );
     if (hasUploadingAttachments) return;
 
     const messageCount = incrementFreeTierCount(user?.id ?? undefined);
@@ -3880,15 +4611,19 @@ export default function Chat({
       setShowFreeTierModal(true);
     }
 
-    preserveDraftBeforeOptimisticClear(null, currentWelcomeInput, currentAttachments);
+    preserveDraftBeforeOptimisticClear(
+      null,
+      currentWelcomeInput,
+      currentAttachments,
+    );
     setIsCreatingThread(true);
     const userMessage = currentWelcomeInput.trim();
-    setWelcomeInput('');
+    setWelcomeInput("");
 
     const finalContent = buildMessageContent(userMessage, currentAttachments);
 
     // Clear attachments (revoke any blob URLs to avoid memory leaks)
-    setAttachments(prev => {
+    setAttachments((prev) => {
       for (const a of prev) {
         revokeAttachmentPreviewUrl(a.previewUrl);
       }
@@ -3905,314 +4640,434 @@ export default function Chat({
 
     // Submit to route action to create thread
     const createThreadPayload: Record<string, string> = {
-      intent: 'createThread',
+      intent: "createThread",
       model: selectedThreadModel,
     };
     if (userMessage) {
       createThreadPayload.firstMessage = userMessage;
     }
-    createThreadFetcher.submit(createThreadPayload, { method: 'post', action: '/chat' });
+    createThreadFetcher.submit(createThreadPayload, {
+      method: "post",
+      action: "/chat",
+    });
   }
 
   function stopGeneration() {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
     }
-    wsRef.current.send(JSON.stringify({ type: 'stop' }));
+    wsRef.current.send(JSON.stringify({ type: "stop" }));
   }
 
-  const handleQuestionResponse = useCallback((answers: Record<string, string>) => {
-    if (!pendingQuestion || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      return;
-    }
+  const handleQuestionResponse = useCallback(
+    (answers: Record<string, string>) => {
+      const socket =
+        questionResponseSocketRef.current === "oob"
+          ? oobWsRef.current
+          : wsRef.current;
+      if (!pendingQuestion || !socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
 
-    wsRef.current.send(JSON.stringify({
-      type: 'question_response',
-      questionId: pendingQuestion.questionId,
-      answers,
-    }));
+      socket.send(
+        JSON.stringify({
+          type: "question_response",
+          questionId: pendingQuestion.questionId,
+          answers,
+        }),
+      );
 
-    // Optimistically clear the question
-    setPendingQuestion(null);
+      // Optimistically clear the question
+      setPendingQuestion(null);
 
-    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
-  }, [pendingQuestion]);
+      window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+    },
+    [pendingQuestion],
+  );
 
   // Handle connection setup response - send via chat WebSocket
-  const handleConnectionSetupResponse = useCallback((response: ConnectionSetupResponse) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.error('[Chat] WebSocket not available for connection setup response');
-      return;
-    }
+  const handleConnectionSetupResponse = useCallback(
+    (response: ConnectionSetupResponse) => {
+      const socket = oobWsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        console.error(
+          "[Chat] WebSocket not available for connection setup response",
+        );
+        return;
+      }
 
-    wsRef.current.send(JSON.stringify({
-      type: 'connection_setup_response',
-      ...response,
-    }));
+      socket.send(
+        JSON.stringify({
+          type: "connection_setup_response",
+          ...response,
+        }),
+      );
 
-    // Clear the prompt
-    setConnectionSetupPrompt(null);
-  }, []);
+      // Clear the prompt
+      setConnectionSetupPrompt(null);
+    },
+    [],
+  );
 
   const handleConnectionSetupCancel = useCallback(() => {
     setConnectionSetupPrompt(null);
   }, []);
 
   // Handle bug report dialog open/close - sends cancellation if MCP-triggered
-  const handleBugReportOpenChange = useCallback((open: boolean) => {
-    if (!open && mcpBugReportPrompt) {
-      // User closed the dialog while MCP capture was pending - send cancellation
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'bug_report_response',
-          requestId: mcpBugReportPrompt.requestId,
-          cancelled: true,
-        }));
+  const handleBugReportOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && mcpBugReportPrompt) {
+        // User closed the dialog while MCP capture was pending - send cancellation
+        if (oobWsRef.current?.readyState === WebSocket.OPEN) {
+          oobWsRef.current.send(
+            JSON.stringify({
+              type: "bug_report_response",
+              requestId: mcpBugReportPrompt.requestId,
+              cancelled: true,
+            }),
+          );
+        }
+        setMcpBugReportPrompt(null);
       }
-      setMcpBugReportPrompt(null);
-    }
-    setBugReportOpen(open);
-  }, [mcpBugReportPrompt]);
+      setBugReportOpen(open);
+    },
+    [mcpBugReportPrompt],
+  );
 
   // Bug report submission
-  const submitBugReport = useCallback(async (report: { description: string }) => {
-    if (!deployedApp || !resolvedWorkspaceId || !threadId) return;
+  const submitBugReport = useCallback(
+    async (report: { description: string }) => {
+      if (!deployedApp || !resolvedWorkspaceId || !threadId) return;
 
-    // Check if this is an MCP-triggered capture
-    const isMcpTriggered = !!mcpBugReportPrompt;
-    const mcpRequestId = mcpBugReportPrompt?.requestId;
+      // Check if this is an MCP-triggered capture
+      const isMcpTriggered = !!mcpBugReportPrompt;
+      const mcpRequestId = mcpBugReportPrompt?.requestId;
 
-    // Only update UI status for manual (non-MCP) captures
-    if (!isMcpTriggered) {
-      setBugReportStatus('capturing');
-      setBugReportError(null);
-    }
+      // Only update UI status for manual (non-MCP) captures
+      if (!isMcpTriggered) {
+        setBugReportStatus("capturing");
+        setBugReportError(null);
+      }
 
-    // Generate unique request ID
-    const requestId = `bug_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      // Generate unique request ID
+      const requestId = `bug_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-    // Set up response listener with timeout (10s to allow for screenshot capture)
-    const debugDataPromise = new Promise<{
-      domSnapshot: string;
-      pageState: { url: string; scrollX: number; scrollY: number; viewportWidth?: number; viewportHeight?: number; documentTitle?: string };
-      consoleLogs: Array<{ level: string; timestamp: number; deltaMs: number; sinceStartMs: number; args: string[] }>;
-      networkRequests: Array<{ type: string; method: string; url: string; status: number; statusText: string; ok: boolean; failed?: boolean; error?: string; timestamp: number; durationMs: number }>;
-      storage: { localStorage: Record<string, string | null>; sessionStorage: Record<string, string | null> };
-      screenshot: string | null;
-      sessionRecording: { events: unknown[]; durationMs: number; eventCount: number } | null;
-      capturedAt: number;
-      sessionDurationMs: number;
-    } | null>((resolve) => {
-      const timeout = setTimeout(() => {
-        window.removeEventListener('message', handler);
-        resolve(null);
-      }, 10000);
+      // Set up response listener with timeout (10s to allow for screenshot capture)
+      const debugDataPromise = new Promise<{
+        domSnapshot: string;
+        pageState: {
+          url: string;
+          scrollX: number;
+          scrollY: number;
+          viewportWidth?: number;
+          viewportHeight?: number;
+          documentTitle?: string;
+        };
+        consoleLogs: Array<{
+          level: string;
+          timestamp: number;
+          deltaMs: number;
+          sinceStartMs: number;
+          args: string[];
+        }>;
+        networkRequests: Array<{
+          type: string;
+          method: string;
+          url: string;
+          status: number;
+          statusText: string;
+          ok: boolean;
+          failed?: boolean;
+          error?: string;
+          timestamp: number;
+          durationMs: number;
+        }>;
+        storage: {
+          localStorage: Record<string, string | null>;
+          sessionStorage: Record<string, string | null>;
+        };
+        screenshot: string | null;
+        sessionRecording: {
+          events: unknown[];
+          durationMs: number;
+          eventCount: number;
+        } | null;
+        capturedAt: number;
+        sessionDurationMs: number;
+      } | null>((resolve) => {
+        const timeout = setTimeout(() => {
+          window.removeEventListener("message", handler);
+          resolve(null);
+        }, 10000);
 
-      function handler(event: MessageEvent) {
-        if (
-          event.data?.type === 'chiridion:bug-report-response' &&
-          event.data?.requestId === requestId
-        ) {
-          clearTimeout(timeout);
-          window.removeEventListener('message', handler);
-          if (event.data.success) {
-            resolve(event.data.data);
-          } else {
-            resolve(null);
+        function handler(event: MessageEvent) {
+          if (
+            event.data?.type === "chiridion:bug-report-response" &&
+            event.data?.requestId === requestId
+          ) {
+            clearTimeout(timeout);
+            window.removeEventListener("message", handler);
+            if (event.data.success) {
+              resolve(event.data.data);
+            } else {
+              resolve(null);
+            }
           }
         }
-      }
 
-      window.addEventListener('message', handler);
-    });
+        window.addEventListener("message", handler);
+      });
 
-    // Send request to iframe
-    if (iframeRef.current?.contentWindow) {
-      iframeRef.current.contentWindow.postMessage(
-        { type: 'chiridion:bug-report-request', requestId },
-        '*'
-      );
-    }
-
-    // Wait for response
-    const debugData = await debugDataPromise;
-
-    // Upload to R2
-    if (!isMcpTriggered) {
-      setBugReportStatus('uploading');
-    }
-    try {
-      const reportId = `bug-report-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-      let screenshotPath: string | null = null;
-      let sessionRecordingPath: string | null = null;
-
-      // Upload screenshot as separate image file if available
-      if (debugData?.screenshot) {
-        const base64Data = debugData.screenshot.split(',')[1];
-        const binaryData = atob(base64Data);
-        const bytes = new Uint8Array(binaryData.length);
-        for (let i = 0; i < binaryData.length; i++) {
-          bytes[i] = binaryData.charCodeAt(i);
-        }
-        const screenshotBlob = new Blob([bytes], { type: 'image/jpeg' });
-        const screenshotFile = new File([screenshotBlob], `${reportId}-screenshot.jpg`, { type: 'image/jpeg' });
-        try {
-          const screenshotData = await uploadWorkspaceFile(resolvedWorkspaceId, screenshotFile);
-          screenshotPath = screenshotData.path;
-        } catch (uploadError) {
-          console.error('Failed to upload bug report screenshot:', uploadError);
-        }
-      }
-
-      // Upload session recording as separate JSON file if available
-      if (debugData?.sessionRecording && debugData.sessionRecording.events.length > 0) {
-        const recordingBlob = new Blob(
-          [JSON.stringify(debugData.sessionRecording, null, 2)],
-          { type: 'application/json' }
+      // Send request to iframe
+      if (iframeRef.current?.contentWindow) {
+        iframeRef.current.contentWindow.postMessage(
+          { type: "chiridion:bug-report-request", requestId },
+          "*",
         );
-        const recordingFile = new File([recordingBlob], `${reportId}-session.json`, { type: 'application/json' });
-        try {
-          const recordingData = await uploadWorkspaceFile(resolvedWorkspaceId, recordingFile);
-          sessionRecordingPath = recordingData.path;
-        } catch (uploadError) {
-          console.error('Failed to upload bug report recording:', uploadError);
-        }
       }
 
-      // Create bug report bundle (without large data, using file references)
-      const vanityHost = orgSlug
-        ? `${buildAppLabel(deployedApp, orgSlug)}.${getVanityDomain(hostname)}`
-        : `${deployedApp}.${getVanityDomain(hostname)}`;
-      const vanityUrl = `https://${vanityHost}`;
-      const debugDataClean = debugData ? {
-        ...debugData,
-        screenshot: undefined, // Remove base64 from JSON
-        screenshotPath, // Add file path reference
-        sessionRecording: debugData.sessionRecording ? {
-          durationMs: debugData.sessionRecording.durationMs,
-          eventCount: debugData.sessionRecording.eventCount,
-          events: undefined, // Remove events array from main JSON
-        } : null,
-        sessionRecordingPath, // Add file path reference
-      } : null;
+      // Wait for response
+      const debugData = await debugDataPromise;
 
-      const bugReport = {
-        version: 1,
-        createdAt: new Date().toISOString(),
-        appName: deployedApp,
-        appUrl: vanityUrl,
-        userReport: {
-          description: report.description,
-        },
-        debugData: debugDataClean,
-      };
-
-      const fileName = `${reportId}.json`;
-      const blob = new Blob([JSON.stringify(bugReport, null, 2)], { type: 'application/json' });
-      const file = new File([blob], fileName, { type: 'application/json' });
-      const uploadData = await uploadWorkspaceFile(resolvedWorkspaceId, file);
-
+      // Upload to R2
       if (!isMcpTriggered) {
-        setBugReportStatus('sending');
+        setBugReportStatus("uploading");
       }
+      try {
+        const reportId = `bug-report-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+        let screenshotPath: string | null = null;
+        let sessionRecordingPath: string | null = null;
 
-      // If this is an MCP-triggered capture, send response via chat WebSocket
-      if (isMcpTriggered && mcpRequestId && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'bug_report_response',
-          requestId: mcpRequestId,
-          cancelled: false,
-          bugReport: {
-            reportPath: uploadData.path,
-            screenshotPath,
-            sessionRecordingPath,
-            appName: deployedApp,
-            appUrl: vanityUrl,
-            userDescription: report.description.trim() || undefined,
+        // Upload screenshot as separate image file if available
+        if (debugData?.screenshot) {
+          const base64Data = debugData.screenshot.split(",")[1];
+          const binaryData = atob(base64Data);
+          const bytes = new Uint8Array(binaryData.length);
+          for (let i = 0; i < binaryData.length; i++) {
+            bytes[i] = binaryData.charCodeAt(i);
+          }
+          const screenshotBlob = new Blob([bytes], { type: "image/jpeg" });
+          const screenshotFile = new File(
+            [screenshotBlob],
+            `${reportId}-screenshot.jpg`,
+            { type: "image/jpeg" },
+          );
+          try {
+            const screenshotData = await uploadWorkspaceFile(
+              resolvedWorkspaceId,
+              screenshotFile,
+            );
+            screenshotPath = screenshotData.path;
+          } catch (uploadError) {
+            console.error(
+              "Failed to upload bug report screenshot:",
+              uploadError,
+            );
+          }
+        }
+
+        // Upload session recording as separate JSON file if available
+        if (
+          debugData?.sessionRecording &&
+          debugData.sessionRecording.events.length > 0
+        ) {
+          const recordingBlob = new Blob(
+            [JSON.stringify(debugData.sessionRecording, null, 2)],
+            { type: "application/json" },
+          );
+          const recordingFile = new File(
+            [recordingBlob],
+            `${reportId}-session.json`,
+            { type: "application/json" },
+          );
+          try {
+            const recordingData = await uploadWorkspaceFile(
+              resolvedWorkspaceId,
+              recordingFile,
+            );
+            sessionRecordingPath = recordingData.path;
+          } catch (uploadError) {
+            console.error(
+              "Failed to upload bug report recording:",
+              uploadError,
+            );
+          }
+        }
+
+        // Create bug report bundle (without large data, using file references)
+        const vanityHost = orgSlug
+          ? `${buildAppLabel(deployedApp, orgSlug)}.${getVanityDomain(hostname)}`
+          : `${deployedApp}.${getVanityDomain(hostname)}`;
+        const vanityUrl = `https://${vanityHost}`;
+        const debugDataClean = debugData
+          ? {
+              ...debugData,
+              screenshot: undefined, // Remove base64 from JSON
+              screenshotPath, // Add file path reference
+              sessionRecording: debugData.sessionRecording
+                ? {
+                    durationMs: debugData.sessionRecording.durationMs,
+                    eventCount: debugData.sessionRecording.eventCount,
+                    events: undefined, // Remove events array from main JSON
+                  }
+                : null,
+              sessionRecordingPath, // Add file path reference
+            }
+          : null;
+
+        const bugReport = {
+          version: 1,
+          createdAt: new Date().toISOString(),
+          appName: deployedApp,
+          appUrl: vanityUrl,
+          userReport: {
+            description: report.description,
           },
-        }));
+          debugData: debugDataClean,
+        };
 
-        // Clear the MCP prompt (no dialog to close)
-        setMcpBugReportPrompt(null);
-      } else {
-        // Manual bug report - send message to agent
-        const description = report.description.trim();
-        const agentMessage = description
-          ? `I found a bug in the deployed app "${deployedApp}".
+        const fileName = `${reportId}.json`;
+        const blob = new Blob([JSON.stringify(bugReport, null, 2)], {
+          type: "application/json",
+        });
+        const file = new File([blob], fileName, { type: "application/json" });
+        const uploadData = await uploadWorkspaceFile(resolvedWorkspaceId, file);
+
+        if (!isMcpTriggered) {
+          setBugReportStatus("sending");
+        }
+
+        // If this is an MCP-triggered capture, send response via chat WebSocket
+        if (
+          isMcpTriggered &&
+          mcpRequestId &&
+          oobWsRef.current?.readyState === WebSocket.OPEN
+        ) {
+          oobWsRef.current.send(
+            JSON.stringify({
+              type: "bug_report_response",
+              requestId: mcpRequestId,
+              cancelled: false,
+              bugReport: {
+                reportPath: uploadData.path,
+                screenshotPath,
+                sessionRecordingPath,
+                appName: deployedApp,
+                appUrl: vanityUrl,
+                userDescription: report.description.trim() || undefined,
+              },
+            }),
+          );
+
+          // Clear the MCP prompt (no dialog to close)
+          setMcpBugReportPrompt(null);
+        } else {
+          // Manual bug report - send message to agent
+          const description = report.description.trim();
+          const agentMessage = description
+            ? `I found a bug in the deployed app "${deployedApp}".
 
 **Description:** ${description}
 
 I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
 
 (bug report: ${uploadData.path})`
-          : `I found a bug in the deployed app "${deployedApp}".
+            : `I found a bug in the deployed app "${deployedApp}".
 
 I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
 
 (bug report: ${uploadData.path})`;
 
-        const userMsg: Message = {
-          id: `local_${Date.now()}`,
-          thread_id: threadId,
-          role: 'user',
-          content: agentMessage,
-          created_at: Date.now(),
-        };
-        forceScrollOnNextUpdate.current = true;
-        setMessages(prev => [...prev, userMsg]);
-
-        // Send via WebSocket if connected
-        if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
-          wsRef.current.send(JSON.stringify({
-            type: 'message',
+          const userMsg: Message = {
+            id: `local_${Date.now()}`,
+            thread_id: threadId,
+            role: "user",
             content: agentMessage,
-            sessionId: sessionIdRef.current,
-            threadId,
-          }));
-          setLoading(true);
-        } else {
-          // Queue the message
-          setPendingMessages(prev => [...prev, userMsg]);
-          setLoading(true);
+            created_at: Date.now(),
+          };
+          forceScrollOnNextUpdate.current = true;
+          setMessages((prev) => [...prev, userMsg]);
 
-          // Trigger reconnect if needed
-          if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-            connectWebSocketRef.current?.(threadId, true);
+          // Send via WebSocket if connected
+          if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: "message",
+                content: agentMessage,
+                sessionId: sessionIdRef.current,
+                threadId,
+              }),
+            );
+            setLoading(true);
+          } else {
+            // Queue the message
+            setPendingMessages((prev) => [...prev, userMsg]);
+            setLoading(true);
+
+            // Trigger reconnect if needed
+            if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+              connectWebSocketRef.current?.(threadId, true);
+            }
           }
+
+          setBugReportStatus("done");
+          setTimeout(() => {
+            setBugReportOpen(false);
+            setBugReportStatus("idle");
+          }, 1000);
         }
+      } catch (e) {
+        console.error("Bug report submission failed:", e);
 
-        setBugReportStatus('done');
-        setTimeout(() => {
-          setBugReportOpen(false);
-          setBugReportStatus('idle');
-        }, 1000);
+        // If MCP-triggered, send cancellation response
+        if (
+          isMcpTriggered &&
+          mcpRequestId &&
+          oobWsRef.current?.readyState === WebSocket.OPEN
+        ) {
+          oobWsRef.current.send(
+            JSON.stringify({
+              type: "bug_report_response",
+              requestId: mcpRequestId,
+              cancelled: true,
+            }),
+          );
+          setMcpBugReportPrompt(null);
+        } else {
+          // Only update UI status for manual captures
+          setBugReportStatus("error");
+          setBugReportError(
+            e instanceof Error ? e.message : "Failed to submit bug report",
+          );
+        }
       }
-    } catch (e) {
-      console.error('Bug report submission failed:', e);
-
-      // If MCP-triggered, send cancellation response
-      if (isMcpTriggered && mcpRequestId && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'bug_report_response',
-          requestId: mcpRequestId,
-          cancelled: true,
-        }));
-        setMcpBugReportPrompt(null);
-      } else {
-        // Only update UI status for manual captures
-        setBugReportStatus('error');
-        setBugReportError(e instanceof Error ? e.message : 'Failed to submit bug report');
-      }
-    }
-  }, [deployedApp, resolvedWorkspaceId, threadId, hostname, ready, setLoading, setPendingMessages, setMessages, mcpBugReportPrompt]);
+    },
+    [
+      deployedApp,
+      resolvedWorkspaceId,
+      threadId,
+      hostname,
+      ready,
+      setLoading,
+      setPendingMessages,
+      setMessages,
+      mcpBugReportPrompt,
+    ],
+  );
 
   // Auto-capture when MCP triggers bug report (no dialog needed)
   useEffect(() => {
     if (mcpBugReportPrompt && deployedApp && resolvedWorkspaceId && threadId) {
       // Trigger the capture automatically without showing dialog
-      submitBugReport({ description: '' });
+      submitBugReport({ description: "" });
     }
-  }, [mcpBugReportPrompt, deployedApp, resolvedWorkspaceId, threadId, submitBugReport]);
+  }, [
+    mcpBugReportPrompt,
+    deployedApp,
+    resolvedWorkspaceId,
+    threadId,
+    submitBugReport,
+  ]);
 
   const resetPreviewTabsState = useCallback(() => {
     setLocalPreviewSessionState([], null);
@@ -4224,50 +5079,56 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     clearAllIframeRefreshTimeouts();
   }, [setLocalPreviewSessionState, clearAllIframeRefreshTimeouts]);
 
-  const setPreviewTargetForThread = useCallback((target: PreviewTarget | null) => {
-    if (!threadId) return;
+  const setPreviewTargetForThread = useCallback(
+    (target: PreviewTarget | null) => {
+      if (!threadId) return;
 
-    if (readOnly) {
-      if (target === null) {
-        resetPreviewTabsState();
-        setMobileView('chat');
+      if (readOnly) {
+        if (target === null) {
+          resetPreviewTabsState();
+          setMobileView("chat");
+          return;
+        }
+        openTabForTarget(target, { sync: false });
         return;
       }
-      openTabForTarget(target, { sync: false });
-      return;
-    }
 
-    const socket = wsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      if (target === null) {
-        resetPreviewTabsState();
-        setMobileView('chat');
+      const socket = oobWsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        if (target === null) {
+          resetPreviewTabsState();
+          setMobileView("chat");
+          return;
+        }
+        toast.error("Preview is unavailable while reconnecting.");
         return;
       }
-      toast.error('Preview is unavailable while reconnecting.');
-      return;
-    }
 
-    if (target === null) {
-      resetPreviewTabsState();
-      syncPreviewTabsStateBestEffort([], null);
-      setMobileView('chat');
-      return;
-    }
+      if (target === null) {
+        resetPreviewTabsState();
+        syncPreviewTabsStateBestEffort([], null);
+        setMobileView("chat");
+        return;
+      }
 
-    openTabForTarget(target, { sync: true });
-  }, [
-    threadId,
-    readOnly,
-    resetPreviewTabsState,
-    openTabForTarget,
-    syncPreviewTabsStateBestEffort,
-  ]);
+      openTabForTarget(target, { sync: true });
+    },
+    [
+      threadId,
+      readOnly,
+      resetPreviewTabsState,
+      openTabForTarget,
+      syncPreviewTabsStateBestEffort,
+    ],
+  );
 
-  const openPreviewTarget = useCallback((target: PreviewTarget) => {
-    setPreviewTargetForThread(target);
-    setMobileView('preview');
-  }, [setPreviewTargetForThread]);
+  const openPreviewTarget = useCallback(
+    (target: PreviewTarget) => {
+      setPreviewTargetForThread(target);
+      setMobileView("preview");
+    },
+    [setPreviewTargetForThread],
+  );
 
   const clearPreviewTarget = useCallback(() => {
     setPreviewTargetForThread(null);
@@ -4285,8 +5146,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
     const currentInput = inputRef.current;
     const currentAttachments = attachmentsRef.current;
-    const hasUploadingAttachments = currentAttachments.some(a => a.status === 'uploading');
-    const hasCompletedAttachments = getCompletedAttachments(currentAttachments).length > 0;
+    const hasUploadingAttachments = currentAttachments.some(
+      (a) => a.status === "uploading",
+    );
+    const hasCompletedAttachments =
+      getCompletedAttachments(currentAttachments).length > 0;
     const rawContent = (opts?.contentOverride ?? currentInput).trim();
     if (
       isLoadingMessages ||
@@ -4312,11 +5176,16 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
 
     if (!opts?.preserveDraft && !opts?.contentOverride) {
-      preserveDraftBeforeOptimisticClear(threadId, currentInput, currentAttachments);
-      setInput('');
+      preserveDraftBeforeOptimisticClear(
+        threadId,
+        currentInput,
+        currentAttachments,
+      );
+      setInput("");
     }
 
-    const shouldIncludeAttachmentRefs = !opts?.skipAttachmentRefs && !opts?.contentOverride;
+    const shouldIncludeAttachmentRefs =
+      !opts?.skipAttachmentRefs && !opts?.contentOverride;
     const finalContent = shouldIncludeAttachmentRefs
       ? buildMessageContent(rawContent, currentAttachments)
       : rawContent;
@@ -4329,7 +5198,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
     if (shouldIncludeAttachmentRefs) {
       // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
-      setAttachments(prev => {
+      setAttachments((prev) => {
         for (const a of prev) {
           revokeAttachmentPreviewUrl(a.previewUrl);
         }
@@ -4344,7 +5213,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     const userMsg: Message = {
       id: `local_${Date.now()}`,
       thread_id: threadId,
-      role: 'user',
+      role: "user",
       content: finalContent,
       created_at: Date.now(),
       sentDuringStreaming: wasSentDuringStreaming,
@@ -4353,28 +5222,30 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     // If user sends mid-stream, keep current part streaming and split at next message_start.
     if (wasSentDuringStreaming) {
       splitStreamingMessageOnNextPartRef.current = true;
-      setMessages(prev => [...prev, userMsg]);
+      setMessages((prev) => [...prev, userMsg]);
     } else {
       lastCompletedAssistantMessageIdRef.current = null;
       // /compact is operational and can happen while users read older messages.
       // Avoid forcing a jump to bottom in that case.
       forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;
-      setMessages(prev => [...prev, userMsg]);
+      setMessages((prev) => [...prev, userMsg]);
     }
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
-      wsRef.current.send(JSON.stringify({
-        type: 'message',
-        content: finalContent,
-        sessionId: sessionIdRef.current,
-        threadId,
-      }));
+      wsRef.current.send(
+        JSON.stringify({
+          type: "message",
+          content: finalContent,
+          sessionId: sessionIdRef.current,
+          threadId,
+        }),
+      );
     } else {
       // Queue the full message object for later delivery (with file refs in content)
       const queuedMsg: Message = { ...userMsg, content: finalContent };
-      setPendingMessages(prev => [...prev, queuedMsg]);
+      setPendingMessages((prev) => [...prev, queuedMsg]);
       setLoading(true);
 
       // If not connected at all, trigger reconnect
@@ -4391,22 +5262,22 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   const handleCompactFromIndicator = useCallback(() => {
     if (loading || isStreaming || isCompacting || readOnly) return;
     sendMessageRef.current({
-      contentOverride: '/compact',
+      contentOverride: "/compact",
       preserveDraft: true,
       skipAttachmentRefs: true,
     });
   }, [loading, isStreaming, isCompacting, readOnly]);
 
   const chatBreadcrumbs = [
-    { label: 'Chat' },
-    { label: currentTitle?.trim() || 'Untitled Chat' },
+    { label: "Chat" },
+    { label: currentTitle?.trim() || "Untitled Chat" },
   ];
 
   const encodePathSegments = useCallback((path: string) => {
     return path
-      .split('/')
-      .map(segment => encodeURIComponent(segment))
-      .join('/');
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
   }, []);
 
   // Per-tab render state for all open tabs. Kept in the DOM simultaneously so
@@ -4416,7 +5287,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       const target = tab.target;
       const tabId = tab.id;
 
-      if (target.kind === 'app') {
+      if (target.kind === "app") {
         const scriptName = target.scriptName;
         const iframeHost = orgSlug
           ? `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`
@@ -4431,38 +5302,42 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           vanityHost: vHost,
           iframeKey: tabIframeKeys[tabId] ?? 0,
           isLoading: tabAppLoading[tabId] ?? false,
-          filePreviewUrl: '',
-          filePreviewOpenUrl: '',
-          previewFileName: '',
-          notebookViewMode: 'report',
-          markdownViewMode: 'rendered',
+          filePreviewUrl: "",
+          filePreviewOpenUrl: "",
+          previewFileName: "",
+          notebookViewMode: "report",
+          markdownViewMode: "rendered",
           isNotebookPreview: false,
           isMarkdownPreview: false,
         };
       }
 
       // File tab
-      const normalizedPath = target.path.replace(/^\/+/, '');
+      const normalizedPath = target.path.replace(/^\/+/, "");
       const encodedPath = encodePathSegments(normalizedPath);
-      const route = target.source === 'workspace'
-        ? `fs/content/${encodedPath}`
-        : `${target.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
+      const route =
+        target.source === "workspace"
+          ? `fs/content/${encodedPath}`
+          : `${target.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
       const fileKey = tabFilePreviewKeys[tabId] ?? 0;
-      const filename = target.filename || target.path.split('/').filter(Boolean).pop() || 'file';
-      const isNotebook = filename.toLowerCase().endsWith('.ipynb');
-      const isMarkdown = filename.toLowerCase().endsWith('.md');
+      const filename =
+        target.filename ||
+        target.path.split("/").filter(Boolean).pop() ||
+        "file";
+      const isNotebook = filename.toLowerCase().endsWith(".ipynb");
+      const isMarkdown = filename.toLowerCase().endsWith(".md");
       return {
         tabId,
         target,
-        appPreviewUrl: '',
-        vanityHost: '',
+        appPreviewUrl: "",
+        vanityHost: "",
         iframeKey: 0,
         isLoading: false,
         filePreviewUrl: `/api/workspaces/${target.workspaceId}/${route}?v=${fileKey}`,
         filePreviewOpenUrl: `/api/workspaces/${target.workspaceId}/${route}`,
         previewFileName: filename,
-        notebookViewMode: tabNotebookViewModes[tabId] ?? 'report',
-        markdownViewMode: tabMarkdownViewModes[tabId] ?? 'rendered',
+        notebookViewMode: tabNotebookViewModes[tabId] ?? "report",
+        markdownViewMode: tabMarkdownViewModes[tabId] ?? "rendered",
         isNotebookPreview: isNotebook,
         isMarkdownPreview: isMarkdown,
       };
@@ -4480,8 +5355,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   ]);
 
   const previewDomains = useMemo(() => {
-    if (previewTarget?.kind !== 'app') {
-      return { iframeHost: '', vanityHost: '' };
+    if (previewTarget?.kind !== "app") {
+      return { iframeHost: "", vanityHost: "" };
     }
     const scriptName = previewTarget.scriptName;
     if (orgSlug) {
@@ -4496,37 +5371,40 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       vanityHost: `${scriptName}.${getVanityDomain(hostname)}`,
     };
   }, [previewTarget, hostname, orgSlug]);
-  const appPreviewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
+  const appPreviewVanityUrl = previewDomains.vanityHost
+    ? `https://${previewDomains.vanityHost}`
+    : "";
 
   const filePreviewOpenUrl = useMemo(() => {
-    if (previewTarget?.kind !== 'file') return '';
-    const normalizedPath = previewTarget.path.replace(/^\/+/, '');
+    if (previewTarget?.kind !== "file") return "";
+    const normalizedPath = previewTarget.path.replace(/^\/+/, "");
     const encodedPath = encodePathSegments(normalizedPath);
-    const route = previewTarget.source === 'workspace'
-      ? `fs/content/${encodedPath}`
-      : `${previewTarget.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
+    const route =
+      previewTarget.source === "workspace"
+        ? `fs/content/${encodedPath}`
+        : `${previewTarget.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
     return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
   }, [previewTarget, encodePathSegments]);
 
   const fileExternalOpenUrl = useMemo(() => {
-    if (previewTarget?.kind !== 'file') return '';
-    if (previewTarget.source === 'workspace') {
+    if (previewTarget?.kind !== "file") return "";
+    if (previewTarget.source === "workspace") {
       const query = new URLSearchParams();
-      query.set('file', previewTarget.path);
+      query.set("file", previewTarget.path);
       if (readOnly) {
-        query.set('adminReadonly', '1');
+        query.set("adminReadonly", "1");
       }
       return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
     }
-    const normalizedPath = previewTarget.path.replace(/^\/+/, '');
+    const normalizedPath = previewTarget.path.replace(/^\/+/, "");
     const encodedPath = encodePathSegments(normalizedPath);
-    const route = previewTarget.source === 'upload' ? 'uploads' : 'outputs';
+    const route = previewTarget.source === "upload" ? "uploads" : "outputs";
     return `/api/workspaces/${previewTarget.workspaceId}/${route}/${encodedPath}`;
   }, [previewTarget, encodePathSegments, readOnly]);
 
   const handlePreviewRefresh = useCallback(() => {
     if (!previewTarget) return;
-    if (previewTarget.kind === 'app') {
+    if (previewTarget.kind === "app") {
       refreshActiveIframe();
       return;
     }
@@ -4535,28 +5413,31 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
   const handlePreviewOpenExternal = useCallback(() => {
     if (!previewTarget) return;
-    if (previewTarget.kind === 'app') {
+    if (previewTarget.kind === "app") {
       if (!appPreviewVanityUrl) return;
-      window.open(appPreviewVanityUrl, '_blank', 'noopener,noreferrer');
+      window.open(appPreviewVanityUrl, "_blank", "noopener,noreferrer");
       return;
     }
     if (!fileExternalOpenUrl) return;
-    window.open(fileExternalOpenUrl, '_blank', 'noopener,noreferrer');
+    window.open(fileExternalOpenUrl, "_blank", "noopener,noreferrer");
   }, [previewTarget, appPreviewVanityUrl, fileExternalOpenUrl]);
 
   const handlePreviewBugReportOpen = useCallback(() => {
     if (readOnly) return;
     setBugReportOpen(true);
-    setBugReportStatus('idle');
+    setBugReportStatus("idle");
     setBugReportError(null);
   }, [readOnly]);
 
-  const showMobilePreview = previewTabs.length > 0 && mobileView === 'preview';
-  const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
-  const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
+  const showMobilePreview = previewTabs.length > 0 && mobileView === "preview";
+  const currentMembership = orgs.find(
+    (entry) => entry.org_id === currentOrg?.id,
+  );
+  const isAdmin =
+    currentMembership?.role === "owner" || currentMembership?.role === "admin";
   const previewShareButton = useMemo(() => {
     if (readOnly) return undefined;
-    if (previewTarget?.kind !== 'app') return undefined;
+    if (previewTarget?.kind !== "app") return undefined;
     return (
       <ShareStatusButton
         threadId={threadId}
@@ -4596,21 +5477,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
   const chatPanelContent = (
     <>
-      <PageHeader
-        breadcrumbs={chatBreadcrumbs}
-      />
+      <PageHeader breadcrumbs={chatBreadcrumbs} />
       {!readOnly && billingCreditStatus ? (
         <BillingCreditNotice
           status={billingCreditStatus}
-          onOpenUsage={() => navigate('/settings/organization/usage')}
-          onTopUp={() => navigate('/settings/organization/usage?action=topup')}
-          canTopUp={Boolean(isAdmin)}
-        />
-      ) : null}
-      {!readOnly ? (
-        <DevChatCreditControls
-          search={location.search}
-          onNavigate={(nextSearch) => navigate(`${location.pathname}${nextSearch}`)}
+          onOpenBilling={() => navigate("/settings/organization/billing")}
+          onOpenProviderSettings={() =>
+            navigate("/settings/organization/ai-provider")
+          }
         />
       ) : null}
       {readOnly && (
@@ -4630,7 +5504,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden"
       >
         {/* Centered message column */}
-        <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
+        <div
+          ref={messageColumnRef}
+          className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col"
+        >
           <ChatMessagesView
             visibleMessages={visibleMessages}
             lastUserMessageId={lastUserMessage?.id ?? null}
@@ -4639,6 +5516,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             isLastMessageAssistantLike={isLastMessageAssistantLike}
             copyMessage={copyMessage}
             copiedMessageId={copiedMessageId}
+            forkMessage={readOnly ? undefined : forkMessage}
+            forkingMessageId={forkingMessageId}
             assistantTurnActive={assistantTurnActive}
             activeAssistantMessageId={activeAssistantMessageId}
             skillSheetsByToolId={skillSheetsByToolId}
@@ -4656,7 +5535,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             assistantPendingMeasureRef={assistantPendingMeasureRef}
             assistantSpacerRef={assistantSpacerRef}
             messagesEndRef={messagesEndRef}
-            mentionSlugMap={mentionSlugMap}
           />
         </div>
       </div>
@@ -4671,9 +5549,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
               className={cn(
                 "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
                 "bg-background/80 backdrop-blur-sm border-border/50",
-                showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
+                showScrollButton
+                  ? "opacity-100 translate-y-0"
+                  : "opacity-0 translate-y-2 pointer-events-none",
               )}
-              onClick={() => scrollToBottom('smooth')}
+              onClick={() => scrollToBottom("smooth")}
             >
               <ArrowDown className="h-4 w-4" />
             </Button>
@@ -4723,10 +5603,12 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   model={selectedThreadModel}
                   onModelChange={handleThreadModelChange}
                   modelOptions={availableThreadModels}
-                  modelDisabled={loading || isStreaming || updateThreadModelFetcher.state !== 'idle'}
+                  modelDisabled={
+                    loading ||
+                    isStreaming ||
+                    updateThreadModelFetcher.state !== "idle"
+                  }
                   textareaRef={composerTextareaRef}
-                  mentionableConnections={mentionConnections}
-                  onMentionAddNewClick={() => navigate('/connections')}
                 />
               </div>
             </div>
@@ -4751,7 +5633,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
               {!readOnly && isDragOver && (
                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
                   <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
-                    <span className="text-lg font-medium text-primary">Drop files here to upload</span>
+                    <span className="text-lg font-medium text-primary">
+                      Drop files here to upload
+                    </span>
                   </div>
                 </div>
               )}
@@ -4763,7 +5647,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                         <div
                           className={cn(
                             "flex h-full w-[200%] will-change-transform motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-out",
-                            showMobilePreview ? "-translate-x-1/2" : "translate-x-0"
+                            showMobilePreview
+                              ? "-translate-x-1/2"
+                              : "translate-x-0",
                           )}
                         >
                           <div className="flex w-1/2 shrink-0 flex-col min-h-0">
@@ -4775,7 +5661,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                         </div>
                       </div>
                       <div className="shrink-0 border-t border-border bg-background">
-                        <MobileViewSwitcher value={mobileView} onChange={setMobileView} />
+                        <MobileViewSwitcher
+                          value={mobileView}
+                          onChange={setMobileView}
+                        />
                       </div>
                     </>
                   ) : (
@@ -4815,7 +5704,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             </div>
           ) : (
             <>
-              <PageHeader breadcrumbs={[{ label: 'Home' }]} />
+              <PageHeader breadcrumbs={[{ label: "Home" }]} />
               {/* Welcome Screen */}
               <div
                 className="flex-1 flex flex-col items-center px-4 py-8 relative overflow-y-auto"
@@ -4827,7 +5716,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                 {isDragOver && (
                   <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
                     <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
-                      <span className="text-lg font-medium text-primary">Drop files here to upload</span>
+                      <span className="text-lg font-medium text-primary">
+                        Drop files here to upload
+                      </span>
                     </div>
                   </div>
                 )}
@@ -4845,7 +5736,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
                   onAttachmentRemove={handleAttachmentRemove}
-                  isCreatingThread={isCreatingThread || createThreadFetcher.state !== 'idle'}
+                  isCreatingThread={
+                    isCreatingThread || createThreadFetcher.state !== "idle"
+                  }
                   model={selectedThreadModel}
                   onModelChange={handleThreadModelChange}
                   modelOptions={availableThreadModels}

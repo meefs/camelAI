@@ -383,11 +383,13 @@ export async function captureScreenshotRaw(
 
     return { success: false, error: errorMessage };
   } finally {
-    if (page) {
-      await page.close();
+    const currentPage = page as Page | null;
+    if (currentPage) {
+      await currentPage.close();
     }
-    if (puppeteerBrowser) {
-      await puppeteerBrowser.close();
+    const currentBrowser = puppeteerBrowser as Browser | null;
+    if (currentBrowser) {
+      await currentBrowser.close();
     }
   }
 }

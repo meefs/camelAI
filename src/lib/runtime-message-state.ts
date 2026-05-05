@@ -396,7 +396,8 @@ function updateStreamingAssistantMessage(
 function finalizeAssistantMessage(
   messages: Message[],
   threadId: string,
-  streamingMessageIds: Record<string, string | null>
+  streamingMessageIds: Record<string, string | null>,
+  finalizedMessageId?: string
 ): Message[] {
   const currentStreamingId = resolveStreamingMessageId(messages, threadId, streamingMessageIds);
   streamingMessageIds[threadId] = null;
@@ -405,7 +406,9 @@ function finalizeAssistantMessage(
   }
 
   return messages.map((message) =>
-    message.id === currentStreamingId ? { ...message, isStreaming: false } : message
+    message.id === currentStreamingId
+      ? { ...message, id: finalizedMessageId || message.id, isStreaming: false }
+      : message
   );
 }
 
@@ -447,21 +450,26 @@ function appendTextDeltaBlock(
   delta: string,
   itemKind: string
 ): ContentBlock[] {
-  const existingIndex = findBlockIndex(
-    blocks,
-    (block) => block.type === 'text' && getBlockItemId(block) === itemId
-  );
+  let existingIndex = -1;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block.type === 'text' && getBlockItemId(block) === itemId) {
+      existingIndex = index;
+      break;
+    }
+  }
   if (existingIndex >= 0) {
     const nextBlocks = [...blocks];
     const existing = nextBlocks[existingIndex];
-    if (existing.type === 'text') {
+    const hasLaterBlocks = existingIndex < nextBlocks.length - 1;
+    if (existing.type === 'text' && !hasLaterBlocks) {
       nextBlocks[existingIndex] = {
         ...existing,
         text: `${existing.text}${delta}`,
         itemKind,
       };
+      return nextBlocks;
     }
-    return nextBlocks;
   }
 
   return [
@@ -627,7 +635,7 @@ function appendReasoningSummaryDelta(
     blocks,
     targetItemId,
     '',
-    'Reasoning',
+    'Thinking',
     'reasoning'
   );
   const existingIndex = findBlockIndex(
@@ -660,7 +668,7 @@ function ensureReasoningSummary(
     blocks,
     targetItemId,
     '',
-    'Reasoning',
+    'Thinking',
     'reasoning'
   );
   const existingIndex = findBlockIndex(
@@ -693,7 +701,7 @@ function upsertReasoningSummaries(
     blocks,
     targetItemId,
     '',
-    'Reasoning',
+    'Thinking',
     'reasoning'
   );
   const existingIndex = findBlockIndex(
@@ -721,13 +729,15 @@ function upsertToolUseBlock(
   input: Record<string, unknown>,
   itemKind: string
 ): ContentBlock[] {
+  const existing = getToolUseBlock(blocks, itemId);
+  const mergedInput = existing ? { ...existing.input, ...input } : input;
   return upsertBlock(
     blocks,
     {
       type: 'tool_use',
       id: itemId,
       name,
-      input,
+      input: mergedInput,
       itemKind,
     },
     (block) => block.type === 'tool_use' && block.id === itemId
@@ -1141,6 +1151,96 @@ function formatImageResult(item: CodexThreadItem): string {
   ]);
 }
 
+function canonicalizeDynamicToolName(tool: unknown): string {
+  if (typeof tool !== 'string') return 'DynamicTool';
+  const name = tool.trim();
+  if (!name) return 'DynamicTool';
+
+  switch (name) {
+    case 'ask_user_question':
+      return 'AskUserQuestion';
+    case 'todo_write':
+    case 'update_todo':
+      return 'TodoWrite';
+    case 'agent':
+      return 'Agent';
+    case 'Explore':
+    case 'explore':
+      return 'Agent';
+    case 'web_search':
+      return 'WebSearch';
+    case 'web_fetch':
+      return 'WebFetch';
+    case 'read':
+      return 'Read';
+    case 'write':
+      return 'Write';
+    case 'edit':
+      return 'Edit';
+    case 'bash':
+      return 'Bash';
+    case 'grep':
+      return 'Grep';
+    case 'glob':
+      return 'Glob';
+    default:
+      return name;
+  }
+}
+
+function normalizeEditArguments(args: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...args };
+
+  if (typeof next.old_string !== 'string' && typeof next.oldText === 'string') {
+    next.old_string = next.oldText;
+  }
+  if (typeof next.new_string !== 'string' && typeof next.newText === 'string') {
+    next.new_string = next.newText;
+  }
+
+  if (Array.isArray(next.edits)) {
+    next.edits = next.edits.map((edit) => {
+      if (!edit || typeof edit !== 'object' || Array.isArray(edit)) return edit;
+      const editRecord = edit as Record<string, unknown>;
+      return {
+        ...editRecord,
+        old_string:
+          typeof editRecord.old_string === 'string'
+            ? editRecord.old_string
+            : editRecord.oldText,
+        new_string:
+          typeof editRecord.new_string === 'string'
+            ? editRecord.new_string
+            : editRecord.newText,
+      };
+    });
+  }
+
+  return next;
+}
+
+function omitUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined)
+  );
+}
+
+function buildDynamicToolInput(item: CodexThreadItem): Record<string, unknown> {
+  const args =
+    item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments)
+      ? normalizeEditArguments(item.arguments as Record<string, unknown>)
+      : {};
+  const rawToolName = typeof item.tool === 'string' ? item.tool : undefined;
+
+  return omitUndefined({
+    ...args,
+    arguments: item.arguments,
+    status: item.status,
+    durationMs: item.durationMs,
+    rawToolName,
+  });
+}
+
 function buildToolUseFromCodexItem(item: CodexThreadItem): {
   name: string;
   input: Record<string, unknown>;
@@ -1149,14 +1249,15 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
     case 'commandExecution':
       return {
         name: 'Bash',
-        input: {
+        input: omitUndefined({
           command: item.command,
+          description: item.description,
           cwd: item.cwd,
           source: item.source,
           processId: item.processId,
           status: item.status,
           commandActions: item.commandActions,
-        },
+        }),
       };
     case 'fileChange':
       return {
@@ -1177,12 +1278,8 @@ function buildToolUseFromCodexItem(item: CodexThreadItem): {
       };
     case 'dynamicToolCall':
       return {
-        name: typeof item.tool === 'string' ? item.tool : 'DynamicTool',
-        input: {
-          arguments: item.arguments,
-          status: item.status,
-          durationMs: item.durationMs,
-        },
+        name: canonicalizeDynamicToolName(item.tool),
+        input: buildDynamicToolInput(item),
       };
     case 'collabAgentToolCall':
       return {
@@ -1300,7 +1397,7 @@ function applyCodexItemStarted(
         blocks,
         getReasoningContentItemId(item.id),
         formatReasoningText(item),
-        'Reasoning',
+        'Thinking',
         item.type
       );
     default: {
@@ -1331,7 +1428,7 @@ function applyCodexItemCompleted(
           blocks,
           getReasoningPrimaryItemId(item.id),
           formatReasoningText(item),
-          'Reasoning',
+          'Thinking',
           item.type
         ),
         item.id,
@@ -1362,7 +1459,16 @@ function applyCodexRuntimeEvent(
   const itemId = typeof params.itemId === 'string' ? params.itemId : undefined;
 
   if (event.method === 'turn/completed') {
-    return finalizeAssistantMessage(currentMessages, threadId, streamingMessageIds);
+    const forkEntryId =
+      typeof params.forkEntryId === 'string' && params.forkEntryId.trim()
+        ? params.forkEntryId.trim()
+        : undefined;
+    return finalizeAssistantMessage(
+      currentMessages,
+      threadId,
+      streamingMessageIds,
+      forkEntryId,
+    );
   }
 
   if (event.method === 'turn/plan/updated') {
@@ -1440,7 +1546,7 @@ function applyCodexRuntimeEvent(
           blocks,
           getReasoningContentItemId(itemId, contentIndex),
           params.delta as string,
-          'Reasoning',
+          'Thinking',
           'reasoning'
         ),
     );

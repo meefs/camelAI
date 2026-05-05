@@ -72,8 +72,8 @@ export default [
           "routes/_app.settings.organization.ai-provider.tsx",
         ),
         route(
-          "settings/organization/usage",
-          "routes/_app.settings.organization.usage.tsx",
+          'settings/organization/usage',
+          'routes/_app.settings.organization.usage.tsx'
         ),
       ]),
 
@@ -185,6 +185,10 @@ export default [
   route(
     "api/workspaces/:id/chat/:threadId/messages/stream",
     "routes/api/workspaces.$id.chat.$threadId.messages.stream.ts",
+  ),
+  route(
+    "api/workspaces/:id/chat/:threadId/fork",
+    "routes/api/workspaces.$id.chat.$threadId.fork.ts",
   ),
   route(
     "api/workspaces/:id/chat/:threadId/first-user-message",

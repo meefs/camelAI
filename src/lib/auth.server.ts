@@ -19,113 +19,16 @@ import {
   getUserOrgs,
   listUserWorkspacesAcrossOrgs,
   listOrgWorkspaces,
-  getUserByEmail,
-  createUser,
-  createOrg,
 } from "./auth-do";
+
+const LOCAL_AUTH_USER_ID = "local-dev-user";
+const LOCAL_AUTH_ORG_ID = "local-dev-org";
+const LOCAL_AUTH_EMAIL = "local-dev@camelai.local";
+const LOCAL_AUTH_NAME = "Local Dev";
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
 const authContextCache = new WeakMap<Request, Promise<AuthContext | null>>();
-
-function getRuntimeEnvValue(key: string): string | undefined {
-  return typeof process !== "undefined" ? process.env[key] : undefined;
-}
-
-function isLocalAuthBypassEnabled(env: ReturnType<typeof getEnv>): boolean {
-  if (
-    env.NEXTJS_ENV !== "development" &&
-    getRuntimeEnvValue("NEXTJS_ENV") !== "development"
-  ) {
-    return false;
-  }
-  return (
-    env.LOCAL_AUTH_BYPASS === "1" ||
-    env.LOCAL_AUTH_BYPASS === "true" ||
-    getRuntimeEnvValue("LOCAL_AUTH_BYPASS") === "1" ||
-    getRuntimeEnvValue("LOCAL_AUTH_BYPASS") === "true"
-  );
-}
-
-async function getLocalBypassSession(
-  request: Request,
-  env: ReturnType<typeof getEnv>,
-): Promise<SessionContext | null> {
-  if (!isLocalAuthBypassEnabled(env)) return null;
-
-  const authEnv = getAuthEnv(env);
-  const email = (
-    env.LOCAL_AUTH_EMAIL ??
-    getRuntimeEnvValue("LOCAL_AUTH_EMAIL") ??
-    "local@example.com"
-  ).trim().toLowerCase();
-  const name = (
-    env.LOCAL_AUTH_NAME ??
-    getRuntimeEnvValue("LOCAL_AUTH_NAME") ??
-    "Local User"
-  ).trim();
-  if (!email) return null;
-
-  let userResult = await getUserByEmail(authEnv, email);
-  if (!userResult) {
-    userResult = await createUser(
-      authEnv,
-      email,
-      "local-password-not-used",
-      name || "Local User",
-      request.headers.get("CF-Connecting-IP") ?? "127.0.0.1",
-    );
-  }
-
-  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userResult.userId));
-  await Promise.all([
-    userStub.markEmailVerified().catch(() => null),
-    userStub.updateOnboarding({ completed_at: Date.now() }).catch(() => null),
-  ]);
-
-  let orgs = await getUserOrgs(authEnv, userResult.userId).catch(() => []);
-  if (orgs.length === 0) {
-    const created = await createOrg(
-      authEnv,
-      `${name || "Local User"}'s Workspace`,
-      userResult.userId,
-    );
-    orgs = [{
-      org_id: created.org.id,
-      org_name: created.org.name,
-      role: "owner",
-      joined_at: Date.now(),
-      last_workspace_id: created.defaultWorkspaceId,
-    }];
-  }
-
-  const orgId = orgs[0].org_id;
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  await orgStub.updateBillingState({
-    billing_status: "enterprise",
-    billing_plan: "enterprise",
-  }).catch(() => null);
-
-  const workspaces = await listOrgWorkspaces(authEnv, orgId).catch(() => []);
-  const workspaceId =
-    orgs[0].last_workspace_id ??
-    workspaces[0]?.id ??
-    null;
-
-  const now = Date.now();
-  return {
-    sessionId: `local:${userResult.userId}`,
-    session: {
-      user_id: userResult.userId,
-      org_id: orgId,
-      workspace_id: workspaceId,
-      created_at: now,
-      last_accessed: now,
-      user_name: userResult.user.name,
-      user_email: userResult.user.email,
-    },
-  };
-}
 
 // Re-export AuthEnv and getAuthEnv for routes that need them
 export { getAuthEnv, type AuthEnv } from "./auth-helpers";
@@ -175,13 +78,16 @@ export async function getSession(
   context: AppLoadContext,
 ): Promise<SessionContext | null> {
   const env = getEnv(context);
+  const localBypassSession = await getLocalAuthBypassSession(request, context);
+  if (localBypassSession) {
+    return localBypassSession;
+  }
+
   const signedSession = await getSignedSessionFromRequest(
     request,
     env.TOKEN_SIGNING_SECRET,
   );
-  if (!signedSession) {
-    return getLocalBypassSession(request, env);
-  }
+  if (!signedSession) return null;
 
   await redirectIfBannedSession(request, context, {
     userId: signedSession.user_id,
@@ -212,6 +118,153 @@ export async function getSession(
 
   // sessionId is a placeholder — with signed cookies, the cookie IS the session
   return { sessionId: `signed:${signedSession.user_id}`, session };
+}
+
+function getRuntimeEnvValue(
+  env: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const bindingValue = env[key];
+  if (typeof bindingValue === "string") return bindingValue;
+
+  const processEnv = (globalThis as unknown as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env;
+  return processEnv?.[key];
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function isLocalhostRequest(request: Request): boolean {
+  const hostname = new URL(request.url).hostname;
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+async function getLocalAuthBypassSession(
+  request: Request,
+  context: AppLoadContext,
+): Promise<SessionContext | null> {
+  const env = getEnv(context);
+  if (
+    !isLocalhostRequest(request) ||
+    !envFlagEnabled(
+      getRuntimeEnvValue(
+        env as unknown as Record<string, unknown>,
+        "LOCAL_AUTH_BYPASS",
+      ),
+    )
+  ) {
+    return null;
+  }
+
+  const authEnv = getAuthEnv(env);
+  const email =
+    getRuntimeEnvValue(
+      env as unknown as Record<string, unknown>,
+      "LOCAL_AUTH_USER_EMAIL",
+    ) ??
+    LOCAL_AUTH_EMAIL;
+  const name =
+    getRuntimeEnvValue(
+      env as unknown as Record<string, unknown>,
+      "LOCAL_AUTH_USER_NAME",
+    ) ??
+    LOCAL_AUTH_NAME;
+
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(LOCAL_AUTH_USER_ID));
+  let profile = await userStub.getProfile();
+  if (!profile) {
+    await authEnv.EMAIL_TO_USER.put(
+      `email:${email.toLowerCase()}`,
+      LOCAL_AUTH_USER_ID,
+    );
+    await authEnv.EMAIL_TO_USER.put(
+      "oauth:github:local-dev",
+      LOCAL_AUTH_USER_ID,
+    );
+    profile = await userStub.createUserFromOAuth(
+      LOCAL_AUTH_USER_ID,
+      email.toLowerCase(),
+      name,
+      "github",
+      "local-dev",
+    );
+  }
+
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(LOCAL_AUTH_ORG_ID));
+  let orgInfo: Organization | null = await orgStub.getInfo();
+  let workspaceId: string | null = null;
+
+  if (!orgInfo) {
+    const created = await orgStub.createOrg(
+      LOCAL_AUTH_ORG_ID,
+      "Local Dev",
+      LOCAL_AUTH_USER_ID,
+    );
+    orgInfo = created.org;
+    workspaceId = created.defaultWorkspaceId;
+    await userStub.addOrg(LOCAL_AUTH_ORG_ID, "owner", workspaceId);
+  } else {
+    const workspaces = await orgStub.getWorkspaces();
+    workspaceId =
+      workspaces.find((workspace) => !workspace.archived)?.id ?? null;
+
+    if (!(await orgStub.isMember(LOCAL_AUTH_USER_ID))) {
+      await orgStub.addMember(LOCAL_AUTH_USER_ID, "owner", LOCAL_AUTH_USER_ID);
+    }
+    if (!(await userStub.hasOrg(LOCAL_AUTH_ORG_ID))) {
+      await userStub.addOrg(LOCAL_AUTH_ORG_ID, "owner", workspaceId);
+    }
+  }
+
+  if (!orgInfo) {
+    return null;
+  }
+
+  if (orgInfo.billing_status !== "enterprise") {
+    orgInfo = await orgStub.updateBillingState({
+      billing_status: "enterprise",
+      billing_plan: "enterprise",
+      billing_seat_count: Math.max(orgInfo.billing_seat_count ?? 1, 1),
+    });
+    if (!orgInfo) {
+      return null;
+    }
+  }
+
+  if (workspaceId) {
+    const workspaceStub = authEnv.WORKSPACE.get(
+      authEnv.WORKSPACE.idFromName(workspaceId),
+    );
+    await workspaceStub.setMemberAccess(
+      LOCAL_AUTH_USER_ID,
+      "full",
+      LOCAL_AUTH_USER_ID,
+    );
+    await userStub.setOrgLastWorkspace(LOCAL_AUTH_ORG_ID, workspaceId);
+  }
+
+  const onboarding = await userStub.getOnboarding();
+  if (!onboarding?.completed_at) {
+    await userStub.updateOnboarding({ completed_at: Date.now() });
+  }
+
+  const now = Date.now();
+  return {
+    sessionId: "local-dev",
+    session: {
+      user_id: profile.id,
+      org_id: orgInfo.id,
+      workspace_id: workspaceId,
+      created_at: now,
+      last_accessed: now,
+      user_name: profile.name,
+      user_email: profile.email,
+    },
+  };
 }
 
 /**

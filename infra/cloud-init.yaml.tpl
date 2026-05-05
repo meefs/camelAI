@@ -28,6 +28,9 @@ write_files:
       CF_ACCOUNT_ID=${cf_account_id}
       CF_GATEWAY_NAME=${cf_gateway_name}
       CF_GATEWAY_TOKEN=${cf_gateway_token}
+      EXA_API_KEY=${exa_api_key}
+      PARALLEL_API_KEY=${parallel_api_key}
+      FIRECRAWL_API_KEY=${firecrawl_api_key}
 
 runcmd:
   - bash -c '. /etc/chiridion/storage.env && export SANDBOX_DATA_DEVICE CLOUDFLARED_TUNNEL_TOKEN ACR_LOGIN_SERVER && bash /opt/chiridion/sandbox-host/scripts/setup-host.sh'

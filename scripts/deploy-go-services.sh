@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENVIRONMENT="prod"
+ENVIRONMENT="staging"
 TARGET="all"
 VM=""
 REMOTE_BUILD="/tmp/chiridion-build"
@@ -13,7 +13,7 @@ usage() {
   echo "Deploy Go services to the Azure sandbox-host VM."
   echo ""
   echo "Options:"
-  echo "  --env ENV       Deploy target environment. Defaults to prod."
+  echo "  --env ENV       Deploy target environment. Defaults to staging."
   echo "  --host HOST     Override SSH target. Also available via SANDBOX_GO_DEPLOY_HOST."
   echo ""
   echo "Targets:"
@@ -107,8 +107,13 @@ rsync -az --delete \
   "$VM:$REMOTE_BUILD/services/sandbox-host/"
 
 if [[ " ${TARGETS[*]} " == *" sandbox-host "* ]]; then
-  echo "==> Installing latest host Codex on $VM..."
-  ssh "$VM" 'bash -s' < "$LOCAL_ROOT/scripts/install-host-codex.sh"
+  echo "==> Syncing sandbox skills to $VM..."
+  ssh "$VM" "mkdir -p '$REMOTE_BUILD/sandbox/skills'"
+  rsync -az --delete \
+    "$LOCAL_ROOT/sandbox/skills/" \
+    "$VM:$REMOTE_BUILD/sandbox/skills/"
+  echo "==> Installing host Pi on $VM..."
+  ssh "$VM" "HOST_PI_EXTENSION_SOURCE='$REMOTE_BUILD/services/sandbox-host/pi/container-tools.ts' HOST_PI_SKILLS_SOURCE='$REMOTE_BUILD/sandbox/skills' bash -s" < "$LOCAL_ROOT/scripts/install-host-pi.sh"
 fi
 
 for svc in "${TARGETS[@]}"; do

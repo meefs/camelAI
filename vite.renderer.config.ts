@@ -4,7 +4,7 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 
 export default defineConfig({
   root: 'sandbox/create-worker/renderer',
-  plugins: [react(), tsconfigPaths({ root: __dirname })],
+  plugins: [react(), tsconfigPaths({ root: __dirname, ignoreConfigErrors: true })],
   build: {
     outDir: '../renderer-dist',
     emptyOutDir: true,

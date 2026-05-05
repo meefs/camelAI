@@ -249,7 +249,6 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "search_workspaces" }),
           expect.objectContaining({ name: "search_apps" }),
           expect.objectContaining({ name: "list_bans" }),
-          expect.objectContaining({ name: "set_user_credits" }),
         ]),
       },
     });

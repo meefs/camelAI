@@ -39,7 +39,7 @@ const handleConnectionSelect = useCallback((connection: Integration) => {
 This should now populate the composer with the selected connection mention instead:
 
 ```text
-@selected_connection_slug 
+@selected_connection_slug
 ```
 
 Use the same collision-aware slug map used by the mention menu. Do **not** manually slug `connection.name` directly, because duplicate connection names need the same `-2`, `-3`, etc. suffix behavior as menu insertion.

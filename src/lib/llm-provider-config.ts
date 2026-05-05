@@ -4,22 +4,27 @@ import type {
   LlmProvider,
   LlmProviderConfigPublic,
   OrganizationExperimentalSettings,
-} from '../types';
-import { decryptCredentials } from './integration-crypto';
+} from "../types";
+import { decryptCredentials } from "./integration-crypto";
 
-export const DEFAULT_LLM_MODEL: LlmModel = 'sonnet';
-export const DEFAULT_CODEX_MODEL: LlmModel = 'gpt-5.4';
+export const DEFAULT_LLM_MODEL: LlmModel = "sonnet";
+export const DEFAULT_CODEX_MODEL: LlmModel = "gpt-5.4";
+export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.6";
 export const THREAD_MODEL_LOCK_MESSAGE =
-  'This thread is locked to its original model. Start a new thread to use a different model.';
+  "This thread is locked to its original model. Start a new thread to use a different model.";
 
 export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
 }> = [
-  { value: 'sonnet', label: 'Sonnet', description: 'Default and recommended' },
-  { value: 'haiku', label: 'Haiku', description: 'Faster and cheaper' },
-  { value: 'opus', label: 'Opus', description: 'Smarter, but slower and more expensive' },
+  { value: "sonnet", label: "Sonnet", description: "Default and recommended" },
+  { value: "haiku", label: "Haiku", description: "Faster and cheaper" },
+  {
+    value: "opus",
+    label: "Opus",
+    description: "Smarter, but slower and more expensive",
+  },
 ];
 
 export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
@@ -27,8 +32,26 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
-  { value: 'gpt-5.4', label: 'GPT-5.4', description: 'Default and recommended' },
-  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', description: 'Faster and cheaper' },
+  {
+    value: "gpt-5.4",
+    label: "GPT-5.4",
+    description: "Default and recommended",
+  },
+  {
+    value: "gpt-5.4-mini",
+    label: "GPT-5.4 Mini",
+    description: "Faster and cheaper",
+  },
+  {
+    value: "kimi-k2.6",
+    label: "Kimi K2.6",
+    description: "OpenRouter/camelAI hosted model",
+  },
+  {
+    value: "grok-4.3",
+    label: "Grok 4.3",
+    description: "OpenRouter/camelAI hosted model",
+  },
 ];
 
 export const LLM_MODEL_OPTIONS: ReadonlyArray<{
@@ -41,12 +64,15 @@ export interface LlmProviderStoredConfig {
   aws_region?: string;
 }
 
-export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings = {
-  claude_proxy_models: false,
-};
+export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings =
+  {
+    claude_proxy_models: false,
+  };
 
-export function parseOrganizationExperimentalSettings(raw: unknown): OrganizationExperimentalSettings {
-  if (!raw || typeof raw !== 'object') {
+export function parseOrganizationExperimentalSettings(
+  raw: unknown,
+): OrganizationExperimentalSettings {
+  if (!raw || typeof raw !== "object") {
     return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
   }
 
@@ -66,27 +92,36 @@ export function getAllowedChatHarnessesForNewThread(
   orgProvider: string | null | undefined,
   experimentalSettings?: OrganizationExperimentalSettings | null,
 ): ChatHarness[] {
-  if (orgProvider === 'anthropic' || orgProvider === 'bedrock') {
-    return ['claude'];
+  if (orgProvider === "anthropic" || orgProvider === "bedrock") {
+    return ["claude"];
   }
-  if (orgProvider === 'openrouter') {
-    return ['codex', 'claude'];
+  if (orgProvider === "openrouter") {
+    return ["codex", "claude"];
   }
-  if (orgProvider === 'openai') {
-    return ['codex'];
+  if (orgProvider === "openai") {
+    return ["codex"];
   }
-  return ['claude', 'codex'];
+  return ["claude", "codex"];
 }
 
 export function getDefaultThreadProvider(
   orgProvider: string | null | undefined,
   experimentalSettings?: OrganizationExperimentalSettings | null,
 ): ChatHarness {
-  return getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings)[0] ?? 'claude';
+  return (
+    getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings)[0] ??
+    "claude"
+  );
 }
 
-export function getDefaultLlmModel(provider: ChatHarness): LlmModel {
-  return provider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_LLM_MODEL;
+export function getDefaultLlmModel(
+  provider: ChatHarness,
+  orgProvider?: string | null,
+): LlmModel {
+  if (provider === "codex" && orgProvider === "openrouter") {
+    return DEFAULT_OPENROUTER_MODEL;
+  }
+  return provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_LLM_MODEL;
 }
 
 export function getLlmModelOptions(provider: ChatHarness): ReadonlyArray<{
@@ -94,18 +129,25 @@ export function getLlmModelOptions(provider: ChatHarness): ReadonlyArray<{
   label: string;
   description: string;
 }> {
-  return provider === 'codex' ? CODEX_LLM_MODEL_OPTIONS : CLAUDE_LLM_MODEL_OPTIONS;
+  return provider === "codex"
+    ? CODEX_LLM_MODEL_OPTIONS
+    : CLAUDE_LLM_MODEL_OPTIONS;
 }
 
 export function getProviderForModel(
   model: LlmModel | null | undefined,
-  fallbackProvider: ChatHarness = 'claude',
+  fallbackProvider: ChatHarness = "claude",
 ): ChatHarness {
-  if (model === 'gpt-5.4' || model === 'gpt-5.4-mini') {
-    return 'codex';
+  if (
+    model === "gpt-5.4" ||
+    model === "gpt-5.4-mini" ||
+    model === "kimi-k2.6" ||
+    model === "grok-4.3"
+  ) {
+    return "codex";
   }
-  if (model === 'haiku' || model === 'sonnet' || model === 'opus') {
-    return 'claude';
+  if (model === "haiku" || model === "sonnet" || model === "opus") {
+    return "claude";
   }
   return fallbackProvider;
 }
@@ -113,14 +155,14 @@ export function getProviderForModel(
 export function getChatHarnessesForLlmProvider(
   provider: string | null | undefined,
 ): ChatHarness[] {
-  if (provider === 'openrouter') {
-    return ['codex', 'claude'];
+  if (provider === "openrouter") {
+    return ["codex", "claude"];
   }
-  if (provider === 'openai') {
-    return ['codex'];
+  if (provider === "openai") {
+    return ["codex"];
   }
-  if (provider === 'anthropic' || provider === 'bedrock') {
-    return ['claude'];
+  if (provider === "anthropic" || provider === "bedrock") {
+    return ["claude"];
   }
   return [];
 }
@@ -133,7 +175,7 @@ export function getAffectedChatHarnessesForLlmProviderChange(
     new Set([
       ...getChatHarnessesForLlmProvider(previousProvider),
       ...getChatHarnessesForLlmProvider(nextProvider),
-    ])
+    ]),
   );
 }
 
@@ -151,18 +193,32 @@ export function getVisibleLlmModelOptions(
   description: string;
 }> {
   const visibleHarnesses = options?.allowModelFamilySwitch
-    ? getAllowedChatHarnessesForNewThread(options.orgProvider, experimentalSettings)
+    ? getAllowedChatHarnessesForNewThread(
+        options.orgProvider,
+        experimentalSettings,
+      )
     : [provider];
-  const baseOptions = visibleHarnesses.flatMap((visibleProvider) => (
-    visibleProvider === 'codex' ? CODEX_LLM_MODEL_OPTIONS : CLAUDE_LLM_MODEL_OPTIONS
-  ));
+  const baseOptions = visibleHarnesses
+    .flatMap((visibleProvider) =>
+      visibleProvider === "codex"
+        ? CODEX_LLM_MODEL_OPTIONS
+        : CLAUDE_LLM_MODEL_OPTIONS,
+    )
+    .filter((option) =>
+      isLlmModelAllowedForOrgProvider(option.value, options?.orgProvider),
+    );
 
-  if (!includeModel || baseOptions.some((option) => option.value === includeModel)) {
+  if (
+    !includeModel ||
+    baseOptions.some((option) => option.value === includeModel)
+  ) {
     return baseOptions;
   }
 
-  const fallbackOption = [...CODEX_LLM_MODEL_OPTIONS, ...CLAUDE_LLM_MODEL_OPTIONS]
-    .find((option) => option.value === includeModel);
+  const fallbackOption = [
+    ...CODEX_LLM_MODEL_OPTIONS,
+    ...CLAUDE_LLM_MODEL_OPTIONS,
+  ].find((option) => option.value === includeModel);
 
   return fallbackOption ? [fallbackOption, ...baseOptions] : baseOptions;
 }
@@ -174,59 +230,98 @@ export function isLlmModelAllowedForNewThread(
 ): value is LlmModel {
   if (!isLlmModel(value)) return false;
   const provider = getProviderForModel(value);
-  return getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings).includes(provider);
-}
-
-export function isLlmModel(value: unknown, provider?: ChatHarness): value is LlmModel {
-  if (provider === 'codex') {
-    return value === 'gpt-5.4' || value === 'gpt-5.4-mini';
-  }
-  if (provider === 'claude') {
-    return value === 'haiku' || value === 'sonnet' || value === 'opus';
-  }
   return (
-    value === 'haiku' ||
-    value === 'sonnet' ||
-    value === 'opus' ||
-    value === 'gpt-5.4' ||
-    value === 'gpt-5.4-mini'
+    getAllowedChatHarnessesForNewThread(
+      orgProvider,
+      experimentalSettings,
+    ).includes(provider) && isLlmModelAllowedForOrgProvider(value, orgProvider)
   );
 }
 
-export function normalizeLlmModel(value: unknown, provider: ChatHarness = 'claude'): LlmModel {
-  return isLlmModel(value, provider) ? value : getDefaultLlmModel(provider);
+export function isLlmModel(
+  value: unknown,
+  provider?: ChatHarness,
+): value is LlmModel {
+  if (provider === "codex") {
+    return (
+      value === "gpt-5.4" ||
+      value === "gpt-5.4-mini" ||
+      value === "kimi-k2.6" ||
+      value === "grok-4.3"
+    );
+  }
+  if (provider === "claude") {
+    return value === "haiku" || value === "sonnet" || value === "opus";
+  }
+  return (
+    value === "haiku" ||
+    value === "sonnet" ||
+    value === "opus" ||
+    value === "gpt-5.4" ||
+    value === "gpt-5.4-mini" ||
+    value === "kimi-k2.6" ||
+    value === "grok-4.3"
+  );
 }
 
-export function parseStoredLlmProviderConfig(raw: unknown): LlmProviderStoredConfig {
+export function isLlmModelAllowedForOrgProvider(
+  model: LlmModel,
+  orgProvider?: string | null,
+): boolean {
+  if (model === "kimi-k2.6" || model === "grok-4.3") {
+    return orgProvider !== "openai";
+  }
+  return true;
+}
+
+export function normalizeLlmModel(
+  value: unknown,
+  provider: ChatHarness = "claude",
+  orgProvider?: string | null,
+): LlmModel {
+  return isLlmModel(value, provider) &&
+    isLlmModelAllowedForOrgProvider(value, orgProvider)
+    ? value
+    : getDefaultLlmModel(provider, orgProvider);
+}
+
+export function parseStoredLlmProviderConfig(
+  raw: unknown,
+): LlmProviderStoredConfig {
   let config: Record<string, unknown> = {};
 
-  if (typeof raw === 'string') {
+  if (typeof raw === "string") {
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === 'object') {
+      if (parsed && typeof parsed === "object") {
         config = parsed as Record<string, unknown>;
       }
     } catch {
       config = {};
     }
-  } else if (raw && typeof raw === 'object') {
+  } else if (raw && typeof raw === "object") {
     config = raw as Record<string, unknown>;
   }
 
-  const awsRegion = typeof config.aws_region === 'string' && config.aws_region.trim()
-    ? config.aws_region.trim()
-    : undefined;
+  const awsRegion =
+    typeof config.aws_region === "string" && config.aws_region.trim()
+      ? config.aws_region.trim()
+      : undefined;
 
   return {
     ...(awsRegion ? { aws_region: awsRegion } : {}),
   };
 }
 
-export function parseLlmProviderStoredConfig(raw: unknown): LlmProviderStoredConfig {
+export function parseLlmProviderStoredConfig(
+  raw: unknown,
+): LlmProviderStoredConfig {
   return parseStoredLlmProviderConfig(raw);
 }
 
-export function stringifyStoredLlmProviderConfig(config: Partial<LlmProviderStoredConfig>): string {
+export function stringifyStoredLlmProviderConfig(
+  config: Partial<LlmProviderStoredConfig>,
+): string {
   const normalized = parseStoredLlmProviderConfig(config);
   return JSON.stringify({
     ...(normalized.aws_region ? { aws_region: normalized.aws_region } : {}),
@@ -249,19 +344,19 @@ export function keyHint(key: string): string {
 
 export async function buildPublicLlmProviderConfig(
   record: LlmProviderConfigRecord,
-  integrationSecretKey: string
+  integrationSecretKey: string,
 ): Promise<LlmProviderConfigPublic> {
-  let hint = '********';
+  let hint = "********";
 
   try {
     const creds = await decryptCredentials<Record<string, string>>(
       record.credentials_encrypted,
-      integrationSecretKey
+      integrationSecretKey,
     );
     const primaryKey =
-      record.provider === 'anthropic' ||
-      record.provider === 'openai' ||
-      record.provider === 'openrouter'
+      record.provider === "anthropic" ||
+      record.provider === "openai" ||
+      record.provider === "openrouter"
         ? creds.api_key
         : creds.bearer_token;
     if (primaryKey) {

@@ -35,6 +35,15 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 			},
 		},
 		{
+			model: "camel/anthropic/claude-haiku-4.5",
+			want: ModelPricing{
+				InputPerToken:         0.000001,
+				OutputPerToken:        0.000005,
+				CacheCreationPerToken: 0.00000125,
+				CacheReadPerToken:     0.0000001,
+			},
+		},
+		{
 			model: "gpt-5.4",
 			want: ModelPricing{
 				InputPerToken:     0.0000025,
@@ -48,6 +57,48 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 				InputPerToken:     0.00000075,
 				OutputPerToken:    0.0000045,
 				CacheReadPerToken: 0.000000075,
+			},
+		},
+		{
+			model: "~moonshotai/kimi-latest",
+			want: ModelPricing{
+				InputPerToken:  0.0000007448,
+				OutputPerToken: 0.000004655,
+			},
+		},
+		{
+			model: "openrouter/~moonshotai/kimi-latest",
+			want: ModelPricing{
+				InputPerToken:  0.0000007448,
+				OutputPerToken: 0.000004655,
+			},
+		},
+		{
+			model: "camel/~moonshotai/kimi-latest",
+			want: ModelPricing{
+				InputPerToken:  0.0000007448,
+				OutputPerToken: 0.000004655,
+			},
+		},
+		{
+			model: "x-ai/grok-4.3",
+			want: ModelPricing{
+				InputPerToken:  0.00000125,
+				OutputPerToken: 0.0000025,
+			},
+		},
+		{
+			model: "camelai-openrouter/x-ai/grok-4.3",
+			want: ModelPricing{
+				InputPerToken:  0.00000125,
+				OutputPerToken: 0.0000025,
+			},
+		},
+		{
+			model: "camel/x-ai/grok-4.3",
+			want: ModelPricing{
+				InputPerToken:  0.00000125,
+				OutputPerToken: 0.0000025,
 			},
 		},
 	}

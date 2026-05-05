@@ -465,13 +465,17 @@ async function renderMarkdownEmailHtml(markdown: string): Promise<string> {
   const content = markdown.trim() || "Done.";
 
   try {
-    const [{ createElement }, { renderToStaticMarkup }, { default: ReactMarkdown }, { default: remarkGfm }] =
-      await Promise.all([
-        import("react"),
-        import("react-dom/server"),
-        import("react-markdown"),
-        import("remark-gfm"),
-      ]);
+    const [
+      { createElement },
+      { renderToStaticMarkup },
+      { default: ReactMarkdown },
+      { default: remarkGfm },
+    ] = await Promise.all([
+      import("react"),
+      import("react-dom/server"),
+      import("react-markdown"),
+      import("remark-gfm"),
+    ]);
     const renderedMarkdown = renderToStaticMarkup(
       createElement(
         "div",
@@ -705,13 +709,16 @@ async function resolveThreadForEmail(
     orgStub.getLlmProviderConfig(),
     orgStub.getExperimentalSettings(),
   ]);
-  const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
+  const provider = getDefaultThreadProvider(
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  );
   const created = await orgStub.createThread(
     args.workspaceId,
     title,
     args.userId,
     args.message.slice(0, 500),
-    getDefaultLlmModel(provider),
+    getDefaultLlmModel(provider, llmProviderConfig?.provider),
     provider,
   );
 
@@ -850,7 +857,9 @@ export async function handleWorkspaceEmailIngress(
     !getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
       .emailInbox
   ) {
-    message.setReject("Workspace email inbox requires a Pro, Team, or Enterprise plan.");
+    message.setReject(
+      "Workspace email inbox requires a Pro, Team, or Enterprise plan.",
+    );
     return;
   }
 

@@ -23,6 +23,29 @@ func TestSandboxNameNormalization(t *testing.T) {
 	}
 }
 
+func TestHeaderCloningStripsMiniflareProxyHeaders(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("MF-Proxy-Shared-Secret", "local-secret")
+	headers.Set("X-Test", "kept")
+
+	cloned := cloneHeaders(headers)
+	if cloned.Get("MF-Proxy-Shared-Secret") != "" {
+		t.Fatal("expected cloneHeaders to strip Miniflare proxy headers")
+	}
+	if cloned.Get("X-Test") != "kept" {
+		t.Fatalf("expected normal header to be preserved, got %q", cloned.Get("X-Test"))
+	}
+
+	copied := http.Header{}
+	copyHeaders(copied, headers)
+	if copied.Get("MF-Proxy-Shared-Secret") != "" {
+		t.Fatal("expected copyHeaders to strip Miniflare proxy headers")
+	}
+	if copied.Get("X-Test") != "kept" {
+		t.Fatalf("expected normal copied header to be preserved, got %q", copied.Get("X-Test"))
+	}
+}
+
 func TestParseWorkspaceRoute(t *testing.T) {
 	route, ok := parseWorkspaceRoute("/v1/workspaces/org-1/ws-2/fs/read")
 	if !ok {
@@ -304,30 +327,44 @@ func TestForwardDataProxyRequest(t *testing.T) {
 	}
 }
 
-func TestShouldUseGatewayOpenAIResponses(t *testing.T) {
-	if !shouldUseGatewayOpenAIResponses("/responses", "gpt-5.4") {
-		t.Fatal("expected gpt-* responses traffic to use openai provider")
-	}
-	if !shouldUseGatewayOpenAIResponses("/responses", "GPT-5.4-mini") {
-		t.Fatal("expected case-insensitive gpt-* detection")
-	}
-	if shouldUseGatewayOpenAIResponses("/chat/completions", "gpt-5.4") {
-		t.Fatal("did not expect chat completions to use openai responses provider")
-	}
-	if shouldUseGatewayOpenAIResponses("/responses", "dynamic/auto") {
-		t.Fatal("did not expect dynamic aliases to use openai responses provider")
-	}
-	if shouldUseGatewayOpenAIResponses("/responses", "anthropic/claude-sonnet-4.6") {
-		t.Fatal("did not expect non-OpenAI model IDs to use openai responses provider")
+func TestResolveGatewayModelAutoRoutesOpenRouter(t *testing.T) {
+	for _, model := range []string{"", "auto", "auto_search", "auto_image", "dynamic/auto"} {
+		if got := resolveGatewayModel(model); got != "openrouter/auto" {
+			t.Fatalf("resolveGatewayModel(%q) = %q, want %q", model, got, "openrouter/auto")
+		}
 	}
 }
 
-func TestForwardOpenAIToAIGatewayUsesOpenAIResponsesForGPTModels(t *testing.T) {
+func TestResolveGatewayModelGPT(t *testing.T) {
+	if got := resolveGatewayModel("gpt-5.4"); got != "openai/gpt-5.4" {
+		t.Fatalf("resolveGatewayModel(gpt-5.4) = %q, want %q", got, "openai/gpt-5.4")
+	}
+}
+
+func TestResolveGatewayModelKimi(t *testing.T) {
+	if got := resolveGatewayModel("kimi-k2.6"); got != "~moonshotai/kimi-latest" {
+		t.Fatalf("resolveGatewayModel(kimi-k2.6) = %q, want %q", got, "~moonshotai/kimi-latest")
+	}
+}
+
+func TestResolveGatewayModelGrok(t *testing.T) {
+	if got := resolveGatewayModel("grok-4.3"); got != "x-ai/grok-4.3" {
+		t.Fatalf("resolveGatewayModel(grok-4.3) = %q, want %q", got, "x-ai/grok-4.3")
+	}
+}
+
+func TestForwardOpenAIToAIGatewayUsesOpenRouterResponsesForGPTModels(t *testing.T) {
 	var capturedPath string
+	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedPath = req.URL.Path
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		capturedModel, _ = body["model"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"response","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}`))
+		_, _ = w.Write([]byte(`{"object":"response","model":"openai/gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer upstream.Close()
 
@@ -350,8 +387,251 @@ func TestForwardOpenAIToAIGatewayUsesOpenAIResponsesForGPTModels(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if capturedPath != "/openai/responses" {
-		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openai/responses")
+	if capturedPath != "/openrouter/responses" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
+	}
+	if capturedModel != "openai/gpt-5.4" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "openai/gpt-5.4")
+	}
+}
+
+func TestForwardClaudeToOpenRouterGatewayRewritesModel(t *testing.T) {
+	var capturedPath string
+	var capturedAuth string
+	var capturedModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		capturedAuth = req.Header.Get("cf-aig-authorization")
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		capturedModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","model":"anthropic/claude-sonnet-4.6","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			AIGatewayBaseURL: upstream.URL,
+			AIGatewayToken:   "test-token",
+		},
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+	}
+
+	body := `{"model":"sonnet","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/claude/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	rec := httptest.NewRecorder()
+	server.forwardClaudeToOpenRouterGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-claude-openrouter-gateway", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/openrouter/v1/messages" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/v1/messages")
+	}
+	if capturedAuth != "Bearer test-token" {
+		t.Fatalf("unexpected gateway auth: got=%q", capturedAuth)
+	}
+	if capturedModel != "anthropic/claude-sonnet-4.6" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "anthropic/claude-sonnet-4.6")
+	}
+}
+
+func TestForwardOpenAIToAIGatewayRoutesKimiToOpenRouterAndRewritesModel(t *testing.T) {
+	var capturedPath string
+	var capturedModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		capturedModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_kimi","object":"chat.completion"}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			AIGatewayBaseURL: upstream.URL,
+			AIGatewayToken:   "test-token",
+		},
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+	}
+
+	body := `{"model":"kimi-k2.6","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.forwardOpenAIToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/chat/completions"}, testThreadContext(), testCaller(), "test-req-kimi-gateway", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/openrouter/chat/completions" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/chat/completions")
+	}
+	if capturedModel != "~moonshotai/kimi-latest" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "~moonshotai/kimi-latest")
+	}
+}
+
+func TestForwardOpenAIToAIGatewayRoutesGrokResponsesToOpenRouterAndRewritesModel(t *testing.T) {
+	var capturedPath string
+	var capturedModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		capturedModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"response","model":"x-ai/grok-4.3","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			AIGatewayBaseURL: upstream.URL,
+			AIGatewayToken:   "test-token",
+		},
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+	}
+
+	body := `{"model":"grok-4.3","input":"hi"}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.forwardOpenAIToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"}, testThreadContext(), testCaller(), "test-req-grok-gateway", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/openrouter/responses" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
+	}
+	if capturedModel != "x-ai/grok-4.3" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "x-ai/grok-4.3")
+	}
+}
+
+func TestForwardOpenRouterEndpointToAIGateway(t *testing.T) {
+	var capturedPath string
+	var capturedModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		capturedModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"response","model":"openai/gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			AIGatewayBaseURL: upstream.URL,
+			AIGatewayToken:   "test-token",
+		},
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+	}
+
+	body := `{"model":"openai/gpt-5.4","input":"hi"}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openrouter/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.forwardOpenAIToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openrouter/v1/responses"}, testThreadContext(), testCaller(), "test-req-openrouter-responses", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/openrouter/responses" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
+	}
+	if capturedModel != "openai/gpt-5.4" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "openai/gpt-5.4")
+	}
+}
+
+func TestForwardOpenAIToAIGatewayRecordsStreamingKimiUsage(t *testing.T) {
+	usageStore, err := state.NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = usageStore.Close() }()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"~moonshotai/kimi-latest","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}],"usage":null}`,
+			"",
+			`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"~moonshotai/kimi-latest","choices":[],"usage":{"prompt_tokens":194,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},"completion_tokens":2,"total_tokens":196}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			AIGatewayBaseURL: upstream.URL,
+			AIGatewayToken:   "test-token",
+		},
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+		usage:      usageStore,
+	}
+
+	body := `{"model":"kimi-k2.6","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.forwardOpenAIToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/chat/completions"}, testThreadContext(), testCaller(), "test-req-kimi-stream-usage", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var entries []state.UsageLogEntry
+	for range 20 {
+		entries, err = usageStore.GetUsageLog("test-org", 20)
+		if err != nil {
+			t.Fatalf("read usage log: %v", err)
+		}
+		if len(entries) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one usage row, got %+v", entries)
+	}
+	if entries[0].Model != "~moonshotai/kimi-latest" {
+		t.Fatalf("unexpected usage model: got=%q", entries[0].Model)
+	}
+	if entries[0].Provider != "openrouter" {
+		t.Fatalf("unexpected usage provider: got=%q", entries[0].Provider)
+	}
+	if entries[0].InputTokens != 164 || entries[0].CacheReadInputTokens != 20 || entries[0].CacheCreationInputTokens != 10 || entries[0].OutputTokens != 2 {
+		t.Fatalf("unexpected usage tokens: %+v", entries[0])
 	}
 }
 
@@ -391,6 +671,55 @@ func TestForwardOpenAICompatibleDirectPreservesV1ResponsesPath(t *testing.T) {
 	}
 	if capturedPath != "/api/v1/responses" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/api/v1/responses")
+	}
+}
+
+func TestForwardOpenAICompatibleDirectRewritesKimiForOpenRouter(t *testing.T) {
+	var capturedAuth string
+	var capturedModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedAuth = req.Header.Get("Authorization")
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		capturedModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_or","object":"chat.completion"}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		httpClient: &http.Client{},
+		containers: container.NewTestManager(),
+	}
+
+	body := `{"model":"kimi-k2.6","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.forwardOpenAICompatibleDirect(
+		rec,
+		req,
+		ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/chat/completions"},
+		testThreadContext(),
+		testCaller(),
+		"test-req-openrouter-direct",
+		time.Now(),
+		upstream.URL+"/api",
+		"test-openrouter-key",
+		"openrouter",
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedAuth != "Bearer test-openrouter-key" {
+		t.Fatalf("unexpected auth header: got=%q", capturedAuth)
+	}
+	if capturedModel != "~moonshotai/kimi-latest" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "~moonshotai/kimi-latest")
 	}
 }
 

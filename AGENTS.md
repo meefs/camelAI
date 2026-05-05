@@ -121,13 +121,11 @@ waitUntil(
 - Browser chat connects to `/ws/{workspace}`.
 - The main worker validates access and routes to `ChatThreadDO`.
 - `ChatThreadDO` opens a sandbox-host chat connection for the workspace/thread.
-- `sandbox/control-plane.mjs` selects the harness:
-  - Claude threads use Claude Agent SDK.
-  - Codex/GPT threads use a warm per-thread `codex app-server` via sandbox OpenAI proxy.
+- The sandbox-host Go service runs the Pi coding agent on the host. Pi tools dispatch file and shell work into the Docker workspace container so filesystem scope still comes from the sandbox.
 - Thread records store provider/model state on org thread data. Verify current fields in `OrgDO` before changing related behavior.
 - Message history is loaded through sandbox-host chat message APIs rather than by parsing transcripts in the Worker runtime.
 - Slash commands are allowlisted in `ChatThreadDO`; check `SLASH_COMMANDS` before adding or changing one.
-- Clarifying questions are provider-specific: Claude uses SDK question tooling; Codex uses the sandbox `ask_user_question` MCP helper.
+- Clarifying questions use the Pi `AskUserQuestion`/`ask_user_question` tools.
 
 ## Uploads, Files, And Safety
 
@@ -135,7 +133,7 @@ waitUntil(
 - Workspace file API routes live under `/api/workspaces/:id/fs/*`.
 - Computer tab file mutations may be intentionally blocked during beta; check `src/routes/api/workspaces.utils.ts` before changing write behavior.
 - File safety logic lives in `workers/main/src/file-safety.ts` and is applied before agent turns for suspicious uploaded-file/deploy/bridge workflows.
-- The sandbox system prompt in `sandbox/control-plane.mjs` contains standing prohibited-activity rules. Keep security-relevant prompt changes explicit and tested.
+- The Pi system-prompt appendix in `services/sandbox-host/internal/app/pi_system_prompt.md` contains standing prohibited-activity rules. Keep security-relevant prompt changes explicit and tested.
 
 ## Proxies And Bindings
 
@@ -198,7 +196,7 @@ Common local secret/config files:
 - `wrangler*.jsonc` for environment-specific Cloudflare config.
 - `services/sandbox-host/README.md` for host-specific setup/deploy details.
 
-Useful local variables include `CF_GATEWAY_TOKEN`, OAuth client IDs/secrets, `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, email provider settings, and sandbox debug flags such as `CHIRIDION_TRACE_EVENTS` and `CHIRIDION_DEBUG_STARTUP`.
+Useful local variables include `CF_GATEWAY_TOKEN`, OAuth client IDs/secrets, `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, email provider settings, and sandbox debug flags such as `TRACE_SANDBOX_HOST` and `TRACE_SANDBOX_LIFECYCLE`.
 
 ## Maintenance Rules
 

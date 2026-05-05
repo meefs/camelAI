@@ -1,5 +1,5 @@
 import { reactRouter } from '@react-router/dev/vite';
-import { cloudflare } from '@cloudflare/vite-plugin';
+import { cloudflare, type WorkerConfig } from '@cloudflare/vite-plugin';
 import { defineConfig, type DepOptimizationOptions, type Plugin } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
@@ -42,6 +42,39 @@ function suppressUndiciTerminatedErrors(): Plugin {
         // Let other rejections propagate normally
         console.error('Unhandled rejection:', reason);
       });
+    },
+  };
+}
+
+function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
+  const localAuthBypass = process.env.LOCAL_AUTH_BYPASS;
+  const localAuthUserEmail = process.env.LOCAL_AUTH_USER_EMAIL;
+  const localAuthUserName = process.env.LOCAL_AUTH_USER_NAME;
+  const workerBaseUrl = process.env.WORKER_BASE_URL;
+  const localWorkerBaseUrl = process.env.LOCAL_WORKER_BASE_URL;
+
+  if (
+    !localAuthBypass &&
+    !localAuthUserEmail &&
+    !localAuthUserName &&
+    !workerBaseUrl &&
+    !localWorkerBaseUrl
+  ) {
+    return;
+  }
+
+  return {
+    vars: {
+      ...(config.vars ?? {}),
+      ...(localAuthBypass ? { LOCAL_AUTH_BYPASS: localAuthBypass } : {}),
+      ...(localAuthUserEmail
+        ? { LOCAL_AUTH_USER_EMAIL: localAuthUserEmail }
+        : {}),
+      ...(localAuthUserName ? { LOCAL_AUTH_USER_NAME: localAuthUserName } : {}),
+      ...(workerBaseUrl ? { WORKER_BASE_URL: workerBaseUrl } : {}),
+      ...(localWorkerBaseUrl
+        ? { LOCAL_WORKER_BASE_URL: localWorkerBaseUrl }
+        : {}),
     },
   };
 }
@@ -95,6 +128,7 @@ export default defineConfig(({ command }) => {
     suppressUndiciTerminatedErrors(),
     cloudflare({
       configPath: './wrangler.jsonc',
+      config: withLocalDevVars,
       viteEnvironment: { name: 'ssr' },
     }),
     reactRouter(),

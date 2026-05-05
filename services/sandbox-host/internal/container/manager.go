@@ -1,8 +1,11 @@
 package container
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +23,7 @@ import (
 	dockernetwork "github.com/docker/docker/api/types/network"
 	dockerclient "github.com/docker/docker/client"
 	dockererrdefs "github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	dockerunits "github.com/docker/go-units"
 )
@@ -37,15 +41,29 @@ type ContainerRecord struct {
 	Status            string
 	CreatedAt         int64
 	LastAccessedAt    int64
-	ActiveWebSockets  int
 	InFlightProxyReqs int
 	OrgID             string
 	WorkspaceID       string
 }
 
+type ExecRequest struct {
+	Cmd []string          `json:"cmd"`
+	Cwd string            `json:"cwd"`
+	Env map[string]string `json:"env,omitempty"`
+}
+
+type ExecResponse struct {
+	Success  bool   `json:"success"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exitCode"`
+}
+
 const (
-	labelOrgID       = "com.chiridion.org-id"
-	labelWorkspaceID = "com.chiridion.workspace-id"
+	labelOrgID                    = "com.chiridion.org-id"
+	labelWorkspaceID              = "com.chiridion.workspace-id"
+	defaultContainerIdleTimeoutMS = 300_000
+	minContainerIdleTimeout       = 10 * time.Second
 )
 
 type ensureWait struct {
@@ -63,10 +81,9 @@ type Manager struct {
 	containerMemory     string
 	containerCPUShares  string
 	containerRuntime    string
-	controlPlanePort    int
+	containerHTTPPort   int
 	proxyPort           int
 	idleTimeout         time.Duration
-	reaperInterval      time.Duration
 	r2MountRoot         string
 	healthPollInterval  time.Duration
 	cfDispatchNamespace string
@@ -78,6 +95,7 @@ type Manager struct {
 	containerIPIndex  map[string]string
 	pendingWorkspaces map[string]int
 	ensureInFlight    map[string]*ensureWait
+	idleTimers        map[string]*time.Timer
 }
 
 func NewManager(workspaces *workspace.Manager) *Manager {
@@ -103,10 +121,9 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		containerMemory:     envString("CONTAINER_MEMORY", "16g"),
 		containerCPUShares:  envString("CONTAINER_CPU_SHARES", "2048"),
 		containerRuntime:    containerRuntime,
-		controlPlanePort:    8080,
+		containerHTTPPort:   8080,
 		proxyPort:           proxyPort,
-		idleTimeout:         time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
-		reaperInterval:      10 * time.Second,
+		idleTimeout:         containerIdleTimeoutFromEnv(),
 		r2MountRoot:         "/mnt/r2",
 		healthPollInterval:  maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
 		cfDispatchNamespace: envString("CF_DISPATCH_NAMESPACE", ""),
@@ -116,24 +133,31 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		containerIPIndex:    make(map[string]string),
 		pendingWorkspaces:   make(map[string]int),
 		ensureInFlight:      make(map[string]*ensureWait),
+		idleTimers:          make(map[string]*time.Timer),
 	}
 
 	m.discoverRunningContainers()
 
-	go m.runIdleReaper()
-
-	log.Printf("[ContainerManager] idle reaper started (timeout=%ds, interval=%ds)", int(m.idleTimeout/time.Second), int(m.reaperInterval/time.Second))
+	log.Printf("[ContainerManager] container idle timeout enabled (timeout=%ds)", int(m.idleTimeout/time.Second))
 	return m
 }
 
 // NewTestManager returns a Manager suitable for tests that don't need Docker.
 func NewTestManager() *Manager {
 	return &Manager{
-		containers:       make(map[string]*ContainerRecord),
-		containerIPIndex: make(map[string]string),
+		containers:        make(map[string]*ContainerRecord),
+		containerIPIndex:  make(map[string]string),
 		pendingWorkspaces: make(map[string]int),
-		ensureInFlight:   make(map[string]*ensureWait),
+		ensureInFlight:    make(map[string]*ensureWait),
+		idleTimers:        make(map[string]*time.Timer),
 	}
+}
+
+func (m *Manager) ContainerProxyBaseURL() string {
+	if m == nil {
+		return ""
+	}
+	return m.containerProxyBase
 }
 
 func (m *Manager) TouchContainer(name, reason string) {
@@ -145,35 +169,8 @@ func (m *Manager) TouchContainer(name, reason string) {
 		return
 	}
 	rec.LastAccessedAt = nowMillis()
+	m.resetIdleTimerLocked(name, rec)
 	m.trace("touch_container", map[string]any{"reason": reason, "container": rec})
-}
-
-func (m *Manager) AddWebSocket(name, source string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	rec := m.containers[name]
-	if rec == nil {
-		m.trace("ws_open_missing_container", map[string]any{"name": name, "source": source})
-		return
-	}
-	rec.ActiveWebSockets++
-	rec.LastAccessedAt = nowMillis()
-	m.trace("ws_open", map[string]any{"source": source, "container": rec})
-}
-
-func (m *Manager) RemoveWebSocket(name, source string, closeCode int, closeReason string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	rec := m.containers[name]
-	if rec == nil {
-		m.trace("ws_close_missing_container", map[string]any{"name": name, "source": source, "closeCode": closeCode, "closeReason": closeReason})
-		return
-	}
-	if rec.ActiveWebSockets > 0 {
-		rec.ActiveWebSockets--
-	}
-	rec.LastAccessedAt = nowMillis()
-	m.trace("ws_close", map[string]any{"source": source, "closeCode": closeCode, "closeReason": closeReason, "container": rec})
 }
 
 func (m *Manager) AddProxyRequest(name, reason string) {
@@ -186,6 +183,7 @@ func (m *Manager) AddProxyRequest(name, reason string) {
 	}
 	rec.InFlightProxyReqs++
 	rec.LastAccessedAt = nowMillis()
+	m.resetIdleTimerLocked(name, rec)
 	m.trace("proxy_request_open", map[string]any{"reason": reason, "container": rec})
 }
 
@@ -201,7 +199,70 @@ func (m *Manager) RemoveProxyRequest(name, reason string, status int, durationMs
 		rec.InFlightProxyReqs--
 	}
 	rec.LastAccessedAt = nowMillis()
+	m.resetIdleTimerLocked(name, rec)
 	m.trace("proxy_request_close", map[string]any{"reason": reason, "status": status, "durationMs": durationMs, "container": rec})
+}
+
+func (m *Manager) resetIdleTimerLocked(name string, rec *ContainerRecord) {
+	if m.idleTimeout <= 0 || rec == nil {
+		return
+	}
+	if m.idleTimers == nil {
+		m.idleTimers = make(map[string]*time.Timer)
+	}
+	if timer := m.idleTimers[name]; timer != nil {
+		timer.Stop()
+	}
+	m.idleTimers[name] = time.AfterFunc(m.idleTimeout, func() {
+		m.expireIdleContainer(name)
+	})
+}
+
+func (m *Manager) clearIdleTimerLocked(name string) {
+	if timer := m.idleTimers[name]; timer != nil {
+		timer.Stop()
+	}
+	delete(m.idleTimers, name)
+}
+
+func (m *Manager) removeContainerRecordLocked(name string) {
+	if current := m.containers[name]; current != nil && current.ContainerIP != "" {
+		m.unindexContainerIPLocked(current.ContainerIP)
+	}
+	delete(m.containers, name)
+	m.clearIdleTimerLocked(name)
+}
+
+func (m *Manager) expireIdleContainer(name string) {
+	now := nowMillis()
+
+	m.mu.Lock()
+	current := m.containers[name]
+	if current == nil {
+		m.clearIdleTimerLocked(name)
+		m.mu.Unlock()
+		return
+	}
+	pending := m.pendingWorkspaces[name]
+	inFlight := current.InFlightProxyReqs
+	lastAccessed := current.LastAccessedAt
+	snapshot := copyRecord(current)
+
+	if pending > 0 || inFlight > 0 || now-lastAccessed < m.idleTimeout.Milliseconds() {
+		m.resetIdleTimerLocked(name, current)
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Unlock()
+
+	idleSeconds := int((now - lastAccessed) / 1000)
+	log.Printf("[ContainerManager] stopping idle container %s (idle=%ds)", name, idleSeconds)
+	m.trace("idle_timeout_terminate", map[string]any{
+		"name":   name,
+		"idleMs": now - lastAccessed,
+		"state":  snapshot,
+	})
+	_, _ = m.TerminateContainer(name, "idle_timeout")
 }
 
 func (m *Manager) ResolveContainerBySourceIP(sourceIP string) (*ContainerRecord, error) {
@@ -313,17 +374,13 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 				log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
 				_ = m.removeContainerIfExists(name, true)
 				m.mu.Lock()
-				if existing := m.containers[name]; existing != nil {
-					if existing.ContainerIP != "" {
-						m.unindexContainerIPLocked(existing.ContainerIP)
-					}
-					delete(m.containers, name)
-				}
+				m.removeContainerRecordLocked(name)
 				m.mu.Unlock()
 			} else {
 				m.mu.Lock()
 				if current := m.containers[name]; current != nil {
 					current.LastAccessedAt = nowMillis()
+					m.resetIdleTimerLocked(name, current)
 					m.mu.Unlock()
 					m.trace("ensure_container_cache_hit", map[string]any{"name": name, "container": current})
 					return copyRecord(current), nil
@@ -332,12 +389,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			}
 		} else {
 			m.mu.Lock()
-			if existing := m.containers[name]; existing != nil {
-				if existing.ContainerIP != "" {
-					m.unindexContainerIPLocked(existing.ContainerIP)
-				}
-				delete(m.containers, name)
-			}
+			m.removeContainerRecordLocked(name)
 			m.mu.Unlock()
 		}
 	}
@@ -352,7 +404,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
 			_ = m.removeContainerIfExists(name, true)
 		} else {
-			port := hostPortFromInspect(inspect, m.controlPlanePort)
+			port := hostPortFromInspect(inspect, m.containerHTTPPort)
 			containerIP := containerIPFromInspect(inspect)
 			if port > 0 {
 				orgID := opts.OrgID
@@ -371,7 +423,6 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 					Status:            "running",
 					CreatedAt:         nowMillis(),
 					LastAccessedAt:    nowMillis(),
-					ActiveWebSockets:  0,
 					InFlightProxyReqs: 0,
 					OrgID:             orgID,
 					WorkspaceID:       workspaceID,
@@ -381,6 +432,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 				if containerIP != "" {
 					m.indexContainerIPLocked(containerIP, name)
 				}
+				m.resetIdleTimerLocked(name, rec)
 				m.mu.Unlock()
 				log.Printf("[ContainerManager] reconnected to existing container %s (port=%d)", name, port)
 				m.trace("ensure_container_reconnected_existing", map[string]any{"name": name, "container": rec})
@@ -424,21 +476,9 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			"CLOUDFLARE_ACCOUNT_ID=chiridion",
 			"WRANGLER_SEND_METRICS=false",
 			"CI=1",
-			"CLAUDE_ENV_FILE=/home/claude/.chiridion/integration.env",
-			"DEBUG_CLAUDE_AGENT_SDK=1",
 		)
 		if m.cfDispatchNamespace != "" {
 			env = append(env, "CF_DISPATCH_NAMESPACE="+m.cfDispatchNamespace)
-		}
-		for _, key := range []string{
-			"CHIRIDION_TRACE_EVENTS", "CHIRIDION_DEBUG_STARTUP", "CHIRIDION_DEBUG_SDK",
-			"CHIRIDION_DEBUG_FS", "CLAUDE_CODE_MAX_TURNS", "CLAUDE_CODE_DISABLE_NONESSENTIAL",
-			"CHIRIDION_PREQUEUE_FIRST_MESSAGE", "CHIRIDION_FIRST_MESSAGE_DELAY_MS",
-			"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
-		} {
-			if value, ok := os.LookupEnv(key); ok {
-				env = append(env, key+"="+value)
-			}
 		}
 	}
 
@@ -470,12 +510,12 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		cpuShares = parsed
 	}
 
-	controlPlanePort := nat.Port(strconv.Itoa(m.controlPlanePort) + "/tcp")
+	containerHTTPPort := nat.Port(strconv.Itoa(m.containerHTTPPort) + "/tcp")
 	createConfig := &dockercontainer.Config{
 		Image: m.sandboxImage,
 		Env:   env,
 		ExposedPorts: nat.PortSet{
-			controlPlanePort: {},
+			containerHTTPPort: {},
 		},
 		Labels: map[string]string{
 			labelOrgID:       opts.OrgID,
@@ -491,7 +531,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			CPUShares: cpuShares,
 		},
 		PortBindings: nat.PortMap{
-			controlPlanePort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: ""}},
+			containerHTTPPort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: ""}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -540,7 +580,6 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		Status:            "running",
 		CreatedAt:         nowMillis(),
 		LastAccessedAt:    nowMillis(),
-		ActiveWebSockets:  0,
 		InFlightProxyReqs: 0,
 		OrgID:             opts.OrgID,
 		WorkspaceID:       opts.WorkspaceID,
@@ -551,6 +590,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	if containerIP != "" {
 		m.indexContainerIPLocked(containerIP, name)
 	}
+	m.resetIdleTimerLocked(name, rec)
 	m.mu.Unlock()
 
 	log.Printf("[ContainerManager] created container %s (id=%s, port=%d)", name, containerID, port)
@@ -568,6 +608,7 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 			m.mu.Lock()
 			if current := m.containers[name]; current != nil {
 				current.LastAccessedAt = nowMillis()
+				m.resetIdleTimerLocked(name, current)
 				out := copyRecord(current)
 				m.mu.Unlock()
 				return out, nil
@@ -575,12 +616,7 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 			m.mu.Unlock()
 		} else {
 			m.mu.Lock()
-			if current := m.containers[name]; current != nil {
-				if current.ContainerIP != "" {
-					m.unindexContainerIPLocked(current.ContainerIP)
-				}
-				delete(m.containers, name)
-			}
+			m.removeContainerRecordLocked(name)
 			m.mu.Unlock()
 		}
 	}
@@ -596,7 +632,7 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 			_ = m.removeContainerIfExists(name, true)
 			return nil, nil
 		}
-		port := hostPortFromInspect(inspect, m.controlPlanePort)
+		port := hostPortFromInspect(inspect, m.containerHTTPPort)
 		containerIP := containerIPFromInspect(inspect)
 		if port > 0 {
 			rec := &ContainerRecord{
@@ -607,7 +643,6 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 				Status:            "running",
 				CreatedAt:         nowMillis(),
 				LastAccessedAt:    nowMillis(),
-				ActiveWebSockets:  0,
 				InFlightProxyReqs: 0,
 				OrgID:             labelFromInspect(inspect, labelOrgID),
 				WorkspaceID:       labelFromInspect(inspect, labelWorkspaceID),
@@ -617,6 +652,7 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 			if containerIP != "" {
 				m.indexContainerIPLocked(containerIP, name)
 			}
+			m.resetIdleTimerLocked(name, rec)
 			m.mu.Unlock()
 			m.trace("get_container_reconnected", map[string]any{"name": name, "container": rec})
 			return copyRecord(rec), nil
@@ -624,6 +660,69 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 	}
 
 	return nil, nil
+}
+
+func (m *Manager) Exec(ctx context.Context, name string, opts EnsureContainerOptions, req ExecRequest) (ExecResponse, error) {
+	if len(req.Cmd) == 0 {
+		return ExecResponse{}, fmt.Errorf("cmd is required")
+	}
+	if _, err := m.EnsureContainer(name, opts); err != nil {
+		return ExecResponse{}, err
+	}
+
+	workingDir := strings.TrimSpace(req.Cwd)
+	if workingDir == "" {
+		workingDir = "/home/claude"
+	}
+
+	execEnv := []string{
+		"HOME=/home/claude",
+		"USER=claude",
+	}
+	for key, value := range req.Env {
+		key = strings.TrimSpace(key)
+		if key == "" || strings.ContainsAny(key, "=\x00") || strings.Contains(value, "\x00") {
+			continue
+		}
+		execEnv = append(execEnv, key+"="+value)
+	}
+
+	createResp, err := m.docker.ContainerExecCreate(ctx, name, dockercontainer.ExecOptions{
+		User:         "claude",
+		AttachStdout: true,
+		AttachStderr: true,
+		WorkingDir:   workingDir,
+		Cmd:          req.Cmd,
+		Env:          execEnv,
+	})
+	if err != nil {
+		return ExecResponse{}, err
+	}
+
+	hijacked, err := m.docker.ContainerExecAttach(ctx, createResp.ID, dockercontainer.ExecAttachOptions{Tty: false})
+	if err != nil {
+		return ExecResponse{}, err
+	}
+	defer hijacked.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, hijacked.Reader); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		if err != io.EOF {
+			return ExecResponse{}, err
+		}
+	}
+
+	inspect, err := m.docker.ContainerExecInspect(context.Background(), createResp.ID)
+	if err != nil {
+		return ExecResponse{}, err
+	}
+	return ExecResponse{
+		Success:  inspect.ExitCode == 0,
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: inspect.ExitCode,
+	}, nil
 }
 
 func (m *Manager) TerminateContainer(name, reason string) (bool, error) {
@@ -651,12 +750,7 @@ func (m *Manager) TerminateContainer(name, reason string) (bool, error) {
 
 	if terminated {
 		m.mu.Lock()
-		if current := m.containers[name]; current != nil {
-			if current.ContainerIP != "" {
-				m.unindexContainerIPLocked(current.ContainerIP)
-			}
-		}
-		delete(m.containers, name)
+		m.removeContainerRecordLocked(name)
 		m.mu.Unlock()
 
 		log.Printf("[ContainerManager] terminated container %s", name)
@@ -674,92 +768,6 @@ func (m *Manager) TerminateContainer(name, reason string) (bool, error) {
 	return false, nil
 }
 
-func (m *Manager) GetControlPlanePort(name string, opts EnsureContainerOptions) (int, error) {
-	m.mu.Lock()
-	rec := m.containers[name]
-	if rec != nil {
-		rec.LastAccessedAt = nowMillis()
-		port := rec.HostPort
-		m.mu.Unlock()
-		return port, nil
-	}
-	m.mu.Unlock()
-
-	reconnected, err := m.GetContainer(name)
-	if err != nil {
-		return 0, err
-	}
-	if reconnected == nil {
-		log.Printf("[ContainerManager] control plane port missing for %s; recreating container", name)
-		ensured, ensureErr := m.EnsureContainer(name, opts)
-		if ensureErr != nil {
-			return 0, ensureErr
-		}
-		return ensured.HostPort, nil
-	}
-	return reconnected.HostPort, nil
-}
-
-// RefreshControlPlanePort re-inspects Docker for the container's actual port,
-// updates the in-memory record, and returns the fresh port. Use this when an
-// upstream dial fails to recover from a stale cached port.
-func (m *Manager) RefreshControlPlanePort(name string, opts EnsureContainerOptions) (int, error) {
-	actualPort, actualIP := m.getHostPortAndIP(name)
-	if actualPort > 0 {
-		m.mu.Lock()
-		rec := m.containers[name]
-		if rec != nil {
-			if rec.HostPort != actualPort {
-				log.Printf("[ContainerManager] port refreshed for %s: %d -> %d", name, rec.HostPort, actualPort)
-				rec.HostPort = actualPort
-			}
-			if actualIP != "" && rec.ContainerIP != actualIP {
-				if rec.ContainerIP != "" {
-					m.unindexContainerIPLocked(rec.ContainerIP)
-				}
-				rec.ContainerIP = actualIP
-				m.indexContainerIPLocked(actualIP, name)
-			}
-			rec.LastAccessedAt = nowMillis()
-			m.mu.Unlock()
-			return actualPort, nil
-		}
-		m.mu.Unlock()
-		return actualPort, nil
-	}
-
-	// Container gone — save live-session counters, remove stale record, and recreate.
-	m.mu.Lock()
-	var savedActiveWS, savedInFlight int
-	if rec := m.containers[name]; rec != nil {
-		savedActiveWS = rec.ActiveWebSockets
-		savedInFlight = rec.InFlightProxyReqs
-		if rec.ContainerIP != "" {
-			m.unindexContainerIPLocked(rec.ContainerIP)
-		}
-		delete(m.containers, name)
-	}
-	m.mu.Unlock()
-
-	log.Printf("[ContainerManager] container gone during port refresh for %s; recreating", name)
-	ensured, err := m.EnsureContainer(name, opts)
-	if err != nil {
-		return 0, err
-	}
-
-	// Restore counters so active sessions survive recreation.
-	if savedActiveWS > 0 || savedInFlight > 0 {
-		m.mu.Lock()
-		if rec := m.containers[name]; rec != nil {
-			rec.ActiveWebSockets = savedActiveWS
-			rec.InFlightProxyReqs = savedInFlight
-		}
-		m.mu.Unlock()
-	}
-
-	return ensured.HostPort, nil
-}
-
 func (m *Manager) ListContainers() []ContainerRecord {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -768,90 +776,6 @@ func (m *Manager) ListContainers() []ContainerRecord {
 		out = append(out, *copyRecord(rec))
 	}
 	return out
-}
-
-func (m *Manager) runIdleReaper() {
-	ticker := time.NewTicker(m.reaperInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		if err := m.reapIdleContainers(); err != nil {
-			log.Printf("[ContainerManager] reaper error: %v", err)
-		}
-	}
-}
-
-func (m *Manager) reapIdleContainers() error {
-	now := nowMillis()
-
-	type reaperCandidate struct {
-		name           string
-		lastAccessedAt int64
-		activeWS       int
-		inFlight       int
-		pending        int
-	}
-
-	candidates := make([]reaperCandidate, 0)
-	m.mu.Lock()
-	for name, rec := range m.containers {
-		pending := m.pendingWorkspaces[name]
-		m.trace("reaper_scan", map[string]any{
-			"name":                  name,
-			"idleMs":                now - rec.LastAccessedAt,
-			"activeWebSockets":      rec.ActiveWebSockets,
-			"inFlightProxyRequests": rec.InFlightProxyReqs,
-			"pendingEnsures":        pending,
-		})
-		candidates = append(candidates, reaperCandidate{
-			name:           name,
-			lastAccessedAt: rec.LastAccessedAt,
-			activeWS:       rec.ActiveWebSockets,
-			inFlight:       rec.InFlightProxyReqs,
-			pending:        pending,
-		})
-	}
-	m.mu.Unlock()
-
-	for _, candidate := range candidates {
-		if candidate.activeWS > 0 || candidate.inFlight > 0 || candidate.pending > 0 {
-			continue
-		}
-		if now-candidate.lastAccessedAt < m.idleTimeout.Milliseconds() {
-			continue
-		}
-
-		m.mu.Lock()
-		current := m.containers[candidate.name]
-		pending := m.pendingWorkspaces[candidate.name]
-		currentActiveWS := 0
-		currentInFlight := 0
-		currentLastAccessed := int64(0)
-		currentSnapshot := (*ContainerRecord)(nil)
-		if current != nil {
-			currentActiveWS = current.ActiveWebSockets
-			currentInFlight = current.InFlightProxyReqs
-			currentLastAccessed = current.LastAccessedAt
-			currentSnapshot = copyRecord(current)
-		}
-		m.mu.Unlock()
-
-		if current == nil {
-			continue
-		}
-		if currentActiveWS > 0 || currentInFlight > 0 || pending > 0 {
-			continue
-		}
-		if nowMillis()-currentLastAccessed < m.idleTimeout.Milliseconds() {
-			continue
-		}
-
-		idleSeconds := int((nowMillis() - currentLastAccessed) / 1000)
-		log.Printf("[ContainerManager] reaping idle container %s (idle=%ds)", candidate.name, idleSeconds)
-		m.trace("reaper_terminate", map[string]any{"name": candidate.name, "idleMs": nowMillis() - currentLastAccessed, "container": currentSnapshot})
-		_, _ = m.TerminateContainer(candidate.name, "idle_reaper")
-	}
-
-	return nil
 }
 
 func (m *Manager) getContainerBySourceIPCached(sourceIP string) *ContainerRecord {
@@ -924,7 +848,7 @@ func (m *Manager) getHostPort(name string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return hostPortFromInspect(inspect, m.controlPlanePort), nil
+	return hostPortFromInspect(inspect, m.containerHTTPPort), nil
 }
 
 func (m *Manager) getContainerIP(name string) (string, error) {
@@ -940,7 +864,7 @@ func (m *Manager) getHostPortAndIP(name string) (int, string) {
 	if err != nil {
 		return 0, ""
 	}
-	return hostPortFromInspect(inspect, m.controlPlanePort), containerIPFromInspect(inspect)
+	return hostPortFromInspect(inspect, m.containerHTTPPort), containerIPFromInspect(inspect)
 }
 
 func (m *Manager) isRunning(name string) (bool, error) {
@@ -1023,7 +947,7 @@ func (m *Manager) discoverRunningContainers() {
 			continue
 		}
 
-		port := hostPortFromInspect(inspect, m.controlPlanePort)
+		port := hostPortFromInspect(inspect, m.containerHTTPPort)
 		containerIP := containerIPFromInspect(inspect)
 		if port == 0 {
 			continue
@@ -1037,7 +961,6 @@ func (m *Manager) discoverRunningContainers() {
 			Status:            "running",
 			CreatedAt:         nowMillis(),
 			LastAccessedAt:    nowMillis(),
-			ActiveWebSockets:  0,
 			InFlightProxyReqs: 0,
 			OrgID:             labelFromInspect(inspect, labelOrgID),
 			WorkspaceID:       labelFromInspect(inspect, labelWorkspaceID),
@@ -1048,6 +971,7 @@ func (m *Manager) discoverRunningContainers() {
 		if containerIP != "" {
 			m.indexContainerIPLocked(containerIP, name)
 		}
+		m.resetIdleTimerLocked(name, rec)
 		m.mu.Unlock()
 		discovered++
 	}
@@ -1075,8 +999,8 @@ func (m *Manager) matchesConfiguredImage(inspect dockercontainer.InspectResponse
 	return configuredImageFromInspect(inspect) == strings.TrimSpace(m.sandboxImage)
 }
 
-func hostPortFromInspect(inspect dockercontainer.InspectResponse, controlPlanePort int) int {
-	portKey := nat.Port(strconv.Itoa(controlPlanePort) + "/tcp")
+func hostPortFromInspect(inspect dockercontainer.InspectResponse, containerHTTPPort int) int {
+	portKey := nat.Port(strconv.Itoa(containerHTTPPort) + "/tcp")
 	if inspect.NetworkSettings == nil || inspect.NetworkSettings.Ports == nil {
 		return 0
 	}
@@ -1147,6 +1071,17 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func containerIdleTimeoutFromEnv() time.Duration {
+	key := "CONTAINER_IDLE_TIMEOUT_MS"
+	if strings.TrimSpace(os.Getenv(key)) == "" {
+		key = "IDLE_TIMEOUT_MS"
+	}
+	return maxDuration(
+		minContainerIdleTimeout,
+		time.Duration(envInt(key, defaultContainerIdleTimeoutMS))*time.Millisecond,
+	)
 }
 
 func maxDuration(a, b time.Duration) time.Duration {

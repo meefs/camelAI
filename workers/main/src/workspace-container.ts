@@ -3,9 +3,8 @@
  *
  * Architecture:
  * - Sandbox host (services/sandbox-host/): Manages Docker container lifecycle,
- *   host filesystem operations, exec, and proxies control plane + API traffic.
- * - Control plane (sandbox/control-plane.mjs): Runs inside the container as
- *   the main entrypoint on port 8080. Handles Claude Agent SDK chat sessions.
+ *   host filesystem operations, container exec, host-side Pi agent sessions,
+ *   and API traffic.
  * - This module: Provides FS/exec APIs for dashboard routes, builds
  *   thread-specific env vars (integrations), and exposes
  *   connectChatWebSocket() for ChatThreadDO.
@@ -14,20 +13,20 @@
  * creation. API traffic from containers routes through the sandbox host proxy
  * which adds identity headers + a shared secret.
  *
- * All traffic (lifecycle, FS, exec, control plane) routes through the
+ * All traffic (lifecycle, FS, exec, chat runner) routes through the
  * sandbox host — CF Workers can't reach Docker bridge IPs directly.
  */
-import { mapCredentialsToEnvVars } from './integration-env';
-import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { mapCredentialsToEnvVars } from "./integration-env";
+import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
   DEFAULT_LLM_MODEL,
   DEFAULT_CODEX_MODEL,
   parseStoredLlmProviderConfig,
   normalizeLlmModel,
-} from '../../../src/lib/llm-provider-config';
-import { createDispatcherSession } from './worker-auth';
-import type { WorkspaceDO } from './workspace';
-import type { OrgDO } from './auth';
+} from "../../../src/lib/llm-provider-config";
+import { createDispatcherSession } from "./worker-auth";
+import type { WorkspaceDO } from "./workspace";
+import type { OrgDO } from "./auth";
 import { isOrgBanned } from "./ban-list";
 
 export interface WorkspaceContainerEnv {
@@ -40,6 +39,7 @@ export interface WorkspaceContainerEnv {
 
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
+  LOCAL_WORKER_BASE_URL?: string;
   WORKER_BASE_URL?: string;
 }
 
@@ -129,14 +129,14 @@ interface ControlPlaneDeleteResponse {
 
 export interface ChatRunnerEnvOptions {
   threadId: string;
-  provider: 'claude' | 'codex';
+  provider: "claude" | "codex";
 }
 
 export type ByokProxyCredentials =
-  | { provider: 'anthropic'; apiKey: string }
-  | { provider: 'bedrock'; bearerToken: string; region: string }
-  | { provider: 'openai'; apiKey: string }
-  | { provider: 'openrouter'; apiKey: string };
+  | { provider: "anthropic"; apiKey: string }
+  | { provider: "bedrock"; bearerToken: string; region: string }
+  | { provider: "openai"; apiKey: string }
+  | { provider: "openrouter"; apiKey: string };
 
 const INTEGRATION_ENV_FILE_PATH = "/home/claude/.chiridion/integration.env";
 
@@ -471,12 +471,12 @@ export class WorkspaceContainer {
 
   /**
    * Build thread-specific env vars (integration creds + thread ID).
-   * Passed to the control plane chat WebSocket init message.
+   * Passed to the sandbox-host chat runner.
    *
    * BYOK credentials are returned separately as `byokProxy` so they're
    * passed to sandbox-host via WebSocket upgrade headers — never leaked
-   * into the container env. The SDK always talks standard Anthropic Messages
-   * API through the proxy; sandbox-host decides the upstream.
+   * into the container env. The runner talks to providers through the
+   * sandbox-host proxy; sandbox-host decides the upstream.
    */
   async buildChatRunnerEnv(options: ChatRunnerEnvOptions): Promise<{
     envVars: Record<string, string>;
@@ -487,7 +487,7 @@ export class WorkspaceContainer {
     }
 
     console.log(
-      `[Sandbox] buildChatRunnerEnv: thread=${options.threadId} provider=${options.provider}`
+      `[Sandbox] buildChatRunnerEnv: thread=${options.threadId} provider=${options.provider}`,
     );
     const integrationEnv = await this.fetchIntegrationEnvVars();
 
@@ -501,17 +501,29 @@ export class WorkspaceContainer {
 
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
     const thread = await orgStub.getThread(options.threadId);
+    const llmProviderRecord = await orgStub.getLlmProviderConfig();
 
     const threadProvider = options.provider;
     const threadModel =
       thread && thread.workspace_id === this.workspaceId
-        ? normalizeLlmModel(thread.model, threadProvider)
-        : (threadProvider === 'codex' ? DEFAULT_CODEX_MODEL : DEFAULT_LLM_MODEL);
+        ? normalizeLlmModel(
+            thread.model,
+            threadProvider,
+            llmProviderRecord?.provider,
+          )
+        : threadProvider === "codex"
+          ? normalizeLlmModel(undefined, "codex", llmProviderRecord?.provider)
+          : DEFAULT_LLM_MODEL;
 
-    integrationEnv.CHIRIDION_CLAUDE_MODEL = threadProvider === 'claude' ? threadModel : DEFAULT_LLM_MODEL;
+    integrationEnv.CHIRIDION_CLAUDE_MODEL =
+      threadProvider === "claude" ? threadModel : DEFAULT_LLM_MODEL;
     // Fetch org-level BYOK provider config (if any)
-    const byokProxy = await this.fetchByokProxyCredentials(options.provider);
-    integrationEnv.CHIRIDION_CODEX_MODEL = threadProvider === 'codex' ? threadModel : DEFAULT_CODEX_MODEL;
+    const byokProxy = await this.fetchByokProxyCredentials(
+      options.provider,
+      llmProviderRecord,
+    );
+    integrationEnv.CHIRIDION_CODEX_MODEL =
+      threadProvider === "codex" ? threadModel : DEFAULT_CODEX_MODEL;
 
     return {
       envVars: {
@@ -530,13 +542,14 @@ export class WorkspaceContainer {
    * Credentials are passed via WebSocket headers, not container env vars.
    */
   private async fetchByokProxyCredentials(
-    provider: 'claude' | 'codex'
+    provider: "claude" | "codex",
+    existingRecord?: Awaited<ReturnType<OrgDO["getLlmProviderConfig"]>>,
   ): Promise<ByokProxyCredentials | undefined> {
     if (!this.orgId) return undefined;
 
     try {
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
-      const record = await orgStub.getLlmProviderConfig();
+      const record = existingRecord ?? (await orgStub.getLlmProviderConfig());
       if (!record) return undefined;
 
       const creds = await decryptCredentials<Record<string, string>>(
@@ -560,14 +573,21 @@ export class WorkspaceContainer {
         return { provider: "bedrock", bearerToken: creds.bearer_token, region };
       }
 
-      if (record.provider === 'openai' && provider === 'codex') {
-        console.log(`[Sandbox] BYOK: using OpenAI via proxy for org=${this.orgId}`);
-        return { provider: 'openai', apiKey: creds.api_key };
+      if (record.provider === "openai" && provider === "codex") {
+        console.log(
+          `[Sandbox] BYOK: using OpenAI via proxy for org=${this.orgId}`,
+        );
+        return { provider: "openai", apiKey: creds.api_key };
       }
 
-      if (record.provider === 'openrouter' && (provider === 'codex' || provider === 'claude')) {
-        console.log(`[Sandbox] BYOK: using OpenRouter via ${provider} proxy for org=${this.orgId}`);
-        return { provider: 'openrouter', apiKey: creds.api_key };
+      if (
+        record.provider === "openrouter" &&
+        (provider === "codex" || provider === "claude")
+      ) {
+        console.log(
+          `[Sandbox] BYOK: using OpenRouter via ${provider} proxy for org=${this.orgId}`,
+        );
+        return { provider: "openrouter", apiKey: creds.api_key };
       }
 
       return undefined;
@@ -600,9 +620,7 @@ export class WorkspaceContainer {
   // ─── Chat WebSocket ──────────────────────────────────────
 
   /**
-   * Open a WebSocket to the control plane's /chat endpoint via the proxy.
-   * ChatThreadDO uses this to bridge chat clients to the Claude Agent SDK
-   * running in-process inside the sandbox.
+   * Open a WebSocket to the sandbox-host chat runner.
    */
   async connectChatWebSocket(options: {
     threadId: string;
@@ -613,7 +631,11 @@ export class WorkspaceContainer {
     if (!options.threadId) {
       throw new Error("Thread ID is required for chat websocket");
     }
-    const workerBaseUrl = (this.env.WORKER_BASE_URL || "").trim();
+    const workerBaseUrl = (
+      this.env.LOCAL_WORKER_BASE_URL ||
+      this.env.WORKER_BASE_URL ||
+      ""
+    ).trim();
     if (!workerBaseUrl) {
       throw new Error("WORKER_BASE_URL is not configured");
     }
@@ -626,15 +648,15 @@ export class WorkspaceContainer {
     if (options.userId) {
       headers["X-Chiridion-User-Id"] = options.userId;
     }
-    if (options.byokProxy?.provider === 'anthropic') {
-      headers['X-Chiridion-Byok-Anthropic-Key'] = options.byokProxy.apiKey;
-    } else if (options.byokProxy?.provider === 'bedrock') {
-      headers['X-Chiridion-Byok-Bedrock-Token'] = options.byokProxy.bearerToken;
-      headers['X-Chiridion-Byok-Bedrock-Region'] = options.byokProxy.region;
-    } else if (options.byokProxy?.provider === 'openai') {
-      headers['X-Chiridion-Byok-OpenAI-Key'] = options.byokProxy.apiKey;
-    } else if (options.byokProxy?.provider === 'openrouter') {
-      headers['X-Chiridion-Byok-OpenRouter-Key'] = options.byokProxy.apiKey;
+    if (options.byokProxy?.provider === "anthropic") {
+      headers["X-Chiridion-Byok-Anthropic-Key"] = options.byokProxy.apiKey;
+    } else if (options.byokProxy?.provider === "bedrock") {
+      headers["X-Chiridion-Byok-Bedrock-Token"] = options.byokProxy.bearerToken;
+      headers["X-Chiridion-Byok-Bedrock-Region"] = options.byokProxy.region;
+    } else if (options.byokProxy?.provider === "openai") {
+      headers["X-Chiridion-Byok-OpenAI-Key"] = options.byokProxy.apiKey;
+    } else if (options.byokProxy?.provider === "openrouter") {
+      headers["X-Chiridion-Byok-OpenRouter-Key"] = options.byokProxy.apiKey;
     }
 
     const response = await this.fetchSandbox(this.sandboxUrl("/chat"), {
@@ -880,6 +902,54 @@ export class WorkspaceContainer {
     }
 
     return { success: true, response };
+  }
+
+  async forkThreadSession(options: {
+    sourceThreadId: string;
+    targetThreadId: string;
+    entryId: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    const sourceThreadId = options.sourceThreadId.trim();
+    const targetThreadId = options.targetThreadId.trim();
+    const entryId = options.entryId.trim();
+    if (!sourceThreadId || !targetThreadId || !entryId) {
+      return {
+        success: false,
+        error: "sourceThreadId, targetThreadId, and entryId are required",
+      };
+    }
+
+    const response = await this.fetchSandbox(
+      this.sandboxUrl("/chat/fork"),
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ sourceThreadId, targetThreadId, entryId }),
+      },
+      { skipBanCheck: true },
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      let error = body;
+      try {
+        const parsed = JSON.parse(body) as { error?: unknown };
+        if (typeof parsed.error === "string" && parsed.error.trim()) {
+          error = parsed.error;
+        }
+      } catch {
+        // Keep the raw body.
+      }
+      return {
+        success: false,
+        error: error || `Fork thread session failed: HTTP ${response.status}`,
+      };
+    }
+
+    return { success: true };
   }
 
   async terminateWorkspace(

@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "react-router dev",
+		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 LOCAL_WORKER_BASE_URL=http://localhost:3001 react-router dev",
 		"build": "react-router build",
 		"build:cf": "react-router build",
 		"start": "wrangler dev",
@@ -37,6 +38,7 @@
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
 		"dev:sandbox-host": "node scripts/dev-sandbox-host.mjs",
+		"dev:sandbox-host:pi": "node scripts/dev-sandbox-host.mjs",
 		"test:sandbox-host": "cd services/sandbox-host && CGO_ENABLED=0 go test ./...",
 		"build:renderer": "vite build --config vite.renderer.config.ts",
 		"deploy:go": "bash scripts/deploy-go-services.sh --env prod",

@@ -53,7 +53,7 @@ export function ThinkingBlock({
                 {summaries.map((summary, index) => (
                   <div key={`${label}-summary-${index}`} className="rounded-md bg-muted/30 px-3 py-2 text-muted-foreground/80">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60 not-italic">
-                      Reasoning Summary {summaries.length > 1 ? index + 1 : ''}
+                      Thinking Summary {summaries.length > 1 ? index + 1 : ''}
                     </div>
                     <div className="whitespace-pre-wrap not-italic">{summary}</div>
                   </div>

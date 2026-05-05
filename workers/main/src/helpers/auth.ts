@@ -13,10 +13,20 @@ import { isOrgBanned, isUserBanned } from "../ban-list.js";
 
 export type AuthResult = { session: SessionData } | { error: Response };
 
+const LOCAL_AUTH_USER_ID = "local-dev-user";
+const LOCAL_AUTH_ORG_ID = "local-dev-org";
+const LOCAL_AUTH_EMAIL = "local-dev@camelai.local";
+const LOCAL_AUTH_NAME = "Local Dev";
+
 export async function requireSession(
   req: Request,
   env: Env,
 ): Promise<AuthResult> {
+  const localBypassSession = await getLocalAuthBypassSession(req, env);
+  if (localBypassSession) {
+    return { session: localBypassSession };
+  }
+
   const signedSession = await getSignedSessionFromRequest(
     req,
     env.TOKEN_SIGNING_SECRET,
@@ -57,6 +67,109 @@ export async function requireSession(
   };
 
   return { session };
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function isLocalhostRequest(req: Request): boolean {
+  const hostname = new URL(req.url).hostname;
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+async function getLocalAuthBypassSession(
+  req: Request,
+  env: Env,
+): Promise<SessionData | null> {
+  if (!isLocalhostRequest(req) || !envFlagEnabled(env.LOCAL_AUTH_BYPASS)) {
+    return null;
+  }
+
+  const email = (env.LOCAL_AUTH_USER_EMAIL || LOCAL_AUTH_EMAIL).toLowerCase();
+  const name = env.LOCAL_AUTH_USER_NAME || LOCAL_AUTH_NAME;
+  const userNs = env.USER as DurableObjectNamespace<UserDO>;
+  const orgNs = env.ORG as DurableObjectNamespace<OrgDO>;
+  const workspaceNs = env.WORKSPACE as DurableObjectNamespace<WorkspaceDO>;
+
+  const userStub = userNs.get(userNs.idFromName(LOCAL_AUTH_USER_ID));
+  let profile = await userStub.getProfile();
+  if (!profile) {
+    await env.EMAIL_TO_USER.put(`email:${email}`, LOCAL_AUTH_USER_ID);
+    await env.EMAIL_TO_USER.put("oauth:github:local-dev", LOCAL_AUTH_USER_ID);
+    profile = await userStub.createUserFromOAuth(
+      LOCAL_AUTH_USER_ID,
+      email,
+      name,
+      "github",
+      "local-dev",
+    );
+  }
+
+  const orgStub = orgNs.get(orgNs.idFromName(LOCAL_AUTH_ORG_ID));
+  let orgInfo = await orgStub.getInfo();
+  let workspaceId: string | null = null;
+
+  if (!orgInfo) {
+    const created = await orgStub.createOrg(
+      LOCAL_AUTH_ORG_ID,
+      "Local Dev",
+      LOCAL_AUTH_USER_ID,
+    );
+    orgInfo = created.org;
+    workspaceId = created.defaultWorkspaceId;
+    await userStub.addOrg(LOCAL_AUTH_ORG_ID, "owner", workspaceId);
+  } else {
+    const workspaces = await orgStub.getWorkspaces();
+    workspaceId =
+      workspaces.find((workspace) => !workspace.archived)?.id ?? null;
+
+    if (!(await orgStub.isMember(LOCAL_AUTH_USER_ID))) {
+      await orgStub.addMember(LOCAL_AUTH_USER_ID, "owner", LOCAL_AUTH_USER_ID);
+    }
+    if (!(await userStub.hasOrg(LOCAL_AUTH_ORG_ID))) {
+      await userStub.addOrg(LOCAL_AUTH_ORG_ID, "owner", workspaceId);
+    }
+  }
+
+  if (workspaceId) {
+    const workspaceStub = workspaceNs.get(workspaceNs.idFromName(workspaceId));
+    await workspaceStub.setMemberAccess(
+      LOCAL_AUTH_USER_ID,
+      "full",
+      LOCAL_AUTH_USER_ID,
+    );
+    await userStub.setOrgLastWorkspace(LOCAL_AUTH_ORG_ID, workspaceId);
+  }
+
+  if (orgInfo.billing_status !== "enterprise") {
+    const updatedOrgInfo = await orgStub.updateBillingState({
+      billing_status: "enterprise",
+      billing_plan: "enterprise",
+      billing_seat_count: Math.max(orgInfo.billing_seat_count ?? 1, 1),
+    });
+    if (!updatedOrgInfo) {
+      return null;
+    }
+    orgInfo = updatedOrgInfo;
+  }
+
+  const onboarding = await userStub.getOnboarding();
+  if (!onboarding?.completed_at) {
+    await userStub.updateOnboarding({ completed_at: Date.now() });
+  }
+
+  const now = Date.now();
+  return {
+    user_id: profile.id,
+    org_id: orgInfo.id,
+    workspace_id: workspaceId,
+    created_at: now,
+    last_accessed: now,
+    user_name: profile.name,
+    user_email: profile.email,
+  };
 }
 
 export interface WorkspaceAccess {

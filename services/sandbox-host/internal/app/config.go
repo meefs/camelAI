@@ -15,7 +15,12 @@ type Config struct {
 	ListenAddr                 string
 	ProxyPort                  int
 	ProxyListenAddr            string
-	HostCodexPath              string
+	HostPiPath                 string
+	HostPiExtensionPath        string
+	HostPiSkillsPath           string
+	HostPiContainerSkillsPath  string
+	HostPiSessionRoot          string
+	HostPiModel                string
 	DataProxyUpstreamURL       string
 	IdleTimeout                time.Duration
 	ReadHeaderTimeout          time.Duration
@@ -27,10 +32,13 @@ type Config struct {
 	ProxyThreadCleanupInterval time.Duration
 	AIGatewayBaseURL           string
 	AIGatewayToken             string
-	AWSRegionName              string
-	AnthropicAPIKey            string
-	BedrockAccessToken         string
-	BedrockRegion              string
+	ExaAPIKey                  string
+	ExaBaseURL                 string
+	FirecrawlAPIKey            string
+	FirecrawlBaseURL           string
+	ParallelAPIKey             string
+	ParallelBaseURL            string
+	WebProviderOrder           string
 	TraceSandboxHost           bool
 	HeaderWorkerBaseURL        string
 	HeaderThreadID             string
@@ -72,7 +80,12 @@ func LoadConfig() Config {
 		ListenAddr:                 ":" + strconv.Itoa(controlPort),
 		ProxyPort:                  proxyPort,
 		ProxyListenAddr:            ":" + strconv.Itoa(proxyPort),
-		HostCodexPath:              envString("HOST_CODEX_PATH", "/usr/local/bin/chiridion-host-codex"),
+		HostPiPath:                 envString("HOST_PI_PATH", "/usr/local/bin/chiridion-host-pi"),
+		HostPiExtensionPath:        envString("HOST_PI_EXTENSION_PATH", "/opt/chiridion-host-pi/extensions/container-tools.ts"),
+		HostPiSkillsPath:           envString("HOST_PI_SKILLS_PATH", "/opt/chiridion-host-pi/skills"),
+		HostPiContainerSkillsPath:  envString("HOST_PI_CONTAINER_SKILLS_PATH", "/opt/chiridion-host-pi/skills"),
+		HostPiSessionRoot:          envString("HOST_PI_SESSION_ROOT", defaultHostPiSessionRoot()),
+		HostPiModel:                strings.TrimSpace(envString("HOST_PI_MODEL", "")),
 		DataProxyUpstreamURL:       envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
 		IdleTimeout:                time.Duration(idleSecs) * time.Second,
 		ReadHeaderTimeout:          15 * time.Second,
@@ -84,10 +97,13 @@ func LoadConfig() Config {
 		ProxyThreadCleanupInterval: time.Duration(cleanupMs) * time.Millisecond,
 		AIGatewayBaseURL:           strings.TrimRight(envString("AI_GATEWAY_BASE_URL", defaultAIGatewayBaseURL), "/"),
 		AIGatewayToken:             envString("CF_GATEWAY_TOKEN", ""),
-		AWSRegionName:              envString("AWS_REGION_NAME", "us-west-2"),
-		AnthropicAPIKey:            envString("ANTHROPIC_API_KEY", ""),
-		BedrockAccessToken:         envString("BEDROCK_ACCESS_TOKEN", ""),
-		BedrockRegion:              envString("BEDROCK_REGION", envString("AWS_REGION_NAME", "us-west-2")),
+		ExaAPIKey:                  envString("EXA_API_KEY", ""),
+		ExaBaseURL:                 strings.TrimRight(envString("EXA_BASE_URL", "https://api.exa.ai"), "/"),
+		FirecrawlAPIKey:            envString("FIRECRAWL_API_KEY", ""),
+		FirecrawlBaseURL:           strings.TrimRight(envString("FIRECRAWL_BASE_URL", "https://api.firecrawl.dev"), "/"),
+		ParallelAPIKey:             envString("PARALLEL_API_KEY", ""),
+		ParallelBaseURL:            strings.TrimRight(envString("PARALLEL_BASE_URL", "https://api.parallel.ai"), "/"),
+		WebProviderOrder:           envString("WEB_PROVIDER_ORDER", envString("CHIRIDION_WEB_PROVIDER_ORDER", "firecrawl,parallel,exa")),
 		TraceSandboxHost:           envString("TRACE_SANDBOX_HOST", "") == "1",
 		HeaderWorkerBaseURL:        "x-chiridion-worker-base-url",
 		HeaderThreadID:             "x-chiridion-thread-id",
@@ -130,6 +146,17 @@ func defaultStateDBPath() string {
 		return ".sandbox-host/state.db"
 	}
 	return filepath.Join(wd, ".sandbox-host", "state.db")
+}
+
+func defaultHostPiSessionRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/srv/sandboxes/.sandbox-host/pi-sessions"
+	}
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".sandbox-host/pi-sessions"
+	}
+	return filepath.Join(wd, ".sandbox-host", "pi-sessions")
 }
 
 func envString(key, fallback string) string {

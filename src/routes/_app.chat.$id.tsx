@@ -1,50 +1,92 @@
-import { Suspense, use, useCallback, useEffect, useState } from 'react';
-import { redirect, useLoaderData } from 'react-router';
-import type { Route } from './+types/_app.chat.$id';
-import { requireAuthContext, requireSuperuser, requireSessionWorkspaceAccess, getAuthEnv } from '@/lib/auth.server';
-import { integrationRecordToIntegration } from '@/lib/auth-helpers';
-import { getEnv } from '@/lib/cloudflare.server';
-import { getOrgBillingOverview } from '@/lib/billing.server';
+import { Suspense, use, useCallback, useEffect, useState } from "react";
+import { redirect, useLoaderData } from "react-router";
+import type { Route } from "./+types/_app.chat.$id";
 import {
-  applyDevBillingCreditStatusOverride,
-  buildBillingCreditStatus,
-  getDevChatInitialError,
-} from '@/lib/chat-credit-status';
+  requireAuthContext,
+  requireSuperuser,
+  requireSessionWorkspaceAccess,
+  getAuthEnv,
+} from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import {
+  getOrgBillingOverview,
+  type OrgBillingOverview,
+} from "@/lib/billing.server";
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   isLlmModel,
-  THREAD_MODEL_LOCK_MESSAGE,
-} from '@/lib/llm-provider-config';
-import { getOrg, getWorkerScript } from '@/lib/auth-do';
-import * as authDO from '@/lib/auth-do.server';
-import * as chatDO from '@/lib/chat-do.server';
-import Chat from '@/components/Chat';
-import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
-import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { ChatHarness, Integration, LlmModel, Message, PreviewTarget } from '@/types';
+} from "@/lib/llm-provider-config";
+import { getOrg, getWorkerScript } from "@/lib/auth-do";
+import * as authDO from "@/lib/auth-do.server";
+import * as chatDO from "@/lib/chat-do.server";
+import Chat from "@/components/Chat";
+import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
+import { NoWorkspacesError } from "@/components/no-workspaces-error";
+import type { ChatHarness, LlmModel, Message, PreviewTarget } from "@/types";
+
+function buildBillingCreditStatus(
+  overview: OrgBillingOverview | null,
+  hasByokProvider: boolean,
+) {
+  if (!overview || overview.billing_status === "enterprise") {
+    return null;
+  }
+  if (overview.total_credit_limit_cents <= 0) {
+    return null;
+  }
+
+  const usedPercent = Math.min(
+    100,
+    Math.max(
+      0,
+      Math.round(
+        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
+          100,
+      ),
+    ),
+  );
+  const isExhausted = overview.available_credits_cents <= 0;
+  const isLow = !isExhausted && usedPercent >= 80;
+  if (!isLow && !isExhausted) {
+    return null;
+  }
+
+  return {
+    availableCreditsCents: overview.available_credits_cents,
+    totalCreditLimitCents: overview.total_credit_limit_cents,
+    usedPercent,
+    isLow,
+    isExhausted,
+    hasByokProvider,
+  };
+}
 
 export function meta({ data }: Route.MetaArgs) {
-  const title = data?.threadTitle || 'Chat';
+  const title = data?.threadTitle || "Chat";
   return [
     { title: `${title} - camelAI` },
-    { name: 'description', content: 'AI Chat' },
+    { name: "description", content: "AI Chat" },
   ];
 }
 
 /**
  * Client loader that short-circuits the server round trip for new thread
  * navigations. When navigating from the welcome screen with ?newThread=1,
- * the pending-message sessionStorage entry already contains workspaceId,
- * orgSlug, and connections — everything the page needs. This eliminates a full
+ * the pending-message sessionStorage entry already contains workspaceId and
+ * orgSlug — everything the page needs. This eliminates a full
  * requireAuthContext() + getThread() server call (~400ms).
  */
-export async function clientLoader({ serverLoader, params, request }: Route.ClientLoaderArgs) {
+export async function clientLoader({
+  serverLoader,
+  params,
+  request,
+}: Route.ClientLoaderArgs) {
   const url = new URL(request.url);
 
-  if (url.searchParams.get('newThread') === '1') {
+  if (url.searchParams.get("newThread") === "1") {
     try {
-      const stored = sessionStorage.getItem('pendingMessage:newThread');
+      const stored = sessionStorage.getItem("pendingMessage:newThread");
       if (stored) {
         const parsed = JSON.parse(stored) as {
           threadId?: string;
@@ -52,14 +94,10 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
           orgSlug?: string;
           threadModel?: LlmModel;
           threadProvider?: ChatHarness;
-          connections?: Integration[];
         };
-        if (
-          parsed.threadId === params.id &&
-          parsed.workspaceId &&
-          Array.isArray(parsed.connections)
-        ) {
-          const threadProvider = parsed.threadProvider === 'codex' ? 'codex' : 'claude';
+        if (parsed.threadId === params.id && parsed.workspaceId) {
+          const threadProvider =
+            parsed.threadProvider === "codex" ? "codex" : "claude";
           return {
             threadId: params.id,
             workspaceId: parsed.workspaceId,
@@ -70,12 +108,10 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
               : getDefaultLlmModel(threadProvider),
             threadProvider,
             experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-            billingCreditStatus: applyDevBillingCreditStatusOverride(null, url.searchParams),
-            initialChatError: getDevChatInitialError(url.searchParams),
+            billingCreditStatus: null,
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
-            connections: parsed.connections,
             readOnly: false,
           };
         }
@@ -90,39 +126,73 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   const url = new URL(request.url);
-  if (url.searchParams.get('adminReadonly') === '1') {
+  if (url.searchParams.get("adminReadonly") === "1") {
     await requireSuperuser(request, context);
-    return { error: 'Read-only admin view' };
+    return { error: "Read-only admin view" };
   }
 
-  const { workspaceId } = await requireSessionWorkspaceAccess(request, context, undefined, {
-    requireWrite: true,
-  });
+  const { workspaceId } = await requireSessionWorkspaceAccess(
+    request,
+    context,
+    undefined,
+    {
+      requireWrite: true,
+    },
+  );
   const formData = await request.formData();
-  const intent = formData.get('intent');
+  const intent = formData.get("intent");
 
-  if (intent === 'updateThreadModel') {
-    const model = formData.get('model');
-    const existingThread = await chatDO.getThread(context, params.id, workspaceId);
+  if (intent === "updateThreadModel") {
+    const model = formData.get("model");
+    const existingThread = await chatDO.getThread(
+      context,
+      params.id,
+      workspaceId,
+    );
     if (!existingThread) {
-      return { error: 'Thread not found' };
+      return { error: "Thread not found" };
     }
-    if (!isLlmModel(model, existingThread.provider ?? 'claude')) {
-      return { error: 'A valid thread model is required' };
-    }
-    if (model !== existingThread.model) {
-      return { error: THREAD_MODEL_LOCK_MESSAGE };
+    if (!isLlmModel(model)) {
+      return { error: "A valid thread model is required" };
     }
 
-    const updated = await chatDO.updateThreadModel(context, params.id, model, workspaceId);
+    let updated;
+    try {
+      updated = await chatDO.updateThreadModel(
+        context,
+        params.id,
+        model,
+        workspaceId,
+      );
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to update thread model",
+      };
+    }
     if (!updated) {
-      return { error: 'Thread not found' };
+      return { error: "Thread not found" };
+    }
+    try {
+      const env = getEnv(context);
+      const chatThread = env.CHAT_THREAD.get(
+        env.CHAT_THREAD.idFromName(params.id),
+      ) as unknown as {
+        setModel(model: LlmModel, provider?: ChatHarness): Promise<void>;
+        refreshRunnerConfig(): Promise<void>;
+      };
+      await chatThread.setModel(updated.model, updated.provider);
+      await chatThread.refreshRunnerConfig();
+    } catch (error) {
+      console.error("Failed to broadcast thread model update:", error);
     }
 
     return { thread: updated };
   }
 
-  return { error: 'Unknown action' };
+  return { error: "Unknown action" };
 }
 
 interface ChatData {
@@ -140,26 +210,30 @@ const EMPTY_CHAT_DATA: ChatData = {
 };
 
 function getPreviewTabId(target: PreviewTarget): string {
-  if (target.kind === 'app') return `app:${target.scriptName}`;
+  if (target.kind === "app") return `app:${target.scriptName}`;
   return `file:${target.workspaceId}:${target.source}:${target.path}`;
 }
 
 function buildPreviewChatDataPromise(
-  context: Route.LoaderArgs['context'],
+  context: Route.LoaderArgs["context"],
   authEnv: ReturnType<typeof getAuthEnv>,
   orgId: string,
-  threadId: string
+  threadId: string,
 ): Promise<ChatData> {
   return (async () => {
-    const previewStateRaw = await chatDO.getThreadPreviewState(context, threadId).catch(() => ({
-      target: null,
-      tabs: [],
-      activeTabId: null,
-      version: 0,
-    }));
+    const previewStateRaw = await chatDO
+      .getThreadPreviewState(context, threadId)
+      .catch(() => ({
+        target: null,
+        tabs: [],
+        activeTabId: null,
+        version: 0,
+      }));
 
-    const applyAppVisibility = async (target: PreviewTarget): Promise<PreviewTarget> => {
-      if (target.kind !== 'app') {
+    const applyAppVisibility = async (
+      target: PreviewTarget,
+    ): Promise<PreviewTarget> => {
+      if (target.kind !== "app") {
         return target;
       }
       const script = await getWorkerScript(authEnv, orgId, target.scriptName);
@@ -172,9 +246,12 @@ function buildPreviewChatDataPromise(
       };
     };
 
-    const fallbackTabs = previewStateRaw.tabs.length > 0
-      ? previewStateRaw.tabs
-      : (previewStateRaw.target ? [previewStateRaw.target] : []);
+    const fallbackTabs =
+      previewStateRaw.tabs.length > 0
+        ? previewStateRaw.tabs
+        : previewStateRaw.target
+          ? [previewStateRaw.target]
+          : [];
     const previewTabs = await Promise.all(fallbackTabs.map(applyAppVisibility));
     const tabIds = new Set(previewTabs.map(getPreviewTabId));
 
@@ -184,7 +261,8 @@ function buildPreviewChatDataPromise(
     }
 
     let previewTarget = activeTabId
-      ? (previewTabs.find((tab) => getPreviewTabId(tab) === activeTabId) ?? null)
+      ? (previewTabs.find((tab) => getPreviewTabId(tab) === activeTabId) ??
+        null)
       : null;
     if (!previewTarget && previewStateRaw.target) {
       previewTarget = await applyAppVisibility(previewStateRaw.target);
@@ -201,20 +279,27 @@ function buildPreviewChatDataPromise(
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const url = new URL(request.url);
-  const isAdminReadonly = url.searchParams.get('adminReadonly') === '1';
-  const hostname = request.headers.get('host')?.split(':')[0] || undefined;
+  const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
+  const hostname = request.headers.get("host")?.split(":")[0] || undefined;
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
   if (isAdminReadonly) {
     await requireSuperuser(request, context);
 
-    const threadContext = await authDO.adminGetThreadContextById(context, params.id);
+    const threadContext = await authDO.adminGetThreadContextById(
+      context,
+      params.id,
+    );
     if (!threadContext) {
-      throw redirect('/qaml-backdoor/threads');
+      throw redirect("/qaml-backdoor/threads");
     }
 
-    const thread = await chatDO.getThread(context, params.id, threadContext.workspace_id);
+    const thread = await chatDO.getThread(
+      context,
+      params.id,
+      threadContext.workspace_id,
+    );
     const org = await getOrg(authEnv, threadContext.org_id);
 
     return {
@@ -224,18 +309,26 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         context,
         authEnv,
         threadContext.org_id,
-        params.id
+        params.id,
       ),
       threadTitle: thread?.title ?? threadContext.title ?? null,
-      threadModel: thread?.model ?? ((threadContext.model as LlmModel | undefined) ?? getDefaultLlmModel((thread?.provider ?? (threadContext.provider as ChatHarness | undefined) ?? 'claude'))),
-      threadProvider: thread?.provider ?? ((threadContext.provider as ChatHarness | undefined) ?? 'claude'),
+      threadModel:
+        thread?.model ??
+        (threadContext.model as LlmModel | undefined) ??
+        getDefaultLlmModel(
+          thread?.provider ??
+            (threadContext.provider as ChatHarness | undefined) ??
+            "claude",
+        ),
+      threadProvider:
+        thread?.provider ??
+        (threadContext.provider as ChatHarness | undefined) ??
+        "claude",
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
-      initialChatError: null,
       isNewThread: false,
       hostname,
       orgSlug: org?.slug,
-      connections: [] as Integration[],
       readOnly: true,
     };
   }
@@ -248,76 +341,66 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       workspaceId: null,
       chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
       threadTitle: null,
-      threadModel: getDefaultLlmModel('claude'),
-      threadProvider: 'claude' as const,
+      threadModel: getDefaultLlmModel("claude"),
+      threadProvider: "claude" as const,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
-      initialChatError: getDevChatInitialError(url.searchParams),
       isNewThread: false,
       hostname: undefined,
-      connections: [] as Integration[],
       readOnly: false,
     };
   }
 
   const workspaceId = authContext.currentWorkspace.id;
   const orgId = authContext.currentOrg.id;
-  const isNewThread = url.searchParams.get('newThread') === '1';
+  const isNewThread = url.searchParams.get("newThread") === "1";
   const orgStub = authEnv.ORG
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
     : null;
   const [experimentalSettings, llmProviderConfig, billingOverview] = orgStub
     ? await Promise.all([
-        orgStub.getExperimentalSettings().catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
+        orgStub
+          .getExperimentalSettings()
+          .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
         orgStub.getLlmProviderConfig().catch(() => null),
         getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
-          console.warn('Failed to load billing overview for chat:', error);
+          console.warn("Failed to load billing overview for chat:", error);
           return null;
         }),
       ])
-    : [DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null, null] as const;
+    : ([DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null, null] as const);
 
   // Even for newly created threads, load the persisted thread record so the UI
   // reflects the actual saved model instead of the Sonnet default.
   const thread = await chatDO.getThread(context, params.id, workspaceId);
   if (!isNewThread && !thread) {
-    throw redirect('/chat');
+    throw redirect("/chat");
   }
 
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
     : buildPreviewChatDataPromise(context, authEnv, orgId, params.id);
-  const workspaceNamespace = env.WORKSPACE;
-  const connections = workspaceNamespace
-    ? await workspaceNamespace.get(workspaceNamespace.idFromName(workspaceId))
-        .getIntegrations()
-        .then((records) => records.map(integrationRecordToIntegration))
-        .catch((error) => {
-          console.error('Failed to load workspace connections:', error);
-          return [] as Integration[];
-        })
-    : [];
 
   return {
     threadId: params.id,
     workspaceId,
     chatDataPromise,
     threadTitle: thread?.title ?? null,
-    threadModel: thread?.model ?? getDefaultLlmModel(thread?.provider ?? 'claude'),
-    threadProvider: thread?.provider ?? 'claude',
-    experimentalSettings,
-    billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(
-        billingOverview,
-        Boolean(llmProviderConfig),
+    threadModel:
+      thread?.model ??
+      getDefaultLlmModel(
+        thread?.provider ?? "claude",
+        llmProviderConfig?.provider,
       ),
-      url.searchParams,
+    threadProvider: thread?.provider ?? "claude",
+    experimentalSettings,
+    billingCreditStatus: buildBillingCreditStatus(
+      billingOverview,
+      Boolean(llmProviderConfig),
     ),
-    initialChatError: getDevChatInitialError(url.searchParams),
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
-    connections,
     readOnly: false,
   };
 }
@@ -349,11 +432,9 @@ export default function ChatPage() {
     threadProvider,
     experimentalSettings,
     billingCreditStatus,
-    initialChatError,
     isNewThread,
     hostname,
     orgSlug,
-    connections,
     readOnly,
   } = useLoaderData<typeof loader>();
 
@@ -364,21 +445,21 @@ export default function ChatPage() {
   const [resolvedChatDataState, setResolvedChatDataState] = useState<{
     threadId: string;
     data: ChatData;
-  } | null>(() => (
-    isNewThread
-      ? { threadId, data: EMPTY_CHAT_DATA }
-      : null
-  ));
+  } | null>(() => (isNewThread ? { threadId, data: EMPTY_CHAT_DATA } : null));
 
-  const resolvedChatData = resolvedChatDataState?.threadId === threadId
-    ? resolvedChatDataState.data
-    : null;
+  const resolvedChatData =
+    resolvedChatDataState?.threadId === threadId
+      ? resolvedChatDataState.data
+      : null;
   const chatData = resolvedChatData ?? EMPTY_CHAT_DATA;
   const isLoadingMessages = !isNewThread && resolvedChatData === null;
 
-  const handleResolved = useCallback((resolvedThreadId: string, data: ChatData) => {
-    setResolvedChatDataState({ threadId: resolvedThreadId, data });
-  }, []);
+  const handleResolved = useCallback(
+    (resolvedThreadId: string, data: ChatData) => {
+      setResolvedChatDataState({ threadId: resolvedThreadId, data });
+    },
+    [],
+  );
 
   return (
     <>
@@ -392,14 +473,12 @@ export default function ChatPage() {
         threadProvider={threadProvider}
         experimentalSettings={experimentalSettings}
         billingCreditStatus={billingCreditStatus}
-        initialError={initialChatError}
         initialPreviewTarget={chatData.previewTarget}
         initialPreviewTabs={chatData.previewTabs}
         initialActiveTabId={chatData.activeTabId}
         isNewThread={isNewThread}
         hostname={hostname}
         orgSlug={orgSlug}
-        connections={connections}
         isLoadingMessages={isLoadingMessages}
         readOnly={readOnly}
       />

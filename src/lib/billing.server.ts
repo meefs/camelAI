@@ -29,6 +29,7 @@ export const DEFAULT_SUBSCRIPTION_INCLUDED_CREDIT_CENTS = 1000;
 export interface StripeBillingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   SANDBOX_HOST?: Fetcher;
+  SANDBOX_HOST_URL?: string;
   APP_KV?: KVNamespace;
   STRIPE_MODE?: string;
   STRIPE_SECRET_KEY?: string;
@@ -228,6 +229,67 @@ interface UsageLogSumResponse {
 interface OrgSpendResponse {
   total_cost_usd: number;
   total_requests: number;
+}
+
+function resolveSandboxHostUrlOverride(
+  env: Pick<StripeBillingEnv, "SANDBOX_HOST_URL">,
+): URL | null {
+  const raw = (env.SANDBOX_HOST_URL ?? "").trim();
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      console.warn(
+        `[Billing] ignoring SANDBOX_HOST_URL with unsupported protocol: ${parsed.protocol}`,
+      );
+      return null;
+    }
+    return parsed;
+  } catch {
+    console.warn(`[Billing] ignoring invalid SANDBOX_HOST_URL: ${raw}`);
+    return null;
+  }
+}
+
+function normalizeBaseUrl(url: URL): URL {
+  const copy = new URL(url.toString());
+  copy.search = "";
+  copy.hash = "";
+  copy.pathname = copy.pathname.replace(/\/+$/, "");
+  return copy;
+}
+
+function sandboxHostUrl(
+  env: Pick<StripeBillingEnv, "SANDBOX_HOST_URL">,
+  path: string,
+): string {
+  const requestPath = path.startsWith("/") ? path : `/${path}`;
+  const parsedPath = new URL(requestPath, "http://sandbox");
+  const override = resolveSandboxHostUrlOverride(env);
+  const url = override ? normalizeBaseUrl(override) : new URL("http://sandbox");
+  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
+  url.pathname = `${basePath}${parsedPath.pathname}`;
+  url.search = parsedPath.search;
+  return url.toString();
+}
+
+export async function fetchSandboxHostApi(
+  env: Pick<StripeBillingEnv, "SANDBOX_HOST" | "SANDBOX_HOST_URL">,
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const override = resolveSandboxHostUrlOverride(env);
+  const url = sandboxHostUrl(env, path);
+  if (override) {
+    return fetch(url, init);
+  }
+  if (!env.SANDBOX_HOST) {
+    throw new Error(
+      "SANDBOX_HOST binding is not configured (or set SANDBOX_HOST_URL for local mode)",
+    );
+  }
+  return env.SANDBOX_HOST.fetch(url, init);
 }
 
 export interface StripePriceSummary {

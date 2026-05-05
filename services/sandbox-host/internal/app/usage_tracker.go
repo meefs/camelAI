@@ -68,10 +68,16 @@ func copySSEStreamWithUsage(w http.ResponseWriter, body io.Reader) (UsageTokens,
 			currentEventType = string(bytes.TrimPrefix(line, []byte("event: ")))
 		}
 
-		// Parse SSE data lines for usage-bearing events
-		if bytes.HasPrefix(line, []byte("data: ")) && isUsageEvent(currentEventType) {
+		// Parse SSE data lines for usage-bearing events.
+		if bytes.HasPrefix(line, []byte("data: ")) {
 			data := bytes.TrimPrefix(line, []byte("data: "))
-			extractUsageFromSSEData(data, currentEventType, &usage)
+			if !bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+				if isUsageEvent(currentEventType) {
+					extractUsageFromSSEData(data, currentEventType, &usage)
+				} else {
+					applyUsageTokens(&usage, extractUsageFromJSON(data))
+				}
+			}
 		}
 
 		// Forward the line to the client (with newline)
@@ -95,7 +101,20 @@ func isUsageEvent(eventType string) bool {
 	return eventType == "message_start" || eventType == "message_delta" || eventType == "response.completed"
 }
 
-func applyOpenAIUsage(usage *UsageTokens, model string, inputTokens, cachedTokens, outputTokens int64) {
+func applyUsageTokens(target *UsageTokens, next UsageTokens) {
+	if target == nil {
+		return
+	}
+	if next.Model != "" {
+		target.Model = next.Model
+	}
+	target.InputTokens += next.InputTokens
+	target.OutputTokens += next.OutputTokens
+	target.CacheCreationInputTokens += next.CacheCreationInputTokens
+	target.CacheReadInputTokens += next.CacheReadInputTokens
+}
+
+func applyOpenAIUsage(usage *UsageTokens, model string, inputTokens, cachedTokens, cacheWriteTokens, outputTokens int64) {
 	if usage == nil {
 		return
 	}
@@ -108,7 +127,14 @@ func applyOpenAIUsage(usage *UsageTokens, model string, inputTokens, cachedToken
 	if inputTokens < cachedTokens {
 		cachedTokens = inputTokens
 	}
-	usage.InputTokens += inputTokens - cachedTokens
+	if cacheWriteTokens < 0 {
+		cacheWriteTokens = 0
+	}
+	if inputTokens < cachedTokens+cacheWriteTokens {
+		cacheWriteTokens = inputTokens - cachedTokens
+	}
+	usage.InputTokens += inputTokens - cachedTokens - cacheWriteTokens
+	usage.CacheCreationInputTokens += cacheWriteTokens
 	usage.CacheReadInputTokens += cachedTokens
 	usage.OutputTokens += outputTokens
 }
@@ -158,21 +184,25 @@ func extractUsageFromSSEData(data []byte, eventType string, usage *UsageTokens) 
 					InputTokens        int64 `json:"input_tokens"`
 					OutputTokens       int64 `json:"output_tokens"`
 					InputTokensDetails *struct {
-						CachedTokens int64 `json:"cached_tokens"`
+						CachedTokens     int64 `json:"cached_tokens"`
+						CacheWriteTokens int64 `json:"cache_write_tokens"`
 					} `json:"input_tokens_details"`
 				} `json:"usage"`
 			} `json:"response"`
 		}
 		if json.Unmarshal(data, &ev) == nil {
 			var cachedTokens int64
+			var cacheWriteTokens int64
 			if ev.Response.Usage.InputTokensDetails != nil {
 				cachedTokens = ev.Response.Usage.InputTokensDetails.CachedTokens
+				cacheWriteTokens = ev.Response.Usage.InputTokensDetails.CacheWriteTokens
 			}
 			applyOpenAIUsage(
 				usage,
 				ev.Response.Model,
 				ev.Response.Usage.InputTokens,
 				cachedTokens,
+				cacheWriteTokens,
 				ev.Response.Usage.OutputTokens,
 			)
 		}
@@ -190,7 +220,8 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 			InputTokens        int64 `json:"input_tokens"`
 			OutputTokens       int64 `json:"output_tokens"`
 			InputTokensDetails *struct {
-				CachedTokens int64 `json:"cached_tokens"`
+				CachedTokens     int64 `json:"cached_tokens"`
+				CacheWriteTokens int64 `json:"cache_write_tokens"`
 			} `json:"input_tokens_details"`
 		} `json:"usage"`
 	}
@@ -198,14 +229,17 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 		if responsesResp.Object == "response" || responsesResp.Type == "response" || responsesResp.Usage.InputTokensDetails != nil {
 			var usage UsageTokens
 			var cachedTokens int64
+			var cacheWriteTokens int64
 			if responsesResp.Usage.InputTokensDetails != nil {
 				cachedTokens = responsesResp.Usage.InputTokensDetails.CachedTokens
+				cacheWriteTokens = responsesResp.Usage.InputTokensDetails.CacheWriteTokens
 			}
 			applyOpenAIUsage(
 				&usage,
 				responsesResp.Model,
 				responsesResp.Usage.InputTokens,
 				cachedTokens,
+				cacheWriteTokens,
 				responsesResp.Usage.OutputTokens,
 			)
 			return usage
@@ -248,7 +282,8 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 			PromptTokens        int64 `json:"prompt_tokens"`
 			CompletionTokens    int64 `json:"completion_tokens"`
 			PromptTokensDetails *struct {
-				CachedTokens int64 `json:"cached_tokens"`
+				CachedTokens     int64 `json:"cached_tokens"`
+				CacheWriteTokens int64 `json:"cache_write_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
@@ -257,10 +292,12 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 	}
 	var usage UsageTokens
 	var cachedTokens int64
+	var cacheWriteTokens int64
 	if chatResp.Usage.PromptTokensDetails != nil {
 		cachedTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
+		cacheWriteTokens = chatResp.Usage.PromptTokensDetails.CacheWriteTokens
 	}
-	applyOpenAIUsage(&usage, chatResp.Model, chatResp.Usage.PromptTokens, cachedTokens, chatResp.Usage.CompletionTokens)
+	applyOpenAIUsage(&usage, chatResp.Model, chatResp.Usage.PromptTokens, cachedTokens, cacheWriteTokens, chatResp.Usage.CompletionTokens)
 	return usage
 }
 

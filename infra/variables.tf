@@ -127,3 +127,24 @@ variable "cf_gateway_token" {
   type        = string
   sensitive   = true
 }
+
+variable "exa_api_key" {
+  description = "Exa API key used by host-side Pi WebSearch and WebFetch tools"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "parallel_api_key" {
+  description = "Parallel API key used by host-side Pi WebSearch and WebFetch tools"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "firecrawl_api_key" {
+  description = "Firecrawl API key used by host-side Pi WebSearch and WebFetch tools"
+  type        = string
+  sensitive   = true
+  default     = ""
+}

@@ -77,6 +77,10 @@ type Server struct {
 
 	proxyMu      sync.Mutex
 	proxyThreads map[string]*ProxyThreadContext
+	hostPiMu     sync.Mutex
+	hostPiChats  map[string]*hostPiBridge
+	webToolMu    sync.Mutex
+	webToolIndex int
 
 	httpClient *http.Client
 	wsUpgrader websocket.Upgrader
@@ -103,6 +107,7 @@ func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.
 		state:        stateStore,
 		usage:        usageStore,
 		proxyThreads: make(map[string]*ProxyThreadContext),
+		hostPiChats:  make(map[string]*hostPiBridge),
 		httpClient:   &http.Client{Transport: transport},
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(_ *http.Request) bool { return true },
@@ -165,6 +170,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Path == "/health" {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "sandbox-host"})
+		return
+	}
+
+	if req.URL.Path == "/internal/host-pi/ask-user-question" {
+		s.handleHostPiAskUserQuestionRoute(w, req, sourceIP)
+		return
+	}
+	if req.URL.Path == "/internal/host-pi/todo-state" {
+		s.handleHostPiTodoStateRoute(w, req, sourceIP)
+		return
+	}
+	if req.URL.Path == "/internal/host-pi/web-search" {
+		s.handleHostPiWebToolRoute(w, req, sourceIP, "search")
+		return
+	}
+	if req.URL.Path == "/internal/host-pi/web-fetch" {
+		s.handleHostPiWebToolRoute(w, req, sourceIP, "fetch")
 		return
 	}
 
@@ -262,7 +284,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return nil
 	}
 
-	if strings.HasPrefix(route.Subpath, "/fs/") || route.Subpath == "/chat/messages" {
+	if strings.HasPrefix(route.Subpath, "/fs/") || route.Subpath == "/chat/messages" || route.Subpath == "/chat/fork" {
 		if _, err := s.workspaces.Ensure(name); err != nil {
 			return err
 		}
@@ -287,19 +309,40 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleExec(w, req, name, opts)
 	case route.Subpath == "/chat/messages" && req.Method == http.MethodGet:
 		return s.handleChatMessages(w, req, name)
+	case route.Subpath == "/chat/fork" && req.Method == http.MethodPost:
+		return s.handleChatFork(w, req)
 	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
 		return s.forwardDataProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
 		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 			return err
 		}
-		return s.proxyToControlPlane(w, req, name, "/health", opts)
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "status": "ok"})
+		return nil
 	case route.Subpath == "/chat":
 		return s.handleChatProxy(w, req, name, route, opts)
 	default:
 		errorJSON(w, "Not found", http.StatusNotFound)
 		return nil
 	}
+}
+
+func (s *Server) handleChatFork(w http.ResponseWriter, req *http.Request) error {
+	var payload piForkSessionRequest
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		errorJSON(w, "Invalid JSON", http.StatusBadRequest)
+		return nil
+	}
+	result, err := forkHostPiSession(s.cfg.HostPiSessionRoot, payload)
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"fork":    result,
+	})
+	return nil
 }
 
 func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, name string) error {
@@ -330,6 +373,16 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 	defer func() {
 		s.containers.RemoveProxyRequest(name, "chat_messages", http.StatusOK, time.Since(started).Milliseconds())
 	}()
+
+	if messages, err := readHostPiSessionMessages(s.cfg.HostPiSessionRoot, threadID); err != nil {
+		log.Printf("[SandboxHost] host Pi message history unavailable thread=%s sessionRoot=%s: %v", threadID, s.cfg.HostPiSessionRoot, err)
+	} else if len(messages) > 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":  true,
+			"messages": messages,
+		})
+		return nil
+	}
 
 	sessionIDs := []string{threadID}
 	if claudeSessionID != "" && claudeSessionID != threadID {
@@ -373,9 +426,8 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 	}
 
 	if info, err := s.fs.ReadInfo(name, fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", threadID)); err == nil {
-		hostCodexHome := filepath.Dir(info.HostPath)
-		if messages, err := readCodexAppServerMessages(req.Context(), s.cfg.HostCodexPath, hostCodexHome, threadID, codexSessionID); err != nil {
-			log.Printf("[SandboxHost] codex message history unavailable thread=%s codexHome=%s: %v", threadID, hostCodexHome, err)
+		if messages, err := readCodexStateMessages(req.Context(), info.HostPath, threadID, codexSessionID); err != nil {
+			log.Printf("[SandboxHost] codex state message history unavailable thread=%s state=%s: %v", threadID, info.HostPath, err)
 		} else if len(messages) > 0 {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"success":  true,
@@ -445,6 +497,18 @@ func normalizeOpenAIProxyUpstreamPath(path string) (string, bool) {
 		return "", false
 	}
 	return normalized, true
+}
+
+func openAICompatibleProxyPath(upstreamPath string) (string, string, bool) {
+	for _, prefix := range []string{"/api/openai", "/api/openrouter"} {
+		if upstreamPath != prefix && !strings.HasPrefix(upstreamPath, prefix+"/") {
+			continue
+		}
+		path := strings.TrimPrefix(upstreamPath, prefix)
+		normalized, ok := normalizeOpenAIProxyUpstreamPath(path)
+		return path, normalized, ok
+	}
+	return "", "", false
 }
 
 func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
@@ -640,12 +704,25 @@ func (s *Server) handleFSExists(w http.ResponseWriter, req *http.Request, name s
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, req *http.Request, name string, opts container.EnsureContainerOptions) error {
+	var body container.ExecRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		errorJSON(w, "Invalid JSON body", http.StatusBadRequest)
+		return nil
+	}
 	if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 		return err
 	}
-	// Fast path: execute through the already-running control plane process
-	// instead of spawning docker exec per request.
-	return s.proxyToControlPlane(w, req, name, "/exec", opts)
+	started := time.Now()
+	s.containers.AddProxyRequest(name, "container_exec")
+	defer func() {
+		s.containers.RemoveProxyRequest(name, "container_exec", http.StatusOK, time.Since(started).Milliseconds())
+	}()
+	result, err := s.containers.Exec(req.Context(), name, opts, body)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, result)
+	return nil
 }
 
 func (s *Server) handleChatProxy(
@@ -665,6 +742,10 @@ func (s *Server) handleChatProxy(
 		errorJSON(w, "Missing thread ID", http.StatusBadRequest)
 		return nil
 	}
+	if strings.ContainsAny(threadID, `/\`) {
+		errorJSON(w, "invalid thread ID", http.StatusBadRequest)
+		return nil
+	}
 	userID := strings.TrimSpace(req.Header.Get(s.cfg.HeaderUserID))
 	byokAnthropicKey := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Anthropic-Key"))
 	byokBedrockToken := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Bedrock-Token"))
@@ -676,10 +757,6 @@ func (s *Server) handleChatProxy(
 	if workerBaseURL == "" {
 		errorJSON(w, "Missing worker base URL", http.StatusBadRequest)
 		return nil
-	}
-
-	if _, err := s.containers.EnsureContainer(name, opts); err != nil {
-		return err
 	}
 
 	now := time.Now().UTC()
@@ -712,6 +789,15 @@ func (s *Server) handleChatProxy(
 	current := copyProxyThreadContext(s.proxyThreads[threadKey])
 	s.proxyMu.Unlock()
 	s.upsertProxyThreadState(current)
+	cleanupFailedOpen := func() {
+		if existing != nil {
+			return
+		}
+		s.proxyMu.Lock()
+		delete(s.proxyThreads, threadKey)
+		s.proxyMu.Unlock()
+		s.deleteProxyThreadState(threadKey)
+	}
 
 	log.Printf("[SandboxHost] chat session opened container=%s thread=%s", name, threadID)
 	s.trace("chat_session_opened", map[string]any{
@@ -724,27 +810,15 @@ func (s *Server) handleChatProxy(
 		"activeProxyThreads": s.proxyThreadCount(),
 	})
 
-	port, err := s.containers.GetControlPlanePort(name, opts)
-	if err != nil {
-		return err
-	}
-	targetWSURL := fmt.Sprintf("ws://127.0.0.1:%d/chat", port)
-
 	clientConn, err := s.wsUpgrader.Upgrade(w, req, nil)
 	if err != nil {
-		if existing == nil {
-			s.proxyMu.Lock()
-			delete(s.proxyThreads, threadKey)
-			s.proxyMu.Unlock()
-			s.deleteProxyThreadState(threadKey)
-		}
+		cleanupFailedOpen()
 		s.trace("chat_session_upgrade_failed", map[string]any{
 			"container":   name,
 			"orgId":       route.OrgID,
 			"workspaceId": route.WorkspaceID,
 			"threadId":    threadID,
 			"threadKey":   threadKey,
-			"targetWsUrl": targetWSURL,
 		})
 		return nil
 	}
@@ -754,130 +828,9 @@ func (s *Server) handleChatProxy(
 		"workspaceId": route.WorkspaceID,
 		"threadId":    threadID,
 		"threadKey":   threadKey,
-		"targetWsUrl": targetWSURL,
 	})
 
-	s.containers.AddWebSocket(name, "chat_client_ws_open")
-	s.trace("chat_ws_open", map[string]any{"container": name, "threadId": threadID, "threadKey": threadKey, "targetWsUrl": targetWSURL})
-
-	upstreamDialer := *websocket.DefaultDialer
-	upstreamDialer.HandshakeTimeout = 10 * time.Second
-	upstreamConn, _, err := upstreamDialer.Dial(targetWSURL, nil)
-	if err != nil {
-		// Port may be stale (container restarted). Refresh from Docker and retry once.
-		refreshedPort, refreshErr := s.containers.RefreshControlPlanePort(name, opts)
-		if refreshErr == nil && refreshedPort != port {
-			targetWSURL = fmt.Sprintf("ws://127.0.0.1:%d/chat", refreshedPort)
-			upstreamConn, _, err = upstreamDialer.Dial(targetWSURL, nil)
-		}
-		if err != nil {
-			_ = clientConn.Close()
-			s.containers.RemoveWebSocket(name, "chat_client_ws_close", 1011, "upstream dial failed")
-			return err
-		}
-	}
-	log.Printf("[SandboxHost] chat session upstream connected container=%s thread=%s target=%s", name, threadID, targetWSURL)
-
-	var closeOnce sync.Once
-	closeAll := func(code int, reason string) {
-		closeOnce.Do(func() {
-			now := time.Now().UTC()
-			var updated *ProxyThreadContext
-			s.proxyMu.Lock()
-			if ctx := s.proxyThreads[threadKey]; ctx != nil {
-				ctx.ClosedAt = &now
-				ctx.ExpiresAt = now.Add(s.cfg.ProxyThreadCloseGrace)
-				updated = copyProxyThreadContext(ctx)
-			}
-			s.proxyMu.Unlock()
-			s.upsertProxyThreadState(updated)
-
-			log.Printf("[SandboxHost] chat session closed container=%s thread=%s code=%d reason=%s", name, threadID, code, reason)
-			s.trace("chat_ws_close", map[string]any{
-				"container":          name,
-				"threadId":           threadID,
-				"threadKey":          threadKey,
-				"code":               code,
-				"reason":             reason,
-				"upstreamReadyState": upstreamConn.UnderlyingConn() != nil,
-			})
-			s.containers.RemoveWebSocket(name, "chat_client_ws_close", code, reason)
-			_ = upstreamConn.Close()
-			_ = clientConn.Close()
-		})
-	}
-
-	done := make(chan struct{}, 2)
-
-	go func() {
-		defer func() { done <- struct{}{} }()
-		if err := s.streamWebSocket(clientConn, upstreamConn, "chat_ws_client_message", map[string]any{
-			"container": name,
-			"threadId":  threadID,
-			"threadKey": threadKey,
-		}); err != nil {
-			closeAll(1000, "client_to_upstream: "+err.Error())
-			return
-		}
-	}()
-
-	go func() {
-		defer func() { done <- struct{}{} }()
-		if err := s.streamWebSocket(upstreamConn, clientConn, "chat_ws_upstream_message", map[string]any{
-			"container": name,
-			"threadId":  threadID,
-			"threadKey": threadKey,
-		}); err != nil {
-			closeAll(1000, "upstream_to_client: "+err.Error())
-			return
-		}
-	}()
-
-	<-done
-	closeAll(1000, "session ended")
-	<-done
-	return nil
-}
-
-func (s *Server) proxyToControlPlane(
-	w http.ResponseWriter,
-	req *http.Request,
-	containerName string,
-	path string,
-	opts container.EnsureContainerOptions,
-) error {
-	port, err := s.containers.GetControlPlanePort(containerName, opts)
-	if err != nil {
-		return err
-	}
-
-	target := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
-	if req.URL.RawQuery != "" {
-		target += "?" + req.URL.RawQuery
-	}
-
-	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, target, req.Body)
-	if err != nil {
-		return err
-	}
-	forwardReq.Header = cloneHeaders(req.Header)
-	forwardReq.Header.Del("Authorization")
-	forwardReq.Header.Del(s.cfg.HeaderSandboxSecret)
-	forwardReq.Header.Del(s.cfg.HeaderWorkerBaseURL)
-	forwardReq.Header.Del(s.cfg.HeaderThreadID)
-	forwardReq.Header.Del("Host")
-	applyStreamingRequestHeaders(forwardReq.Header)
-
-	resp, err := s.httpClient.Do(forwardReq)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	copyHeaders(w.Header(), resp.Header)
-	applyStreamingResponseHeaders(w.Header(), resp.Header.Get("Content-Type"))
-	w.WriteHeader(resp.StatusCode)
-	return copyResponseBody(w, resp.Body)
+	return s.serveHostPiChat(clientConn, name, route, opts, threadID, threadKey)
 }
 
 func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, proxy ProxyRoute, sourceIP string) {
@@ -978,19 +931,30 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 		}
 	}
 
-	// Route Claude API requests directly to Bedrock/Anthropic (no AI Gateway).
-	if strings.HasPrefix(proxy.UpstreamPath, "/api/claude/") && (s.cfg.AnthropicAPIKey != "" || s.cfg.BedrockAccessToken != "") {
-		s.forwardClaudeDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+	// Hosted Claude API requests go through OpenRouter via AI Gateway. BYOK routes above
+	// remain provider-direct.
+	if strings.HasPrefix(proxy.UpstreamPath, "/api/claude/") && s.cfg.AIGatewayBaseURL != "" {
+		s.forwardClaudeToOpenRouterGateway(w, req, proxy, threadContext, caller, requestID, startedAt)
 		return
 	}
 
-	// Route OpenAI API requests to AI Gateway (still uses gateway).
-	if strings.HasPrefix(proxy.UpstreamPath, "/api/openai/") && threadContext.ByokOpenAIKey != "" {
-		s.forwardOpenAIDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+	if strings.HasPrefix(proxy.UpstreamPath, "/api/openrouter/") && threadContext.ByokOpenRouterKey != "" {
+		s.forwardOpenRouterDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
 		return
 	}
+
+	if s.cfg.AIGatewayBaseURL != "" && strings.HasPrefix(proxy.UpstreamPath, "/api/openrouter/") {
+		s.forwardOpenAIToAIGateway(w, req, proxy, threadContext, caller, requestID, startedAt)
+		return
+	}
+
 	if strings.HasPrefix(proxy.UpstreamPath, "/api/openai/") && threadContext.ByokOpenRouterKey != "" {
 		s.forwardOpenRouterDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+		return
+	}
+
+	if strings.HasPrefix(proxy.UpstreamPath, "/api/openai/") && threadContext.ByokOpenAIKey != "" {
+		s.forwardOpenAIDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
 		return
 	}
 
@@ -1111,301 +1075,6 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	}
 }
 
-// forwardClaudeDirect calls Bedrock first (if configured), falling back to
-// Anthropic direct. No AI Gateway in the path. Usage is tracked for both
-// streaming and non-streaming responses.
-func (s *Server) forwardClaudeDirect(
-	w http.ResponseWriter,
-	req *http.Request,
-	proxy ProxyRoute,
-	threadContext *ProxyThreadContext,
-	caller *container.ContainerRecord,
-	requestID string,
-	startedAt time.Time,
-) {
-	rawBody, err := io.ReadAll(req.Body)
-	if err != nil {
-		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-
-	claudeEndpoint := strings.TrimPrefix(
-		strings.Replace(proxy.UpstreamPath, "/api/claude/", "/", 1),
-		"/",
-	)
-
-	isMessagesEndpoint := strings.Contains(claudeEndpoint, "messages") && !strings.Contains(claudeEndpoint, "count_tokens")
-	billingDecision := BillingAccessDecision{BillingSource: billingSourceHosted}
-
-	// Billing enforcement: reject if the org does not currently have access.
-	if isMessagesEndpoint {
-		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, extractModelFromRequestBody(rawBody))
-		if billingDecision.Denied {
-			s.trace("claude_direct_billing_denied", map[string]any{
-				"requestId":       requestID,
-				"callerContainer": caller.Name,
-				"orgId":           threadContext.OrgID,
-				"threadId":        threadContext.ThreadID,
-			})
-			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
-			return
-		}
-	}
-
-	// Determine provider order: Bedrock first (messages only), then Anthropic.
-	type providerAttempt struct {
-		name string
-		fn   func() (*http.Response, bool, error) // returns (resp, isBedrock, err)
-	}
-	var attempts []providerAttempt
-
-	if isMessagesEndpoint && s.cfg.BedrockAccessToken != "" {
-		attempts = append(attempts, providerAttempt{
-			name: "bedrock",
-			fn: func() (*http.Response, bool, error) {
-				return s.doBedrockRequest(req.Context(), rawBody, req.Header, s.cfg.BedrockAccessToken, s.cfg.BedrockRegion)
-			},
-		})
-	}
-	if s.cfg.AnthropicAPIKey != "" {
-		attempts = append(attempts, providerAttempt{
-			name: "anthropic",
-			fn: func() (*http.Response, bool, error) {
-				return s.doAnthropicRequest(req.Context(), rawBody, req.Header, s.cfg.AnthropicAPIKey, "/"+claudeEndpoint)
-			},
-		})
-	}
-
-	if len(attempts) == 0 {
-		errorJSON(w, "No Claude API provider configured (set ANTHROPIC_API_KEY or BEDROCK_ACCESS_TOKEN)", http.StatusServiceUnavailable)
-		return
-	}
-
-	s.trace("claude_direct_start", map[string]any{
-		"requestId":       requestID,
-		"callerContainer": caller.Name,
-		"method":          req.Method,
-		"threadId":        threadContext.ThreadID,
-		"endpoint":        claudeEndpoint,
-		"providerCount":   len(attempts),
-	})
-	proxyTag := fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath)
-	s.containers.AddProxyRequest(threadContext.ContainerName, proxyTag)
-
-	var resp *http.Response
-	var usedProvider string
-	var isBedrock bool
-	var upstreamErr error
-
-	type directFailure struct {
-		status   int
-		headers  http.Header
-		body     []byte
-		provider string
-	}
-	var lastFailure *directFailure
-
-	for i, attempt := range attempts {
-		attemptStart := time.Now()
-		resp, isBedrock, upstreamErr = attempt.fn()
-		durationMs := time.Since(attemptStart).Milliseconds()
-
-		if upstreamErr != nil {
-			s.trace("claude_direct_attempt_error", map[string]any{
-				"requestId":  requestID,
-				"threadId":   threadContext.ThreadID,
-				"provider":   attempt.name,
-				"attempt":    i,
-				"durationMs": durationMs,
-				"error":      upstreamErr.Error(),
-			})
-			continue
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			usedProvider = attempt.name
-			break
-		}
-
-		s.trace("claude_direct_attempt_non_2xx", map[string]any{
-			"requestId":  requestID,
-			"threadId":   threadContext.ThreadID,
-			"provider":   attempt.name,
-			"attempt":    i,
-			"durationMs": durationMs,
-			"status":     resp.StatusCode,
-		})
-
-		failureBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-		lastFailure = &directFailure{
-			status:   resp.StatusCode,
-			headers:  cloneHeaders(resp.Header),
-			body:     failureBody,
-			provider: attempt.name,
-		}
-		resp = nil
-	}
-
-	totalDurationMs := time.Since(startedAt).Milliseconds()
-	if resp == nil {
-		s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, 0, totalDurationMs)
-		if lastFailure != nil {
-			copyHeaders(w.Header(), lastFailure.headers)
-			applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
-			w.WriteHeader(lastFailure.status)
-			if len(lastFailure.body) > 0 {
-				_, _ = w.Write(lastFailure.body)
-			}
-			return
-		}
-		if upstreamErr != nil {
-			log.Printf("[SandboxHost] Claude direct proxy failed endpoint=%s thread=%s container=%s durationMs=%d error=%v",
-				claudeEndpoint, threadContext.ThreadID, threadContext.ContainerName, totalDurationMs, upstreamErr)
-		}
-		errorJSON(w, "Claude API upstream unavailable", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	s.trace("claude_direct_complete", map[string]any{
-		"requestId":  requestID,
-		"threadId":   threadContext.ThreadID,
-		"status":     resp.StatusCode,
-		"durationMs": totalDurationMs,
-		"endpoint":   claudeEndpoint,
-		"provider":   usedProvider,
-	})
-	s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, resp.StatusCode, totalDurationMs)
-
-	// Write response to client and extract usage.
-	var usage UsageTokens
-	if isBedrock && usedProvider == "bedrock" {
-		// Bedrock: parse request body for streaming flag, convert eventstream → SSE.
-		var bodyJSON map[string]any
-		_ = json.Unmarshal(rawBody, &bodyJSON)
-		isStreaming, _ := bodyJSON["stream"].(bool)
-
-		if isStreaming && resp.StatusCode == http.StatusOK {
-			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-			applyStreamingResponseHeaders(w.Header(), "text/event-stream")
-			w.WriteHeader(resp.StatusCode)
-			usage, err = copyBedrockStreamToSSEWithUsage(w, resp.Body)
-		} else {
-			copyHeaders(w.Header(), resp.Header)
-			applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
-			w.WriteHeader(resp.StatusCode)
-			usage, err = copyNonStreamingWithUsage(w, resp.Body)
-		}
-	} else {
-		// Anthropic: SSE or JSON response, already in Anthropic format.
-		copyHeaders(w.Header(), resp.Header)
-		applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
-		w.WriteHeader(resp.StatusCode)
-		streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
-		usage, err = copyResponseBodyWithUsage(w, resp.Body, streaming)
-	}
-
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.trace("claude_direct_copy_error", map[string]any{
-			"requestId": requestID,
-			"threadId":  threadContext.ThreadID,
-			"provider":  usedProvider,
-			"error":     err.Error(),
-		})
-	}
-
-	if usage.Model == "" {
-		usage.Model = extractModelFromRequestBody(rawBody)
-	}
-
-	if isMessagesEndpoint && usage.HasBillableTokens() {
-		go s.recordUsage(threadContext, usedProvider, billingDecision.BillingSource, billingDecision.CreditChargeable, usage, totalDurationMs)
-	}
-}
-
-// doBedrockRequest builds and executes a Bedrock API request from an Anthropic-format body.
-func (s *Server) doBedrockRequest(ctx context.Context, rawBody []byte, srcHeaders http.Header, token, region string) (*http.Response, bool, error) {
-	var bodyJSON map[string]any
-	if err := json.Unmarshal(rawBody, &bodyJSON); err != nil {
-		return nil, true, fmt.Errorf("invalid JSON body: %w", err)
-	}
-
-	modelStr, _ := bodyJSON["model"].(string)
-	if modelStr == "" {
-		return nil, true, fmt.Errorf("missing model in request body")
-	}
-	bedrockModel := mapToBedrockModel(modelStr)
-
-	isStreaming, _ := bodyJSON["stream"].(bool)
-	endpoint := "invoke"
-	if isStreaming {
-		endpoint = "invoke-with-response-stream"
-	}
-
-	if region == "" {
-		region = "us-west-2"
-	}
-
-	targetURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/%s",
-		region, bedrockModel, endpoint)
-
-	bedrockBody := map[string]any{
-		"anthropic_version": "bedrock-2023-05-31",
-	}
-	for key, val := range bodyJSON {
-		if key != "model" && key != "stream" {
-			bedrockBody[key] = val
-		}
-	}
-
-	if betaHeader := srcHeaders.Get("anthropic-beta"); betaHeader != "" {
-		var betas []string
-		for _, b := range strings.Split(betaHeader, ",") {
-			b = strings.TrimSpace(b)
-			if b != "" {
-				betas = append(betas, b)
-			}
-		}
-		if len(betas) > 0 {
-			bedrockBody["anthropic_beta"] = betas
-		}
-	}
-
-	payload, err := json.Marshal(bedrockBody)
-	if err != nil {
-		return nil, true, fmt.Errorf("marshal bedrock body: %w", err)
-	}
-
-	forwardReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, true, err
-	}
-	forwardReq.Header.Set("Content-Type", "application/json")
-	forwardReq.Header.Set("Authorization", "Bearer "+token)
-	applyStreamingRequestHeaders(forwardReq.Header)
-
-	resp, err := s.httpClient.Do(forwardReq)
-	return resp, true, err
-}
-
-// doAnthropicRequest builds and executes a direct Anthropic API request.
-func (s *Server) doAnthropicRequest(ctx context.Context, rawBody []byte, srcHeaders http.Header, apiKey, path string) (*http.Response, bool, error) {
-	targetURL := "https://api.anthropic.com" + path
-
-	forwardReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(rawBody))
-	if err != nil {
-		return nil, false, err
-	}
-
-	forwardReq.Header = sanitizeGatewayUpstreamHeaders(srcHeaders)
-	forwardReq.Header.Set("Content-Type", "application/json")
-	forwardReq.Header.Set("x-api-key", apiKey)
-	applyStreamingRequestHeaders(forwardReq.Header)
-
-	resp, err := s.httpClient.Do(forwardReq)
-	return resp, false, err
-}
-
 type BillingAccessSnapshot struct {
 	OrgID                           string `json:"org_id"`
 	BillingStatus                   string `json:"billing_status"`
@@ -1502,12 +1171,12 @@ func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billin
 		if billingSource == billingSourceBYOK {
 			return decision
 		}
-		return s.checkCreditBalance(threadContext, snapshot, decision)
+		return s.checkCreditBalance(threadContext, snapshot, decision, "Trial hosted-model credits are used up.")
 	case "active":
 		if billingSource == billingSourceBYOK {
 			return decision
 		}
-		return s.checkCreditBalance(threadContext, snapshot, decision)
+		return s.checkCreditBalance(threadContext, snapshot, decision, "Hosted model credits are used up.")
 	case "past_due":
 		decision.Denied = true
 		decision.StatusCode = http.StatusPaymentRequired
@@ -1529,7 +1198,14 @@ func (s *Server) checkOrgBillingAccess(threadContext *ProxyThreadContext, billin
 	}
 }
 
-func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot *BillingAccessSnapshot, decision BillingAccessDecision) BillingAccessDecision {
+func formatCreditCents(cents int64) string {
+	if cents < 0 {
+		cents = 0
+	}
+	return fmt.Sprintf("%.2f credits", float64(cents)/100)
+}
+
+func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot *BillingAccessSnapshot, decision BillingAccessDecision, deniedMessage string) BillingAccessDecision {
 	sum, err := s.usage.GetCreditChargeableUsageLogSum(
 		threadContext.OrgID,
 		0,
@@ -1549,7 +1225,11 @@ func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot 
 	}
 	decision.Denied = true
 	decision.StatusCode = http.StatusPaymentRequired
-	decision.Message = "Message not sent — top up credits or add an API key to continue."
+	decision.Message = fmt.Sprintf("%s You have used %s of %s. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.",
+		deniedMessage,
+		formatCreditCents(spentCents),
+		formatCreditCents(totalCreditsCents),
+	)
 	return decision
 }
 
@@ -1753,6 +1433,112 @@ func (s *Server) forwardClaudeToOpenRouterDirect(
 	}
 	if usage.Model == "" {
 		usage.Model = extractModelFromRequestBody(rawBody)
+	}
+	if isMessagesEndpoint && resp.StatusCode < 400 && usage.HasBillableTokens() {
+		go s.recordUsage(threadContext, "openrouter", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+	}
+}
+
+// forwardClaudeToOpenRouterGateway handles hosted Anthropic-compatible Claude
+// requests through the OpenRouter provider configured on Cloudflare AI Gateway.
+func (s *Server) forwardClaudeToOpenRouterGateway(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	claudeEndpoint := strings.TrimPrefix(
+		strings.Replace(proxy.UpstreamPath, "/api/claude/", "/", 1),
+		"/",
+	)
+	isMessagesEndpoint := strings.Contains(claudeEndpoint, "messages") && !strings.Contains(claudeEndpoint, "count_tokens")
+	billingDecision := BillingAccessDecision{BillingSource: billingSourceHosted}
+
+	rawBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if req.Method == http.MethodPost && isMessagesEndpoint {
+		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, extractModelFromRequestBody(rawBody))
+		if billingDecision.Denied {
+			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+			return
+		}
+	}
+	forwardBody := rewriteClaudeRequestBodyForOpenRouter(rawBody)
+
+	targetURL := s.cfg.AIGatewayBaseURL + "/openrouter" + strings.Replace(proxy.UpstreamPath, "/api/claude", "", 1)
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, bytes.NewReader(forwardBody))
+	if err != nil {
+		errorJSON(w, "Failed to create OpenRouter request", http.StatusInternalServerError)
+		return
+	}
+
+	headers := sanitizeGatewayUpstreamHeaders(req.Header)
+	headers.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
+	headers.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+	applyStreamingRequestHeaders(headers)
+	forwardReq.Header = headers
+
+	proxyTag := fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath)
+	s.trace("gateway_openrouter_claude_proxy_start", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"targetPath":      "/openrouter" + strings.Replace(proxy.UpstreamPath, "/api/claude", "", 1),
+	})
+	s.containers.AddProxyRequest(threadContext.ContainerName, proxyTag)
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		s.trace("gateway_openrouter_claude_proxy_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"method":          req.Method,
+			"threadId":        threadContext.ThreadID,
+			"durationMs":      durationMs,
+			"error":           upstreamErr.Error(),
+		})
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, 0, durationMs)
+		errorJSON(w, "OpenRouter upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	s.trace("gateway_openrouter_claude_proxy_complete", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"status":          resp.StatusCode,
+		"durationMs":      durationMs,
+	})
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, resp.StatusCode, durationMs)
+
+	copyHeaders(w.Header(), resp.Header)
+	applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
+	usage, err := copyResponseBodyWithUsage(w, resp.Body, streaming)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.trace("gateway_openrouter_claude_proxy_copy_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"threadId":        threadContext.ThreadID,
+			"error":           err.Error(),
+		})
+	}
+	if usage.Model == "" {
+		usage.Model = extractModelFromRequestBody(forwardBody)
 	}
 	if isMessagesEndpoint && resp.StatusCode < 400 && usage.HasBillableTokens() {
 		go s.recordUsage(threadContext, "openrouter", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
@@ -2006,18 +1792,17 @@ func (s *Server) forwardOpenAIToAIGateway(
 	requestID string,
 	startedAt time.Time,
 ) {
-	// Map /api/openai/v1/* -> {gateway}/{provider}/* where provider is
-	// "compat", "openrouter", or "openai" for dedicated Responses API routing.
-	openaiPath := strings.TrimPrefix(proxy.UpstreamPath, "/api/openai")
-	normalizedPath, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
+	// Map /api/openai/v1/* or /api/openrouter/v1/* -> /openrouter/*.
+	// BYOK routes bypass this function.
+	_, normalizedPath, ok := openAICompatibleProxyPath(proxy.UpstreamPath)
 	if !ok {
 		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
 		return
 	}
 	billingDecision := BillingAccessDecision{BillingSource: billingSourceHosted}
 
-	// Resolve model and determine gateway provider
-	gatewayProvider := "compat"
+	// Resolve model for the OpenRouter provider.
+	gatewayProvider := "openrouter"
 	requestModel := ""
 	var err error
 	var rawBody []byte
@@ -2037,11 +1822,6 @@ func (s *Server) forwardOpenAIToAIGateway(
 					if resolved != model {
 						bodyJSON["model"] = resolved
 						rawBody, _ = json.Marshal(bodyJSON)
-					}
-					if shouldUseGatewayOpenAIResponses(normalizedPath, model) {
-						gatewayProvider = "openai"
-					} else if isOpenRouterModel(resolved) {
-						gatewayProvider = "openrouter"
 					}
 				}
 			}
@@ -2128,11 +1908,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 		usage.Model = extractModelFromRequestBody(rawBody)
 	}
 	if resp.StatusCode < 400 && usage.HasBillableTokens() {
-		provider := "openai"
-		if gatewayProvider == "openrouter" {
-			provider = "openrouter"
-		}
-		go s.recordUsage(threadContext, provider, billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+		go s.recordUsage(threadContext, "openrouter", billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
 	}
 }
 
@@ -2172,8 +1948,7 @@ func (s *Server) forwardOpenAICompatibleDirect(
 	apiKey string,
 	providerName string,
 ) {
-	openaiPath := strings.TrimPrefix(proxy.UpstreamPath, "/api/openai")
-	_, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
+	openaiPath, _, ok := openAICompatibleProxyPath(proxy.UpstreamPath)
 	if !ok {
 		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
 		return
@@ -2200,6 +1975,9 @@ func (s *Server) forwardOpenAICompatibleDirect(
 		if err != nil {
 			errorJSON(w, "Failed to read request body", http.StatusBadRequest)
 			return
+		}
+		if providerName == "openrouter" {
+			rawBody = rewriteOpenRouterRequestBody(rawBody)
 		}
 		forwardBody = bytes.NewReader(rawBody)
 	}
@@ -2359,37 +2137,54 @@ var dynamicModelAliases = map[string]bool{
 	"auto_image":  true,
 }
 
-// resolveGatewayModel rewrites model aliases to Cloudflare dynamic routing names
-// and passes OpenRouter models through as-is.
-//
-// Known aliases ("auto", "auto_search", "auto_image") map to "dynamic/{alias}".
-// Models already prefixed with "dynamic/" pass through unchanged.
-// Everything else is treated as an OpenRouter model and passes through as-is.
+// resolveGatewayModel rewrites local aliases to OpenRouter model IDs.
 func resolveGatewayModel(model string) string {
 	trimmed := strings.TrimSpace(model)
+	if resolved := resolveOpenRouterModel(trimmed); resolved != trimmed {
+		return resolved
+	}
 	if dynamicModelAliases[trimmed] {
-		return "dynamic/" + trimmed
+		return "openrouter/auto"
 	}
 	if trimmed == "" {
-		return "dynamic/auto"
+		return "openrouter/auto"
 	}
 	return trimmed
 }
 
-// isOpenRouterModel returns true when the resolved model should route through
-// the OpenRouter gateway provider endpoint (/openrouter/) rather than the
-// Cloudflare compat endpoint (/compat/).
-func isOpenRouterModel(resolvedModel string) bool {
-	return !strings.HasPrefix(resolvedModel, "dynamic/")
+func resolveOpenRouterModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	switch trimmed {
+	case "dynamic/auto", "dynamic/auto_search", "dynamic/auto_image":
+		return "openrouter/auto"
+	case "kimi-k2.6", "kimi-latest":
+		return "~moonshotai/kimi-latest"
+	case "grok-4.3", "grok-latest":
+		return "x-ai/grok-4.3"
+	default:
+		if strings.HasPrefix(strings.ToLower(trimmed), "gpt-") {
+			return "openai/" + trimmed
+		}
+		return trimmed
+	}
 }
 
-func shouldUseGatewayOpenAIResponses(normalizedPath string, model string) bool {
-	if normalizedPath != "/responses" {
-		return false
+func rewriteOpenRouterRequestBody(rawBody []byte) []byte {
+	var bodyJSON map[string]any
+	if len(rawBody) == 0 || json.Unmarshal(rawBody, &bodyJSON) != nil {
+		return rawBody
 	}
-
-	trimmedModel := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(trimmedModel, "gpt-")
+	model, _ := bodyJSON["model"].(string)
+	resolved := resolveOpenRouterModel(model)
+	if model == "" || resolved == model {
+		return rawBody
+	}
+	bodyJSON["model"] = resolved
+	nextBody, err := json.Marshal(bodyJSON)
+	if err != nil {
+		return rawBody
+	}
+	return nextBody
 }
 
 func (s *Server) findActiveProxyThreadByThreadID(threadID string, now time.Time) (threadKey string, containerName string, ok bool) {
@@ -2826,37 +2621,6 @@ func (w *flushWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (s *Server) streamWebSocket(source *websocket.Conn, target *websocket.Conn, traceEvent string, traceFields map[string]any) error {
-	for {
-		messageType, reader, err := source.NextReader()
-		if err != nil {
-			return err
-		}
-
-		writer, err := target.NextWriter(messageType)
-		if err != nil {
-			return err
-		}
-
-		written, copyErr := io.Copy(writer, reader)
-		closeErr := writer.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-
-		fields := make(map[string]any, len(traceFields)+2)
-		for key, value := range traceFields {
-			fields[key] = value
-		}
-		fields["bytes"] = written
-		fields["type"] = websocketMessageType(messageType)
-		s.trace(traceEvent, fields)
-	}
-}
-
 func randomID() string {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
@@ -2865,26 +2629,12 @@ func randomID() string {
 	return hex.EncodeToString(buf)
 }
 
-func websocketMessageType(messageType int) string {
-	switch messageType {
-	case websocket.TextMessage:
-		return "text"
-	case websocket.BinaryMessage:
-		return "binary"
-	case websocket.CloseMessage:
-		return "close"
-	case websocket.PingMessage:
-		return "ping"
-	case websocket.PongMessage:
-		return "pong"
-	default:
-		return fmt.Sprintf("type_%d", messageType)
-	}
-}
-
 func cloneHeaders(headers http.Header) http.Header {
 	out := make(http.Header, len(headers))
 	for key, values := range headers {
+		if isInternalProxyHeader(key) {
+			continue
+		}
 		copied := make([]string, len(values))
 		copy(copied, values)
 		out[key] = copied
@@ -2894,10 +2644,19 @@ func cloneHeaders(headers http.Header) http.Header {
 
 func copyHeaders(dst, src http.Header) {
 	for key, values := range src {
+		if isInternalProxyHeader(key) {
+			continue
+		}
 		for _, value := range values {
 			dst.Add(key, value)
 		}
 	}
+}
+
+func isInternalProxyHeader(key string) bool {
+	// Miniflare injects MF-* headers for local service-binding proxying. They
+	// are not valid user/Worker headers and must not be replayed downstream.
+	return strings.HasPrefix(strings.ToLower(key), "mf-")
 }
 
 func decodeJSON(req *http.Request, target any) error {

@@ -176,6 +176,9 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
     cf_account_id            = var.cf_account_id
     cf_gateway_name          = var.cf_gateway_name
     cf_gateway_token         = var.cf_gateway_token
+    exa_api_key              = var.exa_api_key
+    parallel_api_key         = var.parallel_api_key
+    firecrawl_api_key        = var.firecrawl_api_key
   }))
 
   identity {

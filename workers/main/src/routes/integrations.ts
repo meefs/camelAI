@@ -650,13 +650,16 @@ async function getOrCreateSlackThreadId(
     orgStub.getLlmProviderConfig(),
     orgStub.getExperimentalSettings(),
   ]);
-  const provider = getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
+  const provider = getDefaultThreadProvider(
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  );
   const thread = await orgStub.createThread(
     args.workspaceId,
     title,
     "slack",
     args.initialText.trim().slice(0, 500) || undefined,
-    getDefaultLlmModel(provider),
+    getDefaultLlmModel(provider, llmProviderConfig?.provider),
     provider,
   );
 

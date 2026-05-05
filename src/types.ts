@@ -498,7 +498,14 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 // LLM Provider BYOK types
 export type ChatHarness = "claude" | "codex";
 export type LlmProvider = "anthropic" | "bedrock" | "openai" | "openrouter";
-export type LlmModel = "haiku" | "sonnet" | "opus" | "gpt-5.4" | "gpt-5.4-mini";
+export type LlmModel =
+  | "haiku"
+  | "sonnet"
+  | "opus"
+  | "gpt-5.4"
+  | "gpt-5.4-mini"
+  | "kimi-k2.6"
+  | "grok-4.3";
 export interface OrganizationExperimentalSettings {
   /** Internal allowlist for creating new Claude threads on the camelAI proxy. */
   claude_proxy_models: boolean;
