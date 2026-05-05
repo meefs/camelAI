@@ -76,19 +76,24 @@ type Manager struct {
 	workspaces *workspace.Manager
 	docker     *dockerclient.Client
 
-	workspacesRoot      string
-	sandboxImage        string
-	containerMemory     string
-	containerCPUShares  string
-	containerRuntime    string
-	containerHTTPPort   int
-	proxyPort           int
-	idleTimeout         time.Duration
-	r2MountRoot         string
-	healthPollInterval  time.Duration
-	cfDispatchNamespace string
-	containerProxyBase  string
-	traceLifecycle      bool
+	workspacesRoot             string
+	sandboxImage               string
+	containerMemory            string
+	containerCPUShares         string
+	containerRuntime           string
+	containerHTTPPort          int
+	proxyPort                  int
+	idleTimeout                time.Duration
+	r2CredentialsRoot          string
+	r2BucketName               string
+	r2AccountID                string
+	r2AccessKeyID              string
+	r2SecretAccessKey          string
+	r2TempCredentialTTLSeconds int
+	healthPollInterval         time.Duration
+	cfDispatchNamespace        string
+	containerProxyBase         string
+	traceLifecycle             bool
 
 	mu                sync.Mutex
 	containers        map[string]*ContainerRecord
@@ -114,26 +119,31 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 	containerProxyBase := normalizeProxyBaseURL(envString("CONTAINER_PROXY_BASE_URL", defaultProxyBase))
 
 	m := &Manager{
-		workspaces:          workspaces,
-		docker:              docker,
-		workspacesRoot:      workspacesRoot,
-		sandboxImage:        envString("SANDBOX_IMAGE", "chiridion-sandbox:latest"),
-		containerMemory:     envString("CONTAINER_MEMORY", "16g"),
-		containerCPUShares:  envString("CONTAINER_CPU_SHARES", "2048"),
-		containerRuntime:    containerRuntime,
-		containerHTTPPort:   8080,
-		proxyPort:           proxyPort,
-		idleTimeout:         containerIdleTimeoutFromEnv(),
-		r2MountRoot:         "/mnt/r2",
-		healthPollInterval:  maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
-		cfDispatchNamespace: envString("CF_DISPATCH_NAMESPACE", ""),
-		containerProxyBase:  containerProxyBase,
-		traceLifecycle:      envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
-		containers:          make(map[string]*ContainerRecord),
-		containerIPIndex:    make(map[string]string),
-		pendingWorkspaces:   make(map[string]int),
-		ensureInFlight:      make(map[string]*ensureWait),
-		idleTimers:          make(map[string]*time.Timer),
+		workspaces:                 workspaces,
+		docker:                     docker,
+		workspacesRoot:             workspacesRoot,
+		sandboxImage:               envString("SANDBOX_IMAGE", "chiridion-sandbox:latest"),
+		containerMemory:            envString("CONTAINER_MEMORY", "16g"),
+		containerCPUShares:         envString("CONTAINER_CPU_SHARES", "2048"),
+		containerRuntime:           containerRuntime,
+		containerHTTPPort:          8080,
+		proxyPort:                  proxyPort,
+		idleTimeout:                containerIdleTimeoutFromEnv(),
+		r2CredentialsRoot:          envString("R2_CREDENTIALS_ROOT", defaultR2CredentialsRoot()),
+		r2BucketName:               envString("R2_BUCKET_NAME", ""),
+		r2AccountID:                envString("R2_ACCOUNT_ID", ""),
+		r2AccessKeyID:              envString("R2_ACCESS_KEY_ID", ""),
+		r2SecretAccessKey:          envString("R2_SECRET_ACCESS_KEY", ""),
+		r2TempCredentialTTLSeconds: envInt("R2_TEMP_CREDENTIAL_TTL_SECONDS", defaultR2TempCredentialTTLSeconds()),
+		healthPollInterval:         maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
+		cfDispatchNamespace:        envString("CF_DISPATCH_NAMESPACE", ""),
+		containerProxyBase:         containerProxyBase,
+		traceLifecycle:             envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
+		containers:                 make(map[string]*ContainerRecord),
+		containerIPIndex:           make(map[string]string),
+		pendingWorkspaces:          make(map[string]int),
+		ensureInFlight:             make(map[string]*ensureWait),
+		idleTimers:                 make(map[string]*time.Timer),
 	}
 
 	m.discoverRunningContainers()
@@ -458,6 +468,8 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	binds := []string{
 		wsPath + ":/home/claude",
 	}
+	var capAdd []string
+	var devices []dockercontainer.DeviceMapping
 
 	if opts.OrgID != "" && opts.WorkspaceID != "" {
 		env = append(env,
@@ -482,22 +494,34 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		}
 	}
 
-	if opts.OrgID != "" && opts.WorkspaceID != "" && m.r2MountRoot != "" {
-		prefix := opts.OrgID + "/" + opts.WorkspaceID
-		if err := ensureR2Prefix(m.r2MountRoot, prefix); err != nil {
-			log.Printf("[ContainerManager] R2 prefix creation failed for %s: %v (container will start without R2 mounts)", name, err)
-		} else {
-			uploadsDir := filepath.Join(m.r2MountRoot, prefix, "user-uploads")
-			outputsDir := filepath.Join(m.r2MountRoot, prefix, "user-outputs")
-			if waitForR2Dir(uploadsDir, 2*time.Second) && waitForR2Dir(outputsDir, 2*time.Second) {
-				binds = append(binds,
-					uploadsDir+":/mnt/user-uploads:ro,rslave",
-					outputsDir+":/mnt/user-outputs:rslave",
-				)
-				log.Printf("[ContainerManager] R2 bind mounts added for %s", prefix)
-			} else {
-				log.Printf("[ContainerManager] R2 dirs not visible on FUSE for %s (container will start without R2 mounts)", name)
-			}
+	var r2Config *containerR2Config
+	if opts.OrgID != "" && opts.WorkspaceID != "" {
+		cfg, err := m.prepareContainerR2Config(name, opts.OrgID, opts.WorkspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("prepare R2 config for %s: %w", name, err)
+		}
+		r2Config = cfg
+		if r2Config != nil {
+			binds = append(binds,
+				r2Config.uploadsCredentialsFile+":/run/chiridion-r2/uploads.credentials:ro",
+				r2Config.outputsCredentialsFile+":/run/chiridion-r2/outputs.credentials:ro",
+			)
+			capAdd = append(capAdd, "SYS_ADMIN")
+			devices = append(devices, dockercontainer.DeviceMapping{
+				PathOnHost:        "/dev/fuse",
+				PathInContainer:   "/dev/fuse",
+				CgroupPermissions: "rwm",
+			})
+			env = append(env,
+				"R2_MOUNT_ENABLED=1",
+				"R2_BUCKET_NAME="+m.r2BucketName,
+				"R2_ACCOUNT_ID="+m.r2AccountID,
+				"R2_UPLOADS_PREFIX="+r2Config.uploadsPrefix,
+				"R2_OUTPUTS_PREFIX="+r2Config.outputsPrefix,
+				"R2_UPLOADS_CREDENTIALS_FILE=/run/chiridion-r2/uploads.credentials",
+				"R2_OUTPUTS_CREDENTIALS_FILE=/run/chiridion-r2/outputs.credentials",
+			)
+			log.Printf("[ContainerManager] in-container R2 mounts configured for %s/%s", opts.OrgID, opts.WorkspaceID)
 		}
 	}
 
@@ -525,10 +549,12 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	hostConfig := &dockercontainer.HostConfig{
 		Runtime:     m.containerRuntime,
 		Binds:       binds,
+		CapAdd:      capAdd,
 		NetworkMode: dockercontainer.NetworkMode("bridge"),
 		Resources: dockercontainer.Resources{
 			Memory:    memoryBytes,
 			CPUShares: cpuShares,
+			Devices:   devices,
 		},
 		PortBindings: nat.PortMap{
 			containerHTTPPort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: ""}},
@@ -545,6 +571,9 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	)
 	cancel()
 	if err != nil {
+		if r2Config != nil {
+			_ = m.cleanupContainerR2Config(name)
+		}
 		m.trace("ensure_container_create_failed", map[string]any{"name": name, "error": err.Error()})
 		return nil, fmt.Errorf("failed to create container %s: %w", name, err)
 	}
@@ -911,9 +940,16 @@ func (m *Manager) removeContainerIfExists(name string, force bool) error {
 		Force: force,
 	})
 	if err != nil && dockererrdefs.IsNotFound(err) {
-		return nil
+		err = nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if cleanupErr := m.cleanupContainerR2Config(name); cleanupErr != nil {
+		log.Printf("[ContainerManager] failed to cleanup R2 config for %s: %v", name, cleanupErr)
+		return cleanupErr
+	}
+	return nil
 }
 
 func (m *Manager) discoverRunningContainers() {

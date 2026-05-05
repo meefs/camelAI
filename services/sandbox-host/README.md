@@ -111,9 +111,10 @@ Force local image refresh options:
 
 When the configured image ref changes, sandbox-host now recreates workspace containers instead of reusing stale ones.
 
-For R2 host-level FUSE mounts, set `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME`.
-The sandbox-host mounts R2 on the host and bind-mounts per-workspace directories into containers.
-The s3fs FUSE mount uploads synchronously on close() — writes are guaranteed in R2 when the syscall returns.
+For in-container R2 FUSE mounts, set `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME`.
+The sandbox-host derives short-lived R2 temporary credentials scoped to `org/workspace/user-uploads/` (read-only) and `org/workspace/user-outputs/` (read/write), writes root-only credential files under `R2_CREDENTIALS_ROOT` (default `/run/chiridion-r2-creds`), and bind-mounts those files into the container.
+The sandbox image uses `goofys` to mount the scoped prefixes at `/mnt/user-uploads` and `/mnt/user-outputs` with stat/type metadata TTLs set to zero.
+Credentials default to a 24 hour TTL; override with `R2_TEMP_CREDENTIAL_TTL_SECONDS`.
 
 `SANDBOX_PROXY_SECRET` must match between the main worker and sandbox-host. If it is missing,
 container proxy calls (for example `/api/claude/v1/messages`) are rejected.

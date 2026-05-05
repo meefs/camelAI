@@ -518,8 +518,11 @@ func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, route Wo
 		return nil
 	}
 
-	// Resolve /mnt/user-outputs/ and /mnt/user-uploads/ to host R2 FUSE paths
-	if hostPath, ok := s.resolveR2MountPath(path, route.OrgID, route.WorkspaceID); ok {
+	// Resolve /mnt/user-outputs/ and /mnt/user-uploads/ to host R2 FUSE paths.
+	if hostPath, ok := s.containers.ResolveR2HostPath(route.Name, path); ok {
+		return s.serveHostFile(w, hostPath)
+	}
+	if hostPath, ok := s.resolveLegacyR2MountPath(path, route.OrgID, route.WorkspaceID); ok {
 		return s.serveHostFile(w, hostPath)
 	}
 
@@ -531,10 +534,10 @@ func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, route Wo
 	return s.serveHostFile(w, info.HostPath)
 }
 
-// resolveR2MountPath checks if a sandbox path targets /mnt/user-outputs/ or
-// /mnt/user-uploads/ and returns the corresponding host R2 FUSE path.
+// resolveLegacyR2MountPath checks if a sandbox path targets /mnt/user-outputs/ or
+// /mnt/user-uploads/ and returns the legacy global host R2 FUSE path.
 // Returns ("", false) if the path doesn't match or is invalid.
-func (s *Server) resolveR2MountPath(sandboxPath, orgID, workspaceID string) (string, bool) {
+func (s *Server) resolveLegacyR2MountPath(sandboxPath, orgID, workspaceID string) (string, bool) {
 	for _, mountDir := range []string{"user-outputs", "user-uploads"} {
 		prefix := "/mnt/" + mountDir + "/"
 		if !strings.HasPrefix(sandboxPath, prefix) {
