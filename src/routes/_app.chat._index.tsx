@@ -10,6 +10,10 @@ import {
   getOrgBillingOverview,
   type OrgBillingOverview,
 } from "@/lib/billing.server";
+import {
+  applyDevBillingCreditStatusOverride,
+  getDevChatInitialError,
+} from "@/lib/chat-credit-status";
 import { waitUntil } from "@/lib/wait-until";
 import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getWorkerScript } from "@/lib/auth-do";
@@ -245,10 +249,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       llmProviderConfig?.provider,
     ),
     allowedThreadModels: null,
-    billingCreditStatus: buildBillingCreditStatus(
-      billingOverview,
-      Boolean(llmProviderConfig),
+    billingCreditStatus: applyDevBillingCreditStatusOverride(
+      buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
+      url.searchParams,
     ),
+    initialChatError: getDevChatInitialError(url.searchParams),
     llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     experimentalSettings,
     hostname,
@@ -361,6 +366,7 @@ export default function NewChatPage() {
     threadModel,
     allowedThreadModels,
     billingCreditStatus,
+    initialChatError,
     hostname,
     userId,
     userName,
@@ -405,6 +411,7 @@ export default function NewChatPage() {
       threadModel={threadModel}
       allowedThreadModels={allowedThreadModels}
       billingCreditStatus={billingCreditStatus}
+      initialError={initialChatError}
       initialWelcomeInput={salesPrompt}
     />
   );

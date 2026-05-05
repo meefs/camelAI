@@ -14,6 +14,10 @@ import {
   type OrgBillingOverview,
 } from "@/lib/billing.server";
 import {
+  applyDevBillingCreditStatusOverride,
+  getDevChatInitialError,
+} from "@/lib/chat-credit-status";
+import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   isLlmModel,
@@ -116,7 +120,11 @@ export async function clientLoader({
               : getDefaultLlmModel(threadProvider),
             threadProvider,
             experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-            billingCreditStatus: null,
+            billingCreditStatus: applyDevBillingCreditStatusOverride(
+              null,
+              url.searchParams,
+            ),
+            initialChatError: getDevChatInitialError(url.searchParams),
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
@@ -337,6 +345,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         "claude",
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
+      initialChatError: null,
       isNewThread: false,
       hostname,
       orgSlug: org?.slug,
@@ -357,6 +366,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadProvider: "claude" as const,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
+      initialChatError: getDevChatInitialError(url.searchParams),
       isNewThread: false,
       hostname: undefined,
       connections: [] as Integration[],
@@ -416,10 +426,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       ),
     threadProvider: thread?.provider ?? "claude",
     experimentalSettings,
-    billingCreditStatus: buildBillingCreditStatus(
-      billingOverview,
-      Boolean(llmProviderConfig),
+    billingCreditStatus: applyDevBillingCreditStatusOverride(
+      buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
+      url.searchParams,
     ),
+    initialChatError: getDevChatInitialError(url.searchParams),
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
@@ -455,6 +466,7 @@ export default function ChatPage() {
     threadProvider,
     experimentalSettings,
     billingCreditStatus,
+    initialChatError,
     isNewThread,
     hostname,
     orgSlug,
@@ -497,6 +509,7 @@ export default function ChatPage() {
         threadProvider={threadProvider}
         experimentalSettings={experimentalSettings}
         billingCreditStatus={billingCreditStatus}
+        initialError={initialChatError}
         initialPreviewTarget={chatData.previewTarget}
         initialPreviewTabs={chatData.previewTabs}
         initialActiveTabId={chatData.activeTabId}

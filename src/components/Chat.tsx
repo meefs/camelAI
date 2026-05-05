@@ -17,8 +17,8 @@ import {
   useRevalidator,
 } from "react-router";
 import {
-  AlertTriangle,
   ArrowDown,
+  CircleAlert,
   RefreshCw,
   X,
   ChevronDown,
@@ -73,6 +73,7 @@ import { FreeTierModal } from "@/components/free-tier-modal";
 import { OnboardingLoadingModal } from "@/components/onboarding-loading-modal";
 import type { Attachment } from "@/components/attachment-list";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ResizableHandle,
@@ -137,6 +138,7 @@ import {
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
+import type { BillingCreditStatus } from "@/lib/chat-credit-status";
 import {
   loadDraft,
   removeDraft,
@@ -155,6 +157,7 @@ interface ChatProps {
   llmProvider?: LlmProvider | null;
   allowedThreadModels?: LlmModel[] | null;
   billingCreditStatus?: BillingCreditStatus | null;
+  initialError?: string | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
@@ -178,15 +181,6 @@ interface ChatProps {
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
-}
-
-interface BillingCreditStatus {
-  availableCreditsCents: number;
-  totalCreditLimitCents: number;
-  usedPercent: number;
-  isLow: boolean;
-  isExhausted: boolean;
-  hasByokProvider: boolean;
 }
 
 interface PendingNewThreadMessagePayload {
@@ -572,8 +566,19 @@ function MobileViewSwitcher({
   );
 }
 
+const CREDIT_SEND_BLOCKED_MESSAGE =
+  "Message not sent — top up credits or add an API key to continue.";
+
+const creditFormatter = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 2,
+});
+
 function formatCredits(cents: number): string {
-  return `${(Math.max(0, cents) / 100).toFixed(2)} credits`;
+  return creditFormatter.format(Math.max(0, cents) / 100);
+}
+
+function isHostedCreditExhaustedMessage(lowerMessage: string): boolean {
+  return lowerMessage.includes("credits are used up");
 }
 
 function extractChatErrorMessage(error: unknown): string {
@@ -641,14 +646,11 @@ function normalizeChatErrorMessage(error: unknown): string {
     lower.includes("hosted model");
 
   if (isBillingOrCreditError) {
-    const alreadyActionable =
-      lower.includes("settings") ||
-      lower.includes("buy credits") ||
-      lower.includes("api key") ||
-      lower.includes("subscription");
-    return alreadyActionable
-      ? message
-      : `${message} Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider.`;
+    if (isHostedCreditExhaustedMessage(lower)) {
+      return CREDIT_SEND_BLOCKED_MESSAGE;
+    }
+
+    return message;
   }
 
   if (lower.includes("429") || lower.includes("rate limit")) {
@@ -660,76 +662,112 @@ function normalizeChatErrorMessage(error: unknown): string {
 
 export function BillingCreditNotice({
   status,
-  onOpenBilling,
-  onOpenProviderSettings,
   onOpenUsage,
   onTopUp,
+  canTopUp = true,
   className,
 }: {
   status: BillingCreditStatus;
-  onOpenBilling?: () => void;
-  onOpenProviderSettings?: () => void;
-  onOpenUsage?: () => void;
-  onTopUp?: () => void;
+  onOpenUsage: () => void;
+  onTopUp: () => void;
   canTopUp?: boolean;
   className?: string;
 }) {
-  const title = status.isExhausted
-    ? "Hosted model credits are used up"
-    : "Hosted model credits are running low";
-  const description = status.isExhausted
-    ? "Buy credits or add your own API key before sending more hosted-model messages."
-    : `${formatCredits(status.availableCreditsCents)} left of ${formatCredits(status.totalCreditLimitCents)}.`;
+  const usedCreditsCents = Math.max(
+    0,
+    status.totalCreditLimitCents - status.availableCreditsCents,
+  );
+  const usedPercent = Math.min(100, Math.max(0, status.usedPercent));
 
-  return (
-    <div className={cn("mx-auto w-full max-w-3xl px-4 pt-3 md:px-6", className)}>
+  if (status.isExhausted) {
+    const description = status.hasByokProvider
+      ? canTopUp
+        ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
+        : "This thread uses a hosted model that isn't covered by your API key. Ask an organization admin to top up credits, or switch to a model your key supports."
+      : canTopUp
+        ? "Top up to keep going, or use your own API key."
+        : "Ask an organization admin to top up credits, or use your own API key.";
+
+    return (
       <div
         className={cn(
-          "flex flex-col gap-3 rounded-lg border px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between",
-          status.isExhausted
-            ? "border-destructive/30 bg-destructive/10 text-destructive"
-            : "border-amber-300/50 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100",
+          "mx-auto w-full max-w-3xl px-4 pt-3 md:px-6",
+          className,
         )}
       >
-        <div className="flex min-w-0 items-start gap-2">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="min-w-0">
-            <p className="font-medium">{title}</p>
-            <p
-              className={cn(
-                "text-xs",
-                status.isExhausted
-                  ? "text-destructive/80"
-                  : "text-amber-900/80 dark:text-amber-100/80",
-              )}
-            >
-              {description}
-              {status.hasByokProvider
-                ? " Own-key threads do not use hosted credits."
-                : null}
-            </p>
+        <div className="rounded-lg bg-foreground px-4 py-3 text-background">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">
+                You&apos;re out of hosted credits this month
+              </p>
+              <p className="mt-0.5 text-xs text-background/80">
+                {description}
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-background/40 bg-transparent text-background hover:bg-background/10 hover:text-background"
+                onClick={onOpenUsage}
+              >
+                View usage
+              </Button>
+              {canTopUp ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="bg-background text-foreground hover:bg-background/90"
+                  onClick={onTopUp}
+                >
+                  Top up
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
-        <div className="flex shrink-0 gap-2">
-          <Button
-            type="button"
-            variant={status.isExhausted ? "destructive" : "outline"}
-            size="sm"
-            onClick={onTopUp ?? onOpenBilling ?? onOpenUsage}
-          >
-            {onTopUp ? "Top up" : "Billing"}
-          </Button>
-          {!status.hasByokProvider ? (
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn("mx-auto w-full max-w-3xl px-4 pt-3 md:px-6", className)}
+    >
+      <div className="rounded-lg border bg-card px-4 py-3 text-card-foreground">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">
+              {formatCredits(usedCreditsCents)} of{" "}
+              {formatCredits(status.totalCreditLimitCents)} credits used this
+              month
+            </p>
+            {status.hasByokProvider ? (
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                This thread uses a hosted model that isn&apos;t covered by your
+                API key, so it&apos;s drawing from hosted credits.
+              </p>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={onOpenProviderSettings ?? onOpenUsage}
+              onClick={onOpenUsage}
             >
-              Use own key
+              View usage
             </Button>
-          ) : null}
+            {canTopUp ? (
+              <Button type="button" size="sm" onClick={onTopUp}>
+                Top up
+              </Button>
+            ) : null}
+          </div>
         </div>
+        <Progress value={usedPercent} className="mt-2 h-2" />
       </div>
     </div>
   );
@@ -743,15 +781,107 @@ export function ChatErrorNotice({
   onDismiss?: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-      <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <p className="min-w-0 flex-1">{normalizeChatErrorMessage(error)}</p>
-        {onDismiss ? (
-          <Button type="button" variant="ghost" size="icon-sm" onClick={onDismiss}>
-            <X />
-          </Button>
-        ) : null}
+    <div className="flex items-center gap-2 px-1 py-1.5 text-sm text-muted-foreground">
+      <CircleAlert className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <p className="min-w-0 flex-1 text-sm text-muted-foreground">{error}</p>
+      {onDismiss ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="ml-auto h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={onDismiss}
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function DevChatCreditControls({
+  search,
+  onNavigate,
+}: {
+  search: string;
+  onNavigate: (nextSearch: string) => void;
+}) {
+  if (!import.meta.env.DEV) return null;
+
+  const params = new URLSearchParams(search);
+  const isEnabled =
+    params.get("devCreditTest") === "1" ||
+    params.has("devCreditState") ||
+    params.has("devChatError");
+  if (!isEnabled) return null;
+
+  const current = params.get("devCreditState") ?? "normal";
+  const currentError = params.get("devChatError");
+  const setState = (nextState: string | null, nextError?: string | null) => {
+    const nextParams = new URLSearchParams(search);
+    nextParams.set("devCreditTest", "1");
+    if (nextState) {
+      nextParams.set("devCreditState", nextState);
+    } else {
+      nextParams.delete("devCreditState");
+    }
+    if (nextError) {
+      nextParams.set("devChatError", nextError);
+    } else {
+      nextParams.delete("devChatError");
+    }
+    const nextSearch = nextParams.toString();
+    onNavigate(nextSearch ? `?${nextSearch}` : "");
+  };
+  const buttonVariant = (state: string, error?: string) =>
+    current === state && (error ? currentError === error : !currentError)
+      ? "default"
+      : "outline";
+
+  return (
+    <div className="mx-auto w-full max-w-3xl px-4 pt-3 md:px-6">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Credit test</span>
+        <Button
+          type="button"
+          size="sm"
+          variant={buttonVariant("normal")}
+          onClick={() => setState(null)}
+        >
+          Normal
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={buttonVariant("low")}
+          onClick={() => setState("low")}
+        >
+          Low credits
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={buttonVariant("low-byok")}
+          onClick={() => setState("low-byok")}
+        >
+          Low + BYOK
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={buttonVariant("exhausted")}
+          onClick={() => setState("exhausted")}
+        >
+          No credits
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={buttonVariant("exhausted", "out-of-credits")}
+          onClick={() => setState("exhausted", "out-of-credits")}
+        >
+          Send failure
+        </Button>
       </div>
     </div>
   );
@@ -1006,39 +1136,9 @@ const ChatMessagesView = memo(function ChatMessagesView({
       })}
 
       {/* Error display */}
-      {error && (
-        <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
-          <div className="flex items-start gap-3">
-            <svg
-              className="w-5 h-5 text-destructive shrink-0 mt-0.5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-              />
-            </svg>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-destructive mb-1">
-                Something went wrong
-              </p>
-              <p className="text-sm text-muted-foreground">{error}</p>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={() => setError(null)}
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      )}
+      {error ? (
+        <ChatErrorNotice error={error} onDismiss={() => setError(null)} />
+      ) : null}
 
       {/* Compaction in-progress indicator */}
       {isCompacting && (
@@ -1246,6 +1346,7 @@ export default function Chat({
   llmProvider,
   allowedThreadModels,
   billingCreditStatus,
+  initialError,
   experimentalSettings,
   initialPreviewTarget,
   initialPreviewTabs,
@@ -1635,7 +1736,9 @@ export default function Chat({
   }, [messages]);
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? "");
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() =>
+    initialError ? normalizeChatErrorMessage(initialError) : null,
+  );
   const [welcomeInput, setWelcomeInput] = useState(
     () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
   );
@@ -1690,6 +1793,10 @@ export default function Chat({
     threadId ?? null,
   );
   const [isDragOver, setIsDragOver] = useState(false);
+
+  useEffect(() => {
+    setError(initialError ? normalizeChatErrorMessage(initialError) : null);
+  }, [initialError]);
 
   useEffect(() => {
     inputRef.current = input;
@@ -5498,9 +5605,16 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       {!readOnly && billingCreditStatus ? (
         <BillingCreditNotice
           status={billingCreditStatus}
-          onOpenBilling={() => navigate("/settings/organization/billing")}
-          onOpenProviderSettings={() =>
-            navigate("/settings/organization/ai-provider")
+          onOpenUsage={() => navigate("/settings/organization/usage")}
+          onTopUp={() => navigate("/settings/organization/usage?action=topup")}
+          canTopUp={Boolean(isAdmin)}
+        />
+      ) : null}
+      {!readOnly ? (
+        <DevChatCreditControls
+          search={location.search}
+          onNavigate={(nextSearch) =>
+            navigate(`${location.pathname}${nextSearch}`)
           }
         />
       ) : null}
