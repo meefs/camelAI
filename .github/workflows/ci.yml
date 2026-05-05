@@ -38,8 +38,6 @@ jobs:
           case "${GITHUB_REF}" in
             refs/heads/main)
               echo "host_ip=172.206.70.242" >> "$GITHUB_OUTPUT"
-              echo "acr_name=crchiridionstaging" >> "$GITHUB_OUTPUT"
-              echo "acr_login_server=crchiridionstaging.azurecr.io" >> "$GITHUB_OUTPUT"
               ;;
             refs/heads/production)
               echo "host_ip=20.46.233.68" >> "$GITHUB_OUTPUT"
@@ -83,11 +81,18 @@ jobs:
             services/sandbox-host/Dockerfile.sandbox \
             sandbox-image-deploy:/opt/chiridion/Dockerfile.sandbox
 
-      - name: Build and push image to ACR
+      - name: Build sandbox image
         run: |
           ssh sandbox-image-deploy '
             cd /opt/chiridion &&
-            sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox . &&
+            sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox .
+          '
+
+      - name: Push production image to ACR
+        if: github.ref == 'refs/heads/production'
+        run: |
+          ssh sandbox-image-deploy '
+            cd /opt/chiridion &&
             sudo az acr login --name ${{ steps.target.outputs.acr_name }} &&
             sudo docker tag chiridion-sandbox:latest ${{ steps.target.outputs.acr_login_server }}/chiridion-sandbox:latest &&
             sudo docker push ${{ steps.target.outputs.acr_login_server }}/chiridion-sandbox:latest
