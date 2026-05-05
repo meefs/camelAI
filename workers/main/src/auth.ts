@@ -2176,6 +2176,11 @@ export class OrgDO extends DurableObject<DOEnv> {
         ...updates,
       };
       let trialCreditGranted = false;
+      const existingTrialUsed = Boolean(
+        existingOrg.billing_trial_started_at ||
+          existingOrg.billing_trial_ends_at ||
+          existingOrg.billing_trial_credit_granted_at,
+      );
 
       if (
         normalizedTrialCreditGrantCents > 0 &&
@@ -2183,7 +2188,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         updates.billing_status === "trialing" &&
         updates.billing_trial_started_at &&
         updates.billing_trial_ends_at &&
-        !existingOrg.billing_trial_credit_granted_at
+        !existingTrialUsed
       ) {
         nextInfo.billing_credit_grant_total_cents =
           (existingOrg.billing_credit_grant_total_cents ?? 0) +
