@@ -108,6 +108,7 @@ import { PreviewToolbar } from "@/components/preview-panel/preview-toolbar";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSetAppPublicPayload } from "@/lib/app-visibility";
+import { buildSlugMap } from "@/lib/connection-mentions";
 import {
   type SDKEvent,
   applyStreamingEventToMessage,
@@ -168,6 +169,7 @@ interface ChatProps {
   /** Superuser admin read-only viewer */
   readOnly?: boolean;
   initialWelcomeInput?: string | null;
+  connections?: Integration[];
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -195,6 +197,7 @@ interface PendingNewThreadMessagePayload {
   threadProvider?: ChatHarness;
   workspaceId?: string;
   orgSlug?: string;
+  connections?: Integration[];
 }
 
 function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
@@ -906,6 +909,7 @@ interface ChatMessagesViewProps {
   assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
   assistantSpacerRef: RefObject<HTMLDivElement | null>;
   messagesEndRef: RefObject<HTMLDivElement | null>;
+  mentionSlugMap?: Map<string, Integration>;
 }
 
 const ChatMessagesView = memo(function ChatMessagesView({
@@ -935,6 +939,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
   assistantPendingMeasureRef,
   assistantSpacerRef,
   messagesEndRef,
+  mentionSlugMap,
 }: ChatMessagesViewProps) {
   return (
     <>
@@ -994,6 +999,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
               skillSheets={skillSheetsByToolId}
               hostname={hostname}
               orgSlug={orgSlug}
+              mentionSlugMap={mentionSlugMap}
             />
           </div>
         );
@@ -1250,6 +1256,7 @@ export default function Chat({
   isLoadingMessages = false,
   readOnly = false,
   initialWelcomeInput,
+  connections,
   welcomeData,
 }: ChatProps) {
   const navigate = useNavigate();
@@ -1975,6 +1982,11 @@ export default function Chat({
     recentThreads: [],
     renderedAt: fallbackRenderedAtRef.current,
   };
+  const mentionConnections = connections ?? resolvedWelcomeData.connections;
+  const mentionSlugMap = useMemo(
+    () => buildSlugMap(mentionConnections) as Map<string, Integration>,
+    [mentionConnections],
+  );
   // Use static key for pending messages - threadId in payload ensures correct matching
   // This avoids issues when workspace changes between welcome screen and chat page
   const pendingMessageKey = "pendingMessage:newThread";
@@ -4410,6 +4422,7 @@ export default function Chat({
               threadProvider: data.thread.provider,
               workspaceId: resolvedWorkspaceId,
               orgSlug: currentOrg?.slug,
+              connections: mentionConnections,
             }),
           );
           navigate(`/chat/${data.thread.id}?newThread=1`);
@@ -4451,6 +4464,7 @@ export default function Chat({
     navigate,
     resolvedWorkspaceId,
     currentOrg,
+    mentionConnections,
   ]);
 
   useEffect(() => {
@@ -5538,6 +5552,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             assistantPendingMeasureRef={assistantPendingMeasureRef}
             assistantSpacerRef={assistantSpacerRef}
             messagesEndRef={messagesEndRef}
+            mentionSlugMap={mentionSlugMap}
           />
         </div>
       </div>
@@ -5612,6 +5627,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                     updateThreadModelFetcher.state !== "idle"
                   }
                   textareaRef={composerTextareaRef}
+                  mentionableConnections={mentionConnections}
+                  onMentionAddNewClick={() => navigate("/connections")}
                 />
               </div>
             </div>

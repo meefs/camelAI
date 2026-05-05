@@ -7,6 +7,7 @@ import {
   requireSessionWorkspaceAccess,
   getAuthEnv,
 } from "@/lib/auth.server";
+import { integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   getOrgBillingOverview,
@@ -23,7 +24,13 @@ import * as chatDO from "@/lib/chat-do.server";
 import Chat from "@/components/Chat";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
-import type { ChatHarness, LlmModel, Message, PreviewTarget } from "@/types";
+import type {
+  ChatHarness,
+  Integration,
+  LlmModel,
+  Message,
+  PreviewTarget,
+} from "@/types";
 
 function buildBillingCreditStatus(
   overview: OrgBillingOverview | null,
@@ -73,9 +80,9 @@ export function meta({ data }: Route.MetaArgs) {
 /**
  * Client loader that short-circuits the server round trip for new thread
  * navigations. When navigating from the welcome screen with ?newThread=1,
- * the pending-message sessionStorage entry already contains workspaceId and
- * orgSlug — everything the page needs. This eliminates a full
- * requireAuthContext() + getThread() server call (~400ms).
+ * the pending-message sessionStorage entry already contains workspaceId,
+ * orgSlug, and connections — everything the page needs. This eliminates a
+ * full requireAuthContext() + getThread() server call (~400ms).
  */
 export async function clientLoader({
   serverLoader,
@@ -94,6 +101,7 @@ export async function clientLoader({
           orgSlug?: string;
           threadModel?: LlmModel;
           threadProvider?: ChatHarness;
+          connections?: Integration[];
         };
         if (parsed.threadId === params.id && parsed.workspaceId) {
           const threadProvider =
@@ -112,6 +120,9 @@ export async function clientLoader({
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
+            connections: Array.isArray(parsed.connections)
+              ? parsed.connections
+              : [],
             readOnly: false,
           };
         }
@@ -329,6 +340,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isNewThread: false,
       hostname,
       orgSlug: org?.slug,
+      connections: [] as Integration[],
       readOnly: true,
     };
   }
@@ -347,6 +359,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       billingCreditStatus: null,
       isNewThread: false,
       hostname: undefined,
+      connections: [] as Integration[],
       readOnly: false,
     };
   }
@@ -380,6 +393,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
     : buildPreviewChatDataPromise(context, authEnv, orgId, params.id);
+  const connections = await env.WORKSPACE.get(
+    env.WORKSPACE.idFromName(workspaceId),
+  )
+    .getIntegrations()
+    .then((records) => records.map(integrationRecordToIntegration))
+    .catch((error) => {
+      console.error("Failed to load workspace connections:", error);
+      return [] as Integration[];
+    });
 
   return {
     threadId: params.id,
@@ -401,6 +423,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
+    connections,
     readOnly: false,
   };
 }
@@ -435,6 +458,7 @@ export default function ChatPage() {
     isNewThread,
     hostname,
     orgSlug,
+    connections,
     readOnly,
   } = useLoaderData<typeof loader>();
 
@@ -479,6 +503,7 @@ export default function ChatPage() {
         isNewThread={isNewThread}
         hostname={hostname}
         orgSlug={orgSlug}
+        connections={connections}
         isLoadingMessages={isLoadingMessages}
         readOnly={readOnly}
       />
