@@ -7,40 +7,46 @@ import (
 )
 
 func parseCodexRolloutMessages(fileContent string, camelThreadID string) []parsedChatMessage {
-	lines := strings.Split(fileContent, "\n")
-	messages := make([]parsedChatMessage, 0)
-	assistantBlocks := make([]any, 0)
-	assistantCreatedAt := int64(0)
-	assistantID := ""
+	response := parseCodexRolloutThreadReadResponse(fileContent)
+	return parseCodexThreadReadMessages(response, camelThreadID)
+}
 
-	flushAssistant := func() {
-		if len(assistantBlocks) == 0 {
+func parseCodexRolloutThreadReadResponse(fileContent string) codexThreadReadResponse {
+	lines := strings.Split(fileContent, "\n")
+	turns := make([]codexTurn, 0)
+	current := codexTurn{ID: "codex_rollout_turn_0"}
+	turnIndex := 0
+
+	flushTurn := func() {
+		if len(current.Items) == 0 {
 			return
 		}
-		id := assistantID
-		if id == "" {
-			id = fmt.Sprintf("codex_rollout_assistant_%d", len(messages))
+		if current.ID == "" {
+			current.ID = fmt.Sprintf("codex_rollout_turn_%d", turnIndex)
 		}
-		if assistantCreatedAt <= 0 {
-			assistantCreatedAt = nowMillis()
-		}
-		messages = append(messages, parsedChatMessage{
-			ID:        id,
-			ThreadID:  camelThreadID,
-			Role:      "assistant",
-			Content:   assistantBlocks,
-			CreatedAt: assistantCreatedAt,
-		})
-		assistantBlocks = make([]any, 0)
-		assistantCreatedAt = 0
-		assistantID = ""
+		turns = append(turns, current)
+		turnIndex++
+		current = codexTurn{ID: fmt.Sprintf("codex_rollout_turn_%d", turnIndex)}
 	}
 
-	appendAssistantBlock := func(timestamp any, block map[string]any) {
-		if assistantCreatedAt <= 0 {
-			assistantCreatedAt = toCreatedAt(timestamp)
+	setStartedAt := func(timestamp any) {
+		if current.StartedAt != nil {
+			return
 		}
-		assistantBlocks = append(assistantBlocks, block)
+		seconds := codexRolloutTimestampSeconds(timestamp)
+		current.StartedAt = &seconds
+	}
+
+	appendItem := func(timestamp any, item map[string]any) {
+		setStartedAt(timestamp)
+		if firstString(item, "id", "call_id") == "" {
+			item["id"] = fmt.Sprintf("codex_rollout_item_%d", len(turns)+len(current.Items))
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return
+		}
+		current.Items = append(current.Items, encoded)
 	}
 
 	for _, rawLine := range lines {
@@ -60,27 +66,36 @@ func parseCodexRolloutMessages(fileContent string, camelThreadID string) []parse
 		switch eventType {
 		case "event_msg":
 			switch firstString(payload, "type") {
+			case "task_started":
+				if len(current.Items) > 0 {
+					flushTurn()
+				}
+				if turnID := firstString(payload, "turn_id", "id"); turnID != "" {
+					current.ID = turnID
+				}
+				setStartedAt(timestamp)
 			case "user_message":
 				text := firstString(payload, "message")
 				if strings.TrimSpace(text) == "" {
 					continue
 				}
-				flushAssistant()
-				messages = append(messages, parsedChatMessage{
-					ID:        fmt.Sprintf("codex_rollout_user_%d", len(messages)),
-					ThreadID:  camelThreadID,
-					Role:      "user",
-					Content:   text,
-					CreatedAt: toCreatedAt(timestamp),
+				appendItem(timestamp, map[string]any{
+					"type": "userMessage",
+					"id":   fmt.Sprintf("codex_rollout_user_%d", len(turns)+len(current.Items)),
+					"content": []map[string]any{
+						{"type": "text", "text": text},
+					},
 				})
 			case "task_complete":
-				flushAssistant()
+				seconds := codexRolloutTimestampSeconds(timestamp)
+				current.CompletedAt = &seconds
+				flushTurn()
 			}
 		case "response_item":
 			itemType := firstString(payload, "type")
 			itemID := firstString(payload, "id", "call_id")
 			if itemID == "" {
-				itemID = fmt.Sprintf("codex_rollout_item_%d", len(messages)+len(assistantBlocks))
+				itemID = fmt.Sprintf("codex_rollout_item_%d", len(turns)+len(current.Items))
 			}
 			switch itemType {
 			case "message":
@@ -91,65 +106,32 @@ func parseCodexRolloutMessages(fileContent string, camelThreadID string) []parse
 				if strings.TrimSpace(text) == "" {
 					continue
 				}
-				if assistantID == "" {
-					assistantID = itemID
-				}
-				appendAssistantBlock(timestamp, map[string]any{
-					"type":     "text",
-					"text":     text,
-					"itemId":   itemID,
-					"itemKind": itemType,
+				appendItem(timestamp, map[string]any{
+					"type": "agentMessage",
+					"id":   itemID,
+					"text": text,
 				})
 			case "reasoning":
-				text := codexRolloutReasoningText(payload)
-				summaries := extractCodexStringSlice(payload["summary"])
-				if strings.TrimSpace(text) == "" && len(summaries) == 0 {
+				payload["id"] = itemID
+				appendItem(timestamp, payload)
+			case "function_call":
+				payload["id"] = itemID
+				appendItem(timestamp, payload)
+			case "function_call_output":
+				payload["id"] = itemID
+				appendItem(timestamp, payload)
+			default:
+				if itemType == "" {
 					continue
 				}
-				appendAssistantBlock(timestamp, map[string]any{
-					"type":      "thinking",
-					"thinking":  text,
-					"itemId":    itemID,
-					"itemKind":  itemType,
-					"label":     "Reasoning",
-					"summaries": summaries,
-				})
-			case "function_call":
-				name := firstString(payload, "name")
-				if name == "" {
-					name = "function_call"
-				}
-				toolID := firstString(payload, "call_id")
-				if toolID == "" {
-					toolID = itemID
-				}
-				input := codexRolloutFunctionArguments(payload["arguments"])
-				appendAssistantBlock(timestamp, map[string]any{
-					"type":     "tool_use",
-					"id":       toolID,
-					"name":     name,
-					"input":    input,
-					"itemKind": itemType,
-				})
-			case "function_call_output":
-				callID := firstString(payload, "call_id")
-				content := payload["output"]
-				if text, ok := asString(content); ok {
-					content = text
-				}
-				appendAssistantBlock(timestamp, map[string]any{
-					"type":        "tool_result",
-					"tool_use_id": callID,
-					"content":     content,
-					"itemId":      itemID,
-					"itemKind":    itemType,
-				})
+				payload["id"] = itemID
+				appendItem(timestamp, payload)
 			}
 		}
 	}
 
-	flushAssistant()
-	return messages
+	flushTurn()
+	return codexThreadReadResponse{Thread: codexThread{Turns: turns}}
 }
 
 func codexRolloutMessageText(content any) string {
@@ -172,23 +154,12 @@ func codexRolloutMessageText(content any) string {
 	return out.String()
 }
 
-func codexRolloutReasoningText(payload map[string]any) string {
-	if text := firstString(payload, "content"); text != "" {
-		return text
+func codexRolloutTimestampSeconds(timestamp any) int64 {
+	millis := toCreatedAt(timestamp)
+	if millis <= 0 {
+		return 0
 	}
-	content, ok := asSlice(payload["content"])
-	if !ok {
-		return ""
-	}
-	var out strings.Builder
-	for _, rawBlock := range content {
-		block, ok := asMap(rawBlock)
-		if !ok {
-			continue
-		}
-		out.WriteString(firstString(block, "text"))
-	}
-	return out.String()
+	return millis / 1000
 }
 
 func codexRolloutFunctionArguments(value any) map[string]any {

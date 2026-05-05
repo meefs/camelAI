@@ -82,3 +82,52 @@ func TestReadCodexStateMessagesMapsCopiedRolloutPath(t *testing.T) {
 		t.Fatalf("expected 2 messages, got %d: %#v", len(messages), messages)
 	}
 }
+
+func TestReadCodexStateMessagesReadsWalBackedState(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, ".codex", "threads", "camel-thread")
+	sessionDir := filepath.Join(stateDir, "sessions", "2026", "04", "14")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	rolloutPath := filepath.Join(sessionDir, "rollout.jsonl")
+	if err := os.WriteFile(rolloutPath, []byte(`{"timestamp":"2026-04-14T18:53:31.464Z","type":"event_msg","payload":{"type":"user_message","message":"hello wal"}}
+{"timestamp":"2026-04-14T18:53:35.000Z","type":"response_item","payload":{"type":"message","role":"assistant","id":"msg_1","content":[{"type":"output_text","text":"done"}]}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(stateDir, "state_5.sqlite")
+	db, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE threads (
+		id TEXT PRIMARY KEY,
+		rollout_path TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads (id, rollout_path, created_at, updated_at) VALUES (?, ?, ?, ?)`, "codex-thread", rolloutPath, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statePath + "-wal"); err != nil {
+		t.Fatalf("expected WAL file: %v", err)
+	}
+
+	messages, err := readCodexStateMessages(context.Background(), statePath, "camel-thread", "codex-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d: %#v", len(messages), messages)
+	}
+}

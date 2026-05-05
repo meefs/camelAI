@@ -17,7 +17,7 @@ func readCodexStateMessages(ctx context.Context, stateDBPath, camelThreadID, cod
 		return nil, errors.New("codex state db path is required")
 	}
 
-	db, err := sql.Open("sqlite", "file:"+stateDBPath+"?mode=ro&immutable=1")
+	db, err := sql.Open("sqlite", "file:"+stateDBPath+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
@@ -90,18 +90,4 @@ func mapCodexRolloutPathToStateDir(stateDBPath, rolloutPath string) string {
 	suffix := strings.TrimPrefix(rolloutPath[index+len(marker):], "/")
 	stateThreadsDir := filepath.Dir(filepath.Dir(stateDBPath))
 	return filepath.Join(stateThreadsDir, filepath.FromSlash(suffix))
-}
-
-func extractCodexStringSlice(value any) []string {
-	values, ok := value.([]any)
-	if !ok {
-		return []string{}
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if text, ok := value.(string); ok && text != "" {
-			out = append(out, text)
-		}
-	}
-	return out
 }
