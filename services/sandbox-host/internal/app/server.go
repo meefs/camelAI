@@ -189,6 +189,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		s.handleHostPiWebToolRoute(w, req, sourceIP, "fetch")
 		return
 	}
+	if strings.HasPrefix(req.URL.Path, "/internal/host-pi/inference/") {
+		s.handleHostPiInferenceRoute(w, req, sourceIP)
+		return
+	}
 
 	// Usage/spend endpoints (org-scoped, control port only).
 	if strings.HasPrefix(req.URL.Path, "/v1/usage/") {
@@ -862,6 +866,25 @@ func (s *Server) handleChatProxy(
 	return s.serveHostPiChat(clientConn, name, route, opts, threadID, threadKey)
 }
 
+func (s *Server) handleHostPiInferenceRoute(w http.ResponseWriter, req *http.Request, sourceIP string) {
+	if !isLoopbackSourceIP(sourceIP) {
+		errorJSON(w, "Host Pi inference endpoint is loopback only", http.StatusForbidden)
+		return
+	}
+
+	proxy, ok := parseHostPiInferenceRoute(req.URL.Path)
+	if !ok {
+		errorJSON(w, "Invalid Host Pi inference route", http.StatusNotFound)
+		return
+	}
+	if !isInferenceProxyPath(proxy.UpstreamPath) {
+		errorJSON(w, "Invalid Host Pi inference upstream", http.StatusForbidden)
+		return
+	}
+
+	s.handleProxyRoute(w, req, proxy, sourceIP)
+}
+
 func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, proxy ProxyRoute, sourceIP string) {
 	startedAt := time.Now()
 	requestID := randomID()
@@ -876,12 +899,17 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 		errorJSON(w, "Proxy caller resolution failed", http.StatusInternalServerError)
 		return
 	}
-	fallbackThreadKey := ""
+
+	var threadKey string
+	var threadContext *ProxyThreadContext
+	hostPiLoopback := false
 	if caller == nil {
 		if isLoopbackSourceIP(sourceIP) {
-			if threadKey, containerName, ok := s.findActiveProxyThreadByThreadID(proxy.ThreadID, time.Now().UTC()); ok {
-				fallbackThreadKey = threadKey
-				caller = &container.ContainerRecord{Name: containerName}
+			if resolvedKey, resolvedContext, ok := s.resolveHostPiLoopbackProxyThread(proxy.ThreadID, time.Now().UTC()); ok {
+				threadKey = resolvedKey
+				threadContext = resolvedContext
+				hostPiLoopback = true
+				caller = &container.ContainerRecord{Name: resolvedContext.ContainerName}
 			}
 		}
 	}
@@ -897,36 +925,48 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 		return
 	}
 
-	threadKey := proxyThreadKey(caller.Name, proxy.ThreadID)
-	if fallbackThreadKey != "" {
-		threadKey = fallbackThreadKey
+	if !hostPiLoopback && isInferenceProxyPath(proxy.UpstreamPath) {
+		s.trace("proxy_request_rejected_container_inference", map[string]any{
+			"requestId":       requestID,
+			"sourceIp":        sourceIP,
+			"callerContainer": caller.Name,
+			"method":          req.Method,
+			"upstreamPath":    proxy.UpstreamPath,
+			"threadId":        proxy.ThreadID,
+		})
+		errorJSON(w, "Inference proxy is only available to the host Pi harness", http.StatusForbidden)
+		return
 	}
-	var upsertedThread *ProxyThreadContext
-	removedThread := false
-	s.proxyMu.Lock()
-	threadContext := s.proxyThreads[threadKey]
-	now := time.Now().UTC()
-	if threadContext != nil {
-		if threadContext.ContainerName != caller.Name {
-			threadContext = nil
-			delete(s.proxyThreads, threadKey)
-			removedThread = true
-		} else if threadContext.ClosedAt != nil && !threadContext.ExpiresAt.After(now) {
-			// Closed thread mappings are only valid through close-grace.
-			threadContext = nil
-			delete(s.proxyThreads, threadKey)
-			removedThread = true
-		} else {
-			threadContext.LastSeenAt = now
-			upsertedThread = copyProxyThreadContext(threadContext)
+
+	if threadContext == nil {
+		threadKey = proxyThreadKey(caller.Name, proxy.ThreadID)
+		var upsertedThread *ProxyThreadContext
+		removedThread := false
+		s.proxyMu.Lock()
+		threadContext = s.proxyThreads[threadKey]
+		now := time.Now().UTC()
+		if threadContext != nil {
+			if threadContext.ContainerName != caller.Name {
+				threadContext = nil
+				delete(s.proxyThreads, threadKey)
+				removedThread = true
+			} else if threadContext.ClosedAt != nil && !threadContext.ExpiresAt.After(now) {
+				// Closed thread mappings are only valid through close-grace.
+				threadContext = nil
+				delete(s.proxyThreads, threadKey)
+				removedThread = true
+			} else {
+				threadContext.LastSeenAt = now
+				upsertedThread = copyProxyThreadContext(threadContext)
+			}
 		}
-	}
-	s.proxyMu.Unlock()
-	if upsertedThread != nil {
-		s.upsertProxyThreadState(upsertedThread)
-	}
-	if removedThread {
-		s.deleteProxyThreadState(threadKey)
+		s.proxyMu.Unlock()
+		if upsertedThread != nil {
+			s.upsertProxyThreadState(upsertedThread)
+		}
+		if removedThread {
+			s.deleteProxyThreadState(threadKey)
+		}
 	}
 
 	if threadContext == nil {
@@ -2216,35 +2256,37 @@ func rewriteOpenRouterRequestBody(rawBody []byte) []byte {
 	return nextBody
 }
 
-func (s *Server) findActiveProxyThreadByThreadID(threadID string, now time.Time) (threadKey string, containerName string, ok bool) {
-	if strings.TrimSpace(threadID) == "" {
-		return "", "", false
+func (s *Server) resolveHostPiLoopbackProxyThread(threadID string, now time.Time) (threadKey string, threadContext *ProxyThreadContext, ok bool) {
+	bridge := s.hostPiBridgeForThread(threadID)
+	if bridge == nil {
+		return "", nil, false
 	}
 
 	s.proxyMu.Lock()
-	defer s.proxyMu.Unlock()
-
-	var found *ProxyThreadContext
-	var foundKey string
-	for key, ctx := range s.proxyThreads {
-		if ctx == nil || ctx.ThreadID != threadID {
-			continue
-		}
-		if ctx.ClosedAt != nil {
-			continue
-		}
-		if found != nil && foundKey != key {
-			// Ambiguous thread mapping; fall back to strict caller-IP flow.
-			return "", "", false
-		}
-		found = ctx
-		foundKey = key
+	ctx := s.proxyThreads[bridge.threadKey]
+	if ctx == nil || ctx.ThreadID != threadID {
+		s.proxyMu.Unlock()
+		return "", nil, false
 	}
 
-	if found == nil {
-		return "", "", false
-	}
-	return foundKey, found.ContainerName, true
+	ctx.ClosedAt = nil
+	ctx.LastSeenAt = now
+	ctx.ExpiresAt = now.Add(s.cfg.ProxyThreadActiveTTL)
+	resolved := copyProxyThreadContext(ctx)
+	s.proxyMu.Unlock()
+
+	s.upsertProxyThreadState(resolved)
+	return bridge.threadKey, resolved, true
+}
+
+func isInferenceProxyPath(upstreamPath string) bool {
+	upstreamPath = strings.TrimSpace(upstreamPath)
+	return upstreamPath == "/api/claude" ||
+		strings.HasPrefix(upstreamPath, "/api/claude/") ||
+		upstreamPath == "/api/openai" ||
+		strings.HasPrefix(upstreamPath, "/api/openai/") ||
+		upstreamPath == "/api/openrouter" ||
+		strings.HasPrefix(upstreamPath, "/api/openrouter/")
 }
 
 func (s *Server) runProxyThreadCleanup() {
@@ -2430,8 +2472,21 @@ func parseProxyRoute(path string) (ProxyRoute, bool) {
 	return ProxyRoute{ThreadID: threadID, UpstreamPath: firstNonEmpty(matches[2], "/")}, true
 }
 
+func parseHostPiInferenceRoute(path string) (ProxyRoute, bool) {
+	matches := hostPiInferenceRouteRegex.FindStringSubmatch(path)
+	if len(matches) == 0 {
+		return ProxyRoute{}, false
+	}
+	threadID, err := url.PathUnescape(matches[1])
+	if err != nil {
+		return ProxyRoute{}, false
+	}
+	return ProxyRoute{ThreadID: threadID, UpstreamPath: firstNonEmpty(matches[2], "/")}, true
+}
+
 var workspaceRouteRegex = regexp.MustCompile(`^/v1/workspaces/([^/]+)/([^/]+)(/.*)?$`)
 var proxyRouteRegex = regexp.MustCompile(`^/proxy/([^/]+)(/.*)?$`)
+var hostPiInferenceRouteRegex = regexp.MustCompile(`^/internal/host-pi/inference/([^/]+)(/.*)?$`)
 var cfAssetsUploadProxyRegex = regexp.MustCompile(`^/client/v4/accounts/[^/]+/workers/assets/upload$`)
 
 func shouldPreserveAuthorization(upstreamPath string) bool {

@@ -14,18 +14,11 @@ type ExecResponse = {
 };
 
 const proxyEnvKeys = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_BASE_URL",
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_BASE_URL",
   "CLOUDFLARE_API_TOKEN",
   "DATA_PROXY_URL",
   "MCP_SERVER_URL",
-  "OPENAI_API_KEY",
-  "OPENAI_BASE_URL",
-  "OPENAI_PROXY_URL",
-  "OPENROUTER_ANTHROPIC_BASE_URL",
-  "OPENROUTER_BASE_URL",
   "RESEND_PROXY_URL",
   "THREAD_ID",
 ];
@@ -131,14 +124,9 @@ async function runContainerCommand(command: string, cwd?: string, signal?: Abort
       .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
   );
   if (containerProxyBase) {
-    env.ANTHROPIC_BASE_URL = `${containerProxyBase}/api/claude`;
     env.CLOUDFLARE_API_BASE_URL = `${containerProxyBase}/client/v4`;
     env.DATA_PROXY_URL = `${containerProxyBase}/api`;
     env.MCP_SERVER_URL = `${containerProxyBase}/mcp`;
-    env.OPENAI_PROXY_URL = `${containerProxyBase}/api/openai`;
-    env.OPENAI_BASE_URL = `${containerProxyBase}/api/openai/v1`;
-    env.OPENROUTER_ANTHROPIC_BASE_URL = `${containerProxyBase}/api/claude`;
-    env.OPENROUTER_BASE_URL = `${containerProxyBase}/api/openrouter/v1`;
     env.RESEND_PROXY_URL = `${containerProxyBase}/api/resend`;
   }
   const response = await fetch(execUrl, {

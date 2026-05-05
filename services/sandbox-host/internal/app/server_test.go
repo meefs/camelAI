@@ -72,6 +72,19 @@ func TestParseProxyRoute(t *testing.T) {
 	}
 }
 
+func TestParseHostPiInferenceRoute(t *testing.T) {
+	proxy, ok := parseHostPiInferenceRoute("/internal/host-pi/inference/thread-123/api/openai/v1/responses")
+	if !ok {
+		t.Fatal("expected host Pi inference route to parse")
+	}
+	if proxy.ThreadID != "thread-123" {
+		t.Fatalf("unexpected thread id: %s", proxy.ThreadID)
+	}
+	if proxy.UpstreamPath != "/api/openai/v1/responses" {
+		t.Fatalf("unexpected upstream path: %s", proxy.UpstreamPath)
+	}
+}
+
 func TestRewriteClaudeRequestBodyForOpenRouter(t *testing.T) {
 	body := []byte(`{"model":"sonnet","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
 	rewritten := rewriteClaudeRequestBodyForOpenRouter(body)
@@ -194,6 +207,74 @@ func TestLoadProxyThreadsFromState(t *testing.T) {
 	}
 	if !recordKeys[open.Key] || !recordKeys[closedGrace.Key] || recordKeys[expired.Key] {
 		t.Fatalf("unexpected persisted record keys: %+v", recordKeys)
+	}
+}
+
+func TestHostPiInferenceRouteUsesThreadContextWithoutContainerCaller(t *testing.T) {
+	var sawGatewayRequest bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/api/internal/billing/access":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"org_id":"org-1","billing_status":"enterprise"}`))
+		case "/openrouter/responses":
+			sawGatewayRequest = true
+			if got := req.Header.Get("cf-aig-authorization"); got != "Bearer test-token" {
+				t.Fatalf("unexpected gateway auth header: %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"response","model":"openai/gpt-5.4"}`))
+		default:
+			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	now := time.Now().UTC()
+	threadKey := proxyThreadKey("test-container", "thread-1")
+	server := &Server{
+		cfg: Config{
+			SandboxProxySecret:   "secret",
+			AIGatewayBaseURL:     upstream.URL,
+			AIGatewayToken:       "test-token",
+			ProxyThreadActiveTTL: 5 * time.Minute,
+		},
+		containers:   container.NewTestManager(),
+		httpClient:   upstream.Client(),
+		proxyThreads: make(map[string]*ProxyThreadContext),
+		hostPiChats:  make(map[string]*hostPiBridge),
+	}
+	closedAt := now.Add(-10 * time.Second)
+	server.proxyThreads[threadKey] = &ProxyThreadContext{
+		Key:           threadKey,
+		ContainerName: "test-container",
+		OrgID:         "org-1",
+		WorkspaceID:   "ws-1",
+		UserID:        "user-1",
+		ThreadID:      "thread-1",
+		WorkerBaseURL: upstream.URL,
+		CreatedAt:     now.Add(-1 * time.Minute),
+		LastSeenAt:    now.Add(-30 * time.Second),
+		ExpiresAt:     now.Add(30 * time.Second),
+		ClosedAt:      &closedAt,
+	}
+	server.hostPiChats["thread-1"] = &hostPiBridge{threadID: "thread-1", threadKey: threadKey}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/host-pi/inference/thread-1/api/openai/v1/responses", strings.NewReader(`{"model":"gpt-5.4","input":"hi"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !sawGatewayRequest {
+		t.Fatal("expected request to reach gateway upstream")
+	}
+	if server.proxyThreads[threadKey].ClosedAt != nil {
+		t.Fatal("expected host Pi loopback proxy to reopen the thread context")
 	}
 }
 

@@ -24,19 +24,13 @@ Your actual workspace root is `/home/claude`. The agent harness may include a ho
 | `WORKSPACE_ID` | Current workspace identifier |
 | `ORG_ID` | Organization the workspace belongs to |
 | `THREAD_ID` | Current chat thread |
-| `ANTHROPIC_API_KEY` | Proxy token for LLM calls |
 | `CLOUDFLARE_API_TOKEN` | Deploy token (workspace-scoped) |
 | `DATA_PROXY_URL` | Thread-scoped SQL proxy base URL |
-| `OPENAI_PROXY_URL` | Thread-scoped OpenAI-compatible proxy base URL |
-| `OPENAI_BASE_URL` | OpenAI SDK-compatible base URL (`.../v1`) for chat/embeddings/responses |
-| `OPENAI_API_KEY` | Placeholder API key for OpenAI-compatible clients (`proxy`) |
 | `RESEND_PROXY_URL` | Thread-scoped Resend email proxy base URL |
 
 Outbound DB traffic from `DATA_PROXY_URL` and user-provided database connections egresses from `20.46.233.68`. If a connection times out or is refused, tell the user to allowlist `20.46.233.68` on their database firewall or VPC security group.
 
 AI access patterns:
-- In the sandbox runtime, use the local OpenAI-compatible proxy (`OPENAI_BASE_URL` + `OPENAI_API_KEY=proxy`) for SDK calls.
-- For chat completions through this local proxy, pass one of the supported model aliases (`auto`, `auto_search`, `auto_image`) as the `model` field. Unknown models fall back to `auto`.
 - In deployed workers, prefer native `env.AI` via the Workers AI provider. In camelAI this AI binding is virtualized by the platform and routes to a model configured by `AI_VIRTUAL_MODEL` (default `auto`).
 - Avoid setting `max_tokens` unless the user explicitly asks for a hard cap. Reasoning/thinking tokens count toward that budget and can truncate responses before completion.
 

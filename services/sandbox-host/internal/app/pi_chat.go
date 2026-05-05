@@ -591,18 +591,19 @@ func (b *hostPiBridge) piEnv(workspacePath string, sessionEnv map[string]string)
 	threadEscaped := url.PathEscape(b.threadID)
 	controlBase := fmt.Sprintf("http://127.0.0.1:%d", b.server.cfg.Port)
 	proxyBase := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", b.server.cfg.ProxyPort, threadEscaped)
+	inferenceBase := fmt.Sprintf("%s/internal/host-pi/inference/%s", controlBase, threadEscaped)
 	containerProxyBase := strings.TrimRight(b.server.containers.ContainerProxyBaseURL(), "/")
 	if containerProxyBase != "" {
 		containerProxyBase += "/" + threadEscaped
 	}
 
-	env["OPENAI_BASE_URL"] = proxyBase + "/api/openai/v1"
+	env["OPENAI_BASE_URL"] = inferenceBase + "/api/openai/v1"
 	env["OPENAI_API_KEY"] = "proxy"
-	env["OPENAI_PROXY_URL"] = proxyBase + "/api/openai"
-	env["OPENROUTER_BASE_URL"] = proxyBase + "/api/openrouter/v1"
-	env["OPENROUTER_ANTHROPIC_BASE_URL"] = proxyBase + "/api/claude"
+	env["OPENAI_PROXY_URL"] = inferenceBase + "/api/openai"
+	env["OPENROUTER_BASE_URL"] = inferenceBase + "/api/openrouter/v1"
+	env["OPENROUTER_ANTHROPIC_BASE_URL"] = inferenceBase + "/api/claude"
 	env["CAMEL_API_KEY"] = "proxy"
-	env["ANTHROPIC_BASE_URL"] = proxyBase + "/api/claude"
+	env["ANTHROPIC_BASE_URL"] = inferenceBase + "/api/claude"
 	env["ANTHROPIC_API_KEY"] = "proxy"
 	if b.openRouterUpstreamEnabled() {
 		env["CHIRIDION_OPENROUTER_UPSTREAM"] = "1"
