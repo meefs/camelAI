@@ -2188,6 +2188,22 @@ export default function Chat({
     setAttachments(savedDraft.attachments);
   }, []);
 
+  const logRunnerClient = useCallback(
+    (event: string, fields: Record<string, unknown> = {}) => {
+      if (import.meta.env.MODE === "test") return;
+      console.info("[chat runner client]", {
+        event,
+        threadId,
+        workspaceId: resolvedWorkspaceId,
+        ready,
+        pendingMessages: pendingMessagesRef.current.length,
+        wsReadyState: wsRef.current?.readyState ?? null,
+        ...fields,
+      });
+    },
+    [ready, resolvedWorkspaceId, threadId],
+  );
+
   const clearQueuedSendReadyTimeout = useCallback(() => {
     if (queuedSendReadyTimeoutRef.current) {
       clearTimeout(queuedSendReadyTimeoutRef.current);
@@ -2197,6 +2213,7 @@ export default function Chat({
 
   const failPendingMessageDelivery = useCallback(
     (message: string) => {
+      logRunnerClient("pending_delivery_failed", { message });
       const unsentIds = new Set(pendingMessagesRef.current.map((msg) => msg.id));
       if (unsentIds.size > 0) {
         setMessages((prev) => prev.filter((msg) => !unsentIds.has(msg.id)));
@@ -2211,6 +2228,7 @@ export default function Chat({
     },
     [
       clearQueuedSendReadyTimeout,
+      logRunnerClient,
       restorePendingDeliveryDraft,
       setMessages,
       setPendingMessages,
@@ -3075,6 +3093,10 @@ export default function Chat({
         if (connectionIdRef.current !== thisConnectionId) {
           return;
         }
+        logRunnerClient("ws_open", {
+          connectionId: thisConnectionId,
+          isReconnect,
+        });
         reconnectAttempts.current = 0;
 
         // Start ping interval to detect connection issues early
@@ -3119,6 +3141,9 @@ export default function Chat({
         if (data.type === "ready") {
           // Container is ready to receive messages
           clearQueuedSendReadyTimeout();
+          logRunnerClient("runner_ready", {
+            queuedMessages: pendingMessagesRef.current.length,
+          });
           setReady(true);
 
           // Get and clear queued messages
@@ -3143,6 +3168,10 @@ export default function Chat({
                 typeof msg.content === "string"
                   ? msg.content
                   : JSON.stringify(msg.content);
+              logRunnerClient("queued_message_sent", {
+                messageId: msg.id,
+                contentLength: content.length,
+              });
               ws.send(
                 JSON.stringify({
                   type: "message",
@@ -3720,7 +3749,7 @@ export default function Chat({
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event: CloseEvent) => {
         // Ignore if this connection was superseded by a new one
         if (connectionIdRef.current !== thisConnectionId) {
           return;
@@ -3735,6 +3764,12 @@ export default function Chat({
         connectionStartedAtRef.current.delete(thisConnectionId);
         setReady(false);
         wsRef.current = null;
+        logRunnerClient("ws_closed", {
+          connectionId: thisConnectionId,
+          code: event.code || 1000,
+          reason: event.reason || "closed",
+          reconnectAttempts: reconnectAttempts.current,
+        });
         if (oobWsRef.current) {
           oobWsRef.current.close();
           oobWsRef.current = null;
@@ -3751,6 +3786,10 @@ export default function Chat({
           reconnectTimeoutRef.current = setTimeout(() => {
             // Check again that we haven't been superseded
             if (connectionIdRef.current === thisConnectionId) {
+              logRunnerClient("ws_reconnect_attempt", {
+                connectionId: thisConnectionId,
+                attempt: reconnectAttempts.current,
+              });
               connectWebSocket(id, true);
             }
           }, delay);
@@ -3780,6 +3819,7 @@ export default function Chat({
       clearQueuedSendReadyTimeout,
       failPendingMessageDelivery,
       isNewThread,
+      logRunnerClient,
       persistSessionState,
       revalidator,
       resolvedWorkspaceId,
@@ -5424,6 +5464,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
+      logRunnerClient("message_sent_immediate", {
+        contentLength: finalContent.length,
+      });
       wsRef.current.send(
         JSON.stringify({
           type: "message",
@@ -5437,10 +5480,17 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       const queuedMsg: Message = { ...userMsg, content: finalContent };
       setPendingMessages((prev) => [...prev, queuedMsg]);
       setLoading(true);
+      logRunnerClient("message_queued_waiting_ready", {
+        messageId: queuedMsg.id,
+        contentLength: finalContent.length,
+      });
       if (!ready) {
         clearQueuedSendReadyTimeout();
         queuedSendReadyTimeoutRef.current = setTimeout(() => {
           if (pendingMessagesRef.current.length > 0 && threadId) {
+            logRunnerClient("queued_ready_timeout_reconnect", {
+              queuedMessages: pendingMessagesRef.current.length,
+            });
             connectWebSocketRef.current?.(threadId, true);
           }
         }, 5000);
