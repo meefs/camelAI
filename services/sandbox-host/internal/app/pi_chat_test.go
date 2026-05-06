@@ -337,6 +337,15 @@ func TestHostPiBridgeBuffersReplayEventsWithoutClient(t *testing.T) {
 	}
 }
 
+func TestHostPiBridgeSkipsReplayWhenInactive(t *testing.T) {
+	if hostPiShouldReplayBufferedEvents(false) {
+		t.Fatal("inactive bridge should not replay buffered events")
+	}
+	if !hostPiShouldReplayBufferedEvents(true) {
+		t.Fatal("active bridge should replay buffered events")
+	}
+}
+
 func TestHostPiBridgeDefersRetryableAgentEndUntilAutoRetryStarts(t *testing.T) {
 	bridge := &hostPiBridge{
 		server:   &Server{cfg: Config{HostPiSessionRoot: t.TempDir()}},

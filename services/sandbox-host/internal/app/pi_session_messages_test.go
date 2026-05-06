@@ -71,6 +71,30 @@ func TestParsePiJSONLMessagesCanonicalizesToolNames(t *testing.T) {
 	}
 }
 
+func TestParsePiJSONLMessagesMovesLateThinkingBeforeText(t *testing.T) {
+	jsonl := `{"type":"message","id":"a1","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"first"},{"type":"text","text":"final answer"},{"type":"thinking","thinking":"late redacted"}],"timestamp":1770000000001}}`
+
+	messages := parsePiJSONLMessages(jsonl, "thread-1")
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d: %#v", len(messages), messages)
+	}
+	blocks, ok := asSlice(messages[0].Content)
+	if !ok || len(blocks) != 3 {
+		t.Fatalf("unexpected blocks: %#v", messages[0].Content)
+	}
+	got := make([]string, 0, len(blocks))
+	for _, rawBlock := range blocks {
+		block, _ := asMap(rawBlock)
+		got = append(got, firstString(block, "type")+":"+firstString(block, "thinking", "text"))
+	}
+	want := []string{"thinking:first", "thinking:late redacted", "text:final answer"}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("block order = %#v, want %#v", got, want)
+		}
+	}
+}
+
 func TestReadHostPiSessionMessagesCombinesJSONLFiles(t *testing.T) {
 	root := t.TempDir()
 	threadID := "thread-1"

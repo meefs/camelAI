@@ -177,7 +177,11 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 		}
 		nextSeq, started, buffered, active := b.lifecycleSnapshot()
 		log.Printf("[SandboxHost] host Pi init thread=%s lastSeq=%d nextSeq=%d bufferedEvents=%d started=%t active=%t", b.threadID, lastSeq, nextSeq, buffered, started, active)
-		b.replayEventsAfter(lastSeq)
+		if hostPiShouldReplayBufferedEvents(active) {
+			b.replayEventsAfter(lastSeq)
+		} else {
+			log.Printf("[SandboxHost] host Pi replay skipped inactive thread=%s lastSeq=%d bufferedEvents=%d", b.threadID, lastSeq, buffered)
+		}
 		b.sendEvent(map[string]any{"type": "session", "sessionId": b.threadID})
 		b.sendEvent(map[string]any{"type": "ready"})
 	case "ping":
@@ -1606,6 +1610,10 @@ func (b *hostPiBridge) replayEventsAfter(lastSeq int64) {
 	}
 	b.mu.Unlock()
 	log.Printf("[SandboxHost] host Pi replay complete thread=%s lastSeq=%d replayEvents=%d", b.threadID, lastSeq, len(events))
+}
+
+func hostPiShouldReplayBufferedEvents(active bool) bool {
+	return active
 }
 
 func (b *hostPiBridge) writePiCommand(command map[string]any) error {
