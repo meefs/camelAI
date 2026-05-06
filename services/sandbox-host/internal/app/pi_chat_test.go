@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -118,6 +119,40 @@ func TestHostPiBridgeRejectsNewIdlePromptWhileDraining(t *testing.T) {
 	}
 	if event["source"] != "host_pi_drain" {
 		t.Fatalf("unexpected event: %#v", event)
+	}
+}
+
+type testWriteCloser struct {
+	bytes.Buffer
+}
+
+func (w *testWriteCloser) Close() error {
+	return nil
+}
+
+func TestHostPiBridgeAcknowledgesPromptAfterWrite(t *testing.T) {
+	stdin := &testWriteCloser{}
+	bridge := &hostPiBridge{
+		server:   &Server{},
+		threadID: "thread-1",
+		nextSeq:  1,
+		started:  true,
+		stdin:    stdin,
+	}
+
+	if err := bridge.handleClientMessage([]byte(`{"type":"message","content":"hello","clientMessageId":"client-1"}`)); err != nil {
+		t.Fatalf("handleClientMessage() returned error: %v", err)
+	}
+
+	event := hostPiLatestEventOfType(t, bridge, "message_accepted")
+	if event == nil {
+		t.Fatal("expected message_accepted event")
+	}
+	if got := event["clientMessageId"]; got != "client-1" {
+		t.Fatalf("clientMessageId = %#v, want client-1", got)
+	}
+	if !strings.Contains(stdin.String(), `"type":"prompt"`) {
+		t.Fatalf("expected prompt command to be written, got %q", stdin.String())
 	}
 }
 

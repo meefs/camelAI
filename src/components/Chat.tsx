@@ -197,6 +197,13 @@ interface PendingNewThreadMessagePayload {
   connections?: Integration[];
 }
 
+interface PendingThreadMessagesPayload {
+  version?: number;
+  workspaceId?: string;
+  threadId?: string;
+  messages?: unknown[];
+}
+
 function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
   if (typeof window === "undefined" || !isNewThread) return false;
 
@@ -365,6 +372,124 @@ function parseMessageContent(
 
   // Plain string content
   return content;
+}
+
+function pendingThreadMessagesKey(workspaceId: string, threadId: string): string {
+  return `pendingMessages:${workspaceId}:${threadId}`;
+}
+
+function readPendingThreadMessages(
+  workspaceId: string | null | undefined,
+  threadId: string | null | undefined,
+): Message[] {
+  if (typeof window === "undefined" || !workspaceId || !threadId) {
+    return [];
+  }
+
+  try {
+    const stored = sessionStorage.getItem(
+      pendingThreadMessagesKey(workspaceId, threadId),
+    );
+    if (!stored) return [];
+
+    const parsed = JSON.parse(stored) as PendingThreadMessagesPayload;
+    if (
+      !parsed ||
+      parsed.workspaceId !== workspaceId ||
+      parsed.threadId !== threadId ||
+      !Array.isArray(parsed.messages)
+    ) {
+      return [];
+    }
+
+    return parsed.messages.flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const item = raw as Record<string, unknown>;
+      const id = typeof item.id === "string" ? item.id : "";
+      if (!id) return [];
+      const clientMessageId =
+        typeof item.clientMessageId === "string" && item.clientMessageId
+          ? item.clientMessageId
+          : id;
+      const createdAt =
+        typeof item.created_at === "number" && Number.isFinite(item.created_at)
+          ? item.created_at
+          : Date.now();
+      const content =
+        typeof item.content === "string" || Array.isArray(item.content)
+          ? parseMessageContent(item.content as string | ContentBlock[])
+          : "";
+
+      return [
+        {
+          id,
+          clientMessageId,
+          thread_id: threadId,
+          role: "user" as const,
+          content,
+          created_at: createdAt,
+          sentDuringStreaming: item.sentDuringStreaming === true,
+        },
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writePendingThreadMessages(
+  workspaceId: string | null | undefined,
+  threadId: string | null | undefined,
+  messages: Message[],
+): void {
+  if (typeof window === "undefined" || !workspaceId || !threadId) {
+    return;
+  }
+
+  try {
+    const key = pendingThreadMessagesKey(workspaceId, threadId);
+    const pending = messages.filter((message) => message.role === "user");
+    if (pending.length === 0) {
+      sessionStorage.removeItem(key);
+      return;
+    }
+
+    const payload: PendingThreadMessagesPayload = {
+      version: 1,
+      workspaceId,
+      threadId,
+      messages: pending.map((message) => ({
+        id: message.id,
+        clientMessageId: message.clientMessageId ?? message.id,
+        content: message.content,
+        created_at: message.created_at,
+        sentDuringStreaming: message.sentDuringStreaming === true,
+      })),
+    };
+    sessionStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // A reload-safe pending send is best effort; the live in-memory queue remains.
+  }
+}
+
+function messagesAreOnlyPending(
+  messages: Message[],
+  pendingMessages: Message[],
+): boolean {
+  if (messages.length === 0 || pendingMessages.length === 0) {
+    return false;
+  }
+  const pendingIds = new Set(
+    pendingMessages.flatMap((message) => [
+      message.id,
+      message.clientMessageId ?? message.id,
+    ]),
+  );
+  return messages.every(
+    (message) =>
+      pendingIds.has(message.id) ||
+      (message.clientMessageId && pendingIds.has(message.clientMessageId)),
+  );
 }
 
 /**
@@ -1417,6 +1542,21 @@ export default function Chat({
       })),
     [initialMessages],
   );
+  const initialPendingMessagesRef = useRef<Message[] | undefined>(undefined);
+  if (initialPendingMessagesRef.current === undefined) {
+    initialPendingMessagesRef.current =
+      !readOnly && !isNewThread && threadId
+        ? readPendingThreadMessages(resolvedWorkspaceId, threadId)
+        : [];
+  }
+  const initialMessagesWithPending = useMemo(
+    () =>
+      mergeServerAndLocalMessages(
+        parsedInitialMessages,
+        initialPendingMessagesRef.current ?? [],
+      ),
+    [parsedInitialMessages],
+  );
   const initialPreviewSession = useMemo(
     () =>
       normalizePreviewSessionState(
@@ -1429,13 +1569,17 @@ export default function Chat({
 
   // Local state for messages, streaming, and loading
   const [messages, setMessagesState] = useState<Message[]>(
-    parsedInitialMessages,
+    initialMessagesWithPending,
   );
   const [streamingMessageId, setStreamingMessageIdState] = useState<
     string | null
   >(null);
-  const [loading, setLoading] = useState(false);
-  const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(
+    () => (initialPendingMessagesRef.current?.length ?? 0) > 0,
+  );
+  const [pendingMessages, setPendingMessagesState] = useState<Message[]>(
+    initialPendingMessagesRef.current ?? [],
+  );
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
@@ -1625,6 +1769,18 @@ export default function Chat({
   );
   const lastCompletedAssistantMessageIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
+  const pendingThreadContextRef = useRef({
+    workspaceId: resolvedWorkspaceId,
+    threadId,
+    isNewThread,
+    readOnly,
+  });
+  pendingThreadContextRef.current = {
+    workspaceId: resolvedWorkspaceId,
+    threadId,
+    isNewThread,
+    readOnly,
+  };
 
   // Wrapper setters that update both state and ref
   const setMessages = useCallback(
@@ -1690,11 +1846,21 @@ export default function Chat({
 
   const setPendingMessages = useCallback(
     (updater: Message[] | ((prev: Message[]) => Message[])) => {
-      setPendingMessagesState((prev) => {
-        const next = typeof updater === "function" ? updater(prev) : updater;
-        pendingMessagesRef.current = next;
-        return next;
-      });
+      const next =
+        typeof updater === "function"
+          ? updater(pendingMessagesRef.current)
+          : updater;
+      pendingMessagesRef.current = next;
+      setPendingMessagesState(next);
+
+      const context = pendingThreadContextRef.current;
+      if (!context.readOnly && !context.isNewThread) {
+        writePendingThreadMessages(
+          context.workspaceId,
+          context.threadId,
+          next,
+        );
+      }
     },
     [],
   );
@@ -2431,6 +2597,13 @@ export default function Chat({
           messagesRef.current,
         );
         setMessages(mergedMessages);
+        const mergedIds = new Set(mergedMessages.map((message) => message.id));
+        const serverIds = new Set(loadedMessages.map((message) => message.id));
+        setPendingMessages((prev) =>
+          prev.filter(
+            (message) => mergedIds.has(message.id) && !serverIds.has(message.id),
+          ),
+        );
         void backfillThreadFirstUserMessage(id, mergedMessages);
       } catch (error) {
         if (abortController.signal.aborted) return;
@@ -2448,6 +2621,7 @@ export default function Chat({
       resolvedWorkspaceId,
       setError,
       setMessages,
+      setPendingMessages,
     ],
   );
 
@@ -2971,13 +3145,15 @@ export default function Chat({
         setLoading(true);
       }
 
-      // Skip fetch if we have pending messages (use ref to avoid stale closure)
-      if (shouldFetchMessages && pendingMessagesRef.current.length > 0) {
-        shouldFetchMessages = false;
-      }
-
       // Skip fetch if we already have messages (use ref to avoid stale closure)
-      if (shouldFetchMessages && messagesRef.current.length > 0) {
+      if (
+        shouldFetchMessages &&
+        messagesRef.current.length > 0 &&
+        !messagesAreOnlyPending(
+          messagesRef.current,
+          pendingMessagesRef.current,
+        )
+      ) {
         shouldFetchMessages = false;
       }
 
@@ -3176,6 +3352,7 @@ export default function Chat({
                 JSON.stringify({
                   type: "message",
                   content,
+                  clientMessageId: msg.clientMessageId ?? msg.id,
                   sessionId: sessionIdRef.current,
                   threadId: id,
                 }),
@@ -3708,6 +3885,19 @@ export default function Chat({
           if (nextIsStreaming || pendingMessagesRef.current.length === 0) {
             setLoading(nextIsStreaming);
           }
+        } else if (data.type === "message_accepted") {
+          const clientMessageId =
+            typeof data.clientMessageId === "string" ? data.clientMessageId : "";
+          if (clientMessageId) {
+            setPendingMessages((prev) =>
+              prev.filter(
+                (msg) =>
+                  msg.id !== clientMessageId &&
+                  msg.clientMessageId !== clientMessageId,
+              ),
+            );
+            clearQueuedSendReadyTimeout();
+          }
         } else if (data.type === "result") {
           if (id) {
             for (const delay of [1000, 3000]) {
@@ -4067,10 +4257,10 @@ export default function Chat({
     if (historyFetchAbortRef.current) {
       return;
     }
-    if (pendingMessagesRef.current.length > 0) {
-      return;
-    }
-    if (messagesRef.current.length > 0) {
+    if (
+      messagesRef.current.length > 0 &&
+      !messagesAreOnlyPending(messagesRef.current, pendingMessagesRef.current)
+    ) {
       return;
     }
     void fetchMessages(threadId);
@@ -5403,6 +5593,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       : rawContent;
 
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
+    const clientMessageId = `client_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
 
     if (shouldShowCompactingIndicator) {
       queueManualCompaction();
@@ -5423,7 +5616,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
     // Add user message to state immediately (optimistic)
     const userMsg: Message = {
-      id: `local_${Date.now()}`,
+      id: clientMessageId,
+      clientMessageId,
       thread_id: threadId,
       role: "user",
       content: finalContent,
@@ -5460,6 +5654,18 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;
       setMessages((prev) => [...prev, userMsg]);
     }
+    setPendingMessages((prev) => {
+      if (
+        prev.some(
+          (message) =>
+            message.id === clientMessageId ||
+            message.clientMessageId === clientMessageId,
+        )
+      ) {
+        return prev;
+      }
+      return [...prev, userMsg];
+    });
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
@@ -5471,17 +5677,16 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         JSON.stringify({
           type: "message",
           content: finalContent,
+          clientMessageId,
           sessionId: sessionIdRef.current,
           threadId,
         }),
       );
     } else {
       // Queue the full message object for later delivery (with file refs in content)
-      const queuedMsg: Message = { ...userMsg, content: finalContent };
-      setPendingMessages((prev) => [...prev, queuedMsg]);
       setLoading(true);
       logRunnerClient("message_queued_waiting_ready", {
-        messageId: queuedMsg.id,
+        messageId: userMsg.id,
         contentLength: finalContent.length,
       });
       if (!ready) {

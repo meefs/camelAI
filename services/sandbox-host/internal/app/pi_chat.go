@@ -192,6 +192,7 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 		if content == "" {
 			return nil
 		}
+		clientMessageID := strings.TrimSpace(stringValue(msg["clientMessageId"], ""))
 		active := b.isActive()
 		if b.server.IsDraining() && !active {
 			b.sendEvent(map[string]any{
@@ -224,6 +225,12 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 				b.endActiveTurn()
 			}
 			return err
+		}
+		if clientMessageID != "" {
+			b.sendEvent(map[string]any{
+				"type":            "message_accepted",
+				"clientMessageId": clientMessageID,
+			})
 		}
 		return nil
 	case "set_model":
@@ -262,6 +269,9 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 }
 
 func (b *hostPiBridge) warmContainerForToolCalls() {
+	if b == nil || b.ctx == nil || b.server == nil || b.server.containers == nil {
+		return
+	}
 	select {
 	case <-b.ctx.Done():
 		return
