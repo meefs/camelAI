@@ -114,6 +114,14 @@ type hostPiBridge struct {
 	askToken  string
 	questions map[string]chan hostPiQuestionResult
 	toolArgs  map[string]map[string]any
+
+	toolCallProgress map[string]hostPiToolCallProgress
+}
+
+type hostPiToolCallProgress struct {
+	ToolName        string
+	LastLoggedBytes int
+	DeltaBytes      int
 }
 
 type hostPiQuestionResult struct {
@@ -772,6 +780,12 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 					"delta":    delta,
 				})
 			}
+		case "toolcall_start":
+			b.logPiToolCallStart(assistantEvent)
+		case "toolcall_delta":
+			b.logPiToolCallDelta(assistantEvent)
+		case "toolcall_end":
+			b.logPiToolCallEnd(assistantEvent)
 		}
 	case "message_end":
 		message, _ := event["message"].(map[string]any)
@@ -1192,6 +1206,126 @@ func (b *hostPiBridge) recallToolArgs(toolID string, args map[string]any) map[st
 		return remembered
 	}
 	return map[string]any{}
+}
+
+const hostPiToolCallProgressLogIntervalBytes = 16 * 1024
+
+func (b *hostPiBridge) logPiToolCallStart(event map[string]any) {
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		toolID = fmt.Sprintf("content_%d", piContentIndex(event))
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	b.mu.Lock()
+	if b.toolCallProgress == nil {
+		b.toolCallProgress = make(map[string]hostPiToolCallProgress)
+	}
+	b.toolCallProgress[toolID] = hostPiToolCallProgress{
+		ToolName:        toolName,
+		LastLoggedBytes: partialBytes,
+	}
+	b.mu.Unlock()
+	log.Printf("[SandboxHost] host Pi toolcall start thread=%s tool=%s toolCall=%s partialBytes=%d", b.threadID, toolName, toolID, partialBytes)
+}
+
+func (b *hostPiBridge) logPiToolCallDelta(event map[string]any) {
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		toolID = fmt.Sprintf("content_%d", piContentIndex(event))
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	delta, _ := event["delta"].(string)
+	shouldLog := false
+	totalDeltaBytes := 0
+	lastLoggedBytes := 0
+
+	b.mu.Lock()
+	if b.toolCallProgress == nil {
+		b.toolCallProgress = make(map[string]hostPiToolCallProgress)
+	}
+	progress := b.toolCallProgress[toolID]
+	if progress.ToolName == "" {
+		progress.ToolName = toolName
+	} else {
+		toolName = progress.ToolName
+	}
+	progress.DeltaBytes += len(delta)
+	totalDeltaBytes = progress.DeltaBytes
+	if partialBytes <= 0 {
+		partialBytes = progress.DeltaBytes
+	}
+	lastLoggedBytes = progress.LastLoggedBytes
+	if partialBytes-progress.LastLoggedBytes >= hostPiToolCallProgressLogIntervalBytes {
+		progress.LastLoggedBytes = partialBytes
+		shouldLog = true
+	}
+	b.toolCallProgress[toolID] = progress
+	b.mu.Unlock()
+
+	if shouldLog {
+		log.Printf("[SandboxHost] host Pi toolcall progress thread=%s tool=%s toolCall=%s partialBytes=%d deltaBytes=%d lastLoggedBytes=%d", b.threadID, toolName, toolID, partialBytes, totalDeltaBytes, lastLoggedBytes)
+	}
+}
+
+func (b *hostPiBridge) logPiToolCallEnd(event map[string]any) {
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		toolID = fmt.Sprintf("content_%d", piContentIndex(event))
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+
+	b.mu.Lock()
+	progress := b.toolCallProgress[toolID]
+	if b.toolCallProgress != nil {
+		delete(b.toolCallProgress, toolID)
+	}
+	b.mu.Unlock()
+	if progress.ToolName != "" {
+		toolName = progress.ToolName
+	}
+
+	if partialBytes <= 0 {
+		partialBytes = progress.DeltaBytes
+	}
+	log.Printf("[SandboxHost] host Pi toolcall end thread=%s tool=%s toolCall=%s partialBytes=%d deltaBytes=%d", b.threadID, toolName, toolID, partialBytes, progress.DeltaBytes)
+}
+
+func piAssistantToolCallProgress(event map[string]any) (toolID string, toolName string, partialBytes int) {
+	if toolCall, ok := event["toolCall"].(map[string]any); ok {
+		toolID = stringValue(toolCall["id"], "")
+		toolName = stringValue(toolCall["name"], "")
+		if args, ok := toolCall["arguments"].(map[string]any); ok {
+			if encoded, err := json.Marshal(args); err == nil {
+				partialBytes = len(encoded)
+			}
+		}
+		return toolID, toolName, partialBytes
+	}
+
+	partial, _ := event["partial"].(map[string]any)
+	content, _ := partial["content"].([]any)
+	contentIndex := piContentIndex(event)
+	if contentIndex < len(content) {
+		if block, ok := content[contentIndex].(map[string]any); ok {
+			toolID = stringValue(block["id"], "")
+			toolName = stringValue(block["name"], "")
+			if partialJSON := stringValue(block["partialJson"], ""); partialJSON != "" {
+				partialBytes = len(partialJSON)
+			} else if args, ok := block["arguments"].(map[string]any); ok {
+				if encoded, err := json.Marshal(args); err == nil {
+					partialBytes = len(encoded)
+				}
+			}
+		}
+	}
+
+	return toolID, toolName, partialBytes
 }
 
 func (b *hostPiBridge) handlePiToolStart(event map[string]any) {

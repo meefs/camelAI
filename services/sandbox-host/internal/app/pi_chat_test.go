@@ -472,6 +472,34 @@ func TestPiContentIndex(t *testing.T) {
 	}
 }
 
+func TestPiAssistantToolCallProgress(t *testing.T) {
+	event := map[string]any{
+		"contentIndex": float64(1),
+		"partial": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "thinking"},
+				map[string]any{
+					"type":        "toolCall",
+					"id":          "functions.write:1|fc_123",
+					"name":        "write",
+					"partialJson": `{"path":"/home/claude/report.md"}`,
+				},
+			},
+		},
+	}
+
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID != "functions.write:1|fc_123" {
+		t.Fatalf("tool id = %q", toolID)
+	}
+	if toolName != "write" {
+		t.Fatalf("tool name = %q", toolName)
+	}
+	if partialBytes != len(`{"path":"/home/claude/report.md"}`) {
+		t.Fatalf("partial bytes = %d", partialBytes)
+	}
+}
+
 func TestHostPiBridgeAnswerQuestion(t *testing.T) {
 	resultCh := make(chan hostPiQuestionResult, 1)
 	bridge := &hostPiBridge{

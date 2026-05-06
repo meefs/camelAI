@@ -120,7 +120,10 @@ import {
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from "@/lib/streaming";
-import { applyRuntimeEventToMessages } from "@/lib/runtime-message-state";
+import {
+  applyRuntimeEventToMessages,
+  splitStreamingMessageForSteer,
+} from "@/lib/runtime-message-state";
 import { mergeServerAndLocalMessages } from "@/lib/chat-message-merge";
 import {
   getAppUrl,
@@ -1713,7 +1716,8 @@ export default function Chat({
 
     return null;
   }, [messages, streamingMessageId]);
-  const assistantTurnActive = loading || isStreaming;
+  const assistantTurnActive =
+    loading || isStreaming || activeAssistantMessageId !== null;
   const hasActiveAssistantMessage = activeAssistantMessageId !== null;
   const showGlobalAssistantIndicator =
     assistantTurnActive && !hasActiveAssistantMessage && !isCompacting;
@@ -1885,6 +1889,7 @@ export default function Chat({
   >({});
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const queuedSendReadyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const historyFetchAbortRef = useRef<AbortController | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2182,6 +2187,36 @@ export default function Chat({
     setInput(savedDraft.text);
     setAttachments(savedDraft.attachments);
   }, []);
+
+  const clearQueuedSendReadyTimeout = useCallback(() => {
+    if (queuedSendReadyTimeoutRef.current) {
+      clearTimeout(queuedSendReadyTimeoutRef.current);
+      queuedSendReadyTimeoutRef.current = null;
+    }
+  }, []);
+
+  const failPendingMessageDelivery = useCallback(
+    (message: string) => {
+      const unsentIds = new Set(pendingMessagesRef.current.map((msg) => msg.id));
+      if (unsentIds.size > 0) {
+        setMessages((prev) => prev.filter((msg) => !unsentIds.has(msg.id)));
+      }
+      setPendingMessages([]);
+      clearQueuedSendReadyTimeout();
+      setLoading(false);
+      setReady(false);
+      setStreamingMessageId(null);
+      restorePendingDeliveryDraft();
+      setError(message);
+    },
+    [
+      clearQueuedSendReadyTimeout,
+      restorePendingDeliveryDraft,
+      setMessages,
+      setPendingMessages,
+      setStreamingMessageId,
+    ],
+  );
 
   const loadSessionState = useCallback(
     (id: string) => {
@@ -2844,6 +2879,7 @@ export default function Chat({
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
+      clearQueuedSendReadyTimeout();
 
       // Increment connection ID to invalidate any pending callbacks from old connections
       const thisConnectionId = ++connectionIdRef.current;
@@ -3082,6 +3118,7 @@ export default function Chat({
 
         if (data.type === "ready") {
           // Container is ready to receive messages
+          clearQueuedSendReadyTimeout();
           setReady(true);
 
           // Get and clear queued messages
@@ -3719,7 +3756,9 @@ export default function Chat({
           }, delay);
         } else {
           // Reconnect exhausted — clear stale compaction indicator.
-          restorePendingDeliveryDraft();
+          failPendingMessageDelivery(
+            "Connection was lost before your message was sent. I restored it as a draft.",
+          );
           isAutoCompactingRef.current = false;
           compactingPriorMessageIdRef.current = null;
           setCompactingPriorMessageId(null);
@@ -3738,6 +3777,8 @@ export default function Chat({
     [
       clearPendingDeliveryDraft,
       fetchMessages,
+      clearQueuedSendReadyTimeout,
+      failPendingMessageDelivery,
       isNewThread,
       persistSessionState,
       revalidator,
@@ -3867,6 +3908,7 @@ export default function Chat({
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
+      clearQueuedSendReadyTimeout();
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
@@ -3967,7 +4009,13 @@ export default function Chat({
       connectedThreadIdRef.current = null;
       connectedWorkspaceIdRef.current = null;
     };
-  }, [threadId, shouldShowChat, resolvedWorkspaceId, readOnly]);
+  }, [
+    threadId,
+    shouldShowChat,
+    resolvedWorkspaceId,
+    readOnly,
+    clearQueuedSendReadyTimeout,
+  ]);
 
   // Ensure existing threads hydrate full history once initial route loading
   // settles. Without this fallback, the connect path can skip fetch while
@@ -5287,7 +5335,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       return;
     }
 
-    const wasSentDuringStreaming = isStreaming;
+    const wasSentDuringStreaming = assistantTurnActive;
 
     // Mark that user has interacted - prevents loader sync from overwriting streaming state
     hasHadUserInteraction.current = true;
@@ -5345,8 +5393,26 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
     // If user sends mid-stream, keep current part streaming and split at next message_start.
     if (wasSentDuringStreaming) {
-      splitStreamingMessageOnNextPartRef.current = true;
-      setMessages((prev) => [...prev, userMsg]);
+      if (activeThreadProvider === "codex") {
+        const previousStreamingMessageId = streamingMessageIdRef.current;
+        const nextStreamingMessageId = `stream_steer_${Date.now()}`;
+        splitStreamingMessageOnNextPartRef.current = false;
+        runtimeStreamingMessageIdsRef.current[threadId] = nextStreamingMessageId;
+        setStreamingMessageId(nextStreamingMessageId);
+        setMessages((prev) =>
+          splitStreamingMessageForSteer(
+            prev,
+            threadId,
+            runtimeStreamingMessageIdsRef.current,
+            userMsg,
+            nextStreamingMessageId,
+            previousStreamingMessageId,
+          ),
+        );
+      } else {
+        splitStreamingMessageOnNextPartRef.current = true;
+        setMessages((prev) => [...prev, userMsg]);
+      }
     } else {
       lastCompletedAssistantMessageIdRef.current = null;
       // /compact is operational and can happen while users read older messages.
@@ -5371,6 +5437,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       const queuedMsg: Message = { ...userMsg, content: finalContent };
       setPendingMessages((prev) => [...prev, queuedMsg]);
       setLoading(true);
+      if (!ready) {
+        clearQueuedSendReadyTimeout();
+        queuedSendReadyTimeoutRef.current = setTimeout(() => {
+          if (pendingMessagesRef.current.length > 0 && threadId) {
+            connectWebSocketRef.current?.(threadId, true);
+          }
+        }, 5000);
+      }
 
       // If not connected at all, trigger reconnect
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
