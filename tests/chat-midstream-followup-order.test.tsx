@@ -250,6 +250,19 @@ function emitStreamTextDelta(socket: MockWebSocket, text: string) {
   });
 }
 
+function emitCodexTextDelta(socket: MockWebSocket, itemId: string, text: string) {
+  socket.emitMessage({
+    type: 'runtime_event',
+    event: {
+      method: 'item/agentMessage/delta',
+      params: {
+        itemId,
+        delta: text,
+      },
+    },
+  });
+}
+
 function getTranscriptRows(): string[] {
   const region = screen.getByRole('region', { name: 'Chat messages' });
   const rows = region.querySelectorAll('[data-message-id]');
@@ -399,6 +412,47 @@ describe('Chat mid-stream follow-up ordering', () => {
       expect(rows.every((row) => row.startsWith('assistant:'))).toBe(true);
       expect(rows.join(' ')).toContain('Part one');
       expect(rows.join(' ')).toContain('Part two');
+    });
+  });
+
+  it('immediately splits Codex runtime output when user follows up mid-stream', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        threadProvider="codex"
+        initialMessages={[]}
+      />
+    );
+
+    const mainSocket = getMainSocket();
+
+    await act(async () => {
+      mainSocket.emitOpen();
+      mainSocket.emitMessage({ type: 'ready' });
+      emitCodexTextDelta(mainSocket, 'assistant-part-1', 'Part one');
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('global-loading-dots')).toBeNull();
+      expect(screen.getByTestId('inline-loading-dots')).toBeTruthy();
+    });
+
+    await user.type(screen.getByLabelText('Prompt'), 'continue');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await act(async () => {
+      emitCodexTextDelta(mainSocket, 'assistant-part-2', 'Part two');
+    });
+
+    await waitFor(() => {
+      expect(getTranscriptRows()).toEqual([
+        'assistant: Part one',
+        'user: continue',
+        'assistant: Part two',
+      ]);
     });
   });
 });

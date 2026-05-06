@@ -337,6 +337,116 @@ func TestHostPiBridgeBuffersReplayEventsWithoutClient(t *testing.T) {
 	}
 }
 
+func TestHostPiBridgeDefersRetryableAgentEndUntilAutoRetryStarts(t *testing.T) {
+	bridge := &hostPiBridge{
+		server:   &Server{cfg: Config{HostPiSessionRoot: t.TempDir()}},
+		threadID: "thread-1",
+		nextSeq:  1,
+	}
+	bridge.beginActiveTurn()
+
+	bridge.handlePiEvent(map[string]any{
+		"type": "message_update",
+		"assistantMessageEvent": map[string]any{
+			"type":  "text_delta",
+			"delta": "failed partial",
+		},
+	})
+	bridge.handlePiEvent(map[string]any{
+		"type": "agent_end",
+		"messages": []any{
+			map[string]any{
+				"role":         "assistant",
+				"stopReason":   "error",
+				"errorMessage": "provider returned error: 503 service unavailable",
+			},
+		},
+	})
+
+	if !bridge.isActive() {
+		t.Fatal("expected retryable agent_end to keep the Pi turn active")
+	}
+	if hostPiHasRuntimeMethod(t, bridge, "turn/completed") {
+		t.Fatal("retryable agent_end should not complete the runtime turn before auto retry starts")
+	}
+	if event := hostPiLatestEventOfType(t, bridge, "result"); event != nil {
+		t.Fatalf("retryable agent_end should not emit a result before auto retry starts: %#v", event)
+	}
+
+	bridge.handlePiEvent(map[string]any{
+		"type":        "auto_retry_start",
+		"attempt":     1,
+		"maxAttempts": 3,
+		"delayMs":     2000,
+	})
+	bridge.handlePiEvent(map[string]any{
+		"type": "message_update",
+		"assistantMessageEvent": map[string]any{
+			"type":  "text_delta",
+			"delta": "retry success",
+		},
+	})
+	bridge.handlePiEvent(map[string]any{
+		"type": "agent_end",
+		"messages": []any{
+			map[string]any{
+				"role":       "assistant",
+				"stopReason": "stop",
+			},
+		},
+	})
+
+	if bridge.isActive() {
+		t.Fatal("expected successful final agent_end to end the active Pi turn")
+	}
+	if !hostPiHasRuntimeMethod(t, bridge, "turn/completed") {
+		t.Fatal("expected successful final agent_end to complete the runtime turn")
+	}
+	result := hostPiLatestEventOfType(t, bridge, "result")
+	if result == nil {
+		t.Fatal("expected successful final agent_end to emit result")
+	}
+	if got := result["result"]; got != "retry success" {
+		t.Fatalf("result = %#v, want retry success", got)
+	}
+}
+
+func TestHostPiBridgeEndsTurnWhenAutoRetryFails(t *testing.T) {
+	bridge := &hostPiBridge{
+		server:   &Server{},
+		threadID: "thread-1",
+		nextSeq:  1,
+	}
+	bridge.beginActiveTurn()
+	bridge.handlePiEvent(map[string]any{
+		"type": "agent_end",
+		"messages": []any{
+			map[string]any{
+				"role":         "assistant",
+				"stopReason":   "error",
+				"errorMessage": "fetch failed with status 503",
+			},
+		},
+	})
+	bridge.handlePiEvent(map[string]any{
+		"type":       "auto_retry_end",
+		"success":    false,
+		"attempt":    3,
+		"finalError": "Retry failed after 3 attempts: fetch failed with status 503",
+	})
+
+	if bridge.isActive() {
+		t.Fatal("expected failed auto retry to end the active Pi turn")
+	}
+	event := hostPiLatestEventOfType(t, bridge, "error")
+	if event == nil {
+		t.Fatal("expected failed auto retry to emit an error event")
+	}
+	if got := event["source"]; got != "host_pi_auto_retry" {
+		t.Fatalf("error source = %#v, want host_pi_auto_retry", got)
+	}
+}
+
 func TestHostPiSkillArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -368,6 +478,51 @@ func TestHostPiSkillArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func hostPiBufferedPayloads(t *testing.T, bridge *hostPiBridge) []map[string]any {
+	t.Helper()
+	bridge.mu.Lock()
+	encoded := make([][]byte, 0, len(bridge.events))
+	for _, event := range bridge.events {
+		encoded = append(encoded, append([]byte(nil), event.Encoded...))
+	}
+	bridge.mu.Unlock()
+
+	payloads := make([]map[string]any, 0, len(encoded))
+	for _, raw := range encoded {
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("decode host Pi buffered event: %v", err)
+		}
+		payloads = append(payloads, payload)
+	}
+	return payloads
+}
+
+func hostPiHasRuntimeMethod(t *testing.T, bridge *hostPiBridge, method string) bool {
+	t.Helper()
+	for _, payload := range hostPiBufferedPayloads(t, bridge) {
+		if payload["type"] != "runtime_event" {
+			continue
+		}
+		event, _ := payload["event"].(map[string]any)
+		if event["method"] == method {
+			return true
+		}
+	}
+	return false
+}
+
+func hostPiLatestEventOfType(t *testing.T, bridge *hostPiBridge, eventType string) map[string]any {
+	t.Helper()
+	payloads := hostPiBufferedPayloads(t, bridge)
+	for i := len(payloads) - 1; i >= 0; i-- {
+		if payloads[i]["type"] == eventType {
+			return payloads[i]
+		}
+	}
+	return nil
 }
 
 func TestHostPiToolArgsIncludesExtensionTools(t *testing.T) {
@@ -469,6 +624,34 @@ func TestPiContentIndex(t *testing.T) {
 				t.Fatalf("piContentIndex() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPiAssistantToolCallProgress(t *testing.T) {
+	event := map[string]any{
+		"contentIndex": float64(1),
+		"partial": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "thinking"},
+				map[string]any{
+					"type":        "toolCall",
+					"id":          "functions.write:1|fc_123",
+					"name":        "write",
+					"partialJson": `{"path":"/home/claude/report.md"}`,
+				},
+			},
+		},
+	}
+
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID != "functions.write:1|fc_123" {
+		t.Fatalf("tool id = %q", toolID)
+	}
+	if toolName != "write" {
+		t.Fatalf("tool name = %q", toolName)
+	}
+	if partialBytes != len(`{"path":"/home/claude/report.md"}`) {
+		t.Fatalf("partial bytes = %d", partialBytes)
 	}
 }
 

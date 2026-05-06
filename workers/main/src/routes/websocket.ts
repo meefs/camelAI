@@ -112,10 +112,27 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   let closed = false;
   const queuedClientMessages: string[] = [];
   let clientMessageChain = Promise.resolve();
+  const bridgeId = crypto.randomUUID();
+  const startedAt = Date.now();
+
+  const logBridge = (event: string, fields: Record<string, unknown> = {}) => {
+    console.log('[chat runner bridge]', {
+      event,
+      bridgeId,
+      threadId,
+      workspaceId,
+      orgId,
+      elapsedMs: Date.now() - startedAt,
+      ...fields,
+    });
+  };
+
+  logBridge('created');
 
   const closeBoth = (code = 1000, reason = 'closed') => {
     if (closed) return;
     closed = true;
+    logBridge('close_both', { code, reason });
     closeWebSocket(server, code, reason);
     if (runnerSocket) {
       closeWebSocket(runnerSocket, code, reason);
@@ -123,10 +140,17 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   };
 
   const sendToRunner = (message: Record<string, unknown>) => {
+    const type = typeof message.type === 'string' ? message.type : 'unknown';
     if (!runnerSocket || runnerSocket.readyState !== WebSocket.OPEN) {
-      return;
+      logBridge('forward_skipped_runner_not_open', {
+        type,
+        runnerReadyState: runnerSocket?.readyState ?? null,
+      });
+      return false;
     }
     runnerSocket.send(JSON.stringify(message));
+    logBridge('forwarded_to_runner', { type });
+    return true;
   };
 
   const updateThreadMetadata = (messageContent: string) => {
@@ -148,7 +172,15 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
     const type = typeof data.type === 'string' ? data.type : '';
     if (type === 'init') {
+      logBridge('client_init_ignored');
       return;
+    }
+
+    if (type !== 'ping') {
+      logBridge('client_message_received', {
+        type,
+        rawBytes: raw.length,
+      });
     }
 
     if (type === 'message') {
@@ -160,6 +192,10 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
         { userName, userEmail },
       );
       if (!attributedContent) return;
+      logBridge('client_user_message_prepared', {
+        rawLength: rawContent.length,
+        attributedLength: attributedContent.length,
+      });
       sendJson(server, { type: 'streaming_state', isStreaming: true });
       updateThreadMetadata(attributedContent);
       return sendToRunner({
@@ -181,6 +217,11 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
         const data = JSON.parse(event.data) as { type?: unknown };
         if (data.type !== 'init') {
           queuedClientMessages.push(event.data);
+          logBridge('client_message_queued', {
+            type: typeof data.type === 'string' ? data.type : 'unknown',
+            queueLength: queuedClientMessages.length,
+            runnerReadyState: runnerSocket?.readyState ?? null,
+          });
         }
       } catch {
         // Ignore invalid JSON while the runner is starting.
@@ -198,9 +239,15 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       });
   });
   server.addEventListener('close', (event) => {
+    logBridge('client_closed', {
+      code: event.code || 1000,
+      reason: event.reason || 'client closed',
+      queuedMessages: queuedClientMessages.length,
+    });
     closeBoth(event.code || 1000, event.reason || 'client closed');
   });
   server.addEventListener('error', () => {
+    logBridge('client_error', { queuedMessages: queuedClientMessages.length });
     closeBoth(1011, 'client error');
   });
 
@@ -208,6 +255,7 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const thread = await orgStub.getThread(threadId);
   const provider = thread?.provider === 'codex' ? 'codex' : 'claude';
+  logBridge('runner_connect_start', { provider });
   const { envVars, byokProxy } = await container.buildChatRunnerEnv({
     threadId,
     provider,
@@ -219,6 +267,10 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     byokProxy,
   });
   runnerSocket.accept();
+  logBridge('runner_connected', {
+    provider,
+    byokProxy: Boolean(byokProxy),
+  });
 
   runnerSocket.addEventListener('message', (event) => {
     if (typeof event.data !== 'string') return;
@@ -233,6 +285,18 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
     const eventType = typeof payload.type === 'string' ? payload.type : '';
     const runtimeEvent = payload.event as { method?: unknown } | undefined;
+    if (
+      eventType === 'ready' ||
+      eventType === 'error' ||
+      eventType === 'result' ||
+      eventType === 'streaming_state' ||
+      runtimeEvent?.method === 'turn/completed'
+    ) {
+      logBridge('runner_event', {
+        type: eventType || null,
+        method: typeof runtimeEvent?.method === 'string' ? runtimeEvent.method : null,
+      });
+    }
     if (eventType === 'todo_state' && Array.isArray(payload.todos)) {
       const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId)) as unknown as {
         setTodoState(todos: unknown[]): Promise<void>;
@@ -254,9 +318,15 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     sendJson(server, payload);
   });
   runnerSocket.addEventListener('close', (event) => {
+    logBridge('runner_closed', {
+      code: event.code || 1000,
+      reason: event.reason || 'runner closed',
+      queuedMessages: queuedClientMessages.length,
+    });
     closeBoth(event.code || 1000, event.reason || 'runner closed');
   });
   runnerSocket.addEventListener('error', () => {
+    logBridge('runner_error', { queuedMessages: queuedClientMessages.length });
     closeBoth(1011, 'runner error');
   });
 
@@ -267,10 +337,14 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     env: envVars,
     lastSeq: 0,
   }));
+  logBridge('runner_init_sent');
 
   while (queuedClientMessages.length > 0 && runnerSocket.readyState === WebSocket.OPEN) {
     const raw = queuedClientMessages.shift();
     if (!raw) continue;
+    logBridge('flushing_queued_client_message', {
+      remainingQueueLength: queuedClientMessages.length,
+    });
     await handleClientMessage(raw);
   }
 }

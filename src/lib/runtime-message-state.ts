@@ -412,6 +412,48 @@ function finalizeAssistantMessage(
   );
 }
 
+export function splitStreamingMessageForSteer(
+  messages: Message[],
+  threadId: string,
+  streamingMessageIds: Record<string, string | null>,
+  userMessage: Message,
+  nextStreamingMessageId: string,
+  previousStreamingMessageId?: string | null
+): Message[] {
+  const activeStreamingId =
+    previousStreamingMessageId &&
+    messages.some((message) => message.id === previousStreamingMessageId)
+      ? previousStreamingMessageId
+      : resolveStreamingMessageId(messages, threadId, streamingMessageIds);
+
+  const finalizedMessages = activeStreamingId
+    ? messages.map((message) =>
+        message.id === activeStreamingId && message.role === 'assistant'
+          ? finalizeStreamingMessage(message)
+          : message
+      )
+    : messages;
+
+  const nextStreamingMessage: Message = {
+    id: nextStreamingMessageId,
+    thread_id: threadId,
+    role: 'assistant',
+    content: [],
+    created_at: Date.now(),
+    isStreaming: true,
+  };
+
+  streamingMessageIds[threadId] = nextStreamingMessageId;
+
+  const withUserMessage = finalizedMessages.some((message) => message.id === userMessage.id)
+    ? finalizedMessages
+    : [...finalizedMessages, userMessage];
+
+  return withUserMessage.some((message) => message.id === nextStreamingMessageId)
+    ? withUserMessage
+    : [...withUserMessage, nextStreamingMessage];
+}
+
 function findBlockIndex(
   blocks: ContentBlock[],
   predicate: (block: ContentBlock) => boolean

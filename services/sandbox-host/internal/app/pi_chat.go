@@ -79,6 +79,7 @@ func (s *Server) serveHostPiChat(
 }
 
 const hostPiEventReplayLimit = 512
+const hostPiRetryStartGracePeriod = 5 * time.Second
 
 type hostPiBufferedEvent struct {
 	Seq     int64
@@ -111,9 +112,25 @@ type hostPiBridge struct {
 	activeItemBuf strings.Builder
 	reasoningItem string
 
+	pendingRetryCompletion *hostPiPendingRetryCompletion
+	pendingRetryTimer      *time.Timer
+
 	askToken  string
 	questions map[string]chan hostPiQuestionResult
 	toolArgs  map[string]map[string]any
+
+	toolCallProgress map[string]hostPiToolCallProgress
+}
+
+type hostPiToolCallProgress struct {
+	ToolName        string
+	LastLoggedBytes int
+	DeltaBytes      int
+}
+
+type hostPiPendingRetryCompletion struct {
+	FinalText    string
+	ErrorMessage string
 }
 
 type hostPiQuestionResult struct {
@@ -723,6 +740,10 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 	case "agent_start":
 		log.Printf("[SandboxHost] host Pi agent_start thread=%s", b.threadID)
 		b.beginActiveTurn()
+	case "auto_retry_start":
+		b.handlePiAutoRetryStart(event)
+	case "auto_retry_end":
+		b.handlePiAutoRetryEnd(event)
 	case "message_update":
 		assistantEvent, _ := event["assistantMessageEvent"].(map[string]any)
 		deltaType, _ := assistantEvent["type"].(string)
@@ -772,6 +793,12 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 					"delta":    delta,
 				})
 			}
+		case "toolcall_start":
+			b.logPiToolCallStart(assistantEvent)
+		case "toolcall_delta":
+			b.logPiToolCallDelta(assistantEvent)
+		case "toolcall_end":
+			b.logPiToolCallEnd(assistantEvent)
 		}
 	case "message_end":
 		message, _ := event["message"].(map[string]any)
@@ -813,25 +840,119 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 		b.stateMu.Lock()
 		finalText := b.finalBuf.String()
 		b.stateMu.Unlock()
-		b.endActiveTurn()
-		log.Printf("[SandboxHost] host Pi agent_end thread=%s finalBytes=%d", b.threadID, len(finalText))
-		if finalText == "" {
-			finalText = extractPiAssistantText(event["messages"])
+		if retryable, errorMessage := isRetryablePiAgentEnd(event); retryable {
+			b.deferRetryableAgentEnd(finalText, errorMessage)
+			return
 		}
-		params := map[string]any{"threadId": b.threadID}
-		if entryID, err := latestHostPiAssistantEntryID(b.server.cfg.HostPiSessionRoot, b.threadID); err != nil {
-			log.Printf("[SandboxHost] failed to resolve latest Pi assistant entry for fork thread=%s: %v", b.threadID, err)
-		} else if entryID != "" {
-			params["forkEntryId"] = entryID
-		}
-		b.sendRuntimeEvent("turn/completed", params)
-		b.sendEvent(map[string]any{
-			"type":      "result",
-			"threadId":  b.threadID,
-			"result":    finalText,
-			"sessionId": b.threadID,
-		})
+		b.finishPiAgentEnd(finalText, event["messages"])
 	}
+}
+
+func (b *hostPiBridge) handlePiAutoRetryStart(event map[string]any) {
+	attempt := intValue(event["attempt"])
+	maxAttempts := intValue(event["maxAttempts"])
+	delayMs := intValue(event["delayMs"])
+	b.stateMu.Lock()
+	hadPending := b.pendingRetryCompletion != nil
+	if b.pendingRetryTimer != nil {
+		b.pendingRetryTimer.Stop()
+		b.pendingRetryTimer = nil
+	}
+	b.pendingRetryCompletion = nil
+	b.active = true
+	b.finalBuf.Reset()
+	b.activeItemBuf.Reset()
+	b.activeItem = fmt.Sprintf("pi_agent_%s", randomID())
+	b.reasoningItem = ""
+	b.stateMu.Unlock()
+	log.Printf("[SandboxHost] host Pi auto_retry_start thread=%s attempt=%d maxAttempts=%d delayMs=%d hadPending=%t", b.threadID, attempt, maxAttempts, delayMs, hadPending)
+}
+
+func (b *hostPiBridge) handlePiAutoRetryEnd(event map[string]any) {
+	success, _ := event["success"].(bool)
+	attempt := intValue(event["attempt"])
+	if success {
+		log.Printf("[SandboxHost] host Pi auto_retry_end thread=%s success=true attempt=%d", b.threadID, attempt)
+		return
+	}
+	finalError := stringValue(event["finalError"], "Pi auto retry failed")
+	b.stateMu.Lock()
+	if b.pendingRetryTimer != nil {
+		b.pendingRetryTimer.Stop()
+		b.pendingRetryTimer = nil
+	}
+	b.pendingRetryCompletion = nil
+	b.active = false
+	b.stateMu.Unlock()
+	log.Printf("[SandboxHost] host Pi auto_retry_end thread=%s success=false attempt=%d error=%s", b.threadID, attempt, finalError)
+	b.sendEvent(map[string]any{
+		"type":    "error",
+		"error":   finalError,
+		"source":  "host_pi_auto_retry",
+		"attempt": attempt,
+	})
+}
+
+func (b *hostPiBridge) deferRetryableAgentEnd(finalText string, errorMessage string) {
+	pending := &hostPiPendingRetryCompletion{
+		FinalText:    finalText,
+		ErrorMessage: errorMessage,
+	}
+	timer := time.AfterFunc(hostPiRetryStartGracePeriod, func() {
+		b.finalizePendingRetryCompletion("retry_start_timeout")
+	})
+
+	b.stateMu.Lock()
+	if b.pendingRetryTimer != nil {
+		b.pendingRetryTimer.Stop()
+	}
+	b.pendingRetryCompletion = pending
+	b.pendingRetryTimer = timer
+	b.active = true
+	b.stateMu.Unlock()
+
+	log.Printf("[SandboxHost] host Pi agent_end retryable deferred thread=%s finalBytes=%d graceMs=%d error=%s", b.threadID, len(finalText), hostPiRetryStartGracePeriod.Milliseconds(), errorMessage)
+}
+
+func (b *hostPiBridge) finalizePendingRetryCompletion(reason string) {
+	b.stateMu.Lock()
+	pending := b.pendingRetryCompletion
+	if pending == nil {
+		b.stateMu.Unlock()
+		return
+	}
+	b.pendingRetryCompletion = nil
+	b.pendingRetryTimer = nil
+	b.active = false
+	b.stateMu.Unlock()
+
+	log.Printf("[SandboxHost] host Pi retryable agent_end finalized thread=%s reason=%s finalBytes=%d error=%s", b.threadID, reason, len(pending.FinalText), pending.ErrorMessage)
+	b.sendEvent(map[string]any{
+		"type":   "error",
+		"error":  pending.ErrorMessage,
+		"source": "host_pi_retryable_agent_end",
+	})
+}
+
+func (b *hostPiBridge) finishPiAgentEnd(finalText string, messages any) {
+	b.endActiveTurn()
+	log.Printf("[SandboxHost] host Pi agent_end thread=%s finalBytes=%d", b.threadID, len(finalText))
+	if finalText == "" {
+		finalText = extractPiAssistantText(messages)
+	}
+	params := map[string]any{"threadId": b.threadID}
+	if entryID, err := latestHostPiAssistantEntryID(b.server.cfg.HostPiSessionRoot, b.threadID); err != nil {
+		log.Printf("[SandboxHost] failed to resolve latest Pi assistant entry for fork thread=%s: %v", b.threadID, err)
+	} else if entryID != "" {
+		params["forkEntryId"] = entryID
+	}
+	b.sendRuntimeEvent("turn/completed", params)
+	b.sendEvent(map[string]any{
+		"type":      "result",
+		"threadId":  b.threadID,
+		"result":    finalText,
+		"sessionId": b.threadID,
+	})
 }
 
 func (s *Server) attachHostPiBridge(
@@ -944,6 +1065,11 @@ func (b *hostPiBridge) isActive() bool {
 
 func (b *hostPiBridge) beginActiveTurn() {
 	b.stateMu.Lock()
+	if b.pendingRetryTimer != nil {
+		b.pendingRetryTimer.Stop()
+		b.pendingRetryTimer = nil
+	}
+	b.pendingRetryCompletion = nil
 	b.active = true
 	b.finalBuf.Reset()
 	b.activeItemBuf.Reset()
@@ -954,6 +1080,11 @@ func (b *hostPiBridge) beginActiveTurn() {
 
 func (b *hostPiBridge) endActiveTurn() {
 	b.stateMu.Lock()
+	if b.pendingRetryTimer != nil {
+		b.pendingRetryTimer.Stop()
+		b.pendingRetryTimer = nil
+	}
+	b.pendingRetryCompletion = nil
 	b.active = false
 	b.stateMu.Unlock()
 }
@@ -1192,6 +1323,126 @@ func (b *hostPiBridge) recallToolArgs(toolID string, args map[string]any) map[st
 		return remembered
 	}
 	return map[string]any{}
+}
+
+const hostPiToolCallProgressLogIntervalBytes = 16 * 1024
+
+func (b *hostPiBridge) logPiToolCallStart(event map[string]any) {
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		toolID = fmt.Sprintf("content_%d", piContentIndex(event))
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	b.mu.Lock()
+	if b.toolCallProgress == nil {
+		b.toolCallProgress = make(map[string]hostPiToolCallProgress)
+	}
+	b.toolCallProgress[toolID] = hostPiToolCallProgress{
+		ToolName:        toolName,
+		LastLoggedBytes: partialBytes,
+	}
+	b.mu.Unlock()
+	log.Printf("[SandboxHost] host Pi toolcall start thread=%s tool=%s toolCall=%s partialBytes=%d", b.threadID, toolName, toolID, partialBytes)
+}
+
+func (b *hostPiBridge) logPiToolCallDelta(event map[string]any) {
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		toolID = fmt.Sprintf("content_%d", piContentIndex(event))
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	delta, _ := event["delta"].(string)
+	shouldLog := false
+	totalDeltaBytes := 0
+	lastLoggedBytes := 0
+
+	b.mu.Lock()
+	if b.toolCallProgress == nil {
+		b.toolCallProgress = make(map[string]hostPiToolCallProgress)
+	}
+	progress := b.toolCallProgress[toolID]
+	if progress.ToolName == "" {
+		progress.ToolName = toolName
+	} else {
+		toolName = progress.ToolName
+	}
+	progress.DeltaBytes += len(delta)
+	totalDeltaBytes = progress.DeltaBytes
+	if partialBytes <= 0 {
+		partialBytes = progress.DeltaBytes
+	}
+	lastLoggedBytes = progress.LastLoggedBytes
+	if partialBytes-progress.LastLoggedBytes >= hostPiToolCallProgressLogIntervalBytes {
+		progress.LastLoggedBytes = partialBytes
+		shouldLog = true
+	}
+	b.toolCallProgress[toolID] = progress
+	b.mu.Unlock()
+
+	if shouldLog {
+		log.Printf("[SandboxHost] host Pi toolcall progress thread=%s tool=%s toolCall=%s partialBytes=%d deltaBytes=%d lastLoggedBytes=%d", b.threadID, toolName, toolID, partialBytes, totalDeltaBytes, lastLoggedBytes)
+	}
+}
+
+func (b *hostPiBridge) logPiToolCallEnd(event map[string]any) {
+	toolID, toolName, partialBytes := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		toolID = fmt.Sprintf("content_%d", piContentIndex(event))
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+
+	b.mu.Lock()
+	progress := b.toolCallProgress[toolID]
+	if b.toolCallProgress != nil {
+		delete(b.toolCallProgress, toolID)
+	}
+	b.mu.Unlock()
+	if progress.ToolName != "" {
+		toolName = progress.ToolName
+	}
+
+	if partialBytes <= 0 {
+		partialBytes = progress.DeltaBytes
+	}
+	log.Printf("[SandboxHost] host Pi toolcall end thread=%s tool=%s toolCall=%s partialBytes=%d deltaBytes=%d", b.threadID, toolName, toolID, partialBytes, progress.DeltaBytes)
+}
+
+func piAssistantToolCallProgress(event map[string]any) (toolID string, toolName string, partialBytes int) {
+	if toolCall, ok := event["toolCall"].(map[string]any); ok {
+		toolID = stringValue(toolCall["id"], "")
+		toolName = stringValue(toolCall["name"], "")
+		if args, ok := toolCall["arguments"].(map[string]any); ok {
+			if encoded, err := json.Marshal(args); err == nil {
+				partialBytes = len(encoded)
+			}
+		}
+		return toolID, toolName, partialBytes
+	}
+
+	partial, _ := event["partial"].(map[string]any)
+	content, _ := partial["content"].([]any)
+	contentIndex := piContentIndex(event)
+	if contentIndex < len(content) {
+		if block, ok := content[contentIndex].(map[string]any); ok {
+			toolID = stringValue(block["id"], "")
+			toolName = stringValue(block["name"], "")
+			if partialJSON := stringValue(block["partialJson"], ""); partialJSON != "" {
+				partialBytes = len(partialJSON)
+			} else if args, ok := block["arguments"].(map[string]any); ok {
+				if encoded, err := json.Marshal(args); err == nil {
+					partialBytes = len(encoded)
+				}
+			}
+		}
+	}
+
+	return toolID, toolName, partialBytes
 }
 
 func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
@@ -1441,6 +1692,13 @@ func numberAsInt64(value any) (int64, bool) {
 	}
 }
 
+func intValue(value any) int {
+	if n, ok := numberAsInt64(value); ok {
+		return int(n)
+	}
+	return 0
+}
+
 func stringValue(value any, fallback string) string {
 	if str, ok := value.(string); ok && str != "" {
 		return str
@@ -1453,6 +1711,78 @@ func piContentIndex(event map[string]any) int {
 		return int(value)
 	}
 	return 0
+}
+
+func isRetryablePiAgentEnd(event map[string]any) (bool, string) {
+	messages, ok := event["messages"].([]any)
+	if !ok {
+		return false, ""
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		message, ok := messages[i].(map[string]any)
+		if !ok || stringValue(message["role"], "") != "assistant" {
+			continue
+		}
+		if stringValue(message["stopReason"], "") != "error" {
+			return false, ""
+		}
+		errorMessage := stringValue(message["errorMessage"], "")
+		return isRetryablePiErrorMessage(errorMessage), errorMessage
+	}
+	return false, ""
+}
+
+func isRetryablePiErrorMessage(message string) bool {
+	normalized := strings.ToLower(message)
+	if normalized == "" {
+		return false
+	}
+	if strings.Contains(normalized, "context") &&
+		(strings.Contains(normalized, "overflow") ||
+			strings.Contains(normalized, "length") ||
+			strings.Contains(normalized, "window") ||
+			strings.Contains(normalized, "token")) {
+		return false
+	}
+	retryablePatterns := []string{
+		"overloaded",
+		"provider returned error",
+		"provider-returned-error",
+		"rate limit",
+		"ratelimit",
+		"too many requests",
+		"429",
+		"500",
+		"502",
+		"503",
+		"504",
+		"service unavailable",
+		"server error",
+		"internal error",
+		"network error",
+		"connection error",
+		"connection refused",
+		"connection lost",
+		"websocket closed",
+		"websocket error",
+		"other side closed",
+		"fetch failed",
+		"upstream connect",
+		"reset before headers",
+		"socket hang up",
+		"ended without",
+		"http2 request did not get a response",
+		"timed out",
+		"timeout",
+		"terminated",
+		"retry delay",
+	}
+	for _, pattern := range retryablePatterns {
+		if strings.Contains(normalized, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func stringifyJSON(value any) string {
