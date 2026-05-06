@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -43,6 +44,61 @@ func TestHeaderCloningStripsMiniflareProxyHeaders(t *testing.T) {
 	}
 	if copied.Get("X-Test") != "kept" {
 		t.Fatalf("expected normal copied header to be preserved, got %q", copied.Get("X-Test"))
+	}
+}
+
+func TestDrainRouteTracksActiveHostPiTurns(t *testing.T) {
+	server := &Server{hostPiChats: make(map[string]*hostPiBridge)}
+	bridge := &hostPiBridge{threadID: "thread-1"}
+	bridge.beginActiveTurn()
+	server.hostPiChats["thread-1"] = bridge
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/admin/drain", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected drain status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var status map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode drain response: %v", err)
+	}
+	if draining, _ := status["draining"].(bool); !draining {
+		t.Fatalf("expected draining=true, got %#v", status)
+	}
+	if active, _ := status["activePiTurns"].(float64); active != 1 {
+		t.Fatalf("expected one active Pi turn, got %#v", status)
+	}
+
+	bridge.endActiveTurn()
+	req = httptest.NewRequest(http.MethodDelete, "/internal/admin/drain", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected drain resume status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if server.IsDraining() {
+		t.Fatal("expected drain mode to be disabled")
+	}
+}
+
+func TestWaitForHostPiIdleWaitsUntilActiveTurnEnds(t *testing.T) {
+	server := &Server{hostPiChats: make(map[string]*hostPiBridge)}
+	bridge := &hostPiBridge{threadID: "thread-1"}
+	bridge.beginActiveTurn()
+	server.hostPiChats["thread-1"] = bridge
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		bridge.endActiveTurn()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.WaitForHostPiIdle(ctx, time.Millisecond); err != nil {
+		t.Fatalf("WaitForHostPiIdle() returned error: %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,33 @@ func TestHostPiBridgeResolvePiModel(t *testing.T) {
 				t.Fatalf("resolvePiModel() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHostPiBridgeRejectsNewIdlePromptWhileDraining(t *testing.T) {
+	server := &Server{}
+	server.BeginDrain("test")
+	bridge := &hostPiBridge{
+		server:   server,
+		threadID: "thread-1",
+		nextSeq:  1,
+	}
+
+	if err := bridge.handleClientMessage([]byte(`{"type":"message","content":"hello"}`)); err != nil {
+		t.Fatalf("handleClientMessage() returned error: %v", err)
+	}
+	if bridge.started {
+		t.Fatal("expected draining idle prompt to be rejected before starting Pi")
+	}
+	if len(bridge.events) != 1 {
+		t.Fatalf("expected one buffered error event, got %d", len(bridge.events))
+	}
+	var event map[string]any
+	if err := json.Unmarshal(bridge.events[0].Encoded, &event); err != nil {
+		t.Fatalf("decode buffered event: %v", err)
+	}
+	if event["source"] != "host_pi_drain" {
+		t.Fatalf("unexpected event: %#v", event)
 	}
 }
 

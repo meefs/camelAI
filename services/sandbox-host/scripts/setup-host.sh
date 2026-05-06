@@ -245,6 +245,8 @@ WorkingDirectory=${service_dir}
 ExecStart=${host_binary_path}
 Restart=always
 RestartSec=5
+KillMode=process
+TimeoutStopSec=1800
 Environment=PORT=80
 Environment=SANDBOX_PROXY_PORT=8081
 Environment=WORKSPACES_ROOT=${SANDBOXES_DIR}

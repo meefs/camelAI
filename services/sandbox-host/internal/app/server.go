@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chiridion/sandbox-host/internal/container"
@@ -79,6 +80,7 @@ type Server struct {
 	proxyThreads map[string]*ProxyThreadContext
 	hostPiMu     sync.Mutex
 	hostPiChats  map[string]*hostPiBridge
+	draining     atomic.Bool
 	webToolMu    sync.Mutex
 	webToolIndex int
 
@@ -170,6 +172,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Path == "/health" {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "sandbox-host"})
+		return
+	}
+	if req.URL.Path == "/internal/admin/drain" {
+		s.handleDrainRoute(w, req, sourceIP)
 		return
 	}
 
@@ -794,6 +800,13 @@ func (s *Server) handleChatProxy(
 
 	now := time.Now().UTC()
 	threadKey := proxyThreadKey(name, threadID)
+	if s.IsDraining() {
+		bridge := s.hostPiBridgeForThread(threadID)
+		if bridge == nil || bridge.threadKey != threadKey || !bridge.isActive() {
+			errorJSON(w, "Sandbox host is draining for deploy", http.StatusServiceUnavailable)
+			return nil
+		}
+	}
 
 	s.proxyMu.Lock()
 	existing := s.proxyThreads[threadKey]

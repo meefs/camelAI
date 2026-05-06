@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/chiridion/sandbox-host/internal/app"
 	"github.com/chiridion/sandbox-host/internal/container"
@@ -63,6 +67,7 @@ func main() {
 	}
 
 	errCh := make(chan error, 2)
+	shutdownDone := make(chan struct{})
 
 	log.Printf("[SandboxHost] control listener on %s", cfg.ListenAddr)
 	go func() {
@@ -78,5 +83,34 @@ func main() {
 		}
 	}()
 
-	log.Fatalf("sandbox-host stopped: %v", <-errCh)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("[SandboxHost] received %s; draining active Pi turns before shutdown", sig)
+		server.BeginDrain("signal:" + sig.String())
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), 30*time.Minute)
+		if err := server.WaitForHostPiIdle(drainCtx, 500*time.Millisecond); err != nil {
+			log.Printf("[SandboxHost] drain before shutdown timed out with activePiTurns=%d: %v", server.ActiveHostPiTurnCount(), err)
+		}
+		cancelDrain()
+
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[SandboxHost] control listener shutdown failed: %v", err)
+		}
+		if err := proxyServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[SandboxHost] proxy listener shutdown failed: %v", err)
+		}
+		cancelShutdown()
+		server.StopHostPiBridges()
+		close(shutdownDone)
+	}()
+
+	select {
+	case err := <-errCh:
+		log.Fatalf("sandbox-host stopped: %v", err)
+	case <-shutdownDone:
+		log.Printf("[SandboxHost] shutdown complete")
+	}
 }

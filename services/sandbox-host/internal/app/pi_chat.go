@@ -166,13 +166,22 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 	case "ping":
 		b.sendEvent(map[string]any{"type": "pong", "ts": msg["ts"]})
 	case "message":
-		if err := b.start(nil); err != nil {
-			return err
-		}
 		content, _ := msg["content"].(string)
 		content = strings.TrimSpace(content)
 		if content == "" {
 			return nil
+		}
+		active := b.isActive()
+		if b.server.IsDraining() && !active {
+			b.sendEvent(map[string]any{
+				"type":   "error",
+				"error":  "Sandbox host is restarting. Please retry after reconnect.",
+				"source": "host_pi_drain",
+			})
+			return nil
+		}
+		if err := b.start(nil); err != nil {
+			return err
 		}
 		if userID, _ := msg["userId"].(string); strings.TrimSpace(userID) != "" {
 			b.sendEvent(map[string]any{"type": "active_turn_identity", "userId": strings.TrimSpace(userID), "source": "host_pi_message_start"})
@@ -183,14 +192,19 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 			"type":    "prompt",
 			"message": content,
 		}
-		b.stateMu.Lock()
-		active := b.active
-		b.stateMu.Unlock()
 		if active {
 			command["streamingBehavior"] = "steer"
+		} else {
+			b.beginActiveTurn()
 		}
 		log.Printf("[SandboxHost] host Pi prompt command thread=%s active=%t contentBytes=%d", b.threadID, active, len(content))
-		return b.writePiCommand(command)
+		if err := b.writePiCommand(command); err != nil {
+			if !active {
+				b.endActiveTurn()
+			}
+			return err
+		}
+		return nil
 	case "set_model":
 		if err := b.start(nil); err != nil {
 			return err
@@ -350,6 +364,7 @@ func (b *hostPiBridge) start(sessionEnv map[string]string) error {
 	go func() {
 		err := cmd.Wait()
 		durationMs := time.Since(startedAt).Milliseconds()
+		b.endActiveTurn()
 		log.Printf("[SandboxHost] host Pi process exited thread=%s container=%s durationMs=%d err=%v", b.threadID, b.container, durationMs, err)
 		if b.ctx.Err() == nil && err != nil {
 			b.sendEvent(map[string]any{
@@ -698,6 +713,7 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 	case "response":
 		if success, _ := event["success"].(bool); !success {
 			log.Printf("[SandboxHost] host Pi response error thread=%s error=%s", b.threadID, stringifyJSON(event["error"]))
+			b.endActiveTurn()
 			b.sendEvent(map[string]any{
 				"type":   "error",
 				"error":  stringifyJSON(event["error"]),
@@ -706,13 +722,7 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 		}
 	case "agent_start":
 		log.Printf("[SandboxHost] host Pi agent_start thread=%s", b.threadID)
-		b.stateMu.Lock()
-		b.active = true
-		b.finalBuf.Reset()
-		b.activeItemBuf.Reset()
-		b.activeItem = fmt.Sprintf("pi_agent_%s", randomID())
-		b.reasoningItem = ""
-		b.stateMu.Unlock()
+		b.beginActiveTurn()
 	case "message_update":
 		assistantEvent, _ := event["assistantMessageEvent"].(map[string]any)
 		deltaType, _ := assistantEvent["type"].(string)
@@ -801,9 +811,9 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 		b.handlePiToolEnd(event)
 	case "agent_end":
 		b.stateMu.Lock()
-		b.active = false
 		finalText := b.finalBuf.String()
 		b.stateMu.Unlock()
+		b.endActiveTurn()
 		log.Printf("[SandboxHost] host Pi agent_end thread=%s finalBytes=%d", b.threadID, len(finalText))
 		if finalText == "" {
 			finalText = extractPiAssistantText(event["messages"])
@@ -930,6 +940,22 @@ func (b *hostPiBridge) isActive() bool {
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
 	return b.active
+}
+
+func (b *hostPiBridge) beginActiveTurn() {
+	b.stateMu.Lock()
+	b.active = true
+	b.finalBuf.Reset()
+	b.activeItemBuf.Reset()
+	b.activeItem = fmt.Sprintf("pi_agent_%s", randomID())
+	b.reasoningItem = ""
+	b.stateMu.Unlock()
+}
+
+func (b *hostPiBridge) endActiveTurn() {
+	b.stateMu.Lock()
+	b.active = false
+	b.stateMu.Unlock()
 }
 
 func (s *Server) hostPiBridgeForThread(threadID string) *hostPiBridge {
