@@ -11,9 +11,6 @@ sandbox_data_disk_iops    = 3000
 sandbox_data_disk_mbps    = 125
 sandbox_data_disk_lun     = 0
 
-# Restrict this once the staging host is stable.
-ssh_allowed_cidr = "*"
-
 # Use a staging-only Cloudflare tunnel/VPC service.
 cloudflared_tunnel_token = "eyJ...replace-me..."
 

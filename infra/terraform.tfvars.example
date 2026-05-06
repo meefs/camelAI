@@ -11,9 +11,6 @@ sandbox_data_disk_iops    = 5000
 sandbox_data_disk_mbps    = 200
 sandbox_data_disk_lun     = 0
 
-# Restrict SSH to your IP in production
-ssh_allowed_cidr          = "*"
-
 # Cloudflare tunnel token used by cloudflared on the VM
 cloudflared_tunnel_token  = "eyJ...replace-me..."
 

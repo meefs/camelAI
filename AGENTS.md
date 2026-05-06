@@ -173,7 +173,8 @@ waitUntil(
 
 - Go service code lives in `services/sandbox-host/`.
 - The host manages Docker + gVisor lifecycle, workspace filesystem operations, chat transcript retrieval, OpenAI proxying/usage tracking, and data proxy forwarding.
-- Prod and staging sandbox-hosts should be separate VMs/VPC services. Prod SSH target is `chiridion-vm` (`20.46.233.68`, Central US). Staging SSH target is `chiridion-vm-staging` (`172.206.70.242`, East US 2). Keep deploys explicit with `bun run deploy:go:sandbox-host:prod` or `bun run deploy:go:sandbox-host:staging`.
+- Prod and staging sandbox-hosts should be separate VMs/VPC services. Prod SSH target is `chiridion-vm` (`20.46.233.68`, Central US); public SSH remains available on prod until explicitly removed. Staging admin/deploy SSH goes through Tailscale at `100.115.221.105` (`chiridion-sandbox-staging`), and direct public SSH to staging should remain closed except for temporary break-glass. Keep deploys explicit with `bun run deploy:go:sandbox-host:prod` or `bun run deploy:go:sandbox-host:staging`.
+- GitHub Actions staging deploys join Tailscale as ephemeral `tag:ci` nodes using `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`; the OAuth client needs writable `auth_keys` scope for `tag:ci`, and the tailnet policy must allow `tag:ci` to reach staging TCP/22.
 - Terraform examples for the Azure sandbox-host environments live in `infra/`; see `infra/README.md`, `infra/prod.tfvars.example`, and `infra/staging.tfvars.example`.
 - Run `bun run test:sandbox-host` for Go changes.
 - Local sandbox-host development uses `bun run dev:sandbox-host`.

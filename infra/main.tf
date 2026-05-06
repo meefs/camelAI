@@ -53,20 +53,6 @@ resource "azurerm_network_security_group" "sandbox" {
   tags                = local.tags
 }
 
-resource "azurerm_network_security_rule" "ssh" {
-  name                        = "AllowSSH"
-  priority                    = 100
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range           = "*"
-  destination_port_range      = "22"
-  source_address_prefix       = var.ssh_allowed_cidr
-  destination_address_prefix  = "*"
-  resource_group_name         = azurerm_resource_group.sandbox.name
-  network_security_group_name = azurerm_network_security_group.sandbox.name
-}
-
 resource "azurerm_subnet_network_security_group_association" "sandbox" {
   subnet_id                 = azurerm_subnet.sandbox.id
   network_security_group_id = azurerm_network_security_group.sandbox.id

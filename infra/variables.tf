@@ -57,13 +57,6 @@ variable "sandbox_data_disk_lun" {
   default     = 0
 }
 
-variable "ssh_allowed_cidr" {
-  description = "CIDR block allowed for SSH access"
-  type        = string
-  default     = "*"
-}
-
-
 variable "os_disk_size_gb" {
   description = "OS disk size in GB"
   type        = number

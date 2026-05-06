@@ -75,10 +75,12 @@ jobs:
 
           case "$deploy_env" in
             staging)
-              host_ip="172.206.70.242"
+              host="100.115.221.105"
+              use_tailscale="true"
               ;;
             prod)
-              host_ip="20.46.233.68"
+              host="20.46.233.68"
+              use_tailscale="false"
               ;;
             *)
               echo "Unknown deploy environment: $deploy_env" >&2
@@ -88,7 +90,17 @@ jobs:
 
           echo "environment=$deploy_env" >> "$GITHUB_OUTPUT"
           echo "target=$deploy_target" >> "$GITHUB_OUTPUT"
-          echo "host_ip=$host_ip" >> "$GITHUB_OUTPUT"
+          echo "host=$host" >> "$GITHUB_OUTPUT"
+          echo "use_tailscale=$use_tailscale" >> "$GITHUB_OUTPUT"
+
+      - name: Connect to Tailscale
+        if: steps.target.outputs.use_tailscale == 'true'
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ steps.target.outputs.host }}
 
       - name: Configure SSH
         shell: bash
@@ -99,9 +111,13 @@ jobs:
           chmod 600 ~/.ssh/sandbox_go_deploy
           printf '%s\n' "${{ secrets.SANDBOX_GO_DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          if [[ "${{ steps.target.outputs.use_tailscale }}" == "true" ]]; then
+            ssh-keygen -F "${{ steps.target.outputs.host }}" >/dev/null ||
+              ssh-keyscan -T 10 -H "${{ steps.target.outputs.host }}" >> ~/.ssh/known_hosts
+          fi
           cat > ~/.ssh/config <<EOF
           Host sandbox-go-deploy
-            HostName ${{ steps.target.outputs.host_ip }}
+            HostName ${{ steps.target.outputs.host }}
             User chiridion
             IdentityFile ~/.ssh/sandbox_go_deploy
             IdentitiesOnly yes

@@ -4,7 +4,7 @@ output "vm_public_ip" {
 }
 
 output "ssh_command" {
-  description = "SSH command to connect to the VM"
+  description = "Break-glass public SSH command if a temporary NSG rule is opened"
   value       = "ssh ${var.admin_username}@${azurerm_public_ip.sandbox.ip_address}"
 }
 
