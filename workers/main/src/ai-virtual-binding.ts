@@ -1,6 +1,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 interface AIVirtualBindingEnv {
+  SANDBOX_HOST?: Fetcher;
+  SANDBOX_PROXY_SECRET?: string;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
@@ -69,18 +71,16 @@ export class AIVirtualBinding extends WorkerEntrypoint<
     const picked = pickModel(model, inputModel, envDefault);
     const resolvedModelName = resolveModel(picked);
 
-    const gatewaySettings = resolveGatewaySettings(this.env);
-    if (!gatewaySettings) {
-      throw new Error(
-        "AI gateway is not configured. Required: CF_ACCOUNT_ID, CF_GATEWAY_NAME, and CF_GATEWAY_TOKEN or AI_GATEWAY_AUTH_TOKEN.",
-      );
+    if (!this.env.SANDBOX_HOST) {
+      throw new Error("Sandbox host binding is not configured for virtual AI.");
     }
 
     const provider: GatewayProvider = isOpenRouterModel(resolvedModelName)
       ? "openrouter"
       : "compat";
-    return runViaGatewayHTTP(
-      gatewaySettings,
+    return runViaSandboxHostVirtualAI(
+      this.env.SANDBOX_HOST,
+      this.env.SANDBOX_PROXY_SECRET,
       this.ctx.props,
       sanitizedInput,
       resolvedModelName,
@@ -241,6 +241,66 @@ export async function runViaGatewayHTTP(
   return {};
 }
 
+export async function runViaSandboxHostVirtualAI(
+  sandboxHost: Fetcher,
+  sandboxProxySecret: string | undefined,
+  props: AIVirtualBindingProps,
+  input: unknown,
+  model: string = "dynamic/auto",
+  _provider: GatewayProvider = "compat",
+): Promise<unknown> {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  headers.set("x-chiridion-org-id", props.orgId);
+  headers.set("x-chiridion-workspace-id", props.workspaceId);
+  if (sandboxProxySecret?.trim()) {
+    headers.set("x-sandbox-secret", sandboxProxySecret.trim());
+  }
+  if (props.userId?.trim()) {
+    headers.set("x-chiridion-user-id", props.userId.trim());
+  }
+
+  const payload = toGatewayPayload(input, model);
+  const resp = await sandboxHost.fetch(
+    "http://sandbox/v1/virtual-ai/chat/completions",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+  );
+
+  const streamRequested = payload.stream === true;
+  if (resp.ok && shouldPassthroughStream(resp, streamRequested)) {
+    if (!resp.body) {
+      throw new Error("AI Gateway returned an empty streaming response");
+    }
+    return resp.body;
+  }
+
+  const responseText = await resp.text();
+  const responsePayload = responseText
+    ? safeJsonParse(responseText)
+    : undefined;
+  if (!resp.ok) {
+    const message =
+      extractGatewayErrorMessage(responsePayload) ??
+      extractErrorMessage(responsePayload) ??
+      (responseText.trim() || undefined) ??
+      `AI Gateway request failed (${resp.status})`;
+    throw new Error(message);
+  }
+
+  if (responsePayload !== undefined) {
+    return responsePayload;
+  }
+
+  if (responseText.trim()) {
+    throw new Error("AI Gateway returned a non-JSON non-streaming response");
+  }
+  return {};
+}
+
 function toGatewayPayload(
   input: unknown,
   model: string,
@@ -291,4 +351,12 @@ function extractGatewayErrorMessage(payload: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function extractErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const message = (payload as { error?: unknown }).error;
+  return typeof message === "string" && message.trim() ? message : undefined;
 }

@@ -206,6 +206,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if strings.HasPrefix(req.URL.Path, "/v1/virtual-ai/") {
+		s.handleVirtualAIRoute(w, req)
+		return
+	}
+
 	route, ok := parseWorkspaceRoute(req.URL.Path)
 	if !ok {
 		errorJSON(w, "Not found", http.StatusNotFound)
@@ -1982,6 +1987,154 @@ func (s *Server) forwardOpenAIToAIGateway(
 	}
 }
 
+func (s *Server) handleVirtualAIRoute(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path != "/v1/virtual-ai/chat/completions" {
+		errorJSON(w, "Not found", http.StatusNotFound)
+		return
+	}
+	if req.Method != http.MethodPost {
+		errorJSON(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.AIGatewayBaseURL == "" || strings.TrimSpace(s.cfg.AIGatewayToken) == "" {
+		errorJSON(w, "AI Gateway is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if expectedSecret := strings.TrimSpace(s.cfg.SandboxProxySecret); expectedSecret != "" &&
+		req.Header.Get("x-sandbox-secret") != expectedSecret {
+		errorJSON(w, "Unauthorized", http.StatusForbidden)
+		return
+	}
+
+	threadContext := &ProxyThreadContext{
+		OrgID:         strings.TrimSpace(req.Header.Get("x-chiridion-org-id")),
+		WorkspaceID:   strings.TrimSpace(req.Header.Get("x-chiridion-workspace-id")),
+		UserID:        strings.TrimSpace(req.Header.Get("x-chiridion-user-id")),
+		ThreadID:      "virtual-ai",
+		ContainerName: "virtual-ai",
+		WorkerBaseURL: strings.TrimSpace(req.Header.Get("x-chiridion-worker-base-url")),
+	}
+	if threadContext.OrgID == "" || threadContext.WorkspaceID == "" {
+		errorJSON(w, "Missing virtual AI tenant context", http.StatusBadRequest)
+		return
+	}
+
+	startedAt := time.Now()
+	rawBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	requestModel := ""
+	gatewayProvider := "compat"
+	var bodyJSON map[string]any
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &bodyJSON); err != nil {
+			errorJSON(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+	}
+	if bodyJSON == nil {
+		bodyJSON = make(map[string]any)
+	}
+	if model, _ := bodyJSON["model"].(string); model != "" {
+		requestModel = model
+	}
+	resolved := resolveVirtualAIModel(requestModel)
+	bodyJSON["model"] = resolved
+	if isVirtualAIOpenRouterModel(resolved) {
+		gatewayProvider = "openrouter"
+	}
+	ensureOpenAIStreamUsage(bodyJSON)
+	rawBody, _ = json.Marshal(bodyJSON)
+
+	billingDecision := s.checkOrgBillingAccess(threadContext, billingSourceHosted, requestModel)
+	if billingDecision.Denied {
+		errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
+		return
+	}
+
+	targetURL := s.cfg.AIGatewayBaseURL + "/" + gatewayProvider + "/chat/completions"
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, targetURL, bytes.NewReader(rawBody))
+	if err != nil {
+		errorJSON(w, "Failed to create gateway request", http.StatusInternalServerError)
+		return
+	}
+	headers := sanitizeGatewayUpstreamHeaders(req.Header)
+	headers.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
+	headers.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+	applyStreamingRequestHeaders(headers)
+	forwardReq.Header = headers
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		log.Printf("[SandboxHost] virtual AI Gateway proxy failed org=%s workspace=%s durationMs=%d error=%v",
+			threadContext.OrgID, threadContext.WorkspaceID, durationMs, upstreamErr)
+		errorJSON(w, "AI Gateway upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyHeaders(w.Header(), resp.Header)
+	applyStreamingResponseHeaders(w.Header(), resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+
+	streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
+	usage, err := copyResponseBodyWithUsage(w, resp.Body, streaming)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.trace("virtual_ai_proxy_copy_error", map[string]any{
+			"orgId":       threadContext.OrgID,
+			"workspaceId": threadContext.WorkspaceID,
+			"error":       err.Error(),
+		})
+	}
+	if usage.Model == "" {
+		usage.Model = extractModelFromRequestBody(rawBody)
+	}
+	if resp.StatusCode < 400 && usage.HasBillableTokens() {
+		provider := "openai"
+		if gatewayProvider == "openrouter" {
+			provider = "openrouter"
+		}
+		go s.recordUsage(threadContext, provider, billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+	}
+}
+
+func ensureOpenAIStreamUsage(body map[string]any) {
+	stream, _ := body["stream"].(bool)
+	if !stream {
+		return
+	}
+	options, _ := body["stream_options"].(map[string]any)
+	if options == nil {
+		options = make(map[string]any)
+	}
+	options["include_usage"] = true
+	body["stream_options"] = options
+}
+
+func resolveVirtualAIModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	switch trimmed {
+	case "":
+		return "dynamic/auto"
+	case "auto", "auto_search", "auto_image":
+		return "dynamic/" + trimmed
+	default:
+		return trimmed
+	}
+}
+
+func isVirtualAIOpenRouterModel(model string) bool {
+	return !strings.HasPrefix(strings.TrimSpace(model), "dynamic/")
+}
+
 func (s *Server) forwardOpenAIDirect(
 	w http.ResponseWriter,
 	req *http.Request,
@@ -2129,6 +2282,7 @@ func sanitizeGatewayUpstreamHeaders(src http.Header) http.Header {
 	headers.Del("X-Chiridion-Workspace-Id")
 	headers.Del("X-Chiridion-User-Id")
 	headers.Del("X-Chiridion-Thread-Id")
+	headers.Del("X-Chiridion-Worker-Base-Url")
 	headers.Del("X-Api-Key")
 	headers.Del("x-api-key")
 	// Strip spoofable forwarding/proxy headers from sandbox callers

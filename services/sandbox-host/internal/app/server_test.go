@@ -904,6 +904,83 @@ func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) 
 	return fn(req)
 }
 
+func TestVirtualAIProxyRecordsCreditChargeableUsage(t *testing.T) {
+	usageStore, err := state.NewUsageStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open usage store: %v", err)
+	}
+	defer func() { _ = usageStore.Close() }()
+
+	billingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/api/internal/billing/access" {
+			t.Fatalf("unexpected billing path: %s", req.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"org_id":"org-1",
+			"billing_status":"active",
+			"billing_credit_purchase_total_cents":1000,
+			"billing_credit_grant_total_cents":0
+		}`))
+	}))
+	defer billingServer.Close()
+
+	var capturedPath string
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"gpt-5.4-mini","usage":{"prompt_tokens":1000,"completion_tokens":2000}}`))
+	}))
+	defer gateway.Close()
+
+	server := &Server{
+		cfg: Config{
+			AIGatewayBaseURL: gateway.URL,
+			AIGatewayToken:   "test-gateway-token",
+			WorkerBaseURL:    billingServer.URL,
+		},
+		httpClient: &http.Client{},
+		usage:      usageStore,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/virtual-ai/chat/completions", strings.NewReader(`{
+		"model":"gpt-5.4-mini",
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-chiridion-org-id", "org-1")
+	req.Header.Set("x-chiridion-workspace-id", "ws-1")
+	req.Header.Set("x-chiridion-user-id", "user-1")
+
+	rec := httptest.NewRecorder()
+	server.handleVirtualAIRoute(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/openrouter/chat/completions" {
+		t.Fatalf("unexpected gateway path: got=%q want=%q", capturedPath, "/openrouter/chat/completions")
+	}
+
+	var sum state.UsageLogSum
+	for i := 0; i < 20; i++ {
+		sum, err = usageStore.GetCreditChargeableUsageLogSum("org-1", 0, time.Now().Add(time.Minute).UnixMilli())
+		if err != nil {
+			t.Fatalf("read chargeable usage: %v", err)
+		}
+		if sum.TotalRequests == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if sum.TotalRequests != 1 {
+		t.Fatalf("expected 1 chargeable request, got %d", sum.TotalRequests)
+	}
+	if sum.TotalInputTokens != 1000 || sum.TotalOutputTokens != 2000 {
+		t.Fatalf("unexpected token sum: %+v", sum)
+	}
+}
+
 type chunkReader struct {
 	chunks [][]byte
 	index  int
