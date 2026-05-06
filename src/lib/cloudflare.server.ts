@@ -44,6 +44,9 @@ export interface CloudflareEnv {
   R2_MOUNT_DIR: string;
   R2_PARENT_ACCESS_KEY_ID: string;
   CF_ACCOUNT_ID: string;
+  CF_GATEWAY_NAME?: string;
+  CF_GATEWAY_TOKEN?: string;
+  AI_GATEWAY_AUTH_TOKEN?: string;
   CF_DISPATCH_NAMESPACE: string;
   CF_API_TOKEN?: string;
   CF_ZONE_ID?: string;

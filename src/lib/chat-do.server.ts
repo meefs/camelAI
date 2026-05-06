@@ -9,9 +9,8 @@ import type {
 } from "@/types";
 import type { PreviewTarget } from "@/types";
 import {
-  sanitizeGeneratedThreadTitle,
-  THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
-} from "./thread-title";
+  generateThreadTitleWithOpenAI,
+} from "./thread-title-generation.server";
 import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
@@ -351,34 +350,17 @@ export async function generateThreadTitle(
   try {
     const env = getEnv(context);
 
-    // Use AI binding to generate title
-    const ai = env.AI as {
-      run: (
-        model: string,
-        options: {
-          messages: { role: string; content: string }[];
-          temperature?: number;
-          max_tokens?: number;
-        },
-      ) => Promise<{ response?: string }>;
-    };
-
-    const response = await ai.run("@cf/google/gemma-3-12b-it", {
-      messages: [
-        { role: "system", content: THREAD_TITLE_GENERATION_SYSTEM_PROMPT },
-        { role: "user", content: message },
-      ],
-      temperature: 1,
-      max_tokens: 50,
-    });
-
-    const title = sanitizeGeneratedThreadTitle(response?.response);
-    if (!title) return;
-
-    // Update title in OrgDO
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return;
 
+    const title = await generateThreadTitleWithOpenAI(env, message, {
+      orgId: wsInfo.org_id,
+      workspaceId,
+      threadId,
+    });
+    if (!title) return;
+
+    // Update title in OrgDO
     const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
     await orgStub.updateThread(threadId, title);
 

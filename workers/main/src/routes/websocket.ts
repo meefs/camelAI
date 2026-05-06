@@ -17,9 +17,8 @@ import { applyConnectionMentionContext } from '../connection-mention-context.js'
 import {
   getThreadTitleSourceMessage,
   isPlaceholderThreadTitle,
-  sanitizeGeneratedThreadTitle,
-  THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
 } from '../../../../src/lib/thread-title.js';
+import { generateThreadTitleWithOpenAI } from '../../../../src/lib/thread-title-generation.server.js';
 
 export async function handleChatWebSocket({ req, env, url }: RouteContext): Promise<Response> {
   const threadIdFromUrl = url.searchParams.get('threadId');
@@ -399,16 +398,11 @@ async function updateThreadMetadataForUserMessage(
   if (!isPlaceholderThreadTitle(thread.title)) return;
 
   try {
-    const response = await env.AI.run('@cf/google/gemma-3-12b-it', {
-      messages: [
-        { role: 'system', content: THREAD_TITLE_GENERATION_SYSTEM_PROMPT },
-        { role: 'user', content: titleSourceMessage },
-      ],
-      temperature: 1,
-      max_tokens: 50,
-    }) as { response?: string };
-
-    const title = sanitizeGeneratedThreadTitle(response?.response);
+    const title = await generateThreadTitleWithOpenAI(env, titleSourceMessage, {
+      orgId,
+      workspaceId,
+      threadId,
+    });
     if (title) {
       await orgStub.updateThread(threadId, title);
     }

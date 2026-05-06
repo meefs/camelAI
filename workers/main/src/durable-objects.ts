@@ -14,9 +14,8 @@ import { applyConnectionMentionContext } from './connection-mention-context';
 import {
   getThreadTitleSourceMessage,
   isPlaceholderThreadTitle,
-  sanitizeGeneratedThreadTitle,
-  THREAD_TITLE_GENERATION_SYSTEM_PROMPT,
 } from '../../../src/lib/thread-title';
+import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
 import type { LlmModel } from '../../../src/types';
 import { isOrgBanned } from "./ban-list";
 
@@ -130,6 +129,9 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   AI: Ai;
   ANTHROPIC_API_KEY: string;
   CF_ACCOUNT_ID?: string;
+  CF_GATEWAY_NAME?: string;
+  CF_GATEWAY_TOKEN?: string;
+  AI_GATEWAY_AUTH_TOKEN?: string;
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
   R2_MOUNT_DIR?: string;
@@ -2338,22 +2340,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async generateThreadTitleFromMessage(threadId: string, message: string): Promise<void> {
     try {
-      const response = await this.env.AI.run('@cf/google/gemma-3-12b-it', {
-        messages: [
-          { role: 'system', content: THREAD_TITLE_GENERATION_SYSTEM_PROMPT },
-          { role: 'user', content: message },
-        ],
-        temperature: 1,
-        max_tokens: 50,
-      }) as { response?: string };
-
-      const title = sanitizeGeneratedThreadTitle(response?.response);
-      if (!title) {
+      const context = this.chatContext;
+      if (!context?.orgId) {
         return;
       }
 
-      const context = this.chatContext;
-      if (!context?.orgId) {
+      const title = await generateThreadTitleWithOpenAI(this.env, message, {
+        orgId: context.orgId,
+        workspaceId: context.workspaceId,
+        threadId,
+      });
+      if (!title) {
         return;
       }
 
