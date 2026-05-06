@@ -81,17 +81,22 @@ func (s *Server) handleHostPiWebToolRoute(w http.ResponseWriter, req *http.Reque
 	if threadContext != nil {
 		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, "web_"+operation)
 		if billingDecision.Denied {
+			log.Printf("[SandboxHost] host Pi web tool denied thread=%s operation=%s status=%d message=%s", body.ThreadID, operation, billingDecision.StatusCode, billingDecision.Message)
 			errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
 			return
 		}
 	}
 
 	startedAt := time.Now()
+	log.Printf("[SandboxHost] host Pi web tool start thread=%s operation=%s", body.ThreadID, operation)
 	text, providerResult, err := s.executeWebTool(req.Context(), operation, body.Params, body.ThreadID)
+	durationMs := time.Since(startedAt).Milliseconds()
 	if err != nil {
+		log.Printf("[SandboxHost] host Pi web tool error thread=%s operation=%s durationMs=%d error=%v", body.ThreadID, operation, durationMs, err)
 		errorJSON(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	log.Printf("[SandboxHost] host Pi web tool complete thread=%s operation=%s provider=%s results=%d costUSD=%.6f durationMs=%d", body.ThreadID, operation, providerResult.Provider, len(providerResult.Results), providerResult.CostUSD, durationMs)
 	if threadContext != nil {
 		go s.recordWebUsage(
 			threadContext,
@@ -100,7 +105,7 @@ func (s *Server) handleHostPiWebToolRoute(w http.ResponseWriter, req *http.Reque
 			billingDecision.CreditChargeable,
 			"web_"+operation,
 			providerResult.CostUSD,
-			time.Since(startedAt).Milliseconds(),
+			durationMs,
 		)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

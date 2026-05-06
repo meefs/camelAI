@@ -47,6 +47,7 @@ func (s *Server) serveHostPiChat(
 	var closeOnce sync.Once
 	closeAll := func(code int, reason string) {
 		closeOnce.Do(func() {
+			log.Printf("[SandboxHost] host Pi websocket detached thread=%s container=%s code=%d reason=%s", threadID, name, code, reason)
 			bridge.detachClient(clientConn)
 
 			s.trace("host_pi_chat_ws_close", map[string]any{
@@ -152,13 +153,13 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 		if value, ok := numberAsInt64(msg["lastSeq"]); ok {
 			lastSeq = value
 		}
-		if lastSeq >= b.nextSeq {
-			b.nextSeq = lastSeq + 1
-		}
+		b.ensureNextSeqAfter(lastSeq)
 		env := mapStringValues(msg["env"])
 		if err := b.start(env); err != nil {
 			return err
 		}
+		nextSeq, started, buffered, active := b.lifecycleSnapshot()
+		log.Printf("[SandboxHost] host Pi init thread=%s lastSeq=%d nextSeq=%d bufferedEvents=%d started=%t active=%t", b.threadID, lastSeq, nextSeq, buffered, started, active)
 		b.replayEventsAfter(lastSeq)
 		b.sendEvent(map[string]any{"type": "session", "sessionId": b.threadID})
 		b.sendEvent(map[string]any{"type": "ready"})
@@ -188,6 +189,7 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 		if active {
 			command["streamingBehavior"] = "steer"
 		}
+		log.Printf("[SandboxHost] host Pi prompt command thread=%s active=%t contentBytes=%d", b.threadID, active, len(content))
 		return b.writePiCommand(command)
 	case "set_model":
 		if err := b.start(nil); err != nil {
@@ -208,7 +210,9 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 			"modelId":  strings.TrimSpace(modelID),
 		})
 	case "stop":
-		if b.started {
+		_, started, _, _ := b.lifecycleSnapshot()
+		if started {
+			log.Printf("[SandboxHost] host Pi abort command thread=%s", b.threadID)
 			return b.writePiCommand(map[string]any{"id": fmt.Sprintf("abort_%s", randomID()), "type": "abort"})
 		}
 	case "question_response":
@@ -339,11 +343,14 @@ func (b *hostPiBridge) start(sessionEnv map[string]string) error {
 	b.stdin = stdin
 	b.started = true
 	b.mu.Unlock()
+	startedAt := time.Now()
 
 	go b.readPiStdout(stdout)
 	go b.readPiStderr(stderr)
 	go func() {
 		err := cmd.Wait()
+		durationMs := time.Since(startedAt).Milliseconds()
+		log.Printf("[SandboxHost] host Pi process exited thread=%s container=%s durationMs=%d err=%v", b.threadID, b.container, durationMs, err)
 		if b.ctx.Err() == nil && err != nil {
 			b.sendEvent(map[string]any{
 				"type":   "error",
@@ -361,6 +368,7 @@ func (b *hostPiBridge) start(sessionEnv map[string]string) error {
 		"skillsPath": skillsPath,
 		"workspace":  workspacePath,
 	})
+	log.Printf("[SandboxHost] host Pi started thread=%s container=%s model=%s sessionDir=%s workspace=%s", b.threadID, b.container, piModel, sessionDir, workspacePath)
 	return nil
 }
 
@@ -689,6 +697,7 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 	switch eventType {
 	case "response":
 		if success, _ := event["success"].(bool); !success {
+			log.Printf("[SandboxHost] host Pi response error thread=%s error=%s", b.threadID, stringifyJSON(event["error"]))
 			b.sendEvent(map[string]any{
 				"type":   "error",
 				"error":  stringifyJSON(event["error"]),
@@ -696,6 +705,7 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 			})
 		}
 	case "agent_start":
+		log.Printf("[SandboxHost] host Pi agent_start thread=%s", b.threadID)
 		b.stateMu.Lock()
 		b.active = true
 		b.finalBuf.Reset()
@@ -794,6 +804,7 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 		b.active = false
 		finalText := b.finalBuf.String()
 		b.stateMu.Unlock()
+		log.Printf("[SandboxHost] host Pi agent_end thread=%s finalBytes=%d", b.threadID, len(finalText))
 		if finalText == "" {
 			finalText = extractPiAssistantText(event["messages"])
 		}
@@ -834,6 +845,8 @@ func (s *Server) attachHostPiBridge(
 		existing.route = route
 		existing.opts = opts
 		existing.attachClient(client)
+		nextSeq, started, buffered, active := existing.lifecycleSnapshot()
+		log.Printf("[SandboxHost] host Pi websocket attached existing bridge thread=%s container=%s nextSeq=%d bufferedEvents=%d started=%t active=%t", threadID, name, nextSeq, buffered, started, active)
 		s.trace("host_pi_chat_ws_attached_existing", map[string]any{
 			"container": name,
 			"threadId":  threadID,
@@ -860,6 +873,7 @@ func (s *Server) attachHostPiBridge(
 		toolArgs:   make(map[string]map[string]any),
 	}
 	s.hostPiChats[bridge.threadID] = bridge
+	log.Printf("[SandboxHost] host Pi bridge created thread=%s container=%s threadKey=%s", threadID, name, threadKey)
 	return bridge
 }
 
@@ -881,10 +895,41 @@ func (b *hostPiBridge) detachClient(client *websocket.Conn) {
 	if b.client == client {
 		b.client = nil
 	}
+	nextSeq := b.nextSeq
+	buffered := len(b.events)
 	b.mu.Unlock()
+	log.Printf("[SandboxHost] host Pi client detached thread=%s nextSeq=%d bufferedEvents=%d active=%t", b.threadID, nextSeq, buffered, b.isActive())
 	if client != nil {
 		_ = client.Close()
 	}
+}
+
+func (b *hostPiBridge) ensureNextSeqAfter(lastSeq int64) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if lastSeq >= b.nextSeq {
+		b.nextSeq = lastSeq + 1
+	}
+	return b.nextSeq
+}
+
+func (b *hostPiBridge) lifecycleSnapshot() (int64, bool, int, bool) {
+	b.mu.Lock()
+	nextSeq := b.nextSeq
+	started := b.started
+	buffered := len(b.events)
+	b.mu.Unlock()
+
+	b.stateMu.Lock()
+	active := b.active
+	b.stateMu.Unlock()
+	return nextSeq, started, buffered, active
+}
+
+func (b *hostPiBridge) isActive() bool {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	return b.active
 }
 
 func (s *Server) hostPiBridgeForThread(threadID string) *hostPiBridge {
@@ -1011,21 +1056,26 @@ func (b *hostPiBridge) askUserQuestions(ctx context.Context, questions []any, to
 	if strings.TrimSpace(toolCallID) != "" {
 		event["toolUseId"] = strings.TrimSpace(toolCallID)
 	}
+	log.Printf("[SandboxHost] host Pi ask_user_question start thread=%s question=%s toolCall=%s count=%d", b.threadID, questionID, strings.TrimSpace(toolCallID), len(questions))
 	b.sendEvent(event)
 
 	select {
 	case result := <-resultCh:
 		if result.err != nil {
+			log.Printf("[SandboxHost] host Pi ask_user_question failed thread=%s question=%s error=%v", b.threadID, questionID, result.err)
 			return nil, result.err
 		}
 		if result.answers == nil {
 			return map[string]any{}, nil
 		}
+		log.Printf("[SandboxHost] host Pi ask_user_question answered thread=%s question=%s", b.threadID, questionID)
 		b.sendEvent(map[string]any{"type": "question_answered", "questionId": questionID})
 		return result.answers, nil
 	case <-ctx.Done():
+		log.Printf("[SandboxHost] host Pi ask_user_question request context done thread=%s question=%s error=%v", b.threadID, questionID, ctx.Err())
 		return nil, ctx.Err()
 	case <-b.ctx.Done():
+		log.Printf("[SandboxHost] host Pi ask_user_question bridge closed thread=%s question=%s", b.threadID, questionID)
 		return nil, errors.New("host Pi chat session closed")
 	}
 }
@@ -1035,8 +1085,10 @@ func (b *hostPiBridge) answerQuestion(questionID string, answers map[string]any)
 	resultCh := b.questions[questionID]
 	b.mu.Unlock()
 	if resultCh == nil {
+		log.Printf("[SandboxHost] host Pi question response ignored thread=%s question=%s", b.threadID, questionID)
 		return
 	}
+	log.Printf("[SandboxHost] host Pi question response received thread=%s question=%s answerKeys=%d", b.threadID, questionID, len(answers))
 	resultCh <- hostPiQuestionResult{answers: answers}
 }
 
@@ -1120,6 +1172,7 @@ func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
 	toolID := stringValue(event["toolCallId"], "pi_tool_"+randomID())
 	toolName := stringValue(event["toolName"], "tool")
 	args := b.rememberToolArgs(toolID, piToolArgs(event))
+	log.Printf("[SandboxHost] host Pi tool start thread=%s tool=%s toolCall=%s", b.threadID, toolName, toolID)
 	item := map[string]any{
 		"id":        toolID,
 		"type":      "dynamicToolCall",
@@ -1167,6 +1220,7 @@ func (b *hostPiBridge) handlePiToolEnd(event map[string]any) {
 	if isError, _ := event["isError"].(bool); isError {
 		status = "failed"
 	}
+	log.Printf("[SandboxHost] host Pi tool end thread=%s tool=%s toolCall=%s status=%s resultBytes=%d", b.threadID, toolName, toolID, status, len(resultText))
 	item := map[string]any{
 		"id":        toolID,
 		"type":      "dynamicToolCall",
@@ -1215,9 +1269,13 @@ func (b *hostPiBridge) sendEvent(payload map[string]any) {
 	if len(b.events) > hostPiEventReplayLimit {
 		b.events = append([]hostPiBufferedEvent(nil), b.events[len(b.events)-hostPiEventReplayLimit:]...)
 	}
+	buffered := len(b.events)
 	client := b.client
 	if client == nil {
 		b.mu.Unlock()
+		if kind, ok := loggableHostPiEventKind(payload); ok {
+			log.Printf("[SandboxHost] host Pi event buffered without client thread=%s seq=%d kind=%s bufferedEvents=%d", b.threadID, seq, kind, buffered)
+		}
 		return
 	}
 	if err := client.WriteMessage(websocket.TextMessage, encoded); err != nil {
@@ -1225,6 +1283,7 @@ func (b *hostPiBridge) sendEvent(payload map[string]any) {
 			b.client = nil
 		}
 		b.mu.Unlock()
+		log.Printf("[SandboxHost] host Pi client write failed thread=%s seq=%d type=%s error=%v", b.threadID, seq, stringValue(payload["type"], ""), err)
 		b.server.trace("host_pi_client_write_failed", map[string]any{
 			"threadId": b.threadID,
 			"type":     payload["type"],
@@ -1241,6 +1300,7 @@ func (b *hostPiBridge) replayEventsAfter(lastSeq int64) {
 	client := b.client
 	if client == nil {
 		b.mu.Unlock()
+		log.Printf("[SandboxHost] host Pi replay skipped no client thread=%s lastSeq=%d", b.threadID, lastSeq)
 		return
 	}
 	events := make([]hostPiBufferedEvent, 0, len(b.events))
@@ -1249,12 +1309,15 @@ func (b *hostPiBridge) replayEventsAfter(lastSeq int64) {
 			events = append(events, event)
 		}
 	}
+	buffered := len(b.events)
+	log.Printf("[SandboxHost] host Pi replay start thread=%s lastSeq=%d replayEvents=%d bufferedEvents=%d", b.threadID, lastSeq, len(events), buffered)
 	for _, event := range events {
 		if err := client.WriteMessage(websocket.TextMessage, event.Encoded); err != nil {
 			if b.client == client {
 				b.client = nil
 			}
 			b.mu.Unlock()
+			log.Printf("[SandboxHost] host Pi replay failed thread=%s seq=%d error=%v", b.threadID, event.Seq, err)
 			b.server.trace("host_pi_client_replay_failed", map[string]any{
 				"threadId": b.threadID,
 				"seq":      event.Seq,
@@ -1265,6 +1328,7 @@ func (b *hostPiBridge) replayEventsAfter(lastSeq int64) {
 		}
 	}
 	b.mu.Unlock()
+	log.Printf("[SandboxHost] host Pi replay complete thread=%s lastSeq=%d replayEvents=%d", b.threadID, lastSeq, len(events))
 }
 
 func (b *hostPiBridge) writePiCommand(command map[string]any) error {
@@ -1280,7 +1344,32 @@ func (b *hostPiBridge) writePiCommand(command map[string]any) error {
 	if _, err := b.stdin.Write(append(encoded, '\n')); err != nil {
 		return err
 	}
+	log.Printf("[SandboxHost] host Pi command sent thread=%s commandType=%s commandId=%s bytes=%d", b.threadID, stringValue(command["type"], ""), stringValue(command["id"], ""), len(encoded))
 	return nil
+}
+
+func loggableHostPiEventKind(payload map[string]any) (string, bool) {
+	eventType := stringValue(payload["type"], "")
+	if eventType == "" {
+		return "", false
+	}
+	if eventType != "runtime_event" {
+		switch eventType {
+		case "session", "ready", "pong":
+			return "", false
+		default:
+			return eventType, true
+		}
+	}
+
+	event, _ := payload["event"].(map[string]any)
+	method := stringValue(event["method"], "")
+	switch method {
+	case "", "item/agentMessage/delta", "item/reasoning/textDelta", "item/commandExecution/outputDelta":
+		return "", false
+	default:
+		return "runtime_event:" + method, true
+	}
 }
 
 func (b *hostPiBridge) stopProcess() {
