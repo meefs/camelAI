@@ -1870,7 +1870,6 @@ func (s *Server) forwardOpenAIToAIGateway(
 	}
 	billingDecision := BillingAccessDecision{BillingSource: billingSourceHosted}
 
-	// Resolve model for the OpenRouter provider.
 	gatewayProvider := "openrouter"
 	requestModel := ""
 	var err error
@@ -1882,19 +1881,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 			errorJSON(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		var bodyJSON map[string]any
-		if len(rawBody) > 0 {
-			if err := json.Unmarshal(rawBody, &bodyJSON); err == nil {
-				if model, _ := bodyJSON["model"].(string); model != "" {
-					requestModel = model
-					resolved := resolveGatewayModel(model)
-					if resolved != model {
-						bodyJSON["model"] = resolved
-						rawBody, _ = json.Marshal(bodyJSON)
-					}
-				}
-			}
-		}
+		requestModel = extractModelFromRequestBody(rawBody)
 		rawBody = ensureOpenAIStreamingUsage(rawBody, normalizedPath)
 		forwardBody = bytes.NewReader(rawBody)
 		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, requestModel)
@@ -2045,9 +2032,6 @@ func (s *Server) forwardOpenAICompatibleDirect(
 		if err != nil {
 			errorJSON(w, "Failed to read request body", http.StatusBadRequest)
 			return
-		}
-		if providerName == "openrouter" {
-			rawBody = rewriteOpenRouterRequestBody(rawBody)
 		}
 		rawBody = ensureOpenAIStreamingUsage(rawBody, normalizedPath)
 		forwardBody = bytes.NewReader(rawBody)
@@ -2200,62 +2184,6 @@ func mapToBedrockModel(model string) string {
 		return "global.anthropic.claude-sonnet-4-6"
 	}
 	return "global.anthropic." + model + "-v1:0"
-}
-
-var dynamicModelAliases = map[string]bool{
-	"auto":        true,
-	"auto_search": true,
-	"auto_image":  true,
-}
-
-// resolveGatewayModel rewrites local aliases to OpenRouter model IDs.
-func resolveGatewayModel(model string) string {
-	trimmed := strings.TrimSpace(model)
-	if resolved := resolveOpenRouterModel(trimmed); resolved != trimmed {
-		return resolved
-	}
-	if dynamicModelAliases[trimmed] {
-		return "openrouter/auto"
-	}
-	if trimmed == "" {
-		return "openrouter/auto"
-	}
-	return trimmed
-}
-
-func resolveOpenRouterModel(model string) string {
-	trimmed := strings.TrimSpace(model)
-	switch trimmed {
-	case "dynamic/auto", "dynamic/auto_search", "dynamic/auto_image":
-		return "openrouter/auto"
-	case "kimi-k2.6", "kimi-latest":
-		return "~moonshotai/kimi-latest"
-	case "grok-4.3", "grok-latest":
-		return "x-ai/grok-4.3"
-	default:
-		if strings.HasPrefix(strings.ToLower(trimmed), "gpt-") {
-			return "openai/" + trimmed
-		}
-		return trimmed
-	}
-}
-
-func rewriteOpenRouterRequestBody(rawBody []byte) []byte {
-	var bodyJSON map[string]any
-	if len(rawBody) == 0 || json.Unmarshal(rawBody, &bodyJSON) != nil {
-		return rawBody
-	}
-	model, _ := bodyJSON["model"].(string)
-	resolved := resolveOpenRouterModel(model)
-	if model == "" || resolved == model {
-		return rawBody
-	}
-	bodyJSON["model"] = resolved
-	nextBody, err := json.Marshal(bodyJSON)
-	if err != nil {
-		return rawBody
-	}
-	return nextBody
 }
 
 func ensureOpenAIStreamingUsage(rawBody []byte, normalizedPath string) []byte {

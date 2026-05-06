@@ -119,20 +119,40 @@ func lookupPricing(model string) ModelPricing {
 	if p, ok := modelPricingTable[model]; ok {
 		return p
 	}
+	normalized := normalizePricingModel(model)
+	if normalized != model {
+		if p, ok := modelPricingTable[normalized]; ok {
+			return p
+		}
+	}
 	switch {
-	case strings.HasPrefix(model, "gpt-5.4-mini"):
+	case strings.HasPrefix(normalized, "gpt-5.4-mini"):
 		return modelPricingTable["gpt-5.4-mini"]
-	case strings.HasPrefix(model, "gpt-5.4"):
+	case strings.HasPrefix(normalized, "gpt-5.4"):
 		return modelPricingTable["gpt-5.4"]
-	case strings.Contains(model, "kimi-k2.6") || strings.Contains(model, "kimi-latest"):
+	case strings.Contains(normalized, "kimi-k2.6") || strings.Contains(normalized, "kimi-latest"):
 		return modelPricingTable["~moonshotai/kimi-latest"]
-	case strings.Contains(model, "grok-4.3"):
+	case strings.Contains(normalized, "grok-4.3"):
 		return modelPricingTable["x-ai/grok-4.3"]
-	case strings.Contains(model, "claude-haiku-4.5"):
+	case strings.Contains(normalized, "claude-haiku-4.5"):
 		return modelPricingTable["anthropic/claude-haiku-4.5"]
 	}
 	// Fallback: Sonnet-tier pricing
 	return modelPricingTable["claude-sonnet-4-5-20250929"]
+}
+
+func normalizePricingModel(model string) string {
+	normalized := strings.TrimSpace(model)
+	for {
+		before := normalized
+		normalized = strings.TrimPrefix(normalized, "camel/")
+		normalized = strings.TrimPrefix(normalized, "camelai-openrouter/")
+		normalized = strings.TrimPrefix(normalized, "openrouter/")
+		normalized = strings.TrimPrefix(normalized, "openai/")
+		if normalized == before {
+			return normalized
+		}
+	}
 }
 
 // UsageTokens holds token counts extracted from an API response.

@@ -101,6 +101,30 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 				OutputPerToken: 0.0000025,
 			},
 		},
+		{
+			model: "openai/gpt-5.4",
+			want: ModelPricing{
+				InputPerToken:     0.0000025,
+				OutputPerToken:    0.000015,
+				CacheReadPerToken: 0.00000025,
+			},
+		},
+		{
+			model: "camel/openai/gpt-5.4",
+			want: ModelPricing{
+				InputPerToken:     0.0000025,
+				OutputPerToken:    0.000015,
+				CacheReadPerToken: 0.00000025,
+			},
+		},
+		{
+			model: "camel/openai/gpt-5.4-mini",
+			want: ModelPricing{
+				InputPerToken:     0.00000075,
+				OutputPerToken:    0.0000045,
+				CacheReadPerToken: 0.000000075,
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -408,33 +408,7 @@ func TestForwardDataProxyRequest(t *testing.T) {
 	}
 }
 
-func TestResolveGatewayModelAutoRoutesOpenRouter(t *testing.T) {
-	for _, model := range []string{"", "auto", "auto_search", "auto_image", "dynamic/auto"} {
-		if got := resolveGatewayModel(model); got != "openrouter/auto" {
-			t.Fatalf("resolveGatewayModel(%q) = %q, want %q", model, got, "openrouter/auto")
-		}
-	}
-}
-
-func TestResolveGatewayModelGPT(t *testing.T) {
-	if got := resolveGatewayModel("gpt-5.4"); got != "openai/gpt-5.4" {
-		t.Fatalf("resolveGatewayModel(gpt-5.4) = %q, want %q", got, "openai/gpt-5.4")
-	}
-}
-
-func TestResolveGatewayModelKimi(t *testing.T) {
-	if got := resolveGatewayModel("kimi-k2.6"); got != "~moonshotai/kimi-latest" {
-		t.Fatalf("resolveGatewayModel(kimi-k2.6) = %q, want %q", got, "~moonshotai/kimi-latest")
-	}
-}
-
-func TestResolveGatewayModelGrok(t *testing.T) {
-	if got := resolveGatewayModel("grok-4.3"); got != "x-ai/grok-4.3" {
-		t.Fatalf("resolveGatewayModel(grok-4.3) = %q, want %q", got, "x-ai/grok-4.3")
-	}
-}
-
-func TestForwardOpenAIToAIGatewayUsesOpenRouterResponsesForGPTModels(t *testing.T) {
+func TestForwardOpenAIToAIGatewayUsesOpenRouterResponsesPath(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -471,8 +445,8 @@ func TestForwardOpenAIToAIGatewayUsesOpenRouterResponsesForGPTModels(t *testing.
 	if capturedPath != "/openrouter/responses" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
 	}
-	if capturedModel != "openai/gpt-5.4" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "openai/gpt-5.4")
+	if capturedModel != "gpt-5.4" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "gpt-5.4")
 	}
 }
 
@@ -524,7 +498,7 @@ func TestForwardClaudeToOpenRouterGatewayRewritesModel(t *testing.T) {
 	}
 }
 
-func TestForwardOpenAIToAIGatewayRoutesKimiToOpenRouterAndRewritesModel(t *testing.T) {
+func TestForwardOpenAIToAIGatewayPreservesKimiModelAndRequestsStreamingUsage(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
 	var capturedIncludeUsage bool
@@ -564,15 +538,15 @@ func TestForwardOpenAIToAIGatewayRoutesKimiToOpenRouterAndRewritesModel(t *testi
 	if capturedPath != "/openrouter/chat/completions" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/chat/completions")
 	}
-	if capturedModel != "~moonshotai/kimi-latest" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "~moonshotai/kimi-latest")
+	if capturedModel != "kimi-k2.6" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "kimi-k2.6")
 	}
 	if !capturedIncludeUsage {
 		t.Fatal("expected stream_options.include_usage to be injected for streaming chat completions")
 	}
 }
 
-func TestForwardOpenAIToAIGatewayRoutesGrokResponsesToOpenRouterAndRewritesModel(t *testing.T) {
+func TestForwardOpenAIToAIGatewayPreservesGrokModel(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -609,8 +583,8 @@ func TestForwardOpenAIToAIGatewayRoutesGrokResponsesToOpenRouterAndRewritesModel
 	if capturedPath != "/openrouter/responses" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
 	}
-	if capturedModel != "x-ai/grok-4.3" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "x-ai/grok-4.3")
+	if capturedModel != "grok-4.3" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "grok-4.3")
 	}
 }
 
@@ -781,7 +755,7 @@ func TestForwardOpenAICompatibleDirectPreservesV1ResponsesPath(t *testing.T) {
 	}
 }
 
-func TestForwardOpenAICompatibleDirectRewritesKimiForOpenRouter(t *testing.T) {
+func TestForwardOpenAICompatibleDirectPreservesModelForOpenRouter(t *testing.T) {
 	var capturedAuth string
 	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -825,8 +799,8 @@ func TestForwardOpenAICompatibleDirectRewritesKimiForOpenRouter(t *testing.T) {
 	if capturedAuth != "Bearer test-openrouter-key" {
 		t.Fatalf("unexpected auth header: got=%q", capturedAuth)
 	}
-	if capturedModel != "~moonshotai/kimi-latest" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "~moonshotai/kimi-latest")
+	if capturedModel != "kimi-k2.6" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "kimi-k2.6")
 	}
 }
 
