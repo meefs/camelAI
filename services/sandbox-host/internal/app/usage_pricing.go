@@ -111,6 +111,13 @@ var modelPricingTable = map[string]ModelPricing{
 		InputPerToken:  0.00000125,
 		OutputPerToken: 0.0000025,
 	},
+	// Gemini 3 Flash Preview
+	"gemini-3-flash-preview": {
+		InputPerToken:         0.0000005,
+		OutputPerToken:        0.000003,
+		CacheCreationPerToken: 0.0000005,
+		CacheReadPerToken:     0.00000005,
+	},
 }
 
 // lookupPricing returns pricing for a model. Snapshot-style model names fall back
@@ -136,6 +143,8 @@ func lookupPricing(model string) ModelPricing {
 		return modelPricingTable["x-ai/grok-4.3"]
 	case strings.Contains(normalized, "claude-haiku-4.5"):
 		return modelPricingTable["anthropic/claude-haiku-4.5"]
+	case strings.Contains(normalized, "gemini-3-flash"):
+		return modelPricingTable["gemini-3-flash-preview"]
 	}
 	// Fallback: Sonnet-tier pricing
 	return modelPricingTable["claude-sonnet-4-5-20250929"]

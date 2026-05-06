@@ -125,6 +125,33 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 				CacheReadPerToken: 0.000000075,
 			},
 		},
+		{
+			model: "gemini-3-flash-preview",
+			want: ModelPricing{
+				InputPerToken:         0.0000005,
+				OutputPerToken:        0.000003,
+				CacheCreationPerToken: 0.0000005,
+				CacheReadPerToken:     0.00000005,
+			},
+		},
+		{
+			model: "google/gemini-3-flash-preview",
+			want: ModelPricing{
+				InputPerToken:         0.0000005,
+				OutputPerToken:        0.000003,
+				CacheCreationPerToken: 0.0000005,
+				CacheReadPerToken:     0.00000005,
+			},
+		},
+		{
+			model: "camel/openai/gemini-3-flash-preview",
+			want: ModelPricing{
+				InputPerToken:         0.0000005,
+				OutputPerToken:        0.000003,
+				CacheCreationPerToken: 0.0000005,
+				CacheReadPerToken:     0.00000005,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -178,6 +205,21 @@ func TestUsageTokensCostUSD_GPT54MiniPricing(t *testing.T) {
 
 	cost := usage.CostUSD()
 	expected := 0.00075 + 0.009 + 0.0003
+	if diff := cost - expected; diff > 0.000001 || diff < -0.000001 {
+		t.Fatalf("expected cost %.6f, got %.6f", expected, cost)
+	}
+}
+
+func TestUsageTokensCostUSD_Gemini3FlashPricing(t *testing.T) {
+	usage := UsageTokens{
+		Model:                "gemini-3-flash-preview",
+		InputTokens:          7938,
+		OutputTokens:         2479,
+		CacheReadInputTokens: 4000,
+	}
+
+	cost := usage.CostUSD()
+	expected := 7938*0.0000005 + 2479*0.000003 + 4000*0.00000005
 	if diff := cost - expected; diff > 0.000001 || diff < -0.000001 {
 		t.Fatalf("expected cost %.6f, got %.6f", expected, cost)
 	}
