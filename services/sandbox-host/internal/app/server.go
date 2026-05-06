@@ -1895,6 +1895,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 				}
 			}
 		}
+		rawBody = ensureOpenAIStreamingUsage(rawBody, normalizedPath)
 		forwardBody = bytes.NewReader(rawBody)
 		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, requestModel)
 		if billingDecision.Denied {
@@ -2017,7 +2018,7 @@ func (s *Server) forwardOpenAICompatibleDirect(
 	apiKey string,
 	providerName string,
 ) {
-	openaiPath, _, ok := openAICompatibleProxyPath(proxy.UpstreamPath)
+	openaiPath, normalizedPath, ok := openAICompatibleProxyPath(proxy.UpstreamPath)
 	if !ok {
 		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
 		return
@@ -2048,6 +2049,7 @@ func (s *Server) forwardOpenAICompatibleDirect(
 		if providerName == "openrouter" {
 			rawBody = rewriteOpenRouterRequestBody(rawBody)
 		}
+		rawBody = ensureOpenAIStreamingUsage(rawBody, normalizedPath)
 		forwardBody = bytes.NewReader(rawBody)
 	}
 
@@ -2249,6 +2251,35 @@ func rewriteOpenRouterRequestBody(rawBody []byte) []byte {
 		return rawBody
 	}
 	bodyJSON["model"] = resolved
+	nextBody, err := json.Marshal(bodyJSON)
+	if err != nil {
+		return rawBody
+	}
+	return nextBody
+}
+
+func ensureOpenAIStreamingUsage(rawBody []byte, normalizedPath string) []byte {
+	if normalizedPath != "/chat/completions" {
+		return rawBody
+	}
+	var bodyJSON map[string]any
+	if len(rawBody) == 0 || json.Unmarshal(rawBody, &bodyJSON) != nil {
+		return rawBody
+	}
+	if stream, _ := bodyJSON["stream"].(bool); !stream {
+		return rawBody
+	}
+
+	streamOptions, _ := bodyJSON["stream_options"].(map[string]any)
+	if streamOptions == nil {
+		streamOptions = map[string]any{}
+		bodyJSON["stream_options"] = streamOptions
+	}
+	if includeUsage, _ := streamOptions["include_usage"].(bool); includeUsage {
+		return rawBody
+	}
+	streamOptions["include_usage"] = true
+
 	nextBody, err := json.Marshal(bodyJSON)
 	if err != nil {
 		return rawBody

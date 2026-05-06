@@ -527,6 +527,7 @@ func TestForwardClaudeToOpenRouterGatewayRewritesModel(t *testing.T) {
 func TestForwardOpenAIToAIGatewayRoutesKimiToOpenRouterAndRewritesModel(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
+	var capturedIncludeUsage bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedPath = req.URL.Path
 		var body map[string]any
@@ -534,6 +535,8 @@ func TestForwardOpenAIToAIGatewayRoutesKimiToOpenRouterAndRewritesModel(t *testi
 			t.Fatalf("decode upstream body: %v", err)
 		}
 		capturedModel, _ = body["model"].(string)
+		streamOptions, _ := body["stream_options"].(map[string]any)
+		capturedIncludeUsage, _ = streamOptions["include_usage"].(bool)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl_kimi","object":"chat.completion"}`))
 	}))
@@ -548,7 +551,7 @@ func TestForwardOpenAIToAIGatewayRoutesKimiToOpenRouterAndRewritesModel(t *testi
 		containers: container.NewTestManager(),
 	}
 
-	body := `{"model":"kimi-k2.6","messages":[{"role":"user","content":"hi"}]}`
+	body := `{"model":"kimi-k2.6","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -563,6 +566,9 @@ func TestForwardOpenAIToAIGatewayRoutesKimiToOpenRouterAndRewritesModel(t *testi
 	}
 	if capturedModel != "~moonshotai/kimi-latest" {
 		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "~moonshotai/kimi-latest")
+	}
+	if !capturedIncludeUsage {
+		t.Fatal("expected stream_options.include_usage to be injected for streaming chat completions")
 	}
 }
 
@@ -713,6 +719,26 @@ func TestForwardOpenAIToAIGatewayRecordsStreamingKimiUsage(t *testing.T) {
 	}
 	if entries[0].InputTokens != 164 || entries[0].CacheReadInputTokens != 20 || entries[0].CacheCreationInputTokens != 10 || entries[0].OutputTokens != 2 {
 		t.Fatalf("unexpected usage tokens: %+v", entries[0])
+	}
+}
+
+func TestEnsureOpenAIStreamingUsagePreservesExistingOptions(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.4","stream":true,"stream_options":{"foo":"bar"},"messages":[{"role":"user","content":"hi"}]}`)
+	next := ensureOpenAIStreamingUsage(raw, "/chat/completions")
+
+	var body map[string]any
+	if err := json.Unmarshal(next, &body); err != nil {
+		t.Fatalf("decode rewritten body: %v", err)
+	}
+	streamOptions, _ := body["stream_options"].(map[string]any)
+	if streamOptions == nil {
+		t.Fatal("expected stream_options to be present")
+	}
+	if streamOptions["foo"] != "bar" {
+		t.Fatalf("expected existing stream option to be preserved, got %#v", streamOptions)
+	}
+	if includeUsage, _ := streamOptions["include_usage"].(bool); !includeUsage {
+		t.Fatalf("expected include_usage=true, got %#v", streamOptions["include_usage"])
 	}
 }
 
