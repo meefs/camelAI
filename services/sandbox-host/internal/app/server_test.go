@@ -471,6 +471,9 @@ func TestResolveVirtualAIModelUsesGeminiFlashForAuto(t *testing.T) {
 	if got := resolveVirtualAIModel("auto"); got != "google/gemini-3-flash-preview" {
 		t.Fatalf("resolveVirtualAIModel(auto) = %q", got)
 	}
+	if got := resolveVirtualAIModel("dynamic/auto"); got != "google/gemini-3-flash-preview" {
+		t.Fatalf("resolveVirtualAIModel(dynamic/auto) = %q", got)
+	}
 	if got := resolveVirtualAIModel("auto_search"); got != "dynamic/auto_search" {
 		t.Fatalf("resolveVirtualAIModel(auto_search) = %q", got)
 	}

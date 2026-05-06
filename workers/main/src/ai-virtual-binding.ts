@@ -23,14 +23,14 @@ const DYNAMIC_MODEL_ALIASES = new Set(["auto_search", "auto_image"]);
 /**
  * Resolve a model string to its gateway representation.
  *
- * - `auto` maps to the current default OpenRouter model.
+ * - `auto`/`dynamic/auto` map to the current default OpenRouter model.
  * - Known capability aliases (`auto_search`, `auto_image`) map to `dynamic/{alias}`.
- * - Models already prefixed with `dynamic/` pass through unchanged.
+ * - Non-auto models already prefixed with `dynamic/` pass through unchanged.
  * - Everything else is treated as an OpenRouter model and passes through as-is.
  */
 export function resolveModel(model: string): string {
   const trimmed = model.trim();
-  if (trimmed === "auto") {
+  if (trimmed === "auto" || trimmed === "dynamic/auto") {
     return DEFAULT_VIRTUAL_MODEL;
   }
   if (trimmed === "kimi-k2.6" || trimmed === "kimi-latest") {

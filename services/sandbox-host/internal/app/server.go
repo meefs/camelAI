@@ -2138,7 +2138,7 @@ func ensureOpenAIStreamUsage(body map[string]any) {
 func resolveVirtualAIModel(model string) string {
 	trimmed := strings.TrimSpace(model)
 	switch trimmed {
-	case "", "auto":
+	case "", "auto", "dynamic/auto":
 		return "google/gemini-3-flash-preview"
 	case "auto_search", "auto_image":
 		return "dynamic/" + trimmed

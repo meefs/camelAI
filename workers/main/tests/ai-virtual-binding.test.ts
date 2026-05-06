@@ -89,6 +89,9 @@ describe("extractModelFromInput", () => {
 describe("resolveModel", () => {
   it("maps auto to the default OpenRouter Gemini model", () => {
     expect(resolveModel("auto")).toBe("google/gemini-3-flash-preview");
+    expect(resolveModel("dynamic/auto")).toBe(
+      "google/gemini-3-flash-preview",
+    );
   });
 
   it("maps auto_search to dynamic/auto_search", () => {
@@ -120,8 +123,7 @@ describe("resolveModel", () => {
     expect(resolveModel("grok-latest")).toBe("x-ai/grok-4.3");
   });
 
-  it("passes through models with dynamic/ prefix unchanged", () => {
-    expect(resolveModel("dynamic/auto")).toBe("dynamic/auto");
+  it("passes through non-auto models with dynamic/ prefix unchanged", () => {
     expect(resolveModel("dynamic/auto_search")).toBe("dynamic/auto_search");
   });
 
