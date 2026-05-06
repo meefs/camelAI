@@ -516,6 +516,16 @@ function mapStripeSubscriptionStatus(
   }
 }
 
+function mapStripeSubscriptionBillingStatus(
+  subscription: Pick<StripeSubscription, "status" | "cancel_at_period_end">,
+): BillingStatus {
+  const status = mapStripeSubscriptionStatus(subscription.status);
+  if (status === "trialing" && subscription.cancel_at_period_end === true) {
+    return "canceled";
+  }
+  return status;
+}
+
 function stripeAuthHeaders(secretKey: string): Headers {
   return new Headers({
     Authorization: `Bearer ${secretKey}`,
@@ -1824,6 +1834,17 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
     });
     throw new StaleTrialingSubscriptionStatusError(subscription.status);
   }
+  if (subscription.cancel_at_period_end === true) {
+    await syncOrgSubscriptionFromStripe(env, subscription).catch((error) => {
+      console.error("[billing] failed to sync canceled trialing subscription", {
+        orgId: latestOrg.id,
+        subscriptionId,
+        stripeStatus: subscription.status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    throw new StaleTrialingSubscriptionStatusError(subscription.status);
+  }
 
   const seatCount = normalizeSeatCount(
     plan,
@@ -1881,7 +1902,7 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
     latestOrg.billing_customer_id ??
     null;
   const updatedOrg = await getOrgStub(env, latestOrg.id).updateBillingState({
-    billing_status: mapStripeSubscriptionStatus(updatedSubscription.status),
+    billing_status: mapStripeSubscriptionBillingStatus(updatedSubscription),
     billing_plan: plan,
     billing_seat_count: seatCount,
     billing_customer_id: customerId,
@@ -2199,7 +2220,7 @@ export async function migrateLegacyStripeSubscription(args: {
   const synced =
     (await syncOrgSubscriptionFromStripe(env, updatedSubscription)) ??
     (await orgStub.updateBillingState({
-      billing_status: mapStripeSubscriptionStatus(updatedSubscription.status),
+      billing_status: mapStripeSubscriptionBillingStatus(updatedSubscription),
       billing_plan: plan,
       billing_seat_count: seatCount,
       billing_customer_id: candidate.customerId,
@@ -2583,7 +2604,7 @@ export async function syncOrgSubscriptionFromStripe(
   const existing = await orgStub.getInfo();
   if (!existing) return null;
 
-  const nextStatus = mapStripeSubscriptionStatus(subscription.status);
+  const nextStatus = mapStripeSubscriptionBillingStatus(subscription);
   const nextBillingStatus =
     existing.billing_status === "enterprise" ? "enterprise" : nextStatus;
   const nextPlan =
