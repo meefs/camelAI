@@ -2048,8 +2048,15 @@ func (s *Server) handleVirtualAIRoute(w http.ResponseWriter, req *http.Request) 
 	}
 	ensureOpenAIStreamUsage(bodyJSON)
 	rawBody, _ = json.Marshal(bodyJSON)
+	provider := "openai"
+	if gatewayProvider == "openrouter" {
+		provider = "openrouter"
+	}
 
 	billingDecision := s.checkOrgBillingAccess(threadContext, billingSourceHosted, requestModel)
+	log.Printf("[SandboxHost] virtual AI billing decision org=%s workspace=%s user=%s requestModel=%s resolvedModel=%s provider=%s billingSource=%s creditChargeable=%t denied=%t workerBaseURLSet=%t",
+		threadContext.OrgID, threadContext.WorkspaceID, threadContext.UserID, requestModel, resolved, provider,
+		billingDecision.BillingSource, billingDecision.CreditChargeable, billingDecision.Denied, threadContext.WorkerBaseURL != "")
 	if billingDecision.Denied {
 		errorJSON(w, billingDecision.Message, billingDecision.StatusCode)
 		return
@@ -2086,6 +2093,8 @@ func (s *Server) handleVirtualAIRoute(w http.ResponseWriter, req *http.Request) 
 	w.WriteHeader(resp.StatusCode)
 
 	streaming := isStreamingContentType(resp.Header.Get("Content-Type"))
+	log.Printf("[SandboxHost] virtual AI Gateway response org=%s workspace=%s user=%s provider=%s status=%d contentType=%q streaming=%t durationMs=%d",
+		threadContext.OrgID, threadContext.WorkspaceID, threadContext.UserID, provider, resp.StatusCode, resp.Header.Get("Content-Type"), streaming, durationMs)
 	usage, err := copyResponseBodyWithUsage(w, resp.Body, streaming)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.trace("virtual_ai_proxy_copy_error", map[string]any{
@@ -2097,12 +2106,19 @@ func (s *Server) handleVirtualAIRoute(w http.ResponseWriter, req *http.Request) 
 	if usage.Model == "" {
 		usage.Model = extractModelFromRequestBody(rawBody)
 	}
+	costUSD := usage.CostUSD()
+	log.Printf("[SandboxHost] virtual AI usage parsed org=%s workspace=%s user=%s requestModel=%s usageModel=%s provider=%s status=%d inputTokens=%d outputTokens=%d cacheCreationInputTokens=%d cacheReadInputTokens=%d billableTokens=%t costUSD=%.6f billingSource=%s creditChargeable=%t durationMs=%d copyError=%t",
+		threadContext.OrgID, threadContext.WorkspaceID, threadContext.UserID, requestModel, usage.Model, provider, resp.StatusCode,
+		usage.InputTokens, usage.OutputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens, usage.HasBillableTokens(), costUSD,
+		billingDecision.BillingSource, billingDecision.CreditChargeable, durationMs, err != nil)
 	if resp.StatusCode < 400 && usage.HasBillableTokens() {
-		provider := "openai"
-		if gatewayProvider == "openrouter" {
-			provider = "openrouter"
-		}
+		log.Printf("[SandboxHost] virtual AI recording usage org=%s workspace=%s user=%s model=%s provider=%s billingSource=%s creditChargeable=%t costUSD=%.6f",
+			threadContext.OrgID, threadContext.WorkspaceID, threadContext.UserID, usage.Model, provider,
+			billingDecision.BillingSource, billingDecision.CreditChargeable, costUSD)
 		go s.recordUsage(threadContext, provider, billingDecision.BillingSource, billingDecision.CreditChargeable, usage, durationMs)
+	} else {
+		log.Printf("[SandboxHost] virtual AI usage not recorded org=%s workspace=%s user=%s status=%d billableTokens=%t copyError=%t",
+			threadContext.OrgID, threadContext.WorkspaceID, threadContext.UserID, resp.StatusCode, usage.HasBillableTokens(), err != nil)
 	}
 }
 

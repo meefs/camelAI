@@ -68,7 +68,8 @@ func copySSEStreamWithUsage(w http.ResponseWriter, body io.Reader) (UsageTokens,
 			currentEventType = string(bytes.TrimPrefix(line, []byte("event: ")))
 		}
 
-		// Parse SSE data lines for usage-bearing events.
+		// Parse SSE data lines for usage. Some OpenAI streams do not send
+		// named SSE events, so usage can arrive on a plain data chunk.
 		if bytes.HasPrefix(line, []byte("data: ")) {
 			data := bytes.TrimPrefix(line, []byte("data: "))
 			if !bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
