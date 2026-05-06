@@ -156,7 +156,7 @@
 				}
 			],
 			"vars": {
-				"AI_VIRTUAL_MODEL": "dynamic/auto",
+				"AI_VIRTUAL_MODEL": "google/gemini-3-flash-preview",
 				"R2_BUCKET_NAME": "chiridion-sandbox",
 				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"R2_MOUNT_DIR": "/home/claude",
