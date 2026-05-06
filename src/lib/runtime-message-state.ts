@@ -596,17 +596,22 @@ function appendThinkingDeltaBlock(
     return nextBlocks;
   }
 
-  return [
-    ...blocks,
-    {
-      type: 'thinking',
-      thinking: delta,
-      itemId,
-      itemKind,
-      label,
-      summaries: [],
-    },
-  ];
+  const thinkingBlock: ContentBlock = {
+    type: 'thinking',
+    thinking: delta,
+    itemId,
+    itemKind,
+    label,
+    summaries: [],
+  };
+  const insertionIndex = findReasoningInsertionIndex(blocks, itemKind);
+  if (insertionIndex < 0) {
+    return [...blocks, thinkingBlock];
+  }
+
+  const nextBlocks = [...blocks];
+  nextBlocks.splice(insertionIndex, 0, thinkingBlock);
+  return nextBlocks;
 }
 
 function appendContiguousThinkingBlock(
@@ -648,21 +653,48 @@ function upsertThinkingBlock(
   label: string,
   itemKind: string
 ): ContentBlock[] {
-  return upsertBlock(
+  const existingIndex = findBlockIndex(
     blocks,
-    {
-      type: 'thinking',
-      thinking,
-      itemId,
-      itemKind,
-      label,
-      summaries:
-        findBlockIndex(blocks, (block) => block.type === 'thinking' && getBlockItemId(block) === itemId) >= 0 &&
-        blocks[findBlockIndex(blocks, (block) => block.type === 'thinking' && getBlockItemId(block) === itemId)]?.type === 'thinking'
-          ? (blocks[findBlockIndex(blocks, (block) => block.type === 'thinking' && getBlockItemId(block) === itemId)] as Extract<ContentBlock, { type: 'thinking' }>).summaries ?? []
-          : [],
-    },
     (block) => block.type === 'thinking' && getBlockItemId(block) === itemId
+  );
+  const existing = existingIndex >= 0 ? blocks[existingIndex] : undefined;
+  const nextBlock: ContentBlock = {
+    type: 'thinking',
+    thinking,
+    itemId,
+    itemKind,
+    label,
+    summaries:
+      existing?.type === 'thinking'
+        ? existing.summaries ?? []
+        : [],
+  };
+
+  if (existingIndex >= 0) {
+    const nextBlocks = [...blocks];
+    nextBlocks[existingIndex] = nextBlock;
+    return nextBlocks;
+  }
+
+  const insertionIndex = findReasoningInsertionIndex(blocks, itemKind);
+  if (insertionIndex < 0) {
+    return [...blocks, nextBlock];
+  }
+
+  const nextBlocks = [...blocks];
+  nextBlocks.splice(insertionIndex, 0, nextBlock);
+  return nextBlocks;
+}
+
+function findReasoningInsertionIndex(
+  blocks: ContentBlock[],
+  itemKind: string
+): number {
+  if (itemKind !== 'reasoning') {
+    return -1;
+  }
+  return blocks.findIndex(
+    (block) => block.type === 'text' && getBlockItemId(block) !== undefined
   );
 }
 

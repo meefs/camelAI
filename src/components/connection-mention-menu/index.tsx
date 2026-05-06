@@ -33,6 +33,7 @@ export interface ConnectionMentionMenuProps {
   query: string;
   connections: Integration[];
   anchorRef: RefObject<HTMLElement | null>;
+  side?: 'top' | 'bottom';
   /** Currently highlighted connection id (controlled). */
   activeId: string | null;
   onActiveIdChange: (id: string | null) => void;
@@ -48,6 +49,7 @@ export function ConnectionMentionMenu({
   query,
   connections,
   anchorRef,
+  side = 'top',
   activeId,
   onActiveIdChange,
   onSelect,
@@ -118,7 +120,7 @@ export function ConnectionMentionMenu({
     >
       <PopoverAnchor virtualRef={anchorRef as RefObject<HTMLElement>} />
       <PopoverContent
-        side="top"
+        side={side}
         align="start"
         sideOffset={4}
         avoidCollisions={false}

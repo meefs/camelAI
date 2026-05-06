@@ -15,6 +15,52 @@ function findToolUse(messages: Message[], id: string) {
 }
 
 describe('Codex todo state integration', () => {
+  it('keeps late reasoning deltas before the assistant final text', () => {
+    const streamingIds: Record<string, string | null> = {};
+
+    let messages = applyRuntimeEventToMessages(
+      [],
+      'thread-1',
+      'codex',
+      {
+        method: 'item/agentMessage/delta',
+        params: {
+          itemId: 'answer-1',
+          delta: 'Final answer',
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/reasoning/textDelta',
+        params: {
+          itemId: 'reasoning-1',
+          contentIndex: 0,
+          delta: 'I should explain this first.',
+        },
+      },
+      streamingIds,
+    );
+
+    const content = messages[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    const blocks = content as ContentBlock[];
+    expect(blocks.map((block) => block.type)).toEqual(['thinking', 'text']);
+    expect(blocks[0]).toMatchObject({
+      type: 'thinking',
+      thinking: 'I should explain this first.',
+    });
+    expect(blocks[1]).toMatchObject({
+      type: 'text',
+      text: 'Final answer',
+    });
+  });
+
   it('maps turn/plan/updated to a TodoWrite tool block', () => {
     const streamingIds: Record<string, string | null> = {};
 

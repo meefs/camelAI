@@ -438,6 +438,7 @@ export function WelcomeScreen({
             modelOptions={modelOptions}
             modelDisabled={isCreatingThread}
             mentionableConnections={mentionableConnections}
+            mentionMenuSide="bottom"
             onMentionAddNewClick={() => navigate('/connections')}
           />
         )}

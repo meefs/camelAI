@@ -141,4 +141,62 @@ describe("mergeServerAndLocalMessages", () => {
 
     expect(merged.map((entry) => entry.id)).toEqual(["server-user", "server-assistant"]);
   });
+
+  it("drops a stale local assistant after the local user was already replaced by the server user", () => {
+    const promptText = "Please continue";
+    const localAssistant = message({
+      id: "stream-local-assistant",
+      role: "assistant",
+      createdAt: 2200,
+      content: [{ type: "text", text: "Working on it" }],
+    });
+
+    const firstFetchServerMessages = [
+      message({
+        id: "server-user",
+        role: "user",
+        createdAt: 1500,
+        content: [{ type: "text", text: `[Miguel]: ${promptText}` }],
+      }),
+    ];
+    const firstFetchLocalMessages = [
+      message({
+        id: "local-user",
+        role: "user",
+        createdAt: 1000,
+        content: [{ type: "text", text: promptText }],
+      }),
+      localAssistant,
+    ];
+
+    const afterFirstFetch = mergeServerAndLocalMessages(
+      firstFetchServerMessages,
+      firstFetchLocalMessages,
+    );
+
+    expect(afterFirstFetch.map((entry) => entry.id)).toEqual([
+      "server-user",
+      "stream-local-assistant",
+    ]);
+
+    const secondFetchServerMessages = [
+      ...firstFetchServerMessages,
+      message({
+        id: "server-assistant",
+        role: "assistant",
+        createdAt: 3000,
+        content: [{ type: "text", text: "Working on it" }],
+      }),
+    ];
+
+    const afterSecondFetch = mergeServerAndLocalMessages(
+      secondFetchServerMessages,
+      afterFirstFetch,
+    );
+
+    expect(afterSecondFetch.map((entry) => entry.id)).toEqual([
+      "server-user",
+      "server-assistant",
+    ]);
+  });
 });

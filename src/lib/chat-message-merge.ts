@@ -71,7 +71,9 @@ function hasServerAssistantForLocalTurn(
 ): boolean {
   const localUser = findPriorUser(localAssistant, localMessages);
   if (!localUser) return false;
-  const serverUser = matchedServerUsersByLocalId.get(localUser.id);
+  const serverIds = new Set(serverMessages.map((message) => message.id));
+  const serverUser = matchedServerUsersByLocalId.get(localUser.id) ??
+    (serverIds.has(localUser.id) && localUser.role === "user" ? localUser : null);
   if (!serverUser) return false;
 
   return serverMessages.some(

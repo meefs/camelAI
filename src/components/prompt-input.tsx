@@ -64,6 +64,7 @@ interface PromptInputProps {
   // @-mention menu for configured connections
   mentionableConnections?: Integration[];
   onMentionAddNewClick?: () => void;
+  mentionMenuSide?: 'top' | 'bottom';
 }
 
 interface SendButtonProps {
@@ -129,6 +130,7 @@ export function PromptInput({
   textareaRef,
   mentionableConnections,
   onMentionAddNewClick,
+  mentionMenuSide = 'top',
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -462,6 +464,7 @@ export function PromptInput({
             query={mentionTrigger.query}
             connections={mentionableConnectionList}
             anchorRef={anchorRef}
+            side={mentionMenuSide}
             activeId={activeMentionId}
             onActiveIdChange={setActiveMentionId}
             onSelect={insertMention}
