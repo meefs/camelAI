@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/chiridion/sandbox-host/internal/container"
 )
 
 func TestHostPiBridgeResolvePiModel(t *testing.T) {
@@ -261,6 +263,49 @@ func TestHostPiBridgeResolvePiModelUsesOpenRouterWhenUpstreamIsOpenRouter(t *tes
 		"CHIRIDION_CODEX_MODEL":   "gpt-5.4",
 	}); got != "openai/gpt-5.4" {
 		t.Fatalf("resolvePiModel() OpenAI BYOK GPT = %q, want openai/gpt-5.4", got)
+	}
+}
+
+func TestAttachHostPiBridgeReusesThreadBridge(t *testing.T) {
+	server := &Server{}
+	route := WorkspaceRoute{OrgID: "org-1", WorkspaceID: "ws-1"}
+	opts := container.EnsureContainerOptions{OrgID: "org-1", WorkspaceID: "ws-1"}
+
+	first := server.attachHostPiBridge(nil, "container-1", route, opts, "thread-1", "container-1::thread-1")
+	if first == nil {
+		t.Fatal("expected first bridge")
+	}
+	defer first.cancel()
+
+	first.sendEvent(map[string]any{"type": "runtime_event"})
+	first.detachClient(nil)
+
+	second := server.attachHostPiBridge(nil, "container-1", route, opts, "thread-1", "container-1::thread-1")
+	if second != first {
+		t.Fatal("expected reconnect to reuse existing host Pi bridge")
+	}
+	if first.ctx.Err() != nil {
+		t.Fatal("expected websocket detach to keep host Pi context alive")
+	}
+	if first.nextSeq != 2 {
+		t.Fatalf("expected sequence to remain on existing bridge, got %d", first.nextSeq)
+	}
+}
+
+func TestHostPiBridgeBuffersReplayEventsWithoutClient(t *testing.T) {
+	bridge := &hostPiBridge{server: &Server{}, nextSeq: 1}
+	for i := 0; i < hostPiEventReplayLimit+1; i++ {
+		bridge.sendEvent(map[string]any{"type": "runtime_event"})
+	}
+
+	if len(bridge.events) != hostPiEventReplayLimit {
+		t.Fatalf("buffer length = %d, want %d", len(bridge.events), hostPiEventReplayLimit)
+	}
+	if bridge.events[0].Seq != 2 {
+		t.Fatalf("first retained seq = %d, want 2", bridge.events[0].Seq)
+	}
+	if bridge.events[len(bridge.events)-1].Seq != int64(hostPiEventReplayLimit+1) {
+		t.Fatalf("last retained seq = %d, want %d", bridge.events[len(bridge.events)-1].Seq, hostPiEventReplayLimit+1)
 	}
 }
 

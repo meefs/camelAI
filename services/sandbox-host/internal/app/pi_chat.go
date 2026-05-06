@@ -42,43 +42,12 @@ func (s *Server) serveHostPiChat(
 		"threadKey":   threadKey,
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	bridge := &hostPiBridge{
-		server:     s,
-		client:     clientConn,
-		container:  name,
-		route:      route,
-		opts:       opts,
-		threadID:   threadID,
-		threadKey:  threadKey,
-		nextSeq:    1,
-		ctx:        ctx,
-		cancel:     cancel,
-		activeItem: fmt.Sprintf("pi_agent_%s", randomID()),
-		askToken:   randomID(),
-		questions:  make(map[string]chan hostPiQuestionResult),
-		toolArgs:   make(map[string]map[string]any),
-	}
-	s.registerHostPiBridge(bridge)
+	bridge := s.attachHostPiBridge(clientConn, name, route, opts, threadID, threadKey)
 
 	var closeOnce sync.Once
 	closeAll := func(code int, reason string) {
 		closeOnce.Do(func() {
-			cancel()
-			s.unregisterHostPiBridge(bridge)
-			bridge.failPendingQuestions("host Pi chat session closed")
-			bridge.stopProcess()
-
-			now := time.Now().UTC()
-			var updated *ProxyThreadContext
-			s.proxyMu.Lock()
-			if ctx := s.proxyThreads[threadKey]; ctx != nil {
-				ctx.ClosedAt = &now
-				ctx.ExpiresAt = now.Add(s.cfg.ProxyThreadCloseGrace)
-				updated = copyProxyThreadContext(ctx)
-			}
-			s.proxyMu.Unlock()
-			s.upsertProxyThreadState(updated)
+			bridge.detachClient(clientConn)
 
 			s.trace("host_pi_chat_ws_close", map[string]any{
 				"container": name,
@@ -108,6 +77,13 @@ func (s *Server) serveHostPiChat(
 	}
 }
 
+const hostPiEventReplayLimit = 512
+
+type hostPiBufferedEvent struct {
+	Seq     int64
+	Encoded []byte
+}
+
 type hostPiBridge struct {
 	server    *Server
 	client    *websocket.Conn
@@ -123,6 +99,7 @@ type hostPiBridge struct {
 	mu       sync.Mutex
 	stateMu  sync.Mutex
 	nextSeq  int64
+	events   []hostPiBufferedEvent
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	started  bool
@@ -171,13 +148,18 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 
 	switch messageType {
 	case "init":
-		if lastSeq, ok := numberAsInt64(msg["lastSeq"]); ok && lastSeq >= b.nextSeq {
+		lastSeq := int64(0)
+		if value, ok := numberAsInt64(msg["lastSeq"]); ok {
+			lastSeq = value
+		}
+		if lastSeq >= b.nextSeq {
 			b.nextSeq = lastSeq + 1
 		}
 		env := mapStringValues(msg["env"])
 		if err := b.start(env); err != nil {
 			return err
 		}
+		b.replayEventsAfter(lastSeq)
 		b.sendEvent(map[string]any{"type": "session", "sessionId": b.threadID})
 		b.sendEvent(map[string]any{"type": "ready"})
 	case "ping":
@@ -831,26 +813,77 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 	}
 }
 
-func (s *Server) registerHostPiBridge(bridge *hostPiBridge) {
-	if bridge == nil || strings.TrimSpace(bridge.threadID) == "" {
-		return
-	}
+func (s *Server) attachHostPiBridge(
+	client *websocket.Conn,
+	name string,
+	route WorkspaceRoute,
+	opts container.EnsureContainerOptions,
+	threadID string,
+	threadKey string,
+) *hostPiBridge {
+	threadID = strings.TrimSpace(threadID)
 	s.hostPiMu.Lock()
 	defer s.hostPiMu.Unlock()
+
 	if s.hostPiChats == nil {
 		s.hostPiChats = make(map[string]*hostPiBridge)
 	}
+
+	if existing := s.hostPiChats[threadID]; existing != nil && existing.threadKey == threadKey {
+		existing.container = name
+		existing.route = route
+		existing.opts = opts
+		existing.attachClient(client)
+		s.trace("host_pi_chat_ws_attached_existing", map[string]any{
+			"container": name,
+			"threadId":  threadID,
+			"threadKey": threadKey,
+		})
+		return existing
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	bridge := &hostPiBridge{
+		server:     s,
+		client:     client,
+		container:  name,
+		route:      route,
+		opts:       opts,
+		threadID:   threadID,
+		threadKey:  threadKey,
+		nextSeq:    1,
+		ctx:        ctx,
+		cancel:     cancel,
+		activeItem: fmt.Sprintf("pi_agent_%s", randomID()),
+		askToken:   randomID(),
+		questions:  make(map[string]chan hostPiQuestionResult),
+		toolArgs:   make(map[string]map[string]any),
+	}
 	s.hostPiChats[bridge.threadID] = bridge
+	return bridge
 }
 
-func (s *Server) unregisterHostPiBridge(bridge *hostPiBridge) {
-	if bridge == nil || strings.TrimSpace(bridge.threadID) == "" {
+func (b *hostPiBridge) attachClient(client *websocket.Conn) {
+	if client == nil {
 		return
 	}
-	s.hostPiMu.Lock()
-	defer s.hostPiMu.Unlock()
-	if s.hostPiChats[bridge.threadID] == bridge {
-		delete(s.hostPiChats, bridge.threadID)
+	b.mu.Lock()
+	previous := b.client
+	if previous != nil && previous != client {
+		_ = previous.Close()
+	}
+	b.client = client
+	b.mu.Unlock()
+}
+
+func (b *hostPiBridge) detachClient(client *websocket.Conn) {
+	b.mu.Lock()
+	if b.client == client {
+		b.client = nil
+	}
+	b.mu.Unlock()
+	if client != nil {
+		_ = client.Close()
 	}
 }
 
@@ -1171,22 +1204,67 @@ func (b *hostPiBridge) sendRuntimeEvent(method string, params map[string]any) {
 func (b *hostPiBridge) sendEvent(payload map[string]any) {
 	b.mu.Lock()
 	payload["seq"] = b.nextSeq
+	seq := b.nextSeq
 	b.nextSeq++
-	b.mu.Unlock()
-
 	encoded, err := json.Marshal(payload)
 	if err != nil {
+		b.mu.Unlock()
 		return
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if err := b.client.WriteMessage(websocket.TextMessage, encoded); err != nil {
+	b.events = append(b.events, hostPiBufferedEvent{Seq: seq, Encoded: encoded})
+	if len(b.events) > hostPiEventReplayLimit {
+		b.events = append([]hostPiBufferedEvent(nil), b.events[len(b.events)-hostPiEventReplayLimit:]...)
+	}
+	client := b.client
+	if client == nil {
+		b.mu.Unlock()
+		return
+	}
+	if err := client.WriteMessage(websocket.TextMessage, encoded); err != nil {
+		if b.client == client {
+			b.client = nil
+		}
+		b.mu.Unlock()
 		b.server.trace("host_pi_client_write_failed", map[string]any{
 			"threadId": b.threadID,
 			"type":     payload["type"],
 			"error":    err.Error(),
 		})
+		_ = client.Close()
+		return
 	}
+	b.mu.Unlock()
+}
+
+func (b *hostPiBridge) replayEventsAfter(lastSeq int64) {
+	b.mu.Lock()
+	client := b.client
+	if client == nil {
+		b.mu.Unlock()
+		return
+	}
+	events := make([]hostPiBufferedEvent, 0, len(b.events))
+	for _, event := range b.events {
+		if event.Seq > lastSeq {
+			events = append(events, event)
+		}
+	}
+	for _, event := range events {
+		if err := client.WriteMessage(websocket.TextMessage, event.Encoded); err != nil {
+			if b.client == client {
+				b.client = nil
+			}
+			b.mu.Unlock()
+			b.server.trace("host_pi_client_replay_failed", map[string]any{
+				"threadId": b.threadID,
+				"seq":      event.Seq,
+				"error":    err.Error(),
+			})
+			_ = client.Close()
+			return
+		}
+	}
+	b.mu.Unlock()
 }
 
 func (b *hostPiBridge) writePiCommand(command map[string]any) error {
