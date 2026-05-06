@@ -47,6 +47,19 @@ func TestHeaderCloningStripsMiniflareProxyHeaders(t *testing.T) {
 	}
 }
 
+func assertOpenRouterAttributionHeaders(t *testing.T, headers http.Header) {
+	t.Helper()
+	if got := headers.Get("HTTP-Referer"); got != openRouterAttributionReferer {
+		t.Fatalf("unexpected OpenRouter referer: got=%q want=%q", got, openRouterAttributionReferer)
+	}
+	if got := headers.Get("X-OpenRouter-Title"); got != openRouterAttributionTitle {
+		t.Fatalf("unexpected OpenRouter title: got=%q want=%q", got, openRouterAttributionTitle)
+	}
+	if got := headers.Get("X-OpenRouter-Categories"); got != openRouterAttributionCategories {
+		t.Fatalf("unexpected OpenRouter categories: got=%q want=%q", got, openRouterAttributionCategories)
+	}
+}
+
 func TestDrainRouteTracksActiveHostPiTurns(t *testing.T) {
 	server := &Server{hostPiChats: make(map[string]*hostPiBridge)}
 	bridge := &hostPiBridge{threadID: "thread-1"}
@@ -531,6 +544,7 @@ func TestForwardClaudeToOpenRouterGatewayRewritesModel(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedPath = req.URL.Path
 		capturedAuth = req.Header.Get("cf-aig-authorization")
+		assertOpenRouterAttributionHeaders(t, req.Header)
 		var body map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream body: %v", err)
@@ -572,12 +586,64 @@ func TestForwardClaudeToOpenRouterGatewayRewritesModel(t *testing.T) {
 	}
 }
 
+func TestForwardClaudeToOpenRouterDirectAddsAttributionHeaders(t *testing.T) {
+	var capturedPath string
+	var capturedAuth string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		capturedPath = req.URL.Path
+		capturedAuth = req.Header.Get("Authorization")
+		assertOpenRouterAttributionHeaders(t, req.Header)
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if model, _ := body["model"].(string); model != "anthropic/claude-sonnet-4.6" {
+			t.Fatalf("unexpected upstream model: got=%q", model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","model":"anthropic/claude-sonnet-4.6","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		httpClient: upstream.Client(),
+		containers: container.NewTestManager(),
+	}
+	originalTransport := server.httpClient.Transport
+	server.httpClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		req.URL.Scheme = "https"
+		req.URL.Host = strings.TrimPrefix(upstream.URL, "https://")
+		return originalTransport.RoundTrip(req)
+	})
+
+	body := `{"model":"sonnet","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/claude/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	thread := testThreadContext()
+	thread.ByokOpenRouterKey = "sk-or-test"
+	rec := httptest.NewRecorder()
+	server.forwardClaudeToOpenRouterDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, thread, testCaller(), "test-req-claude-openrouter-direct", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if capturedPath != "/api/v1/messages" {
+		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/api/v1/messages")
+	}
+	if capturedAuth != "Bearer sk-or-test" {
+		t.Fatalf("unexpected auth header: got=%q", capturedAuth)
+	}
+}
+
 func TestForwardOpenAIToAIGatewayPreservesKimiModelAndRequestsStreamingUsage(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
 	var capturedIncludeUsage bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedPath = req.URL.Path
+		assertOpenRouterAttributionHeaders(t, req.Header)
 		var body map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream body: %v", err)
@@ -625,6 +691,7 @@ func TestForwardOpenAIToAIGatewayPreservesGrokModel(t *testing.T) {
 	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedPath = req.URL.Path
+		assertOpenRouterAttributionHeaders(t, req.Header)
 		var body map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream body: %v", err)
@@ -834,6 +901,7 @@ func TestForwardOpenAICompatibleDirectPreservesModelForOpenRouter(t *testing.T) 
 	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedAuth = req.Header.Get("Authorization")
+		assertOpenRouterAttributionHeaders(t, req.Header)
 		var body map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream body: %v", err)
@@ -946,6 +1014,7 @@ func TestVirtualAIProxyRecordsCreditChargeableUsage(t *testing.T) {
 	var capturedPath string
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedPath = req.URL.Path
+		assertOpenRouterAttributionHeaders(t, req.Header)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"gpt-5.4-mini","usage":{"prompt_tokens":1000,"completion_tokens":2000}}`))
 	}))

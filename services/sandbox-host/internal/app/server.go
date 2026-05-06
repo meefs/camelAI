@@ -88,6 +88,12 @@ type Server struct {
 	wsUpgrader websocket.Upgrader
 }
 
+const (
+	openRouterAttributionReferer    = "https://camelai.dev"
+	openRouterAttributionTitle      = "camelAI"
+	openRouterAttributionCategories = "cloud-agent,programming-app"
+)
+
 func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.Manager, fsManager *fsops.Manager, stateStore *state.Store, usageStore *state.UsageStore) *Server {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -1488,6 +1494,7 @@ func (s *Server) forwardClaudeToOpenRouterDirect(
 	forwardReq.Header = cloneHeaders(req.Header)
 	forwardReq.Header.Del("x-api-key")
 	forwardReq.Header.Set("Authorization", "Bearer "+threadContext.ByokOpenRouterKey)
+	applyOpenRouterAttributionHeaders(forwardReq.Header)
 	applyStreamingRequestHeaders(forwardReq.Header)
 
 	proxyTag := fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath)
@@ -1571,6 +1578,7 @@ func (s *Server) forwardClaudeToOpenRouterGateway(
 	headers := sanitizeGatewayUpstreamHeaders(req.Header)
 	headers.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
 	headers.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+	applyOpenRouterAttributionHeaders(headers)
 	applyStreamingRequestHeaders(headers)
 	forwardReq.Header = headers
 
@@ -1923,6 +1931,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 	headers := sanitizeGatewayUpstreamHeaders(req.Header)
 	headers.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
 	headers.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+	applyOpenRouterAttributionHeaders(headers)
 	applyStreamingRequestHeaders(headers)
 	forwardReq.Header = headers
 
@@ -2075,6 +2084,9 @@ func (s *Server) handleVirtualAIRoute(w http.ResponseWriter, req *http.Request) 
 	headers := sanitizeGatewayUpstreamHeaders(req.Header)
 	headers.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
 	headers.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+	if gatewayProvider == "openrouter" {
+		applyOpenRouterAttributionHeaders(headers)
+	}
 	applyStreamingRequestHeaders(headers)
 	forwardReq.Header = headers
 
@@ -2227,6 +2239,9 @@ func (s *Server) forwardOpenAICompatibleDirect(
 
 	headers := sanitizeGatewayUpstreamHeaders(req.Header)
 	headers.Set("Authorization", "Bearer "+apiKey)
+	if providerName == "openrouter" {
+		applyOpenRouterAttributionHeaders(headers)
+	}
 	applyStreamingRequestHeaders(headers)
 	forwardReq.Header = headers
 
@@ -2310,6 +2325,15 @@ func sanitizeGatewayUpstreamHeaders(src http.Header) http.Header {
 	headers.Del("Forwarded")
 	headers.Del("Via")
 	return headers
+}
+
+func applyOpenRouterAttributionHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	headers.Set("HTTP-Referer", openRouterAttributionReferer)
+	headers.Set("X-OpenRouter-Title", openRouterAttributionTitle)
+	headers.Set("X-OpenRouter-Categories", openRouterAttributionCategories)
 }
 
 // buildAIGatewayMetadata builds the cf-aig-metadata header for Cloudflare
