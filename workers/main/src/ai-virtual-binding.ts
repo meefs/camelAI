@@ -17,17 +17,22 @@ interface AIVirtualBindingProps {
   userId?: string;
 }
 
-const DYNAMIC_MODEL_ALIASES = new Set(["auto", "auto_search", "auto_image"]);
+const DEFAULT_VIRTUAL_MODEL = "google/gemini-3-flash-preview";
+const DYNAMIC_MODEL_ALIASES = new Set(["auto_search", "auto_image"]);
 
 /**
  * Resolve a model string to its gateway representation.
  *
- * - Known aliases (`auto`, `auto_search`, `auto_image`) map to `dynamic/{alias}`.
+ * - `auto` maps to the current default OpenRouter model.
+ * - Known capability aliases (`auto_search`, `auto_image`) map to `dynamic/{alias}`.
  * - Models already prefixed with `dynamic/` pass through unchanged.
  * - Everything else is treated as an OpenRouter model and passes through as-is.
  */
 export function resolveModel(model: string): string {
   const trimmed = model.trim();
+  if (trimmed === "auto") {
+    return DEFAULT_VIRTUAL_MODEL;
+  }
   if (trimmed === "kimi-k2.6" || trimmed === "kimi-latest") {
     return "~moonshotai/kimi-latest";
   }
@@ -37,7 +42,7 @@ export function resolveModel(model: string): string {
   if (DYNAMIC_MODEL_ALIASES.has(trimmed)) {
     return `dynamic/${trimmed}`;
   }
-  return trimmed || "dynamic/auto";
+  return trimmed || DEFAULT_VIRTUAL_MODEL;
 }
 
 /**
@@ -90,8 +95,6 @@ export class AIVirtualBinding extends WorkerEntrypoint<
     );
   }
 }
-
-const DEFAULT_VIRTUAL_MODEL = "auto";
 
 export function resolveVirtualModel(
   env: Pick<AIVirtualBindingEnv, "AI_VIRTUAL_MODEL">,

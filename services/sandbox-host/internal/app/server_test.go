@@ -464,6 +464,21 @@ func TestForwardDataProxyRequest(t *testing.T) {
 	}
 }
 
+func TestResolveVirtualAIModelUsesGeminiFlashForAuto(t *testing.T) {
+	if got := resolveVirtualAIModel(""); got != "google/gemini-3-flash-preview" {
+		t.Fatalf("resolveVirtualAIModel(empty) = %q", got)
+	}
+	if got := resolveVirtualAIModel("auto"); got != "google/gemini-3-flash-preview" {
+		t.Fatalf("resolveVirtualAIModel(auto) = %q", got)
+	}
+	if got := resolveVirtualAIModel("auto_search"); got != "dynamic/auto_search" {
+		t.Fatalf("resolveVirtualAIModel(auto_search) = %q", got)
+	}
+	if got := resolveVirtualAIModel("google/gemini-3-flash-preview"); got != "google/gemini-3-flash-preview" {
+		t.Fatalf("resolveVirtualAIModel(gemini) = %q", got)
+	}
+}
+
 func TestForwardOpenAIToAIGatewayUsesOpenRouterResponsesPath(t *testing.T) {
 	var capturedPath string
 	var capturedModel string

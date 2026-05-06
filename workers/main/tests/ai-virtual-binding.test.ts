@@ -87,8 +87,8 @@ describe("extractModelFromInput", () => {
 });
 
 describe("resolveModel", () => {
-  it("maps auto to dynamic/auto", () => {
-    expect(resolveModel("auto")).toBe("dynamic/auto");
+  it("maps auto to the default OpenRouter Gemini model", () => {
+    expect(resolveModel("auto")).toBe("google/gemini-3-flash-preview");
   });
 
   it("maps auto_search to dynamic/auto_search", () => {
@@ -125,8 +125,8 @@ describe("resolveModel", () => {
     expect(resolveModel("dynamic/auto_search")).toBe("dynamic/auto_search");
   });
 
-  it("falls back to dynamic/auto for empty string", () => {
-    expect(resolveModel("")).toBe("dynamic/auto");
+  it("falls back to the default OpenRouter Gemini model for empty string", () => {
+    expect(resolveModel("")).toBe("google/gemini-3-flash-preview");
   });
 
   it("trims whitespace before matching", () => {
@@ -158,8 +158,10 @@ describe("resolveVirtualModel", () => {
     );
   });
 
-  it("falls back to auto when unset", () => {
-    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: "" })).toBe("auto");
+  it("falls back to the default OpenRouter Gemini model when unset", () => {
+    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: "" })).toBe(
+      "google/gemini-3-flash-preview",
+    );
   });
 });
 
