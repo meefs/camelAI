@@ -8,8 +8,12 @@ import { requireChatWebSocketAccess } from '../helpers/auth.js';
 import { getThreadStub } from '../helpers/stubs.js';
 import { text } from '../helpers/response.js';
 import { WorkspaceContainer } from '../workspace-container.js';
-import { formatAttributedUserMessage } from '../chat-author-attribution.js';
+import {
+  formatAttributedUserMessage,
+  type ChatAuthorIdentity,
+} from '../chat-author-attribution.js';
 import { injectFileSafetyMessage } from '../file-safety.js';
+import { applyConnectionMentionContext } from '../connection-mention-context.js';
 import {
   getThreadTitleSourceMessage,
   isPlaceholderThreadTitle,
@@ -107,6 +111,7 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   let runnerSocket: WebSocket | null = null;
   let closed = false;
   const queuedClientMessages: string[] = [];
+  let clientMessageChain = Promise.resolve();
 
   const closeBoth = (code = 1000, reason = 'closed') => {
     if (closed) return;
@@ -133,7 +138,7 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     );
   };
 
-  const handleClientMessage = (raw: string) => {
+  const handleClientMessage = async (raw: string) => {
     let data: Record<string, unknown>;
     try {
       data = JSON.parse(raw) as Record<string, unknown>;
@@ -148,8 +153,10 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
     if (type === 'message') {
       const rawContent = typeof data.content === 'string' ? data.content : '';
-      const attributedContent = formatAttributedUserMessage(
-        injectFileSafetyMessage(rawContent),
+      const attributedContent = await buildRunnerUserMessageContent(
+        env,
+        workspaceId,
+        rawContent,
         { userName, userEmail },
       );
       if (!attributedContent) return;
@@ -180,7 +187,15 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       }
       return;
     }
-    handleClientMessage(event.data);
+    clientMessageChain = clientMessageChain
+      .then(() => handleClientMessage(event.data as string))
+      .catch((error) => {
+        console.error('[chat websocket] failed to handle client message', error);
+        sendJson(server, {
+          type: 'error',
+          error: 'Failed to send message to chat runner',
+        });
+      });
   });
   server.addEventListener('close', (event) => {
     closeBoth(event.code || 1000, event.reason || 'client closed');
@@ -256,8 +271,33 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   while (queuedClientMessages.length > 0 && runnerSocket.readyState === WebSocket.OPEN) {
     const raw = queuedClientMessages.shift();
     if (!raw) continue;
-    handleClientMessage(raw);
+    await handleClientMessage(raw);
   }
+}
+
+export async function buildRunnerUserMessageContent(
+  env: RouteContext['env'],
+  workspaceId: string,
+  rawContent: string,
+  author?: ChatAuthorIdentity | null,
+): Promise<string> {
+  const safeContent = injectFileSafetyMessage(rawContent);
+  let contentWithConnectionContext = safeContent;
+
+  if (safeContent.includes('@')) {
+    try {
+      const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+      const integrations = await workspaceStub.getIntegrations();
+      contentWithConnectionContext = applyConnectionMentionContext(
+        safeContent,
+        integrations,
+      ).content;
+    } catch (error) {
+      console.error('[chat websocket] apply connection mentions failed', error);
+    }
+  }
+
+  return formatAttributedUserMessage(contentWithConnectionContext, author);
 }
 
 async function updateThreadMetadataForUserMessage(
