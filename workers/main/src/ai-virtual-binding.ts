@@ -3,6 +3,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 interface AIVirtualBindingEnv {
   SANDBOX_HOST?: Fetcher;
   SANDBOX_PROXY_SECRET?: string;
+  WORKER_BASE_URL?: string;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
@@ -81,6 +82,7 @@ export class AIVirtualBinding extends WorkerEntrypoint<
     return runViaSandboxHostVirtualAI(
       this.env.SANDBOX_HOST,
       this.env.SANDBOX_PROXY_SECRET,
+      this.env.WORKER_BASE_URL,
       this.ctx.props,
       sanitizedInput,
       resolvedModelName,
@@ -244,6 +246,7 @@ export async function runViaGatewayHTTP(
 export async function runViaSandboxHostVirtualAI(
   sandboxHost: Fetcher,
   sandboxProxySecret: string | undefined,
+  workerBaseURL: string | undefined,
   props: AIVirtualBindingProps,
   input: unknown,
   model: string = "dynamic/auto",
@@ -255,6 +258,9 @@ export async function runViaSandboxHostVirtualAI(
   headers.set("x-chiridion-workspace-id", props.workspaceId);
   if (sandboxProxySecret?.trim()) {
     headers.set("x-sandbox-secret", sandboxProxySecret.trim());
+  }
+  if (workerBaseURL?.trim()) {
+    headers.set("x-chiridion-worker-base-url", workerBaseURL.trim());
   }
   if (props.userId?.trim()) {
     headers.set("x-chiridion-user-id", props.userId.trim());

@@ -404,6 +404,7 @@ describe("runViaSandboxHostVirtualAI", () => {
     const result = await runViaSandboxHostVirtualAI(
       sandboxHost,
       "sandbox-secret",
+      "https://camelai.dev",
       { orgId: "org_1", workspaceId: "ws_1", userId: "user_1" },
       { messages: [{ role: "user", content: "hello" }] },
       "dynamic/auto",
@@ -428,6 +429,9 @@ describe("runViaSandboxHostVirtualAI", () => {
     expect(headers.get("x-chiridion-workspace-id")).toBe("ws_1");
     expect(headers.get("x-chiridion-user-id")).toBe("user_1");
     expect(headers.get("x-sandbox-secret")).toBe("sandbox-secret");
+    expect(headers.get("x-chiridion-worker-base-url")).toBe(
+      "https://camelai.dev",
+    );
     const body = JSON.parse(String(init.body)) as { model?: string };
     expect(body.model).toBe("dynamic/auto");
   });
@@ -451,6 +455,7 @@ describe("runViaSandboxHostVirtualAI", () => {
     await expect(
       runViaSandboxHostVirtualAI(
         sandboxHost,
+        undefined,
         undefined,
         { orgId: "org_1", workspaceId: "ws_1" },
         { messages: [{ role: "user", content: "hello" }] },
