@@ -17,7 +17,12 @@ import {
 import { waitUntil } from "@/lib/wait-until";
 import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getWorkerScript } from "@/lib/auth-do";
-import { DEFAULT_ORG_EXPERIMENTAL_SETTINGS } from "@/lib/llm-provider-config";
+import {
+  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+  getDefaultLlmModel,
+  getDefaultThreadProvider,
+  getVisibleLlmModelOptions,
+} from "@/lib/llm-provider-config";
 import * as chatDO from "@/lib/chat-do.server";
 import {
   consumeSalesPrompt,
@@ -215,13 +220,50 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     workspaceId && authContext.currentOrg?.id
       ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
       : null;
-  const [pickerState, orgInfo] = orgStub && workspaceId
+  const [
+    pickerState,
+    orgInfo,
+    llmProviderConfig,
+    fallbackExperimentalSettings,
+  ] = orgStub && workspaceId
     ? await Promise.all([
-        chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(() => null),
+        chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(
+          (error) => {
+            console.error("Failed to load model picker state:", error);
+            return null;
+          },
+        ),
         orgStub.getInfo().catch(() => null),
+        orgStub.getLlmProviderConfig().catch(() => null),
+        orgStub
+          .getExperimentalSettings()
+          .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
       ])
-    : ([null, null] as const);
-  const threadProvider: ChatHarness = pickerState?.provider ?? "claude";
+    : ([null, null, null, DEFAULT_ORG_EXPERIMENTAL_SETTINGS] as const);
+  const experimentalSettings =
+    pickerState?.experimentalSettings ?? fallbackExperimentalSettings;
+  const llmProvider =
+    pickerState?.llmProvider ??
+    ((llmProviderConfig?.provider ?? null) as
+      | import("@/types").LlmProvider
+      | null);
+  const threadProvider: ChatHarness =
+    pickerState?.provider ??
+    getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
+  const fallbackThreadModel = getDefaultLlmModel(
+    threadProvider,
+    llmProviderConfig?.provider,
+  );
+  const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
+    threadProvider,
+    experimentalSettings,
+    fallbackThreadModel,
+    {
+      allowModelFamilySwitch: true,
+      orgProvider: llmProviderConfig?.provider,
+    },
+  ).map((option) => option.value);
+  const hasModelFallback = Boolean(orgStub && workspaceId);
   const billingOverview = orgInfo
     ? await getOrgBillingOverview(env, orgInfo).catch((error) => {
         console.warn("Failed to load billing overview for chat:", error);
@@ -232,20 +274,23 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return {
     workspaceId: workspaceId ?? null,
     threadProvider,
-    threadModel: pickerState?.defaultModel ?? null,
-    allowedThreadModels: pickerState?.allowedThreadModels ?? [],
+    threadModel:
+      pickerState?.defaultModel ??
+      (hasModelFallback ? fallbackThreadModel : null),
+    allowedThreadModels:
+      pickerState?.allowedThreadModels ??
+      (hasModelFallback ? fallbackAllowedThreadModels : []),
     effectivePickerDefaultModel:
       pickerState?.effectivePickerDefaultModel ?? null,
     hasEffectivePickerDefault:
       pickerState?.hasEffectivePickerDefault ?? false,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(billingOverview, Boolean(pickerState?.llmProvider)),
+      buildBillingCreditStatus(billingOverview, Boolean(llmProvider)),
       url.searchParams,
     ),
     initialChatError: getDevChatInitialError(url.searchParams),
-    llmProvider: pickerState?.llmProvider ?? null,
-    experimentalSettings:
-      pickerState?.experimentalSettings ?? DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+    llmProvider,
+    experimentalSettings,
     isOrgAdmin: authContext.orgs.some(
       (org) =>
         org.org_id === authContext.currentOrg.id &&

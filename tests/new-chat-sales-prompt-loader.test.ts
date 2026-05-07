@@ -128,4 +128,52 @@ describe('new chat loader sales prompt handling', () => {
     expect(result.salesPrompt).toBe('Build me a dashboard now');
     await expect(kv.get('sales_prompt:sales-key-123')).resolves.toBeNull();
   });
+
+  it('falls back to provider-visible models when picker state loading fails', async () => {
+    const kv = new MemoryKvNamespace();
+    getWorkspaceModelPickerStateMock.mockRejectedValue(new Error('picker down'));
+
+    getEnvMock.mockReturnValue({
+      APP_KV: kv,
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getIntegrations: async () => [],
+        }),
+      },
+    });
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          listWorkerScripts: async () => [],
+          getLlmProviderConfig: async () => ({ provider: 'openai' }),
+          getExperimentalSettings: async () => ({
+            claude_proxy_models: false,
+          }),
+          getInfo: async () => ({ id: 'org_123' }),
+        }),
+      },
+      USER: {
+        get: () => ({
+          getProfile: async () => null,
+        }),
+      },
+    });
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    const result = await loader({
+      request: new Request('https://camelai.dev/chat'),
+      context: {},
+    } as never);
+
+    expect(result.threadProvider).toBe('codex');
+    expect(result.threadModel).toBe('gpt-5.4');
+    expect(result.llmProvider).toBe('openai');
+    expect(result.allowedThreadModels).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+
+    consoleError.mockRestore();
+  });
 });

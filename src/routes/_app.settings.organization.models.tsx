@@ -351,32 +351,12 @@ function normalizeConfigForVisibleModels<
   return { ...config, models, default_model };
 }
 
-function hasVisibleModel(
-  config: Pick<OrgModelPickerConfig, "models">,
-  visibleModelIds: ReadonlySet<LlmModel>,
-): boolean {
-  return config.models.some((model) => visibleModelIds.has(model.id));
-}
-
 function validateModelForProvider(
   model: LlmModel,
   visibleModelIds: ReadonlySet<LlmModel>,
 ): ActionResponse | null {
   if (visibleModelIds.has(model)) return null;
   return { error: `${modelLabel(model)} is not available for this provider` };
-}
-
-function validateConfigForProvider(
-  config: Pick<OrgModelPickerConfig, "models">,
-  visibleModelIds: ReadonlySet<LlmModel>,
-): ActionResponse | null {
-  if (config.models.length === 0 || hasVisibleModel(config, visibleModelIds)) {
-    return null;
-  }
-  return {
-    error:
-      "Picker must include at least one model available for this provider, or be empty.",
-  };
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -476,12 +456,18 @@ export async function action({ request, context }: Route.ActionArgs) {
           ? null
           : target.config.default_model,
     };
-    const providerError = validateConfigForProvider(
-      nextConfig,
-      target.visibleModelIds,
-    );
-    if (providerError) {
-      return response(providerError, { status: 400 });
+    if (
+      target.visibleModelIds.has(model) &&
+      nextConfig.models.length > 0 &&
+      !nextConfig.models.some((item) => target.visibleModelIds.has(item.id))
+    ) {
+      return response(
+        {
+          error:
+            "Picker must include at least one model available for this provider, or be empty.",
+        },
+        { status: 400 },
+      );
     }
     await saveActionTarget(
       target,

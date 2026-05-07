@@ -152,7 +152,47 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
   });
 
-  it('rejects non-empty saves that leave no provider-compatible models', async () => {
+  it('allows removing hidden models even when no visible models remain', async () => {
+    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: false,
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'opus', added_at: 10 },
+      ],
+      default_model: 'sonnet',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'removeModel',
+        model: 'sonnet',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_org_defaults: false,
+        models: [{ id: 'opus', added_at: 10 }],
+        default_model: null,
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'removeModel',
+          model: 'sonnet',
+        },
+      },
+    );
+  });
+
+  it('rejects removing the last visible model while hidden models remain', async () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
