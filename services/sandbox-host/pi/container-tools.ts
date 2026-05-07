@@ -884,6 +884,9 @@ function resolveSubagentModel(model: unknown, agentType: "explore" | "general"):
     : (provider === "claude" ? claudeModel : codexModel));
 
   switch (value) {
+    case "gpt-5.5":
+      if (openRouterUpstream) return "camel/openai/gpt-5.5";
+      return "openai/gpt-5.5";
     case "gpt-5.4-mini":
       if (openRouterUpstream) return "camel/openai/gpt-5.4-mini";
       return "openai/gpt-5.4-mini";
@@ -896,6 +899,14 @@ function resolveSubagentModel(model: unknown, agentType: "explore" | "general"):
     case "grok-4.3":
     case "grok-latest":
       return "camel/x-ai/grok-4.3";
+    case "gemini-3-flash-preview":
+      return "camel/google/gemini-3-flash-preview";
+    case "gemini-3.1-pro-preview":
+      return "camel/google/gemini-3.1-pro-preview";
+    case "deepseek-v4-pro":
+      return "camel/deepseek/deepseek-v4-pro";
+    case "deepseek-v4-flash":
+      return "camel/deepseek/deepseek-v4-flash";
     case "haiku":
     case "claude-haiku-4-5":
     case "claude-haiku-4-5-20251001":
@@ -903,6 +914,10 @@ function resolveSubagentModel(model: unknown, agentType: "explore" | "general"):
     case "sonnet":
       if (openRouterUpstream) return "camel/anthropic/claude-sonnet-4.6";
       return "anthropic/claude-sonnet-4-6";
+    case "opus-4.7":
+    case "claude-opus-4-7":
+      if (openRouterUpstream) return "camel/anthropic/claude-opus-4.7";
+      return "anthropic/claude-opus-4-7";
     case "opus":
       if (openRouterUpstream) return "camel/anthropic/claude-opus-4.6";
       return "anthropic/claude-opus-4-6";
@@ -1266,6 +1281,21 @@ export default function containerTools(pi: ExtensionAPI) {
         apiKey: "CAMEL_API_KEY",
         models: [
           {
+            id: "openai/gpt-5.5",
+            name: "GPT-5.5",
+            api: "openai-responses",
+            reasoning: true,
+            input: ["text", "image"],
+            cost: {
+              input: 5,
+              output: 30,
+              cacheRead: 0.5,
+              cacheWrite: 0,
+            },
+            contextWindow: 272000,
+            maxTokens: 128000,
+          },
+          {
             id: "openai/gpt-5.4",
             name: "GPT-5.4",
             api: "openai-responses",
@@ -1312,6 +1342,66 @@ export default function containerTools(pi: ExtensionAPI) {
           },
           grokModel,
           {
+            id: "google/gemini-3-flash-preview",
+            name: "Gemini 3 Flash Preview",
+            api: "openai-responses",
+            reasoning: true,
+            input: ["text", "image"],
+            cost: {
+              input: 0.5,
+              output: 3,
+              cacheRead: 0.05,
+              cacheWrite: 0.08333333333333334,
+            },
+            contextWindow: 1048576,
+            maxTokens: 65536,
+          },
+          {
+            id: "google/gemini-3.1-pro-preview",
+            name: "Gemini 3.1 Pro Preview",
+            api: "openai-responses",
+            reasoning: true,
+            input: ["text", "image"],
+            cost: {
+              input: 2,
+              output: 12,
+              cacheRead: 0.2,
+              cacheWrite: 0.375,
+            },
+            contextWindow: 1048576,
+            maxTokens: 65536,
+          },
+          {
+            id: "deepseek/deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            api: "openai-responses",
+            reasoning: true,
+            input: ["text"],
+            cost: {
+              input: 0.435,
+              output: 0.87,
+              cacheRead: 0.003625,
+              cacheWrite: 0,
+            },
+            contextWindow: 1048576,
+            maxTokens: 384000,
+          },
+          {
+            id: "deepseek/deepseek-v4-flash",
+            name: "DeepSeek V4 Flash",
+            api: "openai-responses",
+            reasoning: true,
+            input: ["text"],
+            cost: {
+              input: 0.14,
+              output: 0.28,
+              cacheRead: 0.0028,
+              cacheWrite: 0,
+            },
+            contextWindow: 1048576,
+            maxTokens: 384000,
+          },
+          {
             id: "anthropic/claude-haiku-4.5",
             name: "Claude Haiku 4.5",
             api: "anthropic-messages",
@@ -1346,6 +1436,22 @@ export default function containerTools(pi: ExtensionAPI) {
           {
             id: "anthropic/claude-opus-4.6",
             name: "Claude Opus 4.6",
+            api: "anthropic-messages",
+            baseUrl: openRouterAnthropicBaseUrl,
+            reasoning: true,
+            input: ["text", "image"],
+            cost: {
+              input: 5,
+              output: 25,
+              cacheRead: 0.5,
+              cacheWrite: 6.25,
+            },
+            contextWindow: 1000000,
+            maxTokens: 128000,
+          },
+          {
+            id: "anthropic/claude-opus-4.7",
+            name: "Claude Opus 4.7",
             api: "anthropic-messages",
             baseUrl: openRouterAnthropicBaseUrl,
             reasoning: true,

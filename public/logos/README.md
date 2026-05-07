@@ -45,6 +45,8 @@ These are the integration types from the registry that have logos:
 | `openai`    | OpenAI              |                          |
 | `anthropic` | Anthropic           |                          |
 | `claude`    | Claude              | Product logo for models  |
+| `deepseek`  | DeepSeek            | Product logo for models  |
+| `gemini`    | Gemini              | Product logo for models  |
 | `grok`      | Grok                | Themed                   |
 | `kimi`      | Kimi                |                          |
 | `github`    | GitHub              | Likely needs themed      |

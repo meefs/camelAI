@@ -13,12 +13,41 @@ import {
   getLlmModelOptions,
   getProviderForModel,
   getVisibleLlmModelOptions,
+  isLlmModel,
   isLlmModelAllowedForNewThread,
   parseOrganizationExperimentalSettings,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
   stringifyStoredLlmProviderConfig,
 } from "../../../src/lib/llm-provider-config";
+
+const CODEX_MODELS = [
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "kimi-k2.6",
+  "grok-4.3",
+] as const;
+
+const CLAUDE_MODELS = [
+  "opus-4.7",
+  "opus",
+  "sonnet",
+  "haiku",
+] as const;
+
+const OPENROUTER_ONLY_MODELS = [
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "kimi-k2.6",
+  "grok-4.3",
+] as const;
 
 describe("llm provider config helpers", () => {
   it("defaults missing thread model to sonnet", () => {
@@ -37,16 +66,14 @@ describe("llm provider config helpers", () => {
 
   it("returns provider-specific model options", () => {
     expect(getLlmModelOptions("claude").map((option) => option.value)).toEqual([
-      "sonnet",
-      "haiku",
-      "opus",
+      ...CLAUDE_MODELS,
     ]);
-    expect(getLlmModelOptions("codex").map((option) => option.value)).toEqual([
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "kimi-k2.6",
-      "grok-4.3",
-    ]);
+    expect(getLlmModelOptions("codex").map((option) => option.value)).toEqual(
+      CODEX_MODELS,
+    );
+    for (const model of CODEX_MODELS) {
+      expect(isLlmModel(model, "codex")).toBe(true);
+    }
   });
 
   it("keeps BYOK provider-scoped and defaults proxy orgs to Claude", () => {
@@ -72,7 +99,7 @@ describe("llm provider config helpers", () => {
       getVisibleLlmModelOptions("codex", { claude_proxy_models: false }).map(
         (option) => option.value,
       ),
-    ).toEqual(["gpt-5.4", "gpt-5.4-mini", "kimi-k2.6", "grok-4.3"]);
+    ).toEqual(CODEX_MODELS);
   });
 
   it("shows only policy-allowed model families for new chats", () => {
@@ -84,13 +111,8 @@ describe("llm provider config helpers", () => {
         { allowModelFamilySwitch: true, orgProvider: null },
       ).map((option) => option.value),
     ).toEqual([
-      "sonnet",
-      "haiku",
-      "opus",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "kimi-k2.6",
-      "grok-4.3",
+      ...CLAUDE_MODELS,
+      ...CODEX_MODELS,
     ]);
     expect(
       getVisibleLlmModelOptions(
@@ -99,7 +121,7 @@ describe("llm provider config helpers", () => {
         undefined,
         { allowModelFamilySwitch: true, orgProvider: "openai" },
       ).map((option) => option.value),
-    ).toEqual(["gpt-5.4", "gpt-5.4-mini"]);
+    ).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
     expect(
       getVisibleLlmModelOptions(
         "codex",
@@ -108,13 +130,8 @@ describe("llm provider config helpers", () => {
         { allowModelFamilySwitch: true, orgProvider: "openrouter" },
       ).map((option) => option.value),
     ).toEqual([
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "kimi-k2.6",
-      "grok-4.3",
-      "sonnet",
-      "haiku",
-      "opus",
+      ...CODEX_MODELS,
+      ...CLAUDE_MODELS,
     ]);
     expect(
       getVisibleLlmModelOptions(
@@ -123,7 +140,7 @@ describe("llm provider config helpers", () => {
         undefined,
         { allowModelFamilySwitch: true, orgProvider: "anthropic" },
       ).map((option) => option.value),
-    ).toEqual(["sonnet", "haiku", "opus"]);
+    ).toEqual([...CLAUDE_MODELS]);
   });
 
   it("keeps the current model visible for existing locked threads regardless of new-chat policy", () => {
@@ -133,14 +150,14 @@ describe("llm provider config helpers", () => {
         { claude_proxy_models: false },
         "gpt-5.4-mini",
       ).map((option) => option.value),
-    ).toEqual(["gpt-5.4", "gpt-5.4-mini", "kimi-k2.6", "grok-4.3"]);
+    ).toEqual(CODEX_MODELS);
     expect(
       getVisibleLlmModelOptions(
         "claude",
         { claude_proxy_models: false },
         "sonnet",
       ).map((option) => option.value),
-    ).toEqual(["sonnet", "haiku", "opus"]);
+    ).toEqual([...CLAUDE_MODELS]);
   });
 
   it("validates new thread models against BYOK and proxy policy", () => {
@@ -185,36 +202,23 @@ describe("llm provider config helpers", () => {
         claude_proxy_models: true,
       }),
     ).toBe(true);
-    expect(
-      isLlmModelAllowedForNewThread("kimi-k2.6", "openrouter", {
-        claude_proxy_models: true,
-      }),
-    ).toBe(true);
-    expect(
-      isLlmModelAllowedForNewThread("grok-4.3", "openrouter", {
-        claude_proxy_models: true,
-      }),
-    ).toBe(true);
-    expect(
-      isLlmModelAllowedForNewThread("kimi-k2.6", null, {
-        claude_proxy_models: false,
-      }),
-    ).toBe(true);
-    expect(
-      isLlmModelAllowedForNewThread("grok-4.3", null, {
-        claude_proxy_models: false,
-      }),
-    ).toBe(true);
-    expect(
-      isLlmModelAllowedForNewThread("kimi-k2.6", "openai", {
-        claude_proxy_models: true,
-      }),
-    ).toBe(false);
-    expect(
-      isLlmModelAllowedForNewThread("grok-4.3", "openai", {
-        claude_proxy_models: true,
-      }),
-    ).toBe(false);
+    for (const model of OPENROUTER_ONLY_MODELS) {
+      expect(
+        isLlmModelAllowedForNewThread(model, "openrouter", {
+          claude_proxy_models: true,
+        }),
+      ).toBe(true);
+      expect(
+        isLlmModelAllowedForNewThread(model, null, {
+          claude_proxy_models: false,
+        }),
+      ).toBe(true);
+      expect(
+        isLlmModelAllowedForNewThread(model, "openai", {
+          claude_proxy_models: true,
+        }),
+      ).toBe(false);
+    }
     expect(
       isLlmModelAllowedForNewThread("haiku", "openrouter", {
         claude_proxy_models: true,
@@ -224,11 +228,21 @@ describe("llm provider config helpers", () => {
 
   it("infers the thread provider from the selected model", () => {
     expect(getProviderForModel("gpt-5.4", "claude")).toBe("codex");
+    expect(getProviderForModel("gpt-5.5", "claude")).toBe("codex");
     expect(getProviderForModel("gpt-5.4-mini", "claude")).toBe("codex");
     expect(getProviderForModel("kimi-k2.6", "claude")).toBe("codex");
     expect(getProviderForModel("grok-4.3", "claude")).toBe("codex");
+    expect(getProviderForModel("gemini-3-flash-preview", "claude")).toBe(
+      "codex",
+    );
+    expect(getProviderForModel("gemini-3.1-pro-preview", "claude")).toBe(
+      "codex",
+    );
+    expect(getProviderForModel("deepseek-v4-pro", "claude")).toBe("codex");
+    expect(getProviderForModel("deepseek-v4-flash", "claude")).toBe("codex");
     expect(getProviderForModel("haiku", "codex")).toBe("claude");
     expect(getProviderForModel("sonnet", "codex")).toBe("claude");
+    expect(getProviderForModel("opus-4.7", "codex")).toBe("claude");
     expect(getProviderForModel(undefined, "claude")).toBe("claude");
   });
 

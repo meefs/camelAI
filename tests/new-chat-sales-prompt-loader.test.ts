@@ -172,7 +172,11 @@ describe('new chat loader sales prompt handling', () => {
     expect(result.threadProvider).toBe('codex');
     expect(result.threadModel).toBe('gpt-5.4');
     expect(result.llmProvider).toBe('openai');
-    expect(result.allowedThreadModels).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+    expect(result.allowedThreadModels).toEqual([
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+    ]);
 
     consoleError.mockRestore();
   });

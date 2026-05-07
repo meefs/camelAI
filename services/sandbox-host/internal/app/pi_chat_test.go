@@ -28,6 +28,14 @@ func TestHostPiBridgeResolvePiModel(t *testing.T) {
 			want: "custom/provider-model",
 		},
 		{
+			name: "codex gpt 5.5",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "gpt-5.5",
+			},
+			want: "openai/gpt-5.5",
+		},
+		{
 			name: "codex gpt 5.4",
 			env: map[string]string{
 				"CHIRIDION_CHAT_PROVIDER": "codex",
@@ -60,12 +68,52 @@ func TestHostPiBridgeResolvePiModel(t *testing.T) {
 			want: "camel/x-ai/grok-4.3",
 		},
 		{
+			name: "codex gemini 3 flash preview",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "gemini-3-flash-preview",
+			},
+			want: "camel/google/gemini-3-flash-preview",
+		},
+		{
+			name: "codex gemini 3.1 pro preview",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "gemini-3.1-pro-preview",
+			},
+			want: "camel/google/gemini-3.1-pro-preview",
+		},
+		{
+			name: "codex deepseek v4 pro",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "deepseek-v4-pro",
+			},
+			want: "camel/deepseek/deepseek-v4-pro",
+		},
+		{
+			name: "codex deepseek v4 flash",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "deepseek-v4-flash",
+			},
+			want: "camel/deepseek/deepseek-v4-flash",
+		},
+		{
 			name: "claude sonnet",
 			env: map[string]string{
 				"CHIRIDION_CHAT_PROVIDER": "claude",
 				"CHIRIDION_CLAUDE_MODEL":  "sonnet",
 			},
 			want: "anthropic/claude-sonnet-4-6",
+		},
+		{
+			name: "claude opus 4.7",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "claude",
+				"CHIRIDION_CLAUDE_MODEL":  "opus-4.7",
+			},
+			want: "anthropic/claude-opus-4-7",
 		},
 		{
 			name: "claude opus",
@@ -172,6 +220,12 @@ func TestHostPiBridgeResolvePiModelCommand(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:   "gpt 5.5 maps to built in openai provider",
+			msg:    map[string]any{"model": "gpt-5.5"},
+			want:   "openai/gpt-5.5",
+			wantOK: true,
+		},
+		{
 			name:   "gpt maps to built in openai provider",
 			msg:    map[string]any{"model": "gpt-5.4"},
 			want:   "openai/gpt-5.4",
@@ -196,6 +250,30 @@ func TestHostPiBridgeResolvePiModelCommand(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "gemini flash maps to custom camel provider",
+			msg:    map[string]any{"model": "gemini-3-flash-preview"},
+			want:   "camel/google/gemini-3-flash-preview",
+			wantOK: true,
+		},
+		{
+			name:   "gemini pro maps to custom camel provider",
+			msg:    map[string]any{"model": "gemini-3.1-pro-preview"},
+			want:   "camel/google/gemini-3.1-pro-preview",
+			wantOK: true,
+		},
+		{
+			name:   "deepseek pro maps to custom camel provider",
+			msg:    map[string]any{"model": "deepseek-v4-pro"},
+			want:   "camel/deepseek/deepseek-v4-pro",
+			wantOK: true,
+		},
+		{
+			name:   "deepseek flash maps to custom camel provider",
+			msg:    map[string]any{"model": "deepseek-v4-flash"},
+			want:   "camel/deepseek/deepseek-v4-flash",
+			wantOK: true,
+		},
+		{
 			name:   "haiku maps to built in anthropic provider",
 			msg:    map[string]any{"model": "haiku"},
 			want:   "anthropic/claude-haiku-4-5-20251001",
@@ -205,6 +283,12 @@ func TestHostPiBridgeResolvePiModelCommand(t *testing.T) {
 			name:   "sonnet maps to built in anthropic provider",
 			msg:    map[string]any{"model": "sonnet"},
 			want:   "anthropic/claude-sonnet-4-6",
+			wantOK: true,
+		},
+		{
+			name:   "opus 4.7 maps to built in anthropic provider",
+			msg:    map[string]any{"model": "opus-4.7"},
+			want:   "anthropic/claude-opus-4-7",
 			wantOK: true,
 		},
 		{
@@ -301,9 +385,16 @@ func TestHostPiBridgeResolvePiModelUsesOpenRouterWhenUpstreamIsOpenRouter(t *tes
 
 	if got := bridge.resolvePiModel(map[string]string{
 		"CHIRIDION_CHAT_PROVIDER": "codex",
-		"CHIRIDION_CODEX_MODEL":   "gpt-5.4",
-	}); got != "camel/openai/gpt-5.4" {
-		t.Fatalf("resolvePiModel() hosted GPT = %q, want camel/openai/gpt-5.4", got)
+		"CHIRIDION_CODEX_MODEL":   "gpt-5.5",
+	}); got != "camel/openai/gpt-5.5" {
+		t.Fatalf("resolvePiModel() hosted GPT = %q, want camel/openai/gpt-5.5", got)
+	}
+
+	if got := bridge.resolvePiModel(map[string]string{
+		"CHIRIDION_CHAT_PROVIDER": "codex",
+		"CHIRIDION_CODEX_MODEL":   "gpt-5.4-mini",
+	}); got != "camel/openai/gpt-5.4-mini" {
+		t.Fatalf("resolvePiModel() hosted GPT mini = %q, want camel/openai/gpt-5.4-mini", got)
 	}
 
 	if got := bridge.resolvePiModel(map[string]string{
@@ -311,6 +402,20 @@ func TestHostPiBridgeResolvePiModelUsesOpenRouterWhenUpstreamIsOpenRouter(t *tes
 		"CHIRIDION_CLAUDE_MODEL":  "sonnet",
 	}); got != "camel/anthropic/claude-sonnet-4.6" {
 		t.Fatalf("resolvePiModel() hosted Claude = %q, want camel/anthropic/claude-sonnet-4.6", got)
+	}
+
+	if got := bridge.resolvePiModel(map[string]string{
+		"CHIRIDION_CHAT_PROVIDER": "claude",
+		"CHIRIDION_CLAUDE_MODEL":  "opus-4.7",
+	}); got != "camel/anthropic/claude-opus-4.7" {
+		t.Fatalf("resolvePiModel() hosted Opus 4.7 = %q, want camel/anthropic/claude-opus-4.7", got)
+	}
+
+	if got := bridge.resolvePiModel(map[string]string{
+		"CHIRIDION_CHAT_PROVIDER": "claude",
+		"CHIRIDION_CLAUDE_MODEL":  "opus",
+	}); got != "camel/anthropic/claude-opus-4.6" {
+		t.Fatalf("resolvePiModel() hosted Opus 4.6 = %q, want camel/anthropic/claude-opus-4.6", got)
 	}
 
 	if got := bridge.resolvePiModel(map[string]string{
@@ -323,9 +428,9 @@ func TestHostPiBridgeResolvePiModelUsesOpenRouterWhenUpstreamIsOpenRouter(t *tes
 	server.proxyThreads["thread-key"] = &ProxyThreadContext{ByokOpenAIKey: "openai-key"}
 	if got := bridge.resolvePiModel(map[string]string{
 		"CHIRIDION_CHAT_PROVIDER": "codex",
-		"CHIRIDION_CODEX_MODEL":   "gpt-5.4",
-	}); got != "openai/gpt-5.4" {
-		t.Fatalf("resolvePiModel() OpenAI BYOK GPT = %q, want openai/gpt-5.4", got)
+		"CHIRIDION_CODEX_MODEL":   "gpt-5.5",
+	}); got != "openai/gpt-5.5" {
+		t.Fatalf("resolvePiModel() OpenAI BYOK GPT = %q, want openai/gpt-5.5", got)
 	}
 }
 
