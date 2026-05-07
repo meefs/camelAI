@@ -344,10 +344,10 @@ function normalizeConfigForVisibleModels<
   const models = config.models
     .filter((model) => visibleModelIds.has(model.id))
     .map((model) => ({ ...model }));
-  const default_model =
-    config.default_model && visibleModelIds.has(config.default_model)
-      ? config.default_model
-      : (models[0]?.id ?? null);
+  let default_model = config.default_model ?? null;
+  if (default_model && !visibleModelIds.has(default_model)) {
+    default_model = models[0]?.id ?? null;
+  }
   return { ...config, models, default_model };
 }
 

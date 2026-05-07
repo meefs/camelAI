@@ -128,6 +128,37 @@ describe('organization model settings actions', () => {
     );
   });
 
+  it('preserves a null org default when seeding workspace overrides', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: null,
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'setUseOrgDefaults',
+        useOrgDefaults: 'false',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        use_org_defaults: false,
+        default_model: null,
+      }),
+      expect.anything(),
+    );
+  });
+
   it('rejects adding a model that is incompatible with the org provider', async () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({

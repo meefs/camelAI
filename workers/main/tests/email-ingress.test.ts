@@ -192,6 +192,63 @@ describe('handleWorkspaceEmailIngress', () => {
     );
   });
 
+  it('falls back to default picker configs when model picker RPC methods are missing', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
+      getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+      getModelPickerConfig: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('No such RPC method getModelPickerConfig'),
+        ),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
+      isMember: vi.fn().mockResolvedValue(true),
+      getThread: vi.fn().mockResolvedValue(null),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('No such RPC method getModelPickerConfig'),
+        ),
+      createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
+      getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
+    };
+    const userStub = {
+      getProfile: vi.fn().mockResolvedValue({ name: 'Agent User' }),
+    };
+
+    getWorkspaceStubMock.mockReturnValue(workspaceStub);
+    getOrgStubMock.mockReturnValue(orgStub);
+    getUserStubMock.mockReturnValue(userStub);
+    runExternalMessageTurnMock.mockResolvedValue({ status: 'result', reply: 'Looks good.' });
+
+    const env = createMockEnv();
+    env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
+
+    const message = createMessage({
+      from: 'user@example.com',
+      to: 'swift-falcon-ridge@mail.camelai.com',
+      subject: 'Need help',
+      rawBody: 'Please help',
+    });
+
+    await handleWorkspaceEmailIngress(message, env);
+
+    expect(message.setReject).not.toHaveBeenCalled();
+    expect(orgStub.createThread).toHaveBeenCalledWith(
+      'workspace-1',
+      'Need help',
+      'user-1',
+      'Please help',
+      'sonnet',
+      'claude',
+    );
+    expect(runExternalMessageTurnMock).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects unknown workspace mailbox format', async () => {
     const message = createMessage({
       from: 'user@example.com',
