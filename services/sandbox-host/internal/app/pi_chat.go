@@ -827,6 +827,7 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 			}
 		case "toolcall_start":
 			b.logPiToolCallStart(assistantEvent)
+			b.handlePiToolCallStart(assistantEvent)
 		case "toolcall_delta":
 			b.logPiToolCallDelta(assistantEvent)
 		case "toolcall_end":
@@ -1490,17 +1491,19 @@ func piAssistantToolCallProgress(event map[string]any) (toolID string, toolName 
 	return toolID, toolName, partialBytes
 }
 
-func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
-	toolID := stringValue(event["toolCallId"], "pi_tool_"+randomID())
-	toolName := stringValue(event["toolName"], "tool")
-	args := b.rememberToolArgs(toolID, piToolArgs(event))
-	log.Printf("[SandboxHost] host Pi tool start thread=%s tool=%s toolCall=%s", b.threadID, toolName, toolID)
+func hostPiRuntimeToolItem(toolID string, toolName string, args map[string]any, status string) map[string]any {
+	if args == nil {
+		args = map[string]any{}
+	}
+	if status == "" {
+		status = "running"
+	}
 	item := map[string]any{
 		"id":        toolID,
 		"type":      "dynamicToolCall",
 		"tool":      toolName,
 		"arguments": args,
-		"status":    "running",
+		"status":    status,
 	}
 	if strings.EqualFold(toolName, "bash") {
 		item = map[string]any{
@@ -1508,12 +1511,35 @@ func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
 			"type":    "commandExecution",
 			"command": stringValue(args["command"], ""),
 			"cwd":     args["cwd"],
-			"status":  "running",
+			"status":  status,
 		}
 		if description := stringValue(args["description"], ""); description != "" {
 			item["description"] = description
 		}
 	}
+	return item
+}
+
+func (b *hostPiBridge) handlePiToolCallStart(event map[string]any) {
+	toolID, toolName, _ := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		return
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	b.sendRuntimeEvent("item/started", map[string]any{
+		"threadId": b.threadID,
+		"item":     hostPiRuntimeToolItem(toolID, toolName, nil, "running"),
+	})
+}
+
+func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
+	toolID := stringValue(event["toolCallId"], "pi_tool_"+randomID())
+	toolName := stringValue(event["toolName"], "tool")
+	args := b.rememberToolArgs(toolID, piToolArgs(event))
+	log.Printf("[SandboxHost] host Pi tool start thread=%s tool=%s toolCall=%s", b.threadID, toolName, toolID)
+	item := hostPiRuntimeToolItem(toolID, toolName, args, "running")
 	b.sendRuntimeEvent("item/started", map[string]any{"threadId": b.threadID, "item": item})
 }
 
@@ -1552,17 +1578,8 @@ func (b *hostPiBridge) handlePiToolEnd(event map[string]any) {
 		"result":    resultText,
 	}
 	if strings.EqualFold(toolName, "bash") {
-		item = map[string]any{
-			"id":               toolID,
-			"type":             "commandExecution",
-			"command":          stringValue(args["command"], ""),
-			"cwd":              args["cwd"],
-			"status":           status,
-			"aggregatedOutput": resultText,
-		}
-		if description := stringValue(args["description"], ""); description != "" {
-			item["description"] = description
-		}
+		item = hostPiRuntimeToolItem(toolID, toolName, args, status)
+		item["aggregatedOutput"] = resultText
 	}
 	b.sendRuntimeEvent("item/completed", map[string]any{"threadId": b.threadID, "item": item})
 }

@@ -615,6 +615,26 @@ func hostPiHasRuntimeMethod(t *testing.T, bridge *hostPiBridge, method string) b
 	return false
 }
 
+func hostPiRuntimeItemsForMethod(t *testing.T, bridge *hostPiBridge, method string) []map[string]any {
+	t.Helper()
+	items := []map[string]any{}
+	for _, payload := range hostPiBufferedPayloads(t, bridge) {
+		if payload["type"] != "runtime_event" {
+			continue
+		}
+		event, _ := payload["event"].(map[string]any)
+		if event["method"] != method {
+			continue
+		}
+		params, _ := event["params"].(map[string]any)
+		item, _ := params["item"].(map[string]any)
+		if item != nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 func hostPiLatestEventOfType(t *testing.T, bridge *hostPiBridge, eventType string) map[string]any {
 	t.Helper()
 	payloads := hostPiBufferedPayloads(t, bridge)
@@ -828,5 +848,72 @@ func TestHostPiBridgeRecallsToolArgsForEndEvent(t *testing.T) {
 	}
 	if _, ok := bridge.toolArgs["tool_1"]; ok {
 		t.Fatal("recallToolArgs() should clear remembered args")
+	}
+}
+
+func TestHostPiBridgeEmitsEarlyBashToolStarted(t *testing.T) {
+	bridge := &hostPiBridge{threadID: "thread-1"}
+
+	bridge.handlePiToolCallStart(map[string]any{
+		"toolCall": map[string]any{
+			"id":   "tool_bash",
+			"name": "bash",
+		},
+	})
+
+	items := hostPiRuntimeItemsForMethod(t, bridge, "item/started")
+	if len(items) != 1 {
+		t.Fatalf("item/started count = %d, want 1", len(items))
+	}
+	item := items[0]
+	if item["id"] != "tool_bash" {
+		t.Fatalf("item id = %#v, want tool_bash", item["id"])
+	}
+	if item["type"] != "commandExecution" {
+		t.Fatalf("item type = %#v, want commandExecution", item["type"])
+	}
+	if item["status"] != "running" {
+		t.Fatalf("item status = %#v, want running", item["status"])
+	}
+	if command, ok := item["command"].(string); !ok || command != "" {
+		t.Fatalf("item command = %#v, want empty string", item["command"])
+	}
+}
+
+func TestHostPiBridgeUpdatesEarlyBashToolWithArgs(t *testing.T) {
+	bridge := &hostPiBridge{threadID: "thread-1"}
+
+	bridge.handlePiToolCallStart(map[string]any{
+		"toolCall": map[string]any{
+			"id":   "tool_bash",
+			"name": "bash",
+		},
+	})
+	bridge.handlePiToolStart(map[string]any{
+		"toolCallId": "tool_bash",
+		"toolName":   "bash",
+		"args": map[string]any{
+			"command":     "bun test",
+			"description": "tests",
+			"cwd":         "/home/claude",
+		},
+	})
+
+	items := hostPiRuntimeItemsForMethod(t, bridge, "item/started")
+	if len(items) != 2 {
+		t.Fatalf("item/started count = %d, want 2", len(items))
+	}
+	item := items[1]
+	if item["id"] != "tool_bash" {
+		t.Fatalf("item id = %#v, want tool_bash", item["id"])
+	}
+	if item["command"] != "bun test" {
+		t.Fatalf("item command = %#v, want bun test", item["command"])
+	}
+	if item["description"] != "tests" {
+		t.Fatalf("item description = %#v, want tests", item["description"])
+	}
+	if item["cwd"] != "/home/claude" {
+		t.Fatalf("item cwd = %#v, want /home/claude", item["cwd"])
 	}
 }
