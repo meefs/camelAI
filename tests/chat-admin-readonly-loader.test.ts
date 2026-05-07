@@ -7,6 +7,7 @@ const getEnvMock = vi.fn();
 const adminGetThreadContextByIdMock = vi.fn();
 const getThreadMock = vi.fn();
 const getThreadPreviewStateMock = vi.fn();
+const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
 
@@ -27,6 +28,7 @@ vi.mock('@/lib/auth-do.server', () => ({
 vi.mock('@/lib/chat-do.server', () => ({
   getThread: getThreadMock,
   getThreadPreviewState: getThreadPreviewStateMock,
+  getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
 }));
 
 vi.mock('@/lib/auth-do', () => ({
@@ -39,13 +41,29 @@ const { loader } = await import('@/routes/_app.chat.$id');
 describe('chat loader admin readonly mode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getEnvMock.mockReturnValue({});
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getIntegrations: async () => [],
+        }),
+      },
+    });
     getAuthEnvMock.mockReturnValue({});
     getThreadPreviewStateMock.mockResolvedValue({
       target: null,
       tabs: [],
       activeTabId: null,
       version: 0,
+    });
+    getWorkspaceModelPickerStateMock.mockResolvedValue({
+      provider: 'claude',
+      llmProvider: null,
+      experimentalSettings: { claude_proxy_models: false },
+      allowedThreadModels: ['sonnet'],
+      effectivePickerDefaultModel: 'sonnet',
+      hasEffectivePickerDefault: true,
+      defaultModel: 'sonnet',
     });
     getWorkerScriptMock.mockResolvedValue(null);
   });
@@ -108,7 +126,14 @@ describe('chat loader admin readonly mode', () => {
 describe('chat loader workspace mismatch handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getEnvMock.mockReturnValue({});
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getIntegrations: async () => [],
+        }),
+      },
+    });
     getAuthEnvMock.mockReturnValue({});
     getThreadPreviewStateMock.mockResolvedValue({
       target: null,
@@ -116,12 +141,22 @@ describe('chat loader workspace mismatch handling', () => {
       activeTabId: null,
       version: 0,
     });
+    getWorkspaceModelPickerStateMock.mockResolvedValue({
+      provider: 'claude',
+      llmProvider: null,
+      experimentalSettings: { claude_proxy_models: false },
+      allowedThreadModels: ['sonnet'],
+      effectivePickerDefaultModel: 'sonnet',
+      hasEffectivePickerDefault: true,
+      defaultModel: 'sonnet',
+    });
   });
 
   it('redirects to /chat when the thread is not in the active workspace', async () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
     });
     getThreadMock.mockResolvedValue(null);
 
@@ -144,6 +179,7 @@ describe('chat loader workspace mismatch handling', () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
     });
     getThreadMock.mockResolvedValue({
       id: 'thread_123',
@@ -168,10 +204,47 @@ describe('chat loader workspace mismatch handling', () => {
     });
   });
 
+  it('falls back to legacy visible models when picker state fails to load', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+      provider: 'claude',
+      model: 'opus',
+    });
+    getWorkspaceModelPickerStateMock.mockRejectedValue(
+      new Error('transient picker failure'),
+    );
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.threadModel).toBe('opus');
+    if (!Array.isArray(result.allowedThreadModels)) {
+      throw new Error('Expected fallback allowedThreadModels to be an array');
+    }
+    expect(result.allowedThreadModels).toContain('opus');
+    expect(result.allowedThreadModels).toContain('sonnet');
+    expect(result.allowedThreadModels.length).toBeGreaterThan(0);
+    consoleErrorSpy.mockRestore();
+  });
+
   it('keeps the saved thread model for new-thread navigations', async () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
     });
     getThreadMock.mockResolvedValue({
       id: 'thread_123',
@@ -189,6 +262,63 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.readOnly).toBe(false);
     expect(result.isNewThread).toBe(true);
     expect(result.threadModel).toBe('opus');
+    expect(result.allowedThreadModels).toEqual(['sonnet']);
+    expect(result.isOrgAdmin).toBe(true);
+    expect(result.recentModelScope).toEqual({
+      orgId: 'org_active',
+      workspaceId: 'ws_active',
+    });
     expect(getThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_active');
+  });
+
+  it('returns picker policy state for OpenAI-only new-thread navigations', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'owner' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+      provider: 'codex',
+      model: 'gpt-5.4-mini',
+    });
+    getWorkspaceModelPickerStateMock.mockResolvedValue({
+      provider: 'codex',
+      llmProvider: 'openai',
+      experimentalSettings: { claude_proxy_models: false },
+      allowedThreadModels: ['gpt-5.4', 'gpt-5.4-mini'],
+      effectivePickerDefaultModel: 'gpt-5.4',
+      hasEffectivePickerDefault: true,
+      defaultModel: 'gpt-5.4',
+    });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.isNewThread).toBe(true);
+    expect(result.threadProvider).toBe('codex');
+    expect(result.threadModel).toBe('gpt-5.4-mini');
+    expect(result.llmProvider).toBe('openai');
+    expect(result.allowedThreadModels).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+    expect(result.allowedThreadModels).not.toContain('sonnet');
+    expect(result.allowedThreadModels).not.toContain('opus');
+    expect(result.effectivePickerDefaultModel).toBe('gpt-5.4');
+    expect(result.hasEffectivePickerDefault).toBe(true);
+    expect(result.isOrgAdmin).toBe(true);
+    expect(result.recentModelScope).toEqual({
+      orgId: 'org_active',
+      workspaceId: 'ws_active',
+    });
+    await expect(result.chatDataPromise).resolves.toEqual({
+      messages: [],
+      previewTabs: [],
+      activeTabId: null,
+      previewTarget: null,
+    });
   });
 });

@@ -508,6 +508,21 @@ export type LlmModel =
   | "gpt-5.4-mini"
   | "kimi-k2.6"
   | "grok-4.3";
+
+export interface ModelPickerModelConfig {
+  id: LlmModel;
+  added_at: number;
+}
+
+export interface OrgModelPickerConfig {
+  models: ModelPickerModelConfig[];
+  default_model: LlmModel | null;
+}
+
+export interface WorkspaceModelPickerConfig extends OrgModelPickerConfig {
+  use_org_defaults: boolean;
+}
+
 export interface OrganizationExperimentalSettings {
   /** Internal allowlist for creating new Claude threads on the camelAI proxy. */
   claude_proxy_models: boolean;

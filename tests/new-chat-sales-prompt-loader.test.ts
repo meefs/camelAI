@@ -4,6 +4,7 @@ const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getRecentThreadsMock = vi.fn();
+const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgBillingOverviewMock = vi.fn();
 
 vi.mock('@/lib/wait-until', () => ({
@@ -34,6 +35,7 @@ vi.mock('@/lib/auth-do', () => ({
 
 vi.mock('@/lib/chat-do.server', () => ({
   getRecentThreads: getRecentThreadsMock,
+  getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
 }));
 
 const { loader } = await import('@/routes/_app.chat._index');
@@ -60,10 +62,20 @@ describe('new chat loader sales prompt handling', () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_123' },
       currentOrg: { id: 'org_123' },
+      orgs: [{ org_id: 'org_123', role: 'admin' }],
       user: { id: 'user_123', name: 'Illiana' },
       onboarding: { completed_at: Date.now() },
     });
     getRecentThreadsMock.mockResolvedValue([]);
+    getWorkspaceModelPickerStateMock.mockResolvedValue({
+      provider: 'claude',
+      llmProvider: null,
+      experimentalSettings: { claude_proxy_models: false },
+      allowedThreadModels: ['sonnet'],
+      effectivePickerDefaultModel: 'sonnet',
+      hasEffectivePickerDefault: true,
+      defaultModel: 'sonnet',
+    });
     getOrgBillingOverviewMock.mockResolvedValue(null);
   });
 
@@ -115,5 +127,53 @@ describe('new chat loader sales prompt handling', () => {
     expect(result.workspaceId).toBe('ws_123');
     expect(result.salesPrompt).toBe('Build me a dashboard now');
     await expect(kv.get('sales_prompt:sales-key-123')).resolves.toBeNull();
+  });
+
+  it('falls back to provider-visible models when picker state loading fails', async () => {
+    const kv = new MemoryKvNamespace();
+    getWorkspaceModelPickerStateMock.mockRejectedValue(new Error('picker down'));
+
+    getEnvMock.mockReturnValue({
+      APP_KV: kv,
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getIntegrations: async () => [],
+        }),
+      },
+    });
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          listWorkerScripts: async () => [],
+          getLlmProviderConfig: async () => ({ provider: 'openai' }),
+          getExperimentalSettings: async () => ({
+            claude_proxy_models: false,
+          }),
+          getInfo: async () => ({ id: 'org_123' }),
+        }),
+      },
+      USER: {
+        get: () => ({
+          getProfile: async () => null,
+        }),
+      },
+    });
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    const result = await loader({
+      request: new Request('https://camelai.dev/chat'),
+      context: {},
+    } as never);
+
+    expect(result.threadProvider).toBe('codex');
+    expect(result.threadModel).toBe('gpt-5.4');
+    expect(result.llmProvider).toBe('openai');
+    expect(result.allowedThreadModels).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+
+    consoleError.mockRestore();
   });
 });

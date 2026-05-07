@@ -33,6 +33,7 @@ const navGroups: NavGroup[] = [
       { label: "Billing", href: "/settings/organization/billing" },
       { label: "Usage", href: "/settings/organization/usage" },
       { label: "AI Provider", href: "/settings/organization/ai-provider", adminOnly: true },
+      { label: "Models", href: "/settings/organization/models", adminOnly: true },
       { label: "Domains", href: "/settings/organization/domains" },
     ],
   },

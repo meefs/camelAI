@@ -127,6 +127,12 @@ waitUntil(
 - Slash commands are allowlisted in `ChatThreadDO`; check `SLASH_COMMANDS` before adding or changing one.
 - Clarifying questions use the Pi `AskUserQuestion`/`ask_user_question` tools.
 
+### Adding a new chat model
+
+When adding a new model (Claude, OpenAI, OpenRouter), follow the checklist at
+the top of `src/lib/model-catalog.ts`. The picker, pricing, and harness routing
+live in separate files, and the catalog tests fail if any of them drift apart.
+
 ## Uploads, Files, And Safety
 
 - Chat uploads use multipart R2 upload APIs under `/api/workspaces/:id/upload`.

@@ -4,9 +4,6 @@ import { requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
-import {
-  isLlmModelAllowedForNewThread,
-} from '@/lib/llm-provider-config';
 import * as chatDO from '@/lib/chat-do.server';
 import type { LlmModel } from '@/types';
 
@@ -39,18 +36,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const llmProviderConfig = await orgStub.getLlmProviderConfig();
-  const experimentalSettings = await orgStub.getExperimentalSettings();
-
-  if (body.model !== undefined && !isLlmModelAllowedForNewThread(
-    body.model,
-    llmProviderConfig?.provider,
-    experimentalSettings,
-  )) {
-    return Response.json({ error: 'Invalid thread model' }, { status: 400 });
-  }
-
   let thread: Awaited<ReturnType<typeof chatDO.createThread>>;
   try {
     thread = await chatDO.createThread(
@@ -63,7 +48,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create thread';
-    return Response.json({ error: message || 'Failed to create thread' }, { status: 500 });
+    const status =
+      message === 'Invalid thread model' || message === 'No models are available'
+        ? 400
+        : 500;
+    return Response.json({ error: message || 'Failed to create thread' }, { status });
   }
 
   // Set preview apps if provided

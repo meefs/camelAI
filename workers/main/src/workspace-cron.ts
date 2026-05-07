@@ -12,10 +12,20 @@ import {
 } from "./cron-schedule";
 import type { WorkspaceDO } from "./workspace";
 import {
-  getDefaultLlmModel,
   getDefaultThreadProvider,
+  getProviderForModel,
 } from "../../../src/lib/llm-provider-config";
+import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog";
+import {
+  resolveDefaultModelForChat,
+  resolveEffectivePickerConfig,
+} from "../../../src/lib/model-picker-config";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
+import type { LlmModel } from "../../../src/types";
+import {
+  getOrgModelPickerConfigCompat,
+  getWorkspaceModelPickerConfigCompat,
+} from "./model-picker-config-compat";
 
 const DEFAULT_EXTERNAL_MESSAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_DUE_JOBS_PER_ALARM = 20;
@@ -293,6 +303,51 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     ) as DurableObjectStub<OrgDO>;
   }
 
+  private async resolveDefaultThreadModel(
+    workspace: WorkspaceInfo,
+  ): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+    const orgStub = this.getOrgStub(workspace.org_id);
+    const workspaceStub = this.env.WORKSPACE.get(
+      this.env.WORKSPACE.idFromName(workspace.id),
+    ) as DurableObjectStub<WorkspaceDO>;
+    const [
+      llmProviderConfig,
+      experimentalSettings,
+      orgPickerConfig,
+      workspacePickerConfig,
+    ] = await Promise.all([
+      orgStub.getLlmProviderConfig(),
+      orgStub.getExperimentalSettings(),
+      getOrgModelPickerConfigCompat(orgStub),
+      getWorkspaceModelPickerConfigCompat(workspaceStub),
+    ]);
+    const baseProvider = getDefaultThreadProvider(
+      llmProviderConfig?.provider,
+      experimentalSettings,
+    );
+    const effectiveConfig = resolveEffectivePickerConfig(
+      orgPickerConfig,
+      workspacePickerConfig,
+    );
+    const visibleCatalog = resolveModelPickerCatalog({
+      effectiveConfig,
+      provider: baseProvider,
+      experimentalSettings,
+      orgProvider: llmProviderConfig?.provider,
+    });
+    const model = resolveDefaultModelForChat({
+      effectiveDefaultModel: effectiveConfig.default_model,
+      visibleCatalog,
+    });
+    if (!model) {
+      throw new Error("No models are available");
+    }
+    return {
+      model,
+      provider: getProviderForModel(model, baseProvider),
+    };
+  }
+
   private async assertCronWithinBillingLimits(
     workspace: WorkspaceInfo,
     cronExpression: string,
@@ -355,20 +410,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     createdBy: string,
   ): Promise<string> {
     const orgStub = this.getOrgStub(workspace.org_id);
-    const [llmProviderConfig, experimentalSettings] = await Promise.all([
-      orgStub.getLlmProviderConfig(),
-      orgStub.getExperimentalSettings(),
-    ]);
-    const provider = getDefaultThreadProvider(
-      llmProviderConfig?.provider,
-      experimentalSettings,
-    );
+    const { model, provider } = await this.resolveDefaultThreadModel(workspace);
     const created = (await orgStub.createThread(
       workspace.id,
       `Scheduled: ${name}`,
       createdBy || "system",
       prompt.slice(0, 500),
-      getDefaultLlmModel(provider, llmProviderConfig?.provider),
+      model,
       provider,
     )) as OrgThread;
     return created.id;
@@ -386,20 +434,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       return prompt.thread_id;
     }
 
-    const [llmProviderConfig, experimentalSettings] = await Promise.all([
-      orgStub.getLlmProviderConfig(),
-      orgStub.getExperimentalSettings(),
-    ]);
-    const provider = getDefaultThreadProvider(
-      llmProviderConfig?.provider,
-      experimentalSettings,
-    );
+    const { model, provider } = await this.resolveDefaultThreadModel(workspace);
     const created = (await orgStub.createThread(
       workspace.id,
       `Scheduled: ${prompt.name}`,
       "system",
       prompt.prompt.slice(0, 500),
-      getDefaultLlmModel(provider, llmProviderConfig?.provider),
+      model,
       provider,
     )) as OrgThread;
 

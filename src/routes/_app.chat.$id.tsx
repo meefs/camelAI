@@ -20,6 +20,8 @@ import {
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
+  getDefaultThreadProvider,
+  getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
@@ -80,68 +82,6 @@ export function meta({ data }: Route.MetaArgs) {
     { title: `${title} - camelAI` },
     { name: "description", content: "AI Chat" },
   ];
-}
-
-/**
- * Client loader that short-circuits the server round trip for new thread
- * navigations. When navigating from the welcome screen with ?newThread=1,
- * the pending-message sessionStorage entry already contains workspaceId,
- * orgSlug, and connections — everything the page needs. This eliminates a
- * full requireAuthContext() + getThread() server call (~400ms).
- */
-export async function clientLoader({
-  serverLoader,
-  params,
-  request,
-}: Route.ClientLoaderArgs) {
-  const url = new URL(request.url);
-
-  if (url.searchParams.get("newThread") === "1") {
-    try {
-      const stored = sessionStorage.getItem("pendingMessage:newThread");
-      if (stored) {
-        const parsed = JSON.parse(stored) as {
-          threadId?: string;
-          workspaceId?: string;
-          orgSlug?: string;
-          threadModel?: LlmModel;
-          threadProvider?: ChatHarness;
-          connections?: Integration[];
-        };
-        if (parsed.threadId === params.id && parsed.workspaceId) {
-          const threadProvider =
-            parsed.threadProvider === "codex" ? "codex" : "claude";
-          return {
-            threadId: params.id,
-            workspaceId: parsed.workspaceId,
-            chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
-            threadTitle: null,
-            threadModel: isLlmModel(parsed.threadModel, threadProvider)
-              ? parsed.threadModel
-              : getDefaultLlmModel(threadProvider),
-            threadProvider,
-            experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-            billingCreditStatus: applyDevBillingCreditStatusOverride(
-              null,
-              url.searchParams,
-            ),
-            initialChatError: getDevChatInitialError(url.searchParams),
-            isNewThread: true,
-            hostname: window.location.hostname,
-            orgSlug: parsed.orgSlug,
-            connections: Array.isArray(parsed.connections)
-              ? parsed.connections
-              : [],
-            readOnly: false,
-          };
-        }
-      }
-    } catch {
-      // Fall through to server loader on any error
-    }
-  }
-
-  return serverLoader();
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
@@ -345,6 +285,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         (threadContext.provider as ChatHarness | undefined) ??
         "claude",
       llmProvider: null as LlmProvider | null,
+      allowedThreadModels: null,
+      effectivePickerDefaultModel: null,
+      hasEffectivePickerDefault: false,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: null,
@@ -352,6 +295,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       hostname,
       orgSlug: org?.slug,
       connections: [] as Integration[],
+      isOrgAdmin: false,
+      recentModelScope: null,
       readOnly: true,
     };
   }
@@ -367,12 +312,17 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadModel: getDefaultLlmModel("claude"),
       threadProvider: "claude" as const,
       llmProvider: null as LlmProvider | null,
+      allowedThreadModels: [],
+      effectivePickerDefaultModel: null,
+      hasEffectivePickerDefault: false,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: getDevChatInitialError(url.searchParams),
       isNewThread: false,
       hostname: undefined,
       connections: [] as Integration[],
+      isOrgAdmin: false,
+      recentModelScope: null,
       readOnly: false,
     };
   }
@@ -402,6 +352,27 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   if (!isNewThread && !thread) {
     throw redirect("/chat");
   }
+  const pickerState = await chatDO
+    .getWorkspaceModelPickerState(context, workspaceId, thread?.provider)
+    .catch((error) => {
+      console.error("Failed to load model picker state:", error);
+      return null;
+    });
+  const fallbackThreadProvider =
+    thread?.provider ??
+    getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
+  const fallbackThreadModel =
+    thread?.model ??
+    getDefaultLlmModel(fallbackThreadProvider, llmProviderConfig?.provider);
+  const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
+    fallbackThreadProvider,
+    experimentalSettings,
+    fallbackThreadModel,
+    {
+      allowModelFamilySwitch: true,
+      orgProvider: llmProviderConfig?.provider,
+    },
+  ).map((option) => option.value);
 
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
@@ -423,22 +394,36 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadTitle: thread?.title ?? null,
     threadModel:
       thread?.model ??
-      getDefaultLlmModel(
-        thread?.provider ?? "claude",
-        llmProviderConfig?.provider,
-      ),
-    threadProvider: thread?.provider ?? "claude",
-    experimentalSettings,
+      pickerState?.defaultModel ??
+      fallbackThreadModel,
+    threadProvider: thread?.provider ?? pickerState?.provider ?? fallbackThreadProvider,
+    llmProvider:
+      pickerState?.llmProvider ??
+      ((llmProviderConfig?.provider ?? null) as
+        | import("@/types").LlmProvider
+        | null),
+    allowedThreadModels:
+      pickerState?.allowedThreadModels ?? fallbackAllowedThreadModels,
+    effectivePickerDefaultModel:
+      pickerState?.effectivePickerDefaultModel ?? null,
+    hasEffectivePickerDefault:
+      pickerState?.hasEffectivePickerDefault ?? false,
+    experimentalSettings:
+      pickerState?.experimentalSettings ?? experimentalSettings,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
       buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
       url.searchParams,
     ),
-    llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     initialChatError: getDevChatInitialError(url.searchParams),
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
     connections,
+    isOrgAdmin: authContext.orgs.some(
+      (org) =>
+        org.org_id === orgId && (org.role === "owner" || org.role === "admin"),
+    ),
+    recentModelScope: { orgId, workspaceId },
     readOnly: false,
   };
 }
@@ -469,6 +454,9 @@ export default function ChatPage() {
     threadModel,
     threadProvider,
     llmProvider,
+    allowedThreadModels,
+    effectivePickerDefaultModel,
+    hasEffectivePickerDefault,
     experimentalSettings,
     billingCreditStatus,
     initialChatError,
@@ -476,6 +464,8 @@ export default function ChatPage() {
     hostname,
     orgSlug,
     connections,
+    isOrgAdmin,
+    recentModelScope,
     readOnly,
   } = useLoaderData<typeof loader>();
 
@@ -513,6 +503,9 @@ export default function ChatPage() {
         threadModel={threadModel}
         threadProvider={threadProvider}
         llmProvider={llmProvider}
+        allowedThreadModels={allowedThreadModels}
+        effectivePickerDefaultModel={effectivePickerDefaultModel}
+        hasEffectivePickerDefault={hasEffectivePickerDefault}
         experimentalSettings={experimentalSettings}
         billingCreditStatus={billingCreditStatus}
         initialError={initialChatError}
@@ -523,6 +516,8 @@ export default function ChatPage() {
         hostname={hostname}
         orgSlug={orgSlug}
         connections={connections}
+        isOrgAdmin={isOrgAdmin}
+        recentModelScope={recentModelScope}
         isLoadingMessages={isLoadingMessages}
         readOnly={readOnly}
       />

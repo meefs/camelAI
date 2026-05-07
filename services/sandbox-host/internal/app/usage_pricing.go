@@ -13,6 +13,8 @@ type ModelPricing struct {
 
 // modelPricingTable maps canonical model IDs to per-token costs.
 // Keep Claude entries in sync with the models in bedrockModelMap.
+// When adding a model here, also add it to the picker catalog at
+// src/lib/model-catalog.ts. See the checklist there.
 var modelPricingTable = map[string]ModelPricing{
 	// Claude 4.6
 	"claude-opus-4-6": {

@@ -15,9 +15,14 @@ import {
   encryptCredentials,
 } from "../../../../src/lib/integration-crypto.js";
 import {
-  getDefaultLlmModel,
   getDefaultThreadProvider,
+  getProviderForModel,
 } from "../../../../src/lib/llm-provider-config.js";
+import { resolveModelPickerCatalog } from "../../../../src/lib/model-catalog.js";
+import {
+  resolveDefaultModelForChat,
+  resolveEffectivePickerConfig,
+} from "../../../../src/lib/model-picker-config.js";
 import { WorkspaceContainer } from "../workspace-container.js";
 import { requireSession } from "../helpers/auth.js";
 import type {
@@ -26,6 +31,10 @@ import type {
 } from "../durable-objects.js";
 import { runExternalMessageTurn } from "../helpers/external-turn.js";
 import { getWorkspaceStub, getOrgStub } from "../helpers/stubs.js";
+import {
+  getOrgModelPickerConfigCompat,
+  getWorkspaceModelPickerConfigCompat,
+} from "../model-picker-config-compat.js";
 import { redirect, text } from "../helpers/response.js";
 import {
   syncAllWorkspaceWorkerSecrets,
@@ -33,10 +42,55 @@ import {
 } from "../cf-api-proxy.js";
 import type { SlackEventCallbackPayload } from "../slack-types.js";
 import { isOrgBanned } from "../ban-list.js";
+import type { LlmModel } from "../../../../src/types.js";
 
 // RPC interface for MCP DO callback
 interface ChiridionMcpRpc {
   receiveConnectionSetupResponse(response: ConnectionSetupResponse): void;
+}
+
+async function resolveDefaultSlackThreadModel(
+  env: RouteContext["env"],
+  args: { orgId: string; workspaceId: string },
+): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+  const orgStub = getOrgStub(env, args.orgId);
+  const workspaceStub = getWorkspaceStub(env, args.workspaceId);
+  const [
+    llmProviderConfig,
+    experimentalSettings,
+    orgPickerConfig,
+    workspacePickerConfig,
+  ] = await Promise.all([
+    orgStub.getLlmProviderConfig(),
+    orgStub.getExperimentalSettings(),
+    getOrgModelPickerConfigCompat(orgStub),
+    getWorkspaceModelPickerConfigCompat(workspaceStub),
+  ]);
+  const baseProvider = getDefaultThreadProvider(
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  );
+  const effectiveConfig = resolveEffectivePickerConfig(
+    orgPickerConfig,
+    workspacePickerConfig,
+  );
+  const visibleCatalog = resolveModelPickerCatalog({
+    effectiveConfig,
+    provider: baseProvider,
+    experimentalSettings,
+    orgProvider: llmProviderConfig?.provider,
+  });
+  const model = resolveDefaultModelForChat({
+    effectiveDefaultModel: effectiveConfig.default_model,
+    visibleCatalog,
+  });
+  if (!model) {
+    throw new Error("No models are available");
+  }
+  return {
+    model,
+    provider: getProviderForModel(model, baseProvider),
+  };
 }
 
 interface SlackTeamInstallationRecord {
@@ -646,20 +700,13 @@ async function getOrCreateSlackThreadId(
 
   const orgStub = getOrgStub(env, args.orgId);
   const title = args.initialText.trim().slice(0, 100) || "Slack conversation";
-  const [llmProviderConfig, experimentalSettings] = await Promise.all([
-    orgStub.getLlmProviderConfig(),
-    orgStub.getExperimentalSettings(),
-  ]);
-  const provider = getDefaultThreadProvider(
-    llmProviderConfig?.provider,
-    experimentalSettings,
-  );
+  const { model, provider } = await resolveDefaultSlackThreadModel(env, args);
   const thread = await orgStub.createThread(
     args.workspaceId,
     title,
     "slack",
     args.initialText.trim().slice(0, 500) || undefined,
-    getDefaultLlmModel(provider, llmProviderConfig?.provider),
+    model,
     provider,
   );
 

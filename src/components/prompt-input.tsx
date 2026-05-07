@@ -14,8 +14,13 @@ import { VoiceRecorderBar } from '@/components/voice-recorder';
 import { cn } from '@/lib/utils';
 import { useVoiceRecording } from '@/hooks/use-voice-recording';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
+import { ModelPicker } from '@/components/model-picker';
+import {
+  modelCatalogEntriesForIds,
+  type ModelCatalogEntry,
+} from '@/lib/model-catalog';
+import type { RecentModelScope } from '@/lib/recent-model';
 import type { Integration, LlmModel } from '@/types';
 import { ConnectionMentionMenu } from '@/components/connection-mention-menu';
 import { ComposerMentionDecorations } from '@/components/connection-mention-menu/composer-mention-overlay';
@@ -53,12 +58,10 @@ interface PromptInputProps {
   onCompact?: () => void;
   model?: LlmModel;
   onModelChange?: (model: LlmModel) => void;
-  modelOptions?: ReadonlyArray<{
-    value: LlmModel;
-    label: string;
-    description: string;
-  }>;
+  modelOptions?: ReadonlyArray<ModelCatalogEntry>;
   modelDisabled?: boolean;
+  isOrgAdmin?: boolean;
+  recentModelScope?: RecentModelScope | null;
   // Ref for programmatic focus
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   // @-mention menu for configured connections
@@ -75,6 +78,9 @@ interface SendButtonProps {
 }
 
 const LONG_PASTE_CHAR_THRESHOLD = 8_000;
+const DEFAULT_MODEL_OPTIONS = modelCatalogEntriesForIds(
+  LLM_MODEL_OPTIONS.map((option) => option.value),
+);
 
 const MemoizedSendButton = memo(function MemoizedSendButton({
   showStopButton,
@@ -125,8 +131,10 @@ export function PromptInput({
   onCompact,
   model,
   onModelChange,
-  modelOptions = LLM_MODEL_OPTIONS,
+  modelOptions = DEFAULT_MODEL_OPTIONS,
   modelDisabled = false,
+  isOrgAdmin = false,
+  recentModelScope,
   textareaRef,
   mentionableConnections,
   onMentionAddNewClick,
@@ -585,30 +593,14 @@ export function PromptInput({
                   )}
 
                   {model && onModelChange && (
-                    <Select
+                    <ModelPicker
                       value={model}
-                      onValueChange={(value) => onModelChange(value as LlmModel)}
-                      disabled={modelDisabled}
-                    >
-                      <SelectTrigger
-                        size="sm"
-                        aria-label="Thread model"
-                        className="h-auto gap-1 rounded-none border-0 !bg-transparent px-0 py-0 text-xs font-medium text-muted-foreground shadow-none hover:!bg-transparent hover:text-foreground focus-visible:border-0 focus-visible:text-foreground focus-visible:ring-0 focus-visible:underline focus-visible:underline-offset-4"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent align="start">
-                        {modelOptions.map((option) => (
-                          <SelectItem
-                            key={option.value}
-                            value={option.value}
-                            description={option.description}
-                          >
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      onValueChange={onModelChange}
+                      options={modelOptions}
+                      isOrgAdmin={isOrgAdmin}
+                      recentModelScope={recentModelScope}
+                      disabled={modelDisabled || disabled}
+                    />
                   )}
 
                   {contextUsedPercent != null && contextUsedPercent >= 50 && onCompact && (
