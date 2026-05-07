@@ -414,7 +414,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
       url.searchParams,
     ),
-    llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     initialChatError: getDevChatInitialError(url.searchParams),
     isNewThread,
     hostname,
