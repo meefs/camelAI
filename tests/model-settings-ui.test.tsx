@@ -53,7 +53,7 @@ vi.mock('sonner', () => ({
 }));
 
 describe('organization model settings UI', () => {
-  it('shows a workspace-scope entrypoint for a single-workspace org', () => {
+  it('hides the workspace-scope entrypoint for a single-workspace org', () => {
     loaderDataMock.mockReturnValue({
       scope: 'org',
       selectedWorkspaceId: null,
@@ -81,8 +81,8 @@ describe('organization model settings UI', () => {
 
     render(<OrganizationModelsPage />);
 
-    expect(screen.getByText('Org default')).toBeInTheDocument();
-    expect(screen.getByText('Only Workspace')).toBeInTheDocument();
+    expect(screen.queryByText('Org default')).not.toBeInTheDocument();
+    expect(screen.queryByText('Only Workspace')).not.toBeInTheDocument();
     expect(
       screen.queryByText('Use org defaults for this workspace'),
     ).not.toBeInTheDocument();
@@ -120,7 +120,7 @@ describe('organization model settings UI', () => {
       screen.getByText('Use org defaults for this workspace'),
     ).toBeInTheDocument();
     expect(screen.getByText(/Inheriting from org defaults/i)).toBeInTheDocument();
-    expect(screen.getByText('Org default')).toBeInTheDocument();
-    expect(screen.getByText('Only Workspace')).toBeInTheDocument();
+    expect(screen.queryByText('Org default')).not.toBeInTheDocument();
+    expect(screen.queryByText('Only Workspace')).not.toBeInTheDocument();
   });
 });

@@ -22,6 +22,10 @@ import {
 } from "../../../src/lib/model-picker-config";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 import type { LlmModel } from "../../../src/types";
+import {
+  getOrgModelPickerConfigCompat,
+  getWorkspaceModelPickerConfigCompat,
+} from "./model-picker-config-compat";
 
 const DEFAULT_EXTERNAL_MESSAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_DUE_JOBS_PER_ALARM = 20;
@@ -314,8 +318,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     ] = await Promise.all([
       orgStub.getLlmProviderConfig(),
       orgStub.getExperimentalSettings(),
-      orgStub.getModelPickerConfig(),
-      workspaceStub.getModelPickerConfig(),
+      getOrgModelPickerConfigCompat(orgStub),
+      getWorkspaceModelPickerConfigCompat(workspaceStub),
     ]);
     const baseProvider = getDefaultThreadProvider(
       llmProviderConfig?.provider,

@@ -31,6 +31,10 @@ import type {
 } from "../durable-objects.js";
 import { runExternalMessageTurn } from "../helpers/external-turn.js";
 import { getWorkspaceStub, getOrgStub } from "../helpers/stubs.js";
+import {
+  getOrgModelPickerConfigCompat,
+  getWorkspaceModelPickerConfigCompat,
+} from "../model-picker-config-compat.js";
 import { redirect, text } from "../helpers/response.js";
 import {
   syncAllWorkspaceWorkerSecrets,
@@ -59,8 +63,8 @@ async function resolveDefaultSlackThreadModel(
   ] = await Promise.all([
     orgStub.getLlmProviderConfig(),
     orgStub.getExperimentalSettings(),
-    orgStub.getModelPickerConfig(),
-    workspaceStub.getModelPickerConfig(),
+    getOrgModelPickerConfigCompat(orgStub),
+    getWorkspaceModelPickerConfigCompat(workspaceStub),
   ]);
   const baseProvider = getDefaultThreadProvider(
     llmProviderConfig?.provider,

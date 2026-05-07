@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import type { Route } from "./+types/_app.settings.organization.models";
 import { ModelLogo } from "@/components/model-logo";
 import { SettingsHeader } from "@/components/settings/settings-header";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,6 +25,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getContrastTextColor } from "@/lib/avatar";
 import {
   getAuthEnv,
   requireAuthContext,
@@ -61,6 +63,7 @@ interface LoaderWorkspace {
   id: string;
   name: string;
   avatarColor: string;
+  avatarContent: string;
   hasCustomConfig: boolean;
 }
 
@@ -214,6 +217,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       id: workspace.id,
       name: workspace.name,
       avatarColor: workspace.avatar.color,
+      avatarContent: workspace.avatar.content,
       hasCustomConfig:
         workspaceConfigs.get(workspace.id)?.use_org_defaults === false,
     })),
@@ -597,7 +601,10 @@ export default function OrganizationModelsPage() {
   const isSubmitting = fetcher.state !== "idle";
   const readOnly = data.scope === "ws" && data.useOrgDefaults;
   const capacityReached = data.config.capacity.used >= data.config.capacity.max;
-  const workspaceSelectorVisible = data.workspaces.length > 0;
+  // Intentional: the top-level workspace switcher is only useful when admins
+  // can choose between multiple workspaces. Single-workspace orgs can still
+  // access workspace override controls directly via scope=ws.
+  const workspaceSelectorVisible = data.workspaces.length > 1;
   const workspaceControlsVisible =
     workspaceSelectorVisible || data.scope === "ws";
 
@@ -648,19 +655,24 @@ export default function OrganizationModelsPage() {
               onValueChange={navigateScope}
               className="flex-wrap justify-start"
             >
-              <ToggleGroupItem value="org" className="h-11 px-3">
-                <span className="leading-tight">Org default</span>
-              </ToggleGroupItem>
+              <ToggleGroupItem value="org">Org default</ToggleGroupItem>
               {data.workspaces.map((workspace) => (
                 <ToggleGroupItem
                   key={workspace.id}
                   value={workspace.id}
-                  className="h-11 gap-2 px-3"
+                  className="gap-1.5"
                 >
-                  <span
-                    className="size-2 rounded-full"
-                    style={{ backgroundColor: workspace.avatarColor }}
-                  />
+                  <Avatar size="xs" className="shrink-0">
+                    <AvatarFallback
+                      content={workspace.avatarContent}
+                      style={{
+                        backgroundColor: workspace.avatarColor,
+                        color: getContrastTextColor(workspace.avatarColor),
+                      }}
+                    >
+                      {workspace.avatarContent}
+                    </AvatarFallback>
+                  </Avatar>
                   <span className="max-w-36 truncate">{workspace.name}</span>
                   {workspace.hasCustomConfig && (
                     <Badge variant="secondary">CUSTOM</Badge>

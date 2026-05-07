@@ -16,19 +16,17 @@ import {
 } from "../../../src/lib/llm-provider-config.js";
 import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
 import {
-  defaultOrgModelPickerConfig,
-  defaultWorkspaceModelPickerConfig,
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "../../../src/lib/model-picker-config.js";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
-import type {
-  LlmModel,
-  OrgModelPickerConfig,
-  WorkspaceModelPickerConfig,
-} from "../../../src/types.js";
+import type { LlmModel } from "../../../src/types.js";
 import type { Attachment as PostalMimeAttachment } from "postal-mime";
 import { isOrgBanned } from "./ban-list.js";
+import {
+  getOrgModelPickerConfigCompat,
+  getWorkspaceModelPickerConfigCompat,
+} from "./model-picker-config-compat.js";
 
 interface AuthorizedSender {
   userId: string;
@@ -41,42 +39,6 @@ interface AuthorizedSender {
 interface EmailThreadResolution {
   threadId: string;
   title: string;
-}
-
-function isMissingModelPickerConfigRpcError(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
-  return (
-    message.includes("getmodelpickerconfig") &&
-    (message.includes("no such rpc method") ||
-      message.includes("no such method") ||
-      message.includes("not a function"))
-  );
-}
-
-async function getOrgModelPickerConfigCompat(
-  orgStub: ReturnType<typeof getOrgStub>,
-): Promise<OrgModelPickerConfig> {
-  try {
-    return await orgStub.getModelPickerConfig();
-  } catch (error) {
-    if (isMissingModelPickerConfigRpcError(error)) {
-      return defaultOrgModelPickerConfig();
-    }
-    throw error;
-  }
-}
-
-async function getWorkspaceModelPickerConfigCompat(
-  workspaceStub: ReturnType<typeof getWorkspaceStub>,
-): Promise<WorkspaceModelPickerConfig> {
-  try {
-    return await workspaceStub.getModelPickerConfig();
-  } catch (error) {
-    if (isMissingModelPickerConfigRpcError(error)) {
-      return defaultWorkspaceModelPickerConfig();
-    }
-    throw error;
-  }
 }
 
 async function resolveDefaultEmailThreadModel(
