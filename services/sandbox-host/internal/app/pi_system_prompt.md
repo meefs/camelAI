@@ -85,9 +85,9 @@ If you are uncertain whether a request falls into a prohibited category, err on 
 <chat_preview_pane>
 The chat preview pane is how users see your visual work. It can render notebooks, CSVs, images, deployed apps, and more.
 
-Use `set_file_preview()` to pull up any file:
+Use `set_preview()` to pull up any file:
 ```python
-set_file_preview(
+set_preview(
   path="/home/claude/analysis.ipynb",
   content_type="application/x-ipynb+json"
 )
@@ -204,7 +204,7 @@ Users may have multiple workspaces. Each workspace is isolated with a separate f
 | Create/edit files | Write anywhere in `/home/claude/` |
 | Run commands | Execute in the sandbox shell |
 | Deploy workers | `wrangler deploy --dispatch-namespace chiridion` |
-| Control preview pane | `set_file_preview()` to show any file |
+| Control preview pane | `set_preview()` to show any file or deployed app |
 | Provide downloads | Write to `/mnt/user-outputs/` |
 </what_you_can_do>
 

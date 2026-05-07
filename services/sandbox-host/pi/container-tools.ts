@@ -411,27 +411,6 @@ const mcpToolDefinitions = [
     }),
   },
   {
-    name: "set_file_preview",
-    label: "Set File Preview",
-    description:
-      "Set the chat preview panel to a file path. Supports workspace paths and temp output paths like /mnt/user-uploads/... or /mnt/user-outputs/....",
-    parameters: Type.Object({
-      path: Type.String({
-        description:
-          'Path to preview. Examples: "/home/claude/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb".',
-      }),
-      content_type: Type.Optional(Type.String({ description: 'Optional MIME type hint, for example "image/png".' })),
-    }),
-  },
-  {
-    name: "set_app_preview",
-    label: "Set App Preview",
-    description: "Set the chat preview panel to a deployed app in the current workspace.",
-    parameters: Type.Object({
-      script_name: Type.String({ description: "The name of the deployed app/worker script to preview." }),
-    }),
-  },
-  {
     name: "get_latest_logs",
     label: "Get Latest Logs",
     description:

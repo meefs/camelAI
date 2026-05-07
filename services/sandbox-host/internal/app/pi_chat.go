@@ -445,8 +445,6 @@ func hostPiToolArgs() []string {
 		"set_preview",
 		"list_apps",
 		"set_app_visibility",
-		"set_file_preview",
-		"set_app_preview",
 		"get_latest_logs",
 		"list_scheduled_prompts",
 		"create_scheduled_prompt",

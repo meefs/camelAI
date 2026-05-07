@@ -183,7 +183,7 @@ If it reports issues, fix the failing cells and re-execute. Do **not** use `--al
 After creating or updating a notebook, set the active chat preview to the notebook file:
 
 ```text
-set_file_preview(
+set_preview(
   path="/home/claude/analysis.ipynb",
   content_type="application/x-ipynb+json"
 )
