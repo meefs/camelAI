@@ -512,7 +512,9 @@ export default function OrganizationModelsPage() {
   const isSubmitting = fetcher.state !== "idle";
   const readOnly = data.scope === "ws" && data.useOrgDefaults;
   const capacityReached = data.config.capacity.used >= data.config.capacity.max;
-  const selectorVisible = data.workspaces.length > 1;
+  const workspaceSelectorVisible = data.workspaces.length > 1;
+  const workspaceControlsVisible =
+    workspaceSelectorVisible || data.scope === "ws";
 
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return;
@@ -549,35 +551,39 @@ export default function OrganizationModelsPage() {
         description="Choose which models appear in your team's picker."
       />
 
-      {selectorVisible && (
+      {workspaceControlsVisible && (
         <div className="space-y-4">
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            value={data.scope === "org" ? "org" : data.selectedWorkspaceId ?? ""}
-            onValueChange={navigateScope}
-            className="flex-wrap justify-start"
-          >
-            <ToggleGroupItem value="org" className="h-11 px-3">
-              <span className="leading-tight">Org default</span>
-            </ToggleGroupItem>
-            {data.workspaces.map((workspace) => (
-              <ToggleGroupItem
-                key={workspace.id}
-                value={workspace.id}
-                className="h-11 gap-2 px-3"
-              >
-                <span
-                  className="size-2 rounded-full"
-                  style={{ backgroundColor: workspace.avatarColor }}
-                />
-                <span className="max-w-36 truncate">{workspace.name}</span>
-                {workspace.hasCustomConfig && (
-                  <Badge variant="secondary">CUSTOM</Badge>
-                )}
+          {workspaceSelectorVisible && (
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              value={
+                data.scope === "org" ? "org" : data.selectedWorkspaceId ?? ""
+              }
+              onValueChange={navigateScope}
+              className="flex-wrap justify-start"
+            >
+              <ToggleGroupItem value="org" className="h-11 px-3">
+                <span className="leading-tight">Org default</span>
               </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+              {data.workspaces.map((workspace) => (
+                <ToggleGroupItem
+                  key={workspace.id}
+                  value={workspace.id}
+                  className="h-11 gap-2 px-3"
+                >
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ backgroundColor: workspace.avatarColor }}
+                  />
+                  <span className="max-w-36 truncate">{workspace.name}</span>
+                  {workspace.hasCustomConfig && (
+                    <Badge variant="secondary">CUSTOM</Badge>
+                  )}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          )}
 
           {data.scope === "ws" && (
             <label className="flex items-center gap-2 text-sm">
