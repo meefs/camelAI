@@ -7,8 +7,11 @@ import type {
   PaginationParams,
   ChatHarness,
   LlmProvider,
+  LlmModel,
+  OrgModelPickerConfig,
+  PreviewTarget,
+  WorkspaceModelPickerConfig,
 } from "@/types";
-import type { PreviewTarget } from "@/types";
 import {
   generateThreadTitleWithOpenAI,
 } from "./thread-title-generation.server";
@@ -18,7 +21,6 @@ import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from "../../workers/main/src/workspace-container";
-import type { LlmModel } from "@/types";
 import {
   isLlmModelAllowedForNewThread,
   getDefaultThreadProvider,
@@ -26,6 +28,8 @@ import {
 } from "./llm-provider-config";
 import { resolveModelPickerCatalog } from "./model-catalog";
 import {
+  defaultOrgModelPickerConfig,
+  defaultWorkspaceModelPickerConfig,
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "./model-picker-config";
@@ -84,6 +88,36 @@ export interface WorkspaceModelPickerState {
   defaultModel: LlmModel | null;
 }
 
+async function getOrgModelPickerConfigCompat(
+  orgStub: OrgDO,
+): Promise<OrgModelPickerConfig> {
+  try {
+    const maybeStub = orgStub as { getModelPickerConfig?: unknown };
+    if (typeof maybeStub.getModelPickerConfig !== "function") {
+      return defaultOrgModelPickerConfig();
+    }
+    return await orgStub.getModelPickerConfig();
+  } catch (error) {
+    console.warn("Failed to load org model picker config:", error);
+    return defaultOrgModelPickerConfig();
+  }
+}
+
+async function getWorkspaceModelPickerConfigCompat(
+  wsStub: WorkspaceDO,
+): Promise<WorkspaceModelPickerConfig> {
+  try {
+    const maybeStub = wsStub as { getModelPickerConfig?: unknown };
+    if (typeof maybeStub.getModelPickerConfig !== "function") {
+      return defaultWorkspaceModelPickerConfig();
+    }
+    return await wsStub.getModelPickerConfig();
+  } catch (error) {
+    console.warn("Failed to load workspace model picker config:", error);
+    return defaultWorkspaceModelPickerConfig();
+  }
+}
+
 export async function getWorkspaceModelPickerState(
   context: AppLoadContext,
   workspaceId: string,
@@ -105,8 +139,8 @@ export async function getWorkspaceModelPickerState(
   ] = await Promise.all([
     orgStub.getLlmProviderConfig(),
     orgStub.getExperimentalSettings(),
-    orgStub.getModelPickerConfig(),
-    wsStub.getModelPickerConfig(),
+    getOrgModelPickerConfigCompat(orgStub),
+    getWorkspaceModelPickerConfigCompat(wsStub),
   ]);
   const baseProvider =
     preferredProvider ??

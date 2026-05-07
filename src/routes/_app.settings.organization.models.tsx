@@ -84,6 +84,7 @@ type ActionTarget =
   | {
       scope: "ws";
       workspace: Workspace;
+      orgConfig: OrgModelPickerConfig;
       config: WorkspaceModelPickerConfig;
       save: (
         config: WorkspaceModelPickerConfig,
@@ -256,11 +257,16 @@ async function loadActionTarget(args: {
     workspaces,
   );
   const workspaceStub = getWorkspaceStub(authEnv, workspace.id);
+  const [orgConfig, workspaceConfig] = await Promise.all([
+    orgStub.getModelPickerConfig(),
+    workspaceStub.getModelPickerConfig(),
+  ]);
 
-    return {
+  return {
     scope,
     workspace,
-    config: await workspaceStub.getModelPickerConfig(),
+    orgConfig,
+    config: workspaceConfig,
     save: (
       config: WorkspaceModelPickerConfig,
       details: Record<string, unknown>,
@@ -311,15 +317,25 @@ export async function action({ request, context }: Route.ActionArgs) {
       return response({ error: "Invalid action for org scope" }, { status: 400 });
     }
     const useOrgDefaults = formData.get("useOrgDefaults") === "true";
+    const nextConfig =
+      !useOrgDefaults && target.config.use_org_defaults
+        ? {
+            use_org_defaults: false,
+            models: target.orgConfig.models.map((model) => ({ ...model })),
+            default_model: target.orgConfig.default_model,
+          }
+        : {
+            ...target.config,
+            use_org_defaults: useOrgDefaults,
+          };
     await target.save(
-      {
-        ...target.config,
-        use_org_defaults: useOrgDefaults,
-      },
+      nextConfig,
       {
         intent,
         workspace_id: target.workspace.id,
         use_org_defaults: useOrgDefaults,
+        seeded_from_org_defaults:
+          !useOrgDefaults && target.config.use_org_defaults,
       },
     );
     return response({
