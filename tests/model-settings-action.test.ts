@@ -6,6 +6,8 @@ const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
 const listOrgWorkspacesMock = vi.fn();
 const orgGetModelPickerConfigMock = vi.fn();
+const orgGetLlmProviderConfigMock = vi.fn();
+const orgGetExperimentalSettingsMock = vi.fn();
 const workspaceGetModelPickerConfigMock = vi.fn();
 const workspaceSetModelPickerConfigMock = vi.fn();
 
@@ -53,6 +55,8 @@ describe('organization model settings actions', () => {
         idFromName: (id: string) => id,
         get: () => ({
           getModelPickerConfig: orgGetModelPickerConfigMock,
+          getLlmProviderConfig: orgGetLlmProviderConfigMock,
+          getExperimentalSettings: orgGetExperimentalSettingsMock,
         }),
       },
       WORKSPACE: {
@@ -76,6 +80,10 @@ describe('organization model settings actions', () => {
         { id: 'gpt-5.4', added_at: 10 },
       ],
       default_model: 'sonnet',
+    });
+    orgGetLlmProviderConfigMock.mockResolvedValue(null);
+    orgGetExperimentalSettingsMock.mockResolvedValue({
+      claude_proxy_models: false,
     });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: true,
@@ -118,5 +126,57 @@ describe('organization model settings actions', () => {
         },
       },
     );
+  });
+
+  it('rejects adding a model that is incompatible with the org provider', async () => {
+    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: false,
+      models: [{ id: 'gpt-5.4', added_at: 10 }],
+      default_model: 'gpt-5.4',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'addModel',
+        model: 'kimi-k2.6',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Kimi K2.6 is not available for this provider',
+    });
+    expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-empty saves that leave no provider-compatible models', async () => {
+    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: false,
+      models: [
+        { id: 'sonnet', added_at: 20 },
+        { id: 'gpt-5.4', added_at: 10 },
+      ],
+      default_model: 'gpt-5.4',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'removeModel',
+        model: 'gpt-5.4',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        'Picker must include at least one model available for this provider, or be empty.',
+    });
+    expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
   });
 });

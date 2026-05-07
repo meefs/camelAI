@@ -41,7 +41,11 @@ import {
   MODEL_PICKER_MAX_MODELS,
   resolveEffectivePickerConfig,
 } from "@/lib/model-picker-config";
-import { isLlmModel } from "@/lib/llm-provider-config";
+import {
+  getDefaultThreadProvider,
+  getVisibleLlmModelOptions,
+  isLlmModel,
+} from "@/lib/llm-provider-config";
 import { cn } from "@/lib/utils";
 import type {
   LlmModel,
@@ -76,6 +80,7 @@ type ActionTarget =
   | {
       scope: "org";
       config: OrgModelPickerConfig;
+      visibleModelIds: Set<LlmModel>;
       save: (
         config: OrgModelPickerConfig,
         details: Record<string, unknown>,
@@ -86,6 +91,7 @@ type ActionTarget =
       workspace: Workspace;
       orgConfig: OrgModelPickerConfig;
       config: WorkspaceModelPickerConfig;
+      visibleModelIds: Set<LlmModel>;
       save: (
         config: WorkspaceModelPickerConfig,
         details: Record<string, unknown>,
@@ -235,11 +241,22 @@ async function loadActionTarget(args: {
   const url = new URL(args.request.url);
   const scope = getScope(url);
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const [llmProviderConfig, experimentalSettings] = await Promise.all([
+    orgStub.getLlmProviderConfig().catch(() => null),
+    orgStub
+      .getExperimentalSettings()
+      .catch(() => ({ claude_proxy_models: false })),
+  ]);
+  const visibleModelIds = getVisibleModelIdsForSettings(
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  );
 
   if (scope === "org") {
-  return {
+    return {
       scope,
       config: await orgStub.getModelPickerConfig(),
+      visibleModelIds,
       save: async (
         config: OrgModelPickerConfig,
         details: Record<string, unknown>,
@@ -267,6 +284,7 @@ async function loadActionTarget(args: {
     workspace,
     orgConfig,
     config: workspaceConfig,
+    visibleModelIds,
     save: (
       config: WorkspaceModelPickerConfig,
       details: Record<string, unknown>,
@@ -307,6 +325,60 @@ function addModel(
   return [{ id: model, added_at: Date.now() }, ...models];
 }
 
+function getVisibleModelIdsForSettings(
+  llmProvider: string | null | undefined,
+  experimentalSettings: import("@/types").OrganizationExperimentalSettings,
+): Set<LlmModel> {
+  const provider = getDefaultThreadProvider(llmProvider, experimentalSettings);
+  return new Set(
+    getVisibleLlmModelOptions(provider, experimentalSettings, null, {
+      allowModelFamilySwitch: true,
+      orgProvider: llmProvider,
+    }).map((option) => option.value),
+  );
+}
+
+function normalizeConfigForVisibleModels<
+  T extends OrgModelPickerConfig | WorkspaceModelPickerConfig,
+>(config: T, visibleModelIds: ReadonlySet<LlmModel>): T {
+  const models = config.models
+    .filter((model) => visibleModelIds.has(model.id))
+    .map((model) => ({ ...model }));
+  const default_model =
+    config.default_model && visibleModelIds.has(config.default_model)
+      ? config.default_model
+      : (models[0]?.id ?? null);
+  return { ...config, models, default_model };
+}
+
+function hasVisibleModel(
+  config: Pick<OrgModelPickerConfig, "models">,
+  visibleModelIds: ReadonlySet<LlmModel>,
+): boolean {
+  return config.models.some((model) => visibleModelIds.has(model.id));
+}
+
+function validateModelForProvider(
+  model: LlmModel,
+  visibleModelIds: ReadonlySet<LlmModel>,
+): ActionResponse | null {
+  if (visibleModelIds.has(model)) return null;
+  return { error: `${modelLabel(model)} is not available for this provider` };
+}
+
+function validateConfigForProvider(
+  config: Pick<OrgModelPickerConfig, "models">,
+  visibleModelIds: ReadonlySet<LlmModel>,
+): ActionResponse | null {
+  if (config.models.length === 0 || hasVisibleModel(config, visibleModelIds)) {
+    return null;
+  }
+  return {
+    error:
+      "Picker must include at least one model available for this provider, or be empty.",
+  };
+}
+
 export async function action({ request, context }: Route.ActionArgs) {
   const target = await loadActionTarget({ request, context });
   const formData = await request.formData();
@@ -319,11 +391,14 @@ export async function action({ request, context }: Route.ActionArgs) {
     const useOrgDefaults = formData.get("useOrgDefaults") === "true";
     const nextConfig =
       !useOrgDefaults && target.config.use_org_defaults
-        ? {
-            use_org_defaults: false,
-            models: target.orgConfig.models.map((model) => ({ ...model })),
-            default_model: target.orgConfig.default_model,
-          }
+        ? normalizeConfigForVisibleModels(
+            {
+              use_org_defaults: false,
+              models: target.orgConfig.models,
+              default_model: target.orgConfig.default_model,
+            },
+            target.visibleModelIds,
+          )
         : {
             ...target.config,
             use_org_defaults: useOrgDefaults,
@@ -361,6 +436,13 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!model) {
       return response({ error: "A valid model is required" }, { status: 400 });
     }
+    const providerError = validateModelForProvider(
+      model,
+      target.visibleModelIds,
+    );
+    if (providerError) {
+      return response(providerError, { status: 400 });
+    }
     if (
       target.config.models.length >= MODEL_PICKER_MAX_MODELS &&
       !target.config.models.some((item) => item.id === model)
@@ -386,16 +468,24 @@ export async function action({ request, context }: Route.ActionArgs) {
       return response({ error: "A valid model is required" }, { status: 400 });
     }
     const models = target.config.models.filter((item) => item.id !== model);
+    const nextConfig = {
+      ...target.config,
+      models,
+      default_model:
+        target.config.default_model === model
+          ? null
+          : target.config.default_model,
+    };
+    const providerError = validateConfigForProvider(
+      nextConfig,
+      target.visibleModelIds,
+    );
+    if (providerError) {
+      return response(providerError, { status: 400 });
+    }
     await saveActionTarget(
       target,
-      {
-        ...target.config,
-        models,
-        default_model:
-          target.config.default_model === model
-            ? null
-            : target.config.default_model,
-      },
+      nextConfig,
       { intent, model },
     );
     return response({
@@ -414,6 +504,15 @@ export async function action({ request, context }: Route.ActionArgs) {
       !target.config.models.some((item) => item.id === nextDefault)
     ) {
       return response({ error: "Default model must be in the picker" }, { status: 400 });
+    }
+    if (nextDefault) {
+      const providerError = validateModelForProvider(
+        nextDefault,
+        target.visibleModelIds,
+      );
+      if (providerError) {
+        return response(providerError, { status: 400 });
+      }
     }
     await saveActionTarget(
       target,

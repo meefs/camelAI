@@ -204,6 +204,42 @@ describe('chat loader workspace mismatch handling', () => {
     });
   });
 
+  it('falls back to legacy visible models when picker state fails to load', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+      provider: 'claude',
+      model: 'opus',
+    });
+    getWorkspaceModelPickerStateMock.mockRejectedValue(
+      new Error('transient picker failure'),
+    );
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.threadModel).toBe('opus');
+    if (!Array.isArray(result.allowedThreadModels)) {
+      throw new Error('Expected fallback allowedThreadModels to be an array');
+    }
+    expect(result.allowedThreadModels).toContain('opus');
+    expect(result.allowedThreadModels).toContain('sonnet');
+    expect(result.allowedThreadModels.length).toBeGreaterThan(0);
+    consoleErrorSpy.mockRestore();
+  });
+
   it('keeps the saved thread model for new-thread navigations', async () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },

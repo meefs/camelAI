@@ -20,6 +20,8 @@ import {
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
+  getDefaultThreadProvider,
+  getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
@@ -355,6 +357,21 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       console.error("Failed to load model picker state:", error);
       return null;
     });
+  const fallbackThreadProvider =
+    thread?.provider ??
+    getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
+  const fallbackThreadModel =
+    thread?.model ??
+    getDefaultLlmModel(fallbackThreadProvider, llmProviderConfig?.provider);
+  const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
+    fallbackThreadProvider,
+    experimentalSettings,
+    fallbackThreadModel,
+    {
+      allowModelFamilySwitch: true,
+      orgProvider: llmProviderConfig?.provider,
+    },
+  ).map((option) => option.value);
 
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
@@ -377,14 +394,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadModel:
       thread?.model ??
       pickerState?.defaultModel ??
-      getDefaultLlmModel(thread?.provider ?? "claude", llmProviderConfig?.provider),
-    threadProvider: thread?.provider ?? pickerState?.provider ?? "claude",
+      fallbackThreadModel,
+    threadProvider: thread?.provider ?? pickerState?.provider ?? fallbackThreadProvider,
     llmProvider:
       pickerState?.llmProvider ??
       ((llmProviderConfig?.provider ?? null) as
         | import("@/types").LlmProvider
         | null),
-    allowedThreadModels: pickerState?.allowedThreadModels ?? [],
+    allowedThreadModels:
+      pickerState?.allowedThreadModels ?? fallbackAllowedThreadModels,
     effectivePickerDefaultModel:
       pickerState?.effectivePickerDefaultModel ?? null,
     hasEffectivePickerDefault:
