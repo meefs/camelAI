@@ -59,4 +59,38 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(state?.allowedThreadModels).toContain('sonnet');
     expect(state?.allowedThreadModels).toContain('gpt-5.4');
   });
+
+  it('rethrows picker config errors other than missing RPC rollout errors', async () => {
+    const storageError = new Error('storage temporarily unavailable');
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockRejectedValue(storageError),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    await expect(getWorkspaceModelPickerState({}, 'ws_123')).rejects.toThrow(
+      storageError,
+    );
+  });
 });

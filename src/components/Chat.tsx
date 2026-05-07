@@ -135,6 +135,7 @@ import { uploadWorkspaceFile } from "@/lib/workspace-upload.client";
 import { isManualCompactCommand } from "@/lib/slash-commands";
 import { getFirstThreadPreviewUserMessage } from "@/lib/thread-preview";
 import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
+import { isNoModelsBlockingNewThread } from "@/lib/chat-model-availability";
 import {
   getDefaultLlmModel,
   getProviderForModel,
@@ -1805,6 +1806,10 @@ export default function Chat({
     availableThreadModels.length === 0
       ? "No models are available. Ask an admin to add a model in Settings > Models."
       : null;
+  const noModelsBlocksNewThread = isNoModelsBlockingNewThread(
+    threadId,
+    noModelsMessage,
+  );
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -5493,7 +5498,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       !shouldShowChat ||
       !resolvedWorkspaceId ||
       !threadId ||
-      noModelsMessage
+      noModelsBlocksNewThread
     ) {
       return;
     }
@@ -5964,7 +5969,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                     )}
                   </div>
                 )}
-                {noModelsMessage && (
+                {noModelsBlocksNewThread && noModelsMessage && (
                   <p className="mb-3 text-sm text-muted-foreground">
                     {noModelsMessage}
                   </p>
@@ -5982,7 +5987,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
                   onAttachmentRemove={handleAttachmentRemove}
-                  disabled={Boolean(noModelsMessage)}
+                  disabled={noModelsBlocksNewThread}
                   contextUsedPercent={contextUsedPercent}
                   onCompact={handleCompactFromIndicator}
                   model={selectedThreadModel}

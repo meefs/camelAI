@@ -98,7 +98,9 @@ async function getOrgModelPickerConfigCompat(
     }
     return await orgStub.getModelPickerConfig();
   } catch (error) {
-    console.warn("Failed to load org model picker config:", error);
+    if (!isMissingModelPickerConfigRpcError(error)) {
+      throw error;
+    }
     return defaultOrgModelPickerConfig();
   }
 }
@@ -113,9 +115,24 @@ async function getWorkspaceModelPickerConfigCompat(
     }
     return await wsStub.getModelPickerConfig();
   } catch (error) {
-    console.warn("Failed to load workspace model picker config:", error);
+    if (!isMissingModelPickerConfigRpcError(error)) {
+      throw error;
+    }
     return defaultWorkspaceModelPickerConfig();
   }
+}
+
+function isMissingModelPickerConfigRpcError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : String(error).toLowerCase();
+  return (
+    message.includes("getmodelpickerconfig") &&
+    (message.includes("no such rpc method") ||
+      message.includes("no such method") ||
+      message.includes("not a function"))
+  );
 }
 
 export async function getWorkspaceModelPickerState(
