@@ -16,6 +16,25 @@ type ModelPricing struct {
 // When adding a model here, also add it to the picker catalog at
 // src/lib/model-catalog.ts. See the checklist there.
 var modelPricingTable = map[string]ModelPricing{
+	// Claude 4.7
+	"claude-opus-4-7": {
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
+	},
+	"anthropic/claude-opus-4.7": {
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
+	},
+	"anthropic/claude-opus-4-7": {
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
+	},
 	// Claude 4.6
 	"claude-opus-4-6": {
 		InputPerToken:         0.000005,
@@ -23,7 +42,25 @@ var modelPricingTable = map[string]ModelPricing{
 		CacheCreationPerToken: 0.00000625,
 		CacheReadPerToken:     0.0000005,
 	},
+	"anthropic/claude-opus-4.6": {
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
+	},
+	"anthropic/claude-opus-4-6": {
+		InputPerToken:         0.000005,
+		OutputPerToken:        0.000025,
+		CacheCreationPerToken: 0.00000625,
+		CacheReadPerToken:     0.0000005,
+	},
 	"claude-sonnet-4-6": {
+		InputPerToken:         0.000003,
+		OutputPerToken:        0.000015,
+		CacheCreationPerToken: 0.00000375,
+		CacheReadPerToken:     0.0000003,
+	},
+	"anthropic/claude-sonnet-4.6": {
 		InputPerToken:         0.000003,
 		OutputPerToken:        0.000015,
 		CacheCreationPerToken: 0.00000375,
@@ -80,7 +117,12 @@ var modelPricingTable = map[string]ModelPricing{
 		CacheCreationPerToken: 0.00000125,
 		CacheReadPerToken:     0.0000001,
 	},
-	// GPT-5.4
+	// GPT-5.5/5.4
+	"gpt-5.5": {
+		InputPerToken:     0.000005,
+		OutputPerToken:    0.00003,
+		CacheReadPerToken: 0.0000005,
+	},
 	"gpt-5.4": {
 		InputPerToken:     0.0000025,
 		OutputPerToken:    0.000015,
@@ -114,11 +156,51 @@ var modelPricingTable = map[string]ModelPricing{
 		OutputPerToken: 0.0000025,
 	},
 	// Gemini 3 Flash Preview
+	"google/gemini-3-flash-preview": {
+		InputPerToken:         0.0000005,
+		OutputPerToken:        0.000003,
+		CacheCreationPerToken: 0.00000008333333333333334,
+		CacheReadPerToken:     0.00000005,
+	},
 	"gemini-3-flash-preview": {
 		InputPerToken:         0.0000005,
 		OutputPerToken:        0.000003,
-		CacheCreationPerToken: 0.0000005,
+		CacheCreationPerToken: 0.00000008333333333333334,
 		CacheReadPerToken:     0.00000005,
+	},
+	// Gemini 3.1 Pro Preview
+	"google/gemini-3.1-pro-preview": {
+		InputPerToken:         0.000002,
+		OutputPerToken:        0.000012,
+		CacheCreationPerToken: 0.000000375,
+		CacheReadPerToken:     0.0000002,
+	},
+	"gemini-3.1-pro-preview": {
+		InputPerToken:         0.000002,
+		OutputPerToken:        0.000012,
+		CacheCreationPerToken: 0.000000375,
+		CacheReadPerToken:     0.0000002,
+	},
+	// DeepSeek V4
+	"deepseek/deepseek-v4-pro": {
+		InputPerToken:     0.000000435,
+		OutputPerToken:    0.00000087,
+		CacheReadPerToken: 0.000000003625,
+	},
+	"deepseek-v4-pro": {
+		InputPerToken:     0.000000435,
+		OutputPerToken:    0.00000087,
+		CacheReadPerToken: 0.000000003625,
+	},
+	"deepseek/deepseek-v4-flash": {
+		InputPerToken:     0.00000014,
+		OutputPerToken:    0.00000028,
+		CacheReadPerToken: 0.0000000028,
+	},
+	"deepseek-v4-flash": {
+		InputPerToken:     0.00000014,
+		OutputPerToken:    0.00000028,
+		CacheReadPerToken: 0.0000000028,
 	},
 }
 
@@ -135,18 +217,32 @@ func lookupPricing(model string) ModelPricing {
 		}
 	}
 	switch {
+	case strings.HasPrefix(normalized, "gpt-5.5"):
+		return modelPricingTable["gpt-5.5"]
 	case strings.HasPrefix(normalized, "gpt-5.4-mini"):
 		return modelPricingTable["gpt-5.4-mini"]
 	case strings.HasPrefix(normalized, "gpt-5.4"):
 		return modelPricingTable["gpt-5.4"]
+	case strings.Contains(normalized, "claude-opus-4.7") || strings.Contains(normalized, "claude-opus-4-7"):
+		return modelPricingTable["claude-opus-4-7"]
+	case strings.Contains(normalized, "claude-opus-4.6") || strings.Contains(normalized, "claude-opus-4-6"):
+		return modelPricingTable["claude-opus-4-6"]
+	case strings.Contains(normalized, "claude-sonnet-4.6") || strings.Contains(normalized, "claude-sonnet-4-6"):
+		return modelPricingTable["claude-sonnet-4-6"]
 	case strings.Contains(normalized, "kimi-k2.6") || strings.Contains(normalized, "kimi-latest"):
 		return modelPricingTable["~moonshotai/kimi-latest"]
 	case strings.Contains(normalized, "grok-4.3"):
 		return modelPricingTable["x-ai/grok-4.3"]
+	case strings.Contains(normalized, "deepseek-v4-pro"):
+		return modelPricingTable["deepseek/deepseek-v4-pro"]
+	case strings.Contains(normalized, "deepseek-v4-flash"):
+		return modelPricingTable["deepseek/deepseek-v4-flash"]
 	case strings.Contains(normalized, "claude-haiku-4.5"):
 		return modelPricingTable["anthropic/claude-haiku-4.5"]
-	case strings.Contains(normalized, "gemini-3-flash"):
-		return modelPricingTable["gemini-3-flash-preview"]
+	case strings.Contains(normalized, "gemini-3.1-pro-preview"):
+		return modelPricingTable["google/gemini-3.1-pro-preview"]
+	case strings.Contains(normalized, "gemini-3-flash-preview"):
+		return modelPricingTable["google/gemini-3-flash-preview"]
 	}
 	// Fallback: Sonnet-tier pricing
 	return modelPricingTable["claude-sonnet-4-5-20250929"]

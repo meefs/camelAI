@@ -1,10 +1,16 @@
 import type {
   LlmModel,
+  LlmProvider,
   ModelPickerModelConfig,
   OrgModelPickerConfig,
   WorkspaceModelPickerConfig,
 } from "../types";
-import { isLlmModel } from "./llm-provider-config";
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_LLM_MODEL,
+  DEFAULT_OPENROUTER_MODEL,
+  isLlmModel,
+} from "./llm-provider-config";
 
 export const MODEL_PICKER_MAX_MODELS = 10;
 
@@ -16,15 +22,59 @@ export interface ModelIdEntry {
   id: LlmModel;
 }
 
-const DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
-  "opus",
+const HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
+  "opus-4.7",
   "sonnet",
-  "haiku",
-  "gpt-5.4",
+  "gpt-5.5",
   "gpt-5.4-mini",
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
   "kimi-k2.6",
   "grok-4.3",
 ];
+
+const OPENAI_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+];
+
+const CLAUDE_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
+  "opus-4.7",
+  "opus",
+  "sonnet",
+  "haiku",
+];
+
+function defaultModelOrderForProvider(
+  orgProvider?: LlmProvider | string | null,
+): readonly LlmModel[] {
+  switch (orgProvider) {
+    case "openai":
+      return OPENAI_DEFAULT_MODEL_ORDER;
+    case "anthropic":
+    case "bedrock":
+      return CLAUDE_DEFAULT_MODEL_ORDER;
+    case "openrouter":
+    default:
+      return HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER;
+  }
+}
+
+function defaultModelForProvider(
+  orgProvider: LlmProvider | string | null | undefined,
+  models: readonly LlmModel[],
+): LlmModel | null {
+  let preferred: LlmModel = DEFAULT_LLM_MODEL;
+  if (orgProvider === "openai") {
+    preferred = DEFAULT_CODEX_MODEL;
+  } else if (orgProvider === "openrouter") {
+    preferred = DEFAULT_OPENROUTER_MODEL;
+  }
+  return models.includes(preferred) ? preferred : (models[0] ?? null);
+}
 
 function parseMaybeJson(raw: unknown): unknown {
   if (typeof raw !== "string") return raw;
@@ -67,11 +117,14 @@ function normalizeDefaultModel(
   return models.some((model) => model.id === raw) ? raw : null;
 }
 
-export function defaultOrgModelPickerConfig(): OrgModelPickerConfig {
+export function defaultOrgModelPickerConfig(
+  orgProvider?: LlmProvider | string | null,
+): OrgModelPickerConfig {
   const now = Date.now();
+  const defaultOrder = defaultModelOrderForProvider(orgProvider);
   return {
-    default_model: "sonnet",
-    models: DEFAULT_MODEL_ORDER.map((id, index) => ({
+    default_model: defaultModelForProvider(orgProvider, defaultOrder),
+    models: defaultOrder.map((id, index) => ({
       id,
       added_at: now - index,
     })),
@@ -88,15 +141,16 @@ export function defaultWorkspaceModelPickerConfig(): WorkspaceModelPickerConfig 
 
 export function parseOrgModelPickerConfig(
   raw: unknown,
+  orgProvider?: LlmProvider | string | null,
 ): OrgModelPickerConfig {
   const parsed = parseMaybeJson(raw);
   if (!parsed || typeof parsed !== "object") {
-    return defaultOrgModelPickerConfig();
+    return defaultOrgModelPickerConfig(orgProvider);
   }
 
   const record = parsed as Record<string, unknown>;
   if (!Array.isArray(record.models)) {
-    return defaultOrgModelPickerConfig();
+    return defaultOrgModelPickerConfig(orgProvider);
   }
 
   const models = normalizeModelRows(record.models);
@@ -164,4 +218,3 @@ export function resolveDefaultModelForChat(args: {
 
   return args.visibleCatalog[0]?.id ?? null;
 }
-

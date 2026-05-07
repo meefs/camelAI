@@ -11,8 +11,10 @@ import {
 const root = process.cwd();
 
 describe('model logo registry', () => {
-  it('registers Claude, Grok, and Kimi with expected variants', () => {
+  it('registers model provider logos with expected variants', () => {
     expect(logoRegistry.claude).toBe('single');
+    expect(logoRegistry.deepseek).toBe('single');
+    expect(logoRegistry.gemini).toBe('single');
     expect(logoRegistry.grok).toBe('themed');
     expect(logoRegistry.kimi).toBe('single');
   });
@@ -45,5 +47,19 @@ describe('model pricing coverage', () => {
       const pricingKey = LLM_MODEL_TO_PRICING_KEY[model];
       expect(goSource).toContain(`"${pricingKey}"`);
     }
+  });
+
+  it('registers new Pi models with the expected harness APIs', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'services/sandbox-host/pi/container-tools.ts'),
+      'utf8',
+    );
+
+    expect(source).toMatch(
+      /id: "openai\/gpt-5\.5"[\s\S]*?api: "openai-responses"[\s\S]*?contextWindow: 272000/,
+    );
+    expect(source).toMatch(
+      /id: "anthropic\/claude-opus-4\.7"[\s\S]*?api: "anthropic-messages"/,
+    );
   });
 });

@@ -57,7 +57,8 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       defaultModel: 'sonnet',
     });
     expect(state?.allowedThreadModels).toContain('sonnet');
-    expect(state?.allowedThreadModels).toContain('gpt-5.4');
+    expect(state?.allowedThreadModels).toContain('gpt-5.5');
+    expect(state?.allowedThreadModels).toContain('gpt-5.4-mini');
   });
 
   it('rethrows picker config errors other than missing RPC rollout errors', async () => {

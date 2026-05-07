@@ -179,6 +179,52 @@ func TestRewriteClaudeRequestBodyForOpenRouter(t *testing.T) {
 	if snapshotParsed["model"] != "anthropic/claude-haiku-4.5" {
 		t.Fatalf("unexpected snapshot model rewrite: %v", snapshotParsed["model"])
 	}
+
+	opus46 := []byte(`{"model":"opus"}`)
+	var opus46Parsed map[string]any
+	if err := json.Unmarshal(rewriteClaudeRequestBodyForOpenRouter(opus46), &opus46Parsed); err != nil {
+		t.Fatalf("rewritten opus body is not json: %v", err)
+	}
+	if opus46Parsed["model"] != "anthropic/claude-opus-4.6" {
+		t.Fatalf("unexpected opus model rewrite: %v", opus46Parsed["model"])
+	}
+
+	opus47 := []byte(`{"model":"opus-4.7"}`)
+	var opus47Parsed map[string]any
+	if err := json.Unmarshal(rewriteClaudeRequestBodyForOpenRouter(opus47), &opus47Parsed); err != nil {
+		t.Fatalf("rewritten opus 4.7 body is not json: %v", err)
+	}
+	if opus47Parsed["model"] != "anthropic/claude-opus-4.7" {
+		t.Fatalf("unexpected opus 4.7 model rewrite: %v", opus47Parsed["model"])
+	}
+}
+
+func TestMapToBedrockModelSupportsCurrentOpusModels(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{
+			model: "claude-opus-4-7",
+			want:  "global.anthropic.claude-opus-4-7",
+		},
+		{
+			model: "anthropic/claude-opus-4-7",
+			want:  "global.anthropic.claude-opus-4-7",
+		},
+		{
+			model: "claude-opus-4-6",
+			want:  "global.anthropic.claude-opus-4-6-v1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := mapToBedrockModel(tt.model); got != tt.want {
+				t.Fatalf("mapToBedrockModel(%q) = %q, want %q", tt.model, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestNormalizeWorkerBaseURL(t *testing.T) {
@@ -490,8 +536,26 @@ func TestResolveVirtualAIModelUsesGeminiFlashForAuto(t *testing.T) {
 	if got := resolveVirtualAIModel("auto_search"); got != "dynamic/auto_search" {
 		t.Fatalf("resolveVirtualAIModel(auto_search) = %q", got)
 	}
+	if got := resolveVirtualAIModel("gpt-5.5"); got != "openai/gpt-5.5" {
+		t.Fatalf("resolveVirtualAIModel(gpt-5.5 alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("opus-4.7"); got != "anthropic/claude-opus-4.7" {
+		t.Fatalf("resolveVirtualAIModel(opus 4.7 alias) = %q", got)
+	}
 	if got := resolveVirtualAIModel("google/gemini-3-flash-preview"); got != "google/gemini-3-flash-preview" {
 		t.Fatalf("resolveVirtualAIModel(gemini) = %q", got)
+	}
+	if got := resolveVirtualAIModel("gemini-3-flash-preview"); got != "google/gemini-3-flash-preview" {
+		t.Fatalf("resolveVirtualAIModel(gemini alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("gemini-3.1-pro-preview"); got != "google/gemini-3.1-pro-preview" {
+		t.Fatalf("resolveVirtualAIModel(gemini pro alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("deepseek-v4-pro"); got != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("resolveVirtualAIModel(deepseek pro alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("deepseek-v4-flash"); got != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("resolveVirtualAIModel(deepseek flash alias) = %q", got)
 	}
 }
 
@@ -729,6 +793,63 @@ func TestForwardOpenAIToAIGatewayPreservesGrokModel(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAIToAIGatewayPreservesGeminiAndDeepSeekModels(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+	}{
+		{name: "gemini flash", model: "google/gemini-3-flash-preview"},
+		{name: "gemini pro", model: "google/gemini-3.1-pro-preview"},
+		{name: "deepseek pro", model: "deepseek/deepseek-v4-pro"},
+		{name: "deepseek flash", model: "deepseek/deepseek-v4-flash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedPath string
+			var capturedModel string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				capturedPath = req.URL.Path
+				assertOpenRouterAttributionHeaders(t, req.Header)
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				capturedModel, _ = body["model"].(string)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"object":"response","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer upstream.Close()
+
+			server := &Server{
+				cfg: Config{
+					AIGatewayBaseURL: upstream.URL,
+					AIGatewayToken:   "test-token",
+				},
+				httpClient: &http.Client{},
+				containers: container.NewTestManager(),
+			}
+
+			body := `{"model":"` + tt.model + `","input":"hi"}`
+			req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rec := httptest.NewRecorder()
+			server.forwardOpenAIToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"}, testThreadContext(), testCaller(), "test-req-new-openrouter-gateway", time.Now())
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if capturedPath != "/openrouter/responses" {
+				t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
+			}
+			if capturedModel != tt.model {
+				t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, tt.model)
+			}
+		})
+	}
+}
+
 func TestForwardOpenRouterEndpointToAIGateway(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
@@ -943,6 +1064,70 @@ func TestForwardOpenAICompatibleDirectPreservesModelForOpenRouter(t *testing.T) 
 	}
 	if capturedModel != "kimi-k2.6" {
 		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "kimi-k2.6")
+	}
+}
+
+func TestForwardOpenAICompatibleDirectPreservesGeminiAndDeepSeekModelsForOpenRouter(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+	}{
+		{name: "gemini flash", model: "google/gemini-3-flash-preview"},
+		{name: "gemini pro", model: "google/gemini-3.1-pro-preview"},
+		{name: "deepseek pro", model: "deepseek/deepseek-v4-pro"},
+		{name: "deepseek flash", model: "deepseek/deepseek-v4-flash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedAuth string
+			var capturedModel string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				capturedAuth = req.Header.Get("Authorization")
+				assertOpenRouterAttributionHeaders(t, req.Header)
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				capturedModel, _ = body["model"].(string)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"object":"response","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer upstream.Close()
+
+			server := &Server{
+				httpClient: &http.Client{},
+				containers: container.NewTestManager(),
+			}
+
+			body := `{"model":"` + tt.model + `","input":"hi"}`
+			req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rec := httptest.NewRecorder()
+			server.forwardOpenAICompatibleDirect(
+				rec,
+				req,
+				ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"},
+				testThreadContext(),
+				testCaller(),
+				"test-req-openrouter-direct-new-model",
+				time.Now(),
+				upstream.URL+"/api",
+				"test-openrouter-key",
+				"openrouter",
+			)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if capturedAuth != "Bearer test-openrouter-key" {
+				t.Fatalf("unexpected auth header: got=%q", capturedAuth)
+			}
+			if capturedModel != tt.model {
+				t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, tt.model)
+			}
+		})
 	}
 }
 

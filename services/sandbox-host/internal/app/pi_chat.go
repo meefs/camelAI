@@ -547,6 +547,11 @@ func (b *hostPiBridge) resolvePiModel(sessionEnv map[string]string) string {
 	switch provider {
 	case "codex":
 		switch strings.TrimSpace(sessionEnv["CHIRIDION_CODEX_MODEL"]) {
+		case "gpt-5.5":
+			if b.openRouterUpstreamEnabled() {
+				return "camel/openai/gpt-5.5"
+			}
+			return "openai/gpt-5.5"
 		case "gpt-5.4-mini":
 			if b.openRouterUpstreamEnabled() {
 				return "camel/openai/gpt-5.4-mini"
@@ -561,6 +566,14 @@ func (b *hostPiBridge) resolvePiModel(sessionEnv map[string]string) string {
 			return "camel/~moonshotai/kimi-latest"
 		case "grok-4.3":
 			return "camel/x-ai/grok-4.3"
+		case "gemini-3-flash-preview":
+			return "camel/google/gemini-3-flash-preview"
+		case "gemini-3.1-pro-preview":
+			return "camel/google/gemini-3.1-pro-preview"
+		case "deepseek-v4-pro":
+			return "camel/deepseek/deepseek-v4-pro"
+		case "deepseek-v4-flash":
+			return "camel/deepseek/deepseek-v4-flash"
 		}
 	case "claude":
 		switch strings.TrimSpace(sessionEnv["CHIRIDION_CLAUDE_MODEL"]) {
@@ -569,6 +582,11 @@ func (b *hostPiBridge) resolvePiModel(sessionEnv map[string]string) string {
 				return "camel/" + openRouterClaudeModel("haiku")
 			}
 			return "anthropic/claude-haiku-4-5-20251001"
+		case "opus-4.7":
+			if b.openRouterUpstreamEnabled() {
+				return "camel/" + openRouterClaudeModel("opus-4.7")
+			}
+			return "anthropic/claude-opus-4-7"
 		case "opus":
 			if b.openRouterUpstreamEnabled() {
 				return "camel/" + openRouterClaudeModel("opus")
@@ -595,6 +613,11 @@ func (b *hostPiBridge) resolvePiModelCommand(msg map[string]any) (string, bool) 
 		return "", false
 	}
 	switch model {
+	case "gpt-5.5":
+		if b.openRouterUpstreamEnabled() {
+			return "camel/openai/gpt-5.5", true
+		}
+		return "openai/gpt-5.5", true
 	case "gpt-5.4-mini":
 		if b.openRouterUpstreamEnabled() {
 			return "camel/openai/gpt-5.4-mini", true
@@ -609,11 +632,24 @@ func (b *hostPiBridge) resolvePiModelCommand(msg map[string]any) (string, bool) 
 		return "camel/~moonshotai/kimi-latest", true
 	case "grok-4.3":
 		return "camel/x-ai/grok-4.3", true
+	case "gemini-3-flash-preview":
+		return "camel/google/gemini-3-flash-preview", true
+	case "gemini-3.1-pro-preview":
+		return "camel/google/gemini-3.1-pro-preview", true
+	case "deepseek-v4-pro":
+		return "camel/deepseek/deepseek-v4-pro", true
+	case "deepseek-v4-flash":
+		return "camel/deepseek/deepseek-v4-flash", true
 	case "haiku":
 		if b.openRouterUpstreamEnabled() {
 			return "camel/" + openRouterClaudeModel("haiku"), true
 		}
 		return "anthropic/claude-haiku-4-5-20251001", true
+	case "opus-4.7":
+		if b.openRouterUpstreamEnabled() {
+			return "camel/" + openRouterClaudeModel("opus-4.7"), true
+		}
+		return "anthropic/claude-opus-4-7", true
 	case "opus":
 		if b.openRouterUpstreamEnabled() {
 			return "camel/" + openRouterClaudeModel("opus"), true

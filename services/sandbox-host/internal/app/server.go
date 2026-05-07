@@ -1673,6 +1673,8 @@ func openRouterClaudeModel(model string) string {
 		return "anthropic/claude-haiku-4.5"
 	case "opus":
 		return "anthropic/claude-opus-4.6"
+	case "opus-4.7", "claude-opus-4-7", "claude-opus-4.7":
+		return "anthropic/claude-opus-4.7"
 	case "claude-sonnet-4-6":
 		return "anthropic/claude-sonnet-4.6"
 	case "claude-opus-4-6":
@@ -2154,6 +2156,18 @@ func resolveVirtualAIModel(model string) string {
 		return "google/gemini-3-flash-preview"
 	case "auto_search", "auto_image":
 		return "dynamic/" + trimmed
+	case "gpt-5.5":
+		return "openai/gpt-5.5"
+	case "opus-4.7":
+		return "anthropic/claude-opus-4.7"
+	case "gemini-3-flash-preview":
+		return "google/gemini-3-flash-preview"
+	case "gemini-3.1-pro-preview":
+		return "google/gemini-3.1-pro-preview"
+	case "deepseek-v4-pro":
+		return "deepseek/deepseek-v4-pro"
+	case "deepseek-v4-flash":
+		return "deepseek/deepseek-v4-flash"
 	default:
 		return trimmed
 	}
@@ -2376,6 +2390,7 @@ var bedrockModelMap = map[string]string{
 	"claude-opus-4-5-20251101":   "global.anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-sonnet-4-6":          "global.anthropic.claude-sonnet-4-6",
 	"claude-opus-4-6":            "global.anthropic.claude-opus-4-6-v1",
+	"claude-opus-4-7":            "global.anthropic.claude-opus-4-7",
 	"claude-sonnet-4-20250514":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
 	"claude-opus-4-20250514":     "global.anthropic.claude-opus-4-20250514-v1:0",
 	"claude-3-5-sonnet-20241022": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -2383,14 +2398,25 @@ var bedrockModelMap = map[string]string{
 }
 
 func mapToBedrockModel(model string) string {
-	if mapped, ok := bedrockModelMap[model]; ok {
+	normalized := strings.TrimSpace(model)
+	if mapped, ok := bedrockModelMap[normalized]; ok {
 		return mapped
 	}
-	m := strings.ToLower(model)
+	normalized = strings.TrimPrefix(normalized, "anthropic/")
+	if mapped, ok := bedrockModelMap[normalized]; ok {
+		return mapped
+	}
+	m := strings.ToLower(normalized)
+	if strings.Contains(m, "opus-4-7") || strings.Contains(m, "opus-4.7") {
+		return "global.anthropic.claude-opus-4-7"
+	}
+	if strings.Contains(m, "opus-4-6") || strings.Contains(m, "opus-4.6") {
+		return "global.anthropic.claude-opus-4-6-v1"
+	}
 	if strings.Contains(m, "sonnet-4-6") || strings.Contains(m, "sonnet-4.6") {
 		return "global.anthropic.claude-sonnet-4-6"
 	}
-	return "global.anthropic." + model + "-v1:0"
+	return "global.anthropic." + normalized + "-v1:0"
 }
 
 func ensureOpenAIStreamingUsage(rawBody []byte, normalizedPath string) []byte {

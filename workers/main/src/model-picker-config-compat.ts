@@ -3,12 +3,16 @@ import {
   defaultWorkspaceModelPickerConfig,
 } from "../../../src/lib/model-picker-config.js";
 import type {
+  LlmProvider,
   OrgModelPickerConfig,
   WorkspaceModelPickerConfig,
 } from "../../../src/types.js";
 
 interface OrgModelPickerConfigReader {
   getModelPickerConfig(): Promise<OrgModelPickerConfig> | OrgModelPickerConfig;
+  getLlmProviderConfig?:
+    | (() => Promise<{ provider: LlmProvider | string } | null>)
+    | (() => { provider: LlmProvider | string } | null);
 }
 
 interface WorkspaceModelPickerConfigReader {
@@ -35,11 +39,17 @@ function isMissingModelPickerConfigRpcError(error: unknown): boolean {
 export async function getOrgModelPickerConfigCompat(
   orgStub: OrgModelPickerConfigReader,
 ): Promise<OrgModelPickerConfig> {
+  let provider: LlmProvider | string | null | undefined;
+  try {
+    provider = (await orgStub.getLlmProviderConfig?.())?.provider;
+  } catch {
+    provider = null;
+  }
   try {
     return await orgStub.getModelPickerConfig();
   } catch (error) {
     if (isMissingModelPickerConfigRpcError(error)) {
-      return defaultOrgModelPickerConfig();
+      return defaultOrgModelPickerConfig(provider);
     }
     throw error;
   }

@@ -118,9 +118,29 @@ describe("resolveModel", () => {
     expect(resolveModel("kimi-latest")).toBe("~moonshotai/kimi-latest");
   });
 
+  it("maps GPT-5.5 and Opus 4.7 aliases to OpenRouter route models", () => {
+    expect(resolveModel("gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(resolveModel("opus-4.7")).toBe("anthropic/claude-opus-4.7");
+  });
+
   it("maps Grok aliases to the OpenRouter route model", () => {
     expect(resolveModel("grok-4.3")).toBe("x-ai/grok-4.3");
     expect(resolveModel("grok-latest")).toBe("x-ai/grok-4.3");
+  });
+
+  it("maps Gemini and DeepSeek aliases to OpenRouter route models", () => {
+    expect(resolveModel("gemini-3-flash-preview")).toBe(
+      "google/gemini-3-flash-preview",
+    );
+    expect(resolveModel("gemini-3.1-pro-preview")).toBe(
+      "google/gemini-3.1-pro-preview",
+    );
+    expect(resolveModel("deepseek-v4-pro")).toBe(
+      "deepseek/deepseek-v4-pro",
+    );
+    expect(resolveModel("deepseek-v4-flash")).toBe(
+      "deepseek/deepseek-v4-flash",
+    );
   });
 
   it("passes through non-auto models with dynamic/ prefix unchanged", () => {
