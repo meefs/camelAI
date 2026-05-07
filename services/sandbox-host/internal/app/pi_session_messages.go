@@ -205,7 +205,11 @@ func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessa
 		case "assistant":
 			content := piContentBlocks(messageMap["content"])
 			if len(content) == 0 {
-				continue
+				if errorText := piAssistantProviderErrorText(messageMap); errorText != "" {
+					content = []any{map[string]any{"type": "text", "text": errorText}}
+				} else {
+					continue
+				}
 			}
 			id := firstString(eventMap, "id")
 			if id == "" {

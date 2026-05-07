@@ -112,6 +112,8 @@ export interface Message {
   role: "user" | "assistant";
   content: string | ContentBlock[];
   created_at: number;
+  /** Client-generated delivery id used to recover sends across reconnects. */
+  clientMessageId?: string;
   isStreaming?: boolean;
   /** True if this user message was sent while assistant was streaming */
   sentDuringStreaming?: boolean;

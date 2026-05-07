@@ -33,6 +33,7 @@ import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import type {
   ChatHarness,
   Integration,
+  LlmProvider,
   LlmModel,
   Message,
   PreviewTarget,
@@ -283,7 +284,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         thread?.provider ??
         (threadContext.provider as ChatHarness | undefined) ??
         "claude",
-      llmProvider: null,
+      llmProvider: null as LlmProvider | null,
       allowedThreadModels: null,
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
@@ -310,7 +311,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadTitle: null,
       threadModel: getDefaultLlmModel("claude"),
       threadProvider: "claude" as const,
-      llmProvider: null,
+      llmProvider: null as LlmProvider | null,
       allowedThreadModels: [],
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
@@ -413,6 +414,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
       url.searchParams,
     ),
+    llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     initialChatError: getDevChatInitialError(url.searchParams),
     isNewThread,
     hostname,

@@ -192,6 +192,7 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 		if content == "" {
 			return nil
 		}
+		clientMessageID := strings.TrimSpace(stringValue(msg["clientMessageId"], ""))
 		active := b.isActive()
 		if b.server.IsDraining() && !active {
 			b.sendEvent(map[string]any{
@@ -224,6 +225,12 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 				b.endActiveTurn()
 			}
 			return err
+		}
+		if clientMessageID != "" {
+			b.sendEvent(map[string]any{
+				"type":            "message_accepted",
+				"clientMessageId": clientMessageID,
+			})
 		}
 		return nil
 	case "set_model":
@@ -262,6 +269,9 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 }
 
 func (b *hostPiBridge) warmContainerForToolCalls() {
+	if b == nil || b.ctx == nil || b.server == nil || b.server.containers == nil {
+		return
+	}
 	select {
 	case <-b.ctx.Done():
 		return
@@ -432,6 +442,26 @@ func hostPiToolArgs() []string {
 		"explore",
 		"Agent",
 		"agent",
+		"set_preview",
+		"list_apps",
+		"set_app_visibility",
+		"set_file_preview",
+		"set_app_preview",
+		"get_latest_logs",
+		"list_scheduled_prompts",
+		"create_scheduled_prompt",
+		"update_scheduled_prompt",
+		"delete_scheduled_prompt",
+		"run_scheduled_prompt_now",
+		"list_integrations",
+		"list_integration_types",
+		"create_integration",
+		"prompt_connection_setup",
+		"capture_bug_report",
+		"get_custom_domain",
+		"set_custom_domain",
+		"remove_custom_domain",
+		"retry_custom_domain_hostnames",
 		"WebSearch",
 		"web_search",
 		"WebFetch",
@@ -943,6 +973,19 @@ func (b *hostPiBridge) finishPiAgentEnd(finalText string, messages any) {
 	log.Printf("[SandboxHost] host Pi agent_end thread=%s finalBytes=%d", b.threadID, len(finalText))
 	if finalText == "" {
 		finalText = extractPiAssistantText(messages)
+	}
+	if finalText == "" {
+		finalText = extractPiAssistantProviderErrorText(messages)
+		if finalText != "" {
+			b.sendRuntimeEvent("item/completed", map[string]any{
+				"threadId": b.threadID,
+				"item": map[string]any{
+					"id":   fmt.Sprintf("pi_provider_error_%s", randomID()),
+					"type": "agentMessage",
+					"text": finalText,
+				},
+			})
+		}
 	}
 	params := map[string]any{"threadId": b.threadID}
 	if entryID, err := latestHostPiAssistantEntryID(b.server.cfg.HostPiSessionRoot, b.threadID); err != nil {
@@ -1860,6 +1903,28 @@ func extractPiAssistantText(value any) string {
 		}
 		if isPiAssistantMessage(v) {
 			return extractPiText(v)
+		}
+	}
+	return ""
+}
+
+func extractPiAssistantProviderErrorText(value any) string {
+	switch v := value.(type) {
+	case []any:
+		for i := len(v) - 1; i >= 0; i-- {
+			if text := extractPiAssistantProviderErrorText(v[i]); text != "" {
+				return text
+			}
+		}
+	case map[string]any:
+		if message, ok := v["message"].(map[string]any); ok {
+			if !isPiAssistantMessage(message) {
+				return ""
+			}
+			return piAssistantProviderErrorText(message)
+		}
+		if isPiAssistantMessage(v) {
+			return piAssistantProviderErrorText(v)
 		}
 	}
 	return ""

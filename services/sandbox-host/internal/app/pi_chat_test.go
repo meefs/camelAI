@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -118,6 +119,40 @@ func TestHostPiBridgeRejectsNewIdlePromptWhileDraining(t *testing.T) {
 	}
 	if event["source"] != "host_pi_drain" {
 		t.Fatalf("unexpected event: %#v", event)
+	}
+}
+
+type testWriteCloser struct {
+	bytes.Buffer
+}
+
+func (w *testWriteCloser) Close() error {
+	return nil
+}
+
+func TestHostPiBridgeAcknowledgesPromptAfterWrite(t *testing.T) {
+	stdin := &testWriteCloser{}
+	bridge := &hostPiBridge{
+		server:   &Server{},
+		threadID: "thread-1",
+		nextSeq:  1,
+		started:  true,
+		stdin:    stdin,
+	}
+
+	if err := bridge.handleClientMessage([]byte(`{"type":"message","content":"hello","clientMessageId":"client-1"}`)); err != nil {
+		t.Fatalf("handleClientMessage() returned error: %v", err)
+	}
+
+	event := hostPiLatestEventOfType(t, bridge, "message_accepted")
+	if event == nil {
+		t.Fatal("expected message_accepted event")
+	}
+	if got := event["clientMessageId"]; got != "client-1" {
+		t.Fatalf("clientMessageId = %#v, want client-1", got)
+	}
+	if !strings.Contains(stdin.String(), `"type":"prompt"`) {
+		t.Fatalf("expected prompt command to be written, got %q", stdin.String())
 	}
 }
 
@@ -456,6 +491,44 @@ func TestHostPiBridgeEndsTurnWhenAutoRetryFails(t *testing.T) {
 	}
 }
 
+func TestHostPiBridgeCompletesWithProviderErrorMessage(t *testing.T) {
+	bridge := &hostPiBridge{
+		server:   &Server{cfg: Config{HostPiSessionRoot: t.TempDir()}},
+		threadID: "thread-1",
+		nextSeq:  1,
+	}
+	bridge.beginActiveTurn()
+	bridge.handlePiEvent(map[string]any{
+		"type": "agent_end",
+		"messages": []any{
+			map[string]any{
+				"role":         "assistant",
+				"content":      []any{},
+				"stopReason":   "error",
+				"errorMessage": `403 {"error":{"message":"Key limit exceeded (total limit). Manage it using https://openrouter.ai/settings/keys","code":403}}`,
+			},
+		},
+	})
+
+	if bridge.isActive() {
+		t.Fatal("expected provider error agent_end to end the active Pi turn")
+	}
+	if !hostPiHasRuntimeMethod(t, bridge, "turn/completed") {
+		t.Fatal("expected provider error agent_end to complete the runtime turn")
+	}
+	result := hostPiLatestEventOfType(t, bridge, "result")
+	if result == nil {
+		t.Fatal("expected provider error agent_end to emit result")
+	}
+	want := "OpenRouter rejected the request: Key limit exceeded (total limit). Manage it using https://openrouter.ai/settings/keys"
+	if got := result["result"]; got != want {
+		t.Fatalf("result = %#v, want %q", got, want)
+	}
+	if !hostPiRuntimeAgentMessageContains(t, bridge, want) {
+		t.Fatal("expected provider error to be emitted as an agent message")
+	}
+}
+
 func TestHostPiSkillArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -487,6 +560,25 @@ func TestHostPiSkillArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func hostPiRuntimeAgentMessageContains(t *testing.T, bridge *hostPiBridge, text string) bool {
+	t.Helper()
+	for _, payload := range hostPiBufferedPayloads(t, bridge) {
+		if payload["type"] != "runtime_event" {
+			continue
+		}
+		event, _ := payload["event"].(map[string]any)
+		if event["method"] != "item/completed" {
+			continue
+		}
+		params, _ := event["params"].(map[string]any)
+		item, _ := params["item"].(map[string]any)
+		if item["type"] == "agentMessage" && item["text"] == text {
+			return true
+		}
+	}
+	return false
 }
 
 func hostPiBufferedPayloads(t *testing.T, bridge *hostPiBridge) []map[string]any {
@@ -549,6 +641,26 @@ func TestHostPiToolArgsIncludesExtensionTools(t *testing.T) {
 		"TodoWrite",
 		"Explore",
 		"Agent",
+		"set_preview",
+		"list_apps",
+		"set_app_visibility",
+		"set_file_preview",
+		"set_app_preview",
+		"get_latest_logs",
+		"list_scheduled_prompts",
+		"create_scheduled_prompt",
+		"update_scheduled_prompt",
+		"delete_scheduled_prompt",
+		"run_scheduled_prompt_now",
+		"list_integrations",
+		"list_integration_types",
+		"create_integration",
+		"prompt_connection_setup",
+		"capture_bug_report",
+		"get_custom_domain",
+		"set_custom_domain",
+		"remove_custom_domain",
+		"retry_custom_domain_hostnames",
 		"WebSearch",
 		"web_search",
 		"WebFetch",

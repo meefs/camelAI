@@ -31,6 +31,7 @@ const askUserQuestionToken = process.env.CHIRIDION_ASK_USER_QUESTION_TOKEN || ""
 const todoStateUrl = process.env.CHIRIDION_TODO_STATE_URL || "";
 const webSearchUrl = process.env.CHIRIDION_WEB_SEARCH_URL || "";
 const webFetchUrl = process.env.CHIRIDION_WEB_FETCH_URL || "";
+const mcpServerUrl = (process.env.MCP_SERVER_URL || "").replace(/\/+$/, "");
 const hostPiToken = process.env.CHIRIDION_HOST_PI_TOKEN || askUserQuestionToken;
 const threadId = process.env.THREAD_ID || "";
 const containerProxyBase = (process.env.CHIRIDION_CONTAINER_PROXY_BASE_URL || "").replace(/\/+$/, "");
@@ -389,6 +390,216 @@ const agentParameters = Type.Object({
   maxMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum runtime in minutes. Defaults to 5." })),
 });
 
+const emptyParameters = Type.Object({});
+
+const mcpToolDefinitions = [
+  {
+    name: "list_apps",
+    label: "List Apps",
+    description:
+      "List deployed apps/workers for the current workspace. Returns script names, URLs, visibility status, and creation info.",
+    parameters: emptyParameters,
+  },
+  {
+    name: "set_app_visibility",
+    label: "Set App Visibility",
+    description:
+      "Change the visibility of a deployed app in the current workspace. Public apps are accessible to anyone, private apps require authentication.",
+    parameters: Type.Object({
+      script_name: Type.String({ description: "The name of the app/worker script." }),
+      is_public: Type.Boolean({ description: "Set true for public access, false for private org-member access." }),
+    }),
+  },
+  {
+    name: "set_file_preview",
+    label: "Set File Preview",
+    description:
+      "Set the chat preview panel to a file path. Supports workspace paths and temp output paths like /mnt/user-uploads/... or /mnt/user-outputs/....",
+    parameters: Type.Object({
+      path: Type.String({
+        description:
+          'Path to preview. Examples: "/home/claude/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb".',
+      }),
+      content_type: Type.Optional(Type.String({ description: 'Optional MIME type hint, for example "image/png".' })),
+    }),
+  },
+  {
+    name: "set_app_preview",
+    label: "Set App Preview",
+    description: "Set the chat preview panel to a deployed app in the current workspace.",
+    parameters: Type.Object({
+      script_name: Type.String({ description: "The name of the deployed app/worker script to preview." }),
+    }),
+  },
+  {
+    name: "get_latest_logs",
+    label: "Get Latest Logs",
+    description:
+      "Get recent runtime logs for a deployed app in the current workspace. Returns console and exception events captured by the tail worker.",
+    parameters: Type.Object({
+      script_name: Type.String({ description: "The app/worker script name to fetch logs for." }),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500, description: "Maximum log entries. Defaults to 100." })),
+      since_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Only logs newer than this millisecond timestamp." })),
+    }),
+  },
+  {
+    name: "list_scheduled_prompts",
+    label: "List Scheduled Prompts",
+    description: "List scheduled prompts for the current workspace. Cron expressions use 5 fields in UTC.",
+    parameters: emptyParameters,
+  },
+  {
+    name: "create_scheduled_prompt",
+    label: "Create Scheduled Prompt",
+    description:
+      "Create a scheduled prompt in the current workspace. The cron expression is evaluated in UTC, and a dedicated thread is created automatically.",
+    parameters: Type.Object({
+      name: Type.String({ description: "Friendly name for the scheduled prompt." }),
+      prompt: Type.String({ description: "Prompt text to send when the schedule fires." }),
+      cron_expression: Type.String({ description: "5-field cron expression in UTC: minute hour day-of-month month day-of-week." }),
+      enabled: Type.Optional(Type.Boolean({ description: "Defaults to true. Set false to create a paused schedule." })),
+    }),
+  },
+  {
+    name: "update_scheduled_prompt",
+    label: "Update Scheduled Prompt",
+    description: "Update an existing scheduled prompt in the current workspace.",
+    parameters: Type.Object({
+      prompt_id: Type.String({ description: "ID of the scheduled prompt to update." }),
+      name: Type.Optional(Type.String({ description: "Optional new display name." })),
+      prompt: Type.Optional(Type.String({ description: "Optional new prompt text." })),
+      cron_expression: Type.Optional(Type.String({ description: "Optional new 5-field UTC cron expression." })),
+      enabled: Type.Optional(Type.Boolean({ description: "Optional enabled state." })),
+    }),
+  },
+  {
+    name: "delete_scheduled_prompt",
+    label: "Delete Scheduled Prompt",
+    description: "Delete a scheduled prompt from the current workspace.",
+    parameters: Type.Object({
+      prompt_id: Type.String({ description: "ID of the scheduled prompt to delete." }),
+    }),
+  },
+  {
+    name: "run_scheduled_prompt_now",
+    label: "Run Scheduled Prompt Now",
+    description: "Trigger a scheduled prompt immediately without waiting for its next cron time.",
+    parameters: Type.Object({
+      prompt_id: Type.String({ description: "ID of the scheduled prompt to run now." }),
+    }),
+  },
+  {
+    name: "list_integrations",
+    label: "List Integrations",
+    description: "List configured integrations (Stripe, Notion, GitHub, etc.) for the current workspace.",
+    parameters: Type.Object({
+      category: Type.Optional(Type.Union([
+        Type.Literal("databases"),
+        Type.Literal("saas"),
+        Type.Literal("ai_services"),
+        Type.Literal("cloud_providers"),
+        Type.Literal("communication"),
+      ])),
+    }),
+  },
+  {
+    name: "list_integration_types",
+    label: "List Integration Types",
+    description: "List all available integration types that can be configured, with their configuration schemas.",
+    parameters: Type.Object({
+      category: Type.Optional(Type.Union([
+        Type.Literal("databases"),
+        Type.Literal("saas"),
+        Type.Literal("ai_services"),
+        Type.Literal("cloud_providers"),
+        Type.Literal("communication"),
+      ])),
+    }),
+  },
+  {
+    name: "create_integration",
+    label: "Create Integration",
+    description:
+      "Create a new integration/connection for the current workspace. Use list_integration_types to see available types and required fields.",
+    parameters: Type.Object({
+      integration_type: Type.String({ description: 'The type of integration, for example "stripe", "notion", "postgres", or "other".' }),
+      name: Type.String({ description: "A friendly name for this connection." }),
+      config: Type.Optional(Type.Any({ description: "Configuration object; fields vary by integration type." })),
+      credentials: Type.Optional(Type.Any({ description: "Credential object; fields vary by integration type." })),
+    }),
+  },
+  {
+    name: "prompt_connection_setup",
+    label: "Prompt Connection Setup",
+    description:
+      "Prompt the user to set up a new integration/connection through a secure UI modal in chat and wait for completion.",
+    parameters: Type.Object({
+      integration_type: Type.String({ description: 'The integration type to set up. Use "other" for custom APIs.' }),
+      suggested_name: Type.Optional(Type.String({ description: "Suggested connection name to prefill." })),
+      message: Type.Optional(Type.String({ description: "Message explaining why this connection is needed." })),
+      display_name: Type.Optional(Type.String({ description: 'Display name for custom integrations when integration_type is "other".' })),
+      description: Type.Optional(Type.String({ description: "Description for custom integrations." })),
+      instructions: Type.Optional(Type.String({ description: "Setup instructions shown above the form. Supports markdown." })),
+      fields: Type.Optional(Type.Array(Type.Object({
+        name: Type.String({ description: "Field name for env var suffix." }),
+        label: Type.String({ description: "Display label shown in UI." }),
+        type: Type.Union([Type.Literal("password"), Type.Literal("text"), Type.Literal("url"), Type.Literal("number")]),
+        required: Type.Boolean({ description: "Whether the field is required." }),
+        placeholder: Type.Optional(Type.String()),
+        description: Type.Optional(Type.String()),
+      }), { maxItems: 10 })),
+    }),
+  },
+  {
+    name: "capture_bug_report",
+    label: "Capture Bug Report",
+    description:
+      "Capture a bug report from the currently deployed app preview, including screenshot, DOM snapshot, logs, network requests, and session recording.",
+    parameters: Type.Object({
+      message: Type.Optional(Type.String({ description: "Optional message explaining why you need to capture the bug report." })),
+    }),
+  },
+  {
+    name: "get_custom_domain",
+    label: "Get Custom Domain",
+    description:
+      "Get exact custom domains configured for this organization with required DNS records, per-app hostname/SSL status, and live DNS checks.",
+    parameters: emptyParameters,
+  },
+  {
+    name: "set_custom_domain",
+    label: "Set Custom Domain",
+    description: "Set one exact custom hostname for one deployed app. Admin only. Wildcards are not supported.",
+    parameters: Type.Object({
+      app_name: Type.String({ description: "The deployed app name." }),
+      hostname: Type.String({ description: 'The exact hostname, for example "example.com" or "app.example.com".' }),
+    }),
+  },
+  {
+    name: "remove_custom_domain",
+    label: "Remove Custom Domain",
+    description: "Remove the exact custom domain from one app. Admin only.",
+    parameters: Type.Object({
+      app_name: Type.String({ description: "The deployed app name." }),
+    }),
+  },
+  {
+    name: "retry_custom_domain_hostnames",
+    label: "Retry Custom Domain Hostnames",
+    description: "Retry Cloudflare hostname provisioning for apps whose exact custom domains are not active.",
+    parameters: emptyParameters,
+  },
+] as const;
+
+const setPreviewParameters = Type.Object({
+  kind: Type.Optional(Type.Union([Type.Literal("file"), Type.Literal("app")], {
+    description: "Preview target kind. If omitted, script_name selects app preview and path selects file preview.",
+  })),
+  path: Type.Optional(Type.String({ description: "Workspace, upload, or output file path to preview." })),
+  content_type: Type.Optional(Type.String({ description: "Optional MIME type hint for file previews." })),
+  script_name: Type.Optional(Type.String({ description: "Deployed app/worker script name to preview." })),
+});
+
 type TodoItem = {
   content: string;
   activeForm: string;
@@ -454,6 +665,181 @@ type WebProxyResponse = {
   content?: Array<{ type?: string; text?: string }>;
   error?: string;
 };
+
+function parseJsonOrSsePayload(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const dataLines = trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice("data:".length).trim())
+      .filter(Boolean);
+    if (dataLines.length > 0) {
+      return JSON.parse(dataLines.join("\n"));
+    }
+    return { raw: text };
+  }
+}
+
+function parseMcpToolText(result: unknown): unknown {
+  const resultObject = result && typeof result === "object" ? result as Record<string, unknown> : {};
+  const content = Array.isArray(resultObject.content) ? resultObject.content : [];
+  const textPart = content.find((part) => {
+    if (!part || typeof part !== "object") return false;
+    const entry = part as Record<string, unknown>;
+    return entry.type === "text" && typeof entry.text === "string";
+  }) as Record<string, unknown> | undefined;
+  const text = typeof textPart?.text === "string" ? textPart.text : "";
+  if (!text) return result;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function localMcpRequest(
+  message: Record<string, unknown>,
+  sessionId: string | undefined,
+  signal?: AbortSignal,
+): Promise<{ payload: Record<string, unknown>; sessionId?: string }> {
+  if (!mcpServerUrl) {
+    throw new Error("MCP_SERVER_URL is not configured");
+  }
+
+  const response = await fetch(mcpServerUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-06-18",
+      ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+    },
+    body: JSON.stringify(message),
+    signal,
+  });
+  const text = await response.text();
+  const payload = parseJsonOrSsePayload(text) as Record<string, unknown>;
+  if (!response.ok) {
+    const error = payload.error;
+    const message = error && typeof error === "object" && typeof (error as Record<string, unknown>).message === "string"
+      ? (error as Record<string, unknown>).message as string
+      : typeof error === "string"
+        ? error
+        : `MCP request failed with HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  if (payload.error) {
+    const error = payload.error;
+    const message = error && typeof error === "object" && typeof (error as Record<string, unknown>).message === "string"
+      ? (error as Record<string, unknown>).message as string
+      : JSON.stringify(error);
+    throw new Error(message);
+  }
+  return {
+    payload,
+    sessionId: response.headers.get("mcp-session-id") || sessionId,
+  };
+}
+
+async function closeLocalMcpSession(sessionId: string | undefined, signal?: AbortSignal): Promise<void> {
+  if (!mcpServerUrl || !sessionId) return;
+  await fetch(mcpServerUrl, {
+    method: "DELETE",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-06-18",
+      "mcp-session-id": sessionId,
+    },
+    signal,
+  }).catch(() => {});
+}
+
+async function callLocalMcpTool(
+  name: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  let sessionId: string | undefined;
+  try {
+    const initialized = await localMcpRequest({
+      jsonrpc: "2.0",
+      id: `init_${Date.now()}`,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: {
+          name: "chiridion-host-pi",
+          version: "1.0.0",
+        },
+      },
+    }, undefined, signal);
+    sessionId = initialized.sessionId;
+    if (!sessionId) {
+      throw new Error("MCP initialize did not return a session id");
+    }
+
+    await localMcpRequest({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+      params: {},
+    }, sessionId, signal);
+
+    const response = await localMcpRequest({
+      jsonrpc: "2.0",
+      id: `tool_${Date.now()}`,
+      method: "tools/call",
+      params: { name, arguments: args },
+    }, sessionId, signal);
+    return parseMcpToolText(response.payload.result);
+  } finally {
+    await closeLocalMcpSession(sessionId, signal);
+  }
+}
+
+function localMcpToolExecutor(name: string) {
+  return async (
+    _toolCallId: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ content: Array<{ type: "text"; text: string }> }> => {
+    const result = await callLocalMcpTool(name, params || {}, signal);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  };
+}
+
+async function executeSetPreview(
+  _toolCallId: string,
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const kind = params.kind === "app" || params.kind === "file" ? params.kind : undefined;
+  const scriptName = typeof params.script_name === "string" ? params.script_name.trim() : "";
+  const filePath = typeof params.path === "string" ? params.path.trim() : "";
+
+  if (kind === "app" || (!kind && scriptName)) {
+    if (!scriptName) throw new Error("script_name is required for app previews");
+    const result = await callLocalMcpTool("set_app_preview", { script_name: scriptName }, signal);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+
+  if (kind === "file" || (!kind && filePath)) {
+    if (!filePath) throw new Error("path is required for file previews");
+    const args: Record<string, unknown> = { path: filePath };
+    if (typeof params.content_type === "string" && params.content_type.trim()) {
+      args.content_type = params.content_type.trim();
+    }
+    const result = await callLocalMcpTool("set_file_preview", args, signal);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+
+  throw new Error("Provide either path for a file preview or script_name for an app preview");
+}
 
 async function executeWebProxyTool(
   endpointUrl: string,
@@ -1065,6 +1451,25 @@ export default function containerTools(pi: ExtensionAPI) {
       parameters: agentParameters,
       execute: executeAgent,
     });
+
+    pi.registerTool({
+      name: "set_preview",
+      label: "Set Preview",
+      description:
+        "Set the chat preview panel to either a workspace/upload/output file or a deployed app. Provide path for files or script_name for apps.",
+      parameters: setPreviewParameters,
+      execute: executeSetPreview,
+    });
+
+    for (const definition of mcpToolDefinitions) {
+      pi.registerTool({
+        name: definition.name,
+        label: definition.label,
+        description: definition.description,
+        parameters: definition.parameters,
+        execute: localMcpToolExecutor(definition.name),
+      });
+    }
   }
 
   pi.registerTool({

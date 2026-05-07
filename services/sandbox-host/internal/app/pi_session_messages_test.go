@@ -95,6 +95,25 @@ func TestParsePiJSONLMessagesMovesLateThinkingBeforeText(t *testing.T) {
 	}
 }
 
+func TestParsePiJSONLMessagesShowsAssistantProviderError(t *testing.T) {
+	jsonl := `{"type":"message","id":"a1","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"403 {\"error\":{\"message\":\"Key limit exceeded (total limit). Manage it using https://openrouter.ai/settings/keys\",\"code\":403}}"}}`
+
+	messages := parsePiJSONLMessages(jsonl, "thread-1")
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d: %#v", len(messages), messages)
+	}
+	blocks, ok := asSlice(messages[0].Content)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("unexpected blocks: %#v", messages[0].Content)
+	}
+	block, _ := asMap(blocks[0])
+	got := firstString(block, "text")
+	want := "OpenRouter rejected the request: Key limit exceeded (total limit). Manage it using https://openrouter.ai/settings/keys"
+	if got != want {
+		t.Fatalf("provider error text = %q, want %q", got, want)
+	}
+}
+
 func TestReadHostPiSessionMessagesCombinesJSONLFiles(t *testing.T) {
 	root := t.TempDir()
 	threadID := "thread-1"
