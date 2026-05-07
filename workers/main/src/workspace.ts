@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
-import type { Workspace } from '../../../src/types';
+import type { Workspace, WorkspaceModelPickerConfig } from '../../../src/types';
 import type { OrgDO } from './auth';
 import { dispatchAdminEvent } from './auth';
 import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
@@ -13,6 +13,10 @@ import {
 } from './workspace-container';
 import { generateEmailHandle } from '../../../src/lib/workspace-email';
 import type { EmailHandleDO } from './email-handle-registry';
+import {
+  defaultWorkspaceModelPickerConfig,
+  parseWorkspaceModelPickerConfig,
+} from '../../../src/lib/model-picker-config';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -79,6 +83,7 @@ function clampRetryAtMs(retryAtMs: number, nowMs: number): number {
   return Math.max(min, Math.min(max, Math.floor(retryAtMs)));
 }
 const BIGQUERY_INTEGRATION_TYPE = 'bigquery';
+const WORKSPACE_MODEL_PICKER_CONFIG_KEY = 'model_picker_config';
 
 export type WorkspaceAccessLevel = 'full' | 'none';
 
@@ -387,6 +392,44 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       JSON.stringify(info)
     );
     this.dispatchWorkspaceUpsert(info);
+  }
+
+  async getModelPickerConfig(): Promise<WorkspaceModelPickerConfig> {
+    const raw = this.ctx.storage.kv.get<unknown>(
+      WORKSPACE_MODEL_PICKER_CONFIG_KEY
+    );
+    if (!raw) {
+      return defaultWorkspaceModelPickerConfig();
+    }
+    return parseWorkspaceModelPickerConfig(raw);
+  }
+
+  async setModelPickerConfig(
+    config: WorkspaceModelPickerConfig,
+    audit?: {
+      actorId?: string;
+      action?: string;
+      details?: Record<string, unknown>;
+    }
+  ): Promise<WorkspaceModelPickerConfig> {
+    const previous = await this.getModelPickerConfig();
+    const next = parseWorkspaceModelPickerConfig(config);
+
+    this.ctx.storage.kv.put(WORKSPACE_MODEL_PICKER_CONFIG_KEY, next);
+
+    if (audit?.actorId) {
+      this.log(audit.action ?? 'model_picker_config_updated', audit.actorId, undefined, {
+        ...audit.details,
+        previous_use_org_defaults: previous.use_org_defaults,
+        next_use_org_defaults: next.use_org_defaults,
+        previous_default_model: previous.default_model,
+        next_default_model: next.default_model,
+        previous_model_count: previous.models.length,
+        next_model_count: next.models.length,
+      });
+    }
+
+    return next;
   }
 
   async createWorkspace(

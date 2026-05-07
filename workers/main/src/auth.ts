@@ -15,6 +15,7 @@ import type {
   Workspace,
   ChatHarness,
   LlmModel,
+  OrgModelPickerConfig,
   OnboardingPreferences,
 } from "../../../src/types";
 import type { ChatThreadDO } from "./durable-objects";
@@ -26,6 +27,10 @@ import {
   normalizeLlmModel,
   parseOrganizationExperimentalSettings,
 } from "../../../src/lib/llm-provider-config";
+import {
+  defaultOrgModelPickerConfig,
+  parseOrgModelPickerConfig,
+} from "../../../src/lib/model-picker-config";
 import {
   getBillingPlanLimits,
   getOrgBillingPlan,
@@ -55,6 +60,7 @@ const SUPERUSER_EMAILS = new Set(["admin@example.com", "1033072+Vercantez@users.
 const USER_ONBOARDING_KEY = "onboarding";
 const USER_SIGNUP_IP_KEY = "signup_ip";
 const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
+const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 
 function isSuperuserEmail(email: string | null): boolean {
   if (!email) return false;
@@ -2053,6 +2059,49 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
 
     return nextSettings;
+  }
+
+  getModelPickerConfig(): OrgModelPickerConfig {
+    const rows = this.sql
+      .exec<{
+        value: string;
+      }>("SELECT value FROM org_info WHERE key = ?", ORG_MODEL_PICKER_CONFIG_KEY)
+      .toArray();
+    if (rows.length === 0) {
+      return defaultOrgModelPickerConfig();
+    }
+
+    return parseOrgModelPickerConfig(rows[0]!.value);
+  }
+
+  setModelPickerConfig(
+    config: OrgModelPickerConfig,
+    audit?: {
+      actorId?: string;
+      action?: string;
+      details?: Record<string, unknown>;
+    },
+  ): OrgModelPickerConfig {
+    const previous = this.getModelPickerConfig();
+    const next = parseOrgModelPickerConfig(config);
+
+    this.sql.exec(
+      "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+      ORG_MODEL_PICKER_CONFIG_KEY,
+      JSON.stringify(next),
+    );
+
+    if (audit?.actorId) {
+      this.log(audit.action ?? "model_picker_config_updated", audit.actorId, undefined, {
+        ...audit.details,
+        previous_default_model: previous.default_model,
+        next_default_model: next.default_model,
+        previous_model_count: previous.models.length,
+        next_model_count: next.models.length,
+      });
+    }
+
+    return next;
   }
 
   async createOrg(

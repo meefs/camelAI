@@ -11,10 +11,18 @@ import {
   parseWorkspaceEmailAddress,
 } from "../../../src/lib/workspace-email.js";
 import {
-  getDefaultLlmModel,
   getDefaultThreadProvider,
+  getProviderForModel,
 } from "../../../src/lib/llm-provider-config.js";
+import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
+import {
+  defaultOrgModelPickerConfig,
+  defaultWorkspaceModelPickerConfig,
+  resolveDefaultModelForChat,
+  resolveEffectivePickerConfig,
+} from "../../../src/lib/model-picker-config.js";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
+import type { LlmModel } from "../../../src/types.js";
 import type { Attachment as PostalMimeAttachment } from "postal-mime";
 import { isOrgBanned } from "./ban-list.js";
 
@@ -29,6 +37,60 @@ interface AuthorizedSender {
 interface EmailThreadResolution {
   threadId: string;
   title: string;
+}
+
+async function resolveDefaultEmailThreadModel(
+  env: Env,
+  args: { orgId: string; workspaceId: string },
+): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+  const orgStub = getOrgStub(env, args.orgId);
+  const workspaceStub = getWorkspaceStub(env, args.workspaceId);
+  const getOrgPickerConfig =
+    "getModelPickerConfig" in orgStub &&
+    typeof orgStub.getModelPickerConfig === "function"
+      ? orgStub.getModelPickerConfig()
+      : Promise.resolve(defaultOrgModelPickerConfig());
+  const getWorkspacePickerConfig =
+    "getModelPickerConfig" in workspaceStub &&
+    typeof workspaceStub.getModelPickerConfig === "function"
+      ? workspaceStub.getModelPickerConfig()
+      : Promise.resolve(defaultWorkspaceModelPickerConfig());
+  const [
+    llmProviderConfig,
+    experimentalSettings,
+    orgPickerConfig,
+    workspacePickerConfig,
+  ] = await Promise.all([
+    orgStub.getLlmProviderConfig(),
+    orgStub.getExperimentalSettings(),
+    getOrgPickerConfig,
+    getWorkspacePickerConfig,
+  ]);
+  const baseProvider = getDefaultThreadProvider(
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  );
+  const effectiveConfig = resolveEffectivePickerConfig(
+    orgPickerConfig,
+    workspacePickerConfig,
+  );
+  const visibleCatalog = resolveModelPickerCatalog({
+    effectiveConfig,
+    provider: baseProvider,
+    experimentalSettings,
+    orgProvider: llmProviderConfig?.provider,
+  });
+  const model = resolveDefaultModelForChat({
+    effectiveDefaultModel: effectiveConfig.default_model,
+    visibleCatalog,
+  });
+  if (!model) {
+    throw new Error("No models are available");
+  }
+  return {
+    model,
+    provider: getProviderForModel(model, baseProvider),
+  };
 }
 
 interface ParsedEmailContent {
@@ -705,20 +767,13 @@ async function resolveThreadForEmail(
 
   const orgStub = getOrgStub(env, args.orgId);
   const title = titleFromEmail(args.subject, args.message);
-  const [llmProviderConfig, experimentalSettings] = await Promise.all([
-    orgStub.getLlmProviderConfig(),
-    orgStub.getExperimentalSettings(),
-  ]);
-  const provider = getDefaultThreadProvider(
-    llmProviderConfig?.provider,
-    experimentalSettings,
-  );
+  const { model, provider } = await resolveDefaultEmailThreadModel(env, args);
   const created = await orgStub.createThread(
     args.workspaceId,
     title,
     args.userId,
     args.message.slice(0, 500),
-    getDefaultLlmModel(provider, llmProviderConfig?.provider),
+    model,
     provider,
   );
 

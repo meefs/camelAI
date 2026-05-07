@@ -53,14 +53,25 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ error: 'Thread not found' }, { status: 404 });
   }
 
-  const targetThread = await orgStub.createThread(
-    workspaceId,
-    forkThreadTitle(sourceThread.title),
-    userId,
-    sourceThread.first_user_message ?? undefined,
-    sourceThread.model,
-    sourceThread.provider ?? 'claude',
-  );
+  let targetThread: Awaited<ReturnType<typeof chatDO.createThread>>;
+  try {
+    targetThread = await chatDO.createThread(
+      context,
+      workspaceId,
+      forkThreadTitle(sourceThread.title),
+      userId,
+      sourceThread.first_user_message ?? undefined,
+      sourceThread.model,
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create fork';
+    const status =
+      message === 'Invalid thread model' || message === 'No models are available'
+        ? 400
+        : 500;
+    return Response.json({ error: message }, { status });
+  }
 
   try {
     const container = new WorkspaceContainer(

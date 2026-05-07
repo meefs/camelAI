@@ -17,12 +17,7 @@ import {
 import { waitUntil } from "@/lib/wait-until";
 import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getWorkerScript } from "@/lib/auth-do";
-import {
-  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-  getDefaultLlmModel,
-  getDefaultThreadProvider,
-  isLlmModelAllowedForNewThread,
-} from "@/lib/llm-provider-config";
+import { DEFAULT_ORG_EXPERIMENTAL_SETTINGS } from "@/lib/llm-provider-config";
 import * as chatDO from "@/lib/chat-do.server";
 import {
   consumeSalesPrompt,
@@ -34,7 +29,6 @@ import type {
   ChatHarness,
   Integration,
   LlmModel,
-  LlmProvider,
   Thread,
   WorkerScriptWithCreator,
 } from "@/types";
@@ -221,19 +215,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     workspaceId && authContext.currentOrg?.id
       ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
       : null;
-  const [llmProviderConfig, experimentalSettings, orgInfo] = orgStub
+  const [pickerState, orgInfo] = orgStub && workspaceId
     ? await Promise.all([
-        orgStub.getLlmProviderConfig().catch(() => null),
-        orgStub
-          .getExperimentalSettings()
-          .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
+        chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(() => null),
         orgStub.getInfo().catch(() => null),
       ])
-    : ([null, DEFAULT_ORG_EXPERIMENTAL_SETTINGS, null] as const);
-  const threadProvider: ChatHarness = getDefaultThreadProvider(
-    llmProviderConfig?.provider,
-    experimentalSettings,
-  );
+    : ([null, null] as const);
+  const threadProvider: ChatHarness = pickerState?.provider ?? "claude";
   const billingOverview = orgInfo
     ? await getOrgBillingOverview(env, orgInfo).catch((error) => {
         console.warn("Failed to load billing overview for chat:", error);
@@ -244,18 +232,29 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return {
     workspaceId: workspaceId ?? null,
     threadProvider,
-    threadModel: getDefaultLlmModel(
-      threadProvider,
-      llmProviderConfig?.provider,
-    ),
-    allowedThreadModels: null,
+    threadModel: pickerState?.defaultModel ?? null,
+    allowedThreadModels: pickerState?.allowedThreadModels ?? [],
+    effectivePickerDefaultModel:
+      pickerState?.effectivePickerDefaultModel ?? null,
+    hasEffectivePickerDefault:
+      pickerState?.hasEffectivePickerDefault ?? false,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
+      buildBillingCreditStatus(billingOverview, Boolean(pickerState?.llmProvider)),
       url.searchParams,
     ),
     initialChatError: getDevChatInitialError(url.searchParams),
-    llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
-    experimentalSettings,
+    llmProvider: pickerState?.llmProvider ?? null,
+    experimentalSettings:
+      pickerState?.experimentalSettings ?? DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+    isOrgAdmin: authContext.orgs.some(
+      (org) =>
+        org.org_id === authContext.currentOrg.id &&
+        (org.role === "owner" || org.role === "admin"),
+    ),
+    recentModelScope:
+      workspaceId && authContext.currentOrg?.id
+        ? { orgId: authContext.currentOrg.id, workspaceId }
+        : null,
     hostname,
     userId,
     userName,
@@ -291,22 +290,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       const previewAppsRaw = formData.get("previewApps") as string | null;
       const rawModel = formData.get("model");
       const model = typeof rawModel === "string" ? rawModel : null;
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-      const llmProviderConfig = await orgStub.getLlmProviderConfig();
-      const experimentalSettings = await orgStub.getExperimentalSettings();
-      if (
-        model !== null &&
-        !isLlmModelAllowedForNewThread(
-          model,
-          llmProviderConfig?.provider,
-          experimentalSettings,
-        )
-      ) {
-        return Response.json(
-          { error: "Invalid thread model" },
-          { status: 400 },
-        );
-      }
 
       const thread = await chatDO.createThread(
         context,
@@ -348,9 +331,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       console.error("Failed to create thread:", error);
       const message =
         error instanceof Error ? error.message : "Failed to create thread";
+      const status =
+        message === "Invalid thread model" || message === "No models are available"
+          ? 400
+          : 500;
       return Response.json(
         { error: message || "Failed to create thread" },
-        { status: 500 },
+        { status },
       );
     }
   }
@@ -365,6 +352,8 @@ export default function NewChatPage() {
     llmProvider,
     threadModel,
     allowedThreadModels,
+    effectivePickerDefaultModel,
+    hasEffectivePickerDefault,
     billingCreditStatus,
     initialChatError,
     hostname,
@@ -376,6 +365,8 @@ export default function NewChatPage() {
     renderedAt,
     salesPrompt,
     experimentalSettings,
+    isOrgAdmin,
+    recentModelScope,
   } = useLoaderData<typeof loader>();
   const { currentWorkspace } = useAuthData();
   const revalidator = useRevalidator();
@@ -410,6 +401,10 @@ export default function NewChatPage() {
       llmProvider={llmProvider}
       threadModel={threadModel}
       allowedThreadModels={allowedThreadModels}
+      effectivePickerDefaultModel={effectivePickerDefaultModel}
+      hasEffectivePickerDefault={hasEffectivePickerDefault}
+      isOrgAdmin={isOrgAdmin}
+      recentModelScope={recentModelScope}
       billingCreditStatus={billingCreditStatus}
       initialError={initialChatError}
       initialWelcomeInput={salesPrompt}

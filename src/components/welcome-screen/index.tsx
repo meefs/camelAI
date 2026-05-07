@@ -27,6 +27,8 @@ import { IntegrationButtons, FEATURED_CONNECTIONS, LOGO_STACK_CONNECTIONS } from
 import { ConnectedTools } from './connected-tools';
 import { AppCardsRow } from './app-cards-row';
 import { RecentChatsRow } from './recent-chats-row';
+import type { ModelCatalogEntry } from '@/lib/model-catalog';
+import type { RecentModelScope } from '@/lib/recent-model';
 
 const STARTER_PROMPTS: StarterPromptItem[] = [
   // Strong keepers from before
@@ -209,11 +211,10 @@ interface WelcomeScreenProps {
   isCreatingThread: boolean;
   model: LlmModel;
   onModelChange: (model: LlmModel) => void;
-  modelOptions: ReadonlyArray<{
-    value: LlmModel;
-    label: string;
-    description: string;
-  }>;
+  modelOptions: ReadonlyArray<ModelCatalogEntry>;
+  isOrgAdmin?: boolean;
+  recentModelScope?: RecentModelScope | null;
+  noModelsMessage?: string | null;
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
@@ -340,6 +341,9 @@ export function WelcomeScreen({
   model,
   onModelChange,
   modelOptions,
+  isOrgAdmin = false,
+  recentModelScope,
+  noModelsMessage,
 }: WelcomeScreenProps) {
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
@@ -437,12 +441,21 @@ export function WelcomeScreen({
             onModelChange={onModelChange}
             modelOptions={modelOptions}
             modelDisabled={isCreatingThread}
+            disabled={Boolean(noModelsMessage)}
+            isOrgAdmin={isOrgAdmin}
+            recentModelScope={recentModelScope}
             mentionableConnections={mentionableConnections}
             mentionMenuSide="bottom"
             onMentionAddNewClick={() => navigate('/connections')}
           />
         )}
       </AnimatedPlaceholder>
+
+      {noModelsMessage && (
+        <p className="-mt-8 text-sm text-muted-foreground">
+          {noModelsMessage}
+        </p>
+      )}
 
       <Suspense fallback={<RecentChatsFallback />}>
         <DeferredRecentChatsSection

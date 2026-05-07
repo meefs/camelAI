@@ -13,16 +13,23 @@ export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.6";
 export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
+// When adding a model here, also add it to the picker catalog at
+// src/lib/model-catalog.ts and the pricing table at
+// services/sandbox-host/internal/app/usage_pricing.go.
 export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
 }> = [
-  { value: "sonnet", label: "Sonnet", description: "Default and recommended" },
-  { value: "haiku", label: "Haiku", description: "Faster and cheaper" },
+  {
+    value: "sonnet",
+    label: "Sonnet 4.6",
+    description: "Default and recommended",
+  },
+  { value: "haiku", label: "Haiku 4.5", description: "Faster and cheaper" },
   {
     value: "opus",
-    label: "Opus",
+    label: "Opus 4.6",
     description: "Smarter, but slower and more expensive",
   },
 ];

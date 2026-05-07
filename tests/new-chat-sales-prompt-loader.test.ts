@@ -4,6 +4,7 @@ const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getRecentThreadsMock = vi.fn();
+const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgBillingOverviewMock = vi.fn();
 
 vi.mock('@/lib/wait-until', () => ({
@@ -34,6 +35,7 @@ vi.mock('@/lib/auth-do', () => ({
 
 vi.mock('@/lib/chat-do.server', () => ({
   getRecentThreads: getRecentThreadsMock,
+  getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
 }));
 
 const { loader } = await import('@/routes/_app.chat._index');
@@ -60,10 +62,20 @@ describe('new chat loader sales prompt handling', () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_123' },
       currentOrg: { id: 'org_123' },
+      orgs: [{ org_id: 'org_123', role: 'admin' }],
       user: { id: 'user_123', name: 'Illiana' },
       onboarding: { completed_at: Date.now() },
     });
     getRecentThreadsMock.mockResolvedValue([]);
+    getWorkspaceModelPickerStateMock.mockResolvedValue({
+      provider: 'claude',
+      llmProvider: null,
+      experimentalSettings: { claude_proxy_models: false },
+      allowedThreadModels: ['sonnet'],
+      effectivePickerDefaultModel: 'sonnet',
+      hasEffectivePickerDefault: true,
+      defaultModel: 'sonnet',
+    });
     getOrgBillingOverviewMock.mockResolvedValue(null);
   });
 

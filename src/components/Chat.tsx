@@ -141,6 +141,15 @@ import {
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
+import {
+  modelCatalogEntriesForIds,
+  type ModelCatalogEntry,
+} from "@/lib/model-catalog";
+import { resolveDefaultModelForChat } from "@/lib/model-picker-config";
+import {
+  getRecentModel,
+  type RecentModelScope,
+} from "@/lib/recent-model";
 import type { BillingCreditStatus } from "@/lib/chat-credit-status";
 import {
   loadDraft,
@@ -159,6 +168,10 @@ interface ChatProps {
   threadProvider?: ChatHarness | null;
   llmProvider?: LlmProvider | null;
   allowedThreadModels?: LlmModel[] | null;
+  effectivePickerDefaultModel?: LlmModel | null;
+  hasEffectivePickerDefault?: boolean;
+  isOrgAdmin?: boolean;
+  recentModelScope?: RecentModelScope | null;
   billingCreditStatus?: BillingCreditStatus | null;
   initialError?: string | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
@@ -1348,6 +1361,10 @@ export default function Chat({
   threadProvider,
   llmProvider,
   allowedThreadModels,
+  effectivePickerDefaultModel = null,
+  hasEffectivePickerDefault = false,
+  isOrgAdmin = false,
+  recentModelScope,
   billingCreditStatus,
   initialError,
   experimentalSettings,
@@ -1747,21 +1764,26 @@ export default function Chat({
     () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
   );
   const [selectedThreadModel, setSelectedThreadModel] = useState<LlmModel>(
-    threadModel ?? getDefaultLlmModel(initialThreadProvider, llmProvider),
+    threadModel ??
+      allowedThreadModels?.[0] ??
+      getDefaultLlmModel(initialThreadProvider, llmProvider),
   );
   const [activeThreadProvider, setActiveThreadProvider] = useState<ChatHarness>(
     initialThreadProvider,
   );
-  const availableThreadModels = useMemo(() => {
+  const appliedRecentModelScopeRef = useRef<string | null>(null);
+  const availableThreadModels = useMemo<ModelCatalogEntry[]>(() => {
+    if (Array.isArray(allowedThreadModels)) {
+      return modelCatalogEntriesForIds(allowedThreadModels);
+    }
+
     const options = getVisibleLlmModelOptions(
       activeThreadProvider,
       experimentalSettings,
       threadModel ?? getDefaultLlmModel(activeThreadProvider, llmProvider),
       { allowModelFamilySwitch: true, orgProvider: llmProvider },
     );
-    return allowedThreadModels?.length
-      ? options.filter((option) => allowedThreadModels.includes(option.value))
-      : options;
+    return modelCatalogEntriesForIds(options.map((option) => option.value));
   }, [
     activeThreadProvider,
     allowedThreadModels,
@@ -1769,6 +1791,20 @@ export default function Chat({
     llmProvider,
     threadModel,
   ]);
+  const availableThreadModelIds = useMemo(
+    () => new Set(availableThreadModels.map((entry) => entry.id)),
+    [availableThreadModels],
+  );
+  const modelRecentScope = useMemo<RecentModelScope | null>(() => {
+    if (readOnly) return null;
+    if (recentModelScope) return recentModelScope;
+    if (!currentOrg?.id || !resolvedWorkspaceId) return null;
+    return { orgId: currentOrg.id, workspaceId: resolvedWorkspaceId };
+  }, [currentOrg?.id, readOnly, recentModelScope, resolvedWorkspaceId]);
+  const noModelsMessage =
+    availableThreadModels.length === 0
+      ? "No models are available. Ask an admin to add a model in Settings > Models."
+      : null;
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -2076,9 +2112,17 @@ export default function Chat({
   useEffect(() => {
     setActiveThreadProvider(initialThreadProvider);
     setSelectedThreadModel(
-      threadModel ?? getDefaultLlmModel(initialThreadProvider, llmProvider),
+      threadModel ??
+        allowedThreadModels?.[0] ??
+        getDefaultLlmModel(initialThreadProvider, llmProvider),
     );
-  }, [initialThreadProvider, llmProvider, threadId, threadModel]);
+  }, [
+    allowedThreadModels,
+    initialThreadProvider,
+    llmProvider,
+    threadId,
+    threadModel,
+  ]);
 
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
@@ -4671,7 +4715,9 @@ export default function Chat({
     if (updateThreadModelFetcher.data.error) {
       setActiveThreadProvider(initialThreadProvider);
       setSelectedThreadModel(
-        threadModel ?? getDefaultLlmModel(initialThreadProvider, llmProvider),
+        threadModel ??
+          allowedThreadModels?.[0] ??
+          getDefaultLlmModel(initialThreadProvider, llmProvider),
       );
       toast.error(updateThreadModelFetcher.data.error);
       return;
@@ -4709,10 +4755,14 @@ export default function Chat({
     threadModel,
     updateThreadModelFetcher.state,
     updateThreadModelFetcher.data,
+    allowedThreadModels,
   ]);
 
   const handleThreadModelChange = useCallback(
     (nextModel: LlmModel) => {
+      if (!availableThreadModelIds.has(nextModel)) {
+        return;
+      }
       if (!threadId) {
         setSelectedThreadModel(nextModel);
         setActiveThreadProvider(
@@ -4737,6 +4787,7 @@ export default function Chat({
     },
     [
       activeThreadProvider,
+      availableThreadModelIds,
       initialThreadProvider,
       selectedThreadModel,
       threadId,
@@ -4744,10 +4795,79 @@ export default function Chat({
     ],
   );
 
+  useEffect(() => {
+    if (threadId || readOnly || !modelRecentScope || noModelsMessage) {
+      return;
+    }
+
+    const scopeKey = `${modelRecentScope.orgId}:${modelRecentScope.workspaceId}`;
+    if (appliedRecentModelScopeRef.current === scopeKey) {
+      return;
+    }
+    appliedRecentModelScopeRef.current = scopeKey;
+
+    const recentModel = getRecentModel(modelRecentScope);
+    const nextModel = resolveDefaultModelForChat({
+      effectiveDefaultModel: effectivePickerDefaultModel,
+      recentModel,
+      visibleCatalog: availableThreadModels,
+    });
+    if (nextModel && nextModel !== selectedThreadModel) {
+      handleThreadModelChange(nextModel);
+    }
+  }, [
+    availableThreadModels,
+    effectivePickerDefaultModel,
+    handleThreadModelChange,
+    modelRecentScope,
+    noModelsMessage,
+    readOnly,
+    selectedThreadModel,
+    threadId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !threadId ||
+      readOnly ||
+      noModelsMessage ||
+      loading ||
+      isStreaming ||
+      updateThreadModelFetcher.state !== "idle" ||
+      availableThreadModelIds.has(selectedThreadModel)
+    ) {
+      return;
+    }
+
+    const nextModel = resolveDefaultModelForChat({
+      effectiveDefaultModel: effectivePickerDefaultModel,
+      visibleCatalog: availableThreadModels,
+    });
+    if (nextModel && nextModel !== selectedThreadModel) {
+      handleThreadModelChange(nextModel);
+    }
+  }, [
+    availableThreadModelIds,
+    availableThreadModels,
+    effectivePickerDefaultModel,
+    handleThreadModelChange,
+    isStreaming,
+    loading,
+    noModelsMessage,
+    readOnly,
+    selectedThreadModel,
+    threadId,
+    updateThreadModelFetcher.state,
+  ]);
+
   const handleStartChatForApp = useCallback(
     (app: WorkerScriptWithCreator) => {
       if (!resolvedWorkspaceId) {
         toast.error("No workspace selected");
+        return;
+      }
+      if (noModelsMessage) {
+        toast.error(noModelsMessage);
         return;
       }
 
@@ -4794,6 +4914,7 @@ export default function Chat({
       resolvedWorkspaceId,
       createThreadFetcher,
       isCreatingThread,
+      noModelsMessage,
       selectedThreadModel,
     ],
   );
@@ -4808,7 +4929,8 @@ export default function Chat({
       (!currentWelcomeInput.trim() && !hasCompletedAttachments) ||
       isCreatingThread ||
       !resolvedWorkspaceId ||
-      createThreadFetcher.state !== "idle"
+      createThreadFetcher.state !== "idle" ||
+      noModelsMessage
     )
       return;
 
@@ -5370,7 +5492,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       (!rawContent && !hasCompletedAttachments) ||
       !shouldShowChat ||
       !resolvedWorkspaceId ||
-      !threadId
+      !threadId ||
+      noModelsMessage
     ) {
       return;
     }
@@ -5841,6 +5964,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                     )}
                   </div>
                 )}
+                {noModelsMessage && (
+                  <p className="mb-3 text-sm text-muted-foreground">
+                    {noModelsMessage}
+                  </p>
+                )}
                 <PromptInput
                   className="shrink-0"
                   value={input}
@@ -5854,6 +5982,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
                   onAttachmentRemove={handleAttachmentRemove}
+                  disabled={Boolean(noModelsMessage)}
                   contextUsedPercent={contextUsedPercent}
                   onCompact={handleCompactFromIndicator}
                   model={selectedThreadModel}
@@ -5864,6 +5993,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                     isStreaming ||
                     updateThreadModelFetcher.state !== "idle"
                   }
+                  isOrgAdmin={isOrgAdmin}
+                  recentModelScope={modelRecentScope}
                   textareaRef={composerTextareaRef}
                   mentionableConnections={mentionConnections}
                   onMentionAddNewClick={() => navigate("/connections")}
@@ -6000,6 +6131,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   model={selectedThreadModel}
                   onModelChange={handleThreadModelChange}
                   modelOptions={availableThreadModels}
+                  isOrgAdmin={isOrgAdmin}
+                  recentModelScope={modelRecentScope}
+                  noModelsMessage={noModelsMessage}
                 />
               </div>
             </>
