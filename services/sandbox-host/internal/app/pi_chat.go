@@ -974,6 +974,19 @@ func (b *hostPiBridge) finishPiAgentEnd(finalText string, messages any) {
 	if finalText == "" {
 		finalText = extractPiAssistantText(messages)
 	}
+	if finalText == "" {
+		finalText = extractPiAssistantProviderErrorText(messages)
+		if finalText != "" {
+			b.sendRuntimeEvent("item/completed", map[string]any{
+				"threadId": b.threadID,
+				"item": map[string]any{
+					"id":   fmt.Sprintf("pi_provider_error_%s", randomID()),
+					"type": "agentMessage",
+					"text": finalText,
+				},
+			})
+		}
+	}
 	params := map[string]any{"threadId": b.threadID}
 	if entryID, err := latestHostPiAssistantEntryID(b.server.cfg.HostPiSessionRoot, b.threadID); err != nil {
 		log.Printf("[SandboxHost] failed to resolve latest Pi assistant entry for fork thread=%s: %v", b.threadID, err)
@@ -1890,6 +1903,28 @@ func extractPiAssistantText(value any) string {
 		}
 		if isPiAssistantMessage(v) {
 			return extractPiText(v)
+		}
+	}
+	return ""
+}
+
+func extractPiAssistantProviderErrorText(value any) string {
+	switch v := value.(type) {
+	case []any:
+		for i := len(v) - 1; i >= 0; i-- {
+			if text := extractPiAssistantProviderErrorText(v[i]); text != "" {
+				return text
+			}
+		}
+	case map[string]any:
+		if message, ok := v["message"].(map[string]any); ok {
+			if !isPiAssistantMessage(message) {
+				return ""
+			}
+			return piAssistantProviderErrorText(message)
+		}
+		if isPiAssistantMessage(v) {
+			return piAssistantProviderErrorText(v)
 		}
 	}
 	return ""

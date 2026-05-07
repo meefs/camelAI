@@ -31,6 +31,7 @@ import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import type {
   ChatHarness,
   Integration,
+  LlmProvider,
   LlmModel,
   Message,
   PreviewTarget,
@@ -343,6 +344,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         thread?.provider ??
         (threadContext.provider as ChatHarness | undefined) ??
         "claude",
+      llmProvider: null as LlmProvider | null,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: null,
@@ -364,6 +366,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadTitle: null,
       threadModel: getDefaultLlmModel("claude"),
       threadProvider: "claude" as const,
+      llmProvider: null as LlmProvider | null,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: getDevChatInitialError(url.searchParams),
@@ -430,6 +433,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
       url.searchParams,
     ),
+    llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     initialChatError: getDevChatInitialError(url.searchParams),
     isNewThread,
     hostname,
@@ -464,6 +468,7 @@ export default function ChatPage() {
     threadTitle,
     threadModel,
     threadProvider,
+    llmProvider,
     experimentalSettings,
     billingCreditStatus,
     initialChatError,
@@ -507,6 +512,7 @@ export default function ChatPage() {
         threadTitle={threadTitle}
         threadModel={threadModel}
         threadProvider={threadProvider}
+        llmProvider={llmProvider}
         experimentalSettings={experimentalSettings}
         billingCreditStatus={billingCreditStatus}
         initialError={initialChatError}

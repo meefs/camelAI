@@ -267,8 +267,11 @@ function buildMessageContent(text: string, attachments: Attachment[]): string {
 const FREE_TIER_MODAL_SEEN_PREFIX = "freeTierModalSeen:";
 const FREE_TIER_MSG_COUNT_PREFIX = "freeTierMsgCount:";
 
-function shouldShowFreeTierModal(userId: string | undefined): boolean {
-  if (!userId || typeof window === "undefined") {
+function shouldShowFreeTierModal(
+  userId: string | undefined,
+  llmProvider: LlmProvider | null | undefined,
+): boolean {
+  if (llmProvider || !userId || typeof window === "undefined") {
     return false;
   }
 
@@ -1592,7 +1595,7 @@ export default function Chat({
     shouldShowBootModalFromStorage(isNewThread),
   );
   const [showFreeTierModal, setShowFreeTierModal] = useState(() =>
-    shouldShowFreeTierModal(user?.id ?? undefined),
+    shouldShowFreeTierModal(user?.id ?? undefined, llmProvider),
   );
   const [bugReportError, setBugReportError] = useState<string | null>(null);
 
@@ -1611,11 +1614,15 @@ export default function Chat({
   }, [bootModalOpen]);
 
   useEffect(() => {
-    if (!shouldShowFreeTierModal(user?.id ?? undefined)) {
+    if (llmProvider) {
+      setShowFreeTierModal(false);
+      return;
+    }
+    if (!shouldShowFreeTierModal(user?.id ?? undefined, llmProvider)) {
       return;
     }
     setShowFreeTierModal(true);
-  }, [user?.id]);
+  }, [llmProvider, user?.id]);
 
   useEffect(() => {
     if (!initialWelcomeInput) {
@@ -5009,7 +5016,7 @@ export default function Chat({
     if (hasUploadingAttachments) return;
 
     const messageCount = incrementFreeTierCount(user?.id ?? undefined);
-    if (messageCount === 3 && !showFreeTierModal) {
+    if (!llmProvider && messageCount === 3 && !showFreeTierModal) {
       setShowFreeTierModal(true);
     }
 
@@ -5572,7 +5579,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
     if (!opts?.contentOverride) {
       const messageCount = incrementFreeTierCount(user?.id ?? undefined);
-      if (messageCount === 3 && !showFreeTierModal) {
+      if (!llmProvider && messageCount === 3 && !showFreeTierModal) {
         setShowFreeTierModal(true);
       }
     }
