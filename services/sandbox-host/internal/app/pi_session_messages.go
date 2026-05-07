@@ -79,7 +79,6 @@ func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessa
 				content = append(content, blocks...)
 			}
 		}
-		content = normalizePiAssistantContentOrder(content)
 
 		id := assistantGroupID
 		if id == "" {
@@ -303,35 +302,6 @@ func piContentBlocks(value any) []any {
 		}
 	}
 	return blocks
-}
-
-func normalizePiAssistantContentOrder(blocks []any) []any {
-	firstTextIndex := -1
-	lateThinking := make([]any, 0)
-	kept := make([]any, 0, len(blocks))
-
-	for _, rawBlock := range blocks {
-		block, _ := asMap(rawBlock)
-		blockType := firstString(block, "type")
-		if firstTextIndex >= 0 && (blockType == "thinking" || blockType == "redacted_thinking") {
-			lateThinking = append(lateThinking, rawBlock)
-			continue
-		}
-		if firstTextIndex < 0 && blockType == "text" {
-			firstTextIndex = len(kept)
-		}
-		kept = append(kept, rawBlock)
-	}
-
-	if len(lateThinking) == 0 || firstTextIndex < 0 {
-		return blocks
-	}
-
-	out := make([]any, 0, len(blocks))
-	out = append(out, kept[:firstTextIndex]...)
-	out = append(out, lateThinking...)
-	out = append(out, kept[firstTextIndex:]...)
-	return out
 }
 
 func piToolResultContent(value any) any {

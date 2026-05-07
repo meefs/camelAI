@@ -15,7 +15,7 @@ function findToolUse(messages: Message[], id: string) {
 }
 
 describe('Codex todo state integration', () => {
-  it('keeps late reasoning deltas before the assistant final text', () => {
+  it('keeps late reasoning deltas in chronological order after assistant text', () => {
     const streamingIds: Record<string, string | null> = {};
 
     let messages = applyRuntimeEventToMessages(
@@ -50,15 +50,71 @@ describe('Codex todo state integration', () => {
     const content = messages[0]?.content;
     expect(Array.isArray(content)).toBe(true);
     const blocks = content as ContentBlock[];
-    expect(blocks.map((block) => block.type)).toEqual(['thinking', 'text']);
+    expect(blocks.map((block) => block.type)).toEqual(['text', 'thinking']);
     expect(blocks[0]).toMatchObject({
-      type: 'thinking',
-      thinking: 'I should explain this first.',
-    });
-    expect(blocks[1]).toMatchObject({
       type: 'text',
       text: 'Final answer',
     });
+    expect(blocks[1]).toMatchObject({
+      type: 'thinking',
+      thinking: 'I should explain this first.',
+    });
+  });
+
+  it('does not group reasoning blocks across intervening assistant text', () => {
+    const streamingIds: Record<string, string | null> = {};
+
+    let messages = applyRuntimeEventToMessages(
+      [],
+      'thread-1',
+      'codex',
+      {
+        method: 'item/reasoning/textDelta',
+        params: {
+          itemId: 'reasoning-1',
+          contentIndex: 0,
+          delta: 'First thought.',
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/agentMessage/delta',
+        params: {
+          itemId: 'answer-1',
+          delta: 'Interim answer',
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/reasoning/textDelta',
+        params: {
+          itemId: 'reasoning-2',
+          contentIndex: 0,
+          delta: 'Second thought.',
+        },
+      },
+      streamingIds,
+    );
+
+    const content = messages[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    const blocks = content as ContentBlock[];
+    expect(blocks.map((block) => block.type)).toEqual(['thinking', 'text', 'thinking']);
+    expect(blocks[0]).toMatchObject({ type: 'thinking', thinking: 'First thought.' });
+    expect(blocks[1]).toMatchObject({ type: 'text', text: 'Interim answer' });
+    expect(blocks[2]).toMatchObject({ type: 'thinking', thinking: 'Second thought.' });
   });
 
   it('maps turn/plan/updated to a TodoWrite tool block', () => {

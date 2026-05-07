@@ -71,7 +71,7 @@ func TestParsePiJSONLMessagesCanonicalizesToolNames(t *testing.T) {
 	}
 }
 
-func TestParsePiJSONLMessagesMovesLateThinkingBeforeText(t *testing.T) {
+func TestParsePiJSONLMessagesKeepsLateThinkingChronological(t *testing.T) {
 	jsonl := `{"type":"message","id":"a1","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"first"},{"type":"text","text":"final answer"},{"type":"thinking","thinking":"late redacted"}],"timestamp":1770000000001}}`
 
 	messages := parsePiJSONLMessages(jsonl, "thread-1")
@@ -87,7 +87,7 @@ func TestParsePiJSONLMessagesMovesLateThinkingBeforeText(t *testing.T) {
 		block, _ := asMap(rawBlock)
 		got = append(got, firstString(block, "type")+":"+firstString(block, "thinking", "text"))
 	}
-	want := []string{"thinking:first", "thinking:late redacted", "text:final answer"}
+	want := []string{"thinking:first", "text:final answer", "thinking:late redacted"}
 	for index := range want {
 		if got[index] != want[index] {
 			t.Fatalf("block order = %#v, want %#v", got, want)

@@ -604,14 +604,7 @@ function appendThinkingDeltaBlock(
     label,
     summaries: [],
   };
-  const insertionIndex = findReasoningInsertionIndex(blocks, itemKind);
-  if (insertionIndex < 0) {
-    return [...blocks, thinkingBlock];
-  }
-
-  const nextBlocks = [...blocks];
-  nextBlocks.splice(insertionIndex, 0, thinkingBlock);
-  return nextBlocks;
+  return [...blocks, thinkingBlock];
 }
 
 function appendContiguousThinkingBlock(
@@ -676,26 +669,7 @@ function upsertThinkingBlock(
     return nextBlocks;
   }
 
-  const insertionIndex = findReasoningInsertionIndex(blocks, itemKind);
-  if (insertionIndex < 0) {
-    return [...blocks, nextBlock];
-  }
-
-  const nextBlocks = [...blocks];
-  nextBlocks.splice(insertionIndex, 0, nextBlock);
-  return nextBlocks;
-}
-
-function findReasoningInsertionIndex(
-  blocks: ContentBlock[],
-  itemKind: string
-): number {
-  if (itemKind !== 'reasoning') {
-    return -1;
-  }
-  return blocks.findIndex(
-    (block) => block.type === 'text' && getBlockItemId(block) !== undefined
-  );
+  return [...blocks, nextBlock];
 }
 
 function appendReasoningSummaryDelta(
