@@ -512,7 +512,7 @@ export default function OrganizationModelsPage() {
   const isSubmitting = fetcher.state !== "idle";
   const readOnly = data.scope === "ws" && data.useOrgDefaults;
   const capacityReached = data.config.capacity.used >= data.config.capacity.max;
-  const workspaceSelectorVisible = data.workspaces.length > 1;
+  const workspaceSelectorVisible = data.workspaces.length > 0;
   const workspaceControlsVisible =
     workspaceSelectorVisible || data.scope === "ws";
 

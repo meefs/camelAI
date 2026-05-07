@@ -53,6 +53,41 @@ vi.mock('sonner', () => ({
 }));
 
 describe('organization model settings UI', () => {
+  it('shows a workspace-scope entrypoint for a single-workspace org', () => {
+    loaderDataMock.mockReturnValue({
+      scope: 'org',
+      selectedWorkspaceId: null,
+      workspaces: [
+        {
+          id: 'ws_123',
+          name: 'Only Workspace',
+          avatarColor: '#2563eb',
+          hasCustomConfig: false,
+        },
+      ],
+      useOrgDefaults: false,
+      config: {
+        inPicker: [
+          {
+            entry: MODEL_CATALOG.sonnet,
+            addedAt: 1,
+            isDefault: true,
+          },
+        ],
+        additional: [],
+        capacity: { used: 1, max: 10 },
+      },
+    });
+
+    render(<OrganizationModelsPage />);
+
+    expect(screen.getByText('Org default')).toBeInTheDocument();
+    expect(screen.getByText('Only Workspace')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Use org defaults for this workspace'),
+    ).not.toBeInTheDocument();
+  });
+
   it('shows workspace override controls for a single-workspace org', () => {
     loaderDataMock.mockReturnValue({
       scope: 'ws',
@@ -85,6 +120,7 @@ describe('organization model settings UI', () => {
       screen.getByText('Use org defaults for this workspace'),
     ).toBeInTheDocument();
     expect(screen.getByText(/Inheriting from org defaults/i)).toBeInTheDocument();
-    expect(screen.queryByText('Org default')).not.toBeInTheDocument();
+    expect(screen.getByText('Org default')).toBeInTheDocument();
+    expect(screen.getByText('Only Workspace')).toBeInTheDocument();
   });
 });
