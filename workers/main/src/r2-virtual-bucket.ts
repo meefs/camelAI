@@ -22,16 +22,31 @@ interface R2VirtualBucketProps {
   bucketName: string;
 }
 
-/** Metadata returned for stored objects (plain serializable, not R2Object). */
+/** Metadata returned for stored objects. Mirrors the serializable R2Object fields. */
 export interface StorageObjectMetadata {
   key: string;
   version: string;
   size: number;
   etag: string;
   httpEtag: string;
-  uploaded: string; // ISO date
+  checksums: R2StringChecksums;
+  uploaded: Date;
   httpMetadata?: R2HTTPMetadata;
   customMetadata?: Record<string, string>;
+  range?: R2Range;
+  storageClass: string;
+  ssecKeyMd5?: string;
+  writeHttpMetadata(headers: Headers): void;
+}
+
+export interface VirtualR2ObjectBody extends StorageObjectMetadata {
+  readonly body: ReadableStream;
+  readonly bodyUsed: boolean;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  bytes(): Promise<Uint8Array>;
+  text(): Promise<string>;
+  json<T>(): Promise<T>;
+  blob(): Promise<Blob>;
 }
 
 /** Result from list operations. */
@@ -40,12 +55,6 @@ export interface StorageListResult {
   truncated: boolean;
   cursor?: string;
   delimitedPrefixes: string[];
-}
-
-/** Options for put operations. */
-export interface StoragePutOptions {
-  httpMetadata?: R2HTTPMetadata;
-  customMetadata?: Record<string, string>;
 }
 
 /** Options for list operations. */
@@ -119,7 +128,7 @@ export class R2VirtualBucket extends WorkerEntrypoint<R2VirtualBucketEnv, R2Virt
     }
   }
 
-  /** Convert an R2Object to a plain serializable metadata object. */
+  /** Convert an R2Object to a serializable metadata object with native R2 field names. */
   private toMetadata(obj: R2Object): StorageObjectMetadata {
     return {
       key: this.unscopedKey(obj.key),
@@ -127,9 +136,46 @@ export class R2VirtualBucket extends WorkerEntrypoint<R2VirtualBucketEnv, R2Virt
       size: obj.size,
       etag: obj.etag,
       httpEtag: obj.httpEtag,
-      uploaded: obj.uploaded.toISOString(),
+      checksums: obj.checksums.toJSON(),
+      uploaded: obj.uploaded,
       httpMetadata: obj.httpMetadata,
       customMetadata: obj.customMetadata,
+      range: obj.range,
+      storageClass: obj.storageClass,
+      ssecKeyMd5: obj.ssecKeyMd5,
+      writeHttpMetadata(headers: Headers) {
+        obj.writeHttpMetadata(headers);
+      },
+    };
+  }
+
+  private toObjectBody(obj: R2ObjectBody): VirtualR2ObjectBody {
+    const metadata = this.toMetadata(obj);
+    const response = new Response(obj.body);
+
+    return {
+      ...metadata,
+      get body() {
+        return response.body as ReadableStream;
+      },
+      get bodyUsed() {
+        return response.bodyUsed;
+      },
+      arrayBuffer() {
+        return response.arrayBuffer();
+      },
+      async bytes() {
+        return new Uint8Array(await response.arrayBuffer());
+      },
+      text() {
+        return response.text();
+      },
+      json<T>() {
+        return response.json() as Promise<T>;
+      },
+      blob() {
+        return response.blob();
+      },
     };
   }
 
@@ -143,42 +189,28 @@ export class R2VirtualBucket extends WorkerEntrypoint<R2VirtualBucketEnv, R2Virt
     return obj ? this.toMetadata(obj) : null;
   }
 
-  /**
-   * Get an object. Returns a Response with the body stream and metadata in
-   * headers — Response is an Rpc.BaseType so it crosses the RPC boundary.
-   */
-  async get(key: string): Promise<Response | null> {
-    const obj = await this.bucket.get(this.scopedKey(key));
+  /** Get an object body using the same reader methods as a native R2ObjectBody. */
+  async get(
+    key: string,
+    options?: R2GetOptions
+  ): Promise<VirtualR2ObjectBody | StorageObjectMetadata | null> {
+    const obj = await this.bucket.get(this.scopedKey(key), options);
     if (!obj) return null;
 
-    const headers = new Headers();
-    headers.set('x-r2-key', this.unscopedKey(obj.key));
-    headers.set('x-r2-version', obj.version);
-    headers.set('x-r2-size', String(obj.size));
-    headers.set('x-r2-etag', obj.etag);
-    headers.set('x-r2-http-etag', obj.httpEtag);
-    headers.set('x-r2-uploaded', obj.uploaded.toISOString());
-    if (obj.httpMetadata?.contentType) {
-      headers.set('content-type', obj.httpMetadata.contentType);
+    if ('body' in obj) {
+      return this.toObjectBody(obj);
     }
-    if (obj.customMetadata) {
-      headers.set('x-r2-custom-metadata', JSON.stringify(obj.customMetadata));
-    }
-
-    return new Response(obj.body, { headers });
+    return this.toMetadata(obj);
   }
 
-  /** Store an object. Accepts ReadableStream, ArrayBuffer, string, or null. */
+  /** Store an object. Accepts the same value/options shapes as native R2Bucket.put. */
   async put(
     key: string,
-    value: ReadableStream | ArrayBuffer | string | null,
-    options?: StoragePutOptions
-  ): Promise<StorageObjectMetadata> {
-    const obj = await this.bucket.put(this.scopedKey(key), value, {
-      httpMetadata: options?.httpMetadata,
-      customMetadata: options?.customMetadata,
-    });
-    return this.toMetadata(obj);
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+    options?: R2PutOptions
+  ): Promise<StorageObjectMetadata | null> {
+    const obj = await this.bucket.put(this.scopedKey(key), value, options);
+    return obj ? this.toMetadata(obj) : null;
   }
 
   /** Delete one or more objects. */
@@ -218,12 +250,9 @@ export class R2VirtualBucket extends WorkerEntrypoint<R2VirtualBucketEnv, R2Virt
   /** Create a new multipart upload. */
   async createMultipartUpload(
     key: string,
-    options?: StoragePutOptions
+    options?: R2MultipartOptions
   ): Promise<StorageMultipartUpload> {
-    const upload = await this.bucket.createMultipartUpload(this.scopedKey(key), {
-      httpMetadata: options?.httpMetadata,
-      customMetadata: options?.customMetadata,
-    });
+    const upload = await this.bucket.createMultipartUpload(this.scopedKey(key), options);
     return { key, uploadId: upload.uploadId };
   }
 
@@ -232,10 +261,11 @@ export class R2VirtualBucket extends WorkerEntrypoint<R2VirtualBucketEnv, R2Virt
     key: string,
     uploadId: string,
     partNumber: number,
-    value: ReadableStream | ArrayBuffer | string
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob,
+    options?: R2UploadPartOptions
   ): Promise<StorageUploadedPart> {
     const upload = this.bucket.resumeMultipartUpload(this.scopedKey(key), uploadId);
-    const part = await upload.uploadPart(partNumber, value);
+    const part = await upload.uploadPart(partNumber, value, options);
     return { partNumber: part.partNumber, etag: part.etag };
   }
 
