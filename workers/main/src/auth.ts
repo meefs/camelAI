@@ -2578,16 +2578,17 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   getModelPickerConfig(): OrgModelPickerConfig {
+    const orgProvider = this.getLlmProviderConfig()?.provider;
     const rows = this.sql
       .exec<{
         value: string;
       }>("SELECT value FROM org_info WHERE key = ?", ORG_MODEL_PICKER_CONFIG_KEY)
       .toArray();
     if (rows.length === 0) {
-      return defaultOrgModelPickerConfig();
+      return defaultOrgModelPickerConfig(orgProvider);
     }
 
-    return parseOrgModelPickerConfig(rows[0]!.value);
+    return parseOrgModelPickerConfig(rows[0]!.value, orgProvider);
   }
 
   setModelPickerConfig(
@@ -2599,7 +2600,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     },
   ): OrgModelPickerConfig {
     const previous = this.getModelPickerConfig();
-    const next = parseOrgModelPickerConfig(config);
+    const next = parseOrgModelPickerConfig(
+      config,
+      this.getLlmProviderConfig()?.provider,
+    );
 
     this.sql.exec(
       "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",

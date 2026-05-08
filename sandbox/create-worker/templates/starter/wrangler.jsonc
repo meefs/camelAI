@@ -64,6 +64,8 @@
 		"VALUE_FROM_CLOUDFLARE": "Starter template running on Cloudflare"
 		// Optional local fallback for template DATA_PROXY shim:
 		// "DATA_PROXY_URL": "http://host.docker.internal:8081/proxy/<thread-id>/api"
+		// Optional local fallback for template CONNECTIONS shim:
+		// "CAMELAI_CONNECTIONS_URL": "http://host.docker.internal:8081/proxy/<thread-id>/api/connections"
 	},
 
 	/**
@@ -87,8 +89,10 @@
 	/**
 	 * Service bindings
 	 * - DATA_PROXY: locally binds to LocalDataProxyService; virtualized on camelAI deploy
+	 * - CONNECTIONS: locally binds to LocalConnectionsService; virtualized on camelAI deploy
 	 */
 	"services": [
-		{ "binding": "DATA_PROXY", "service": "starter", "entrypoint": "LocalDataProxyService" }
+		{ "binding": "DATA_PROXY", "service": "starter", "entrypoint": "LocalDataProxyService" },
+		{ "binding": "CONNECTIONS", "service": "starter", "entrypoint": "LocalConnectionsService" }
 	]
 }

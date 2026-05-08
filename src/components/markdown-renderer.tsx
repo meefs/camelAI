@@ -37,6 +37,7 @@ interface MarkdownRendererProps {
   isStreaming?: boolean;
   variant?: 'default' | 'user';
   allowInlineHtml?: boolean;
+  workspaceId?: string;
   mentionSlugMap?: Map<string, Integration>;
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>;
 }
@@ -85,6 +86,39 @@ export function normalizeCodexCitationMarkers(content: string): string {
   // text without the structured metadata needed to render real links. Strip the
   // markers so users do not see broken token artifacts like citeturn1search0.
   return content.replace(CODEX_CITATION_REGEX, '');
+}
+
+function replaceWorkspaceIdPlaceholder(value: string | undefined, workspaceId?: string): string | undefined {
+  if (!value || !workspaceId) return value;
+  return value
+    .replaceAll('${WORKSPACE_ID}', workspaceId)
+    .replaceAll('$%7BWORKSPACE_ID%7D', encodeURIComponent(workspaceId))
+    .replaceAll('$%7bWORKSPACE_ID%7d', encodeURIComponent(workspaceId))
+    .replaceAll('%24%7BWORKSPACE_ID%7D', encodeURIComponent(workspaceId))
+    .replaceAll('%24%7bWORKSPACE_ID%7d', encodeURIComponent(workspaceId));
+}
+
+function replaceWorkspaceIdInChildren(children: ReactNode, workspaceId?: string): ReactNode {
+  if (!workspaceId) return children;
+  if (typeof children === 'string') {
+    return replaceWorkspaceIdPlaceholder(children, workspaceId);
+  }
+  if (Array.isArray(children)) {
+    return children.map((child, index) => (
+      <Fragment key={index}>{replaceWorkspaceIdInChildren(child, workspaceId)}</Fragment>
+    ));
+  }
+  if (isValidElement(children)) {
+    const child = children as ReactElement<{ children?: ReactNode }>;
+    if (child.props.children !== undefined) {
+      return cloneElement(
+        child,
+        undefined,
+        replaceWorkspaceIdInChildren(child.props.children, workspaceId),
+      );
+    }
+  }
+  return children;
 }
 
 // Inline code component - simple styled span
@@ -320,6 +354,7 @@ function withMentionChips(
 const createComponents = (
   variant: 'default' | 'user',
   sourceContent: string,
+  workspaceId?: string,
   mentionSlugMap?: Map<string, Integration>,
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>,
 ): Components => {
@@ -383,12 +418,13 @@ const createComponents = (
 
   // Links
   a: ({ href, children }) => {
+    const resolvedHref = replaceWorkspaceIdPlaceholder(href, workspaceId);
     // Internal API links (workspace outputs) should not open in new tab
-    const isInternal = href?.startsWith('/api/');
+    const isInternal = resolvedHref?.startsWith('/api/');
 
     return (
       <a
-        href={href}
+        href={resolvedHref}
         target={isInternal ? undefined : '_blank'}
         rel={isInternal ? undefined : 'noopener noreferrer'}
         className={cn(
@@ -396,7 +432,7 @@ const createComponents = (
           variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
         )}
       >
-        {wrap(children, 'a')}
+        {wrap(replaceWorkspaceIdInChildren(children, workspaceId), 'a')}
       </a>
     );
   },
@@ -474,7 +510,7 @@ const createComponents = (
   img: ({ src, alt }) => (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={src}
+      src={replaceWorkspaceIdPlaceholder(src, workspaceId)}
       alt={alt || ''}
       className="max-w-full h-auto rounded-lg my-4"
     />
@@ -488,6 +524,7 @@ function MarkdownRendererBase({
   isStreaming = false,
   variant = 'default',
   allowInlineHtml = false,
+  workspaceId,
   mentionSlugMap,
   annotatedMentions,
 }: MarkdownRendererProps) {
@@ -508,6 +545,7 @@ function MarkdownRendererBase({
   const components = createComponents(
     variant,
     processedContent,
+    workspaceId,
     mentionSlugMap,
     annotatedMentions,
   );
@@ -539,6 +577,7 @@ export const MarkdownRenderer = memo(MarkdownRendererBase, (prev, next) => {
     prev.isStreaming === next.isStreaming &&
     prev.variant === next.variant &&
     prev.allowInlineHtml === next.allowInlineHtml &&
+    prev.workspaceId === next.workspaceId &&
     prev.mentionSlugMap === next.mentionSlugMap &&
     prev.annotatedMentions === next.annotatedMentions
   );

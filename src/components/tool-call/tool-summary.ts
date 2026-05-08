@@ -4,6 +4,7 @@ import {
   isMcpTool,
   isSetAppPreviewToolName,
   isSetFilePreviewToolName,
+  isSetPreviewToolName,
   parseMcpToolName,
 } from './mcp-utils';
 import { getResultText } from './tool-utils';
@@ -39,9 +40,12 @@ function parseAppPreviewIsPublic(result?: ToolResultBlock): boolean | null {
   const text = getResultText(result);
   if (!text) return null;
   try {
-    const parsed = JSON.parse(text) as { app?: { is_public?: unknown } };
+    const parsed = JSON.parse(text) as { app?: { is_public?: unknown }; target?: { isPublic?: unknown } };
     if (parsed?.app && typeof parsed.app.is_public === 'boolean') {
       return parsed.app.is_public;
+    }
+    if (parsed?.target && typeof parsed.target.isPublic === 'boolean') {
+      return parsed.target.isPublic;
     }
   } catch {
     // Result was not JSON.
@@ -56,6 +60,55 @@ export interface ToolSummaryParts {
   appPreview?: { scriptName: string; isPublic: boolean };
 }
 
+function getFilePreviewSummary(path: string, isRunning: boolean, isError: boolean): ToolSummaryParts {
+  if (isRunning) {
+    if (!path) return { action: 'Opening preview...' };
+    return { action: 'Opening preview', filename: getFilename(path), path };
+  }
+  if (isError) {
+    return {
+      action: 'Failed to preview',
+      filename: path ? getFilename(path) : undefined,
+      path: path || undefined,
+    };
+  }
+  return {
+    action: 'Previewed',
+    filename: path ? getFilename(path) : undefined,
+    path: path || undefined,
+  };
+}
+
+function getAppPreviewSummary(
+  scriptName: string,
+  result: ToolResultBlock | undefined,
+  isRunning: boolean,
+  isError: boolean,
+): ToolSummaryParts {
+  const isPublic = parseAppPreviewIsPublic(result);
+  if (isRunning) {
+    if (!scriptName) return { action: 'Opening preview...' };
+    return { action: 'Opening preview', filename: scriptName };
+  }
+  if (isError) {
+    return {
+      action: 'Failed to preview',
+      filename: scriptName || undefined,
+    };
+  }
+  if (scriptName && isPublic !== null) {
+    return {
+      action: 'Previewed',
+      filename: scriptName,
+      appPreview: { scriptName, isPublic },
+    };
+  }
+  return {
+    action: 'Previewed',
+    filename: scriptName || undefined,
+  };
+}
+
 export function getToolSummaryParts(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
@@ -66,7 +119,7 @@ export function getToolSummaryParts(
 
   const { name, input } = tool;
   const inputRecord = input || {};
-  const isRunning = status === 'running' || (status == null && isStreaming && !result);
+  const isRunning = status === 'running' || (status == null && !!isStreaming && !result);
   const isError = status === 'error';
 
   if (isAskUserQuestionToolName(name)) {
@@ -93,50 +146,32 @@ export function getToolSummaryParts(
     return { action: 'Asked a question' };
   }
 
+  if (isSetPreviewToolName(name)) {
+    const kind = inputRecord.kind === 'app' || inputRecord.kind === 'file' ? inputRecord.kind : undefined;
+    const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
+    const scriptName = typeof inputRecord.script_name === 'string' ? inputRecord.script_name : '';
+
+    if (kind === 'app' || (!kind && scriptName)) {
+      return getAppPreviewSummary(scriptName, result, isRunning, isError);
+    }
+
+    if (kind === 'file' || (!kind && path)) {
+      return getFilePreviewSummary(path, isRunning, isError);
+    }
+
+    if (isRunning) return { action: 'Opening preview...' };
+    if (isError) return { action: 'Failed to preview' };
+    return { action: 'Previewed' };
+  }
+
   if (isSetFilePreviewToolName(name)) {
     const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
-    if (isRunning) {
-      if (!path) return { action: 'Opening preview...' };
-      return { action: 'Opening preview', filename: getFilename(path), path };
-    }
-    if (isError) {
-      return {
-        action: 'Failed to preview',
-        filename: path ? getFilename(path) : undefined,
-        path: path || undefined,
-      };
-    }
-    return {
-      action: 'Previewed',
-      filename: path ? getFilename(path) : undefined,
-      path: path || undefined,
-    };
+    return getFilePreviewSummary(path, isRunning, isError);
   }
 
   if (isSetAppPreviewToolName(name)) {
     const scriptName = typeof inputRecord.script_name === 'string' ? inputRecord.script_name : '';
-    const isPublic = parseAppPreviewIsPublic(result);
-    if (isRunning) {
-      if (!scriptName) return { action: 'Opening preview...' };
-      return { action: 'Opening preview', filename: scriptName };
-    }
-    if (isError) {
-      return {
-        action: 'Failed to preview',
-        filename: scriptName || undefined,
-      };
-    }
-    if (scriptName && isPublic !== null) {
-      return {
-        action: 'Previewed',
-        filename: scriptName,
-        appPreview: { scriptName, isPublic },
-      };
-    }
-    return {
-      action: 'Previewed',
-      filename: scriptName || undefined,
-    };
+    return getAppPreviewSummary(scriptName, result, isRunning, isError);
   }
 
   if (isMcpTool(name)) {

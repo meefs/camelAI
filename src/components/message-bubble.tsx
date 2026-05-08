@@ -278,11 +278,19 @@ interface ContentBlockRendererProps {
   content: string | ContentBlock[];
   messageId?: string;
   isStreaming?: boolean;
+  workspaceId?: string;
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
 }
 
-export function ContentBlockRenderer({ content, messageId, isStreaming = false, skillSheets, mentionSlugMap }: ContentBlockRendererProps) {
+export function ContentBlockRenderer({
+  content,
+  messageId,
+  isStreaming = false,
+  workspaceId,
+  skillSheets,
+  mentionSlugMap,
+}: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
     const { displayText: displayContent, annotatedMentions } = prepareDisplayText(content);
@@ -291,6 +299,7 @@ export function ContentBlockRenderer({ content, messageId, isStreaming = false, 
       <MarkdownRenderer
         content={displayContent}
         isStreaming={isStreaming}
+        workspaceId={workspaceId}
         mentionSlugMap={mentionSlugMap}
         annotatedMentions={annotatedMentions}
       />
@@ -329,6 +338,7 @@ export function ContentBlockRenderer({ content, messageId, isStreaming = false, 
             <MarkdownRenderer
               content={displayText}
               isStreaming={isStreaming}
+              workspaceId={workspaceId}
               mentionSlugMap={mentionSlugMap}
               annotatedMentions={annotatedMentions}
             />
@@ -503,13 +513,16 @@ export function MessageBubble({
   orgSlug,
   mentionSlugMap,
 }: MessageBubbleProps) {
+  const { currentWorkspace } = useAuthData();
+  const workspaceId = currentWorkspace?.id;
+
   if (message.isMeta || message.sourceToolUseID) {
     return null;
   }
 
   // Compact summaries get their own distinct rendering
   if (message.isCompactSummary) {
-    return <CompactSummaryCard content={message.content} />;
+    return <CompactSummaryCard content={message.content} workspaceId={workspaceId} />;
   }
 
   // ── Special user-role messages with distinct rendering ──
@@ -552,7 +565,6 @@ export function MessageBubble({
     return null;
   }
 
-  const { currentWorkspace } = useAuthData();
   const isCopied = copiedId === message.id;
   const isForking = forkingId === message.id;
   const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
@@ -591,8 +603,6 @@ export function MessageBubble({
 
     const previewRefs = uploadInfo.refs;
     const cleanedContent = uploadInfo.cleanContent;
-    const workspaceId = currentWorkspace?.id;
-
     const hasCleanContent = typeof cleanedContent === 'string'
       ? cleanedContent.length > 0
       : cleanedContent.length > 0;
@@ -684,6 +694,7 @@ export function MessageBubble({
               <ContentBlockRenderer
                 content={cleanedContent}
                 messageId={message.id}
+                workspaceId={workspaceId}
                 skillSheets={skillSheets}
                 mentionSlugMap={mentionSlugMap}
               />
@@ -735,6 +746,7 @@ export function MessageBubble({
             content={message.content}
             messageId={message.id}
             isStreaming={isStreaming}
+            workspaceId={workspaceId}
             skillSheets={skillSheets}
             mentionSlugMap={mentionSlugMap}
           />

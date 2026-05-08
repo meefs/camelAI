@@ -28,6 +28,14 @@ func TestHostPiBridgeResolvePiModel(t *testing.T) {
 			want: "custom/provider-model",
 		},
 		{
+			name: "codex gpt 5.5",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "gpt-5.5",
+			},
+			want: "openai/gpt-5.5",
+		},
+		{
 			name: "codex gpt 5.4",
 			env: map[string]string{
 				"CHIRIDION_CHAT_PROVIDER": "codex",
@@ -60,12 +68,52 @@ func TestHostPiBridgeResolvePiModel(t *testing.T) {
 			want: "camel/x-ai/grok-4.3",
 		},
 		{
+			name: "codex gemini 3 flash preview",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "gemini-3-flash-preview",
+			},
+			want: "camel/google/gemini-3-flash-preview",
+		},
+		{
+			name: "codex gemini 3.1 pro preview",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "gemini-3.1-pro-preview",
+			},
+			want: "camel/google/gemini-3.1-pro-preview",
+		},
+		{
+			name: "codex deepseek v4 pro",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "deepseek-v4-pro",
+			},
+			want: "camel/deepseek/deepseek-v4-pro",
+		},
+		{
+			name: "codex deepseek v4 flash",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "codex",
+				"CHIRIDION_CODEX_MODEL":   "deepseek-v4-flash",
+			},
+			want: "camel/deepseek/deepseek-v4-flash",
+		},
+		{
 			name: "claude sonnet",
 			env: map[string]string{
 				"CHIRIDION_CHAT_PROVIDER": "claude",
 				"CHIRIDION_CLAUDE_MODEL":  "sonnet",
 			},
 			want: "anthropic/claude-sonnet-4-6",
+		},
+		{
+			name: "claude opus 4.7",
+			env: map[string]string{
+				"CHIRIDION_CHAT_PROVIDER": "claude",
+				"CHIRIDION_CLAUDE_MODEL":  "opus-4.7",
+			},
+			want: "anthropic/claude-opus-4-7",
 		},
 		{
 			name: "claude opus",
@@ -172,6 +220,12 @@ func TestHostPiBridgeResolvePiModelCommand(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:   "gpt 5.5 maps to built in openai provider",
+			msg:    map[string]any{"model": "gpt-5.5"},
+			want:   "openai/gpt-5.5",
+			wantOK: true,
+		},
+		{
 			name:   "gpt maps to built in openai provider",
 			msg:    map[string]any{"model": "gpt-5.4"},
 			want:   "openai/gpt-5.4",
@@ -196,6 +250,30 @@ func TestHostPiBridgeResolvePiModelCommand(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "gemini flash maps to custom camel provider",
+			msg:    map[string]any{"model": "gemini-3-flash-preview"},
+			want:   "camel/google/gemini-3-flash-preview",
+			wantOK: true,
+		},
+		{
+			name:   "gemini pro maps to custom camel provider",
+			msg:    map[string]any{"model": "gemini-3.1-pro-preview"},
+			want:   "camel/google/gemini-3.1-pro-preview",
+			wantOK: true,
+		},
+		{
+			name:   "deepseek pro maps to custom camel provider",
+			msg:    map[string]any{"model": "deepseek-v4-pro"},
+			want:   "camel/deepseek/deepseek-v4-pro",
+			wantOK: true,
+		},
+		{
+			name:   "deepseek flash maps to custom camel provider",
+			msg:    map[string]any{"model": "deepseek-v4-flash"},
+			want:   "camel/deepseek/deepseek-v4-flash",
+			wantOK: true,
+		},
+		{
 			name:   "haiku maps to built in anthropic provider",
 			msg:    map[string]any{"model": "haiku"},
 			want:   "anthropic/claude-haiku-4-5-20251001",
@@ -205,6 +283,12 @@ func TestHostPiBridgeResolvePiModelCommand(t *testing.T) {
 			name:   "sonnet maps to built in anthropic provider",
 			msg:    map[string]any{"model": "sonnet"},
 			want:   "anthropic/claude-sonnet-4-6",
+			wantOK: true,
+		},
+		{
+			name:   "opus 4.7 maps to built in anthropic provider",
+			msg:    map[string]any{"model": "opus-4.7"},
+			want:   "anthropic/claude-opus-4-7",
 			wantOK: true,
 		},
 		{
@@ -301,9 +385,16 @@ func TestHostPiBridgeResolvePiModelUsesOpenRouterWhenUpstreamIsOpenRouter(t *tes
 
 	if got := bridge.resolvePiModel(map[string]string{
 		"CHIRIDION_CHAT_PROVIDER": "codex",
-		"CHIRIDION_CODEX_MODEL":   "gpt-5.4",
-	}); got != "camel/openai/gpt-5.4" {
-		t.Fatalf("resolvePiModel() hosted GPT = %q, want camel/openai/gpt-5.4", got)
+		"CHIRIDION_CODEX_MODEL":   "gpt-5.5",
+	}); got != "camel/openai/gpt-5.5" {
+		t.Fatalf("resolvePiModel() hosted GPT = %q, want camel/openai/gpt-5.5", got)
+	}
+
+	if got := bridge.resolvePiModel(map[string]string{
+		"CHIRIDION_CHAT_PROVIDER": "codex",
+		"CHIRIDION_CODEX_MODEL":   "gpt-5.4-mini",
+	}); got != "camel/openai/gpt-5.4-mini" {
+		t.Fatalf("resolvePiModel() hosted GPT mini = %q, want camel/openai/gpt-5.4-mini", got)
 	}
 
 	if got := bridge.resolvePiModel(map[string]string{
@@ -311,6 +402,20 @@ func TestHostPiBridgeResolvePiModelUsesOpenRouterWhenUpstreamIsOpenRouter(t *tes
 		"CHIRIDION_CLAUDE_MODEL":  "sonnet",
 	}); got != "camel/anthropic/claude-sonnet-4.6" {
 		t.Fatalf("resolvePiModel() hosted Claude = %q, want camel/anthropic/claude-sonnet-4.6", got)
+	}
+
+	if got := bridge.resolvePiModel(map[string]string{
+		"CHIRIDION_CHAT_PROVIDER": "claude",
+		"CHIRIDION_CLAUDE_MODEL":  "opus-4.7",
+	}); got != "camel/anthropic/claude-opus-4.7" {
+		t.Fatalf("resolvePiModel() hosted Opus 4.7 = %q, want camel/anthropic/claude-opus-4.7", got)
+	}
+
+	if got := bridge.resolvePiModel(map[string]string{
+		"CHIRIDION_CHAT_PROVIDER": "claude",
+		"CHIRIDION_CLAUDE_MODEL":  "opus",
+	}); got != "camel/anthropic/claude-opus-4.6" {
+		t.Fatalf("resolvePiModel() hosted Opus 4.6 = %q, want camel/anthropic/claude-opus-4.6", got)
 	}
 
 	if got := bridge.resolvePiModel(map[string]string{
@@ -323,9 +428,9 @@ func TestHostPiBridgeResolvePiModelUsesOpenRouterWhenUpstreamIsOpenRouter(t *tes
 	server.proxyThreads["thread-key"] = &ProxyThreadContext{ByokOpenAIKey: "openai-key"}
 	if got := bridge.resolvePiModel(map[string]string{
 		"CHIRIDION_CHAT_PROVIDER": "codex",
-		"CHIRIDION_CODEX_MODEL":   "gpt-5.4",
-	}); got != "openai/gpt-5.4" {
-		t.Fatalf("resolvePiModel() OpenAI BYOK GPT = %q, want openai/gpt-5.4", got)
+		"CHIRIDION_CODEX_MODEL":   "gpt-5.5",
+	}); got != "openai/gpt-5.5" {
+		t.Fatalf("resolvePiModel() OpenAI BYOK GPT = %q, want openai/gpt-5.5", got)
 	}
 }
 
@@ -615,6 +720,26 @@ func hostPiHasRuntimeMethod(t *testing.T, bridge *hostPiBridge, method string) b
 	return false
 }
 
+func hostPiRuntimeItemsForMethod(t *testing.T, bridge *hostPiBridge, method string) []map[string]any {
+	t.Helper()
+	items := []map[string]any{}
+	for _, payload := range hostPiBufferedPayloads(t, bridge) {
+		if payload["type"] != "runtime_event" {
+			continue
+		}
+		event, _ := payload["event"].(map[string]any)
+		if event["method"] != method {
+			continue
+		}
+		params, _ := event["params"].(map[string]any)
+		item, _ := params["item"].(map[string]any)
+		if item != nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 func hostPiLatestEventOfType(t *testing.T, bridge *hostPiBridge, eventType string) map[string]any {
 	t.Helper()
 	payloads := hostPiBufferedPayloads(t, bridge)
@@ -644,8 +769,6 @@ func TestHostPiToolArgsIncludesExtensionTools(t *testing.T) {
 		"set_preview",
 		"list_apps",
 		"set_app_visibility",
-		"set_file_preview",
-		"set_app_preview",
 		"get_latest_logs",
 		"list_scheduled_prompts",
 		"create_scheduled_prompt",
@@ -690,6 +813,9 @@ func TestHostPiSystemPromptArgs(t *testing.T) {
 	}
 	if strings.Contains(got[1], "# Project Context") {
 		t.Fatalf("system prompt should not include project context without a workspace path")
+	}
+	if !strings.Contains(got[1], "${WORKSPACE_ID}") {
+		t.Fatalf("system prompt should keep WORKSPACE_ID placeholder for prompt caching")
 	}
 }
 
@@ -830,5 +956,104 @@ func TestHostPiBridgeRecallsToolArgsForEndEvent(t *testing.T) {
 	}
 	if _, ok := bridge.toolArgs["tool_1"]; ok {
 		t.Fatal("recallToolArgs() should clear remembered args")
+	}
+}
+
+func TestHostPiBridgePreservesStructuredToolResult(t *testing.T) {
+	bridge := &hostPiBridge{threadID: "thread-1"}
+	result := []any{
+		map[string]any{"type": "text", "text": "Read image file [image/png]"},
+		map[string]any{"type": "image", "data": "abc123", "mimeType": "image/png"},
+	}
+
+	bridge.handlePiToolEnd(map[string]any{
+		"toolCallId": "tool_read",
+		"toolName":   "read",
+		"result":     result,
+	})
+
+	items := hostPiRuntimeItemsForMethod(t, bridge, "item/completed")
+	if len(items) != 1 {
+		t.Fatalf("item/completed count = %d, want 1", len(items))
+	}
+	item := items[0]
+	rawResult, ok := item["result"].([]any)
+	if !ok || len(rawResult) != 2 {
+		t.Fatalf("structured result was not preserved: %#v", item["result"])
+	}
+	contentItems, ok := item["contentItems"].([]any)
+	if !ok || len(contentItems) != 2 {
+		t.Fatalf("contentItems = %#v, want text plus image", item["contentItems"])
+	}
+	imageItem, _ := contentItems[1].(map[string]any)
+	if imageItem["type"] != "image" || imageItem["data"] != "abc123" {
+		t.Fatalf("image content item was not preserved: %#v", imageItem)
+	}
+}
+
+func TestHostPiBridgeEmitsEarlyBashToolStarted(t *testing.T) {
+	bridge := &hostPiBridge{threadID: "thread-1"}
+
+	bridge.handlePiToolCallStart(map[string]any{
+		"toolCall": map[string]any{
+			"id":   "tool_bash",
+			"name": "bash",
+		},
+	})
+
+	items := hostPiRuntimeItemsForMethod(t, bridge, "item/started")
+	if len(items) != 1 {
+		t.Fatalf("item/started count = %d, want 1", len(items))
+	}
+	item := items[0]
+	if item["id"] != "tool_bash" {
+		t.Fatalf("item id = %#v, want tool_bash", item["id"])
+	}
+	if item["type"] != "commandExecution" {
+		t.Fatalf("item type = %#v, want commandExecution", item["type"])
+	}
+	if item["status"] != "running" {
+		t.Fatalf("item status = %#v, want running", item["status"])
+	}
+	if command, ok := item["command"].(string); !ok || command != "" {
+		t.Fatalf("item command = %#v, want empty string", item["command"])
+	}
+}
+
+func TestHostPiBridgeUpdatesEarlyBashToolWithArgs(t *testing.T) {
+	bridge := &hostPiBridge{threadID: "thread-1"}
+
+	bridge.handlePiToolCallStart(map[string]any{
+		"toolCall": map[string]any{
+			"id":   "tool_bash",
+			"name": "bash",
+		},
+	})
+	bridge.handlePiToolStart(map[string]any{
+		"toolCallId": "tool_bash",
+		"toolName":   "bash",
+		"args": map[string]any{
+			"command":     "bun test",
+			"description": "tests",
+			"cwd":         "/home/claude",
+		},
+	})
+
+	items := hostPiRuntimeItemsForMethod(t, bridge, "item/started")
+	if len(items) != 2 {
+		t.Fatalf("item/started count = %d, want 2", len(items))
+	}
+	item := items[1]
+	if item["id"] != "tool_bash" {
+		t.Fatalf("item id = %#v, want tool_bash", item["id"])
+	}
+	if item["command"] != "bun test" {
+		t.Fatalf("item command = %#v, want bun test", item["command"])
+	}
+	if item["description"] != "tests" {
+		t.Fatalf("item description = %#v, want tests", item["description"])
+	}
+	if item["cwd"] != "/home/claude" {
+		t.Fatalf("item cwd = %#v, want /home/claude", item["cwd"])
 	}
 }

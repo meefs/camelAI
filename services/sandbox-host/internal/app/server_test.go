@@ -162,13 +162,17 @@ func TestRewriteClaudeRequestBodyForOpenRouter(t *testing.T) {
 	if err := json.Unmarshal(rewritten, &parsed); err != nil {
 		t.Fatalf("rewritten body is not json: %v", err)
 	}
-	if parsed["model"] != "anthropic/claude-sonnet-4.6" {
+	if parsed["model"] != "anthropic/claude-sonnet-4.6:nitro" {
 		t.Fatalf("unexpected model rewrite: %v", parsed["model"])
 	}
 
 	alreadyOpenRouter := []byte(`{"model":"anthropic/claude-haiku-4.5"}`)
-	if string(rewriteClaudeRequestBodyForOpenRouter(alreadyOpenRouter)) != string(alreadyOpenRouter) {
-		t.Fatal("expected explicit OpenRouter model to be preserved")
+	var explicitParsed map[string]any
+	if err := json.Unmarshal(rewriteClaudeRequestBodyForOpenRouter(alreadyOpenRouter), &explicitParsed); err != nil {
+		t.Fatalf("rewritten explicit body is not json: %v", err)
+	}
+	if explicitParsed["model"] != "anthropic/claude-haiku-4.5:nitro" {
+		t.Fatalf("unexpected explicit model rewrite: %v", explicitParsed["model"])
 	}
 
 	snapshotModel := []byte(`{"model":"claude-haiku-4-5-20251001"}`)
@@ -176,8 +180,77 @@ func TestRewriteClaudeRequestBodyForOpenRouter(t *testing.T) {
 	if err := json.Unmarshal(rewriteClaudeRequestBodyForOpenRouter(snapshotModel), &snapshotParsed); err != nil {
 		t.Fatalf("rewritten snapshot body is not json: %v", err)
 	}
-	if snapshotParsed["model"] != "anthropic/claude-haiku-4.5" {
+	if snapshotParsed["model"] != "anthropic/claude-haiku-4.5:nitro" {
 		t.Fatalf("unexpected snapshot model rewrite: %v", snapshotParsed["model"])
+	}
+
+	opus46 := []byte(`{"model":"opus"}`)
+	var opus46Parsed map[string]any
+	if err := json.Unmarshal(rewriteClaudeRequestBodyForOpenRouter(opus46), &opus46Parsed); err != nil {
+		t.Fatalf("rewritten opus body is not json: %v", err)
+	}
+	if opus46Parsed["model"] != "anthropic/claude-opus-4.6" {
+		t.Fatalf("unexpected opus model rewrite: %v", opus46Parsed["model"])
+	}
+
+	opus47 := []byte(`{"model":"opus-4.7"}`)
+	var opus47Parsed map[string]any
+	if err := json.Unmarshal(rewriteClaudeRequestBodyForOpenRouter(opus47), &opus47Parsed); err != nil {
+		t.Fatalf("rewritten opus 4.7 body is not json: %v", err)
+	}
+	if opus47Parsed["model"] != "anthropic/claude-opus-4.7" {
+		t.Fatalf("unexpected opus 4.7 model rewrite: %v", opus47Parsed["model"])
+	}
+}
+
+func TestMapToBedrockModelSupportsCurrentOpusModels(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{
+			model: "claude-opus-4-7",
+			want:  "global.anthropic.claude-opus-4-7",
+		},
+		{
+			model: "anthropic/claude-opus-4-7",
+			want:  "global.anthropic.claude-opus-4-7",
+		},
+		{
+			model: "claude-opus-4-6",
+			want:  "global.anthropic.claude-opus-4-6-v1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := mapToBedrockModel(tt.model); got != tt.want {
+				t.Fatalf("mapToBedrockModel(%q) = %q, want %q", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenRouterNitroModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "openai/gpt-5.4", want: "openai/gpt-5.4:nitro"},
+		{model: " openai/gpt-5.4 ", want: "openai/gpt-5.4:nitro"},
+		{model: "openai/gpt-5.4:nitro", want: "openai/gpt-5.4:nitro"},
+		{model: "openai/gpt-5.4:floor", want: "openai/gpt-5.4:floor"},
+		{model: "dynamic/auto_search", want: "dynamic/auto_search"},
+		{model: "google/gemini-3-flash-preview", want: "google/gemini-3-flash-preview"},
+		{model: "deepseek/deepseek-v4-pro", want: "deepseek/deepseek-v4-pro"},
+		{model: "anthropic/claude-opus-4.7", want: "anthropic/claude-opus-4.7"},
+		{model: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		if got := openRouterNitroModel(tt.model); got != tt.want {
+			t.Fatalf("openRouterNitroModel(%q) = %q, want %q", tt.model, got, tt.want)
+		}
 	}
 }
 
@@ -490,8 +563,26 @@ func TestResolveVirtualAIModelUsesGeminiFlashForAuto(t *testing.T) {
 	if got := resolveVirtualAIModel("auto_search"); got != "dynamic/auto_search" {
 		t.Fatalf("resolveVirtualAIModel(auto_search) = %q", got)
 	}
+	if got := resolveVirtualAIModel("gpt-5.5"); got != "openai/gpt-5.5" {
+		t.Fatalf("resolveVirtualAIModel(gpt-5.5 alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("opus-4.7"); got != "anthropic/claude-opus-4.7" {
+		t.Fatalf("resolveVirtualAIModel(opus 4.7 alias) = %q", got)
+	}
 	if got := resolveVirtualAIModel("google/gemini-3-flash-preview"); got != "google/gemini-3-flash-preview" {
 		t.Fatalf("resolveVirtualAIModel(gemini) = %q", got)
+	}
+	if got := resolveVirtualAIModel("gemini-3-flash-preview"); got != "google/gemini-3-flash-preview" {
+		t.Fatalf("resolveVirtualAIModel(gemini alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("gemini-3.1-pro-preview"); got != "google/gemini-3.1-pro-preview" {
+		t.Fatalf("resolveVirtualAIModel(gemini pro alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("deepseek-v4-pro"); got != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("resolveVirtualAIModel(deepseek pro alias) = %q", got)
+	}
+	if got := resolveVirtualAIModel("deepseek-v4-flash"); got != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("resolveVirtualAIModel(deepseek flash alias) = %q", got)
 	}
 }
 
@@ -532,8 +623,8 @@ func TestForwardOpenAIToAIGatewayUsesOpenRouterResponsesPath(t *testing.T) {
 	if capturedPath != "/openrouter/responses" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
 	}
-	if capturedModel != "gpt-5.4" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "gpt-5.4")
+	if capturedModel != "gpt-5.4:nitro" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "gpt-5.4:nitro")
 	}
 }
 
@@ -581,8 +672,8 @@ func TestForwardClaudeToOpenRouterGatewayRewritesModel(t *testing.T) {
 	if capturedAuth != "Bearer test-token" {
 		t.Fatalf("unexpected gateway auth: got=%q", capturedAuth)
 	}
-	if capturedModel != "anthropic/claude-sonnet-4.6" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "anthropic/claude-sonnet-4.6")
+	if capturedModel != "anthropic/claude-sonnet-4.6:nitro" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "anthropic/claude-sonnet-4.6:nitro")
 	}
 }
 
@@ -597,7 +688,7 @@ func TestForwardClaudeToOpenRouterDirectAddsAttributionHeaders(t *testing.T) {
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream body: %v", err)
 		}
-		if model, _ := body["model"].(string); model != "anthropic/claude-sonnet-4.6" {
+		if model, _ := body["model"].(string); model != "anthropic/claude-sonnet-4.6:nitro" {
 			t.Fatalf("unexpected upstream model: got=%q", model)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -637,7 +728,7 @@ func TestForwardClaudeToOpenRouterDirectAddsAttributionHeaders(t *testing.T) {
 	}
 }
 
-func TestForwardOpenAIToAIGatewayPreservesKimiModelAndRequestsStreamingUsage(t *testing.T) {
+func TestForwardOpenAIToAIGatewayAddsNitroToKimiModelAndRequestsStreamingUsage(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
 	var capturedIncludeUsage bool
@@ -678,15 +769,15 @@ func TestForwardOpenAIToAIGatewayPreservesKimiModelAndRequestsStreamingUsage(t *
 	if capturedPath != "/openrouter/chat/completions" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/chat/completions")
 	}
-	if capturedModel != "kimi-k2.6" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "kimi-k2.6")
+	if capturedModel != "kimi-k2.6:nitro" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "kimi-k2.6:nitro")
 	}
 	if !capturedIncludeUsage {
 		t.Fatal("expected stream_options.include_usage to be injected for streaming chat completions")
 	}
 }
 
-func TestForwardOpenAIToAIGatewayPreservesGrokModel(t *testing.T) {
+func TestForwardOpenAIToAIGatewayAddsNitroToGrokModel(t *testing.T) {
 	var capturedPath string
 	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -724,8 +815,65 @@ func TestForwardOpenAIToAIGatewayPreservesGrokModel(t *testing.T) {
 	if capturedPath != "/openrouter/responses" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
 	}
-	if capturedModel != "grok-4.3" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "grok-4.3")
+	if capturedModel != "grok-4.3:nitro" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "grok-4.3:nitro")
+	}
+}
+
+func TestForwardOpenAIToAIGatewayPreservesGeminiAndDeepSeekModels(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+	}{
+		{name: "gemini flash", model: "google/gemini-3-flash-preview"},
+		{name: "gemini pro", model: "google/gemini-3.1-pro-preview"},
+		{name: "deepseek pro", model: "deepseek/deepseek-v4-pro"},
+		{name: "deepseek flash", model: "deepseek/deepseek-v4-flash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedPath string
+			var capturedModel string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				capturedPath = req.URL.Path
+				assertOpenRouterAttributionHeaders(t, req.Header)
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				capturedModel, _ = body["model"].(string)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"object":"response","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer upstream.Close()
+
+			server := &Server{
+				cfg: Config{
+					AIGatewayBaseURL: upstream.URL,
+					AIGatewayToken:   "test-token",
+				},
+				httpClient: &http.Client{},
+				containers: container.NewTestManager(),
+			}
+
+			body := `{"model":"` + tt.model + `","input":"hi"}`
+			req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rec := httptest.NewRecorder()
+			server.forwardOpenAIToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"}, testThreadContext(), testCaller(), "test-req-new-openrouter-gateway", time.Now())
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if capturedPath != "/openrouter/responses" {
+				t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
+			}
+			if capturedModel != tt.model {
+				t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, tt.model)
+			}
+		})
 	}
 }
 
@@ -766,8 +914,8 @@ func TestForwardOpenRouterEndpointToAIGateway(t *testing.T) {
 	if capturedPath != "/openrouter/responses" {
 		t.Fatalf("unexpected upstream path: got=%q want=%q", capturedPath, "/openrouter/responses")
 	}
-	if capturedModel != "openai/gpt-5.4" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "openai/gpt-5.4")
+	if capturedModel != "openai/gpt-5.4:nitro" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "openai/gpt-5.4:nitro")
 	}
 }
 
@@ -783,7 +931,7 @@ func TestForwardOpenAIToAIGatewayRecordsStreamingKimiUsage(t *testing.T) {
 		_, _ = w.Write([]byte(strings.Join([]string{
 			`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"~moonshotai/kimi-latest","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}],"usage":null}`,
 			"",
-			`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"~moonshotai/kimi-latest","choices":[],"usage":{"prompt_tokens":194,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},"completion_tokens":2,"total_tokens":196}}`,
+			`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"~moonshotai/kimi-latest","choices":[],"usage":{"prompt_tokens":194,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},"completion_tokens":2,"total_tokens":196,"cost":0.95}}`,
 			"",
 			"data: [DONE]",
 			"",
@@ -834,6 +982,9 @@ func TestForwardOpenAIToAIGatewayRecordsStreamingKimiUsage(t *testing.T) {
 	}
 	if entries[0].InputTokens != 164 || entries[0].CacheReadInputTokens != 20 || entries[0].CacheCreationInputTokens != 10 || entries[0].OutputTokens != 2 {
 		t.Fatalf("unexpected usage tokens: %+v", entries[0])
+	}
+	if entries[0].CostUSD != 0.95 {
+		t.Fatalf("unexpected usage cost: got=%f want=0.95", entries[0].CostUSD)
 	}
 }
 
@@ -896,7 +1047,7 @@ func TestForwardOpenAICompatibleDirectPreservesV1ResponsesPath(t *testing.T) {
 	}
 }
 
-func TestForwardOpenAICompatibleDirectPreservesModelForOpenRouter(t *testing.T) {
+func TestForwardOpenAICompatibleDirectAddsNitroForOpenRouter(t *testing.T) {
 	var capturedAuth string
 	var capturedModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -941,8 +1092,72 @@ func TestForwardOpenAICompatibleDirectPreservesModelForOpenRouter(t *testing.T) 
 	if capturedAuth != "Bearer test-openrouter-key" {
 		t.Fatalf("unexpected auth header: got=%q", capturedAuth)
 	}
-	if capturedModel != "kimi-k2.6" {
-		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "kimi-k2.6")
+	if capturedModel != "kimi-k2.6:nitro" {
+		t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, "kimi-k2.6:nitro")
+	}
+}
+
+func TestForwardOpenAICompatibleDirectPreservesGeminiAndDeepSeekModelsForOpenRouter(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+	}{
+		{name: "gemini flash", model: "google/gemini-3-flash-preview"},
+		{name: "gemini pro", model: "google/gemini-3.1-pro-preview"},
+		{name: "deepseek pro", model: "deepseek/deepseek-v4-pro"},
+		{name: "deepseek flash", model: "deepseek/deepseek-v4-flash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedAuth string
+			var capturedModel string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				capturedAuth = req.Header.Get("Authorization")
+				assertOpenRouterAttributionHeaders(t, req.Header)
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				capturedModel, _ = body["model"].(string)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"object":"response","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer upstream.Close()
+
+			server := &Server{
+				httpClient: &http.Client{},
+				containers: container.NewTestManager(),
+			}
+
+			body := `{"model":"` + tt.model + `","input":"hi"}`
+			req := httptest.NewRequest(http.MethodPost, "/proxy/test-thread/api/openai/v1/responses", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rec := httptest.NewRecorder()
+			server.forwardOpenAICompatibleDirect(
+				rec,
+				req,
+				ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/openai/v1/responses"},
+				testThreadContext(),
+				testCaller(),
+				"test-req-openrouter-direct-new-model",
+				time.Now(),
+				upstream.URL+"/api",
+				"test-openrouter-key",
+				"openrouter",
+			)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if capturedAuth != "Bearer test-openrouter-key" {
+				t.Fatalf("unexpected auth header: got=%q", capturedAuth)
+			}
+			if capturedModel != tt.model {
+				t.Fatalf("unexpected upstream model: got=%q want=%q", capturedModel, tt.model)
+			}
+		})
 	}
 }
 
@@ -1012,9 +1227,15 @@ func TestVirtualAIProxyRecordsCreditChargeableUsage(t *testing.T) {
 	defer billingServer.Close()
 
 	var capturedPath string
+	var capturedModel string
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		capturedPath = req.URL.Path
 		assertOpenRouterAttributionHeaders(t, req.Header)
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode gateway body: %v", err)
+		}
+		capturedModel, _ = body["model"].(string)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"gpt-5.4-mini","usage":{"prompt_tokens":1000,"completion_tokens":2000}}`))
 	}))
@@ -1047,6 +1268,9 @@ func TestVirtualAIProxyRecordsCreditChargeableUsage(t *testing.T) {
 	}
 	if capturedPath != "/openrouter/chat/completions" {
 		t.Fatalf("unexpected gateway path: got=%q want=%q", capturedPath, "/openrouter/chat/completions")
+	}
+	if capturedModel != "gpt-5.4-mini:nitro" {
+		t.Fatalf("unexpected gateway model: got=%q want=%q", capturedModel, "gpt-5.4-mini:nitro")
 	}
 
 	var sum state.UsageLogSum

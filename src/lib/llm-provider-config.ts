@@ -22,16 +22,21 @@ export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
-    value: "sonnet",
-    label: "Sonnet 4.6",
-    description: "Default and recommended",
+    value: "opus-4.7",
+    label: "Opus 4.7",
+    description: "Smartest Claude model",
   },
-  { value: "haiku", label: "Haiku 4.5", description: "Faster and cheaper" },
   {
     value: "opus",
     label: "Opus 4.6",
     description: "Smarter, but slower and more expensive",
   },
+  {
+    value: "sonnet",
+    label: "Sonnet 4.6",
+    description: "Default and recommended",
+  },
+  { value: "haiku", label: "Haiku 4.5", description: "Faster and cheaper" },
 ];
 
 export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
@@ -39,6 +44,11 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
+  {
+    value: "gpt-5.5",
+    label: "GPT-5.5",
+    description: "OpenAI flagship reasoning model",
+  },
   {
     value: "gpt-5.4",
     label: "GPT-5.4",
@@ -48,6 +58,26 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     value: "gpt-5.4-mini",
     label: "GPT-5.4 Mini",
     description: "Faster and cheaper",
+  },
+  {
+    value: "gemini-3.1-pro-preview",
+    label: "Gemini 3.1 Pro Preview",
+    description: "OpenRouter/camelAI hosted flagship reasoning model",
+  },
+  {
+    value: "gemini-3-flash-preview",
+    label: "Gemini 3 Flash Preview",
+    description: "OpenRouter/camelAI hosted fast reasoning model",
+  },
+  {
+    value: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    description: "OpenRouter/camelAI hosted flagship reasoning model",
+  },
+  {
+    value: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    description: "OpenRouter/camelAI hosted faster and cheaper model",
   },
   {
     value: "kimi-k2.6",
@@ -66,6 +96,15 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = CLAUDE_LLM_MODEL_OPTIONS;
+
+const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
+  "kimi-k2.6",
+  "grok-4.3",
+  "gemini-3-flash-preview",
+  "gemini-3.1-pro-preview",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+]);
 
 export interface LlmProviderStoredConfig {
   aws_region?: string;
@@ -145,15 +184,10 @@ export function getProviderForModel(
   model: LlmModel | null | undefined,
   fallbackProvider: ChatHarness = "claude",
 ): ChatHarness {
-  if (
-    model === "gpt-5.4" ||
-    model === "gpt-5.4-mini" ||
-    model === "kimi-k2.6" ||
-    model === "grok-4.3"
-  ) {
+  if (CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === model)) {
     return "codex";
   }
-  if (model === "haiku" || model === "sonnet" || model === "opus") {
+  if (CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === model)) {
     return "claude";
   }
   return fallbackProvider;
@@ -250,24 +284,14 @@ export function isLlmModel(
   provider?: ChatHarness,
 ): value is LlmModel {
   if (provider === "codex") {
-    return (
-      value === "gpt-5.4" ||
-      value === "gpt-5.4-mini" ||
-      value === "kimi-k2.6" ||
-      value === "grok-4.3"
-    );
+    return CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === value);
   }
   if (provider === "claude") {
-    return value === "haiku" || value === "sonnet" || value === "opus";
+    return CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === value);
   }
   return (
-    value === "haiku" ||
-    value === "sonnet" ||
-    value === "opus" ||
-    value === "gpt-5.4" ||
-    value === "gpt-5.4-mini" ||
-    value === "kimi-k2.6" ||
-    value === "grok-4.3"
+    CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === value) ||
+    CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === value)
   );
 }
 
@@ -275,7 +299,7 @@ export function isLlmModelAllowedForOrgProvider(
   model: LlmModel,
   orgProvider?: string | null,
 ): boolean {
-  if (model === "kimi-k2.6" || model === "grok-4.3") {
+  if (OPENROUTER_ONLY_CODEX_MODELS.has(model)) {
     return orgProvider !== "openai";
   }
   return true;

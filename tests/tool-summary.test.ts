@@ -157,6 +157,40 @@ describe('getToolSummaryParts tense follows status', () => {
 });
 
 describe('getToolSummaryParts set-preview MCP tools', () => {
+  it('renders unified set_preview with a file path as a clickable file summary source', () => {
+    const tool = makeMcpTool('set_preview', {
+      path: '/home/claude/src/app.tsx',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'app.tsx',
+      path: '/home/claude/src/app.tsx',
+    });
+  });
+
+  it('renders unified set_preview with an app preview target when is_public is parseable', () => {
+    const tool = makeMcpTool('set_preview', {
+      script_name: 'my-todo-app',
+    });
+    const result = makeToolResult(JSON.stringify({
+      success: true,
+      target: {
+        kind: 'app',
+        scriptName: 'my-todo-app',
+        isPublic: false,
+      },
+    }));
+    const summary = getToolSummaryParts(tool, result, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'my-todo-app',
+      appPreview: { scriptName: 'my-todo-app', isPublic: false },
+    });
+  });
+
   it('shows generic opening copy while set_file_preview is running without a path', () => {
     const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview');
     const summary = getToolSummaryParts(tool, undefined, false, 'running');

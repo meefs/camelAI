@@ -1328,7 +1328,7 @@ func (s *Server) checkCreditBalance(threadContext *ProxyThreadContext, snapshot 
 
 // recordUsage persists token usage and cost to the state store.
 func (s *Server) recordUsage(tc *ProxyThreadContext, provider string, billingSource string, creditChargeable bool, usage UsageTokens, durationMs int64) {
-	costUSD := usage.CostUSD()
+	costUSD := usage.EffectiveCostUSD()
 
 	record := state.UsageRecord{
 		OrgID:                    tc.OrgID,
@@ -1367,6 +1367,7 @@ func (s *Server) recordUsage(tc *ProxyThreadContext, provider string, billingSou
 		"cacheCreationInputTokens": usage.CacheCreationInputTokens,
 		"cacheReadInputTokens":     usage.CacheReadInputTokens,
 		"costUSD":                  costUSD,
+		"reportedCost":             usage.ReportedCostUSD != nil,
 		"durationMs":               durationMs,
 	})
 }
@@ -1653,7 +1654,7 @@ func rewriteClaudeRequestBodyForOpenRouter(rawBody []byte) []byte {
 	if !ok {
 		return rawBody
 	}
-	openRouterModel := openRouterClaudeModel(model)
+	openRouterModel := openRouterNitroModel(openRouterClaudeModel(model))
 	if openRouterModel == model {
 		return rawBody
 	}
@@ -1673,6 +1674,8 @@ func openRouterClaudeModel(model string) string {
 		return "anthropic/claude-haiku-4.5"
 	case "opus":
 		return "anthropic/claude-opus-4.6"
+	case "opus-4.7", "claude-opus-4-7", "claude-opus-4.7":
+		return "anthropic/claude-opus-4.7"
 	case "claude-sonnet-4-6":
 		return "anthropic/claude-sonnet-4.6"
 	case "claude-opus-4-6":
@@ -1696,6 +1699,51 @@ func openRouterClaudeModel(model string) string {
 	default:
 		return model
 	}
+}
+
+func rewriteOpenRouterNitroRequestBody(rawBody []byte) []byte {
+	if len(rawBody) == 0 {
+		return rawBody
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		return rawBody
+	}
+	model, ok := body["model"].(string)
+	if !ok {
+		return rawBody
+	}
+	nitroModel := openRouterNitroModel(model)
+	if nitroModel == model {
+		return rawBody
+	}
+	body["model"] = nitroModel
+	rewritten, err := json.Marshal(body)
+	if err != nil {
+		return rawBody
+	}
+	return rewritten
+}
+
+func openRouterNitroModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return model
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "dynamic/") ||
+		strings.HasPrefix(lower, "google/gemini-") ||
+		strings.HasPrefix(lower, "deepseek/deepseek-v4-") ||
+		strings.HasPrefix(lower, "anthropic/claude-opus-4.") ||
+		strings.HasSuffix(lower, ":nitro") {
+		return trimmed
+	}
+	lastSlash := strings.LastIndex(trimmed, "/")
+	if strings.Contains(trimmed[lastSlash+1:], ":") {
+		return trimmed
+	}
+	return trimmed + ":nitro"
 }
 
 // forwardClaudeToBedrockDirect handles BYOK Bedrock requests by calling
@@ -1909,6 +1957,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 		}
 		requestModel = extractModelFromRequestBody(rawBody)
 		rawBody = ensureOpenAIStreamingUsage(rawBody, normalizedPath)
+		rawBody = rewriteOpenRouterNitroRequestBody(rawBody)
 		forwardBody = bytes.NewReader(rawBody)
 		billingDecision = s.checkOrgBillingAccess(threadContext, billingSourceHosted, requestModel)
 		if billingDecision.Denied {
@@ -2051,9 +2100,12 @@ func (s *Server) handleVirtualAIRoute(w http.ResponseWriter, req *http.Request) 
 		requestModel = model
 	}
 	resolved := resolveVirtualAIModel(requestModel)
-	bodyJSON["model"] = resolved
 	if isVirtualAIOpenRouterModel(resolved) {
 		gatewayProvider = "openrouter"
+	}
+	bodyJSON["model"] = resolved
+	if gatewayProvider == "openrouter" {
+		bodyJSON["model"] = openRouterNitroModel(resolved)
 	}
 	ensureOpenAIStreamUsage(bodyJSON)
 	rawBody, _ = json.Marshal(bodyJSON)
@@ -2118,7 +2170,7 @@ func (s *Server) handleVirtualAIRoute(w http.ResponseWriter, req *http.Request) 
 	if usage.Model == "" {
 		usage.Model = extractModelFromRequestBody(rawBody)
 	}
-	costUSD := usage.CostUSD()
+	costUSD := usage.EffectiveCostUSD()
 	log.Printf("[SandboxHost] virtual AI usage parsed org=%s workspace=%s user=%s requestModel=%s usageModel=%s provider=%s status=%d inputTokens=%d outputTokens=%d cacheCreationInputTokens=%d cacheReadInputTokens=%d billableTokens=%t costUSD=%.6f billingSource=%s creditChargeable=%t durationMs=%d copyError=%t",
 		threadContext.OrgID, threadContext.WorkspaceID, threadContext.UserID, requestModel, usage.Model, provider, resp.StatusCode,
 		usage.InputTokens, usage.OutputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens, usage.HasBillableTokens(), costUSD,
@@ -2154,6 +2206,18 @@ func resolveVirtualAIModel(model string) string {
 		return "google/gemini-3-flash-preview"
 	case "auto_search", "auto_image":
 		return "dynamic/" + trimmed
+	case "gpt-5.5":
+		return "openai/gpt-5.5"
+	case "opus-4.7":
+		return "anthropic/claude-opus-4.7"
+	case "gemini-3-flash-preview":
+		return "google/gemini-3-flash-preview"
+	case "gemini-3.1-pro-preview":
+		return "google/gemini-3.1-pro-preview"
+	case "deepseek-v4-pro":
+		return "deepseek/deepseek-v4-pro"
+	case "deepseek-v4-flash":
+		return "deepseek/deepseek-v4-flash"
 	default:
 		return trimmed
 	}
@@ -2228,6 +2292,9 @@ func (s *Server) forwardOpenAICompatibleDirect(
 			return
 		}
 		rawBody = ensureOpenAIStreamingUsage(rawBody, normalizedPath)
+		if providerName == "openrouter" {
+			rawBody = rewriteOpenRouterNitroRequestBody(rawBody)
+		}
 		forwardBody = bytes.NewReader(rawBody)
 	}
 
@@ -2376,6 +2443,7 @@ var bedrockModelMap = map[string]string{
 	"claude-opus-4-5-20251101":   "global.anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-sonnet-4-6":          "global.anthropic.claude-sonnet-4-6",
 	"claude-opus-4-6":            "global.anthropic.claude-opus-4-6-v1",
+	"claude-opus-4-7":            "global.anthropic.claude-opus-4-7",
 	"claude-sonnet-4-20250514":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
 	"claude-opus-4-20250514":     "global.anthropic.claude-opus-4-20250514-v1:0",
 	"claude-3-5-sonnet-20241022": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -2383,14 +2451,25 @@ var bedrockModelMap = map[string]string{
 }
 
 func mapToBedrockModel(model string) string {
-	if mapped, ok := bedrockModelMap[model]; ok {
+	normalized := strings.TrimSpace(model)
+	if mapped, ok := bedrockModelMap[normalized]; ok {
 		return mapped
 	}
-	m := strings.ToLower(model)
+	normalized = strings.TrimPrefix(normalized, "anthropic/")
+	if mapped, ok := bedrockModelMap[normalized]; ok {
+		return mapped
+	}
+	m := strings.ToLower(normalized)
+	if strings.Contains(m, "opus-4-7") || strings.Contains(m, "opus-4.7") {
+		return "global.anthropic.claude-opus-4-7"
+	}
+	if strings.Contains(m, "opus-4-6") || strings.Contains(m, "opus-4.6") {
+		return "global.anthropic.claude-opus-4-6-v1"
+	}
 	if strings.Contains(m, "sonnet-4-6") || strings.Contains(m, "sonnet-4.6") {
 		return "global.anthropic.claude-sonnet-4-6"
 	}
-	return "global.anthropic." + model + "-v1:0"
+	return "global.anthropic." + normalized + "-v1:0"
 }
 
 func ensureOpenAIStreamingUsage(rawBody []byte, normalizedPath string) []byte {

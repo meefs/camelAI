@@ -90,18 +90,19 @@ export interface WorkspaceModelPickerState {
 
 async function getOrgModelPickerConfigCompat(
   orgStub: OrgDO,
+  orgProvider?: LlmProvider | string | null,
 ): Promise<OrgModelPickerConfig> {
   try {
     const maybeStub = orgStub as { getModelPickerConfig?: unknown };
     if (typeof maybeStub.getModelPickerConfig !== "function") {
-      return defaultOrgModelPickerConfig();
+      return defaultOrgModelPickerConfig(orgProvider);
     }
     return await orgStub.getModelPickerConfig();
   } catch (error) {
     if (!isMissingModelPickerConfigRpcError(error)) {
       throw error;
     }
-    return defaultOrgModelPickerConfig();
+    return defaultOrgModelPickerConfig(orgProvider);
   }
 }
 
@@ -148,15 +149,12 @@ export async function getWorkspaceModelPickerState(
   const wsStub = env.WORKSPACE.get(
     env.WORKSPACE.idFromName(workspaceId),
   ) as unknown as WorkspaceDO;
-  const [
-    llmProviderConfig,
-    experimentalSettings,
-    orgPickerConfig,
-    workspacePickerConfig,
-  ] = await Promise.all([
+  const [llmProviderConfig, experimentalSettings] = await Promise.all([
     orgStub.getLlmProviderConfig(),
     orgStub.getExperimentalSettings(),
-    getOrgModelPickerConfigCompat(orgStub),
+  ]);
+  const [orgPickerConfig, workspacePickerConfig] = await Promise.all([
+    getOrgModelPickerConfigCompat(orgStub, llmProviderConfig?.provider),
     getWorkspaceModelPickerConfigCompat(wsStub),
   ]);
   const baseProvider =

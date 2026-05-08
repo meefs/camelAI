@@ -8,7 +8,52 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 		want  ModelPricing
 	}{
 		{
+			model: "claude-opus-4-7",
+			want: ModelPricing{
+				InputPerToken:         0.000005,
+				OutputPerToken:        0.000025,
+				CacheCreationPerToken: 0.00000625,
+				CacheReadPerToken:     0.0000005,
+			},
+		},
+		{
+			model: "anthropic/claude-opus-4.7",
+			want: ModelPricing{
+				InputPerToken:         0.000005,
+				OutputPerToken:        0.000025,
+				CacheCreationPerToken: 0.00000625,
+				CacheReadPerToken:     0.0000005,
+			},
+		},
+		{
+			model: "camel/anthropic/claude-opus-4.7",
+			want: ModelPricing{
+				InputPerToken:         0.000005,
+				OutputPerToken:        0.000025,
+				CacheCreationPerToken: 0.00000625,
+				CacheReadPerToken:     0.0000005,
+			},
+		},
+		{
 			model: "claude-opus-4-6",
+			want: ModelPricing{
+				InputPerToken:         0.000005,
+				OutputPerToken:        0.000025,
+				CacheCreationPerToken: 0.00000625,
+				CacheReadPerToken:     0.0000005,
+			},
+		},
+		{
+			model: "anthropic/claude-opus-4.6",
+			want: ModelPricing{
+				InputPerToken:         0.000005,
+				OutputPerToken:        0.000025,
+				CacheCreationPerToken: 0.00000625,
+				CacheReadPerToken:     0.0000005,
+			},
+		},
+		{
+			model: "camel/anthropic/claude-opus-4.6",
 			want: ModelPricing{
 				InputPerToken:         0.000005,
 				OutputPerToken:        0.000025,
@@ -41,6 +86,22 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 				OutputPerToken:        0.000005,
 				CacheCreationPerToken: 0.00000125,
 				CacheReadPerToken:     0.0000001,
+			},
+		},
+		{
+			model: "gpt-5.5",
+			want: ModelPricing{
+				InputPerToken:     0.000005,
+				OutputPerToken:    0.00003,
+				CacheReadPerToken: 0.0000005,
+			},
+		},
+		{
+			model: "camel/openai/gpt-5.5",
+			want: ModelPricing{
+				InputPerToken:     0.000005,
+				OutputPerToken:    0.00003,
+				CacheReadPerToken: 0.0000005,
 			},
 		},
 		{
@@ -130,7 +191,7 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 			want: ModelPricing{
 				InputPerToken:         0.0000005,
 				OutputPerToken:        0.000003,
-				CacheCreationPerToken: 0.0000005,
+				CacheCreationPerToken: 0.00000008333333333333334,
 				CacheReadPerToken:     0.00000005,
 			},
 		},
@@ -139,17 +200,92 @@ func TestLookupPricing_CurrentModelRates(t *testing.T) {
 			want: ModelPricing{
 				InputPerToken:         0.0000005,
 				OutputPerToken:        0.000003,
-				CacheCreationPerToken: 0.0000005,
+				CacheCreationPerToken: 0.00000008333333333333334,
 				CacheReadPerToken:     0.00000005,
 			},
 		},
 		{
-			model: "camel/openai/gemini-3-flash-preview",
+			model: "camel/google/gemini-3-flash-preview",
 			want: ModelPricing{
 				InputPerToken:         0.0000005,
 				OutputPerToken:        0.000003,
-				CacheCreationPerToken: 0.0000005,
+				CacheCreationPerToken: 0.00000008333333333333334,
 				CacheReadPerToken:     0.00000005,
+			},
+		},
+		{
+			model: "google/gemini-3.1-pro-preview",
+			want: ModelPricing{
+				InputPerToken:         0.000002,
+				OutputPerToken:        0.000012,
+				CacheCreationPerToken: 0.000000375,
+				CacheReadPerToken:     0.0000002,
+			},
+		},
+		{
+			model: "gemini-3.1-pro-preview",
+			want: ModelPricing{
+				InputPerToken:         0.000002,
+				OutputPerToken:        0.000012,
+				CacheCreationPerToken: 0.000000375,
+				CacheReadPerToken:     0.0000002,
+			},
+		},
+		{
+			model: "camel/google/gemini-3.1-pro-preview",
+			want: ModelPricing{
+				InputPerToken:         0.000002,
+				OutputPerToken:        0.000012,
+				CacheCreationPerToken: 0.000000375,
+				CacheReadPerToken:     0.0000002,
+			},
+		},
+		{
+			model: "deepseek/deepseek-v4-pro",
+			want: ModelPricing{
+				InputPerToken:     0.000000435,
+				OutputPerToken:    0.00000087,
+				CacheReadPerToken: 0.000000003625,
+			},
+		},
+		{
+			model: "deepseek-v4-pro",
+			want: ModelPricing{
+				InputPerToken:     0.000000435,
+				OutputPerToken:    0.00000087,
+				CacheReadPerToken: 0.000000003625,
+			},
+		},
+		{
+			model: "openrouter/deepseek/deepseek-v4-pro",
+			want: ModelPricing{
+				InputPerToken:     0.000000435,
+				OutputPerToken:    0.00000087,
+				CacheReadPerToken: 0.000000003625,
+			},
+		},
+		{
+			model: "deepseek/deepseek-v4-flash",
+			want: ModelPricing{
+				InputPerToken:     0.00000014,
+				OutputPerToken:    0.00000028,
+				CacheReadPerToken: 0.0000000028,
+			},
+		},
+		{
+			model: "deepseek-v4-flash",
+			want: ModelPricing{
+				InputPerToken:     0.00000014,
+				OutputPerToken:    0.00000028,
+				CacheReadPerToken: 0.0000000028,
+			},
+		},
+		{
+			model: "camelai-openrouter/deepseek/deepseek-v4-flash",
+			want: ModelPricing{
+				InputPerToken:     0.00000014,
+				OutputPerToken:    0.00000028,
+				CacheReadPerToken: 0.0000000028,
 			},
 		},
 	}
@@ -174,6 +310,37 @@ func TestUsageTokensCostUSD_Opus46Pricing(t *testing.T) {
 
 	cost := usage.CostUSD()
 	expected := 0.005 + 0.05 + 0.01875 + 0.002
+	if diff := cost - expected; diff > 0.000001 || diff < -0.000001 {
+		t.Fatalf("expected cost %.6f, got %.6f", expected, cost)
+	}
+}
+
+func TestUsageTokensCostUSD_Opus47Pricing(t *testing.T) {
+	usage := UsageTokens{
+		Model:                    "camel/anthropic/claude-opus-4.7",
+		InputTokens:              1000,
+		OutputTokens:             2000,
+		CacheCreationInputTokens: 3000,
+		CacheReadInputTokens:     4000,
+	}
+
+	cost := usage.CostUSD()
+	expected := 0.005 + 0.05 + 0.01875 + 0.002
+	if diff := cost - expected; diff > 0.000001 || diff < -0.000001 {
+		t.Fatalf("expected cost %.6f, got %.6f", expected, cost)
+	}
+}
+
+func TestUsageTokensCostUSD_GPT55Pricing(t *testing.T) {
+	usage := UsageTokens{
+		Model:                "camel/openai/gpt-5.5",
+		InputTokens:          1000,
+		OutputTokens:         2000,
+		CacheReadInputTokens: 3000,
+	}
+
+	cost := usage.CostUSD()
+	expected := 0.005 + 0.06 + 0.0015
 	if diff := cost - expected; diff > 0.000001 || diff < -0.000001 {
 		t.Fatalf("expected cost %.6f, got %.6f", expected, cost)
 	}

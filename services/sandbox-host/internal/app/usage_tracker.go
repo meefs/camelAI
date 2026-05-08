@@ -99,7 +99,7 @@ func copySSEStreamWithUsage(w http.ResponseWriter, body io.Reader) (UsageTokens,
 }
 
 func isUsageEvent(eventType string) bool {
-	return eventType == "message_start" || eventType == "message_delta" || eventType == "response.completed"
+	return eventType == "message_start" || eventType == "message_delta" || eventType == "response.completed" || eventType == "response.done"
 }
 
 func applyUsageTokens(target *UsageTokens, next UsageTokens) {
@@ -113,6 +113,9 @@ func applyUsageTokens(target *UsageTokens, next UsageTokens) {
 	target.OutputTokens += next.OutputTokens
 	target.CacheCreationInputTokens += next.CacheCreationInputTokens
 	target.CacheReadInputTokens += next.CacheReadInputTokens
+	if next.ReportedCostUSD != nil {
+		target.ReportedCostUSD = next.ReportedCostUSD
+	}
 }
 
 func applyOpenAIUsage(usage *UsageTokens, model string, inputTokens, cachedTokens, cacheWriteTokens, outputTokens int64) {
@@ -140,6 +143,13 @@ func applyOpenAIUsage(usage *UsageTokens, model string, inputTokens, cachedToken
 	usage.OutputTokens += outputTokens
 }
 
+func applyReportedCost(usage *UsageTokens, cost *float64) {
+	if usage == nil || cost == nil {
+		return
+	}
+	usage.ReportedCostUSD = cost
+}
+
 // extractUsageFromSSEData parses a single SSE data payload and accumulates
 // token usage into the provided UsageTokens.
 func extractUsageFromSSEData(data []byte, eventType string, usage *UsageTokens) {
@@ -150,9 +160,10 @@ func extractUsageFromSSEData(data []byte, eventType string, usage *UsageTokens) 
 			Message struct {
 				Model string `json:"model"`
 				Usage struct {
-					InputTokens              int64 `json:"input_tokens"`
-					CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-					CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+					InputTokens              int64    `json:"input_tokens"`
+					CacheCreationInputTokens int64    `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int64    `json:"cache_read_input_tokens"`
+					Cost                     *float64 `json:"cost"`
 				} `json:"usage"`
 			} `json:"message"`
 		}
@@ -163,27 +174,31 @@ func extractUsageFromSSEData(data []byte, eventType string, usage *UsageTokens) 
 			usage.InputTokens += ev.Message.Usage.InputTokens
 			usage.CacheCreationInputTokens += ev.Message.Usage.CacheCreationInputTokens
 			usage.CacheReadInputTokens += ev.Message.Usage.CacheReadInputTokens
+			applyReportedCost(usage, ev.Message.Usage.Cost)
 		}
 
 	case "message_delta":
 		// {"type":"message_delta","usage":{"output_tokens":N}}
 		var ev struct {
 			Usage struct {
-				OutputTokens int64 `json:"output_tokens"`
+				OutputTokens int64    `json:"output_tokens"`
+				Cost         *float64 `json:"cost"`
 			} `json:"usage"`
 		}
 		if json.Unmarshal(data, &ev) == nil {
 			usage.OutputTokens += ev.Usage.OutputTokens
+			applyReportedCost(usage, ev.Usage.Cost)
 		}
 
-	case "response.completed":
+	case "response.completed", "response.done":
 		// {"type":"response.completed","response":{"model":"...","usage":{"input_tokens":N,"input_tokens_details":{"cached_tokens":M},"output_tokens":K}}}
 		var ev struct {
 			Response struct {
 				Model string `json:"model"`
 				Usage struct {
-					InputTokens        int64 `json:"input_tokens"`
-					OutputTokens       int64 `json:"output_tokens"`
+					InputTokens        int64    `json:"input_tokens"`
+					OutputTokens       int64    `json:"output_tokens"`
+					Cost               *float64 `json:"cost"`
 					InputTokensDetails *struct {
 						CachedTokens     int64 `json:"cached_tokens"`
 						CacheWriteTokens int64 `json:"cache_write_tokens"`
@@ -206,6 +221,7 @@ func extractUsageFromSSEData(data []byte, eventType string, usage *UsageTokens) 
 				cacheWriteTokens,
 				ev.Response.Usage.OutputTokens,
 			)
+			applyReportedCost(usage, ev.Response.Usage.Cost)
 		}
 	}
 }
@@ -218,8 +234,9 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 		Type   string `json:"type"`
 		Model  string `json:"model"`
 		Usage  struct {
-			InputTokens        int64 `json:"input_tokens"`
-			OutputTokens       int64 `json:"output_tokens"`
+			InputTokens        int64    `json:"input_tokens"`
+			OutputTokens       int64    `json:"output_tokens"`
+			Cost               *float64 `json:"cost"`
 			InputTokensDetails *struct {
 				CachedTokens     int64 `json:"cached_tokens"`
 				CacheWriteTokens int64 `json:"cache_write_tokens"`
@@ -243,6 +260,7 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 				cacheWriteTokens,
 				responsesResp.Usage.OutputTokens,
 			)
+			applyReportedCost(&usage, responsesResp.Usage.Cost)
 			return usage
 		}
 	}
@@ -250,20 +268,22 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 	var resp struct {
 		Model string `json:"model"`
 		Usage struct {
-			InputTokens              int64 `json:"input_tokens"`
-			OutputTokens             int64 `json:"output_tokens"`
-			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			InputTokens              int64    `json:"input_tokens"`
+			OutputTokens             int64    `json:"output_tokens"`
+			CacheCreationInputTokens int64    `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int64    `json:"cache_read_input_tokens"`
+			Cost                     *float64 `json:"cost"`
 		} `json:"usage"`
 	}
 	if json.Unmarshal(data, &resp) != nil {
 		resp = struct {
 			Model string `json:"model"`
 			Usage struct {
-				InputTokens              int64 `json:"input_tokens"`
-				OutputTokens             int64 `json:"output_tokens"`
-				CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-				CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+				InputTokens              int64    `json:"input_tokens"`
+				OutputTokens             int64    `json:"output_tokens"`
+				CacheCreationInputTokens int64    `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int64    `json:"cache_read_input_tokens"`
+				Cost                     *float64 `json:"cost"`
 			} `json:"usage"`
 		}{}
 	} else if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 ||
@@ -274,14 +294,16 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 			OutputTokens:             resp.Usage.OutputTokens,
 			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			ReportedCostUSD:          resp.Usage.Cost,
 		}
 	}
 
 	var chatResp struct {
 		Model string `json:"model"`
 		Usage struct {
-			PromptTokens        int64 `json:"prompt_tokens"`
-			CompletionTokens    int64 `json:"completion_tokens"`
+			PromptTokens        int64    `json:"prompt_tokens"`
+			CompletionTokens    int64    `json:"completion_tokens"`
+			Cost                *float64 `json:"cost"`
 			PromptTokensDetails *struct {
 				CachedTokens     int64 `json:"cached_tokens"`
 				CacheWriteTokens int64 `json:"cache_write_tokens"`
@@ -289,6 +311,9 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(data, &chatResp) != nil {
+		if resp.Usage.Cost != nil {
+			return UsageTokens{ReportedCostUSD: resp.Usage.Cost}
+		}
 		return UsageTokens{}
 	}
 	var usage UsageTokens
@@ -299,6 +324,10 @@ func extractUsageFromJSON(data []byte) UsageTokens {
 		cacheWriteTokens = chatResp.Usage.PromptTokensDetails.CacheWriteTokens
 	}
 	applyOpenAIUsage(&usage, chatResp.Model, chatResp.Usage.PromptTokens, cachedTokens, cacheWriteTokens, chatResp.Usage.CompletionTokens)
+	applyReportedCost(&usage, chatResp.Usage.Cost)
+	if !usage.HasBillableTokens() && resp.Usage.Cost != nil {
+		return UsageTokens{ReportedCostUSD: resp.Usage.Cost}
+	}
 	return usage
 }
 

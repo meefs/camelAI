@@ -483,7 +483,8 @@ The template creates this `wrangler.jsonc`:
   },
   "worker_loaders": [{ "binding": "LOADER" }],
   "services": [
-    { "binding": "DATA_PROXY", "service": "my-app", "entrypoint": "LocalDataProxyService" }
+    { "binding": "DATA_PROXY", "service": "my-app", "entrypoint": "LocalDataProxyService" },
+    { "binding": "CONNECTIONS", "service": "my-app", "entrypoint": "LocalConnectionsService" }
   ]
 }
 ```
@@ -693,6 +694,77 @@ export async function loader({ context, params }: Route.LoaderArgs) {
 | Large binary assets | R2 |
 | User uploads | R2 |
 | Session/config data | SQLite KV |
+
+## Connections Binding
+
+User workers can call workspace connections through the platform-virtualized `CONNECTIONS` service binding. Use it when an app needs to call a connected provider such as Stripe, GitHub, Linear, or Notion without putting user credentials in Worker code or env vars.
+
+The starter template includes a local `CONNECTIONS` self-binding:
+
+```jsonc
+{
+  "services": [
+    { "binding": "CONNECTIONS", "service": "my-app", "entrypoint": "LocalConnectionsService" }
+  ]
+}
+```
+
+On camelAI deploys, the platform rewrites this binding to the internal `ConnectionsService` with workspace/org isolation. In local dev, the template shim forwards to `CAMELAI_CONNECTIONS_URL` when that variable is available.
+
+### Runtime API
+
+Use the stable runtime API for dynamic connection/tool names:
+
+```typescript
+export async function action({ context }: Route.ActionArgs) {
+  const tools = await context.cloudflare.env.CONNECTIONS.tools("stripe");
+
+  const result = await context.cloudflare.env.CONNECTIONS.call(
+    "stripe",
+    "create_customer",
+    { email: "customer@example.com" }
+  );
+
+  return { tools, result };
+}
+```
+
+Available methods:
+
+| Method | Description |
+|--------|-------------|
+| `list()` | List workspace connections available to the Worker |
+| `get(connection)` | Resolve one connection by id, name, or type |
+| `tools(connection)` | List MCP-backed tools for a connection |
+| `call(connection, tool, input?)` | Call one MCP-backed tool |
+
+Prefer connection ids when a workspace may have multiple connections of the same type. Name/type lookup is convenient, but ambiguous matches throw and ask for an id.
+
+### Typed MCP Tool Facade
+
+For nicer Worker code and build-time checking, generate a typed facade from the live MCP schemas:
+
+```bash
+bun run connections:typegen
+```
+
+This writes `.camelai/connections.ts` in starter apps. Import `createConnections()` and call generated methods instead of raw strings:
+
+```typescript
+import { createConnections } from "../../.camelai/connections";
+
+export async function action({ context }: Route.ActionArgs) {
+  const connections = createConnections(context.cloudflare.env);
+
+  const customer = await connections.stripeProd.createCustomer({
+    email: "customer@example.com",
+  });
+
+  return { customer };
+}
+```
+
+Run typegen again after adding/removing connections or when an MCP server changes its tools. Keep the raw `CONNECTIONS.call(...)` path for fully dynamic workflows.
 
 ## Virtual AI Binding
 

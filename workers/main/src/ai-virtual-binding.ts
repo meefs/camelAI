@@ -19,6 +19,18 @@ interface AIVirtualBindingProps {
 
 const DEFAULT_VIRTUAL_MODEL = "google/gemini-3-flash-preview";
 const DYNAMIC_MODEL_ALIASES = new Set(["auto_search", "auto_image"]);
+const MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "gpt-5.5": "openai/gpt-5.5",
+  "kimi-k2.6": "~moonshotai/kimi-latest",
+  "kimi-latest": "~moonshotai/kimi-latest",
+  "opus-4.7": "anthropic/claude-opus-4.7",
+  "grok-4.3": "x-ai/grok-4.3",
+  "grok-latest": "x-ai/grok-4.3",
+  "gemini-3-flash-preview": "google/gemini-3-flash-preview",
+  "gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview",
+  "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+  "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+};
 
 /**
  * Resolve a model string to its gateway representation.
@@ -33,11 +45,9 @@ export function resolveModel(model: string): string {
   if (trimmed === "auto" || trimmed === "dynamic/auto") {
     return DEFAULT_VIRTUAL_MODEL;
   }
-  if (trimmed === "kimi-k2.6" || trimmed === "kimi-latest") {
-    return "~moonshotai/kimi-latest";
-  }
-  if (trimmed === "grok-4.3" || trimmed === "grok-latest") {
-    return "x-ai/grok-4.3";
+  const alias = MODEL_ALIASES[trimmed];
+  if (alias) {
+    return alias;
   }
   if (DYNAMIC_MODEL_ALIASES.has(trimmed)) {
     return `dynamic/${trimmed}`;
@@ -205,7 +215,10 @@ export async function runViaGatewayHTTP(
   headers.set("Authorization", `Bearer ${settings.authToken}`);
   headers.set("Content-Type", "application/json");
   headers.set("cf-aig-metadata", buildGatewayMetadata(props));
-  const payload = toGatewayPayload(input, model);
+  const payload = toGatewayPayload(
+    input,
+    provider === "openrouter" ? openRouterNitroModel(model) : model,
+  );
 
   const resp = await fetch(
     buildGatewayURL(settings.accountID, settings.gatewayID, provider),
@@ -253,7 +266,7 @@ export async function runViaSandboxHostVirtualAI(
   props: AIVirtualBindingProps,
   input: unknown,
   model: string = "dynamic/auto",
-  _provider: GatewayProvider = "compat",
+  provider: GatewayProvider = "compat",
 ): Promise<unknown> {
   const headers = new Headers();
   headers.set("Content-Type", "application/json");
@@ -269,7 +282,10 @@ export async function runViaSandboxHostVirtualAI(
     headers.set("x-chiridion-user-id", props.userId.trim());
   }
 
-  const payload = toGatewayPayload(input, model);
+  const payload = toGatewayPayload(
+    input,
+    provider === "openrouter" ? openRouterNitroModel(model) : model,
+  );
   const resp = await sandboxHost.fetch(
     "http://sandbox/v1/virtual-ai/chat/completions",
     {
@@ -319,6 +335,26 @@ function toGatewayPayload(
     return { ...asObject, model };
   }
   return { model };
+}
+
+function openRouterNitroModel(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return model;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith("dynamic/") ||
+    lower.startsWith("google/gemini-") ||
+    lower.startsWith("deepseek/deepseek-v4-") ||
+    lower.startsWith("anthropic/claude-opus-4.") ||
+    lower.endsWith(":nitro")
+  ) {
+    return trimmed;
+  }
+  const lastSegment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  if (lastSegment.includes(":")) {
+    return trimmed;
+  }
+  return `${trimmed}:nitro`;
 }
 
 function shouldPassthroughStream(

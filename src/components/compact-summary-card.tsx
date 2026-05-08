@@ -10,9 +10,10 @@ const MASK_FADE = 'linear-gradient(to bottom, black 85%, transparent 100%)';
 
 interface CompactSummaryCardProps {
   content: string | ContentBlock[];
+  workspaceId?: string;
 }
 
-export function CompactSummaryCard({ content }: CompactSummaryCardProps) {
+export function CompactSummaryCard({ content, workspaceId }: CompactSummaryCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -75,7 +76,7 @@ export function CompactSummaryCard({ content }: CompactSummaryCardProps) {
             WebkitMaskImage: MASK_FADE,
           } : undefined}
         >
-          <MarkdownRenderer content={displayContent} />
+          <MarkdownRenderer content={displayContent} workspaceId={workspaceId} />
         </div>
 
         {isOverflowing && (

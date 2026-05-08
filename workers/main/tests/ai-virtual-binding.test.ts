@@ -118,9 +118,29 @@ describe("resolveModel", () => {
     expect(resolveModel("kimi-latest")).toBe("~moonshotai/kimi-latest");
   });
 
+  it("maps GPT-5.5 and Opus 4.7 aliases to OpenRouter route models", () => {
+    expect(resolveModel("gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(resolveModel("opus-4.7")).toBe("anthropic/claude-opus-4.7");
+  });
+
   it("maps Grok aliases to the OpenRouter route model", () => {
     expect(resolveModel("grok-4.3")).toBe("x-ai/grok-4.3");
     expect(resolveModel("grok-latest")).toBe("x-ai/grok-4.3");
+  });
+
+  it("maps Gemini and DeepSeek aliases to OpenRouter route models", () => {
+    expect(resolveModel("gemini-3-flash-preview")).toBe(
+      "google/gemini-3-flash-preview",
+    );
+    expect(resolveModel("gemini-3.1-pro-preview")).toBe(
+      "google/gemini-3.1-pro-preview",
+    );
+    expect(resolveModel("deepseek-v4-pro")).toBe(
+      "deepseek/deepseek-v4-pro",
+    );
+    expect(resolveModel("deepseek-v4-flash")).toBe(
+      "deepseek/deepseek-v4-flash",
+    );
   });
 
   it("passes through non-auto models with dynamic/ prefix unchanged", () => {
@@ -310,7 +330,7 @@ describe("runViaGatewayHTTP", () => {
     );
 
     const body = JSON.parse(String(init.body)) as { model: string };
-    expect(body.model).toBe("anthropic/claude-3.5-sonnet");
+    expect(body.model).toBe("anthropic/claude-3.5-sonnet:nitro");
   });
 
   it("throws gateway error message for non-2xx responses", async () => {
@@ -438,6 +458,31 @@ describe("runViaSandboxHostVirtualAI", () => {
     );
     const body = JSON.parse(String(init.body)) as { model?: string };
     expect(body.model).toBe("dynamic/auto");
+  });
+
+  it("adds the OpenRouter nitro routing suffix for sandbox-host OpenRouter calls", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "chatcmpl_virtual_or_1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const sandboxHost = { fetch: fetchMock } as unknown as Fetcher;
+
+    await runViaSandboxHostVirtualAI(
+      sandboxHost,
+      undefined,
+      undefined,
+      { orgId: "org_1", workspaceId: "ws_1" },
+      { messages: [{ role: "user", content: "hello" }] },
+      "anthropic/claude-3.5-sonnet",
+      "openrouter",
+    );
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body),
+    ) as { model?: string };
+    expect(body.model).toBe("anthropic/claude-3.5-sonnet:nitro");
   });
 
   it("throws sandbox-host billing errors", async () => {

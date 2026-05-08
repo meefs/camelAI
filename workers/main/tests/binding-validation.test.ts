@@ -148,6 +148,15 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings).toHaveLength(0);
     });
 
+    it('allows virtual CONNECTIONS service binding (rewritten at deploy time)', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'service', name: 'CONNECTIONS', service: 'placeholder' },
+      ];
+      const result = validateBindings(bindings);
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
+    });
+
     it('blocks SELF service binding', () => {
       const bindings: WorkerBinding[] = [
         { type: 'service', name: 'SELF', service: 'starter', entrypoint: 'InternetProxy' },
@@ -336,10 +345,11 @@ describe('Worker Binding Validation', () => {
   });
 
   describe('mapVirtualizedBindings', () => {
-    it('rewrites R2, DATA_PROXY, and AI bindings to internal service entrypoints', () => {
+    it('rewrites R2, DATA_PROXY, CONNECTIONS, and AI bindings to internal service entrypoints', () => {
       const bindings: WorkerBinding[] = [
         { type: 'r2_bucket', name: 'FILES', bucket_name: 'workspace-files' },
         { type: 'service', name: 'DATA_PROXY', service: 'placeholder' },
+        { type: 'service', name: 'CONNECTIONS', service: 'placeholder' },
         { type: 'ai', name: 'AI' },
         { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
       ];
@@ -363,6 +373,13 @@ describe('Worker Binding Validation', () => {
         },
         {
           type: 'service',
+          name: 'CONNECTIONS',
+          service: 'chiridion-app',
+          entrypoint: 'ConnectionsService',
+          props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
+        },
+        {
+          type: 'service',
           name: 'AI',
           service: 'chiridion-app',
           entrypoint: 'AIVirtualBinding',
@@ -372,13 +389,19 @@ describe('Worker Binding Validation', () => {
       ]);
     });
 
-    it('rewrites starter local DATA_PROXY shim binding to internal DataProxyService', () => {
+    it('rewrites starter local DATA_PROXY and CONNECTIONS shim bindings to internal services', () => {
       const bindings: WorkerBinding[] = [
         {
           type: 'service',
           name: 'DATA_PROXY',
           service: 'starter',
           entrypoint: 'LocalDataProxyService',
+        },
+        {
+          type: 'service',
+          name: 'CONNECTIONS',
+          service: 'starter',
+          entrypoint: 'LocalConnectionsService',
         },
       ];
 
@@ -390,6 +413,13 @@ describe('Worker Binding Validation', () => {
           name: 'DATA_PROXY',
           service: 'chiridion-app',
           entrypoint: 'DataProxyService',
+          props: { workspaceId: 'ws_abc', orgId: 'org_xyz' },
+        },
+        {
+          type: 'service',
+          name: 'CONNECTIONS',
+          service: 'chiridion-app',
+          entrypoint: 'ConnectionsService',
           props: { workspaceId: 'ws_abc', orgId: 'org_xyz' },
         },
       ]);

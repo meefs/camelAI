@@ -445,8 +445,6 @@ func hostPiToolArgs() []string {
 		"set_preview",
 		"list_apps",
 		"set_app_visibility",
-		"set_file_preview",
-		"set_app_preview",
 		"get_latest_logs",
 		"list_scheduled_prompts",
 		"create_scheduled_prompt",
@@ -547,6 +545,11 @@ func (b *hostPiBridge) resolvePiModel(sessionEnv map[string]string) string {
 	switch provider {
 	case "codex":
 		switch strings.TrimSpace(sessionEnv["CHIRIDION_CODEX_MODEL"]) {
+		case "gpt-5.5":
+			if b.openRouterUpstreamEnabled() {
+				return "camel/openai/gpt-5.5"
+			}
+			return "openai/gpt-5.5"
 		case "gpt-5.4-mini":
 			if b.openRouterUpstreamEnabled() {
 				return "camel/openai/gpt-5.4-mini"
@@ -561,6 +564,14 @@ func (b *hostPiBridge) resolvePiModel(sessionEnv map[string]string) string {
 			return "camel/~moonshotai/kimi-latest"
 		case "grok-4.3":
 			return "camel/x-ai/grok-4.3"
+		case "gemini-3-flash-preview":
+			return "camel/google/gemini-3-flash-preview"
+		case "gemini-3.1-pro-preview":
+			return "camel/google/gemini-3.1-pro-preview"
+		case "deepseek-v4-pro":
+			return "camel/deepseek/deepseek-v4-pro"
+		case "deepseek-v4-flash":
+			return "camel/deepseek/deepseek-v4-flash"
 		}
 	case "claude":
 		switch strings.TrimSpace(sessionEnv["CHIRIDION_CLAUDE_MODEL"]) {
@@ -569,6 +580,11 @@ func (b *hostPiBridge) resolvePiModel(sessionEnv map[string]string) string {
 				return "camel/" + openRouterClaudeModel("haiku")
 			}
 			return "anthropic/claude-haiku-4-5-20251001"
+		case "opus-4.7":
+			if b.openRouterUpstreamEnabled() {
+				return "camel/" + openRouterClaudeModel("opus-4.7")
+			}
+			return "anthropic/claude-opus-4-7"
 		case "opus":
 			if b.openRouterUpstreamEnabled() {
 				return "camel/" + openRouterClaudeModel("opus")
@@ -595,6 +611,11 @@ func (b *hostPiBridge) resolvePiModelCommand(msg map[string]any) (string, bool) 
 		return "", false
 	}
 	switch model {
+	case "gpt-5.5":
+		if b.openRouterUpstreamEnabled() {
+			return "camel/openai/gpt-5.5", true
+		}
+		return "openai/gpt-5.5", true
 	case "gpt-5.4-mini":
 		if b.openRouterUpstreamEnabled() {
 			return "camel/openai/gpt-5.4-mini", true
@@ -609,11 +630,24 @@ func (b *hostPiBridge) resolvePiModelCommand(msg map[string]any) (string, bool) 
 		return "camel/~moonshotai/kimi-latest", true
 	case "grok-4.3":
 		return "camel/x-ai/grok-4.3", true
+	case "gemini-3-flash-preview":
+		return "camel/google/gemini-3-flash-preview", true
+	case "gemini-3.1-pro-preview":
+		return "camel/google/gemini-3.1-pro-preview", true
+	case "deepseek-v4-pro":
+		return "camel/deepseek/deepseek-v4-pro", true
+	case "deepseek-v4-flash":
+		return "camel/deepseek/deepseek-v4-flash", true
 	case "haiku":
 		if b.openRouterUpstreamEnabled() {
 			return "camel/" + openRouterClaudeModel("haiku"), true
 		}
 		return "anthropic/claude-haiku-4-5-20251001", true
+	case "opus-4.7":
+		if b.openRouterUpstreamEnabled() {
+			return "camel/" + openRouterClaudeModel("opus-4.7"), true
+		}
+		return "anthropic/claude-opus-4-7", true
 	case "opus":
 		if b.openRouterUpstreamEnabled() {
 			return "camel/" + openRouterClaudeModel("opus"), true
@@ -669,6 +703,7 @@ func (b *hostPiBridge) piEnv(workspacePath string, sessionEnv map[string]string)
 	env["MCP_SERVER_URL"] = proxyBase + "/mcp"
 	env["DATA_PROXY_URL"] = proxyBase + "/api"
 	env["RESEND_PROXY_URL"] = proxyBase + "/api/resend"
+	env["CAMELAI_CONNECTIONS_URL"] = proxyBase + "/api/connections"
 	env["CLOUDFLARE_API_BASE_URL"] = proxyBase + "/client/v4"
 	env["CLOUDFLARE_API_TOKEN"] = "proxy"
 	env["THREAD_ID"] = b.threadID
@@ -829,6 +864,7 @@ func (b *hostPiBridge) handlePiEvent(event map[string]any) {
 			}
 		case "toolcall_start":
 			b.logPiToolCallStart(assistantEvent)
+			b.handlePiToolCallStart(assistantEvent)
 		case "toolcall_delta":
 			b.logPiToolCallDelta(assistantEvent)
 		case "toolcall_end":
@@ -1492,17 +1528,19 @@ func piAssistantToolCallProgress(event map[string]any) (toolID string, toolName 
 	return toolID, toolName, partialBytes
 }
 
-func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
-	toolID := stringValue(event["toolCallId"], "pi_tool_"+randomID())
-	toolName := stringValue(event["toolName"], "tool")
-	args := b.rememberToolArgs(toolID, piToolArgs(event))
-	log.Printf("[SandboxHost] host Pi tool start thread=%s tool=%s toolCall=%s", b.threadID, toolName, toolID)
+func hostPiRuntimeToolItem(toolID string, toolName string, args map[string]any, status string) map[string]any {
+	if args == nil {
+		args = map[string]any{}
+	}
+	if status == "" {
+		status = "running"
+	}
 	item := map[string]any{
 		"id":        toolID,
 		"type":      "dynamicToolCall",
 		"tool":      toolName,
 		"arguments": args,
-		"status":    "running",
+		"status":    status,
 	}
 	if strings.EqualFold(toolName, "bash") {
 		item = map[string]any{
@@ -1510,12 +1548,35 @@ func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
 			"type":    "commandExecution",
 			"command": stringValue(args["command"], ""),
 			"cwd":     args["cwd"],
-			"status":  "running",
+			"status":  status,
 		}
 		if description := stringValue(args["description"], ""); description != "" {
 			item["description"] = description
 		}
 	}
+	return item
+}
+
+func (b *hostPiBridge) handlePiToolCallStart(event map[string]any) {
+	toolID, toolName, _ := piAssistantToolCallProgress(event)
+	if toolID == "" {
+		return
+	}
+	if toolName == "" {
+		toolName = "tool"
+	}
+	b.sendRuntimeEvent("item/started", map[string]any{
+		"threadId": b.threadID,
+		"item":     hostPiRuntimeToolItem(toolID, toolName, nil, "running"),
+	})
+}
+
+func (b *hostPiBridge) handlePiToolStart(event map[string]any) {
+	toolID := stringValue(event["toolCallId"], "pi_tool_"+randomID())
+	toolName := stringValue(event["toolName"], "tool")
+	args := b.rememberToolArgs(toolID, piToolArgs(event))
+	log.Printf("[SandboxHost] host Pi tool start thread=%s tool=%s toolCall=%s", b.threadID, toolName, toolID)
+	item := hostPiRuntimeToolItem(toolID, toolName, args, "running")
 	b.sendRuntimeEvent("item/started", map[string]any{"threadId": b.threadID, "item": item})
 }
 
@@ -1551,20 +1612,15 @@ func (b *hostPiBridge) handlePiToolEnd(event map[string]any) {
 		"tool":      toolName,
 		"arguments": args,
 		"status":    status,
-		"result":    resultText,
+		"result":    event["result"],
+	}
+	if contentItems := piRuntimeContentItems(event["result"]); len(contentItems) > 0 {
+		item["contentItems"] = contentItems
 	}
 	if strings.EqualFold(toolName, "bash") {
-		item = map[string]any{
-			"id":               toolID,
-			"type":             "commandExecution",
-			"command":          stringValue(args["command"], ""),
-			"cwd":              args["cwd"],
-			"status":           status,
-			"aggregatedOutput": resultText,
-		}
-		if description := stringValue(args["description"], ""); description != "" {
-			item["description"] = description
-		}
+		item = hostPiRuntimeToolItem(toolID, toolName, args, status)
+		item["aggregatedOutput"] = resultText
+		item["result"] = event["result"]
 	}
 	b.sendRuntimeEvent("item/completed", map[string]any{"threadId": b.threadID, "item": item})
 }
@@ -1877,6 +1933,42 @@ func extractPiText(value any) string {
 		}
 	}
 	return ""
+}
+
+func piRuntimeContentItems(value any) []any {
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		return []any{map[string]any{"type": "inputText", "text": v}}
+	case []any:
+		items := make([]any, 0, len(v))
+		for _, item := range v {
+			items = append(items, piRuntimeContentItems(item)...)
+		}
+		return items
+	case map[string]any:
+		if text, ok := v["text"].(string); ok {
+			if text == "" {
+				return nil
+			}
+			return []any{map[string]any{"type": "inputText", "text": text}}
+		}
+		if content, ok := v["content"]; ok {
+			return piRuntimeContentItems(content)
+		}
+		out := make(map[string]any, len(v))
+		for key, entry := range v {
+			out[key] = entry
+		}
+		return []any{out}
+	default:
+		if value == nil {
+			return nil
+		}
+		return []any{value}
+	}
 }
 
 func isPiAssistantMessage(message map[string]any) bool {

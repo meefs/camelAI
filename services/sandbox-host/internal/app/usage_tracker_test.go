@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+func assertReportedCost(t *testing.T, usage UsageTokens, want float64) {
+	t.Helper()
+	if usage.ReportedCostUSD == nil {
+		t.Fatalf("expected reported cost %.6f, got nil", want)
+	}
+	if diff := *usage.ReportedCostUSD - want; diff > 0.000001 || diff < -0.000001 {
+		t.Fatalf("expected reported cost %.6f, got %.6f", want, *usage.ReportedCostUSD)
+	}
+}
+
 func TestCopySSEStreamWithUsage(t *testing.T) {
 	sseStream := strings.Join([]string{
 		"event: message_start",
@@ -18,7 +28,7 @@ func TestCopySSEStreamWithUsage(t *testing.T) {
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
 		"",
 		"event: message_delta",
-		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42,"cost":0.0123}}`,
 		"",
 		"event: message_stop",
 		`data: {"type":"message_stop"}`,
@@ -46,6 +56,7 @@ func TestCopySSEStreamWithUsage(t *testing.T) {
 	if usage.CacheReadInputTokens != 300 {
 		t.Errorf("expected 300 cache read tokens, got %d", usage.CacheReadInputTokens)
 	}
+	assertReportedCost(t, usage, 0.0123)
 
 	// Verify the full stream was forwarded to the client.
 	body := w.Body.String()
@@ -61,7 +72,7 @@ func TestCopySSEStreamWithUsage(t *testing.T) {
 }
 
 func TestCopyNonStreamingWithUsage(t *testing.T) {
-	jsonBody := `{"id":"msg_01","type":"message","model":"claude-opus-4-6","usage":{"input_tokens":500,"output_tokens":150,"cache_creation_input_tokens":0,"cache_read_input_tokens":50}}`
+	jsonBody := `{"id":"msg_01","type":"message","model":"claude-opus-4-6","usage":{"input_tokens":500,"output_tokens":150,"cache_creation_input_tokens":0,"cache_read_input_tokens":50,"cost":0.0042}}`
 
 	w := httptest.NewRecorder()
 	usage, err := copyNonStreamingWithUsage(w, strings.NewReader(jsonBody))
@@ -81,6 +92,7 @@ func TestCopyNonStreamingWithUsage(t *testing.T) {
 	if usage.CacheReadInputTokens != 50 {
 		t.Errorf("expected 50 cache read tokens, got %d", usage.CacheReadInputTokens)
 	}
+	assertReportedCost(t, usage, 0.0042)
 
 	// Body should be forwarded unchanged.
 	if w.Body.String() != jsonBody {
@@ -93,8 +105,8 @@ func TestCopyResponsesSSEStreamWithUsage(t *testing.T) {
 		"event: response.created",
 		`data: {"type":"response.created","response":{"id":"resp_01","model":"gpt-5.4-mini"}}`,
 		"",
-		"event: response.completed",
-		`data: {"type":"response.completed","response":{"id":"resp_01","model":"gpt-5.4-mini","usage":{"input_tokens":140,"input_tokens_details":{"cached_tokens":40},"output_tokens":25,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":165}}}`,
+		"event: response.done",
+		`data: {"type":"response.done","response":{"id":"resp_01","model":"gpt-5.4-mini","usage":{"input_tokens":140,"input_tokens_details":{"cached_tokens":40},"output_tokens":25,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":165,"cost":0.0017}}}`,
 		"",
 	}, "\n")
 
@@ -116,6 +128,7 @@ func TestCopyResponsesSSEStreamWithUsage(t *testing.T) {
 	if usage.OutputTokens != 25 {
 		t.Errorf("expected 25 output tokens, got %d", usage.OutputTokens)
 	}
+	assertReportedCost(t, usage, 0.0017)
 }
 
 func TestCopyOpenRouterChatCompletionSSEStreamWithUsage(t *testing.T) {
@@ -150,13 +163,14 @@ func TestCopyOpenRouterChatCompletionSSEStreamWithUsage(t *testing.T) {
 	if usage.OutputTokens != 2 {
 		t.Errorf("expected 2 output tokens, got %d", usage.OutputTokens)
 	}
+	assertReportedCost(t, usage, 0.95)
 	if !strings.Contains(w.Body.String(), `"cost":0.95`) {
 		t.Fatal("expected stream body to be forwarded unchanged")
 	}
 }
 
 func TestCopyNonStreamingWithUsage_OpenAIResponses(t *testing.T) {
-	jsonBody := `{"id":"resp_01","object":"response","model":"gpt-5.4","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":200},"output_tokens":300,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":1500}}`
+	jsonBody := `{"id":"resp_01","object":"response","model":"gpt-5.4","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":200},"output_tokens":300,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":1500,"cost":0.0088}}`
 
 	w := httptest.NewRecorder()
 	usage, err := copyNonStreamingWithUsage(w, strings.NewReader(jsonBody))
@@ -176,10 +190,11 @@ func TestCopyNonStreamingWithUsage_OpenAIResponses(t *testing.T) {
 	if usage.OutputTokens != 300 {
 		t.Errorf("expected 300 output tokens, got %d", usage.OutputTokens)
 	}
+	assertReportedCost(t, usage, 0.0088)
 }
 
 func TestCopyNonStreamingWithUsage_OpenAIChatCompletions(t *testing.T) {
-	jsonBody := `{"id":"chatcmpl_01","object":"chat.completion","model":"gpt-5.4-mini","usage":{"prompt_tokens":220,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens":55,"completion_tokens_details":{"reasoning_tokens":5},"total_tokens":275}}`
+	jsonBody := `{"id":"chatcmpl_01","object":"chat.completion","model":"gpt-5.4-mini","usage":{"prompt_tokens":220,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens":55,"completion_tokens_details":{"reasoning_tokens":5},"total_tokens":275,"cost":0.0021}}`
 
 	w := httptest.NewRecorder()
 	usage, err := copyNonStreamingWithUsage(w, strings.NewReader(jsonBody))
@@ -199,13 +214,14 @@ func TestCopyNonStreamingWithUsage_OpenAIChatCompletions(t *testing.T) {
 	if usage.OutputTokens != 55 {
 		t.Errorf("expected 55 output tokens, got %d", usage.OutputTokens)
 	}
+	assertReportedCost(t, usage, 0.0021)
 }
 
 func TestCopySSEStreamWithUsage_OpenAIChatCompletionsUnnamedEvents(t *testing.T) {
 	sseStream := strings.Join([]string{
 		`data: {"id":"chatcmpl_01","object":"chat.completion.chunk","model":"gpt-5.4-mini","choices":[{"index":0,"delta":{"content":"Hi"}}],"usage":null}`,
 		"",
-		`data: {"id":"chatcmpl_01","object":"chat.completion.chunk","model":"gpt-5.4-mini","choices":[],"usage":{"prompt_tokens":220,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens":55,"completion_tokens_details":{"reasoning_tokens":5},"total_tokens":275}}`,
+		`data: {"id":"chatcmpl_01","object":"chat.completion.chunk","model":"gpt-5.4-mini","choices":[],"usage":{"prompt_tokens":220,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens":55,"completion_tokens_details":{"reasoning_tokens":5},"total_tokens":275,"cost":0.0023}}`,
 		"",
 		"data: [DONE]",
 		"",
@@ -229,6 +245,7 @@ func TestCopySSEStreamWithUsage_OpenAIChatCompletionsUnnamedEvents(t *testing.T)
 	if usage.OutputTokens != 55 {
 		t.Errorf("expected 55 output tokens, got %d", usage.OutputTokens)
 	}
+	assertReportedCost(t, usage, 0.0023)
 }
 
 func TestExtractModelFromRequestBody(t *testing.T) {
@@ -274,6 +291,19 @@ func TestUsageTokensCostUSD_UnknownModel(t *testing.T) {
 	// Should fall back to Sonnet 4.5 pricing: 1000 * 0.000003 = 0.003
 	if diff := cost - 0.003; diff > 0.000001 || diff < -0.000001 {
 		t.Errorf("expected fallback cost 0.003, got %.6f", cost)
+	}
+}
+
+func TestUsageTokensEffectiveCostUSDUsesReportedCost(t *testing.T) {
+	reported := 0.0012
+	usage := UsageTokens{
+		Model:           "claude-sonnet-4-5-20250929",
+		InputTokens:     1000000,
+		ReportedCostUSD: &reported,
+	}
+
+	if got := usage.EffectiveCostUSD(); got != reported {
+		t.Fatalf("EffectiveCostUSD() = %.6f, want %.6f", got, reported)
 	}
 }
 

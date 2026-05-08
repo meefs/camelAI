@@ -13,7 +13,7 @@ FROM ubuntu:24.04
 
 # Core tools
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick poppler-utils tini fuse3 >/dev/null 2>&1 && \
+    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick poppler-utils tini fuse3 ripgrep fd-find >/dev/null 2>&1 && \
     if ! command -v magick >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then \
       printf '#!/bin/sh\nexec convert "$@"\n' > /usr/local/bin/magick && \
       chmod +x /usr/local/bin/magick; \
@@ -108,6 +108,8 @@ RUN chmod +x /opt/chiridion/entrypoint.sh && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
     chmod +x /usr/local/lib/create-worker/publish.mjs && \
     ln -sf /usr/local/bin/camelai-integrations /usr/local/bin/integrations && \
+    ln -sf /usr/local/bin/camelai-integrations /usr/local/bin/camelai-connections && \
+    ln -sf /usr/local/bin/camelai-integrations /usr/local/bin/connections && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
     ln -sf /usr/local/lib/create-worker/publish.mjs /usr/local/bin/publish
 COPY sandbox/validate-notebook.py /usr/local/bin/validate-notebook

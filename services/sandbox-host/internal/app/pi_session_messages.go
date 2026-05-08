@@ -79,7 +79,6 @@ func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessa
 				content = append(content, blocks...)
 			}
 		}
-		content = normalizePiAssistantContentOrder(content)
 
 		id := assistantGroupID
 		if id == "" {
@@ -274,6 +273,10 @@ func piContentBlocks(value any) []any {
 			if text != "" {
 				blocks = append(blocks, map[string]any{"type": "text", "text": text})
 			}
+		case "image":
+			blocks = append(blocks, clonePiContentBlock(block))
+		case "input_image", "screenshot", "document", "audio", "video", "file":
+			blocks = append(blocks, clonePiContentBlock(block))
 		case "thinking":
 			thinking, _ := asString(block["thinking"])
 			if thinking == "" {
@@ -305,32 +308,11 @@ func piContentBlocks(value any) []any {
 	return blocks
 }
 
-func normalizePiAssistantContentOrder(blocks []any) []any {
-	firstTextIndex := -1
-	lateThinking := make([]any, 0)
-	kept := make([]any, 0, len(blocks))
-
-	for _, rawBlock := range blocks {
-		block, _ := asMap(rawBlock)
-		blockType := firstString(block, "type")
-		if firstTextIndex >= 0 && (blockType == "thinking" || blockType == "redacted_thinking") {
-			lateThinking = append(lateThinking, rawBlock)
-			continue
-		}
-		if firstTextIndex < 0 && blockType == "text" {
-			firstTextIndex = len(kept)
-		}
-		kept = append(kept, rawBlock)
+func clonePiContentBlock(block map[string]any) map[string]any {
+	out := make(map[string]any, len(block))
+	for key, value := range block {
+		out[key] = value
 	}
-
-	if len(lateThinking) == 0 || firstTextIndex < 0 {
-		return blocks
-	}
-
-	out := make([]any, 0, len(blocks))
-	out = append(out, kept[:firstTextIndex]...)
-	out = append(out, lateThinking...)
-	out = append(out, kept[firstTextIndex:]...)
 	return out
 }
 
@@ -351,21 +333,25 @@ func piToolResultContent(value any) any {
 	}
 
 	parts := make([]string, 0, len(blocks))
+	allText := true
 	for _, block := range blocks {
 		blockMap, ok := asMap(block)
 		if !ok {
+			allText = false
 			continue
 		}
 		if firstString(blockMap, "type") == "text" {
 			if text := firstString(blockMap, "text"); text != "" {
 				parts = append(parts, text)
 			}
+		} else {
+			allText = false
 		}
 	}
-	if len(parts) == 0 {
-		return blocks
+	if allText {
+		return strings.Join(parts, "\n")
 	}
-	return strings.Join(parts, "\n")
+	return blocks
 }
 
 func piUIToolName(name string) string {

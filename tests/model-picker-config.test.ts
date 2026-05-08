@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   defaultOrgModelPickerConfig,
+  MODEL_PICKER_MAX_MODELS,
   parseOrgModelPickerConfig,
   parseWorkspaceModelPickerConfig,
   resolveDefaultModelForChat,
@@ -58,6 +59,101 @@ describe('model picker config parsing', () => {
     });
 
     expect(parsed.models.length).toBe(2);
+  });
+
+  it('keeps the default picker within the configured capacity', () => {
+    const config = defaultOrgModelPickerConfig();
+
+    expect(MODEL_PICKER_MAX_MODELS).toBe(10);
+    expect(config.models.map((model) => model.id)).toEqual([
+      'opus-4.7',
+      'sonnet',
+      'gpt-5.5',
+      'gpt-5.4-mini',
+      'gemini-3.1-pro-preview',
+      'gemini-3-flash-preview',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'kimi-k2.6',
+      'grok-4.3',
+    ]);
+    expect(config.models.length).toBe(MODEL_PICKER_MAX_MODELS);
+    expect(config.models.length).toBeLessThanOrEqual(MODEL_PICKER_MAX_MODELS);
+  });
+
+  it('uses provider-aware default suites for direct BYOK providers', () => {
+    expect(defaultOrgModelPickerConfig('openrouter').models.map((model) => model.id)).toEqual([
+      'opus-4.7',
+      'sonnet',
+      'gpt-5.5',
+      'gpt-5.4-mini',
+      'gemini-3.1-pro-preview',
+      'gemini-3-flash-preview',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'kimi-k2.6',
+      'grok-4.3',
+    ]);
+    expect(defaultOrgModelPickerConfig('openai')).toMatchObject({
+      default_model: 'gpt-5.4',
+      models: [
+        { id: 'gpt-5.5' },
+        { id: 'gpt-5.4' },
+        { id: 'gpt-5.4-mini' },
+      ],
+    });
+    expect(defaultOrgModelPickerConfig('anthropic')).toMatchObject({
+      default_model: 'sonnet',
+      models: [
+        { id: 'opus-4.7' },
+        { id: 'opus' },
+        { id: 'sonnet' },
+        { id: 'haiku' },
+      ],
+    });
+    expect(defaultOrgModelPickerConfig('bedrock')).toMatchObject({
+      default_model: 'sonnet',
+      models: [
+        { id: 'opus-4.7' },
+        { id: 'opus' },
+        { id: 'sonnet' },
+        { id: 'haiku' },
+      ],
+    });
+  });
+
+  it('uses the provider-aware default for empty or malformed org config values', () => {
+    expect(parseOrgModelPickerConfig(null, 'openai').models.map((model) => model.id)).toEqual([
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+    ]);
+  });
+
+  it('normalizes newly supported models in stored picker configs', () => {
+    const parsed = parseOrgModelPickerConfig({
+      models: [
+        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'opus-4.7', added_at: 4 },
+        { id: 'gemini-3-flash-preview', added_at: 4 },
+        { id: 'gemini-3.1-pro-preview', added_at: 3 },
+        { id: 'deepseek-v4-pro', added_at: 2 },
+        { id: 'deepseek-v4-flash', added_at: 1 },
+      ],
+      default_model: 'deepseek-v4-flash',
+    });
+
+    expect(parsed).toEqual({
+      models: [
+        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'opus-4.7', added_at: 4 },
+        { id: 'gemini-3-flash-preview', added_at: 4 },
+        { id: 'gemini-3.1-pro-preview', added_at: 3 },
+        { id: 'deepseek-v4-pro', added_at: 2 },
+        { id: 'deepseek-v4-flash', added_at: 1 },
+      ],
+      default_model: 'deepseek-v4-flash',
+    });
   });
 
   it('parses workspace inheritance defaults without dropping stored override fields', () => {
@@ -146,4 +242,3 @@ describe('default model resolution', () => {
     ).toBeNull();
   });
 });
-

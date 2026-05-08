@@ -1,9 +1,29 @@
 #!/usr/bin/env node
 
+import { mkdir, writeFile } from 'node:fs/promises';
+import { basename, dirname, resolve } from 'node:path';
+
 const serverBase = (process.env.MCP_SERVER_URL || '').replace(/\/+$/, '');
 const endpoint = serverBase ? `${serverBase}/integrations` : '';
+const explicitConnectionsEndpoint = (process.env.CAMELAI_CONNECTIONS_URL || '').replace(/\/+$/, '');
+const connectionsEndpoint = explicitConnectionsEndpoint || (serverBase ? `${serverBase.replace(/\/mcp$/, '')}/api/connections` : '');
+const cliName = basename(process.argv[1] || 'camelai-integrations');
+const isConnectionsCli = cliName === 'camelai-connections' || cliName === 'connections';
 
 function usage() {
+  if (isConnectionsCli) {
+    console.log(`Usage:
+  camelai-connections list [--json]
+  camelai-connections get <id|name|type> [--json]
+  camelai-connections tools <id|name|type> [--json]
+  camelai-connections call <id|name|type> <tool-name> [json-args]
+  camelai-connections types [--write-types] [--out=path]
+
+Environment:
+  CAMELAI_CONNECTIONS_URL points at the camelAI connections proxy, usually set automatically.`);
+    return;
+  }
+
   console.log(`Usage:
   camelai-integrations list [--json]
   camelai-integrations get <id|name|type> [--json]
@@ -11,6 +31,11 @@ function usage() {
   camelai-integrations mcp get <id|name|type> [--json]
   camelai-integrations <id|name|type> list_tools [--json]
   camelai-integrations <id|name|type> call_tool <tool-name> [json-args]
+  camelai-integrations connections list [--json]
+  camelai-integrations connections get <id|name|type> [--json]
+  camelai-integrations connections tools <id|name|type> [--json]
+  camelai-integrations connections call <id|name|type> <tool-name> [json-args]
+  camelai-integrations connections types [--write-types] [--out=path]
   camelai-integrations types [--json]
   camelai-integrations tools [--json]
   camelai-integrations call <tool-name> [json-args]
@@ -25,6 +50,13 @@ function hasFlag(flag) {
 
 function stripFlags(args) {
   return args.filter((arg) => !arg.startsWith('--'));
+}
+
+function flagValue(prefix, fallback) {
+  const arg = process.argv.find((value) => value.startsWith(prefix));
+  if (!arg) return fallback;
+  const value = arg.slice(prefix.length);
+  return value || fallback;
 }
 
 async function rpc(method, params = {}) {
@@ -65,6 +97,23 @@ function parseToolJson(result) {
 
 async function callTool(name, args = {}) {
   return parseToolJson(await rpc('tools/call', { name, arguments: args }));
+}
+
+async function connectionsRequest(action, payload = {}) {
+  if (!connectionsEndpoint) {
+    throw new Error('CAMELAI_CONNECTIONS_URL is not set');
+  }
+
+  const response = await fetch(connectionsEndpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.error || `Connections request failed with HTTP ${response.status}`);
+  }
+  return body;
 }
 
 function parseNativePayload(text) {
@@ -219,10 +268,240 @@ function printIntegration(payload) {
   printJson(payload.integration);
 }
 
+function printConnections(connections) {
+  if (!Array.isArray(connections) || connections.length === 0) {
+    console.log('No connected integrations.');
+    return;
+  }
+
+  const rows = connections.map((connection) => ({
+    type: connection.type,
+    name: connection.name,
+    id: connection.id,
+    tools: connection.nativeMcp ? 'mcp' : '-',
+  }));
+  const widths = {
+    type: Math.max('TYPE'.length, ...rows.map((row) => row.type.length)),
+    name: Math.max('NAME'.length, ...rows.map((row) => row.name.length)),
+    tools: 'TOOLS'.length,
+  };
+  console.log(
+    `${'TYPE'.padEnd(widths.type)}  ${'NAME'.padEnd(widths.name)}  ${'TOOLS'.padEnd(widths.tools)}  ID`
+  );
+  for (const row of rows) {
+    console.log(
+      `${row.type.padEnd(widths.type)}  ${row.name.padEnd(widths.name)}  ${row.tools.padEnd(widths.tools)}  ${row.id}`
+    );
+  }
+}
+
+function printConnectionTools(tools) {
+  const names = Array.isArray(tools) ? tools.map((tool) => tool?.name).filter(Boolean) : [];
+  printJson(names);
+}
+
+function toIdentifier(value, fallback = 'value') {
+  const words = String(value || '')
+    .replace(/['"]/g, '')
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean);
+  if (words.length === 0) return fallback;
+  const [first, ...rest] = words;
+  const identifier = `${first.toLowerCase()}${rest.map((word) => `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`).join('')}`;
+  return /^[a-zA-Z_$]/.test(identifier) ? identifier : `${fallback}${identifier}`;
+}
+
+function literal(value) {
+  return JSON.stringify(value);
+}
+
+function schemaToTs(schema, fallback = 'unknown') {
+  if (!schema || typeof schema !== 'object') return fallback;
+  if (schema.const !== undefined) return literal(schema.const);
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return schema.enum.map((value) => literal(value)).join(' | ');
+  }
+  if (Array.isArray(schema.anyOf)) {
+    return schema.anyOf.map((item) => schemaToTs(item, fallback)).join(' | ');
+  }
+  if (Array.isArray(schema.oneOf)) {
+    return schema.oneOf.map((item) => schemaToTs(item, fallback)).join(' | ');
+  }
+  const type = Array.isArray(schema.type) ? schema.type.filter((item) => item !== 'null')[0] : schema.type;
+  switch (type) {
+    case 'string':
+      return 'string';
+    case 'number':
+    case 'integer':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'array':
+      return `${schemaToTs(schema.items, 'unknown')}[]`;
+    case 'object': {
+      const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
+      const entries = Object.entries(properties);
+      if (entries.length === 0) {
+        return 'Record<string, unknown>';
+      }
+      const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+      const lines = entries.map(([key, value]) => {
+        const optional = required.has(key) ? '' : '?';
+        return `  ${JSON.stringify(key)}${optional}: ${schemaToTs(value, 'unknown')};`;
+      });
+      return `{\n${lines.join('\n')}\n}`;
+    }
+    default:
+      if (schema.properties && typeof schema.properties === 'object') {
+        return schemaToTs({ ...schema, type: 'object' }, fallback);
+      }
+      return fallback;
+  }
+}
+
+function toolInputType(tool) {
+  return schemaToTs(tool?.inputSchema || tool?.input_schema, 'Record<string, unknown>');
+}
+
+function toolResultType() {
+  return 'unknown';
+}
+
+function connectionAlias(connection, used) {
+  const base = toIdentifier(`${connection.type}_${connection.name}`, 'connection');
+  let candidate = base;
+  let index = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}${index}`;
+    index += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+async function collectConnectionTypeData(connectionQuery) {
+  const connections = await connectionsRequest('list');
+  const selected = connectionQuery
+    ? [await connectionsRequest('get', { connection: connectionQuery })]
+    : connections;
+  const entries = [];
+  for (const connection of selected) {
+    let tools = [];
+    if (connection.nativeMcp) {
+      tools = await connectionsRequest('tools', { connection: connection.id });
+    }
+    entries.push({ connection, tools });
+  }
+  return entries;
+}
+
+function generateConnectionsTypes(entries) {
+  const usedAliases = new Set();
+  const aliasEntries = entries.map(({ connection, tools }) => ({
+    connection,
+    tools,
+    alias: connectionAlias(connection, usedAliases),
+  }));
+
+  const connectionToolsLines = aliasEntries.map(({ connection, tools }) => {
+    const toolLines = tools.map((tool) => {
+      const name = String(tool?.name || '');
+      return `    ${literal(name)}: { input: ${toolInputType(tool)}; output: ${toolResultType(tool)} };`;
+    });
+    return `  ${literal(connection.id)}: {\n${toolLines.join('\n')}\n  };`;
+  });
+
+  const facadeLines = aliasEntries.map(({ connection, tools, alias }) => {
+    const methodLines = tools.map((tool) => {
+      const toolName = String(tool?.name || '');
+      const methodName = toIdentifier(toolName, 'tool');
+      return `      ${methodName}(input: ToolInput<${literal(connection.id)}, ${literal(toolName)}>) {\n        return binding.call<ToolOutput<${literal(connection.id)}, ${literal(toolName)}>>(${literal(connection.id)}, ${literal(toolName)}, input as Record<string, unknown>);\n      },`;
+    });
+    return `    ${alias}: {\n${methodLines.join('\n')}\n    },`;
+  });
+
+  return `/* eslint-disable */
+// Generated by camelai-connections. Re-run \`camelai-connections types --write-types\` after changing workspace connections.
+
+export interface ConnectionSummary {
+  id: string;
+  type: string;
+  name: string;
+  displayName: string;
+  category: string;
+  authMethod: string;
+  hasCredentials: boolean;
+  capabilities: string[];
+  nativeMcp: {
+    serverName: string;
+    transport: "streamable_http";
+    directConnect: false;
+  } | null;
+}
+
+export interface McpToolSummary {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  [key: string]: unknown;
+}
+
+export interface ConnectionsBinding {
+  list(): Promise<ConnectionSummary[]>;
+  get(connection: string): Promise<ConnectionSummary>;
+  tools(connection: string): Promise<McpToolSummary[]>;
+  call<T = unknown>(connection: string, tool: string, input?: Record<string, unknown>): Promise<T>;
+}
+
+export type ConnectionTools = {
+${connectionToolsLines.join('\n')}
+};
+
+type ToolInput<
+  C extends keyof ConnectionTools,
+  T extends keyof ConnectionTools[C],
+> = ConnectionTools[C][T] extends { input: infer I } ? I : never;
+
+type ToolOutput<
+  C extends keyof ConnectionTools,
+  T extends keyof ConnectionTools[C],
+> = ConnectionTools[C][T] extends { output: infer O } ? O : never;
+
+export function createConnections(env: { CONNECTIONS: ConnectionsBinding }) {
+  const binding = env.CONNECTIONS;
+  return {
+    list: () => binding.list(),
+    get: (connection: string) => binding.get(connection),
+    tools: (connection: string) => binding.tools(connection),
+    call: <
+      C extends keyof ConnectionTools & string,
+      T extends keyof ConnectionTools[C] & string,
+    >(connection: C, tool: T, input: ToolInput<C, T>) =>
+      binding.call<ToolOutput<C, T>>(connection, tool, input as Record<string, unknown>),
+${facadeLines.join('\n')}
+  };
+}
+`;
+}
+
+async function writeConnectionTypes(connectionQuery) {
+  const outPath = resolve(flagValue('--out=', '.camelai/connections.ts'));
+  const source = generateConnectionsTypes(await collectConnectionTypeData(connectionQuery));
+  await mkdir(dirname(outPath), { recursive: true });
+  await writeFile(outPath, source);
+  return outPath;
+}
+
 async function main() {
   const args = stripFlags(process.argv.slice(2));
   const command = args[0] || 'help';
   const json = hasFlag('--json');
+  const writeTypes = hasFlag('--write-types');
+
+  if (isConnectionsCli) {
+    await handleConnectionsCommand(args, json, writeTypes);
+    return;
+  }
 
   switch (command) {
     case 'help':
@@ -282,9 +561,74 @@ async function main() {
       return;
     }
 
+    case 'connections':
+      await handleConnectionsCommand(args.slice(1), json, writeTypes);
+      return;
+
     default:
       await handleIntegrationMcpCommand(args, json);
       return;
+  }
+}
+
+async function handleConnectionsCommand(args, json, writeTypes) {
+  const command = args[0] || 'help';
+
+  switch (command) {
+    case 'help':
+    case '--help':
+    case '-h':
+      usage();
+      return;
+
+    case 'list': {
+      const payload = await connectionsRequest('list');
+      json ? printJson(payload) : printConnections(payload);
+      return;
+    }
+
+    case 'get': {
+      const connection = args[1];
+      if (!connection) throw new Error('get requires a connection id, name, or type');
+      const payload = await connectionsRequest('get', { connection });
+      printJson(payload);
+      return;
+    }
+
+    case 'tools': {
+      const connection = args[1];
+      if (writeTypes) {
+        const outPath = await writeConnectionTypes(connection);
+        console.log(`Wrote ${outPath}`);
+        return;
+      }
+      if (!connection) throw new Error('tools requires a connection id, name, or type');
+      const payload = await connectionsRequest('tools', { connection });
+      json ? printJson(payload) : printConnectionTools(payload);
+      return;
+    }
+
+    case 'types': {
+      if (writeTypes) {
+        const outPath = await writeConnectionTypes(args[1]);
+        console.log(`Wrote ${outPath}`);
+        return;
+      }
+      printJson(generateConnectionsTypes(await collectConnectionTypeData(args[1])));
+      return;
+    }
+
+    case 'call': {
+      const connection = args[1];
+      const toolName = args[2];
+      if (!connection || !toolName) throw new Error('call requires a connection and tool name');
+      const input = args[3] ? JSON.parse(args[3]) : {};
+      printJson(await connectionsRequest('call', { connection, tool: toolName, input }));
+      return;
+    }
+
+    default:
+      throw new Error(`Unknown connections command: ${command}`);
   }
 }
 

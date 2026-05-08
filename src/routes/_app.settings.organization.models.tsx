@@ -36,6 +36,7 @@ import { getEnv } from "@/lib/cloudflare.server";
 import {
   ALL_LLM_MODELS,
   MODEL_CATALOG,
+  compareModelCatalogEntries,
   sortAdditionalModelCatalogEntries,
   type ModelCatalogEntry,
 } from "@/lib/model-catalog";
@@ -131,22 +132,18 @@ function buildPickerRows(
       addedAt: model.added_at,
       isDefault: model.id === config.default_model,
     }))
-    .sort(
-      (a, b) =>
-        a.entry.providerOrder - b.entry.providerOrder ||
-        b.addedAt - a.addedAt ||
-        a.entry.label.localeCompare(b.entry.label),
-    );
+    .sort((a, b) => compareModelCatalogEntries(a.entry, b.entry));
 }
 
 function buildAdditionalRows(
   config: Pick<OrgModelPickerConfig, "models">,
+  visibleModelIds: ReadonlySet<LlmModel>,
 ): ModelCatalogEntry[] {
   const inPicker = new Set(config.models.map((model) => model.id));
   return sortAdditionalModelCatalogEntries(
-    ALL_LLM_MODELS.filter((id) => !inPicker.has(id)).map(
-      (id) => MODEL_CATALOG[id],
-    ),
+    ALL_LLM_MODELS.filter(
+      (id) => visibleModelIds.has(id) && !inPicker.has(id),
+    ).map((id) => MODEL_CATALOG[id]),
   );
 }
 
@@ -191,10 +188,23 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const selectedWorkspaceId = url.searchParams.get("workspaceId");
 
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const [orgConfig, workspaces] = await Promise.all([
+  const [
+    orgConfig,
+    workspaces,
+    llmProviderConfig,
+    experimentalSettings,
+  ] = await Promise.all([
     orgStub.getModelPickerConfig(),
     listOrgWorkspaces(authEnv, orgId),
+    orgStub.getLlmProviderConfig().catch(() => null),
+    orgStub
+      .getExperimentalSettings()
+      .catch(() => ({ claude_proxy_models: false })),
   ]);
+  const visibleModelIds = getVisibleModelIdsForSettings(
+    llmProviderConfig?.provider,
+    experimentalSettings,
+  );
   const workspaceConfigs = await loadWorkspaceConfigs(authEnv, workspaces);
   const selectedWorkspace =
     scope === "ws"
@@ -207,6 +217,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     scope === "ws"
       ? resolveEffectivePickerConfig(orgConfig, workspaceConfig)
       : { ...orgConfig, source: "org" as const };
+  const displayConfig = normalizeConfigForVisibleModels(
+    effectiveConfig,
+    visibleModelIds,
+  );
   const useOrgDefaults =
     scope === "ws" ? (workspaceConfig?.use_org_defaults ?? true) : false;
 
@@ -223,10 +237,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     })),
     useOrgDefaults,
     config: {
-      inPicker: buildPickerRows(effectiveConfig),
-      additional: buildAdditionalRows(effectiveConfig),
+      inPicker: buildPickerRows(displayConfig),
+      additional: buildAdditionalRows(displayConfig, visibleModelIds),
       capacity: {
-        used: effectiveConfig.models.length,
+        used: displayConfig.models.length,
         max: MODEL_PICKER_MAX_MODELS,
       },
     },
@@ -415,6 +429,10 @@ export async function action({ request, context }: Route.ActionArgs) {
   const rawModel = formData.get("model");
   const rawModelString = typeof rawModel === "string" ? rawModel : "";
   const model = isLlmModel(rawModelString) ? rawModelString : null;
+  const currentConfig = normalizeConfigForVisibleModels(
+    target.config,
+    target.visibleModelIds,
+  );
 
   if (intent === "addModel") {
     if (!model) {
@@ -428,16 +446,16 @@ export async function action({ request, context }: Route.ActionArgs) {
       return response(providerError, { status: 400 });
     }
     if (
-      target.config.models.length >= MODEL_PICKER_MAX_MODELS &&
-      !target.config.models.some((item) => item.id === model)
+      currentConfig.models.length >= MODEL_PICKER_MAX_MODELS &&
+      !currentConfig.models.some((item) => item.id === model)
     ) {
       return response({ error: "Picker capacity reached" }, { status: 400 });
     }
     await saveActionTarget(
       target,
       {
-        ...target.config,
-        models: addModel(target.config.models, model),
+        ...currentConfig,
+        models: addModel(currentConfig.models, model),
       },
       { intent, model },
     );
@@ -451,14 +469,14 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!model) {
       return response({ error: "A valid model is required" }, { status: 400 });
     }
-    const models = target.config.models.filter((item) => item.id !== model);
+    const models = currentConfig.models.filter((item) => item.id !== model);
     const nextConfig = {
-      ...target.config,
+      ...currentConfig,
       models,
       default_model:
-        target.config.default_model === model
+        currentConfig.default_model === model
           ? null
-          : target.config.default_model,
+          : currentConfig.default_model,
     };
     if (
       target.visibleModelIds.has(model) &&
@@ -491,7 +509,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     const nextDefault = model;
     if (
       nextDefault &&
-      !target.config.models.some((item) => item.id === nextDefault)
+      !currentConfig.models.some((item) => item.id === nextDefault)
     ) {
       return response({ error: "Default model must be in the picker" }, { status: 400 });
     }
@@ -507,7 +525,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     await saveActionTarget(
       target,
       {
-        ...target.config,
+        ...currentConfig,
         default_model: nextDefault,
       },
       { intent, model: nextDefault },
@@ -531,6 +549,7 @@ function ModelSettingsRow({
   readOnly,
   disabled,
   capacityReached,
+  capacityMax,
 }: {
   row: PickerModelRow | { entry: ModelCatalogEntry };
   actionLabel: "add" | "remove";
@@ -539,6 +558,7 @@ function ModelSettingsRow({
   readOnly?: boolean;
   disabled?: boolean;
   capacityReached?: boolean;
+  capacityMax?: number;
 }) {
   const entry = row.entry;
   const isDefault = "isDefault" in row ? row.isDefault : false;
@@ -583,7 +603,10 @@ function ModelSettingsRow({
         {actionLabel === "add" && capacityReached ? (
           <Tooltip>
             <TooltipTrigger asChild>{actionButton}</TooltipTrigger>
-            <TooltipContent>Picker capacity reached (max 10)</TooltipContent>
+            <TooltipContent>
+              Picker capacity reached (max{" "}
+              {capacityMax ?? MODEL_PICKER_MAX_MODELS})
+            </TooltipContent>
           </Tooltip>
         ) : (
           actionButton
@@ -756,6 +779,7 @@ export default function OrganizationModelsPage() {
             readOnly={readOnly}
             disabled={isSubmitting}
             capacityReached={capacityReached}
+            capacityMax={data.config.capacity.max}
           />
         ))}
       </section>

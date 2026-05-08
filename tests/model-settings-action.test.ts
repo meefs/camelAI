@@ -25,7 +25,7 @@ vi.mock('@/lib/auth-do', () => ({
   listOrgWorkspaces: listOrgWorkspacesMock,
 }));
 
-const { action } = await import('@/routes/_app.settings.organization.models');
+const { action, loader } = await import('@/routes/_app.settings.organization.models');
 
 function formRequest(fields: Record<string, string>) {
   const formData = new FormData();
@@ -39,6 +39,10 @@ function formRequest(fields: Record<string, string>) {
       body: formData,
     },
   );
+}
+
+function loaderRequest(search = '') {
+  return new Request(`https://camelai.com/settings/organization/models${search}`);
 }
 
 describe('organization model settings actions', () => {
@@ -71,7 +75,7 @@ describe('organization model settings actions', () => {
       {
         id: 'ws_123',
         name: 'Workspace',
-        avatar: { color: 'blue' },
+        avatar: { color: 'blue', content: 'W' },
       },
     ]);
     orgGetModelPickerConfigMock.mockResolvedValue({
@@ -170,7 +174,7 @@ describe('organization model settings actions', () => {
     const response = await action({
       request: formRequest({
         intent: 'addModel',
-        model: 'kimi-k2.6',
+        model: 'deepseek-v4-pro',
       }),
       context: {},
       params: {},
@@ -178,9 +182,62 @@ describe('organization model settings actions', () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
-      error: 'Kimi K2.6 is not available for this provider',
+      error: 'DeepSeek V4 Pro is not available for this provider',
     });
     expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('drops hidden stored models before checking capacity when adding visible models', async () => {
+    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: false,
+      models: [
+        { id: 'opus-4.7', added_at: 100 },
+        { id: 'sonnet', added_at: 99 },
+        { id: 'gpt-5.5', added_at: 98 },
+        { id: 'gpt-5.4-mini', added_at: 97 },
+        { id: 'gemini-3.1-pro-preview', added_at: 96 },
+        { id: 'gemini-3-flash-preview', added_at: 95 },
+        { id: 'deepseek-v4-pro', added_at: 94 },
+        { id: 'deepseek-v4-flash', added_at: 93 },
+        { id: 'kimi-k2.6', added_at: 92 },
+        { id: 'grok-4.3', added_at: 91 },
+      ],
+      default_model: 'sonnet',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'addModel',
+        model: 'gpt-5.4',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      message: 'Added GPT-5.4 to picker',
+    });
+    expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_org_defaults: false,
+        models: [
+          { id: 'gpt-5.4', added_at: expect.any(Number) },
+          { id: 'gpt-5.5', added_at: 98 },
+          { id: 'gpt-5.4-mini', added_at: 97 },
+        ],
+        default_model: 'gpt-5.5',
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'addModel',
+          model: 'gpt-5.4',
+        },
+      },
+    );
   });
 
   it('allows removing hidden models even when no visible models remain', async () => {
@@ -210,7 +267,7 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
       {
         use_org_defaults: false,
-        models: [{ id: 'opus', added_at: 10 }],
+        models: [],
         default_model: null,
       },
       {
@@ -223,7 +280,7 @@ describe('organization model settings actions', () => {
     );
   });
 
-  it('rejects removing the last visible model while hidden models remain', async () => {
+  it('allows removing the last visible model and drops hidden models', async () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
@@ -243,11 +300,150 @@ describe('organization model settings actions', () => {
       params: {},
     } as never);
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error:
-        'Picker must include at least one model available for this provider, or be empty.',
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
     });
-    expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
+    expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
+      {
+        use_org_defaults: false,
+        models: [],
+        default_model: null,
+      },
+      {
+        actorId: 'user_123',
+        details: {
+          intent: 'removeModel',
+          model: 'gpt-5.4',
+        },
+      },
+    );
+  });
+});
+
+describe('organization model settings loader', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requireAuthContextMock.mockResolvedValue({
+      currentOrg: { id: 'org_123' },
+      user: { id: 'user_123' },
+    });
+    requireOrgAdminMock.mockResolvedValue(undefined);
+    getEnvMock.mockReturnValue({});
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getModelPickerConfig: orgGetModelPickerConfigMock,
+          getLlmProviderConfig: orgGetLlmProviderConfigMock,
+          getExperimentalSettings: orgGetExperimentalSettingsMock,
+        }),
+      },
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getModelPickerConfig: workspaceGetModelPickerConfigMock,
+          setModelPickerConfig: workspaceSetModelPickerConfigMock,
+        }),
+      },
+    });
+    listOrgWorkspacesMock.mockResolvedValue([
+      {
+        id: 'ws_123',
+        name: 'Workspace',
+        avatar: { color: 'blue', content: 'W' },
+      },
+    ]);
+    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
+    orgGetExperimentalSettingsMock.mockResolvedValue({
+      claude_proxy_models: false,
+    });
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: true,
+      models: [],
+      default_model: null,
+    });
+  });
+
+  it('hides provider-incompatible additional models for OpenAI BYOK orgs', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      models: [
+        { id: 'gpt-5.5', added_at: 30 },
+        { id: 'gpt-5.4', added_at: 20 },
+        { id: 'gpt-5.4-mini', added_at: 10 },
+      ],
+      default_model: 'gpt-5.4',
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+    ]);
+    expect(result.config.additional).toEqual([]);
+    expect(result.config.capacity.used).toBe(3);
+  });
+
+  it('counts only visible picker models after switching to OpenAI BYOK', async () => {
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      models: [
+        { id: 'sonnet', added_at: 50 },
+        { id: 'gpt-5.5', added_at: 40 },
+        { id: 'deepseek-v4-pro', added_at: 30 },
+        { id: 'gpt-5.4-mini', added_at: 20 },
+      ],
+      default_model: 'sonnet',
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'gpt-5.5',
+      'gpt-5.4-mini',
+    ]);
+    expect(result.config.additional.map((entry) => entry.id)).toEqual([
+      'gpt-5.4',
+    ]);
+    expect(result.config.capacity.used).toBe(2);
+  });
+
+  it('shows only Claude-family models for Anthropic BYOK orgs', async () => {
+    orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'anthropic' });
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      models: [
+        { id: 'gpt-5.5', added_at: 60 },
+        { id: 'haiku', added_at: 50 },
+        { id: 'sonnet', added_at: 40 },
+        { id: 'opus', added_at: 30 },
+        { id: 'opus-4.7', added_at: 20 },
+        { id: 'deepseek-v4-flash', added_at: 10 },
+      ],
+      default_model: 'gpt-5.5',
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
+      'opus-4.7',
+      'opus',
+      'sonnet',
+      'haiku',
+    ]);
+    expect(result.config.additional).toEqual([]);
+    expect(result.config.capacity.used).toBe(4);
   });
 });
