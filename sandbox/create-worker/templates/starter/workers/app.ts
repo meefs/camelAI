@@ -5,6 +5,7 @@ import { createRequestHandler } from "react-router";
 // Add new DOs here after creating them in workers/
 export { ExampleDO } from "./example-do";
 export { LocalDataProxyService } from "./data-proxy";
+export { LocalConnectionsService } from "./connections";
 // export { ChatSessionsDO } from "./chat-sessions";
 // export { Chat } from "./chat";
 

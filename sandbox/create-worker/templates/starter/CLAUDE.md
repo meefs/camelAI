@@ -176,6 +176,25 @@ return { rows: result.data.recordset ?? [] };
 
 For local fallback over HTTP, set `DATA_PROXY_URL` in `wrangler.jsonc` vars or `.dev.vars`.
 
+### Connections Binding (`CONNECTIONS`)
+
+The template includes a `CONNECTIONS` service binding by default.
+
+- Local dev: `CONNECTIONS` resolves to `LocalConnectionsService` in `workers/connections.ts`
+- camelAI deploy: platform rewrites this binding to the internal `ConnectionsService`
+- Run `bun run connections:typegen` to generate `.camelai/connections.ts` from live MCP tool schemas
+
+Example:
+
+```typescript
+import { createConnections } from "../../.camelai/connections";
+
+const connections = createConnections(context.cloudflare.env);
+const customer = await connections.stripeProd.createCustomer({
+  email: "customer@example.com",
+});
+```
+
 ### Virtual AI Binding (`AI`)
 
 You can use Cloudflare-style AI calls in user workers with a native AI binding:

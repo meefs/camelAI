@@ -27,6 +27,7 @@ const proxyEnvKeys = [
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_BASE_URL",
   "CLOUDFLARE_API_TOKEN",
+  "CAMELAI_CONNECTIONS_URL",
   "DATA_PROXY_URL",
   "MCP_SERVER_URL",
   "ORG_ID",
@@ -137,6 +138,7 @@ async function runContainerCommand(
   );
   if (containerProxyBase) {
     env.CLOUDFLARE_API_BASE_URL = `${containerProxyBase}/client/v4`;
+    env.CAMELAI_CONNECTIONS_URL = `${containerProxyBase}/api/connections`;
     env.DATA_PROXY_URL = `${containerProxyBase}/api`;
     env.MCP_SERVER_URL = `${containerProxyBase}/mcp`;
     env.RESEND_PROXY_URL = `${containerProxyBase}/api/resend`;

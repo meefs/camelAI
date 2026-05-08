@@ -24,6 +24,7 @@ import type { SlackEventQueueMessage } from './slack-types.js';
 import { handleCfProxy } from './routes/cf-proxy.js';
 import { handleMcp } from './routes/mcp.js';
 import { handleIntegrationsMcp } from './routes/integrations-mcp.js';
+import { handleConnections } from './routes/connections.js';
 import { handleAdminMcp } from './routes/admin-mcp.js';
 import { handleThreadPreview } from './routes/threads.js';
 import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
@@ -63,6 +64,7 @@ export { WorkerLogsDO, EphemeralWorkerLogsDO } from './worker-logs-do.js';
 export { R2VirtualBucket } from './r2-virtual-bucket.js';
 export { DataProxyService } from './data-proxy-service.js';
 export { AIVirtualBinding } from './ai-virtual-binding.js';
+export { ConnectionsService } from './connections-service.js';
 export { AdminIndexDO } from './admin-index-do.js';
 
 // Extend React Router's AppLoadContext
@@ -158,6 +160,9 @@ const routes: Route[] = [
 
   // Resend email proxy (for sandbox containers)
   { method: 'POST', path: /^\/api\/resend\/emails$/, handler: handleResendProxy },
+
+  // Connections proxy (for sandbox containers)
+  { method: 'POST', path: /^\/api\/connections$/, handler: handleConnections },
 
   // Integrations MCP (internal - sandbox tools)
   { method: 'ALL', path: /^\/mcp\/integrations(\/|$)/, handler: handleIntegrationsMcp },

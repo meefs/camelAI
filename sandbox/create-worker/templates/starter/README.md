@@ -72,6 +72,23 @@ export async function loader({ context }: Route.LoaderArgs) {
 }
 ```
 
+### Connections Service Binding
+
+The starter includes a `CONNECTIONS` service binding for workspace connections.
+
+- Local dev: binding points to `LocalConnectionsService` (`workers/connections.ts`), which forwards to `CAMELAI_CONNECTIONS_URL` when set
+- camelAI deploy: platform rewrites `CONNECTIONS` to its internal service binding
+- Typegen: run `bun run connections:typegen` to write `.camelai/connections.ts` from live MCP tool schemas
+
+```typescript
+import { createConnections } from "../../.camelai/connections";
+
+export async function action({ context }: Route.ActionArgs) {
+  const connections = createConnections(context.cloudflare.env);
+  return connections.stripeProd.createCustomer({ email: "customer@example.com" });
+}
+```
+
 ### Durable Object with SQLite
 
 ```typescript

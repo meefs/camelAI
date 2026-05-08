@@ -21,6 +21,11 @@ import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
 // Secrets managed by Chiridion (will be cleaned up if removed)
 const MANAGED_SECRET_PREFIXES = ["INT_"];
 const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
+const VIRTUAL_CONNECTIONS_BINDING_NAME = "CONNECTIONS";
+const ALLOWED_VIRTUAL_SERVICE_BINDINGS = new Set([
+  VIRTUAL_DATA_PROXY_BINDING_NAME,
+  VIRTUAL_CONNECTIONS_BINDING_NAME,
+]);
 
 function isManagedSecret(name: string): boolean {
   return MANAGED_SECRET_PREFIXES.some((p) => name.startsWith(p));
@@ -108,15 +113,15 @@ export function validateBindings(
   for (const binding of bindings) {
     const { type, name } = binding;
 
-    // Allow virtual DATA_PROXY service binding (platform-virtualized at deploy time).
+    // Allow platform-virtualized service bindings that are rewritten at deploy time.
     if (type === "service") {
-      if (name === VIRTUAL_DATA_PROXY_BINDING_NAME) {
+      if (ALLOWED_VIRTUAL_SERVICE_BINDINGS.has(name)) {
         continue;
       }
       forbiddenBindings.push({
         name,
         type,
-        reason: `Service binding "${name}" is not allowed. Only "${VIRTUAL_DATA_PROXY_BINDING_NAME}" is permitted.`,
+        reason: `Service binding "${name}" is not allowed. Only ${Array.from(ALLOWED_VIRTUAL_SERVICE_BINDINGS).map((bindingName) => `"${bindingName}"`).join(" and ")} are permitted.`,
       });
       continue;
     }
@@ -568,10 +573,14 @@ function transformVirtualBindings(
   const dataProxyBindings = bindings.filter(
     (b) => b.type === "service" && b.name === VIRTUAL_DATA_PROXY_BINDING_NAME,
   );
+  const connectionsBindings = bindings.filter(
+    (b) => b.type === "service" && b.name === VIRTUAL_CONNECTIONS_BINDING_NAME,
+  );
   const aiBindings = bindings.filter((b) => b.type === "ai");
   if (
     r2Bindings.length === 0 &&
     dataProxyBindings.length === 0 &&
+    connectionsBindings.length === 0 &&
     aiBindings.length === 0
   )
     return body;
@@ -582,7 +591,7 @@ function transformVirtualBindings(
     metadata = JSON.parse(rawMetadataJson);
   } catch {
     console.warn(
-      "[cf-api-proxy] failed to parse metadata JSON for R2 binding transformation",
+      "[cf-api-proxy] failed to parse metadata JSON for virtual binding transformation",
     );
     return body;
   }
@@ -618,7 +627,7 @@ function transformVirtualBindings(
 
   if (matchPos === -1) {
     console.warn(
-      "[cf-api-proxy] could not find metadata bytes in body for R2 transformation",
+      "[cf-api-proxy] could not find metadata bytes in body for virtual binding transformation",
       {
         metadataLength: rawMetadataJson.length,
         bodyLength: body.byteLength,
@@ -644,6 +653,7 @@ function transformVirtualBindings(
       bucket_name: b.bucket_name,
     })),
     dataProxyBindings: dataProxyBindings.map((b) => ({ name: b.name })),
+    connectionsBindings: connectionsBindings.map((b) => ({ name: b.name })),
     aiBindings: aiBindings.map((b) => ({ name: b.name })),
     originalSize: body.byteLength,
     newSize: result.length,
@@ -680,6 +690,23 @@ export function mapVirtualizedBindings(
         service: workerServiceName,
         entrypoint: "DataProxyService",
         props: { workspaceId, orgId },
+      };
+    }
+
+    if (
+      binding.type === "service" &&
+      binding.name === VIRTUAL_CONNECTIONS_BINDING_NAME
+    ) {
+      const props: Record<string, string> = { workspaceId, orgId };
+      if (userId) {
+        props.userId = userId;
+      }
+      return {
+        type: "service",
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: "ConnectionsService",
+        props,
       };
     }
 
@@ -1718,7 +1745,7 @@ export async function proxyCloudflareApi(
             10005,
             `Deploy blocked: Your worker contains forbidden bindings: ${forbiddenList}. ` +
               `User workers can only use environment variables and Durable Objects defined in the same script. ` +
-              `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
+              `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, CONNECTIONS, AI).`,
             403,
           );
         }
@@ -1790,7 +1817,7 @@ export async function proxyCloudflareApi(
               10005,
               `Settings update blocked: Request contains forbidden bindings: ${forbiddenList}. ` +
                 `User workers can only use environment variables and Durable Objects defined in the same script. ` +
-                `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
+                `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, CONNECTIONS, AI).`,
               403,
             );
           }

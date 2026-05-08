@@ -27,8 +27,20 @@ Your actual workspace root is `/home/claude`. The agent harness may include a ho
 | `CLOUDFLARE_API_TOKEN` | Deploy token (workspace-scoped) |
 | `DATA_PROXY_URL` | Thread-scoped SQL proxy base URL |
 | `RESEND_PROXY_URL` | Thread-scoped Resend email proxy base URL |
+| `CAMELAI_CONNECTIONS_URL` | Thread-scoped user connections proxy endpoint |
 
 Outbound DB traffic from `DATA_PROXY_URL` and user-provided database connections egresses from `20.46.233.68`. If a connection times out or is refused, tell the user to allowlist `20.46.233.68` on their database firewall or VPC security group.
+
+User connections:
+- Use `camelai-connections list` to inspect connected integrations available to this workspace.
+- Use `camelai-connections tools <id|name|type>` to list MCP-backed tools for a connection.
+- Use `camelai-connections call <id|name|type> <tool-name> '<json-args>'` for shell access.
+- For scripts, POST JSON to `CAMELAI_CONNECTIONS_URL` with one of:
+  - `{ "action": "list" }`
+  - `{ "action": "get", "connection": "stripe" }`
+  - `{ "action": "tools", "connection": "stripe" }`
+  - `{ "action": "call", "connection": "stripe", "tool": "create_customer", "input": { ... } }`
+- Prefer the CLI for quick bash usage. In JS/Python scripts, call `CAMELAI_CONNECTIONS_URL` directly with `fetch` or `requests`.
 
 AI access patterns:
 - In deployed workers, prefer native `env.AI` via the Workers AI provider. In camelAI this AI binding is virtualized by the platform and routes to a model configured by `AI_VIRTUAL_MODEL` (default `auto`).

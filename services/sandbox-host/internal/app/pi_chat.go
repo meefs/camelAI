@@ -703,6 +703,7 @@ func (b *hostPiBridge) piEnv(workspacePath string, sessionEnv map[string]string)
 	env["MCP_SERVER_URL"] = proxyBase + "/mcp"
 	env["DATA_PROXY_URL"] = proxyBase + "/api"
 	env["RESEND_PROXY_URL"] = proxyBase + "/api/resend"
+	env["CAMELAI_CONNECTIONS_URL"] = proxyBase + "/api/connections"
 	env["CLOUDFLARE_API_BASE_URL"] = proxyBase + "/client/v4"
 	env["CLOUDFLARE_API_TOKEN"] = "proxy"
 	env["THREAD_ID"] = b.threadID
