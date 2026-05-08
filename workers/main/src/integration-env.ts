@@ -127,6 +127,8 @@ export function getEnvVarSuffixesForType(integrationType: string, dynamicFields?
       return ['ACCESS_TOKEN', 'ENVIRONMENT'];
     case 'other':
       return ['API_KEY', 'API_SECRET', 'CLIENT_ID', 'CLIENT_SECRET', 'BASE_URL'];
+    case 'remote_mcp':
+      return [];
     default:
       return ['API_KEY'];
   }
@@ -514,6 +516,11 @@ export function mapCredentialsToEnvVars(
       }
       break;
     }
+
+    case 'remote_mcp':
+      // Remote MCP connections are exposed through the CONNECTIONS binding and
+      // CAMELAI_CONNECTIONS_URL proxy, not raw environment variables.
+      break;
 
     // Default: expose api_key if present
     default: {

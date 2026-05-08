@@ -93,6 +93,11 @@ const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
 const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
   '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to.</camelai system message>';
 
+function connectionAuthLabel(type: IntegrationDefinition): string {
+  if (type.type === 'remote_mcp') return 'Remote MCP';
+  return type.authMethod === 'oauth2' ? 'OAuth' : 'API Key';
+}
+
 export default function ConnectionsClient({
   initialConnections,
   connectionTypes,
@@ -703,7 +708,7 @@ export default function ConnectionsClient({
                                     {type.displayName}
                                   </div>
                                   <div className="text-xs text-muted-foreground">
-                                    {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                                    {connectionAuthLabel(type)}
                                   </div>
                                 </div>
                                 <Plus className="size-4 shrink-0 text-muted-foreground" />
@@ -743,7 +748,7 @@ export default function ConnectionsClient({
                                         {type.displayName}
                                       </div>
                                       <div className="text-xs text-muted-foreground">
-                                        {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                                        {connectionAuthLabel(type)}
                                       </div>
                                     </div>
                                     <Plus className="size-4 shrink-0 text-muted-foreground" />

@@ -224,6 +224,88 @@ describe('connections runtime', () => {
     ]);
   });
 
+  it('connects to the no-auth Devin DeepWiki remote MCP server', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://mcp.deepwiki.com/mcp');
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBeNull();
+      expect(headers.get('mcp-protocol-version')).toBe('2025-06-18');
+
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'deepwiki' },
+          },
+        }), {
+          headers: { 'mcp-session-id': 'deepwiki-session' },
+        });
+      }
+
+      expect(headers.get('mcp-session-id')).toBe('deepwiki-session');
+      expect(body.method).toBe('tools/list');
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: {
+          tools: [
+            { name: 'read_wiki_structure' },
+            { name: 'read_wiki_contents' },
+            { name: 'ask_question' },
+          ],
+        },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const records = [
+      integration({
+        id: 'deepwiki',
+        integration_type: 'remote_mcp',
+        name: 'DeepWiki',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.deepwiki.com/mcp',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+
+    await expect(listConnections(envWith(records), context)).resolves.toMatchObject([
+      {
+        id: 'deepwiki',
+        type: 'remote_mcp',
+        name: 'DeepWiki',
+        capabilities: ['mcp_tools'],
+        nativeMcp: {
+          serverName: 'DeepWiki',
+          transport: 'streamable_http',
+          directConnect: false,
+          brokered: true,
+          authStrategy: 'remote_mcp_config',
+          preferredMode: 'brokered',
+          broker: {
+            url: 'https://mcp.deepwiki.com/mcp',
+            brokerPath: '/mcp/integrations/native/deepwiki',
+            authStrategy: 'remote_mcp_config',
+          },
+        },
+      },
+    ]);
+
+    await expect(listConnectionTools(envWith(records), context, 'deepwiki')).resolves.toEqual([
+      { name: 'read_wiki_structure' },
+      { name: 'read_wiki_contents' },
+      { name: 'ask_question' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('lists method aliases for connection tools', async () => {
     const records = [
       integration({

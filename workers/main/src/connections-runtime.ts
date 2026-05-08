@@ -1,5 +1,6 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import { getIntegrationDefinition } from '../../../src/lib/integration-registry';
+import { validateRemoteMcpUrl } from '../../../src/lib/remote-mcp';
 import {
   PROVIDER_MCP_REGISTRY,
   type ProviderMcpDefinition,
@@ -288,6 +289,9 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
   if (integrationType === 'other' && typeof config.base_url === 'string' && config.base_url.trim()) {
     return ['authenticated_fetch'];
   }
+  if (integrationType === 'remote_mcp') {
+    return [];
+  }
   const nativeMcp = NATIVE_MCP_SERVERS[integrationType];
   if (!nativeMcp) {
     if (integrationType === 'postgres' || integrationType === 'mysql') {
@@ -417,10 +421,41 @@ async function markConnectionAuthStatus(
   }
 }
 
+function mcpDefinitionForRecord(
+  record: WorkspaceIntegrationRecord,
+  config = parseJsonObject(record.config)
+): ProviderMcpDefinition | null {
+  if (record.integration_type === 'remote_mcp') {
+    const serverUrl = typeof config.server_url === 'string' ? config.server_url.trim() : '';
+    if (!serverUrl || validateRemoteMcpUrl(serverUrl).length > 0) return null;
+    return {
+      integrationType: 'remote_mcp',
+      serverName: record.name,
+      url: serverUrl,
+      transport: 'streamable_http',
+      authStrategy: 'remote_mcp_config',
+      brokered: true,
+      directConnect: false,
+      preferredMode: 'brokered',
+      broker: {
+        serverName: record.name,
+        url: serverUrl,
+        transport: 'streamable_http',
+        authStrategy: 'remote_mcp_config',
+        notes:
+          'User-configured remote MCP server. camelAI proxies this server and applies the configured auth header server-side.',
+      },
+      notes:
+        'User-configured remote MCP server. camelAI proxies this server and applies the configured auth header server-side.',
+    } as unknown as ProviderMcpDefinition;
+  }
+  return NATIVE_MCP_SERVERS[record.integration_type] ?? null;
+}
+
 function summarizeConnection(record: WorkspaceIntegrationRecord, context: ConnectionsContext): ConnectionSummary {
   const config = parseJsonObject(record.config);
   const definition = getIntegrationDefinition(record.integration_type);
-  const nativeMcp = NATIVE_MCP_SERVERS[record.integration_type] ?? null;
+  const nativeMcp = mcpDefinitionForRecord(record, config);
   const resolvedAuthStatus = authStatus(record);
   return {
     id: record.id,
@@ -1152,7 +1187,8 @@ async function nativeMcpRpc(
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<unknown> {
-  const nativeDefinition = NATIVE_MCP_SERVERS[record.integration_type];
+  const config = parseJsonObject(record.config);
+  const nativeDefinition = mcpDefinitionForRecord(record, config);
   if (!nativeDefinition) {
     throw Object.assign(
       new Error(`Connection type "${record.integration_type}" does not have MCP-backed tools.`),
@@ -1223,11 +1259,11 @@ async function nativeMcpRpc(
   const credentials = record.credentials_encrypted
     ? await decryptCredentials<Record<string, unknown>>(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY)
     : {};
-  const token = credentialToken(credentials);
-  if (!token) {
+  const authHeaders = mcpAuthHeaders(record, config, credentials);
+  if (!authHeaders.ok) {
     const status = record.auth_method === 'oauth2' ? 'needs_reauth' : 'setup_incomplete';
     const code = status === 'needs_reauth' ? 'AUTH_REAUTH_REQUIRED' : 'AUTH_SETUP_INCOMPLETE';
-    const message = `Connected ${record.integration_type} integration does not have a usable token credential for MCP proxying.`;
+    const message = authHeaders.error;
     await markConnectionAuthStatus(env, context, record, status, code, message);
     throw connectionAuthError(
       record,
@@ -1239,7 +1275,7 @@ async function nativeMcpRpc(
     );
   }
 
-  const sessionId = await nativeMcpHttp(nativeDefinition, token, 'initialize', {
+  const sessionId = await nativeMcpHttp(nativeDefinition, authHeaders.headers, 'initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
     clientInfo: {
@@ -1248,19 +1284,58 @@ async function nativeMcpRpc(
     },
   }).then((result) => result.sessionId);
 
-  return nativeMcpHttp(nativeDefinition, token, method, params, sessionId)
+  return nativeMcpHttp(nativeDefinition, authHeaders.headers, method, params, sessionId)
     .then((result) => result.result);
+}
+
+function mcpAuthHeaders(
+  record: WorkspaceIntegrationRecord,
+  config: Record<string, unknown>,
+  credentials: Record<string, unknown>
+): { ok: true; headers: Record<string, string> } | { ok: false; error: string } {
+  if (record.integration_type === 'remote_mcp') {
+    const authType = typeof config.auth_type === 'string' ? config.auth_type : 'none';
+    if (authType === 'none') return { ok: true, headers: {} };
+
+    const token = typeof credentials.token === 'string' ? credentials.token.trim() : '';
+    if (!token) {
+      return {
+        ok: false,
+        error: `Remote MCP connection "${record.name}" requires a token for ${authType} authentication.`,
+      };
+    }
+    if (authType === 'custom_header') {
+      const headerName = typeof config.auth_header === 'string' ? config.auth_header.trim() : '';
+      if (!headerName) {
+        return {
+          ok: false,
+          error: `Remote MCP connection "${record.name}" is missing a custom auth header name.`,
+        };
+      }
+      return { ok: true, headers: { [headerName]: token } };
+    }
+    return { ok: true, headers: { authorization: `Bearer ${token}` } };
+  }
+
+  const token = credentialToken(credentials);
+  if (!token) {
+    return {
+      ok: false,
+      error: `Connected ${record.integration_type} integration does not have a usable token credential for MCP proxying.`,
+    };
+  }
+  return { ok: true, headers: { authorization: `Bearer ${token}` } };
 }
 
 async function nativeMcpHttp(
   definition: ProviderMcpDefinition,
-  token: string,
+  authHeaders: Record<string, string>,
   method: string,
   params: Record<string, unknown>,
   sessionId?: string | null
 ): Promise<{ result: unknown; sessionId: string | null }> {
   const headers: Record<string, string> = {
-    authorization: `Bearer ${token}`,
+    ...authHeaders,
     accept: 'application/json, text/event-stream',
     'content-type': 'application/json',
     'mcp-protocol-version': '2025-06-18',

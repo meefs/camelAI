@@ -17,6 +17,7 @@ import {
   type ProviderMcpDefinition,
   type ProviderMcpTransport,
 } from '../../../../src/lib/provider-mcp-registry';
+import { validateRemoteMcpUrl } from '../../../../src/lib/remote-mcp';
 import {
   airtableMcpRpc,
   isAirtableMcpIntegration,
@@ -128,11 +129,13 @@ interface IntegrationToolArgs {
   integration?: string;
 }
 
+type IntegrationMcpAuthStrategy = ProviderMcpAuthStrategy | 'remote_mcp_config';
+
 interface NativeMcpDefinition {
   server_name: string;
   url: string;
   transport: ProviderMcpTransport;
-  auth_strategy: ProviderMcpAuthStrategy;
+  auth_strategy: IntegrationMcpAuthStrategy;
   direct_connect: boolean;
   brokered: boolean;
   preferred_mode?: 'direct' | 'brokered';
@@ -148,7 +151,7 @@ interface NativeMcpDefinition {
     server_name: string;
     url: string;
     transport: ProviderMcpTransport;
-    auth_strategy: 'camelai_hosted_broker' | 'connected_credentials_broker';
+    auth_strategy: 'camelai_hosted_broker' | 'connected_credentials_broker' | 'remote_mcp_config';
     docs_url?: string;
     notes?: string;
   };
@@ -437,6 +440,9 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
   if (integrationType === 'other' && typeof config.base_url === 'string' && config.base_url.trim()) {
     return ['authenticated_fetch'];
   }
+  if (integrationType === 'remote_mcp') {
+    return [];
+  }
   if (!NATIVE_MCP_SERVERS[integrationType]) {
     if (integrationType === 'postgres' || integrationType === 'mysql') {
       return ['query_database'];
@@ -451,7 +457,8 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
 }
 
 function nativeMcpConnection(record: WorkspaceIntegrationRecord, workspaceId?: string): Record<string, JsonValue> | null {
-  const definition = NATIVE_MCP_SERVERS[record.integration_type];
+  const config = parseJsonObject(record.config);
+  const definition = nativeMcpDefinitionForRecord(record, config);
   if (!definition) return null;
 
   return {
@@ -489,6 +496,36 @@ function nativeMcpConnection(record: WorkspaceIntegrationRecord, workspaceId?: s
     docs_url: definition.docs_url ?? null,
     notes: definition.notes ?? null,
   };
+}
+
+function nativeMcpDefinitionForRecord(
+  record: WorkspaceIntegrationRecord,
+  config = parseJsonObject(record.config)
+): NativeMcpDefinition | null {
+  if (record.integration_type === 'remote_mcp') {
+    const serverUrl = typeof config.server_url === 'string' ? config.server_url.trim() : '';
+    if (!serverUrl || validateRemoteMcpUrl(serverUrl).length > 0) return null;
+    return {
+      server_name: record.name,
+      url: serverUrl,
+      transport: 'streamable_http',
+      auth_strategy: 'remote_mcp_config',
+      direct_connect: false,
+      brokered: true,
+      preferred_mode: 'brokered',
+      broker: {
+        server_name: record.name,
+        url: serverUrl,
+        transport: 'streamable_http',
+        auth_strategy: 'remote_mcp_config',
+        notes:
+          'User-configured remote MCP server. camelAI proxies this server and applies the configured auth header server-side.',
+      },
+      notes:
+        'User-configured remote MCP server. camelAI proxies this server and applies the configured auth header server-side.',
+    };
+  }
+  return NATIVE_MCP_SERVERS[record.integration_type] ?? null;
 }
 
 function summarizeIntegration(record: WorkspaceIntegrationRecord, workspaceId?: string): Record<string, JsonValue> {
@@ -679,10 +716,10 @@ function listAvailableIntegrationTypes(args: IntegrationToolArgs): Record<string
       description: definition.description,
       category: definition.category,
       auth_method: definition.authMethod,
-      has_native_mcp: Boolean(NATIVE_MCP_SERVERS[definition.type]),
+      has_native_mcp: definition.type === 'remote_mcp' || Boolean(NATIVE_MCP_SERVERS[definition.type]),
       native_mcp: NATIVE_MCP_SERVERS[definition.type] ?? null,
-      supports_authenticated_fetch_fallback: !NATIVE_MCP_SERVERS[definition.type],
-      supports_brokered_mcp_tools: Boolean(NATIVE_MCP_SERVERS[definition.type]),
+      supports_authenticated_fetch_fallback: definition.type !== 'remote_mcp' && !NATIVE_MCP_SERVERS[definition.type],
+      supports_brokered_mcp_tools: definition.type === 'remote_mcp' || Boolean(NATIVE_MCP_SERVERS[definition.type]),
       requires_outbound_ip_allowlist: Boolean(definition.requiresOutboundIpAllowlist),
     }));
 
@@ -820,7 +857,8 @@ async function handleNativeMcpProxy(
     return jsonResponse(resolved.payload, resolved.status);
   }
 
-  const nativeDefinition = NATIVE_MCP_SERVERS[resolved.record.integration_type];
+  const config = parseJsonObject(resolved.record.config);
+  const nativeDefinition = nativeMcpDefinitionForRecord(resolved.record, config);
   if (!nativeDefinition) {
     return jsonResponse({
       error: `Integration type "${resolved.record.integration_type}" does not have a known native MCP server.`,
@@ -951,11 +989,11 @@ async function handleNativeMcpProxy(
   const credentials = resolved.record.credentials_encrypted
     ? await decryptCredentials<Record<string, unknown>>(resolved.record.credentials_encrypted, env.INTEGRATION_SECRET_KEY)
     : {};
-  const token = credentialToken(credentials);
-  if (!token) {
+  const authHeaders = mcpAuthHeaders(resolved.record, config, credentials);
+  if (!authHeaders.ok) {
     const status = resolved.record.auth_method === 'oauth2' ? 'needs_reauth' : 'setup_incomplete';
     const code = status === 'needs_reauth' ? 'AUTH_REAUTH_REQUIRED' : 'AUTH_SETUP_INCOMPLETE';
-    const message = `Connected ${resolved.record.integration_type} integration does not have a usable token credential for MCP proxying.`;
+    const message = authHeaders.error;
     await markIntegrationAuthStatus(
       workspaceStub,
       resolved.record,
@@ -976,7 +1014,7 @@ async function handleNativeMcpProxy(
   }
 
   const headers: Record<string, string> = {
-    authorization: `Bearer ${token}`,
+    ...authHeaders.headers,
     accept: 'application/json, text/event-stream',
     'content-type': req.headers.get('content-type') ?? 'application/json',
     'mcp-protocol-version': req.headers.get('mcp-protocol-version') ?? '2025-06-18',
@@ -1026,6 +1064,45 @@ async function handleNativeMcpProxy(
     statusText: upstream.statusText,
     headers: responseHeaders,
   });
+}
+
+function mcpAuthHeaders(
+  record: WorkspaceIntegrationRecord,
+  config: Record<string, unknown>,
+  credentials: Record<string, unknown>
+): { ok: true; headers: Record<string, string> } | { ok: false; error: string } {
+  if (record.integration_type === 'remote_mcp') {
+    const authType = typeof config.auth_type === 'string' ? config.auth_type : 'none';
+    if (authType === 'none') return { ok: true, headers: {} };
+
+    const token = typeof credentials.token === 'string' ? credentials.token.trim() : '';
+    if (!token) {
+      return {
+        ok: false,
+        error: `Remote MCP connection "${record.name}" requires a token for ${authType} authentication.`,
+      };
+    }
+    if (authType === 'custom_header') {
+      const headerName = typeof config.auth_header === 'string' ? config.auth_header.trim() : '';
+      if (!headerName) {
+        return {
+          ok: false,
+          error: `Remote MCP connection "${record.name}" is missing a custom auth header name.`,
+        };
+      }
+      return { ok: true, headers: { [headerName]: token } };
+    }
+    return { ok: true, headers: { authorization: `Bearer ${token}` } };
+  }
+
+  const token = credentialToken(credentials);
+  if (!token) {
+    return {
+      ok: false,
+      error: `Connected ${record.integration_type} integration does not have a usable token credential for MCP proxying.`,
+    };
+  }
+  return { ok: true, headers: { authorization: `Bearer ${token}` } };
 }
 
 async function handleBigQueryMcpBroker(

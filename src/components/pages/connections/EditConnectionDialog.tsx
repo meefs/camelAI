@@ -50,6 +50,29 @@ const applyDefaults = (
   return next;
 };
 
+function shouldShowConfigField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'auth_header') {
+    return config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function isCredentialFieldRequired(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>,
+  schemaRequired: boolean
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return schemaRequired;
+}
+
 export function EditConnectionDialog({
   open,
   onOpenChange,
@@ -157,7 +180,7 @@ export function EditConnectionDialog({
             </div>
 
             {/* Config fields */}
-            {typeDef.configSchema.map((field) => (
+            {typeDef.configSchema.filter((field) => shouldShowConfigField(connection.integration_type, field.name, config)).map((field) => (
               <div key={field.name} className="grid gap-1.5">
                 <Label htmlFor={`edit-${field.name}`}>
                   {field.label}
@@ -227,43 +250,51 @@ export function EditConnectionDialog({
                       </AlertDescription>
                     </Alert>
                   ) : (
-                    typeDef.credentialSchema.map((field) => (
-                      <div key={field.name} className="mb-3 grid gap-1.5">
-                        <Label htmlFor={`edit-cred-${field.name}`}>
-                          {field.label}
-                          {field.required && (
-                            <span className="ml-1 text-red-400">*</span>
+                    typeDef.credentialSchema.map((field) => {
+                      const required = isCredentialFieldRequired(
+                        connection.integration_type,
+                        field.name,
+                        config,
+                        field.required
+                      );
+                      return (
+                        <div key={field.name} className="mb-3 grid gap-1.5">
+                          <Label htmlFor={`edit-cred-${field.name}`}>
+                            {field.label}
+                            {required && (
+                              <span className="ml-1 text-red-400">*</span>
+                            )}
+                          </Label>
+                          {field.type === 'textarea' ? (
+                            <Textarea
+                              id={`edit-cred-${field.name}`}
+                              value={(credentials[field.name] as string) || ''}
+                              onChange={(e) =>
+                                handleCredentialChange(field.name, e.target.value)
+                              }
+                              placeholder={field.placeholder}
+                              required={shouldUpdateCredentials && required}
+                              rows={6}
+                              className="font-mono text-xs"
+                            />
+                          ) : (
+                            <Input
+                              id={`edit-cred-${field.name}`}
+                              type={field.type === 'password' ? 'password' : 'text'}
+                              value={(credentials[field.name] as string) || ''}
+                              onChange={(e) =>
+                                handleCredentialChange(field.name, e.target.value)
+                              }
+                              placeholder={field.placeholder}
+                              required={shouldUpdateCredentials && required}
+                            />
                           )}
-                        </Label>
-                        {field.type === 'textarea' ? (
-                          <Textarea
-                            id={`edit-cred-${field.name}`}
-                            value={(credentials[field.name] as string) || ''}
-                            onChange={(e) =>
-                              handleCredentialChange(field.name, e.target.value)
-                            }
-                            placeholder={field.placeholder}
-                            required={shouldUpdateCredentials && field.required}
-                            rows={6}
-                            className="font-mono text-xs"
-                          />
-                        ) : (
-                          <Input
-                            id={`edit-cred-${field.name}`}
-                            type={field.type === 'password' ? 'password' : 'text'}
-                            value={(credentials[field.name] as string) || ''}
-                            onChange={(e) =>
-                              handleCredentialChange(field.name, e.target.value)
-                            }
-                            placeholder={field.placeholder}
-                            required={shouldUpdateCredentials && field.required}
-                          />
-                        )}
-                        {field.description && (
-                          <p className="text-xs text-muted-foreground">{field.description}</p>
-                        )}
-                      </div>
-                    ))
+                          {field.description && (
+                            <p className="text-xs text-muted-foreground">{field.description}</p>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </>

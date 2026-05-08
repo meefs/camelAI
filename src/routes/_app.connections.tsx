@@ -9,7 +9,11 @@ import {
   getIntegrationDefinition,
   shouldStoreIntegrationCredentials,
 } from '@/lib/integration-registry';
-import { encryptCredentials } from '@/lib/integration-crypto';
+import { decryptCredentials, encryptCredentials } from '@/lib/integration-crypto';
+import {
+  normalizeRemoteMcpUrl,
+  validateRemoteMcpConnection,
+} from '@/lib/remote-mcp';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
@@ -45,6 +49,13 @@ function recordToIntegration(record: {
     updated_at: record.updated_at,
     has_credentials: Boolean(record.credentials_encrypted),
   };
+}
+
+function hasNonEmptyCredentialValue(credentials: Record<string, unknown>): boolean {
+  return Object.values(credentials).some((value) => {
+    if (value === null || value === undefined) return false;
+    return String(value).trim().length > 0;
+  });
 }
 
 export function meta() {
@@ -86,7 +97,18 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       const config = configStr ? JSON.parse(configStr) : {};
       const credentials = credentialsStr ? JSON.parse(credentialsStr) : {};
-      const credentialsEncrypted = shouldStoreIntegrationCredentials(integrationType, credentials)
+      if (integrationType === 'remote_mcp') {
+        const validationErrors = validateRemoteMcpConnection(config, credentials);
+        if (validationErrors.length > 0) {
+          return { error: validationErrors.join(', ') };
+        }
+        config.server_url = normalizeRemoteMcpUrl(String(config.server_url));
+      }
+      const shouldStoreCredentials =
+        integrationType === 'remote_mcp'
+          ? hasNonEmptyCredentialValue(credentials)
+          : shouldStoreIntegrationCredentials(integrationType, credentials);
+      const credentialsEncrypted = shouldStoreCredentials
         ? await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY)
         : '';
 
@@ -123,6 +145,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
+      const existing = await stub.getIntegration(integrationId);
+      if (!existing) {
+        return { error: 'Integration not found' };
+      }
+
       const updates: {
         name?: string;
         config?: string;
@@ -130,10 +157,43 @@ export async function action({ request, context }: Route.ActionArgs) {
       } = {};
 
       if (name) updates.name = name;
-      if (configStr) updates.config = configStr;
+      let parsedConfig: Record<string, unknown> | null = null;
+      let parsedCredentials: Record<string, unknown> | null = null;
+      if (configStr) {
+        parsedConfig = JSON.parse(configStr) as Record<string, unknown>;
+      }
       if (credentialsStr) {
-        const credentials = JSON.parse(credentialsStr);
-        updates.credentialsEncrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
+        parsedCredentials = JSON.parse(credentialsStr) as Record<string, unknown>;
+      }
+
+      if (existing.integration_type === 'remote_mcp' && (parsedConfig || parsedCredentials)) {
+        const validationConfig = parsedConfig ?? JSON.parse(existing.config) as Record<string, unknown>;
+        const validationCredentials = parsedCredentials ?? (
+          existing.credentials_encrypted
+            ? await decryptCredentials<Record<string, unknown>>(
+                existing.credentials_encrypted,
+                env.INTEGRATION_SECRET_KEY
+              )
+            : {}
+        );
+        const validationErrors = validateRemoteMcpConnection(validationConfig, validationCredentials);
+        if (validationErrors.length > 0) {
+          return { error: validationErrors.join(', ') };
+        }
+        if (parsedConfig) {
+          parsedConfig.server_url = normalizeRemoteMcpUrl(String(parsedConfig.server_url));
+        }
+      }
+
+      if (parsedConfig) updates.config = JSON.stringify(parsedConfig);
+      if (parsedCredentials) {
+        const shouldStoreCredentials =
+          existing.integration_type === 'remote_mcp'
+            ? hasNonEmptyCredentialValue(parsedCredentials)
+            : shouldStoreIntegrationCredentials(existing.integration_type, parsedCredentials);
+        updates.credentialsEncrypted = shouldStoreCredentials
+          ? await encryptCredentials(parsedCredentials, env.INTEGRATION_SECRET_KEY)
+          : '';
       }
 
       await stub.updateIntegration(integrationId, updates, authContext.user.id);

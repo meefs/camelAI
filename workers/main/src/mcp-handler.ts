@@ -22,6 +22,7 @@ import {
   validateCredentials,
 } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
+import { normalizeRemoteMcpUrl, validateRemoteMcpConnection } from '../../../src/lib/remote-mcp';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
 import {
@@ -70,6 +71,13 @@ const AUTH_HEADER_ORG_ID = 'x-chiridion-org-id';
 const AUTH_HEADER_USER_ID = 'x-chiridion-user-id';
 const AUTH_HEADER_WORKSPACE_ID = 'x-chiridion-workspace-id';
 const AUTH_HEADER_THREAD_ID = 'x-chiridion-thread-id';
+
+function hasNonEmptyCredentialValue(credentials: Record<string, unknown>): boolean {
+  return Object.values(credentials).some((value) => {
+    if (value === null || value === undefined) return false;
+    return String(value).trim().length > 0;
+  });
+}
 
 // Pending bug report capture request with resolver
 interface PendingBugReportCapture {
@@ -1016,9 +1024,29 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         }
 
         try {
-          // Encrypt credentials
+          let finalConfig = config as Record<string, unknown>;
           const credentialPayload = credentials as Record<string, unknown>;
-          const credentialsEncrypted = shouldStoreIntegrationCredentials(integration_type, credentialPayload)
+          if (integration_type === 'remote_mcp') {
+            const validationErrors = validateRemoteMcpConnection(finalConfig, credentialPayload);
+            if (validationErrors.length > 0) {
+              return this.textResponse({
+                success: false,
+                error: 'Invalid remote MCP connection',
+                validation_errors: validationErrors,
+              });
+            }
+            finalConfig = {
+              ...finalConfig,
+              server_url: normalizeRemoteMcpUrl(String(finalConfig.server_url)),
+            };
+          }
+
+          // Encrypt credentials
+          const shouldStoreCredentials =
+            integration_type === 'remote_mcp'
+              ? hasNonEmptyCredentialValue(credentialPayload)
+              : shouldStoreIntegrationCredentials(integration_type, credentialPayload);
+          const credentialsEncrypted = shouldStoreCredentials
             ? await encryptCredentials(credentialPayload, this.env.INTEGRATION_SECRET_KEY)
             : '';
 
@@ -1032,7 +1060,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
             name,
             definition.category,
             definition.authMethod,
-            JSON.stringify(config),
+            JSON.stringify(finalConfig),
             credentialsEncrypted,
             userId
           );
