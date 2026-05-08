@@ -700,11 +700,12 @@ func (b *hostPiBridge) piEnv(workspacePath string, sessionEnv map[string]string)
 	} else {
 		env["CHIRIDION_OPENROUTER_UPSTREAM"] = ""
 	}
-	env["MCP_SERVER_URL"] = proxyBase + "/mcp"
-	env["DATA_PROXY_URL"] = proxyBase + "/api"
-	env["RESEND_PROXY_URL"] = proxyBase + "/api/resend"
-	env["CAMELAI_CONNECTIONS_URL"] = proxyBase + "/api/connections"
-	env["CLOUDFLARE_API_BASE_URL"] = proxyBase + "/client/v4"
+	env["CHIRIDION_HOST_MCP_SERVER_URL"] = proxyBase + "/mcp"
+	env["MCP_SERVER_URL"] = containerProxyBase + "/mcp"
+	env["DATA_PROXY_URL"] = containerProxyBase + "/api"
+	env["RESEND_PROXY_URL"] = containerProxyBase + "/api/resend"
+	env["CAMELAI_CONNECTIONS_URL"] = containerProxyBase + "/api/connections"
+	env["CLOUDFLARE_API_BASE_URL"] = containerProxyBase + "/client/v4"
 	env["CLOUDFLARE_API_TOKEN"] = "proxy"
 	env["THREAD_ID"] = b.threadID
 	env["WORKSPACE_ID"] = b.route.WorkspaceID
