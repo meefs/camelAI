@@ -1,0 +1,41 @@
+import type { ActionFunctionArgs } from "react-router";
+import { requireSessionWorkspaceAccess } from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import { getAuthEnv } from "@/lib/auth-helpers";
+import * as chatDO from "@/lib/chat-do.server";
+
+export async function action({ request, context, params }: ActionFunctionArgs) {
+  if (request.method !== "POST") {
+    return Response.json({ error: "Method not allowed" }, { status: 405 });
+  }
+  const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
+    request,
+    context,
+    undefined,
+    { requireWrite: true },
+  );
+  const groupId = params.id?.trim();
+  const threadId = params.threadId?.trim();
+  if (!groupId || !threadId) {
+    return Response.json({ error: "Missing required IDs" }, { status: 400 });
+  }
+  const thread = await chatDO.getThread(context, threadId, workspaceId);
+  if (!thread) {
+    return Response.json({ error: "Thread not found" }, { status: 404 });
+  }
+  const authEnv = getAuthEnv(getEnv(context));
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
+  const group = await userStub.getChatGroup(groupId);
+  if (!group || group.org_id !== orgId || group.workspace_id !== workspaceId) {
+    return Response.json({ error: "Group not found" }, { status: 404 });
+  }
+  const summary = await userStub.getChatGroupSummary(groupId);
+  if (!summary?.closed_thread_ids.includes(threadId)) {
+    return Response.json(
+      { error: "Thread is not a closed tab in this group" },
+      { status: 404 },
+    );
+  }
+  await userStub.reopenThreadTab(threadId);
+  return Response.json({ success: true });
+}

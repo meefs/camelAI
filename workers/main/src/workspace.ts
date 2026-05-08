@@ -32,6 +32,8 @@ const TOKEN_REFRESH_RETRY_MIN_MS = 30 * 1000;
 const TOKEN_REFRESH_RETRY_MAX_MS = 60 * 60 * 1000;
 // Fallback when rate-limited but provider omits Retry-After
 const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
+const THREAD_STREAMING_STATUS_TTL_MS = 10 * 60 * 1000;
+const WORKSPACE_STATUS_SOCKET_TAG = 'status';
 
 /**
  * Thrown when a token refresh fails permanently (e.g. revoked token, invalid_grant).
@@ -275,10 +277,106 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 4;
+    if (version < 5) {
+      // V5: Persist low-volume chat streaming state for workspace-level status.
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS thread_streaming_status (
+          thread_id TEXT PRIMARY KEY,
+          started_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(
+        'CREATE INDEX IF NOT EXISTS idx_thread_streaming_updated_at ON thread_streaming_status(updated_at)',
+      );
+    }
+
+    const CURRENT_SCHEMA_VERSION = 5;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
+  }
+
+  private pruneStaleStreamingRows(now = Date.now()): void {
+    this.sql.exec(
+      'DELETE FROM thread_streaming_status WHERE updated_at < ?',
+      now - THREAD_STREAMING_STATUS_TTL_MS,
+    );
+  }
+
+  recordThreadStreaming(threadId: string, isStreaming: boolean): void {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) return;
+    const now = Date.now();
+    this.pruneStaleStreamingRows(now);
+    if (isStreaming) {
+      this.sql.exec(
+        `INSERT INTO thread_streaming_status (thread_id, started_at, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(thread_id) DO UPDATE SET updated_at = excluded.updated_at`,
+        normalizedThreadId,
+        now,
+        now,
+      );
+    } else {
+      this.sql.exec(
+        'DELETE FROM thread_streaming_status WHERE thread_id = ?',
+        normalizedThreadId,
+      );
+    }
+    this.broadcastThreadStatus(normalizedThreadId, isStreaming ? 'running' : 'idle');
+  }
+
+  listStreamingThreadIds(): string[] {
+    this.pruneStaleStreamingRows();
+    return this.sql
+      .exec<{ thread_id: string }>(
+        'SELECT thread_id FROM thread_streaming_status ORDER BY updated_at DESC',
+      )
+      .toArray()
+      .map((row) => row.thread_id);
+  }
+
+  private broadcastThreadStatus(
+    threadId: string,
+    status: 'running' | 'idle',
+  ): void {
+    const payload = JSON.stringify({ type: 'thread_status', threadId, status });
+    for (const socket of this.ctx.getWebSockets(WORKSPACE_STATUS_SOCKET_TAG)) {
+      if (socket.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      try {
+        socket.send(payload);
+      } catch {}
+    }
+  }
+
+  private sendThreadStatusSnapshot(socket: WebSocket): void {
+    socket.send(
+      JSON.stringify({
+        type: 'thread_status_snapshot',
+        runningThreadIds: this.listStreamingThreadIds(),
+      }),
+    );
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname !== '/status' || request.headers.get('Upgrade') !== 'websocket') {
+      return new Response('Not found', { status: 404 });
+    }
+
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    this.ctx.acceptWebSocket(server, [WORKSPACE_STATUS_SOCKET_TAG]);
+    server.serializeAttachment({ connectedAt: Date.now() });
+
+    try {
+      this.sendThreadStatusSnapshot(server);
+    } catch {}
+
+    return new Response(null, { status: 101, webSocket: client });
   }
 
   private log(

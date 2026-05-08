@@ -1,11 +1,13 @@
 "use client"
 
 import { useState } from "react"
-import { AppWindowMac, Cable, CircleHelp, Home, LayoutGrid, MessagesSquare } from "lucide-react"
-import { Link, useLocation } from "react-router"
+import { AppWindowMac, Cable, CircleHelp, LayoutGrid, MessagesSquare, Plus } from "lucide-react"
+import { Link, useLocation, useNavigate, useRevalidator } from "react-router"
 
 import { useAuthData } from "@/hooks/use-auth-data"
+import { getGroupLandingHref, useChatGroups } from "@/hooks/use-chat-groups"
 import { GetHelpDialog } from "@/components/get-help-dialog"
+import { ChatGroupsList } from "@/components/sidebar/chat-groups-list"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { WorkspaceSwitcher } from "@/components/sidebar/workspace-switcher"
 import { Badge } from "@/components/ui/badge"
@@ -14,6 +16,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -27,9 +30,11 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 export function AppSidebar(props: AppSidebarProps) {
   const [helpOpen, setHelpOpen] = useState(false)
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const revalidator = useRevalidator()
   const { currentWorkspace } = useAuthData()
+  const { groups, activeGroupId } = useChatGroups()
   const { state } = useSidebar()
-  const isHome = pathname === "/"
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
   const isApps = pathname === "/apps"
@@ -37,6 +42,32 @@ export function AppSidebar(props: AppSidebarProps) {
   const computerHref = currentWorkspace?.id
     ? `/computer/${currentWorkspace.id}`
     : "/computer"
+  const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null
+
+  const handleCloseGroup = async (groupId: string) => {
+    const remainingGroups = groups.filter((group) => group.id !== groupId)
+    await fetch(`/api/chat-groups/${encodeURIComponent(groupId)}`, {
+      method: "DELETE",
+    })
+    revalidator.revalidate()
+    if (groupId === activeGroupId) {
+      const nextGroup = remainingGroups[0]
+      navigate(nextGroup ? getGroupLandingHref(nextGroup) : "/chat")
+    }
+  }
+
+  const handleMoveThreadToGroup = async (threadId: string, targetGroupId: string) => {
+    if (activeGroup?.id === targetGroupId) return
+    const response = await fetch("/api/chat-groups/move-thread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId, targetGroupId }),
+    })
+    if (response.ok) {
+      revalidator.revalidate()
+      navigate(`/chat/${threadId}`)
+    }
+  }
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -55,13 +86,33 @@ export function AppSidebar(props: AppSidebarProps) {
         <SidebarGroup>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild tooltip="New Chat" isActive={isHome}>
-                <Link to="/">
-                  <Home />
-                  <span>New Chat</span>
-                </Link>
+              <SidebarMenuButton
+                tooltip="New chat"
+                className="font-medium"
+                onClick={() => navigate("/chat")}
+              >
+                <Plus />
+                <span>New chat</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Chat Groups</SidebarGroupLabel>
+          <ChatGroupsList
+            groups={groups}
+            activeGroupId={activeGroupId}
+            onSelectGroup={(groupId) => {
+              const group = groups.find((entry) => entry.id === groupId)
+              navigate(group ? getGroupLandingHref(group) : "/chat")
+            }}
+            onCloseGroup={handleCloseGroup}
+            onMoveThreadToGroup={handleMoveThreadToGroup}
+          />
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+          <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Computer" isActive={isComputer}>
                 <Link to={computerHref}>

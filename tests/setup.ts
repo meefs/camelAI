@@ -24,3 +24,10 @@ if (!('ResizeObserver' in globalThis)) {
   }
   vi.stubGlobal('ResizeObserver', ResizeObserverMock);
 }
+
+if (!HTMLElement.prototype.scrollIntoView) {
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
+  });
+}

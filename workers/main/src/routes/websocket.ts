@@ -4,7 +4,7 @@
 
 import { waitUntil } from 'cloudflare:workers';
 import type { RouteContext } from '../types.js';
-import { requireChatWebSocketAccess } from '../helpers/auth.js';
+import { requireChatWebSocketAccess, requireWorkspaceAccess } from '../helpers/auth.js';
 import { getThreadStub } from '../helpers/stubs.js';
 import { text } from '../helpers/response.js';
 import { WorkspaceContainer } from '../workspace-container.js';
@@ -19,6 +19,7 @@ import {
   isPlaceholderThreadTitle,
 } from '../../../../src/lib/thread-title.js';
 import { generateThreadTitleWithOpenAI } from '../../../../src/lib/thread-title-generation.server.js';
+import { recordWorkspaceThreadStreaming } from '../thread-status.js';
 
 export async function handleChatWebSocket({ req, env, url }: RouteContext): Promise<Response> {
   const threadIdFromUrl = url.searchParams.get('threadId');
@@ -82,6 +83,30 @@ export async function handleChatRunnerWebSocket({ req, env, url }: RouteContext)
   });
 
   return new Response(null, { status: 101, webSocket: client });
+}
+
+export async function handleWorkspaceStatusWebSocket({
+  req,
+  env,
+  match,
+}: RouteContext): Promise<Response> {
+  const workspaceIdFromPath = decodeURIComponent(match[1] ?? '').trim();
+  if (!workspaceIdFromPath) {
+    return text('Missing workspaceId', 400);
+  }
+
+  const access = await requireWorkspaceAccess(req, env);
+  if ('error' in access) return access.error;
+  if (access.workspaceId !== workspaceIdFromPath) {
+    return text('Forbidden', 403);
+  }
+
+  const doUrl = new URL('https://workspace/status');
+  const modifiedReq = new Request(doUrl.toString(), {
+    method: 'GET',
+    headers: req.headers,
+  });
+  return access.wsStub.fetch(modifiedReq);
 }
 
 interface BridgeChatSocketArgs {
@@ -154,10 +179,24 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
   const updateThreadMetadata = (messageContent: string) => {
     waitUntil(
-      updateThreadMetadataForUserMessage(env, orgId, threadId, messageContent)
+      updateThreadMetadataForUserMessage(
+        env,
+        orgId,
+        workspaceId,
+        threadId,
+        userId,
+        messageContent,
+      )
         .catch((error) => {
           console.error('[chat websocket] failed to update thread metadata', error);
         }),
+    );
+  };
+  const recordStreaming = (isStreaming: boolean) => {
+    waitUntil(
+      recordWorkspaceThreadStreaming(env, workspaceId, threadId, isStreaming).catch((error) => {
+        console.error('[chat websocket] failed to record workspace thread status', error);
+      }),
     );
   };
 
@@ -196,6 +235,7 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
         attributedLength: attributedContent.length,
       });
       sendJson(server, { type: 'streaming_state', isStreaming: true });
+      recordStreaming(true);
       updateThreadMetadata(attributedContent);
       return sendToRunner({
         ...data,
@@ -244,10 +284,12 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       queuedMessages: queuedClientMessages.length,
     });
     closeBoth(event.code || 1000, event.reason || 'client closed');
+    recordStreaming(false);
   });
   server.addEventListener('error', () => {
     logBridge('client_error', { queuedMessages: queuedClientMessages.length });
     closeBoth(1011, 'client error');
+    recordStreaming(false);
   });
 
   const container = new WorkspaceContainer(env, workspaceId, orgId);
@@ -312,6 +354,7 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       runtimeEvent?.method === 'turn/completed'
     ) {
       sendJson(server, { type: 'streaming_state', isStreaming: false });
+      recordStreaming(false);
     }
 
     sendJson(server, payload);
@@ -323,13 +366,16 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       queuedMessages: queuedClientMessages.length,
     });
     closeBoth(event.code || 1000, event.reason || 'runner closed');
+    recordStreaming(false);
   });
   runnerSocket.addEventListener('error', () => {
     logBridge('runner_error', { queuedMessages: queuedClientMessages.length });
     closeBoth(1011, 'runner error');
+    recordStreaming(false);
   });
 
   sendJson(server, { type: 'streaming_state', isStreaming: false });
+  recordStreaming(false);
   runnerSocket.send(JSON.stringify({
     type: 'init',
     threadId,
@@ -376,7 +422,9 @@ export async function buildRunnerUserMessageContent(
 async function updateThreadMetadataForUserMessage(
   env: RouteContext['env'],
   orgId: string,
+  workspaceId: string,
   threadId: string,
+  userId: string,
   messageContent: string,
 ): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
@@ -405,6 +453,8 @@ async function updateThreadMetadataForUserMessage(
     });
     if (title) {
       await orgStub.updateThread(threadId, title);
+      const userStub = env.USER.get(env.USER.idFromName(userId));
+      await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
     }
   } catch (error) {
     console.error('[chat websocket] failed to generate thread title', error);

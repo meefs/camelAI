@@ -481,6 +481,7 @@ export async function generateThreadTitle(
   threadId: string,
   workspaceId: string,
   message: string,
+  userId?: string | null,
 ): Promise<void> {
   try {
     const env = getEnv(context);
@@ -498,6 +499,10 @@ export async function generateThreadTitle(
     // Update title in OrgDO
     const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
     await orgStub.updateThread(threadId, title);
+    if (userId) {
+      await env.USER.get(env.USER.idFromName(userId))
+        .renameEmptySingleThreadGroupForThread(threadId, title);
+    }
 
     // Broadcast via ChatThreadDO
     const threadStub = env.CHAT_THREAD.get(

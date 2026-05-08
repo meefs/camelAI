@@ -12,6 +12,49 @@ export interface Thread {
   creator?: User;
 }
 
+export interface ChatGroup {
+  id: string;
+  org_id: string;
+  workspace_id: string;
+  name: string;
+  last_active_thread_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ChatGroupMember {
+  group_id: string;
+  thread_id: string;
+  is_open: boolean;
+  position: number;
+  closed_at: number | null;
+  added_at: number;
+}
+
+export interface ChatGroupSummary extends ChatGroup {
+  open_thread_ids: string[];
+  closed_thread_ids: string[];
+}
+
+export type ThreadStatus = "idle" | "running" | "unread";
+
+export interface ChatGroupThreadSummary {
+  id: string;
+  title: string;
+  model: LlmModel;
+  provider: ChatHarness;
+  updated_at: number;
+  is_unread?: boolean;
+  status: ThreadStatus;
+}
+
+export interface ChatGroupView extends ChatGroupSummary {
+  status: ThreadStatus;
+  member_count: number;
+  open_threads: ChatGroupThreadSummary[];
+  closed_threads: ChatGroupThreadSummary[];
+}
+
 export interface ThreadCreator {
   userId: string;
   name: string | null;

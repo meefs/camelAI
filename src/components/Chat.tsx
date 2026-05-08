@@ -49,7 +49,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { PageHeader } from "@/components/page-header";
 import { PromptInput } from "@/components/prompt-input";
 import {
   FloatingTodoList,
@@ -110,6 +109,7 @@ import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSetAppPublicPayload } from "@/lib/app-visibility";
 import { buildSlugMap } from "@/lib/connection-mentions";
+import { isFileDrag } from "@/lib/file-drag";
 import {
   type SDKEvent,
   applyStreamingEventToMessage,
@@ -187,6 +187,13 @@ interface ChatProps {
   isLoadingMessages?: boolean;
   /** Superuser admin read-only viewer */
   readOnly?: boolean;
+  chatGroupId?: string | null;
+  onThreadSnapshotChange?: (snapshot: {
+    messages: Message[];
+    previewTabs: PreviewTarget[];
+    activeTabId: string | null;
+    previewTarget: PreviewTarget | null;
+  }) => void;
   initialWelcomeInput?: string | null;
   connections?: Integration[];
   welcomeData?: {
@@ -1504,6 +1511,8 @@ export default function Chat({
   orgSlug,
   isLoadingMessages = false,
   readOnly = false,
+  chatGroupId = null,
+  onThreadSnapshotChange,
   initialWelcomeInput,
   connections,
   welcomeData,
@@ -1518,6 +1527,7 @@ export default function Chat({
       model: LlmModel;
       provider: ChatHarness;
     };
+    groupId?: string;
     error?: string;
   }>();
   const updateThreadModelFetcher = useFetcher<{
@@ -2036,6 +2046,23 @@ export default function Chat({
     [previewTabs, activeTabId],
   );
   const previewTarget = activeTab?.target ?? null;
+  useEffect(() => {
+    if (!threadId || readOnly || !onThreadSnapshotChange) return;
+    onThreadSnapshotChange({
+      messages,
+      previewTabs: previewTabs.map((tab) => tab.target),
+      activeTabId,
+      previewTarget,
+    });
+  }, [
+    activeTabId,
+    messages,
+    onThreadSnapshotChange,
+    previewTabs,
+    previewTarget,
+    readOnly,
+    threadId,
+  ]);
   const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>(
     {},
   );
@@ -2262,6 +2289,18 @@ export default function Chat({
     }
     wasStreamingRef.current = isStreaming;
   }, [isStreaming]);
+
+  const lastMarkedViewedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!threadId || readOnly || isStreaming || loading || isLoadingMessages) return;
+    const latestMessageAt = messages[messages.length - 1]?.created_at ?? 0;
+    const key = `${threadId}:${latestMessageAt}`;
+    if (lastMarkedViewedKeyRef.current === key) return;
+    lastMarkedViewedKeyRef.current = key;
+    void fetch(`/api/threads/${encodeURIComponent(threadId)}/mark-viewed`, {
+      method: "POST",
+    }).catch(() => {});
+  }, [isLoadingMessages, isStreaming, loading, messages, readOnly, threadId]);
 
   useEffect(() => {
     if (!currentTodos.length || isStreaming) return;
@@ -4644,18 +4683,20 @@ export default function Chat({
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messageId }),
+            body: JSON.stringify({ messageId, groupId: chatGroupId }),
           },
         );
         const data = (await response.json().catch(() => ({}))) as {
           thread?: { id?: string };
+          groupId?: string | null;
           error?: string;
         };
         if (!response.ok || !data.thread?.id) {
           throw new Error(data.error || "Failed to fork chat");
         }
         toast.success("Forked chat");
-        navigate(`/chat/${data.thread.id}`);
+        revalidator.revalidate();
+        navigate(`/chat/${data.thread.id}`, { preventScrollReset: true });
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to fork chat";
@@ -4665,7 +4706,15 @@ export default function Chat({
         setForkingMessageId(null);
       }
     },
-    [navigate, readOnly, resolvedWorkspaceId, setError, threadId],
+    [
+      chatGroupId,
+      navigate,
+      readOnly,
+      resolvedWorkspaceId,
+      revalidator,
+      setError,
+      threadId,
+    ],
   );
 
   const handleFilesSelected = useCallback(
@@ -4763,6 +4812,7 @@ export default function Chat({
   // Drag-drop handlers for the whole chat area
   const handleDragOver = useCallback(
     (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
       e.preventDefault();
       e.stopPropagation();
       if (resolvedWorkspaceId) {
@@ -4773,6 +4823,7 @@ export default function Chat({
   );
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
     // Only set drag over to false if we're leaving the container entirely
@@ -4786,6 +4837,7 @@ export default function Chat({
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
       e.preventDefault();
       e.stopPropagation();
       setIsDragOver(false);
@@ -5101,6 +5153,7 @@ export default function Chat({
           initialTitle: threadTitle,
           previewApps: app.script_name,
           model: selectedThreadModel,
+          ...(chatGroupId ? { groupId: chatGroupId } : {}),
         },
         { method: "post", action: "/chat" },
       );
@@ -5113,6 +5166,7 @@ export default function Chat({
       isCreatingThread,
       noModelsMessage,
       selectedThreadModel,
+      chatGroupId,
     ],
   );
 
@@ -5174,6 +5228,9 @@ export default function Chat({
       intent: "createThread",
       model: selectedThreadModel,
     };
+    if (chatGroupId) {
+      createThreadPayload.groupId = chatGroupId;
+    }
     if (userMessage) {
       createThreadPayload.firstMessage = userMessage;
     }
@@ -5851,11 +5908,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     });
   }, [loading, isStreaming, isCompacting, readOnly]);
 
-  const chatBreadcrumbs = [
-    { label: "Chat" },
-    { label: currentTitle?.trim() || "Untitled Chat" },
-  ];
-
   const encodePathSegments = useCallback((path: string) => {
     return path
       .split("/")
@@ -6060,7 +6112,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
   const chatPanelContent = (
     <>
-      <PageHeader breadcrumbs={chatBreadcrumbs} />
       {!readOnly && billingCreditStatus ? (
         <BillingCreditNotice
           status={billingCreditStatus}
@@ -6305,7 +6356,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             </div>
           ) : (
             <>
-              <PageHeader breadcrumbs={[{ label: "Home" }]} />
               {/* Welcome Screen */}
               <div
                 className="flex-1 flex flex-col items-center px-4 py-8 relative overflow-y-auto"

@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { OrgDO } from "./auth";
+import type { OrgDO, UserDO } from "./auth";
 import type { WorkspaceDO } from "./workspace";
 import {
   WorkspaceContainer,
@@ -18,6 +18,7 @@ import {
 import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
 import type { LlmModel } from '../../../src/types';
 import { isOrgBanned } from "./ban-list";
+import { recordWorkspaceThreadStreaming } from "./thread-status";
 
 export type PreviewTarget =
   | {
@@ -122,6 +123,7 @@ interface ChiridionMcpRpc {
 export interface ChatEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   ORG: DurableObjectNamespace<OrgDO>;
+  USER: DurableObjectNamespace<UserDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   MCP_OBJECT: DurableObjectNamespace;
   APP_KV: KVNamespace;
@@ -1980,6 +1982,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
     }
     this.broadcastRealtime({ type: "streaming_state", isStreaming: value });
+    const context = this.chatContext;
+    if (context?.workspaceId && context.threadId) {
+      this.ctx.waitUntil(
+        recordWorkspaceThreadStreaming(
+          this.env,
+          context.workspaceId,
+          context.threadId,
+          value,
+        ).catch((error) => {
+          console.error("[ChatThreadDO] failed to record workspace thread status", error);
+        }),
+      );
+    }
   }
 
   private getSocketChatContext(ws: WebSocket): ChatContextState | null {
@@ -2357,6 +2372,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
       await orgStub.updateThread(threadId, title);
       await this.setTitle(title);
+      if (context.userId) {
+        const userStub = this.env.USER.get(this.env.USER.idFromName(context.userId));
+        await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
+      }
     } catch (err) {
       console.error('[ChatThreadDO] failed to generate thread title', err);
     } finally {

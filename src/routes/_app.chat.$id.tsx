@@ -1,5 +1,5 @@
-import { Suspense, use, useCallback, useEffect, useState } from "react";
-import { redirect, useLoaderData } from "react-router";
+import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
+import { redirect, useLoaderData, useNavigate, useRevalidator } from "react-router";
 import type { Route } from "./+types/_app.chat.$id";
 import {
   requireAuthContext,
@@ -21,15 +21,26 @@ import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getDefaultThreadProvider,
+  getProviderForModel,
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
+import {
+  ensureGroupForThread,
+  listGroupsForMove,
+} from "@/lib/chat-groups.server";
 import Chat from "@/components/Chat";
+import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
+import { useChatGroups } from "@/hooks/use-chat-groups";
+import {
+  useChatThreadCache,
+  type ChatThreadSnapshot,
+} from "@/hooks/use-chat-thread-cache";
 import type {
   ChatHarness,
   Integration,
@@ -169,6 +180,19 @@ const EMPTY_CHAT_DATA: ChatData = {
   previewTarget: null,
 };
 
+function chatDataFromSnapshot(snapshot: ChatThreadSnapshot): ChatData {
+  return {
+    messages: snapshot.messages,
+    previewTabs: snapshot.previewTabs,
+    activeTabId: snapshot.activeTabId,
+    previewTarget: snapshot.previewTarget,
+  };
+}
+
+function hasUsefulSnapshot(snapshot: ChatThreadSnapshot | null): snapshot is ChatThreadSnapshot {
+  return Boolean(snapshot && snapshot.messages.length > 0);
+}
+
 function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === "app") return `app:${target.scriptName}`;
   return `file:${target.workspaceId}:${target.source}:${target.path}`;
@@ -298,6 +322,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isOrgAdmin: false,
       recentModelScope: null,
       readOnly: true,
+      activeChatGroup: null,
+      moveChatGroups: [],
     };
   }
 
@@ -329,6 +355,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   const workspaceId = authContext.currentWorkspace.id;
   const orgId = authContext.currentOrg.id;
+  const actingUserId =
+    authContext.user?.id ?? authContext.session?.user_id ?? null;
   const isNewThread = url.searchParams.get("newThread") === "1";
   const orgStub = authEnv.ORG
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
@@ -377,6 +405,25 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
     : buildPreviewChatDataPromise(context, authEnv, orgId, params.id);
+  const [activeChatGroup, moveChatGroups] = thread && actingUserId
+    ? await Promise.all([
+        ensureGroupForThread(context, {
+          userId: actingUserId,
+          orgId,
+          workspaceId,
+          threadId: params.id,
+          fallbackName: thread.title,
+        }).catch((error) => {
+          console.error("Failed to ensure chat group:", error);
+          return null;
+        }),
+        listGroupsForMove(context, {
+          userId: actingUserId,
+          orgId,
+          workspaceId,
+        }).catch(() => []),
+      ])
+    : ([null, []] as const);
   const connections = await env.WORKSPACE.get(
     env.WORKSPACE.idFromName(workspaceId),
   )
@@ -425,6 +472,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ),
     recentModelScope: { orgId, workspaceId },
     readOnly: false,
+    activeChatGroup,
+    moveChatGroups,
   };
 }
 
@@ -467,12 +516,22 @@ export default function ChatPage() {
     isOrgAdmin,
     recentModelScope,
     readOnly,
+    activeChatGroup,
+    moveChatGroups,
   } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
+  const revalidator = useRevalidator();
+  const { groups: liveChatGroups } = useChatGroups();
+  const { getSnapshot, writeSnapshot, prefetchMessages } = useChatThreadCache();
+  const [optimisticThreadId, setOptimisticThreadId] = useState<string | null>(
+    null,
+  );
 
-  if (!workspaceId) {
-    return <NoWorkspacesError />;
-  }
+  useEffect(() => {
+    setOptimisticThreadId(null);
+  }, [threadId]);
 
+  const routeSnapshot = workspaceId ? getSnapshot(workspaceId, threadId) : null;
   const [resolvedChatDataState, setResolvedChatDataState] = useState<{
     threadId: string;
     data: ChatData;
@@ -481,46 +540,327 @@ export default function ChatPage() {
   const resolvedChatData =
     resolvedChatDataState?.threadId === threadId
       ? resolvedChatDataState.data
+      : hasUsefulSnapshot(routeSnapshot)
+        ? chatDataFromSnapshot(routeSnapshot)
       : null;
   const chatData = resolvedChatData ?? EMPTY_CHAT_DATA;
-  const isLoadingMessages = !isNewThread && resolvedChatData === null;
 
   const handleResolved = useCallback(
     (resolvedThreadId: string, data: ChatData) => {
       setResolvedChatDataState({ threadId: resolvedThreadId, data });
+      if (workspaceId) {
+        writeSnapshot({
+          workspaceId,
+          threadId: resolvedThreadId,
+          threadTitle,
+          ...(threadModel ? { threadModel } : {}),
+          ...(threadProvider ? { threadProvider } : {}),
+          messages: data.messages,
+          previewTabs: data.previewTabs,
+          activeTabId: data.activeTabId,
+          previewTarget: data.previewTarget,
+        });
+      }
     },
-    [],
+    [threadModel, threadProvider, threadTitle, workspaceId, writeSnapshot],
   );
+
+  const liveActiveChatGroup =
+    activeChatGroup && !readOnly
+      ? liveChatGroups.find((group) => group.id === activeChatGroup.id) ??
+        activeChatGroup
+      : activeChatGroup;
+
+  const optimisticCandidateSnapshot = optimisticThreadId
+    ? getSnapshot(workspaceId, optimisticThreadId)
+    : null;
+  const optimisticSnapshot = hasUsefulSnapshot(optimisticCandidateSnapshot)
+    ? optimisticCandidateSnapshot
+    : null;
+  const optimisticThread =
+    optimisticThreadId && liveActiveChatGroup
+      ? liveActiveChatGroup.open_threads.find(
+          (thread) => thread.id === optimisticThreadId,
+        ) ?? null
+      : null;
+  const shouldUseOptimisticThread = Boolean(
+    optimisticSnapshot && optimisticThread,
+  );
+  const displayThreadId =
+    shouldUseOptimisticThread && optimisticSnapshot
+      ? optimisticSnapshot.threadId
+      : threadId;
+  const displayChatData =
+    shouldUseOptimisticThread && optimisticSnapshot
+      ? chatDataFromSnapshot(optimisticSnapshot)
+      : chatData;
+  const displayThreadTitle =
+    shouldUseOptimisticThread && optimisticSnapshot
+      ? optimisticSnapshot.threadTitle ?? optimisticThread?.title ?? null
+      : threadTitle;
+  const displayThreadModel =
+    shouldUseOptimisticThread && optimisticSnapshot
+      ? optimisticSnapshot.threadModel
+      : threadModel;
+  const displayThreadProvider =
+    shouldUseOptimisticThread && optimisticSnapshot
+      ? optimisticSnapshot.threadProvider
+      : threadProvider;
+  const cacheThreadModel = displayThreadModel ?? getDefaultLlmModel("claude");
+  const cacheThreadProvider =
+    displayThreadProvider ?? getProviderForModel(cacheThreadModel);
+  const displayIsNewThread = displayThreadId === threadId ? isNewThread : false;
+  const isLoadingMessages =
+    !displayIsNewThread &&
+    !shouldUseOptimisticThread &&
+    resolvedChatData === null;
+
+  const openTabs =
+    liveActiveChatGroup?.open_threads.map((thread) => ({
+      threadId: thread.id,
+      title: thread.title,
+      model: thread.model,
+      status: thread.status,
+    })) ?? [];
+
+  const prefetchThread = useCallback(
+    (targetThreadId: string) => {
+      if (
+        !workspaceId ||
+        !liveActiveChatGroup ||
+        targetThreadId === displayThreadId
+      ) {
+        return;
+      }
+      const targetThread = liveActiveChatGroup.open_threads.find(
+        (thread) => thread.id === targetThreadId,
+      );
+      if (!targetThread) return;
+      void prefetchMessages(workspaceId, targetThreadId, {
+        threadTitle: targetThread.title,
+        threadModel: targetThread.model,
+        threadProvider: targetThread.provider,
+      });
+    },
+    [displayThreadId, liveActiveChatGroup, prefetchMessages, workspaceId],
+  );
+
+  const openThreadPrefetchKey = useMemo(
+    () =>
+      liveActiveChatGroup?.open_threads
+        .map((thread) => `${thread.id}:${thread.updated_at}`)
+        .join("|") ?? "",
+    [liveActiveChatGroup?.open_threads],
+  );
+
+  useEffect(() => {
+    if (!workspaceId || !liveActiveChatGroup || readOnly) return;
+    const timeout = window.setTimeout(() => {
+      for (const thread of liveActiveChatGroup.open_threads) {
+        if (thread.id === displayThreadId) continue;
+        void prefetchMessages(workspaceId, thread.id, {
+          threadTitle: thread.title,
+          threadModel: thread.model,
+          threadProvider: thread.provider,
+        });
+      }
+    }, 200);
+    return () => window.clearTimeout(timeout);
+  }, [
+    displayThreadId,
+    liveActiveChatGroup,
+    openThreadPrefetchKey,
+    prefetchMessages,
+    readOnly,
+    workspaceId,
+  ]);
+
+  const selectTab = useCallback(
+    (targetThreadId: string) => {
+      const snapshot = workspaceId
+        ? getSnapshot(workspaceId, targetThreadId)
+        : null;
+      if (hasUsefulSnapshot(snapshot)) {
+        setOptimisticThreadId(targetThreadId);
+      } else {
+        prefetchThread(targetThreadId);
+      }
+      navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
+    },
+    [getSnapshot, navigate, prefetchThread, workspaceId],
+  );
+
+  const handleThreadSnapshotChange = useCallback(
+    (snapshot: {
+      messages: Message[];
+      previewTabs: PreviewTarget[];
+      activeTabId: string | null;
+      previewTarget: PreviewTarget | null;
+    }) => {
+      if (!workspaceId) return;
+      writeSnapshot({
+        workspaceId,
+        threadId: displayThreadId,
+        threadTitle: displayThreadTitle,
+        threadModel: cacheThreadModel,
+        threadProvider: cacheThreadProvider,
+        messages: snapshot.messages,
+        previewTabs: snapshot.previewTabs,
+        activeTabId: snapshot.activeTabId,
+        previewTarget: snapshot.previewTarget,
+      });
+    },
+    [
+      displayThreadId,
+      displayThreadTitle,
+      cacheThreadModel,
+      cacheThreadProvider,
+      workspaceId,
+      writeSnapshot,
+    ],
+  );
+  const closedTabs =
+    liveActiveChatGroup?.closed_threads.map((thread) => ({
+      threadId: thread.id,
+      title: thread.title,
+      model: thread.model,
+      status: thread.status,
+    })) ?? [];
+
+  const closeTab = async (targetThreadId: string) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(targetThreadId)}`,
+      { method: "DELETE" },
+    );
+    const remaining = openTabs.filter((tab) => tab.threadId !== targetThreadId);
+    revalidator.revalidate();
+    if (targetThreadId === displayThreadId) {
+      navigate(
+        remaining[0]
+          ? `/chat/${remaining[0].threadId}`
+          : `/chat?group=${encodeURIComponent(activeChatGroup.id)}`,
+      );
+    }
+  };
+
+  const reopenTab = async (targetThreadId: string) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(targetThreadId)}/reopen`,
+      { method: "POST" },
+    );
+    revalidator.revalidate();
+    navigate(`/chat/${targetThreadId}`);
+  };
+
+  const renameTab = async (targetThreadId: string, name: string) => {
+    await fetch(`/api/threads/${encodeURIComponent(targetThreadId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: name }),
+    });
+    revalidator.revalidate();
+  };
+
+  const renameGroup = async (name: string) => {
+    if (!activeChatGroup) return;
+    await fetch(`/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    revalidator.revalidate();
+  };
+
+  const reorderTabs = async (orderedThreadIds: string[]) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/reorder-tabs`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedThreadIds }),
+      },
+    );
+    revalidator.revalidate();
+  };
+
+  const moveTabToGroup = async (
+    targetThreadId: string,
+    targetGroupId: string | "new",
+  ) => {
+    const response = await fetch("/api/chat-groups/move-thread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: targetThreadId, targetGroupId }),
+    });
+    if (response.ok) {
+      revalidator.revalidate();
+      navigate(`/chat/${targetThreadId}`);
+    }
+  };
+
+  if (!workspaceId) {
+    return <NoWorkspacesError />;
+  }
 
   return (
     <>
-      <Chat
-        key={threadId}
-        threadId={threadId}
-        workspaceId={workspaceId}
-        initialMessages={chatData.messages}
-        threadTitle={threadTitle}
-        threadModel={threadModel}
-        threadProvider={threadProvider}
-        llmProvider={llmProvider}
-        allowedThreadModels={allowedThreadModels}
-        effectivePickerDefaultModel={effectivePickerDefaultModel}
-        hasEffectivePickerDefault={hasEffectivePickerDefault}
-        experimentalSettings={experimentalSettings}
-        billingCreditStatus={billingCreditStatus}
-        initialError={initialChatError}
-        initialPreviewTarget={chatData.previewTarget}
-        initialPreviewTabs={chatData.previewTabs}
-        initialActiveTabId={chatData.activeTabId}
-        isNewThread={isNewThread}
-        hostname={hostname}
-        orgSlug={orgSlug}
-        connections={connections}
-        isOrgAdmin={isOrgAdmin}
-        recentModelScope={recentModelScope}
-        isLoadingMessages={isLoadingMessages}
-        readOnly={readOnly}
-      />
+      <div className="flex h-full min-h-0 flex-col">
+        {!readOnly && activeChatGroup ? (
+          <ChatTabBar
+            groupId={liveActiveChatGroup?.id ?? activeChatGroup.id}
+            groupName={liveActiveChatGroup?.name ?? activeChatGroup.name}
+            openTabs={openTabs}
+            closedTabs={closedTabs}
+            activeThreadId={displayThreadId}
+            moveGroups={moveChatGroups}
+            onSelectTab={selectTab}
+            onTabIntent={prefetchThread}
+            onCloseTab={closeTab}
+            onRenameTab={renameTab}
+            onReorderTabs={reorderTabs}
+            onNewTab={() =>
+              navigate(`/chat?group=${encodeURIComponent(activeChatGroup.id)}`)
+            }
+            onReopenClosedTab={reopenTab}
+            onRenameGroup={renameGroup}
+            onMoveTabToGroup={moveTabToGroup}
+          />
+        ) : null}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <Chat
+            key={displayThreadId}
+            threadId={displayThreadId}
+            workspaceId={workspaceId}
+            chatGroupId={liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null}
+            initialMessages={displayChatData.messages}
+            threadTitle={displayThreadTitle}
+            threadModel={displayThreadModel}
+            threadProvider={displayThreadProvider}
+            llmProvider={llmProvider}
+            allowedThreadModels={allowedThreadModels}
+            effectivePickerDefaultModel={effectivePickerDefaultModel}
+            hasEffectivePickerDefault={hasEffectivePickerDefault}
+            experimentalSettings={experimentalSettings}
+            billingCreditStatus={billingCreditStatus}
+            initialError={initialChatError}
+            initialPreviewTarget={displayChatData.previewTarget}
+            initialPreviewTabs={displayChatData.previewTabs}
+            initialActiveTabId={displayChatData.activeTabId}
+            isNewThread={displayIsNewThread}
+            hostname={hostname}
+            orgSlug={orgSlug}
+            connections={connections}
+            isOrgAdmin={isOrgAdmin}
+            recentModelScope={recentModelScope}
+            isLoadingMessages={isLoadingMessages}
+            readOnly={readOnly}
+            onThreadSnapshotChange={handleThreadSnapshotChange}
+          />
+        </div>
+      </div>
       {!isNewThread && (
         <Suspense fallback={null}>
           <ResolveChatData

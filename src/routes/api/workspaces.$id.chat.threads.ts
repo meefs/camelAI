@@ -5,6 +5,10 @@ import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do.server';
+import {
+  addThreadToExistingGroup,
+  createGroupForNewThread,
+} from '@/lib/chat-groups.server';
 import type { LlmModel } from '@/types';
 
 /**
@@ -32,6 +36,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     firstMessage?: string;
     previewApps?: string;
     model?: LlmModel;
+    groupId?: string;
   };
 
   const env = getEnv(context);
@@ -76,10 +81,32 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         context,
         thread.id,
         workspaceId,
-        body.firstMessage
+        body.firstMessage,
+        userId,
       )
     );
   }
 
-  return Response.json({ thread });
+  try {
+    const group = body.groupId
+      ? await addThreadToExistingGroup(context, {
+          userId,
+          orgId,
+          workspaceId,
+          groupId: body.groupId,
+          threadId: thread.id,
+        })
+      : await createGroupForNewThread(context, {
+          userId,
+          orgId,
+          workspaceId,
+          threadId: thread.id,
+          name: body.initialTitle || body.firstMessage,
+        });
+    return Response.json({ thread, groupId: group.id, group });
+  } catch (error) {
+    await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+    const message = error instanceof Error ? error.message : 'Failed to group thread';
+    return Response.json({ error: message }, { status: 500 });
+  }
 }

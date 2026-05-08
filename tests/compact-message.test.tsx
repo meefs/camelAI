@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 
@@ -143,7 +143,11 @@ vi.mock('@/hooks/use-auth-data', () => ({
 }));
 
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
-vi.mock('@/components/page-header', () => ({ PageHeader: () => <div data-testid="page-header" /> }));
+vi.mock('@/components/page-header', () => ({
+  PageHeader: ({ className }: { className?: string }) => (
+    <div className={className} data-testid="page-header" />
+  ),
+}));
 
 vi.mock('@/components/prompt-input', () => ({
   PromptInput: ({ value, onChange, onSubmit }: { value: string; onChange: (v: string) => void; onSubmit: () => void }) => (
@@ -355,6 +359,44 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('Chat compaction event lifecycle', () => {
+  it('does not render a chat-surface page header', async () => {
+    await act(async () => {
+      render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    });
+
+    expect(screen.queryByTestId('page-header')).not.toBeInTheDocument();
+  });
+
+  it('only shows the upload overlay for file drag events', async () => {
+    const { container } = render(
+      <Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />,
+    );
+    const chatRoot = container.firstElementChild;
+    expect(chatRoot).toBeInstanceOf(HTMLElement);
+
+    await act(async () => {
+      fireEvent.dragOver(chatRoot as HTMLElement, {
+        dataTransfer: {
+          types: ['application/x-camelai-thread-id'],
+          items: [],
+        },
+      });
+    });
+
+    expect(screen.queryByText('Drop files here to upload')).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.dragOver(chatRoot as HTMLElement, {
+        dataTransfer: {
+          types: ['Files'],
+          items: [{ kind: 'file' }],
+        },
+      });
+    });
+
+    expect(screen.getByText('Drop files here to upload')).toBeInTheDocument();
+  });
+
   it('shows compacting indicator immediately for /compact and suppresses generic loading dots', async () => {
     const user = userEvent.setup();
     render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);

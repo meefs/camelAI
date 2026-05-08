@@ -4,6 +4,7 @@ import type { Route } from './+types/_app.settings.workspace.chats';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
+import { removeDeletedThreadFromUserGroups } from '@/lib/chat-groups.server';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import {
@@ -67,6 +68,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     try {
       await chatDO.deleteThread(context, threadId, workspaceId);
+      await removeDeletedThreadFromUserGroups(context, authContext.user.id, threadId);
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete chat' };
