@@ -1,4 +1,14 @@
-import { createEditToolDefinition, type EditOperations, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+  type BashOperations,
+  type EditOperations,
+  type ExtensionAPI,
+  type ReadOperations,
+  type WriteOperations,
+} from "@mariozechner/pi-coding-agent";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,8 +29,10 @@ const proxyEnvKeys = [
   "CLOUDFLARE_API_TOKEN",
   "DATA_PROXY_URL",
   "MCP_SERVER_URL",
+  "ORG_ID",
   "RESEND_PROXY_URL",
   "THREAD_ID",
+  "WORKSPACE_ID",
 ];
 
 const hostCwd = process.env.CHIRIDION_PI_WORKSPACE_CWD || process.cwd();
@@ -109,13 +121,12 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function formatExecResult(result: ExecResponse): string {
-  const output = [result.stdout || "", result.stderr || ""].filter(Boolean).join("\n");
-  const metadata = `exit code: ${typeof result.exitCode === "number" ? result.exitCode : 0}`;
-  return [output.trimEnd(), `[${metadata}]`].filter(Boolean).join("\n");
-}
-
-async function runContainerCommand(command: string, cwd?: string, signal?: AbortSignal): Promise<ExecResponse> {
+async function runContainerCommand(
+  command: string,
+  cwd?: string,
+  signal?: AbortSignal,
+  extraEnv?: Record<string, string | undefined>,
+): Promise<ExecResponse> {
   if (!execUrl) {
     throw new Error("CHIRIDION_CONTAINER_EXEC_URL is not configured");
   }
@@ -129,6 +140,11 @@ async function runContainerCommand(command: string, cwd?: string, signal?: Abort
     env.DATA_PROXY_URL = `${containerProxyBase}/api`;
     env.MCP_SERVER_URL = `${containerProxyBase}/mcp`;
     env.RESEND_PROXY_URL = `${containerProxyBase}/api/resend`;
+  }
+  for (const [key, value] of Object.entries(extraEnv ?? {})) {
+    if (typeof value === "string" && value.length > 0 && proxyEnvKeys.includes(key)) {
+      env[key] = value;
+    }
   }
   const response = await fetch(execUrl, {
     method: "POST",
@@ -184,10 +200,14 @@ function truncateText(value: unknown, maxCharacters = 16000): string {
 const CONTAINER_NODE_PREAMBLE = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
+const childProcess = require("node:child_process");
 const payload = JSON.parse(Buffer.from(process.env.PAYLOAD_B64 || "", "base64").toString("utf8"));
 const workspaceRoot = "/home/claude";
 const extraAllowedRoots = Array.isArray(payload.allowedRoots) ? payload.allowedRoots.filter((root) => typeof root === "string" && root.trim()) : [];
 const allowedRoots = [workspaceRoot, "/mnt/user-uploads", "/mnt/user-outputs", ...extraAllowedRoots].map((root) => path.resolve(root));
+const DEFAULT_MAX_LINES = 2000;
+const DEFAULT_MAX_BYTES = 50 * 1024;
+const GREP_MAX_LINE_LENGTH = 500;
 
 function resolveWorkspacePath(input) {
   if (typeof input !== "string" || !input.trim()) throw new Error("path is required");
@@ -213,24 +233,69 @@ function truncate(value, maxBytes = 51200) {
   }
   return out + "\n\n[Output truncated: " + used + " of " + bytes + " bytes]";
 }
-`;
 
-const readScript = String.raw`
-const filePath = resolveWorkspacePath(payload.path);
-const content = fs.readFileSync(filePath, "utf8");
-process.stdout.write(truncate(content));
-`;
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + "B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + "KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + "MB";
+}
 
-const writeScript = String.raw`
-const filePath = resolveWorkspacePath(payload.path);
-fs.mkdirSync(path.dirname(filePath), { recursive: true });
-fs.writeFileSync(filePath, String(payload.content ?? ""), "utf8");
-process.stdout.write("Wrote " + Buffer.byteLength(String(payload.content ?? ""), "utf8") + " bytes to " + filePath.replace(workspaceRoot + path.sep, ""));
+function truncateHead(content, options = {}) {
+  const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  const totalBytes = Buffer.byteLength(content, "utf8");
+  const lines = String(content ?? "").split("\n");
+  const totalLines = lines.length;
+  if (totalLines <= maxLines && totalBytes <= maxBytes) {
+    return { content, truncated: false, truncatedBy: null, totalLines, totalBytes, outputLines: totalLines, outputBytes: totalBytes, lastLinePartial: false, firstLineExceedsLimit: false, maxLines, maxBytes };
+  }
+  const firstLineBytes = Buffer.byteLength(lines[0] || "", "utf8");
+  if (firstLineBytes > maxBytes) {
+    return { content: "", truncated: true, truncatedBy: "bytes", totalLines, totalBytes, outputLines: 0, outputBytes: 0, lastLinePartial: false, firstLineExceedsLimit: true, maxLines, maxBytes };
+  }
+  const outputLinesArr = [];
+  let outputBytesCount = 0;
+  let truncatedBy = "lines";
+  for (let i = 0; i < lines.length && i < maxLines; i++) {
+    const line = lines[i];
+    const lineBytes = Buffer.byteLength(line, "utf8") + (i > 0 ? 1 : 0);
+    if (outputBytesCount + lineBytes > maxBytes) {
+      truncatedBy = "bytes";
+      break;
+    }
+    outputLinesArr.push(line);
+    outputBytesCount += lineBytes;
+  }
+  if (outputLinesArr.length >= maxLines && outputBytesCount <= maxBytes) truncatedBy = "lines";
+  const outputContent = outputLinesArr.join("\n");
+  return { content: outputContent, truncated: true, truncatedBy, totalLines, totalBytes, outputLines: outputLinesArr.length, outputBytes: Buffer.byteLength(outputContent, "utf8"), lastLinePartial: false, firstLineExceedsLimit: false, maxLines, maxBytes };
+}
+
+function truncateLine(line, maxChars = GREP_MAX_LINE_LENGTH) {
+  if (line.length <= maxChars) return { text: line, wasTruncated: false };
+  return { text: line.slice(0, maxChars) + "... [truncated]", wasTruncated: true };
+}
+
+function toolResult(text, details) {
+  const out = { content: [{ type: "text", text }] };
+  if (details && Object.keys(details).length > 0) out.details = details;
+  return out;
+}
+
+function commandExists(name) {
+  const result = childProcess.spawnSync("bash", ["-lc", "command -v " + name], { encoding: "utf8" });
+  return result.status === 0 ? result.stdout.trim().split("\n")[0] : "";
+}
 `;
 
 const editAccessScript = String.raw`
 const filePath = resolveWorkspacePath(payload.path);
 fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+`;
+
+const readAccessScript = String.raw`
+const filePath = resolveWorkspacePath(payload.path);
+fs.accessSync(filePath, fs.constants.R_OK);
 `;
 
 const editReadScript = String.raw`
@@ -243,39 +308,239 @@ const filePath = resolveWorkspacePath(payload.path);
 fs.writeFileSync(filePath, String(payload.content ?? ""), "utf8");
 `;
 
-const lsScript = String.raw`
-const dirPath = resolveWorkspacePath(payload.path || ".");
-const entries = fs.readdirSync(dirPath, { withFileTypes: true })
-  .map((entry) => (entry.isDirectory() ? "dir " : "file") + "\t" + entry.name)
-  .sort()
-  .join("\n");
-process.stdout.write(entries);
+const mkdirScript = String.raw`
+const dirPath = resolveWorkspacePath(payload.path);
+fs.mkdirSync(dirPath, { recursive: true });
 `;
 
-async function runTextTool(
-  payload: Record<string, unknown>,
-  script: string,
-  signal?: AbortSignal,
-): Promise<{ content: Array<{ type: "text"; text: string }>; details: ExecResponse }> {
-  const result = await runContainerNode(payload, script, signal);
-  assertExecSuccess(result);
-  return {
-    content: [{ type: "text", text: result.stdout || "" }],
-    details: result,
-  };
+const detectImageMimeTypeScript = String.raw`
+const filePath = resolveWorkspacePath(payload.path);
+const buffer = fs.readFileSync(filePath, { flag: "r" }).subarray(0, 4100);
+let mimeType = null;
+if (buffer.length >= 8 && buffer[0] === 0x89 && buffer.toString("ascii", 1, 4) === "PNG") {
+  mimeType = "image/png";
+} else if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+  mimeType = "image/jpeg";
+} else if (buffer.length >= 6 && (buffer.toString("ascii", 0, 6) === "GIF87a" || buffer.toString("ascii", 0, 6) === "GIF89a")) {
+  mimeType = "image/gif";
+} else if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+  mimeType = "image/webp";
 }
+process.stdout.write(mimeType || "");
+`;
 
-async function runReadOnlyTextTool(
+const builtinLikeLsScript = String.raw`
+const dirPath = resolveWorkspacePath(payload.path || ".");
+if (!fs.existsSync(dirPath)) throw new Error("Path not found: " + dirPath);
+const dirStat = fs.statSync(dirPath);
+if (!dirStat.isDirectory()) throw new Error("Not a directory: " + dirPath);
+const effectiveLimit = Math.max(1, Number(payload.limit || 500));
+const entries = fs.readdirSync(dirPath).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+const results = [];
+let entryLimitReached = false;
+for (const entry of entries) {
+  if (results.length >= effectiveLimit) {
+    entryLimitReached = true;
+    break;
+  }
+  try {
+    const entryStat = fs.statSync(path.join(dirPath, entry));
+    results.push(entry + (entryStat.isDirectory() ? "/" : ""));
+  } catch {
+    // Match builtin behavior: skip entries we cannot stat.
+  }
+}
+if (results.length === 0) {
+  process.stdout.write(JSON.stringify(toolResult("(empty directory)")));
+} else {
+  const rawOutput = results.join("\n");
+  const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+  const details = {};
+  const notices = [];
+  let output = truncation.content;
+  if (entryLimitReached) {
+    notices.push(effectiveLimit + " entries limit reached. Use limit=" + (effectiveLimit * 2) + " for more");
+    details.entryLimitReached = effectiveLimit;
+  }
+  if (truncation.truncated) {
+    notices.push(formatSize(DEFAULT_MAX_BYTES) + " limit reached");
+    details.truncation = truncation;
+  }
+  if (notices.length > 0) output += "\n\n[" + notices.join(". ") + "]";
+  process.stdout.write(JSON.stringify(toolResult(output, details)));
+}
+`;
+
+const builtinLikeGrepScript = String.raw`
+const searchPath = resolveWorkspacePath(payload.path || ".");
+let isDirectory = false;
+try {
+  isDirectory = fs.statSync(searchPath).isDirectory();
+} catch {
+  throw new Error("Path not found: " + searchPath);
+}
+const rgPath = commandExists("rg");
+if (!rgPath) throw new Error("ripgrep (rg) is not available");
+const contextValue = payload.context && Number(payload.context) > 0 ? Number(payload.context) : 0;
+const effectiveLimit = Math.max(1, Number(payload.limit || 100));
+const args = ["--json", "--line-number", "--color=never", "--hidden"];
+if (payload.ignoreCase) args.push("--ignore-case");
+if (payload.literal) args.push("--fixed-strings");
+if (typeof payload.glob === "string" && payload.glob.trim()) args.push("--glob", payload.glob);
+args.push("--", String(payload.pattern ?? ""), searchPath);
+const result = childProcess.spawnSync(rgPath, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+if (result.error) throw result.error;
+if (result.status !== 0 && result.status !== 1) throw new Error((result.stderr || "").trim() || "ripgrep exited with code " + result.status);
+const formatPath = (filePath) => {
+  if (isDirectory) {
+    const relative = path.relative(searchPath, filePath);
+    if (relative && !relative.startsWith("..")) return relative.split(path.sep).join("/");
+  }
+  return path.basename(filePath);
+};
+const fileCache = new Map();
+const getFileLines = (filePath) => {
+  if (!fileCache.has(filePath)) {
+    try {
+      fileCache.set(filePath, fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n"));
+    } catch {
+      fileCache.set(filePath, []);
+    }
+  }
+  return fileCache.get(filePath);
+};
+const matches = [];
+let matchLimitReached = false;
+for (const line of String(result.stdout || "").split("\n")) {
+  if (!line.trim()) continue;
+  let event;
+  try { event = JSON.parse(line); } catch { continue; }
+  if (event.type !== "match") continue;
+  if (matches.length >= effectiveLimit) {
+    matchLimitReached = true;
+    break;
+  }
+  const filePath = event.data?.path?.text;
+  const lineNumber = event.data?.line_number;
+  const lineText = event.data?.lines?.text;
+  if (filePath && typeof lineNumber === "number") matches.push({ filePath, lineNumber, lineText });
+  if (matches.length >= effectiveLimit) matchLimitReached = true;
+}
+if (matches.length === 0) {
+  process.stdout.write(JSON.stringify(toolResult("No matches found")));
+} else {
+  const outputLines = [];
+  let linesTruncated = false;
+  for (const match of matches) {
+    const relativePath = formatPath(match.filePath);
+    if (contextValue === 0 && match.lineText !== undefined) {
+      const sanitized = String(match.lineText).replace(/\r\n/g, "\n").replace(/\r/g, "").replace(/\n$/, "");
+      const truncated = truncateLine(sanitized);
+      if (truncated.wasTruncated) linesTruncated = true;
+      outputLines.push(relativePath + ":" + match.lineNumber + ": " + truncated.text);
+    } else {
+      const lines = getFileLines(match.filePath);
+      if (!lines.length) {
+        outputLines.push(relativePath + ":" + match.lineNumber + ": (unable to read file)");
+        continue;
+      }
+      const start = contextValue > 0 ? Math.max(1, match.lineNumber - contextValue) : match.lineNumber;
+      const end = contextValue > 0 ? Math.min(lines.length, match.lineNumber + contextValue) : match.lineNumber;
+      for (let current = start; current <= end; current++) {
+        const truncated = truncateLine(String(lines[current - 1] || "").replace(/\r/g, ""));
+        if (truncated.wasTruncated) linesTruncated = true;
+        outputLines.push(relativePath + (current === match.lineNumber ? ":" : "-") + current + (current === match.lineNumber ? ": " : "- ") + truncated.text);
+      }
+    }
+  }
+  const rawOutput = outputLines.join("\n");
+  const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+  const details = {};
+  const notices = [];
+  let output = truncation.content;
+  if (matchLimitReached) {
+    notices.push(effectiveLimit + " matches limit reached. Use limit=" + (effectiveLimit * 2) + " for more, or refine pattern");
+    details.matchLimitReached = effectiveLimit;
+  }
+  if (truncation.truncated) {
+    notices.push(formatSize(DEFAULT_MAX_BYTES) + " limit reached");
+    details.truncation = truncation;
+  }
+  if (linesTruncated) {
+    notices.push("Some lines truncated to " + GREP_MAX_LINE_LENGTH + " chars. Use read tool to see full lines");
+    details.linesTruncated = true;
+  }
+  if (notices.length > 0) output += "\n\n[" + notices.join(". ") + "]";
+  process.stdout.write(JSON.stringify(toolResult(output, details)));
+}
+`;
+
+const builtinLikeFindScript = String.raw`
+const searchPath = resolveWorkspacePath(payload.path || ".");
+if (!fs.existsSync(searchPath)) throw new Error("Path not found: " + searchPath);
+const fdPath = commandExists("fd") || commandExists("fdfind");
+if (!fdPath) throw new Error("fd is not available");
+const effectiveLimit = Math.max(1, Number(payload.limit || 1000));
+const args = ["--glob", "--color=never", "--hidden", "--no-require-git", "--max-results", String(effectiveLimit)];
+let effectivePattern = String(payload.pattern ?? "");
+if (effectivePattern.includes("/")) {
+  args.push("--full-path");
+  if (!effectivePattern.startsWith("/") && !effectivePattern.startsWith("**/") && effectivePattern !== "**") {
+    effectivePattern = "**/" + effectivePattern;
+  }
+}
+args.push("--", effectivePattern, searchPath);
+const result = childProcess.spawnSync(fdPath, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+if (result.error) throw result.error;
+if (result.status !== 0 && !String(result.stdout || "").trim()) throw new Error((result.stderr || "").trim() || "fd exited with code " + result.status);
+const relativized = [];
+for (const rawLine of String(result.stdout || "").split("\n")) {
+  const line = rawLine.replace(/\r$/, "").trim();
+  if (!line) continue;
+  const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
+  let relativePath = line;
+  if (line.startsWith(searchPath)) {
+    relativePath = line.slice(searchPath.length + 1);
+  } else {
+    relativePath = path.relative(searchPath, line);
+  }
+  if (hadTrailingSlash && !relativePath.endsWith("/")) relativePath += "/";
+  relativized.push(relativePath.split(path.sep).join("/"));
+}
+if (relativized.length === 0) {
+  process.stdout.write(JSON.stringify(toolResult("No files found matching pattern")));
+} else {
+  const resultLimitReached = relativized.length >= effectiveLimit;
+  const rawOutput = relativized.join("\n");
+  const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+  const details = {};
+  const notices = [];
+  let output = truncation.content;
+  if (resultLimitReached) {
+    notices.push(effectiveLimit + " results limit reached. Use limit=" + (effectiveLimit * 2) + " for more, or refine pattern");
+    details.resultLimitReached = effectiveLimit;
+  }
+  if (truncation.truncated) {
+    notices.push(formatSize(DEFAULT_MAX_BYTES) + " limit reached");
+    details.truncation = truncation;
+  }
+  if (notices.length > 0) output += "\n\n[" + notices.join(". ") + "]";
+  process.stdout.write(JSON.stringify(toolResult(output, details)));
+}
+`;
+
+async function runReadOnlyJsonTool<T = unknown>(
   payload: Record<string, unknown>,
   script: string,
   signal?: AbortSignal,
-): Promise<{ content: Array<{ type: "text"; text: string }>; details: ExecResponse }> {
+): Promise<T> {
   const result = await runReadOnlyContainerNode(payload, script, signal);
   assertExecSuccess(result);
-  return {
-    content: [{ type: "text", text: result.stdout || "" }],
-    details: result,
-  };
+  try {
+    return JSON.parse(result.stdout || "null") as T;
+  } catch (error) {
+    throw new Error(`Container tool returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 const containerEditOperations: EditOperations = {
@@ -291,6 +556,82 @@ const containerEditOperations: EditOperations = {
   async writeFile(absolutePath: string, content: string): Promise<void> {
     const result = await runContainerNode({ path: toContainerPath(absolutePath), content }, editWriteScript);
     assertExecSuccess(result);
+  },
+};
+
+const containerReadOperations: ReadOperations = {
+  async access(absolutePath: string): Promise<void> {
+    const result = await runReadOnlyContainerNode({ path: toReadableContainerPath(absolutePath) }, readAccessScript);
+    assertExecSuccess(result);
+  },
+  async readFile(absolutePath: string): Promise<Buffer> {
+    const result = await runReadOnlyContainerNode({ path: toReadableContainerPath(absolutePath) }, editReadScript);
+    assertExecSuccess(result);
+    return Buffer.from(result.stdout || "", "base64");
+  },
+  async detectImageMimeType(absolutePath: string): Promise<string | null | undefined> {
+    const result = await runReadOnlyContainerNode({ path: toReadableContainerPath(absolutePath) }, detectImageMimeTypeScript);
+    assertExecSuccess(result);
+    return result.stdout?.trim() || null;
+  },
+};
+
+const containerWriteOperations: WriteOperations = {
+  async mkdir(absolutePath: string): Promise<void> {
+    const result = await runContainerNode({ path: toContainerPath(absolutePath) }, mkdirScript);
+    assertExecSuccess(result);
+  },
+  async writeFile(absolutePath: string, content: string): Promise<void> {
+    const result = await runContainerNode({ path: toContainerPath(absolutePath), content }, editWriteScript);
+    assertExecSuccess(result);
+  },
+};
+
+function combinedAbortSignal(source?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  if (!source) return { signal: controller.signal, dispose: () => {} };
+  if (source.aborted) {
+    controller.abort(source.reason);
+    return { signal: controller.signal, dispose: () => {} };
+  }
+  const onAbort = () => controller.abort(source.reason);
+  source.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => source.removeEventListener("abort", onAbort),
+  };
+}
+
+const containerBashOperations: BashOperations = {
+  async exec(command, cwd, options) {
+    const { signal, dispose } = combinedAbortSignal(options.signal);
+    let timedOut = false;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutController = new AbortController();
+    const abortTimeout = () => timeoutController.abort();
+    const onCombinedAbort = () => timeoutController.abort();
+    if (signal.aborted) timeoutController.abort();
+    else signal.addEventListener("abort", onCombinedAbort, { once: true });
+    if (options.timeout !== undefined && options.timeout > 0) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        abortTimeout();
+      }, options.timeout * 1000);
+    }
+    try {
+      const result = await runContainerCommand(command, cwd, timeoutController.signal, options.env);
+      const output = [result.stdout || "", result.stderr || ""].filter(Boolean).join("\n");
+      if (output) options.onData(Buffer.from(output, "utf8"));
+      return { exitCode: typeof result.exitCode === "number" ? result.exitCode : result.success === false ? 1 : 0 };
+    } catch (error) {
+      if (timedOut) throw new Error(`timeout:${options.timeout}`);
+      if (options.signal?.aborted) throw new Error("aborted");
+      throw error;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      signal.removeEventListener("abort", onCombinedAbort);
+      dispose();
+    }
   },
 };
 
@@ -1609,106 +1950,82 @@ export default function containerTools(pi: ExtensionAPI) {
     execute: executeWebFetch,
   });
 
-  pi.registerTool({
-    name: "read",
-    label: "Read",
-    description:
-      "Read a UTF-8 text file from inside the sandbox container. Paths are scoped to the workspace; mirrored platform skill files may also be read.",
-    parameters: Type.Object({
-      path: Type.String({ description: "File path, relative to the workspace root unless absolute under /home/claude." }),
-    }),
-    async execute(_toolCallId, params, signal) {
-      return runReadOnlyTextTool({ path: toReadableContainerPath(params.path) }, readScript, signal);
-    },
-  });
+  pi.registerTool(createReadToolDefinition(containerCwd, { operations: containerReadOperations }));
 
   if (!isReadOnlySubagent) {
-    pi.registerTool({
-      name: "write",
-      label: "Write",
-      description: "Create or overwrite a UTF-8 text file from inside the sandbox container. Paths are scoped to the workspace.",
-      parameters: Type.Object({
-        path: Type.String({ description: "File path, relative to the workspace root unless absolute under /home/claude." }),
-        content: Type.String({ description: "Complete file contents." }),
-      }),
-      execute: async (_toolCallId, params, signal) =>
-        runTextTool({ path: toContainerPath(params.path), content: params.content }, writeScript, signal),
-    });
-
+    pi.registerTool(createWriteToolDefinition(containerCwd, { operations: containerWriteOperations }));
     pi.registerTool(createEditToolDefinition(containerCwd, { operations: containerEditOperations }));
   }
 
   pi.registerTool({
     name: "ls",
-    label: "List",
-    description: "List files from inside the sandbox container. Paths are scoped to the workspace.",
+    label: "ls",
+    description:
+      "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).",
+    promptSnippet: "List directory contents",
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: "Directory path. Defaults to the workspace root." })),
+      path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
+      limit: Type.Optional(Type.Number({ description: "Maximum number of entries to return (default: 500)" })),
     }),
     execute: async (_toolCallId, params, signal) =>
-      runReadOnlyTextTool({ path: params.path ? toReadableContainerPath(params.path) : "." }, lsScript, signal),
+      runReadOnlyJsonTool({ path: params.path ? toReadableContainerPath(params.path) : ".", limit: params.limit }, builtinLikeLsScript, signal),
   });
 
   pi.registerTool({
     name: "grep",
-    label: "Grep",
-    description: "Search file contents inside the sandbox container using ripgrep.",
+    label: "grep",
+    description:
+      "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB (whichever is hit first). Long lines are truncated to 500 chars.",
+    promptSnippet: "Search file contents for patterns (respects .gitignore)",
     parameters: Type.Object({
-      pattern: Type.String({ description: "Ripgrep pattern." }),
-      path: Type.Optional(Type.String({ description: "Path to search. Defaults to the workspace root." })),
+      pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
+      path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
+      glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
+      ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
+      literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" })),
+      context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })),
+      limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
     }),
     async execute(_toolCallId, params, signal) {
-      const searchPath = shellQuote(toReadableContainerPath(params.path || "."));
-      const pattern = shellQuote(params.pattern);
-      const result = await runContainerCommand(
-        `rg --line-number --no-heading --color never -- ${pattern} ${searchPath}; code=$?; if [ "$code" -eq 0 ] || [ "$code" -eq 1 ]; then exit 0; fi; exit "$code"`,
-        containerCwd,
+      return runReadOnlyJsonTool(
+        {
+          pattern: params.pattern,
+          path: toReadableContainerPath(params.path || "."),
+          glob: params.glob,
+          ignoreCase: params.ignoreCase,
+          literal: params.literal,
+          context: params.context,
+          limit: params.limit,
+        },
+        builtinLikeGrepScript,
         signal,
       );
-      assertExecSuccess(result);
-      return { content: [{ type: "text", text: result.stdout || "No matches found." }], details: result };
     },
   });
 
   pi.registerTool({
     name: "find",
-    label: "Find",
-    description: "Find files inside the sandbox container by name or glob pattern.",
+    label: "find",
+    description:
+      "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first).",
+    promptSnippet: "Find files by glob pattern (respects .gitignore)",
     parameters: Type.Object({
-      pattern: Type.String({ description: "File name or glob pattern, e.g. '*.ts'." }),
-      path: Type.Optional(Type.String({ description: "Directory to search. Defaults to the workspace root." })),
+      pattern: Type.String({
+        description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
+      }),
+      path: Type.Optional(Type.String({ description: "Directory to search in (default: current directory)" })),
+      limit: Type.Optional(Type.Number({ description: "Maximum number of results (default: 1000)" })),
     }),
     async execute(_toolCallId, params, signal) {
-      const root = shellQuote(toReadableContainerPath(params.path || "."));
-      const pattern = shellQuote(params.pattern);
-      const result = await runContainerCommand(
-        `find ${root} -path '*/.git' -prune -o -name ${pattern} -print | head -2000`,
-        containerCwd,
+      return runReadOnlyJsonTool(
+        { pattern: params.pattern, path: toReadableContainerPath(params.path || "."), limit: params.limit },
+        builtinLikeFindScript,
         signal,
       );
-      assertExecSuccess(result);
-      return { content: [{ type: "text", text: result.stdout || "No files found." }], details: result };
     },
   });
 
   if (!isReadOnlySubagent) {
-    pi.registerTool({
-      name: "bash",
-      label: "Bash",
-      description:
-        "Run a shell command inside the workspace sandbox container. Use this for installs, tests, builds, file inspection, and project commands.",
-      parameters: Type.Object({
-        command: Type.String({ description: "Shell command to run in the sandbox container." }),
-        description: Type.Optional(Type.String({ description: "Brief human-readable description of what this command does, shown in the UI." })),
-        cwd: Type.Optional(Type.String({ description: "Working directory. Defaults to the workspace root." })),
-      }),
-      async execute(_toolCallId, params, signal) {
-        const result = await runContainerCommand(params.command, params.cwd, signal);
-        return {
-          content: [{ type: "text", text: formatExecResult(result) }],
-          details: result,
-        };
-      },
-    });
+    pi.registerTool(createBashToolDefinition(containerCwd, { operations: containerBashOperations }));
   }
 }

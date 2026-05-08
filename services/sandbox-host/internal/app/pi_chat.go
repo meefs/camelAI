@@ -1611,11 +1611,15 @@ func (b *hostPiBridge) handlePiToolEnd(event map[string]any) {
 		"tool":      toolName,
 		"arguments": args,
 		"status":    status,
-		"result":    resultText,
+		"result":    event["result"],
+	}
+	if contentItems := piRuntimeContentItems(event["result"]); len(contentItems) > 0 {
+		item["contentItems"] = contentItems
 	}
 	if strings.EqualFold(toolName, "bash") {
 		item = hostPiRuntimeToolItem(toolID, toolName, args, status)
 		item["aggregatedOutput"] = resultText
+		item["result"] = event["result"]
 	}
 	b.sendRuntimeEvent("item/completed", map[string]any{"threadId": b.threadID, "item": item})
 }
@@ -1928,6 +1932,42 @@ func extractPiText(value any) string {
 		}
 	}
 	return ""
+}
+
+func piRuntimeContentItems(value any) []any {
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		return []any{map[string]any{"type": "inputText", "text": v}}
+	case []any:
+		items := make([]any, 0, len(v))
+		for _, item := range v {
+			items = append(items, piRuntimeContentItems(item)...)
+		}
+		return items
+	case map[string]any:
+		if text, ok := v["text"].(string); ok {
+			if text == "" {
+				return nil
+			}
+			return []any{map[string]any{"type": "inputText", "text": text}}
+		}
+		if content, ok := v["content"]; ok {
+			return piRuntimeContentItems(content)
+		}
+		out := make(map[string]any, len(v))
+		for key, entry := range v {
+			out[key] = entry
+		}
+		return []any{out}
+	default:
+		if value == nil {
+			return nil
+		}
+		return []any{value}
+	}
 }
 
 func isPiAssistantMessage(message map[string]any) bool {

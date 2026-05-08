@@ -13,7 +13,7 @@ FROM ubuntu:24.04
 
 # Core tools
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick poppler-utils tini fuse3 >/dev/null 2>&1 && \
+    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick poppler-utils tini fuse3 ripgrep fd-find >/dev/null 2>&1 && \
     if ! command -v magick >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then \
       printf '#!/bin/sh\nexec convert "$@"\n' > /usr/local/bin/magick && \
       chmod +x /usr/local/bin/magick; \

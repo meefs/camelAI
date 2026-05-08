@@ -956,6 +956,38 @@ func TestHostPiBridgeRecallsToolArgsForEndEvent(t *testing.T) {
 	}
 }
 
+func TestHostPiBridgePreservesStructuredToolResult(t *testing.T) {
+	bridge := &hostPiBridge{threadID: "thread-1"}
+	result := []any{
+		map[string]any{"type": "text", "text": "Read image file [image/png]"},
+		map[string]any{"type": "image", "data": "abc123", "mimeType": "image/png"},
+	}
+
+	bridge.handlePiToolEnd(map[string]any{
+		"toolCallId": "tool_read",
+		"toolName":   "read",
+		"result":     result,
+	})
+
+	items := hostPiRuntimeItemsForMethod(t, bridge, "item/completed")
+	if len(items) != 1 {
+		t.Fatalf("item/completed count = %d, want 1", len(items))
+	}
+	item := items[0]
+	rawResult, ok := item["result"].([]any)
+	if !ok || len(rawResult) != 2 {
+		t.Fatalf("structured result was not preserved: %#v", item["result"])
+	}
+	contentItems, ok := item["contentItems"].([]any)
+	if !ok || len(contentItems) != 2 {
+		t.Fatalf("contentItems = %#v, want text plus image", item["contentItems"])
+	}
+	imageItem, _ := contentItems[1].(map[string]any)
+	if imageItem["type"] != "image" || imageItem["data"] != "abc123" {
+		t.Fatalf("image content item was not preserved: %#v", imageItem)
+	}
+}
+
 func TestHostPiBridgeEmitsEarlyBashToolStarted(t *testing.T) {
 	bridge := &hostPiBridge{threadID: "thread-1"}
 

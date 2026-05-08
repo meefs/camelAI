@@ -50,6 +50,29 @@ func TestParsePiJSONLMessagesBasicFlow(t *testing.T) {
 	}
 }
 
+func TestParsePiJSONLMessagesPreservesToolResultImages(t *testing.T) {
+	jsonl := `{"type":"message","id":"a1","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-1","name":"read","arguments":{"path":"image.png"}}],"timestamp":1770000000001}}
+{"type":"message","id":"tr1","parentId":"a1","timestamp":"2026-01-02T03:04:07.000Z","message":{"role":"toolResult","toolCallId":"tool-1","toolName":"read","content":[{"type":"text","text":"Read image file [image/png]"},{"type":"image","data":"abc123","mimeType":"image/png"}],"isError":false,"timestamp":1770000000002}}`
+
+	messages := parsePiJSONLMessages(jsonl, "thread-1")
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d: %#v", len(messages), messages)
+	}
+	blocks, ok := asSlice(messages[0].Content)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("unexpected blocks: %#v", messages[0].Content)
+	}
+	toolResult, _ := asMap(blocks[1])
+	contentBlocks, ok := asSlice(toolResult["content"])
+	if !ok || len(contentBlocks) != 2 {
+		t.Fatalf("expected structured tool result content, got %#v", toolResult["content"])
+	}
+	imageBlock, _ := asMap(contentBlocks[1])
+	if firstString(imageBlock, "type") != "image" || firstString(imageBlock, "mimeType") != "image/png" || firstString(imageBlock, "data") != "abc123" {
+		t.Fatalf("image block was not preserved: %#v", imageBlock)
+	}
+}
+
 func TestParsePiJSONLMessagesCanonicalizesToolNames(t *testing.T) {
 	jsonl := `{"type":"message","id":"a1","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-bash","name":"bash","arguments":{"command":"pwd"}},{"type":"toolCall","id":"tool-search","name":"web_search","arguments":{"query":"docs"}},{"type":"toolCall","id":"tool-fetch","name":"web_fetch","arguments":{"url":"https://example.com"}}],"timestamp":1770000000001}}`
 
