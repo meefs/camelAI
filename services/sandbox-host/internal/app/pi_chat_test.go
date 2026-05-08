@@ -814,6 +814,9 @@ func TestHostPiSystemPromptArgs(t *testing.T) {
 	if strings.Contains(got[1], "# Project Context") {
 		t.Fatalf("system prompt should not include project context without a workspace path")
 	}
+	if !strings.Contains(got[1], "${WORKSPACE_ID}") {
+		t.Fatalf("system prompt should keep WORKSPACE_ID placeholder for prompt caching")
+	}
 }
 
 func TestHostPiSystemPromptArgsIncludesWorkspaceContext(t *testing.T) {
