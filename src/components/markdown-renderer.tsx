@@ -92,6 +92,8 @@ function replaceWorkspaceIdPlaceholder(value: string | undefined, workspaceId?: 
   if (!value || !workspaceId) return value;
   return value
     .replaceAll('${WORKSPACE_ID}', workspaceId)
+    .replaceAll('$%7BWORKSPACE_ID%7D', encodeURIComponent(workspaceId))
+    .replaceAll('$%7bWORKSPACE_ID%7d', encodeURIComponent(workspaceId))
     .replaceAll('%24%7BWORKSPACE_ID%7D', encodeURIComponent(workspaceId))
     .replaceAll('%24%7bWORKSPACE_ID%7d', encodeURIComponent(workspaceId));
 }
