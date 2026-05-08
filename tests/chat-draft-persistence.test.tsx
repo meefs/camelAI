@@ -254,6 +254,28 @@ function getMainSocket(): MockWebSocket {
   return socket;
 }
 
+function getLatestMainSocket(): MockWebSocket {
+  const socket = [...MockWebSocket.instances]
+    .reverse()
+    .find((candidate) => candidate.url.includes('/ws/runner/ws-1'));
+  if (!socket) {
+    throw new Error('Main chat WebSocket was not created');
+  }
+  return socket;
+}
+
+function sentMessagePayloads(socket: MockWebSocket): Array<Record<string, unknown>> {
+  return socket.send.mock.calls.flatMap(([raw]) => {
+    if (typeof raw !== 'string') return [];
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return parsed.type === 'message' ? [parsed] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
 beforeAll(() => {
   vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
   vi.stubGlobal(
@@ -438,6 +460,94 @@ describe('Chat draft persistence', () => {
     expect(typeof sentPayloadRaw).toBe('string');
     const sentPayload = JSON.parse(String(sentPayloadRaw));
     expect(sentPayload.content).toBe(`(user uploaded file to ${attachmentDraft.path})`);
+  });
+
+  it('does not replay an immediately sent message after remounting before acknowledgement', async () => {
+    const user = userEvent.setup();
+
+    const { unmount } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    const socket = getMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.type(screen.getByLabelText('Thread prompt'), 'Hello once');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(sentMessagePayloads(socket)).toHaveLength(1);
+    expect(sessionStorage.getItem('pendingMessages:ws-1:thread-1')).toBeNull();
+
+    unmount();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    const remountedSocket = getLatestMainSocket();
+    expect(remountedSocket).not.toBe(socket);
+
+    act(() => {
+      remountedSocket.emitOpen();
+      remountedSocket.emitMessage({ type: 'ready' });
+    });
+
+    expect(sentMessagePayloads(remountedSocket)).toHaveLength(0);
+  });
+
+  it('replays a queued message exactly once after remounting before the socket is ready', async () => {
+    const user = userEvent.setup();
+
+    const { unmount } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    await user.type(screen.getByLabelText('Thread prompt'), 'Send when ready');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(
+      JSON.parse(sessionStorage.getItem('pendingMessages:ws-1:thread-1') ?? '{}'),
+    ).toMatchObject({
+      workspaceId: 'ws-1',
+      threadId: 'thread-1',
+      messages: [expect.objectContaining({ content: 'Send when ready' })],
+    });
+
+    unmount();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    const remountedSocket = getLatestMainSocket();
+    act(() => {
+      remountedSocket.emitOpen();
+      remountedSocket.emitMessage({ type: 'ready' });
+    });
+
+    expect(sentMessagePayloads(remountedSocket)).toMatchObject([
+      expect.objectContaining({ content: 'Send when ready' }),
+    ]);
+    expect(sessionStorage.getItem('pendingMessages:ws-1:thread-1')).toBeNull();
   });
 
   it('creates a new thread from an attachment-only welcome draft', async () => {

@@ -5896,6 +5896,13 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           threadId,
         }),
       );
+      setPendingMessages((prev) =>
+        prev.filter(
+          (message) =>
+            message.id !== clientMessageId &&
+            message.clientMessageId !== clientMessageId,
+        ),
+      );
     } else {
       // Queue the full message object for later delivery (with file refs in content)
       setLoading(true);

@@ -395,6 +395,7 @@ func (b *hostPiBridge) start(sessionEnv map[string]string) error {
 	go func() {
 		err := cmd.Wait()
 		durationMs := time.Since(startedAt).Milliseconds()
+		b.markProcessExited(cmd)
 		b.endActiveTurn()
 		log.Printf("[SandboxHost] host Pi process exited thread=%s container=%s durationMs=%d err=%v", b.threadID, b.container, durationMs, err)
 		if b.ctx.Err() == nil && err != nil {
@@ -700,12 +701,14 @@ func (b *hostPiBridge) piEnv(workspacePath string, sessionEnv map[string]string)
 	} else {
 		env["CHIRIDION_OPENROUTER_UPSTREAM"] = ""
 	}
-	env["MCP_SERVER_URL"] = proxyBase + "/mcp"
-	env["DATA_PROXY_URL"] = proxyBase + "/api"
-	env["RESEND_PROXY_URL"] = proxyBase + "/api/resend"
-	env["CAMELAI_CONNECTIONS_URL"] = proxyBase + "/api/connections"
-	env["CLOUDFLARE_API_BASE_URL"] = proxyBase + "/client/v4"
+	env["CHIRIDION_HOST_MCP_SERVER_URL"] = proxyBase + "/mcp"
+	env["MCP_SERVER_URL"] = containerProxyBase + "/mcp"
+	env["DATA_PROXY_URL"] = containerProxyBase + "/api"
+	env["RESEND_PROXY_URL"] = containerProxyBase + "/api/resend"
+	env["CAMELAI_CONNECTIONS_URL"] = containerProxyBase + "/api/connections"
+	env["CLOUDFLARE_API_BASE_URL"] = containerProxyBase + "/client/v4"
 	env["CLOUDFLARE_API_TOKEN"] = "proxy"
+	env["CLOUDFLARE_ACCOUNT_ID"] = "chiridion"
 	env["THREAD_ID"] = b.threadID
 	env["WORKSPACE_ID"] = b.route.WorkspaceID
 	env["ORG_ID"] = b.route.OrgID
@@ -1726,10 +1729,24 @@ func (b *hostPiBridge) writePiCommand(command map[string]any) error {
 		return errors.New("host Pi process is not running")
 	}
 	if _, err := b.stdin.Write(append(encoded, '\n')); err != nil {
+		b.cmd = nil
+		b.stdin = nil
+		b.started = false
 		return err
 	}
 	log.Printf("[SandboxHost] host Pi command sent thread=%s commandType=%s commandId=%s bytes=%d", b.threadID, stringValue(command["type"], ""), stringValue(command["id"], ""), len(encoded))
 	return nil
+}
+
+func (b *hostPiBridge) markProcessExited(cmd *exec.Cmd) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.cmd != cmd {
+		return
+	}
+	b.cmd = nil
+	b.stdin = nil
+	b.started = false
 }
 
 func loggableHostPiEventKind(payload map[string]any) (string, bool) {
@@ -1762,6 +1779,7 @@ func (b *hostPiBridge) stopProcess() {
 	cmd := b.cmd
 	b.stdin = nil
 	b.cmd = nil
+	b.started = false
 	b.mu.Unlock()
 
 	if stdin != nil {

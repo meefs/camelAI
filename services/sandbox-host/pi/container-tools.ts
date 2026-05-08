@@ -36,18 +36,37 @@ const proxyEnvKeys = [
   "WORKSPACE_ID",
 ];
 
+function requireEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
+}
+
+[
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_API_TOKEN",
+  "ORG_ID",
+  "THREAD_ID",
+  "WORKSPACE_ID",
+  "CHIRIDION_CONTAINER_EXEC_URL",
+  "CHIRIDION_CONTAINER_PROXY_BASE_URL",
+  "CHIRIDION_HOST_MCP_SERVER_URL",
+].forEach(requireEnv);
+
 const hostCwd = process.env.CHIRIDION_PI_WORKSPACE_CWD || process.cwd();
 const containerCwd = process.env.CHIRIDION_PI_CONTAINER_CWD || "/home/claude";
-const execUrl = process.env.CHIRIDION_CONTAINER_EXEC_URL || "";
+const execUrl = requireEnv("CHIRIDION_CONTAINER_EXEC_URL");
 const askUserQuestionUrl = process.env.CHIRIDION_ASK_USER_QUESTION_URL || "";
 const askUserQuestionToken = process.env.CHIRIDION_ASK_USER_QUESTION_TOKEN || "";
 const todoStateUrl = process.env.CHIRIDION_TODO_STATE_URL || "";
 const webSearchUrl = process.env.CHIRIDION_WEB_SEARCH_URL || "";
 const webFetchUrl = process.env.CHIRIDION_WEB_FETCH_URL || "";
-const mcpServerUrl = (process.env.MCP_SERVER_URL || "").replace(/\/+$/, "");
+const mcpServerUrl = requireEnv("CHIRIDION_HOST_MCP_SERVER_URL").replace(/\/+$/, "");
 const hostPiToken = process.env.CHIRIDION_HOST_PI_TOKEN || askUserQuestionToken;
-const threadId = process.env.THREAD_ID || "";
-const containerProxyBase = (process.env.CHIRIDION_CONTAINER_PROXY_BASE_URL || "").replace(/\/+$/, "");
+const threadId = requireEnv("THREAD_ID");
+const containerProxyBase = requireEnv("CHIRIDION_CONTAINER_PROXY_BASE_URL").replace(/\/+$/, "");
 const allowedContainerRoots = [containerCwd, "/mnt/user-uploads", "/mnt/user-outputs"];
 const hostPiSkillsPath = process.env.CHIRIDION_HOST_PI_SKILLS_PATH || process.env.HOST_PI_SKILLS_PATH || "";
 const containerPiSkillsPath = process.env.CHIRIDION_CONTAINER_PI_SKILLS_PATH || "/opt/chiridion-host-pi/skills";
@@ -1030,7 +1049,7 @@ async function localMcpRequest(
   signal?: AbortSignal,
 ): Promise<{ payload: Record<string, unknown>; sessionId?: string }> {
   if (!mcpServerUrl) {
-    throw new Error("MCP_SERVER_URL is not configured");
+    throw new Error("CHIRIDION_HOST_MCP_SERVER_URL is not configured");
   }
 
   const response = await fetch(mcpServerUrl, {
