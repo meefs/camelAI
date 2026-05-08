@@ -216,15 +216,17 @@ export function ChatTabBar({
   };
 
   return (
-    <div className="relative flex h-11 shrink-0 items-end gap-0 border-b bg-muted/20 pl-2 pr-1">
-      <div className="mb-1 mr-1 flex shrink-0 items-center md:hidden">
+    <div className="relative flex h-11 shrink-0 items-end gap-0 bg-muted/20 pl-2 pr-1 shadow-[inset_0_-1px_0_0_var(--border)]">
+      <div className="mr-1 flex h-11 shrink-0 items-center pb-1 md:hidden">
         <SidebarTrigger />
       </div>
-      <div className="flex min-w-0 flex-1 items-end gap-0 overflow-x-auto overflow-y-hidden whitespace-nowrap">
+      <div className="flex min-w-0 flex-1 items-end gap-0 overflow-x-auto whitespace-nowrap">
         {openTabs.map((tab, index) => {
           const isActive = tab.threadId === activeThreadId;
           const isRenaming = renamingThreadId === tab.threadId;
           const tabTitle = displayThreadTitle(tab.title);
+          const tabStatus =
+            isActive && tab.status === "unread" ? "idle" : tab.status ?? "idle";
           return (
             <ContextMenu key={tab.threadId}>
               <ContextMenuTrigger asChild>
@@ -266,13 +268,13 @@ export function ChatTabBar({
                   className={cn(
                     "group/tab relative flex w-44 shrink-0 items-center gap-2 rounded-t-md pl-2 pr-2 text-xs outline-none transition-[height,background-color,color] duration-150",
                     isActive
-                      ? "z-10 h-11 border border-b-0 bg-background font-medium text-foreground shadow-[0_-1px_0_0_var(--border)] after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-background"
+                      ? "z-10 h-11 border border-b-0 bg-background pb-1 font-medium text-foreground"
                       : "h-11 bg-transparent pb-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground",
                   )}
                 >
                   <span className="grid size-4 shrink-0 place-items-center">
                     <TabRightSlot
-                      status={tab.status ?? "idle"}
+                      status={tabStatus}
                       model={tab.model}
                     />
                   </span>
@@ -299,10 +301,19 @@ export function ChatTabBar({
                       <span
                         aria-hidden
                         className={cn(
-                          "pointer-events-none absolute inset-y-0 right-0 w-16 rounded-tr-md opacity-0 transition-opacity group-hover/tab:opacity-100 focus-within:opacity-100",
+                          "pointer-events-none absolute inset-y-px right-0 w-12 rounded-tr-[calc(var(--radius-md)-1px)] opacity-0 transition-opacity group-hover/tab:opacity-100 focus-within:opacity-100",
                           isActive
-                            ? "bg-gradient-to-l from-background via-background/85 to-transparent"
-                            : "bg-gradient-to-l from-muted/95 via-muted/75 to-transparent",
+                            ? "bg-background"
+                            : "bg-muted/40 group-hover/tab:bg-muted/40",
+                        )}
+                      />
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "pointer-events-none absolute inset-y-px right-12 w-2.5 opacity-0 transition-opacity group-hover/tab:opacity-100 focus-within:opacity-100",
+                          isActive
+                            ? "bg-gradient-to-l from-background to-transparent"
+                            : "bg-gradient-to-l from-muted/40 to-transparent",
                         )}
                       />
                       <span className="absolute inset-y-0 right-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/tab:opacity-100 focus-within:opacity-100">

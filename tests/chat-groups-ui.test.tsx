@@ -6,6 +6,7 @@ import {
   TabRightSlot,
 } from "@/components/chat-tab-bar";
 import {
+  ChatGroupCollapsedIcon,
   ChatGroupRightSlot,
   ChatGroupsList,
 } from "@/components/sidebar/chat-groups-list";
@@ -120,6 +121,25 @@ describe("ChatTabBar", () => {
     expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-red-500");
   });
 
+  it("never renders the active tab as unread", () => {
+    renderTabBar({
+      activeThreadId: "thread_1",
+      openTabs: [
+        {
+          threadId: "thread_1",
+          title: "API plan",
+          model: "haiku",
+          status: "unread",
+        },
+      ],
+      closedTabs: [],
+    });
+
+    const tab = screen.getByRole("button", { name: "Open API plan" });
+    expect(within(tab).queryByLabelText("Awaiting your review")).not.toBeInTheDocument();
+    expect(within(tab).getByAltText("claude")).toBeInTheDocument();
+  });
+
   it("keeps hover actions overlaid without changing tab width classes", () => {
     const onCloseTab = vi.fn();
     renderTabBar({ onCloseTab });
@@ -162,6 +182,38 @@ describe("ChatTabBar", () => {
     expect(fade).not.toHaveClass("ring-1");
     expect(document.querySelector(".lucide-circle-fading-plus")).toBeTruthy();
     expect(document.querySelector(".lucide-chevron-down")).toBeNull();
+  });
+
+  it("layers a solid hover overlay matching the tab background under a thin feather", () => {
+    renderTabBar();
+
+    const activeTab = screen.getByRole("button", { name: "Open API plan" });
+    const inactiveTab = screen.getByRole("button", { name: "Open UI polish" });
+
+    const activeOverlays = activeTab.querySelectorAll("[aria-hidden='true']");
+    const inactiveOverlays = inactiveTab.querySelectorAll("[aria-hidden='true']");
+
+    expect(activeOverlays[0]).toHaveClass("bg-background");
+    expect(activeOverlays[0]).not.toHaveClass("bg-gradient-to-l");
+    expect(activeOverlays[1]).toHaveClass("bg-gradient-to-l");
+    expect(activeOverlays[1]).toHaveClass("from-background");
+    expect(activeOverlays[1]).toHaveClass("w-2.5");
+
+    expect(inactiveOverlays[0]).toHaveClass("bg-muted/40");
+    expect(inactiveOverlays[1]).toHaveClass("bg-gradient-to-l");
+    expect(inactiveOverlays[1]).toHaveClass("from-muted/40");
+  });
+
+  it("anchors active and inactive tab titles to the same baseline", () => {
+    renderTabBar();
+
+    const activeTab = screen.getByRole("button", { name: "Open API plan" });
+    const inactiveTab = screen.getByRole("button", { name: "Open UI polish" });
+
+    expect(activeTab).toHaveClass("pb-1");
+    expect(inactiveTab).toHaveClass("pb-1");
+    expect(activeTab).toHaveClass("items-center");
+    expect(inactiveTab).toHaveClass("items-center");
   });
 
   it("renders a mobile sidebar trigger in the tab bar", () => {
@@ -229,6 +281,18 @@ describe("ChatGroupsList", () => {
     expect(rightSlot!).not.toHaveClass("group-hover/menu-item:opacity-0");
   });
 
+  it("renders collapsed initials as decoration instead of selectable text", () => {
+    const { container } = render(<ChatGroupCollapsedIcon group={groupView} />);
+
+    const collapsedIcon = container.querySelector("[data-initial='L']");
+    expect(collapsedIcon).not.toBeNull();
+    expect(collapsedIcon).toHaveAttribute("aria-hidden", "true");
+    expect(collapsedIcon).toHaveClass("pointer-events-none");
+    expect(collapsedIcon).toHaveClass("select-none");
+    expect(collapsedIcon).toHaveClass("before:content-[attr(data-initial)]");
+    expect(collapsedIcon).not.toHaveTextContent("L");
+  });
+
   it("selects and closes a single-chat group without confirmation", () => {
     const onSelectGroup = vi.fn();
     const onCloseGroup = vi.fn();
@@ -249,10 +313,19 @@ describe("ChatGroupsList", () => {
 
     expect(onSelectGroup).toHaveBeenCalledWith("group_1");
     expect(onCloseGroup).toHaveBeenCalledWith("group_1");
-    expect(screen.getByRole("button", { name: "Close Launch" })).toHaveClass(
-      "top-1/2",
-      "-translate-y-1/2",
+
+    const groupButton = screen.getByRole("button", { name: "Launch" });
+    expect(groupButton).toHaveAttribute("data-size", "sm");
+    expect(groupButton).toHaveClass(
+      "group-data-[collapsible=icon]:[&_*]:pointer-events-none",
     );
+    expect(groupButton).toHaveClass(
+      "group-data-[collapsible=icon]:[&_*]:cursor-pointer",
+    );
+
+    const closeButton = screen.getByRole("button", { name: "Close Launch" });
+    expect(closeButton).not.toHaveClass("top-1/2");
+    expect(closeButton).not.toHaveClass("-translate-y-1/2");
   });
 });
 
@@ -281,6 +354,35 @@ describe("applyLiveRunningStatuses", () => {
     );
 
     expect(group.status).toBe("idle");
+    expect(group.open_threads[0].status).toBe("idle");
+  });
+
+  it("does not convert the active thread to unread after running stops", () => {
+    const [group] = applyLiveRunningStatuses(
+      [
+        {
+          ...groupView,
+          status: "running",
+          open_threads: [
+            {
+              id: "thread_1",
+              title: "API plan",
+              model: "haiku",
+              provider: "claude",
+              updated_at: 2,
+              status: "running",
+              is_unread: true,
+            },
+          ],
+        },
+      ],
+      new Set(),
+      true,
+      "thread_1",
+    );
+
+    expect(group.status).toBe("idle");
+    expect(group.open_threads[0].is_unread).toBe(false);
     expect(group.open_threads[0].status).toBe("idle");
   });
 });

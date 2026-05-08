@@ -488,7 +488,7 @@ interface MessageBubbleProps {
   message: Message;
   onCopy: (id: string, content: string) => void;
   copiedId: string | null;
-  onFork?: (id: string) => void;
+  onFork?: (id: string, renderedId?: string) => void;
   forkingId?: string | null;
   /** Whether to show the streaming loading indicator (only true for the last streaming message) */
   showStreamingIndicator?: boolean;
@@ -566,7 +566,8 @@ export function MessageBubble({
   }
 
   const isCopied = copiedId === message.id;
-  const isForking = forkingId === message.id;
+  const forkTargetId = message.forkEntryId || message.id;
+  const isForking = forkingId === message.id || forkingId === forkTargetId;
   const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
   const hasContent = typeof message.content === 'string'
     ? message.content.length > 0
@@ -770,7 +771,7 @@ export function MessageBubble({
                   size="icon-sm"
                   className="text-muted-foreground"
                   disabled={isForking}
-                  onClick={() => onFork(message.id)}
+                  onClick={() => onFork(forkTargetId, message.id)}
                 >
                   <GitFork />
                 </Button>

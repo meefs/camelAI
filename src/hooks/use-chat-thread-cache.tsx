@@ -17,6 +17,8 @@ import type {
 
 const MAX_CACHED_THREADS = 20;
 
+export type ChatThreadHistoryState = "server" | "local" | "streaming";
+
 export interface ChatThreadSnapshot {
   workspaceId: string;
   threadId: string;
@@ -27,10 +29,11 @@ export interface ChatThreadSnapshot {
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
   previewTarget: PreviewTarget | null;
+  historyState: ChatThreadHistoryState;
   loadedAt: number;
 }
 
-interface ChatThreadSnapshotInput {
+export interface ChatThreadSnapshotInput {
   workspaceId: string;
   threadId: string;
   threadTitle?: string | null;
@@ -40,6 +43,7 @@ interface ChatThreadSnapshotInput {
   previewTabs?: PreviewTarget[];
   activeTabId?: string | null;
   previewTarget?: PreviewTarget | null;
+  historyState?: ChatThreadHistoryState;
 }
 
 interface ChatThreadCacheContextValue {
@@ -83,11 +87,31 @@ function normalizeMessage(raw: unknown, threadId: string): Message | null {
         ? item.content
         : "",
     created_at: createdAt,
+    forkEntryId:
+      typeof item.forkEntryId === "string" && item.forkEntryId.trim()
+        ? item.forkEntryId.trim()
+        : undefined,
     isMeta: item.isMeta === true,
     sourceToolUseID:
       typeof item.sourceToolUseID === "string" ? item.sourceToolUseID : undefined,
     isCompactSummary: item.isCompactSummary === true,
   };
+}
+
+export function hasServerThreadHistory(
+  snapshot: ChatThreadSnapshot | null | undefined,
+): snapshot is ChatThreadSnapshot {
+  return Boolean(
+    snapshot &&
+      snapshot.historyState === "server" &&
+      snapshot.messages.length > 0,
+  );
+}
+
+export function shouldFetchThreadHistory(
+  snapshot: ChatThreadSnapshot | null | undefined,
+): boolean {
+  return !hasServerThreadHistory(snapshot);
 }
 
 export function upsertThreadSnapshot(
@@ -119,6 +143,8 @@ export function upsertThreadSnapshot(
       input.previewTarget !== undefined
         ? input.previewTarget
         : existing?.previewTarget ?? null,
+    historyState:
+      input.historyState ?? existing?.historyState ?? "local",
     loadedAt: Date.now(),
   });
 
@@ -166,7 +192,7 @@ export function ChatThreadCacheProvider({
     ) => {
       const key = cacheKey(workspaceId, threadId);
       const existing = snapshotsRef.current.get(key);
-      if (existing?.messages.length) return existing;
+      if (!shouldFetchThreadHistory(existing)) return existing ?? null;
 
       const inflight = inflightRef.current.get(key);
       if (inflight) return inflight;
@@ -194,6 +220,7 @@ export function ChatThreadCacheProvider({
             threadModel: meta?.threadModel ?? current?.threadModel,
             threadProvider: meta?.threadProvider ?? current?.threadProvider,
             messages,
+            historyState: "server",
             previewTabs: current?.previewTabs,
             activeTabId: current?.activeTabId,
             previewTarget: current?.previewTarget,

@@ -38,6 +38,7 @@ import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { useChatGroups } from "@/hooks/use-chat-groups";
 import {
+  hasServerThreadHistory,
   useChatThreadCache,
   type ChatThreadSnapshot,
 } from "@/hooks/use-chat-thread-cache";
@@ -190,7 +191,7 @@ function chatDataFromSnapshot(snapshot: ChatThreadSnapshot): ChatData {
 }
 
 function hasUsefulSnapshot(snapshot: ChatThreadSnapshot | null): snapshot is ChatThreadSnapshot {
-  return Boolean(snapshot && snapshot.messages.length > 0);
+  return hasServerThreadHistory(snapshot);
 }
 
 function getPreviewTabId(target: PreviewTarget): string {
@@ -559,6 +560,7 @@ export default function ChatPage() {
           previewTabs: data.previewTabs,
           activeTabId: data.activeTabId,
           previewTarget: data.previewTarget,
+          historyState: "server",
         });
       }
     },
@@ -614,6 +616,23 @@ export default function ChatPage() {
     !displayIsNewThread &&
     !shouldUseOptimisticThread &&
     resolvedChatData === null;
+
+  useEffect(() => {
+    if (readOnly || !workspaceId || !displayThreadId) return;
+    const controller = new AbortController();
+    void fetch(
+      `/api/threads/${encodeURIComponent(displayThreadId)}/mark-viewed`,
+      { method: "POST", signal: controller.signal },
+    )
+      .then((response) => {
+        if (response.ok) revalidator.revalidate();
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        console.warn("Failed to mark active chat viewed:", error);
+      });
+    return () => controller.abort();
+  }, [displayThreadId, readOnly, revalidator, workspaceId]);
 
   const openTabs =
     liveActiveChatGroup?.open_threads.map((thread) => ({
@@ -692,22 +711,41 @@ export default function ChatPage() {
 
   const handleThreadSnapshotChange = useCallback(
     (snapshot: {
+      workspaceId: string;
+      threadId: string;
       messages: Message[];
       previewTabs: PreviewTarget[];
       activeTabId: string | null;
       previewTarget: PreviewTarget | null;
+      historyState: "server" | "local" | "streaming";
     }) => {
-      if (!workspaceId) return;
+      if (!workspaceId || snapshot.workspaceId !== workspaceId) return;
+      const snapshotThread =
+        liveActiveChatGroup?.open_threads.find(
+          (thread) => thread.id === snapshot.threadId,
+        ) ??
+        liveActiveChatGroup?.closed_threads.find(
+          (thread) => thread.id === snapshot.threadId,
+        ) ??
+        null;
+      const isDisplayedThread = snapshot.threadId === displayThreadId;
       writeSnapshot({
-        workspaceId,
-        threadId: displayThreadId,
-        threadTitle: displayThreadTitle,
-        threadModel: cacheThreadModel,
-        threadProvider: cacheThreadProvider,
+        workspaceId: snapshot.workspaceId,
+        threadId: snapshot.threadId,
+        threadTitle: isDisplayedThread
+          ? displayThreadTitle
+          : snapshotThread?.title ?? null,
+        threadModel: isDisplayedThread
+          ? cacheThreadModel
+          : snapshotThread?.model ?? cacheThreadModel,
+        threadProvider: isDisplayedThread
+          ? cacheThreadProvider
+          : snapshotThread?.provider ?? cacheThreadProvider,
         messages: snapshot.messages,
         previewTabs: snapshot.previewTabs,
         activeTabId: snapshot.activeTabId,
         previewTarget: snapshot.previewTarget,
+        historyState: snapshot.historyState,
       });
     },
     [
@@ -715,6 +753,8 @@ export default function ChatPage() {
       displayThreadTitle,
       cacheThreadModel,
       cacheThreadProvider,
+      liveActiveChatGroup?.closed_threads,
+      liveActiveChatGroup?.open_threads,
       workspaceId,
       writeSnapshot,
     ],

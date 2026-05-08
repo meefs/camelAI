@@ -20,6 +20,7 @@ interface AppChatGroupsLoaderData {
 interface ChatRouteData {
   activeChatGroup?: ChatGroupView | null;
   activeGroupId?: string | null;
+  threadId?: string | null;
 }
 
 interface ChatGroupsContextValue {
@@ -40,6 +41,14 @@ function getActiveGroupIdFromMatches(matches: ReturnType<typeof useMatches>) {
   return null;
 }
 
+function getActiveThreadIdFromMatches(matches: ReturnType<typeof useMatches>) {
+  for (const match of matches) {
+    const data = match.data as ChatRouteData | undefined;
+    if (data?.threadId) return data.threadId;
+  }
+  return null;
+}
+
 export function getGroupLandingHref(group: ChatGroupView): string {
   const activeThreadStillOpen =
     group.last_active_thread_id &&
@@ -56,28 +65,28 @@ export function applyLiveRunningStatuses(
   source: ChatGroupView[],
   runningThreadIds: Set<string>,
   hasStatusSnapshot: boolean,
+  activeThreadId: string | null = null,
 ): ChatGroupView[] {
   return source.map((group) => {
-    const open_threads = group.open_threads.map((thread) => ({
-      ...thread,
-      status: runningThreadIds.has(thread.id)
+    const resolveThread = (
+      thread: ChatGroupView["open_threads"][number],
+    ): ChatGroupView["open_threads"][number] => {
+      const status = runningThreadIds.has(thread.id)
         ? "running" as const
         : hasStatusSnapshot && thread.status === "running"
           ? thread.is_unread
             ? "unread" as const
             : "idle" as const
-          : thread.status,
-    }));
-    const closed_threads = group.closed_threads.map((thread) => ({
-      ...thread,
-      status: runningThreadIds.has(thread.id)
-        ? "running" as const
-        : hasStatusSnapshot && thread.status === "running"
-          ? thread.is_unread
-            ? "unread" as const
-            : "idle" as const
-          : thread.status,
-    }));
+          : thread.status;
+      const isActiveUnread = thread.id === activeThreadId && status === "unread";
+      return {
+        ...thread,
+        is_unread: isActiveUnread ? false : thread.is_unread,
+        status: isActiveUnread ? "idle" : status,
+      };
+    };
+    const open_threads = group.open_threads.map(resolveThread);
+    const closed_threads = group.closed_threads.map(resolveThread);
     return {
       ...group,
       open_threads,
@@ -184,8 +193,13 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
 
   const groups = useMemo(() => {
     const source = data?.chatGroups ?? [];
-    return applyLiveRunningStatuses(source, runningThreadIds, hasStatusSnapshot);
-  }, [data?.chatGroups, hasStatusSnapshot, runningThreadIds]);
+    return applyLiveRunningStatuses(
+      source,
+      runningThreadIds,
+      hasStatusSnapshot,
+      getActiveThreadIdFromMatches(matches),
+    );
+  }, [data?.chatGroups, hasStatusSnapshot, matches, runningThreadIds]);
 
   const value = useMemo(() => ({
     groups,

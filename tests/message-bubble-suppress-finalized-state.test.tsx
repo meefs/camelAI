@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { ComponentProps, ReactNode } from 'react';
 import type { Message } from '@/types';
 import { MessageBubble } from '@/components/message-bubble';
@@ -91,5 +91,26 @@ describe('MessageBubble suppressFinalizedState', () => {
 
     expect(screen.getByTestId('tool-call')).toHaveAttribute('data-streaming', 'false');
     expect(screen.getByLabelText('Message actions')).toBeInTheDocument();
+  });
+
+  it('sends forkEntryId instead of the rendered message id when forking', () => {
+    const onFork = vi.fn();
+    render(
+      <div className="group">
+        <MessageBubble
+          message={{
+            ...createAssistantToolMessage(),
+            id: 'rendered-assistant',
+            forkEntryId: 'pi-entry-leaf',
+          }}
+          onCopy={vi.fn()}
+          copiedId={null}
+          onFork={onFork}
+        />
+      </div>
+    );
+
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    expect(onFork).toHaveBeenCalledWith('pi-entry-leaf', 'rendered-assistant');
   });
 });

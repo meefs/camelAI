@@ -29,6 +29,9 @@ func TestParsePiJSONLMessagesBasicFlow(t *testing.T) {
 	if messages[1].ID != "a1" || messages[1].Role != "assistant" {
 		t.Fatalf("unexpected assistant message: %#v", messages[1])
 	}
+	if messages[1].ForkEntryID != "a2" {
+		t.Fatalf("expected assistant fork entry id to use leaf a2, got %q", messages[1].ForkEntryID)
+	}
 	assistantBlocks, ok := asSlice(messages[1].Content)
 	if !ok {
 		t.Fatalf("expected assistant content blocks, got %#v", messages[1].Content)

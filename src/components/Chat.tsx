@@ -189,10 +189,13 @@ interface ChatProps {
   readOnly?: boolean;
   chatGroupId?: string | null;
   onThreadSnapshotChange?: (snapshot: {
+    workspaceId: string;
+    threadId: string;
     messages: Message[];
     previewTabs: PreviewTarget[];
     activeTabId: string | null;
     previewTarget: PreviewTarget | null;
+    historyState: "server" | "local" | "streaming";
   }) => void;
   initialWelcomeInput?: string | null;
   connections?: Integration[];
@@ -1171,7 +1174,7 @@ interface ChatMessagesViewProps {
   isLastMessageAssistantLike: boolean;
   copyMessage: (messageId: string, content: string) => void;
   copiedMessageId: string | null;
-  forkMessage?: (messageId: string) => void;
+  forkMessage?: (messageId: string, renderedMessageId?: string) => void;
   forkingMessageId?: string | null;
   assistantTurnActive: boolean;
   activeAssistantMessageId: string | null;
@@ -2048,20 +2051,40 @@ export default function Chat({
   const previewTarget = activeTab?.target ?? null;
   useEffect(() => {
     if (!threadId || readOnly || !onThreadSnapshotChange) return;
+    const hasActiveStream =
+      Boolean(streamingMessageId) || messages.some((message) => message.isStreaming);
+    const hasPendingLocalMessages =
+      pendingMessages.length > 0 ||
+      messages.some(
+        (message) =>
+          Boolean(message.clientMessageId) ||
+          message.id.startsWith("client_") ||
+          message.id.startsWith("local_"),
+      );
     onThreadSnapshotChange({
+      workspaceId,
+      threadId,
       messages,
       previewTabs: previewTabs.map((tab) => tab.target),
       activeTabId,
       previewTarget,
+      historyState: hasActiveStream
+        ? "streaming"
+        : hasPendingLocalMessages
+          ? "local"
+          : "server",
     });
   }, [
     activeTabId,
     messages,
     onThreadSnapshotChange,
+    pendingMessages,
     previewTabs,
     previewTarget,
     readOnly,
+    streamingMessageId,
     threadId,
+    workspaceId,
   ]);
   const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>(
     {},
@@ -2672,6 +2695,10 @@ export default function Chat({
               (item.content ?? "") as string | ContentBlock[],
             ),
             created_at: createdAt,
+            forkEntryId:
+              typeof item.forkEntryId === "string" && item.forkEntryId.trim()
+                ? item.forkEntryId.trim()
+                : undefined,
             isMeta: item.isMeta === true,
             sourceToolUseID:
               typeof item.sourceToolUseID === "string"
@@ -4673,7 +4700,7 @@ export default function Chat({
   );
 
   const forkMessage = useCallback(
-    async (messageId: string) => {
+    async (messageId: string, renderedMessageId?: string) => {
       if (!threadId || !resolvedWorkspaceId || readOnly) return;
       setForkingMessageId(messageId);
       setError(null);
@@ -4683,7 +4710,7 @@ export default function Chat({
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messageId, groupId: chatGroupId }),
+            body: JSON.stringify({ messageId, renderedMessageId, groupId: chatGroupId }),
           },
         );
         const data = (await response.json().catch(() => ({}))) as {

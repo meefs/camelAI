@@ -79,10 +79,9 @@ export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
   return (
     <span
       aria-hidden
-      className="hidden size-4 cursor-pointer select-none place-items-center rounded bg-sidebar-accent text-[10px] font-medium text-sidebar-accent-foreground group-data-[collapsible=icon]:grid"
-    >
-      {letter}
-    </span>
+      data-initial={letter}
+      className="pointer-events-none hidden size-4 select-none place-items-center rounded bg-sidebar-accent text-[10px] font-medium leading-none text-sidebar-accent-foreground before:content-[attr(data-initial)] group-data-[collapsible=icon]:grid"
+    />
   );
 }
 
@@ -116,9 +115,10 @@ export function ChatGroupsList({
                 type="button"
                 aria-label={group.name}
                 isActive={isActive}
+                size="sm"
                 tooltip={group.name}
                 className={cn(
-                  "group/chat-group h-7 cursor-pointer gap-2",
+                  "group/chat-group cursor-pointer gap-2 select-none group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&_*]:pointer-events-none group-data-[collapsible=icon]:[&_*]:cursor-pointer",
                   dragOverGroupId === group.id && "bg-sidebar-accent/50",
                   dragOverGroupId === group.id &&
                     "group-data-[collapsible=icon]:bg-sidebar-accent group-data-[collapsible=icon]:ring-2 group-data-[collapsible=icon]:ring-blue-500 group-data-[collapsible=icon]:ring-offset-1",
@@ -153,7 +153,7 @@ export function ChatGroupsList({
               <SidebarMenuAction
                 type="button"
                 aria-label={`Close ${group.name}`}
-                className="top-1/2 z-10 -translate-y-1/2 opacity-0 group-hover/menu-item:opacity-100"
+                className="opacity-0 group-hover/menu-item:opacity-100"
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();

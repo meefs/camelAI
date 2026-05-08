@@ -157,6 +157,8 @@ export interface Message {
   created_at: number;
   /** Client-generated delivery id used to recover sends across reconnects. */
   clientMessageId?: string;
+  /** Stable runtime/session entry id used for fork operations. */
+  forkEntryId?: string;
   isStreaming?: boolean;
   /** True if this user message was sent while assistant was streaming */
   sentDuringStreaming?: boolean;

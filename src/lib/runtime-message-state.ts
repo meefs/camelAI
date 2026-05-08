@@ -397,7 +397,7 @@ function finalizeAssistantMessage(
   messages: Message[],
   threadId: string,
   streamingMessageIds: Record<string, string | null>,
-  finalizedMessageId?: string
+  forkEntryId?: string
 ): Message[] {
   const currentStreamingId = resolveStreamingMessageId(messages, threadId, streamingMessageIds);
   streamingMessageIds[threadId] = null;
@@ -407,7 +407,12 @@ function finalizeAssistantMessage(
 
   return messages.map((message) =>
     message.id === currentStreamingId
-      ? { ...message, id: finalizedMessageId || message.id, isStreaming: false }
+      ? {
+          ...message,
+          id: forkEntryId || message.id,
+          forkEntryId: forkEntryId || message.forkEntryId,
+          isStreaming: false,
+        }
       : message
   );
 }
