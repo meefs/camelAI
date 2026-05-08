@@ -215,7 +215,10 @@ export async function runViaGatewayHTTP(
   headers.set("Authorization", `Bearer ${settings.authToken}`);
   headers.set("Content-Type", "application/json");
   headers.set("cf-aig-metadata", buildGatewayMetadata(props));
-  const payload = toGatewayPayload(input, model);
+  const payload = toGatewayPayload(
+    input,
+    provider === "openrouter" ? openRouterNitroModel(model) : model,
+  );
 
   const resp = await fetch(
     buildGatewayURL(settings.accountID, settings.gatewayID, provider),
@@ -263,7 +266,7 @@ export async function runViaSandboxHostVirtualAI(
   props: AIVirtualBindingProps,
   input: unknown,
   model: string = "dynamic/auto",
-  _provider: GatewayProvider = "compat",
+  provider: GatewayProvider = "compat",
 ): Promise<unknown> {
   const headers = new Headers();
   headers.set("Content-Type", "application/json");
@@ -279,7 +282,10 @@ export async function runViaSandboxHostVirtualAI(
     headers.set("x-chiridion-user-id", props.userId.trim());
   }
 
-  const payload = toGatewayPayload(input, model);
+  const payload = toGatewayPayload(
+    input,
+    provider === "openrouter" ? openRouterNitroModel(model) : model,
+  );
   const resp = await sandboxHost.fetch(
     "http://sandbox/v1/virtual-ai/chat/completions",
     {
@@ -329,6 +335,26 @@ function toGatewayPayload(
     return { ...asObject, model };
   }
   return { model };
+}
+
+function openRouterNitroModel(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return model;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith("dynamic/") ||
+    lower.startsWith("google/gemini-") ||
+    lower.startsWith("deepseek/deepseek-v4-") ||
+    lower.startsWith("anthropic/claude-opus-4.") ||
+    lower.endsWith(":nitro")
+  ) {
+    return trimmed;
+  }
+  const lastSegment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  if (lastSegment.includes(":")) {
+    return trimmed;
+  }
+  return `${trimmed}:nitro`;
 }
 
 function shouldPassthroughStream(

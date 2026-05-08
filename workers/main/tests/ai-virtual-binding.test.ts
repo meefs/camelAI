@@ -330,7 +330,7 @@ describe("runViaGatewayHTTP", () => {
     );
 
     const body = JSON.parse(String(init.body)) as { model: string };
-    expect(body.model).toBe("anthropic/claude-3.5-sonnet");
+    expect(body.model).toBe("anthropic/claude-3.5-sonnet:nitro");
   });
 
   it("throws gateway error message for non-2xx responses", async () => {
@@ -458,6 +458,31 @@ describe("runViaSandboxHostVirtualAI", () => {
     );
     const body = JSON.parse(String(init.body)) as { model?: string };
     expect(body.model).toBe("dynamic/auto");
+  });
+
+  it("adds the OpenRouter nitro routing suffix for sandbox-host OpenRouter calls", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "chatcmpl_virtual_or_1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const sandboxHost = { fetch: fetchMock } as unknown as Fetcher;
+
+    await runViaSandboxHostVirtualAI(
+      sandboxHost,
+      undefined,
+      undefined,
+      { orgId: "org_1", workspaceId: "ws_1" },
+      { messages: [{ role: "user", content: "hello" }] },
+      "anthropic/claude-3.5-sonnet",
+      "openrouter",
+    );
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body),
+    ) as { model?: string };
+    expect(body.model).toBe("anthropic/claude-3.5-sonnet:nitro");
   });
 
   it("throws sandbox-host billing errors", async () => {

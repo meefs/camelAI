@@ -250,6 +250,7 @@ func lookupPricing(model string) ModelPricing {
 
 func normalizePricingModel(model string) string {
 	normalized := strings.TrimSpace(model)
+	normalized = strings.TrimSuffix(normalized, ":nitro")
 	for {
 		before := normalized
 		normalized = strings.TrimPrefix(normalized, "camel/")
@@ -269,13 +270,15 @@ type UsageTokens struct {
 	OutputTokens             int64
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
+	ReportedCostUSD          *float64
 }
 
 func (u UsageTokens) HasBillableTokens() bool {
 	return u.InputTokens > 0 ||
 		u.OutputTokens > 0 ||
 		u.CacheCreationInputTokens > 0 ||
-		u.CacheReadInputTokens > 0
+		u.CacheReadInputTokens > 0 ||
+		(u.ReportedCostUSD != nil && *u.ReportedCostUSD > 0)
 }
 
 // CostUSD calculates the total cost in USD for the given usage.
@@ -285,4 +288,14 @@ func (u *UsageTokens) CostUSD() float64 {
 		float64(u.OutputTokens)*p.OutputPerToken +
 		float64(u.CacheCreationInputTokens)*p.CacheCreationPerToken +
 		float64(u.CacheReadInputTokens)*p.CacheReadPerToken
+}
+
+func (u *UsageTokens) EffectiveCostUSD() float64 {
+	if u != nil && u.ReportedCostUSD != nil {
+		return *u.ReportedCostUSD
+	}
+	if u == nil {
+		return 0
+	}
+	return u.CostUSD()
 }
