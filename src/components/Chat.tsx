@@ -1824,9 +1824,9 @@ export default function Chat({
     }
     prevInitialMessagesRef.current = initialMessages;
 
-    // History is loaded via client-side fetch; ignore empty loader updates so
-    // they do not clear already-loaded messages.
-    if (parsedInitialMessages.length === 0 && messagesRef.current.length > 0) {
+    // History is loaded via client-side fetch; empty loader updates only carry
+    // preview state and must not clear messages or invalidate history fetches.
+    if (parsedInitialMessages.length === 0) {
       hasSyncedInitialLoaderMessagesRef.current = true;
       return;
     }

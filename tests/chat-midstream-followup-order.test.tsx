@@ -307,6 +307,76 @@ afterEach(() => {
 });
 
 describe('Chat mid-stream follow-up ordering', () => {
+  it('keeps an in-flight history load when an empty loader update resolves', async () => {
+    let resolveHistory: (response: Response) => void = () => {};
+    const historyResponse = new Promise<Response>((resolve) => {
+      resolveHistory = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/messages/stream')) {
+        return historyResponse;
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { rerender } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes('/messages/stream'),
+        ),
+      ).toBe(true);
+    });
+
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    await act(async () => {
+      resolveHistory(
+        new Response(
+          JSON.stringify({
+            messages: [
+              {
+                id: 'message-1',
+                thread_id: 'thread-1',
+                role: 'user',
+                content: 'Loaded question',
+                created_at: 1,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('user: Loaded question')).toBeInTheDocument();
+    });
+  });
+
   it('splits assistant output at the next part when user follows up mid-stream', async () => {
     const user = userEvent.setup();
 
