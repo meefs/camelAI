@@ -2449,6 +2449,17 @@ export default function Chat({
     setInput(savedDraft.text);
     setAttachments(savedDraft.attachments);
   }, []);
+  const discardPendingDeliveryDraftBackup = useCallback(() => {
+    const pendingDraft = pendingDeliveryDraftRef.current;
+    pendingDeliveryDraftRef.current = null;
+    pendingDraftCountRef.current = 0;
+
+    if (!pendingDraft) {
+      return;
+    }
+
+    removeDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+  }, []);
 
   const logRunnerClient = useCallback(
     (event: string, fields: Record<string, unknown> = {}) => {
@@ -3457,6 +3468,7 @@ export default function Chat({
                   threadId: id,
                 }),
               );
+              discardPendingDeliveryDraftBackup();
             }
           }
         } else if (
@@ -4002,6 +4014,7 @@ export default function Chat({
           const clientMessageId =
             typeof data.clientMessageId === "string" ? data.clientMessageId : "";
           if (clientMessageId) {
+            discardPendingDeliveryDraftBackup();
             setPendingMessages((prev) =>
               prev.filter(
                 (msg) =>
@@ -4118,6 +4131,7 @@ export default function Chat({
     },
     [
       clearPendingDeliveryDraft,
+      discardPendingDeliveryDraftBackup,
       fetchMessages,
       clearQueuedSendReadyTimeout,
       failPendingMessageDelivery,
@@ -5883,6 +5897,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           threadId,
         }),
       );
+      discardPendingDeliveryDraftBackup();
       setPendingMessages((prev) =>
         prev.filter(
           (message) =>
