@@ -134,7 +134,9 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
 
   let runnerSocket: WebSocket | null = null;
   let closed = false;
-  let closingBecauseClientDisconnected = false;
+  let clientConnected = true;
+  let activeOrPendingUserTurn = false;
+  let suppressNextRunnerCloseIdle = false;
   const queuedClientMessages: string[] = [];
   let clientMessageChain = Promise.resolve();
   const bridgeId = crypto.randomUUID();
@@ -162,7 +164,18 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
     logBridge('close_both', { code, reason });
     closeWebSocket(server, code, reason);
     if (runnerSocket) {
+      suppressNextRunnerCloseIdle = !activeOrPendingUserTurn && completionRecordedAt === null;
       closeWebSocket(runnerSocket, code, reason);
+    }
+  };
+  const closeClient = (code = 1000, reason = 'client closed') => {
+    clientConnected = false;
+    closeWebSocket(server, code, reason);
+  };
+  const shouldKeepRunnerAfterClientClose = () => activeOrPendingUserTurn;
+  const closeDetachedRunnerIfDone = (reason: string) => {
+    if (!clientConnected && !activeOrPendingUserTurn) {
+      closeBoth(1000, reason);
     }
   };
 
@@ -196,6 +209,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
     );
   };
   const recordStreaming = (isStreaming: boolean) => {
+    activeOrPendingUserTurn = isStreaming;
     if (isStreaming) completionRecordedAt = null;
     waitUntil(
       recordWorkspaceThreadStreaming(env, workspaceId, threadId, isStreaming).catch((error) => {
@@ -205,6 +219,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
   };
   const recordAssistantCompletion = (rawCompletedAt?: unknown) => {
     const completedAt = normalizeCompletionTimestamp(rawCompletedAt);
+    activeOrPendingUserTurn = false;
     if (completionRecordedAt !== null) return completionRecordedAt;
     completionRecordedAt = completedAt;
     waitUntil(
@@ -249,6 +264,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
     }
 
     if (type === 'message') {
+      activeOrPendingUserTurn = true;
       const rawContent = typeof data.content === 'string' ? data.content : '';
       const attributedContent = await buildRunnerUserMessageContent(
         env,
@@ -256,7 +272,10 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
         rawContent,
         { userName, userEmail },
       );
-      if (!attributedContent) return;
+      if (!attributedContent) {
+        activeOrPendingUserTurn = false;
+        return;
+      }
       logBridge('client_user_message_prepared', {
         rawLength: rawContent.length,
         attributedLength: attributedContent.length,
@@ -290,6 +309,9 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
             });
           return;
         }
+        if (data.type === 'message') {
+          activeOrPendingUserTurn = true;
+        }
         queuedClientMessages.push(event.data);
         logBridge('client_message_queued', {
           type: typeof data.type === 'string' ? data.type : 'unknown',
@@ -317,12 +339,24 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
       reason: event.reason || 'client closed',
       queuedMessages: queuedClientMessages.length,
     });
-    closingBecauseClientDisconnected = true;
+    closeClient(event.code || 1000, event.reason || 'client closed');
+    if (shouldKeepRunnerAfterClientClose()) {
+      logBridge('client_detached_runner_kept', {
+        queuedMessages: queuedClientMessages.length,
+      });
+      return;
+    }
     closeBoth(event.code || 1000, event.reason || 'client closed');
   });
   server.addEventListener('error', () => {
     logBridge('client_error', { queuedMessages: queuedClientMessages.length });
-    closingBecauseClientDisconnected = true;
+    closeClient(1011, 'client error');
+    if (shouldKeepRunnerAfterClientClose()) {
+      logBridge('client_error_runner_kept', {
+        queuedMessages: queuedClientMessages.length,
+      });
+      return;
+    }
     closeBoth(1011, 'client error');
   });
 
@@ -404,6 +438,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
         } else {
           recordAssistantCompletion(completedAt);
         }
+        closeDetachedRunnerIfDone('runner completed after client detached');
       }
     }
     if (eventType === 'error') {
@@ -411,10 +446,12 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
       if (completionRecordedAt === null) {
         recordStreaming(false);
       }
+      closeDetachedRunnerIfDone('runner errored after client detached');
     }
     if (eventType === 'result' || runtimeEvent?.method === 'turn/completed') {
       const completedAt = recordAssistantCompletion(payload.completedAt);
       sendJson(server, { type: 'streaming_state', isStreaming: false, completedAt });
+      closeDetachedRunnerIfDone('runner completed after client detached');
     }
 
     sendJson(server, payload);
@@ -426,14 +463,18 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
       queuedMessages: queuedClientMessages.length,
     });
     closeBoth(event.code || 1000, event.reason || 'runner closed');
-    if (!closingBecauseClientDisconnected && completionRecordedAt === null) {
+    const suppressIdle = suppressNextRunnerCloseIdle;
+    suppressNextRunnerCloseIdle = false;
+    if (!suppressIdle && completionRecordedAt === null) {
       recordStreaming(false);
     }
   });
   runnerSocket.addEventListener('error', () => {
     logBridge('runner_error', { queuedMessages: queuedClientMessages.length });
     closeBoth(1011, 'runner error');
-    if (!closingBecauseClientDisconnected && completionRecordedAt === null) {
+    const suppressIdle = suppressNextRunnerCloseIdle;
+    suppressNextRunnerCloseIdle = false;
+    if (!suppressIdle && completionRecordedAt === null) {
       recordStreaming(false);
     }
   });

@@ -137,6 +137,37 @@ describe('chat runner websocket workspace status', () => {
     expect(recordWorkspaceThreadStreamingMock).not.toHaveBeenCalled();
   });
 
+  it('keeps the runner connected after browser disconnect during an active turn', async () => {
+    const { server, runner } = await startBridge();
+
+    server.emitMessage({ type: 'message', content: 'Build it' });
+    await vi.waitFor(() => {
+      expect(recordWorkspaceThreadStreamingMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'ws_1',
+        'thread_1',
+        true,
+      );
+    });
+
+    server.emitClose({ code: 1000, reason: 'tab switched' });
+    expect(runner.readyState).toBe(WebSocket.OPEN);
+
+    const completedAt = Date.now();
+    runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
+
+    await vi.waitFor(() => {
+      expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
+        expect.anything(),
+        'ws_1',
+        'thread_1',
+        false,
+        { completedAt },
+      );
+    });
+    expect(runner.readyState).toBe(WebSocket.CLOSED);
+  });
+
   it('records authoritative runner streaming_state events', async () => {
     const { runner } = await startBridge();
 
@@ -220,6 +251,57 @@ describe('chat runner websocket workspace status', () => {
     expect(runner.readyState).toBe(WebSocket.CLOSED);
   });
 
+  it('flushes a queued user message after browser disconnect and records completion', async () => {
+    const server = new FakeSocket();
+    const runner = new FakeSocket();
+    const runnerConnection = deferred<FakeSocket>();
+    buildChatRunnerEnvMock.mockResolvedValue({ envVars: {}, byokProxy: null });
+    connectChatWebSocketMock.mockReturnValue(runnerConnection.promise);
+
+    const bridgePromise = bridgeChatSocket({
+      server: server as unknown as WebSocket,
+      env: createEnv() as never,
+      orgId: 'org_1',
+      workspaceId: 'ws_1',
+      threadId: 'thread_1',
+      userId: 'user_1',
+      userName: 'Ada',
+      userEmail: 'ada@example.com',
+    });
+
+    await vi.waitFor(() => {
+      expect(connectChatWebSocketMock).toHaveBeenCalled();
+    });
+    server.emitMessage({ type: 'message', content: 'Build it' });
+    server.emitClose({ code: 1000, reason: 'tab switched' });
+    runnerConnection.resolve(runner);
+    await bridgePromise;
+
+    expect(runner.readyState).toBe(WebSocket.OPEN);
+    expect(runner.sent.map((message) => JSON.parse(message).type)).toEqual(['init', 'message']);
+    await vi.waitFor(() => {
+      expect(recordWorkspaceThreadStreamingMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'ws_1',
+        'thread_1',
+        true,
+      );
+    });
+
+    const completedAt = Date.now();
+    runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
+
+    await vi.waitFor(() => {
+      expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
+        expect.anything(),
+        'ws_1',
+        'thread_1',
+        false,
+        { completedAt },
+      );
+    });
+  });
+
   it('forwards runner seq as browser eventId for the next reconnect', async () => {
     const { server, runner } = await startBridge();
 
@@ -254,10 +336,10 @@ describe('chat runner websocket workspace status', () => {
     );
   });
 
-  it('clears running status when reconnect receives host inactive state after detached completion', async () => {
-    const first = await startBridge();
+  it('clears running status if a detached runner closes before sending completion', async () => {
+    const { server, runner } = await startBridge();
 
-    first.server.emitMessage({ type: 'message', content: 'Build it' });
+    server.emitMessage({ type: 'message', content: 'Build it' });
     await vi.waitFor(() => {
       expect(recordWorkspaceThreadStreamingMock).toHaveBeenCalledWith(
         expect.anything(),
@@ -266,28 +348,14 @@ describe('chat runner websocket workspace status', () => {
         true,
       );
     });
-    first.server.emitClose({ code: 1000, reason: 'tab switched' });
-    first.runner.emitClose({ code: 1000, reason: 'client closed' });
+    server.emitClose({ code: 1000, reason: 'tab switched' });
+    runner.emitClose({ code: 1000, reason: 'runner closed' });
 
-    expect(recordWorkspaceThreadStreamingMock).not.toHaveBeenCalledWith(
+    expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
       expect.anything(),
       'ws_1',
       'thread_1',
       false,
     );
-
-    const second = await startBridge();
-    const completedAt = Date.now();
-    second.runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
-
-    await vi.waitFor(() => {
-      expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
-        expect.anything(),
-        'ws_1',
-        'thread_1',
-        false,
-        { completedAt },
-      );
-    });
   });
 });
