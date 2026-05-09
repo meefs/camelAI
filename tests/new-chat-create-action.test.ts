@@ -49,7 +49,7 @@ vi.mock('@/lib/chat-groups.server', () => ({
   listGroupsForMove: vi.fn(),
 }));
 
-const { action } = await import('@/routes/_app.chat._index');
+const { action, shouldRevalidate } = await import('@/routes/_app.chat._index');
 
 describe('new chat create action', () => {
   beforeEach(() => {
@@ -107,6 +107,47 @@ describe('new chat create action', () => {
         threadId: 'thread_123',
         initialThreadTitle: null,
       },
+    );
+  });
+
+  it('does not revalidate the new-chat loader after createThread', () => {
+    const formData = new FormData();
+    formData.set('intent', 'createThread');
+
+    expect(
+      shouldRevalidate({
+        formData,
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns the new thread and group while title generation runs in the background', async () => {
+    const formData = new FormData();
+    formData.set('intent', 'createThread');
+    formData.set('firstMessage', 'Persist this first message');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      thread: { id: 'thread_123' },
+      groupId: 'group_123',
+    });
+    expect(waitUntilMock).toHaveBeenCalledTimes(1);
+    expect(generateThreadTitleMock).toHaveBeenCalledWith(
+      {},
+      'thread_123',
+      'ws_123',
+      'Persist this first message',
+      'user_123',
     );
   });
 

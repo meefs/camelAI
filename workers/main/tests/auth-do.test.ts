@@ -266,6 +266,31 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.first_user_message).toBe('hello');
     });
 
+    it('stores and preserves the first user message separately from the thread title', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'First Message Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        undefined,
+        userId,
+        'Please keep this first prompt',
+      );
+
+      expect(thread.title).toBe('New Chat');
+      expect(thread.first_user_message).toBe('Please keep this first prompt');
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.title).toBe('New Chat');
+      expect(stored?.first_user_message).toBe('Please keep this first prompt');
+
+      await orgStub.setThreadFirstUserMessage(thread.id, 'Do not overwrite it');
+      const afterBackfill = await orgStub.getThread(thread.id);
+      expect(afterBackfill?.first_user_message).toBe('Please keep this first prompt');
+    });
+
     it('persists per-thread model changes after creation', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');

@@ -1,4 +1,4 @@
-import { waitUntil } from 'cloudflare:workers';
+import { waitUntil } from '@/lib/wait-until';
 import type { Route } from './+types/workspaces.$id.chat.$threadId.first-user-message';
 import { requireWorkspaceAccess } from './workspaces.utils';
 import * as chatDO from '@/lib/chat-do.server';
@@ -17,7 +17,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
     const { userId } = await requireWorkspaceAccess(request, context, workspaceId, { requireWrite: true });
 
-    const payload = await request.json() as { firstUserMessage?: unknown };
+    let payload: { firstUserMessage?: unknown };
+    try {
+      payload = await request.json() as { firstUserMessage?: unknown };
+    } catch {
+      return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    }
     const firstUserMessage = typeof payload.firstUserMessage === 'string'
       ? payload.firstUserMessage.trim()
       : '';
