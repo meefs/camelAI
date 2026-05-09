@@ -5,7 +5,6 @@ import {
   shouldFetchThreadHistory,
   upsertThreadSnapshot,
 } from "@/hooks/use-chat-thread-cache";
-import type { ContentBlock } from "@/types";
 
 describe("upsertThreadSnapshot", () => {
   it("keeps a bounded least-recently-used cache", () => {
@@ -130,7 +129,54 @@ describe("upsertThreadSnapshot", () => {
     expect(shouldFetchThreadHistory(snapshot)).toBe(true);
   });
 
-  it("does not let an empty server preview overwrite warm server message history", () => {
+  it("lets server history replace existing cached messages", () => {
+    let cache = new Map();
+    cache = upsertThreadSnapshot(cache, {
+      workspaceId: "ws_1",
+      threadId: "thread_1",
+      threadTitle: "One",
+      threadModel: "haiku",
+      threadProvider: "claude",
+      historyState: "server",
+      messages: [
+        {
+          id: "server_1",
+          thread_id: "thread_1",
+          role: "assistant",
+          content: "done",
+          created_at: 1,
+        },
+      ],
+    });
+
+    cache = upsertThreadSnapshot(cache, {
+      workspaceId: "ws_1",
+      threadId: "thread_1",
+      historyState: "server",
+      messages: [
+        {
+          id: "server_2",
+          thread_id: "thread_1",
+          role: "assistant",
+          content: "updated",
+          created_at: 2,
+        },
+      ],
+      previewTabs: [{ kind: "app", scriptName: "preview", isPublic: false }],
+      activeTabId: "app:preview",
+      previewTarget: { kind: "app", scriptName: "preview", isPublic: false },
+    });
+
+    const snapshot = cache.get("ws_1:thread_1");
+    expect(snapshot?.messages).toHaveLength(1);
+    expect(snapshot?.messages[0]?.id).toBe("server_2");
+    expect(snapshot?.previewTabs).toEqual([
+      { kind: "app", scriptName: "preview", isPublic: false },
+    ]);
+    expect(hasServerThreadHistory(snapshot)).toBe(true);
+  });
+
+  it("lets empty server history replace existing cached messages", () => {
     let cache = new Map();
     cache = upsertThreadSnapshot(cache, {
       workspaceId: "ws_1",
@@ -161,53 +207,12 @@ describe("upsertThreadSnapshot", () => {
     });
 
     const snapshot = cache.get("ws_1:thread_1");
-    expect(snapshot?.messages).toHaveLength(1);
-    expect(snapshot?.messages[0]?.id).toBe("server_1");
-    expect(snapshot?.previewTabs).toEqual([
-      { kind: "app", scriptName: "preview", isPublic: false },
-    ]);
-    expect(hasServerThreadHistory(snapshot)).toBe(true);
+    expect(snapshot?.messages).toEqual([]);
+    expect(snapshot?.historyState).toBe("server");
+    expect(hasRenderableThreadSnapshot(snapshot)).toBe(false);
   });
 
-  it("does not let an empty server mount overwrite a warm streaming snapshot", () => {
-    let cache = new Map();
-    cache = upsertThreadSnapshot(cache, {
-      workspaceId: "ws_1",
-      threadId: "thread_1",
-      threadTitle: "One",
-      threadModel: "haiku",
-      threadProvider: "claude",
-      historyState: "streaming",
-      messages: [
-        {
-          id: "stream_1",
-          thread_id: "thread_1",
-          role: "assistant",
-          content: "working",
-          created_at: 1,
-          isStreaming: true,
-        },
-      ],
-    });
-
-    cache = upsertThreadSnapshot(cache, {
-      workspaceId: "ws_1",
-      threadId: "thread_1",
-      historyState: "server",
-      messages: [],
-      previewTabs: [{ kind: "app", scriptName: "preview", isPublic: false }],
-      activeTabId: "app:preview",
-      previewTarget: { kind: "app", scriptName: "preview", isPublic: false },
-    });
-
-    const snapshot = cache.get("ws_1:thread_1");
-    expect(snapshot?.messages).toHaveLength(1);
-    expect(snapshot?.messages[0]?.id).toBe("stream_1");
-    expect(snapshot?.historyState).toBe("streaming");
-    expect(hasRenderableThreadSnapshot(snapshot)).toBe(true);
-  });
-
-  it("merges stale non-empty server history into a warm Kimi streaming snapshot", () => {
+  it("does not merge stale streaming cache into fresh server history", () => {
     let cache = new Map();
     cache = upsertThreadSnapshot(cache, {
       workspaceId: "ws_1",
@@ -264,7 +269,7 @@ describe("upsertThreadSnapshot", () => {
 
     expect(snapshot).toBeDefined();
     if (!snapshot) return;
-    expect(snapshot?.historyState).toBe("streaming");
+    expect(snapshot?.historyState).toBe("server");
     expect(
       snapshot.messages.map((message: { id: string }) => message.id),
     ).toEqual([
@@ -272,9 +277,8 @@ describe("upsertThreadSnapshot", () => {
       "pi-entry-root",
     ]);
     expect(snapshot.messages[1]?.forkEntryId).toBe("pi-entry-leaf");
-    expect((snapshot.messages[1]?.content as ContentBlock[])[0]).toMatchObject({
-      type: "tool_use",
-      id: "tool_1",
-    });
+    expect(snapshot.messages[1]?.content).toEqual([
+      { type: "text", text: "I'll inspect it." },
+    ]);
   });
 });

@@ -1837,7 +1837,6 @@ export default function Chat({
   // Sync messages from loader revalidation when not streaming
   // Only sync on initial mount or explicit refresh, not during active chat
   const prevInitialMessagesRef = useRef(initialMessages);
-  const hasHadUserInteraction = useRef(false);
   const hasSyncedInitialLoaderMessagesRef = useRef(false);
   const hasSyncedInitialPreviewRef = useRef(false);
   useEffect(() => {
@@ -1858,25 +1857,13 @@ export default function Chat({
       return;
     }
 
-    // Merge loader history with the current client copy. Revalidation can lag
-    // behind live streaming/tool state, especially after reconnecting to an
-    // already-running thread.
-    const wasAwaitingInitialHistory =
-      !hasSyncedInitialLoaderMessagesRef.current &&
-      (previousInitialMessages?.length ?? 0) === 0;
-    const currentMessages = messagesRef.current;
-
-    const nextMessages =
-      currentMessages.length > 0 ||
-      (hasHadUserInteraction.current && wasAwaitingInitialHistory)
-        ? mergeServerAndLocalMessages(
-            parsedInitialMessages,
-            currentMessages,
-          )
-        : parsedInitialMessages;
-
     hasSyncedInitialLoaderMessagesRef.current = true;
-    setMessages(nextMessages);
+    setMessages(
+      mergeServerAndLocalMessages(
+        parsedInitialMessages,
+        pendingMessagesRef.current,
+      ),
+    );
   }, [initialMessages, parsedInitialMessages, setMessages, revalidator.state]);
 
   const setStreamingMessageId = useCallback((id: string | null) => {
@@ -2740,7 +2727,7 @@ export default function Chat({
 
         const mergedMessages = mergeServerAndLocalMessages(
           loadedMessages,
-          messagesRef.current,
+          pendingMessagesRef.current,
         );
         setMessages(mergedMessages);
         const mergedIds = new Set(mergedMessages.map((message) => message.id));
@@ -5821,9 +5808,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
 
     const wasSentDuringStreaming = assistantTurnActive;
-
-    // Mark that user has interacted - prevents loader sync from overwriting streaming state
-    hasHadUserInteraction.current = true;
 
     if (!opts?.contentOverride) {
       const messageCount = incrementFreeTierCount(user?.id ?? undefined);

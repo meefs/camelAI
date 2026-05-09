@@ -15,7 +15,6 @@ import type {
   PreviewTarget,
 } from "@/types";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
-import { mergeServerAndLocalMessages } from "@/lib/chat-message-merge";
 
 const MAX_CACHED_THREADS = 20;
 
@@ -129,25 +128,8 @@ export function upsertThreadSnapshot(
 ): Map<string, ChatThreadSnapshot> {
   const key = cacheKey(input.workspaceId, input.threadId);
   const existing = current.get(key);
-  const existingMessages = existing?.messages;
   const inputMessages = input.messages;
-  const preserveExistingMessages =
-    existingMessages !== undefined &&
-    existingMessages.length > 0 &&
-    input.historyState === "server" &&
-    inputMessages !== undefined &&
-    inputMessages.length === 0;
-  const mergeExistingMessages =
-    existingMessages !== undefined &&
-    existingMessages.length > 0 &&
-    input.historyState === "server" &&
-    inputMessages !== undefined &&
-    inputMessages.length > 0;
-  const messages = preserveExistingMessages
-    ? existingMessages
-    : mergeExistingMessages
-      ? mergeServerAndLocalMessages(inputMessages, existingMessages)
-      : inputMessages ?? existing?.messages ?? [];
+  const messages = inputMessages ?? existing?.messages ?? [];
   const hasActiveStream = messages.some((message) => message.isStreaming);
   const next = new Map(current);
   next.delete(key);
@@ -172,10 +154,8 @@ export function upsertThreadSnapshot(
         ? input.previewTarget
         : existing?.previewTarget ?? null,
     historyState:
-      preserveExistingMessages
-        ? existing?.historyState ?? "local"
-        : hasActiveStream
-          ? "streaming"
+      hasActiveStream
+        ? "streaming"
         : input.historyState ?? existing?.historyState ?? "local",
     loadedAt: Date.now(),
   });
