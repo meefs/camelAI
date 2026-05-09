@@ -1349,15 +1349,19 @@ export class UserDO extends DurableObject<DOEnv> {
           now,
         );
       } else {
-        this.sql.exec(
-          "UPDATE chat_group_members SET is_open = 1, closed_at = NULL WHERE thread_id = ?",
-          threadId,
-        );
-        this.sql.exec(
-          "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
-          threadId,
-          group.id,
-        );
+        const membership = this.sql
+          .exec<{ is_open: number }>(
+            "SELECT is_open FROM chat_group_members WHERE thread_id = ?",
+            threadId,
+          )
+          .toArray()[0];
+        if (membership?.is_open === 1) {
+          this.sql.exec(
+            "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
+            threadId,
+            group.id,
+          );
+        }
         group = this.getChatGroupRow(group.id);
       }
     });

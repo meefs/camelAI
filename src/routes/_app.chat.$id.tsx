@@ -812,14 +812,15 @@ export default function ChatPage() {
       { method: "DELETE" },
     );
     const remaining = openTabs.filter((tab) => tab.threadId !== targetThreadId);
-    revalidator.revalidate();
     if (targetThreadId === displayThreadId) {
       navigate(
         remaining[0]
           ? `/chat/${remaining[0].threadId}`
           : `/chat?group=${encodeURIComponent(activeChatGroup.id)}`,
       );
+      return;
     }
+    revalidator.revalidate();
   };
 
   const reopenTab = async (targetThreadId: string) => {

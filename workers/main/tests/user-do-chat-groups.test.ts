@@ -163,6 +163,32 @@ describe("UserDO chat groups", () => {
     expect(summary?.closed_thread_ids).toEqual([closedThreadId]);
   });
 
+  it("does not reopen closed tabs while ensuring route membership", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const group = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Build",
+    });
+    const firstThreadId = crypto.randomUUID();
+    const secondThreadId = crypto.randomUUID();
+
+    await userStub.addThreadToGroup(group.id, firstThreadId);
+    await userStub.addThreadToGroup(group.id, secondThreadId);
+    await userStub.closeThreadTab(firstThreadId);
+
+    const ensured = await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      firstThreadId,
+      "Fallback title",
+    );
+
+    expect(ensured.open_thread_ids).toEqual([secondThreadId]);
+    expect(ensured.closed_thread_ids).toEqual([firstThreadId]);
+    expect(ensured.last_active_thread_id).toBe(secondThreadId);
+  });
+
   it("materializes legacy threads and only auto-names empty single-thread groups", async () => {
     const { userStub } = await createUserStub();
     const orgId = crypto.randomUUID();

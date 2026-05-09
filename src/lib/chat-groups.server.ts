@@ -203,7 +203,6 @@ export async function ensureGroupForThread(
     args.threadId,
     args.fallbackName || thread.title,
   );
-  await userStub.setGroupActiveThread(group.id, args.threadId);
   const [hydrated] = await hydrateChatGroups(context, args.userId, args.workspaceId, [
     group,
   ]);
