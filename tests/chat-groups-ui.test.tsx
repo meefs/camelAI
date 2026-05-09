@@ -15,6 +15,7 @@ import {
 import {
   applyLiveRunningStatuses,
   getCloseGroupRedirect,
+  mergeActiveChatGroup,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import type { ChatGroup, ChatGroupView } from "@/types";
@@ -711,6 +712,49 @@ describe("getCloseGroupRedirect", () => {
     expect(
       getCloseGroupRedirect([groupView, nextGroup], "group_1", "group_2"),
     ).toBeNull();
+  });
+});
+
+describe("mergeActiveChatGroup", () => {
+  it("replaces stale layout group data with the active route group", () => {
+    const activeGroup: ChatGroupView = {
+      ...groupView,
+      open_thread_ids: ["thread_1", "thread_2"],
+      open_threads: [
+        ...groupView.open_threads,
+        {
+          id: "thread_2",
+          title: "New tab",
+          model: "haiku",
+          provider: "claude",
+          updated_at: 2,
+          status: "running",
+        },
+      ],
+      member_count: 2,
+      status: "running",
+    };
+
+    const merged = mergeActiveChatGroup([groupView], activeGroup);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].open_thread_ids).toEqual(["thread_1", "thread_2"]);
+    expect(merged[0].open_threads.map((thread) => thread.id)).toEqual([
+      "thread_1",
+      "thread_2",
+    ]);
+  });
+
+  it("adds an active group missing from the stale layout list", () => {
+    const activeGroup: ChatGroupView = {
+      ...groupView,
+      id: "group_new",
+      name: "New group",
+    };
+
+    const merged = mergeActiveChatGroup([groupView], activeGroup);
+
+    expect(merged.map((group) => group.id)).toEqual(["group_new", "group_1"]);
   });
 });
 

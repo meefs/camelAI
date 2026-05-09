@@ -101,7 +101,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
           orgId,
           workspaceId,
           threadId: thread.id,
-          name: body.initialTitle || body.firstMessage,
+          initialThreadTitle: body.initialTitle,
         });
     return Response.json({ thread, groupId: group.id, group });
   } catch (error) {

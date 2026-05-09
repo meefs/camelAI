@@ -11,6 +11,7 @@ import * as chatDO from "@/lib/chat-do.server";
 import { getAuthEnv } from "@/lib/auth-helpers";
 import type { UserDO } from "../../workers/main/src/auth";
 import { maxThreadStatus } from "@/lib/thread-status";
+import { getInitialChatGroupNameFromThreadTitle } from "@/lib/thread-title";
 
 interface UserScopedArgs {
   userId: string;
@@ -211,14 +212,17 @@ export async function ensureGroupForThread(
 
 export async function createGroupForNewThread(
   context: AppLoadContext,
-  args: UserScopedArgs & { threadId: string; name?: string },
+  args: UserScopedArgs & {
+    threadId: string;
+    initialThreadTitle?: string | null;
+  },
 ): Promise<ChatGroupView> {
   const userStub = getUserStub(context, args.userId);
   const { group } = await userStub.moveThreadToNewGroup(
     args.orgId,
     args.workspaceId,
     args.threadId,
-    { name: args.name },
+    { name: getInitialChatGroupNameFromThreadTitle(args.initialThreadTitle) },
   );
   const summary = await userStub.getChatGroupSummary(group.id);
   const [hydrated] = await hydrateChatGroups(

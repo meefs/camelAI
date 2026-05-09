@@ -423,7 +423,7 @@ export async function action({ request, context }: Route.ActionArgs) {
               orgId,
               workspaceId,
               threadId: thread.id,
-              name: initialTitle || firstMessage || undefined,
+              initialThreadTitle: initialTitle,
             });
         return Response.json({ thread, groupId: group.id, group });
       } catch (groupError) {

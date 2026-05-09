@@ -45,6 +45,16 @@ function getActiveGroupIdFromMatches(matches: ReturnType<typeof useMatches>) {
   return null;
 }
 
+function getActiveChatGroupFromMatches(
+  matches: ReturnType<typeof useMatches>,
+): ChatGroupView | null {
+  for (const match of matches) {
+    const data = match.data as ChatRouteData | undefined;
+    if (data?.activeChatGroup) return data.activeChatGroup;
+  }
+  return null;
+}
+
 function getActiveThreadIdFromMatches(matches: ReturnType<typeof useMatches>) {
   for (const match of matches) {
     const data = match.data as ChatRouteData | undefined;
@@ -63,6 +73,19 @@ export function getGroupLandingHref(group: ChatGroupView): string {
   const firstClosed = group.closed_threads[0]?.id;
   if (firstClosed) return `/chat/${firstClosed}`;
   return `/chat?group=${encodeURIComponent(group.id)}`;
+}
+
+export function mergeActiveChatGroup(
+  groups: ChatGroupView[],
+  activeGroup: ChatGroupView | null,
+): ChatGroupView[] {
+  if (!activeGroup) return groups;
+  const existingIndex = groups.findIndex((group) => group.id === activeGroup.id);
+  if (existingIndex < 0) return [activeGroup, ...groups];
+
+  const next = [...groups];
+  next[existingIndex] = activeGroup;
+  return next;
 }
 
 export function getCloseGroupRedirect(
@@ -281,7 +304,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   }, [currentWorkspace?.id, statusRevalidateEnabled, statusSocketEnabled]);
 
   const groups = useMemo(() => {
-    const source = data?.chatGroups ?? [];
+    const source = mergeActiveChatGroup(
+      data?.chatGroups ?? [],
+      getActiveChatGroupFromMatches(matches),
+    );
     return applyLiveRunningStatuses(
       source,
       runningThreadIds,
@@ -294,6 +320,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     data?.chatGroups,
     hasStatusSnapshot,
     liveThreadStatuses,
+    matches,
     runningThreadIds,
   ]);
 

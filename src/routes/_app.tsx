@@ -21,19 +21,15 @@ import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 
 /**
- * Skip revalidation after createThread — the layout auth state hasn't changed
- * and requireAuthContext() is expensive (~200-300ms of DO RPCs).
- * Use defaultShouldRevalidate as fallback so navigations within the layout
- * (where no params changed) also skip the expensive loader.
+ * Keep the default route revalidation behavior. The layout loader owns chat
+ * group sidebar state, so create-thread actions must be allowed to refresh it.
  */
 export function shouldRevalidate({
-  formData,
   defaultShouldRevalidate,
 }: {
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
-  if (formData?.get("intent") === "createThread") return false;
   return defaultShouldRevalidate;
 }
 

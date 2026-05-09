@@ -34,6 +34,16 @@ export function isPlaceholderThreadTitle(title: string | null | undefined): bool
     || normalized.startsWith(APP_THREAD_FALLBACK_TITLE_PREFIX);
 }
 
+export function getInitialChatGroupNameFromThreadTitle(
+  title: string | null | undefined,
+): string | undefined {
+  const normalized = sanitizeGeneratedThreadTitle(title);
+  if (!normalized || isPlaceholderThreadTitle(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
 export function getThreadTitleSourceMessage(content: string): string | null {
   const normalized = normalizeThreadPreviewUserMessage(content);
   if (!normalized) {
