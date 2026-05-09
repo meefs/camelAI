@@ -48,6 +48,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const THREAD_DRAG_MIME = "application/x-camelai-thread-id";
@@ -200,8 +205,23 @@ export function ChatTabBar({
   const [contextMenuResetVersion, setContextMenuResetVersion] = useState(0);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const preventNextContextMenuFocusRestoreRef = useRef(false);
+  const pendingContextMenuRenameTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
 
   useEffect(() => {
+    return () => {
+      if (pendingContextMenuRenameTimeoutRef.current !== null) {
+        clearTimeout(pendingContextMenuRenameTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (pendingContextMenuRenameTimeoutRef.current !== null) {
+      clearTimeout(pendingContextMenuRenameTimeoutRef.current);
+      pendingContextMenuRenameTimeoutRef.current = null;
+    }
     setRenamingThreadId(null);
     setDraftName("");
     setContextMenuResetVersion((version) => version + 1);
@@ -235,9 +255,18 @@ export function ChatTabBar({
   ) => {
     if (options.fromContextMenu) {
       preventNextContextMenuFocusRestoreRef.current = true;
+      if (pendingContextMenuRenameTimeoutRef.current !== null) {
+        clearTimeout(pendingContextMenuRenameTimeoutRef.current);
+      }
+      pendingContextMenuRenameTimeoutRef.current = setTimeout(() => {
+        pendingContextMenuRenameTimeoutRef.current = null;
+        setDraftName(title);
+        setRenamingThreadId(threadId);
+      }, 0);
+      return;
     }
-    setRenamingThreadId(threadId);
     setDraftName(title);
+    setRenamingThreadId(threadId);
   };
 
   return (
@@ -427,31 +456,41 @@ export function ChatTabBar({
             </ContextMenu>
           );
         })}
-        <Button
-          type="button"
-          aria-label="New chat in this group"
-          variant="ghost"
-          size="icon-sm"
-          className="mb-0.5 ml-0.5 h-8 w-8 shrink-0 rounded-t-md text-muted-foreground hover:text-foreground"
-          onClick={onNewTab}
-        >
-          <Plus className="size-4" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              aria-label="New chat in this group"
+              variant="ghost"
+              size="icon-sm"
+              className="mb-0.5 ml-0.5 h-8 w-8 shrink-0 rounded-t-md text-muted-foreground hover:text-foreground"
+              onClick={onNewTab}
+            >
+              <Plus className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>New chat</TooltipContent>
+        </Tooltip>
       </div>
       <div className="mb-0.5 ml-1 flex shrink-0 items-center gap-0">
         {closedTabs.length > 0 ? (
           <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                aria-label="Closed chat tabs"
-                variant="ghost"
-                size="icon-xs"
-                className="h-8 w-8 rounded-t-md"
-              >
-                <CircleFadingPlus className="size-4" />
-              </Button>
-            </PopoverTrigger>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    aria-label="Closed chat tabs"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="h-8 w-8 rounded-t-md"
+                  >
+                    <CircleFadingPlus className="size-4" />
+                  </Button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent>Closed chats</TooltipContent>
+            </Tooltip>
             <PopoverContent align="end" className="w-64 p-1">
               <Command>
                 <CommandInput placeholder="Search closed chats" />
@@ -476,17 +515,22 @@ export function ChatTabBar({
           </Popover>
         ) : null}
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              aria-label="Group options"
-              variant="ghost"
-              size="icon-xs"
-              className="h-8 w-8 rounded-t-md"
-            >
-              <MoreHorizontal className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  aria-label="Group options"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="h-8 w-8 rounded-t-md"
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>Settings</TooltipContent>
+          </Tooltip>
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuItem onSelect={() => setIsRenameGroupOpen(true)}>
               Rename group

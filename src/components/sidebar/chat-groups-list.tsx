@@ -13,6 +13,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   SidebarMenu,
   SidebarMenuAction,
@@ -22,6 +23,33 @@ import {
 import { cn } from "@/lib/utils";
 
 const THREAD_DRAG_MIME = "application/x-camelai-thread-id";
+export const CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY =
+  "camelai:close-chat-group-confirmation-suppressed:v1";
+
+function readCloseGroupConfirmationSuppressed() {
+  if (typeof window === "undefined") return false;
+  try {
+    return (
+      window.localStorage.getItem(
+        CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      ) === "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeCloseGroupConfirmationSuppressed() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      "true",
+    );
+  } catch {
+    // Closing should still succeed if the browser rejects local storage writes.
+  }
+}
 
 interface ChatGroupsListProps {
   groups: ChatGroupView[];
@@ -93,7 +121,11 @@ export function ChatGroupsList({
   onCloseGroup,
   onMoveThreadToGroup,
 }: ChatGroupsListProps) {
+  const [suppressCloseConfirmation, setSuppressCloseConfirmation] = useState(
+    readCloseGroupConfirmationSuppressed,
+  );
   const [confirmGroup, setConfirmGroup] = useState<ChatGroupView | null>(null);
+  const [rememberSuppression, setRememberSuppression] = useState(false);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
 
   if (groups.length === 0) {
@@ -104,12 +136,14 @@ export function ChatGroupsList({
     );
   }
 
+  const confirmChatCount = confirmGroup?.member_count ?? 0;
+  const confirmChatNoun = confirmChatCount === 1 ? "chat" : "chats";
+
   return (
     <>
       <SidebarMenu>
         {groups.map((group) => {
           const isActive = group.id === activeGroupId;
-          const needsConfirm = group.member_count >= 2;
           return (
             <SidebarMenuItem key={group.id}>
               <SidebarMenuButton
@@ -158,7 +192,8 @@ export function ChatGroupsList({
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
-                  if (needsConfirm) {
+                  if (!suppressCloseConfirmation) {
+                    setRememberSuppression(false);
                     setConfirmGroup(group);
                   } else {
                     onCloseGroup(group.id);
@@ -175,7 +210,10 @@ export function ChatGroupsList({
       <AlertDialog
         open={confirmGroup !== null}
         onOpenChange={(open) => {
-          if (!open) setConfirmGroup(null);
+          if (!open) {
+            setConfirmGroup(null);
+            setRememberSuppression(false);
+          }
         }}
       >
         <AlertDialogContent>
@@ -184,17 +222,37 @@ export function ChatGroupsList({
               Close "{confirmGroup?.name ?? "group"}"?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Its {confirmGroup?.member_count ?? 0} chats will be removed from
+              Its {confirmChatCount} {confirmChatNoun} will be removed from
               this group. You can reopen any of them from Chat History.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="flex items-center gap-2 pt-1">
+            <Checkbox
+              id="close-chat-group-confirmation-suppressed"
+              checked={rememberSuppression}
+              onCheckedChange={(checked) =>
+                setRememberSuppression(checked === true)
+              }
+            />
+            <label
+              htmlFor="close-chat-group-confirmation-suppressed"
+              className="text-sm leading-none text-muted-foreground"
+            >
+              Do not show again
+            </label>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
+                if (rememberSuppression) {
+                  setSuppressCloseConfirmation(true);
+                  writeCloseGroupConfirmationSuppressed();
+                }
                 if (confirmGroup) onCloseGroup(confirmGroup.id);
                 setConfirmGroup(null);
+                setRememberSuppression(false);
               }}
             >
               Close group

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ChatTabBar,
   RenameGroupDialog,
@@ -10,6 +10,7 @@ import {
   ChatGroupCollapsedIcon,
   ChatGroupRightSlot,
   ChatGroupsList,
+  CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
 } from "@/components/sidebar/chat-groups-list";
 import {
   applyLiveRunningStatuses,
@@ -48,6 +49,31 @@ const groupView: ChatGroupView = {
   member_count: 1,
   status: "idle",
 };
+
+const multiChatGroupView: ChatGroupView = {
+  ...groupView,
+  id: "group_multi",
+  open_thread_ids: ["thread_1", "thread_2"],
+  open_threads: [
+    ...groupView.open_threads,
+    {
+      id: "thread_2",
+      title: "UI polish",
+      model: "haiku",
+      provider: "claude",
+      updated_at: 2,
+      status: "idle",
+    },
+  ],
+  member_count: 2,
+};
+
+beforeEach(() => {
+  window.localStorage.removeItem(CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY);
+  window.localStorage.removeItem(
+    "camelai:close-chat-group-confirmation-suppressed",
+  );
+});
 
 function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>> = {}) {
   const props: React.ComponentProps<typeof ChatTabBar> = {
@@ -378,7 +404,7 @@ describe("ChatGroupsList", () => {
     expect(collapsedIcon).not.toHaveTextContent("L");
   });
 
-  it("selects and closes a single-chat group without confirmation", () => {
+  it("selects and opens close confirmation for a single-chat group by default", () => {
     const onSelectGroup = vi.fn();
     const onCloseGroup = vi.fn();
 
@@ -393,12 +419,6 @@ describe("ChatGroupsList", () => {
       </SidebarProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
-    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
-
-    expect(onSelectGroup).toHaveBeenCalledWith("group_1");
-    expect(onCloseGroup).toHaveBeenCalledWith("group_1");
-
     const groupButton = screen.getByRole("button", { name: "Launch" });
     expect(groupButton).toHaveAttribute("data-size", "sm");
     expect(groupButton).toHaveClass(
@@ -411,6 +431,251 @@ describe("ChatGroupsList", () => {
     const closeButton = screen.getByRole("button", { name: "Close Launch" });
     expect(closeButton).not.toHaveClass("top-1/2");
     expect(closeButton).not.toHaveClass("-translate-y-1/2");
+
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+
+    expect(onSelectGroup).toHaveBeenCalledWith("group_1");
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText(/Its 1 chat will be removed/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close group" }));
+
+    expect(onCloseGroup).toHaveBeenCalledWith("group_1");
+  });
+
+  it("opens close confirmation for a multi-chat group by default", () => {
+    const onCloseGroup = vi.fn();
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[multiChatGroupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText(/Its 2 chats will be removed/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "Do not show again" }),
+    ).not.toBeChecked();
+  });
+
+  it("does not suppress future close group confirmations when confirming without the checkbox", () => {
+    const onCloseGroup = vi.fn();
+    const { rerender } = render(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[multiChatGroupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close group" }));
+
+    expect(onCloseGroup).toHaveBeenCalledWith("group_multi");
+    expect(
+      window.localStorage.getItem(
+        CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      ),
+    ).toBeNull();
+
+    onCloseGroup.mockClear();
+    rerender(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[
+            {
+              ...multiChatGroupView,
+              id: "group_follow_up",
+              name: "Follow-up",
+            },
+          ]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Follow-up" }));
+
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("can suppress future close group confirmations after confirming with the checkbox", () => {
+    const onCloseGroup = vi.fn();
+    const { rerender } = render(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[multiChatGroupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Do not show again" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close group" }));
+
+    expect(onCloseGroup).toHaveBeenCalledWith("group_multi");
+    expect(
+      window.localStorage.getItem(
+        CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      ),
+    ).toBe("true");
+
+    onCloseGroup.mockClear();
+    rerender(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[
+            {
+              ...multiChatGroupView,
+              id: "group_follow_up",
+              name: "Follow-up",
+            },
+          ]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Follow-up" }));
+
+    expect(onCloseGroup).toHaveBeenCalledWith("group_follow_up");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("honors an existing saved close confirmation suppression preference", () => {
+    const onCloseGroup = vi.fn();
+    window.localStorage.setItem(
+      CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      "true",
+    );
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[multiChatGroupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+
+    expect(onCloseGroup).toHaveBeenCalledWith("group_multi");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale unversioned close confirmation suppression preferences", () => {
+    const onCloseGroup = vi.fn();
+    window.localStorage.setItem(
+      "camelai:close-chat-group-confirmation-suppressed",
+      "true",
+    );
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[multiChatGroupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("shows close confirmation when the saved preference cannot be read", () => {
+    const onCloseGroup = vi.fn();
+    const getItemSpy = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage unavailable");
+      });
+
+    try {
+      render(
+        <SidebarProvider>
+          <ChatGroupsList
+            groups={[multiChatGroupView]}
+            activeGroupId={null}
+            onSelectGroup={vi.fn()}
+            onCloseGroup={onCloseGroup}
+          />
+        </SidebarProvider>,
+      );
+    } finally {
+      getItemSpy.mockRestore();
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("keeps close group confirmation enabled when the checked dialog is canceled", () => {
+    const onCloseGroup = vi.fn();
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[multiChatGroupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Do not show again" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem(
+        CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      ),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch" }));
+
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "Do not show again" }),
+    ).not.toBeChecked();
   });
 });
 
