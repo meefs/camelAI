@@ -1783,6 +1783,7 @@ export default function Chat({
 
   // Refs to track current state for use in callbacks (avoids stale closures)
   const messagesRef = useRef(messages);
+  const messagesVersionRef = useRef(0);
   const streamingMessageIdRef = useRef(streamingMessageId);
   const runtimeStreamingMessageIdsRef = useRef<Record<string, string | null>>(
     {},
@@ -1808,6 +1809,9 @@ export default function Chat({
       setMessagesState((prev) => {
         const next = typeof updater === "function" ? updater(prev) : updater;
         messagesRef.current = next;
+        if (next !== prev) {
+          messagesVersionRef.current += 1;
+        }
         return next;
       });
     },
@@ -2650,6 +2654,7 @@ export default function Chat({
       historyFetchAbortRef.current?.abort();
       const abortController = new AbortController();
       historyFetchAbortRef.current = abortController;
+      const requestMessagesVersion = messagesVersionRef.current;
 
       setError(null);
 
@@ -2720,6 +2725,9 @@ export default function Chat({
           loadedMessages,
           pendingMessagesRef.current,
         );
+        if (messagesVersionRef.current !== requestMessagesVersion) {
+          return;
+        }
         setMessages(mergedMessages);
         const mergedIds = new Set(mergedMessages.map((message) => message.id));
         const serverIds = new Set(loadedMessages.map((message) => message.id));
