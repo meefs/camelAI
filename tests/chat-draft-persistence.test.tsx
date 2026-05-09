@@ -6,6 +6,7 @@ import { loadDraft } from '@/hooks/use-draft-persistence';
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
+let mockLocationState: unknown = null;
 
 function createFetcher() {
   return {
@@ -23,7 +24,7 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useNavigate: () => mockNavigate,
-    useLocation: () => ({ pathname: '/', search: '', hash: '', state: null, key: 'default' }),
+    useLocation: () => ({ pathname: '/chat/thread-1', search: '', hash: '', state: mockLocationState, key: 'default' }),
     useRevalidator: () => ({ state: 'idle' as const, revalidate: mockRevalidate }),
     useFetcher: () => mockFetcher,
   };
@@ -307,6 +308,7 @@ describe('Chat draft persistence', () => {
 
   beforeEach(() => {
     mockFetcher = createFetcher();
+    mockLocationState = null;
     mockNavigate.mockReset();
     mockRevalidate.mockReset();
     MockWebSocket.instances = [];
@@ -360,7 +362,7 @@ describe('Chat draft persistence', () => {
     const input = screen.getByLabelText('Thread prompt');
     expect(input).toHaveValue('Persistent draft');
 
-    const socket = getMainSocket();
+    const socket = getLatestMainSocket();
     act(() => {
       socket.emitOpen();
       socket.emitMessage({ type: 'ready' });
@@ -390,7 +392,7 @@ describe('Chat draft persistence', () => {
     });
   });
 
-  it('transfers a welcome-screen draft to the created thread on new chat success', async () => {
+  it('clears the welcome-screen draft after backend-owned new chat success', async () => {
     const user = userEvent.setup();
 
     const { rerender } = render(
@@ -418,11 +420,8 @@ describe('Chat draft persistence', () => {
       expect(loadDraft('ws-1', null)).toBeNull();
     });
 
-    expect(loadDraft('ws-1', 'thread-new')?.text).toBe('Hello from welcome');
-    expect(JSON.parse(sessionStorage.getItem('pendingMessage:newThread') ?? '{}')).toMatchObject({
-      message: 'Hello from welcome',
-      threadId: 'thread-new',
-    });
+    expect(loadDraft('ws-1', 'thread-new')).toBeNull();
+    expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
   });
 
   it('sends an attachment-only thread draft through the websocket', async () => {
@@ -506,7 +505,7 @@ describe('Chat draft persistence', () => {
     expect(sentMessagePayloads(remountedSocket)).toHaveLength(0);
   });
 
-  it('replays a queued message exactly once after remounting before the socket is ready', async () => {
+  it('does not replay a queued message from session storage after remounting before the socket is ready', async () => {
     const user = userEvent.setup();
 
     const { unmount } = render(
@@ -520,13 +519,7 @@ describe('Chat draft persistence', () => {
     await user.type(screen.getByLabelText('Thread prompt'), 'Send when ready');
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
-    expect(
-      JSON.parse(sessionStorage.getItem('pendingMessages:ws-1:thread-1') ?? '{}'),
-    ).toMatchObject({
-      workspaceId: 'ws-1',
-      threadId: 'thread-1',
-      messages: [expect.objectContaining({ content: 'Send when ready' })],
-    });
+    expect(sessionStorage.getItem('pendingMessages:ws-1:thread-1')).toBeNull();
 
     unmount();
 
@@ -544,9 +537,7 @@ describe('Chat draft persistence', () => {
       remountedSocket.emitMessage({ type: 'ready' });
     });
 
-    expect(sentMessagePayloads(remountedSocket)).toMatchObject([
-      expect.objectContaining({ content: 'Send when ready' }),
-    ]);
+    expect(sentMessagePayloads(remountedSocket)).toHaveLength(0);
     expect(sessionStorage.getItem('pendingMessages:ws-1:thread-1')).toBeNull();
   });
 
@@ -590,27 +581,53 @@ describe('Chat draft persistence', () => {
     );
 
     await waitFor(() => {
-      expect(JSON.parse(sessionStorage.getItem('pendingMessage:newThread') ?? '{}')).toMatchObject({
-        message: `(user uploaded file to ${attachmentDraft.path})`,
-        threadId: 'thread-new',
+      expect(mockNavigate).toHaveBeenCalledWith('/chat/thread-new', {
+        state: {
+          initialMessageContent: `(user uploaded file to ${attachmentDraft.path})`,
+        },
+        preventScrollReset: true,
       });
     });
+    expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
   });
 
-  it('does not hydrate the thread composer from localStorage while a pending new-thread message is being sent', () => {
+  it('sends a navigation-state initial message through the normal websocket path', async () => {
+    mockLocationState = {
+      initialMessageContent: 'write a long poem',
+    };
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    const socket = getMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await waitFor(() => {
+      expect(sentMessagePayloads(socket)).toEqual([
+        expect.objectContaining({
+          content: 'write a long poem',
+          threadId: 'thread-1',
+        }),
+      ]);
+    });
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('hydrates the thread composer from localStorage without a browser pending handoff', () => {
     localStorage.setItem(
       'draft:ws-1:thread-new',
       JSON.stringify({
-        text: 'Should stay hidden while pending',
+        text: 'Saved thread draft',
         attachments: [],
         savedAt: Date.now(),
-      }),
-    );
-    sessionStorage.setItem(
-      'pendingMessage:newThread',
-      JSON.stringify({
-        message: 'Should stay hidden while pending',
-        threadId: 'thread-new',
       }),
     );
 
@@ -623,6 +640,6 @@ describe('Chat draft persistence', () => {
       />
     );
 
-    expect(screen.getByLabelText('Thread prompt')).toHaveValue('');
+    expect(screen.getByLabelText('Thread prompt')).toHaveValue('Saved thread draft');
   });
 });

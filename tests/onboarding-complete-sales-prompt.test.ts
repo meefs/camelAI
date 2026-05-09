@@ -146,6 +146,9 @@ describe('onboarding complete sales prompt flow', () => {
       success: true,
       threadId: 'thread_123',
       salesPrompt: 'Build me a CRM',
+      redirectTo: '/chat/thread_123',
+      initialMessageContent: expect.stringContaining('Build me a CRM'),
+      showBootModal: true,
     });
   });
 
@@ -184,6 +187,8 @@ describe('onboarding complete sales prompt flow', () => {
       success: true,
       threadId: 'thread_123',
       salesPrompt: null,
+      redirectTo: '/chat/thread_123',
+      showBootModal: true,
     });
   });
 

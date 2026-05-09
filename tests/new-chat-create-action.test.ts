@@ -110,6 +110,32 @@ describe('new chat create action', () => {
     );
   });
 
+  it('creates the thread without sending the first message server-side', async () => {
+    const formData = new FormData();
+    formData.set('intent', 'createThread');
+    formData.set('firstMessage', 'Build an analytics dashboard');
+    formData.set('initialMessageContent', 'Build an analytics dashboard');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(createThreadMock).toHaveBeenCalledWith(
+      {},
+      'ws_123',
+      undefined,
+      'user_123',
+      'Build an analytics dashboard',
+      'sonnet',
+    );
+  });
+
   it('passes a real initial thread title through for the new group', async () => {
     const formData = new FormData();
     formData.set('intent', 'createThread');

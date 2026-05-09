@@ -1,5 +1,11 @@
-import { Suspense, use, useCallback, useEffect, useState } from "react";
-import { redirect, useLoaderData, useNavigate, useRevalidator } from "react-router";
+import { useEffect, useState } from "react";
+import {
+  redirect,
+  useLoaderData,
+  useLocation,
+  useNavigate,
+  useRevalidator,
+} from "react-router";
 import type { Route } from "./+types/_app.chat.$id";
 import {
   requireAuthContext,
@@ -32,6 +38,7 @@ import {
   ensureGroupForThread,
   listGroupsForMove,
 } from "@/lib/chat-groups.server";
+import { readThreadMessages } from "@/lib/chat-history.server";
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
@@ -164,6 +171,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
 interface ChatData {
   messages: Message[];
+  messagesError: string | null;
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
   previewTarget: PreviewTarget | null;
@@ -171,6 +179,7 @@ interface ChatData {
 
 const EMPTY_CHAT_DATA: ChatData = {
   messages: [],
+  messagesError: null,
   previewTabs: [],
   activeTabId: null,
   previewTarget: null,
@@ -181,13 +190,18 @@ function getPreviewTabId(target: PreviewTarget): string {
   return `file:${target.workspaceId}:${target.source}:${target.path}`;
 }
 
-function buildPreviewChatDataPromise(
+async function buildChatData(
   context: Route.LoaderArgs["context"],
   authEnv: ReturnType<typeof getAuthEnv>,
-  orgId: string,
   threadId: string,
+  options: {
+    orgId: string;
+    workspaceId: string;
+    loadMessages: boolean;
+    skipBanCheck?: boolean;
+  },
 ): Promise<ChatData> {
-  return (async () => {
+  const previewDataPromise = (async () => {
     const previewStateRaw = await chatDO
       .getThreadPreviewState(context, threadId)
       .catch(() => ({
@@ -203,7 +217,11 @@ function buildPreviewChatDataPromise(
       if (target.kind !== "app") {
         return target;
       }
-      const script = await getWorkerScript(authEnv, orgId, target.scriptName);
+      const script = await getWorkerScript(
+        authEnv,
+        options.orgId,
+        target.scriptName,
+      );
       if (!script) {
         return target;
       }
@@ -236,12 +254,38 @@ function buildPreviewChatDataPromise(
     }
 
     return {
-      messages: [],
       previewTabs,
       activeTabId,
       previewTarget,
     };
   })();
+
+  const messagesPromise = options.loadMessages
+    ? readThreadMessages(context, {
+        workspaceId: options.workspaceId,
+        orgId: options.orgId,
+        threadId,
+        skipBanCheck: options.skipBanCheck,
+      })
+        .then((messages) => ({ messages, messagesError: null }))
+        .catch((error) => {
+          console.error("Failed to load chat route messages:", error);
+          return {
+            messages: [] as Message[],
+            messagesError: "Failed to load message history",
+          };
+        })
+    : Promise.resolve({ messages: [], messagesError: null });
+
+  const [previewData, messageData] = await Promise.all([
+    previewDataPromise,
+    messagesPromise,
+  ]);
+  return {
+    ...previewData,
+    messages: messageData.messages,
+    messagesError: messageData.messagesError,
+  };
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -272,12 +316,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: threadContext.workspace_id,
-      chatDataPromise: buildPreviewChatDataPromise(
-        context,
-        authEnv,
-        threadContext.org_id,
-        params.id,
-      ),
+      chatData: await buildChatData(context, authEnv, params.id, {
+        orgId: threadContext.org_id,
+        workspaceId: threadContext.workspace_id,
+        loadMessages: true,
+        skipBanCheck: true,
+      }),
       threadTitle: thread?.title ?? threadContext.title ?? null,
       threadModel:
         thread?.model ??
@@ -316,7 +360,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: null,
-      chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
+      chatData: EMPTY_CHAT_DATA,
       threadTitle: null,
       threadModel: getDefaultLlmModel("claude"),
       threadProvider: "claude" as const,
@@ -385,9 +429,13 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     },
   ).map((option) => option.value);
 
-  const chatDataPromise: Promise<ChatData> = isNewThread
-    ? Promise.resolve(EMPTY_CHAT_DATA)
-    : buildPreviewChatDataPromise(context, authEnv, orgId, params.id);
+  const chatData = thread
+    ? await buildChatData(context, authEnv, params.id, {
+        orgId,
+        workspaceId,
+        loadMessages: true,
+      })
+    : EMPTY_CHAT_DATA;
   const [activeChatGroup, moveChatGroups] = thread && actingUserId
     ? await Promise.all([
         ensureGroupForThread(context, {
@@ -420,7 +468,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   return {
     threadId: params.id,
     workspaceId,
-    chatDataPromise,
+    chatData,
     threadTitle: thread?.title ?? null,
     threadModel:
       thread?.model ??
@@ -460,28 +508,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   };
 }
 
-function ResolveChatData({
-  threadId,
-  chatDataPromise,
-  onResolved,
-}: {
-  threadId: string;
-  chatDataPromise: Promise<ChatData>;
-  onResolved: (threadId: string, data: ChatData) => void;
-}) {
-  const chatData = use(chatDataPromise);
-  useEffect(() => {
-    onResolved(threadId, chatData);
-  }, [threadId, chatData, onResolved]);
-
-  return null;
-}
-
 export default function ChatPage() {
   const {
     threadId,
     workspaceId,
-    chatDataPromise,
+    chatData,
     threadTitle,
     threadModel,
     threadProvider,
@@ -503,28 +534,15 @@ export default function ChatPage() {
     moveChatGroups,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
+  const location = useLocation();
   const revalidator = useRevalidator();
-  const { groups: liveChatGroups } = useChatGroups();
+  const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
   const chatDebugFlags = getChatDebugFlags();
   const markViewedEnabled = chatDebugFlags.markViewed;
   const [instantThreadId, setInstantThreadId] = useState<string | null>(null);
-  const [resolvedChatDataState, setResolvedChatDataState] = useState<{
-    threadId: string;
-    data: ChatData;
-  } | null>(() => (isNewThread ? { threadId, data: EMPTY_CHAT_DATA } : null));
-
-  const resolvedChatData =
-    resolvedChatDataState?.threadId === threadId
-      ? resolvedChatDataState.data
-      : null;
-  const chatData = resolvedChatData ?? EMPTY_CHAT_DATA;
-
-  const handleResolved = useCallback(
-    (resolvedThreadId: string, data: ChatData) => {
-      setResolvedChatDataState({ threadId: resolvedThreadId, data });
-    },
-    [],
-  );
+  const [chatDataByThreadId, setChatDataByThreadId] = useState<
+    Record<string, ChatData>
+  >(() => ({ [threadId]: chatData }));
 
   const liveActiveChatGroup =
     activeChatGroup && !readOnly
@@ -533,8 +551,34 @@ export default function ChatPage() {
       : activeChatGroup;
 
   useEffect(() => {
+    if (import.meta.env.MODE !== "test") {
+      console.info("[chat history route]", {
+        event: "loader_data_received",
+        at: new Date().toISOString(),
+        location: `${location.pathname}${location.search}`,
+        threadId,
+        isNewThread,
+        routeMessageCount: chatData.messages.length,
+        routeMessageIds: chatData.messages.map((message) => ({
+          id: message.id,
+          clientMessageId: message.clientMessageId,
+          role: message.role,
+          created_at: message.created_at,
+        })),
+        messagesError: chatData.messagesError,
+        activeChatGroupId: activeChatGroup?.id ?? null,
+      });
+    }
+    setChatDataByThreadId((prev) => ({ ...prev, [threadId]: chatData }));
     setInstantThreadId(null);
-  }, [threadId]);
+  }, [
+    activeChatGroup?.id,
+    chatData,
+    isNewThread,
+    location.pathname,
+    location.search,
+    threadId,
+  ]);
 
   const instantThread =
     instantThreadId && liveActiveChatGroup
@@ -546,8 +590,14 @@ export default function ChatPage() {
         ) ??
         null
       : null;
+  const instantChatData = instantThreadId
+    ? chatDataByThreadId[instantThreadId]
+    : null;
   const shouldUseInstantThread = Boolean(
-    instantThread && instantThreadId !== threadId,
+    instantThread &&
+      instantChatData &&
+      instantThreadId &&
+      instantThreadId !== threadId,
   );
   const displayThreadId =
     shouldUseInstantThread && instantThread ? instantThread.id : threadId;
@@ -571,14 +621,13 @@ export default function ChatPage() {
           },
         ).map((option) => option.value)
       : allowedThreadModels;
-  const displayChatData = shouldUseInstantThread ? EMPTY_CHAT_DATA : chatData;
+  const displayChatData =
+    shouldUseInstantThread && instantChatData ? instantChatData : chatData;
   const displayIsNewThread = shouldUseInstantThread ? false : isNewThread;
-  const isLoadingMessages =
-    !displayIsNewThread &&
-    (shouldUseInstantThread || resolvedChatData === null);
 
   useEffect(() => {
     if (!markViewedEnabled || readOnly || !workspaceId || !displayThreadId) return;
+    markThreadIdle(displayThreadId);
     const controller = new AbortController();
     void fetch(
       `/api/threads/${encodeURIComponent(displayThreadId)}/mark-viewed`,
@@ -592,7 +641,14 @@ export default function ChatPage() {
         console.warn("Failed to mark active chat viewed:", error);
       });
     return () => controller.abort();
-  }, [displayThreadId, markViewedEnabled, readOnly, revalidator, workspaceId]);
+  }, [
+    displayThreadId,
+    markThreadIdle,
+    markViewedEnabled,
+    readOnly,
+    revalidator,
+    workspaceId,
+  ]);
 
   const openTabs =
     liveActiveChatGroup?.open_threads.map((thread) => ({
@@ -602,15 +658,6 @@ export default function ChatPage() {
       status: thread.status,
     })) ?? [];
 
-  const selectTab = useCallback(
-    (targetThreadId: string) => {
-      if (targetThreadId !== threadId) {
-        setInstantThreadId(targetThreadId);
-      }
-      navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
-    },
-    [navigate, threadId],
-  );
   const closedTabs =
     liveActiveChatGroup?.closed_threads.map((thread) => ({
       threadId: thread.id,
@@ -618,6 +665,19 @@ export default function ChatPage() {
       model: thread.model,
       status: thread.status,
     })) ?? [];
+
+  const selectTab = (targetThreadId: string) => {
+    if (displayThreadId) {
+      markThreadIdle(displayThreadId);
+    }
+    if (
+      targetThreadId !== threadId &&
+      chatDataByThreadId[targetThreadId]
+    ) {
+      setInstantThreadId(targetThreadId);
+    }
+    navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
+  };
 
   const closeTab = async (targetThreadId: string) => {
     if (!activeChatGroup) return;
@@ -708,6 +768,7 @@ export default function ChatPage() {
             openTabs={openTabs}
             closedTabs={closedTabs}
             activeThreadId={displayThreadId}
+            prefetchTabs
             moveGroups={moveChatGroups}
             onSelectTab={selectTab}
             onCloseTab={closeTab}
@@ -737,7 +798,7 @@ export default function ChatPage() {
             hasEffectivePickerDefault={hasEffectivePickerDefault}
             experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}
-            initialError={initialChatError}
+            initialError={initialChatError ?? displayChatData.messagesError}
             initialPreviewTarget={displayChatData.previewTarget}
             initialPreviewTabs={displayChatData.previewTabs}
             initialActiveTabId={displayChatData.activeTabId}
@@ -747,21 +808,11 @@ export default function ChatPage() {
             connections={connections}
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}
-            isLoadingMessages={isLoadingMessages}
+            isLoadingMessages={false}
             readOnly={readOnly}
           />
         </div>
       </div>
-      {!isNewThread && (
-        <Suspense fallback={null}>
-          <ResolveChatData
-            key={threadId}
-            threadId={threadId}
-            chatDataPromise={chatDataPromise}
-            onResolved={handleResolved}
-          />
-        </Suspense>
-      )}
     </>
   );
 }

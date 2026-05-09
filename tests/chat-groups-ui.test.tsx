@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
 import {
   ChatTabBar,
   MAX_OPEN_CHAT_TABS_PER_GROUP,
@@ -112,9 +113,11 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
   };
 
   const result = render(
-    <SidebarProvider>
-      <ChatTabBar {...props} />
-    </SidebarProvider>,
+    <MemoryRouter>
+      <SidebarProvider>
+        <ChatTabBar {...props} />
+      </SidebarProvider>
+    </MemoryRouter>,
   );
   return { ...props, ...result };
 }
@@ -880,6 +883,36 @@ describe("applyLiveRunningStatuses", () => {
 
     expect(group.status).toBe("idle");
     expect(group.open_threads[0].status).toBe("idle");
+  });
+
+  it("treats an explicit idle status as authoritative over stale unread loader state", () => {
+    const [group] = applyLiveRunningStatuses(
+      [
+        {
+          ...groupView,
+          status: "unread",
+          open_threads: [
+            {
+              id: "thread_1",
+              title: "API plan",
+              model: "haiku",
+              provider: "claude",
+              updated_at: 2,
+              status: "unread",
+              is_unread: true,
+            },
+          ],
+        },
+      ],
+      new Set(),
+      true,
+      null,
+      new Map([["thread_1", "idle"] as const]),
+    );
+
+    expect(group.status).toBe("idle");
+    expect(group.open_threads[0].status).toBe("idle");
+    expect(group.open_threads[0].is_unread).toBe(false);
   });
 
   it("marks a completed background thread unread from live status", () => {

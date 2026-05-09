@@ -107,6 +107,11 @@ export function meta() {
   ];
 }
 
+function formStringValue(formData: FormData, key: string): string | null {
+  const value = formData.get(key);
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
@@ -362,9 +367,9 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   if (intent === "createThread") {
     try {
-      const initialTitle = formData.get("initialTitle") as string | null;
-      const firstMessage = formData.get("firstMessage") as string | null;
-      const previewAppsRaw = formData.get("previewApps") as string | null;
+      const initialTitle = formStringValue(formData, "initialTitle");
+      const firstMessage = formStringValue(formData, "firstMessage");
+      const previewAppsRaw = formStringValue(formData, "previewApps");
       const rawModel = formData.get("model");
       const model = typeof rawModel === "string" ? rawModel : null;
       const rawGroupId = formData.get("groupId");
@@ -409,27 +414,30 @@ export async function action({ request, context }: Route.ActionArgs) {
         );
       }
 
-      try {
-        const group = groupId
-          ? await addThreadToExistingGroup(context, {
-              userId,
-              orgId,
-              workspaceId,
-              groupId,
-              threadId: thread.id,
-            })
-          : await createGroupForNewThread(context, {
-              userId,
-              orgId,
-              workspaceId,
-              threadId: thread.id,
-              initialThreadTitle: initialTitle,
-            });
-        return Response.json({ thread, groupId: group.id, group });
-      } catch (groupError) {
-        await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
-        throw groupError;
-      }
+      const group = await (async () => {
+        try {
+          return groupId
+            ? await addThreadToExistingGroup(context, {
+                userId,
+                orgId,
+                workspaceId,
+                groupId,
+                threadId: thread.id,
+              })
+            : await createGroupForNewThread(context, {
+                userId,
+                orgId,
+                workspaceId,
+                threadId: thread.id,
+                initialThreadTitle: initialTitle,
+              });
+        } catch (groupError) {
+          await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+          throw groupError;
+        }
+      })();
+
+      return Response.json({ thread, groupId: group.id, group });
     } catch (error) {
       console.error("Failed to create thread:", error);
       const message =
@@ -582,7 +590,6 @@ export default function NewChatPage() {
           closedTabs={closedTabs}
           activeThreadId={null}
           moveGroups={moveChatGroups}
-          onSelectTab={(threadId) => navigate(`/chat/${threadId}`)}
           onCloseTab={closeTab}
           onRenameTab={renameTab}
           onReorderTabs={reorderTabs}

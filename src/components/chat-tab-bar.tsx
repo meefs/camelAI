@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { PrefetchPageLinks, useNavigate } from "react-router";
 import {
   CircleFadingPlus,
   Loader2,
@@ -72,8 +73,9 @@ interface ChatTabBarProps {
   openTabs: ChatTab[];
   closedTabs: ChatTab[];
   activeThreadId: string | null;
+  prefetchTabs?: boolean;
   moveGroups: readonly ChatGroup[];
-  onSelectTab: (threadId: string) => void;
+  onSelectTab?: (threadId: string) => void;
   onCloseTab: (threadId: string) => void;
   onRenameTab: (threadId: string, name: string) => void;
   onReorderTabs: (orderedThreadIds: string[]) => void;
@@ -190,6 +192,7 @@ export function ChatTabBar({
   openTabs,
   closedTabs,
   activeThreadId,
+  prefetchTabs = false,
   moveGroups,
   onSelectTab,
   onCloseTab,
@@ -201,9 +204,11 @@ export function ChatTabBar({
   onMoveTabToGroup,
   onTabIntent,
 }: ChatTabBarProps) {
+  const navigate = useNavigate();
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [isRenameGroupOpen, setIsRenameGroupOpen] = useState(false);
+  const [prefetchThreadId, setPrefetchThreadId] = useState<string | null>(null);
   const [contextMenuResetVersion, setContextMenuResetVersion] = useState(0);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const preventNextContextMenuFocusRestoreRef = useRef(false);
@@ -243,6 +248,13 @@ export function ChatTabBar({
     [groupId, moveGroups],
   );
   const isNewTabDisabled = openTabs.length >= MAX_OPEN_CHAT_TABS_PER_GROUP;
+  const selectTab = (threadId: string) => {
+    if (onSelectTab) {
+      onSelectTab(threadId);
+      return;
+    }
+    navigate(`/chat/${threadId}`, { preventScrollReset: true });
+  };
 
   const submitThreadRename = (threadId: string) => {
     const nextName = draftName.trim();
@@ -287,20 +299,32 @@ export function ChatTabBar({
             isActive && tab.status === "unread" ? "idle" : tab.status ?? "idle";
           return (
             <ContextMenu key={`${tab.threadId}:${contextMenuResetVersion}`}>
+              {prefetchTabs && prefetchThreadId === tab.threadId ? (
+                <PrefetchPageLinks page={`/chat/${tab.threadId}`} />
+              ) : null}
               <ContextMenuTrigger asChild>
                 <div
                   role="button"
                   tabIndex={0}
                   aria-label={`Open ${tabTitle}`}
                   draggable
-                  onPointerEnter={() => onTabIntent?.(tab.threadId)}
-                  onPointerDown={() => onTabIntent?.(tab.threadId)}
-                  onFocus={() => onTabIntent?.(tab.threadId)}
-                  onClick={() => onSelectTab(tab.threadId)}
+                  onPointerEnter={() => {
+                    setPrefetchThreadId(tab.threadId);
+                    onTabIntent?.(tab.threadId);
+                  }}
+                  onPointerDown={() => {
+                    setPrefetchThreadId(tab.threadId);
+                    onTabIntent?.(tab.threadId);
+                  }}
+                  onFocus={() => {
+                    setPrefetchThreadId(tab.threadId);
+                    onTabIntent?.(tab.threadId);
+                  }}
+                  onClick={() => selectTab(tab.threadId)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      onSelectTab(tab.threadId);
+                      selectTab(tab.threadId);
                     }
                   }}
                   onDragStart={(event) => {

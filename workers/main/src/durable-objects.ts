@@ -2180,14 +2180,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         status: "error",
         error: "Failed to send message to sandbox",
       });
-    } else {
-      this.setChatIsStreaming(true);
-      this.ctx.waitUntil(
-        this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
-          console.error('[ChatThreadDO] failed to update thread metadata after external user message', err);
-        })
-      );
+      return { status: "error", error: "Failed to send message to sandbox" };
     }
+
+    this.setChatIsStreaming(true);
+    this.ctx.waitUntil(
+      this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
+        console.error('[ChatThreadDO] failed to update thread metadata after external user message', err);
+      })
+    );
 
     const timeoutMs = this.getExternalTurnTimeout(body.timeoutMs);
     return await this.waitForPendingExternalTurn(pendingResult, timeoutMs);

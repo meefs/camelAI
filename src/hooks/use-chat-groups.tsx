@@ -111,24 +111,23 @@ export function applyLiveRunningStatuses(
     ): ChatGroupView["open_threads"][number] => {
       const liveStatus = liveThreadStatuses.get(thread.id);
       const status =
-        liveStatus === "running" || liveStatus === "unread"
+        liveStatus === "running" ||
+        liveStatus === "unread" ||
+        liveStatus === "idle"
           ? liveStatus
-          : liveStatus === "idle" && thread.status === "running"
-            ? thread.is_unread
-              ? "unread" as const
-              : "idle" as const
-            : runningThreadIds.has(thread.id)
+          : runningThreadIds.has(thread.id)
               ? "running" as const
               : hasStatusSnapshot && thread.status === "running"
                 ? thread.is_unread
                   ? "unread" as const
                   : "idle" as const
                 : thread.status;
-      const isActiveUnread = thread.id === activeThreadId && status === "unread";
+      const resolvedStatus =
+        thread.id === activeThreadId && status === "unread" ? "idle" : status;
       return {
         ...thread,
-        is_unread: isActiveUnread ? false : thread.is_unread,
-        status: isActiveUnread ? "idle" : status,
+        is_unread: resolvedStatus === "unread",
+        status: resolvedStatus,
       };
     };
     const open_threads = group.open_threads.map(resolveThread);
@@ -163,15 +162,25 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   >(
     () => new Map(),
   );
+  const [localThreadStatuses, setLocalThreadStatuses] = useState<
+    Map<string, ThreadStatus>
+  >(() => new Map());
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
+  const resolvedThreadStatuses = useMemo(() => {
+    const next = new Map(liveThreadStatuses);
+    for (const [threadId, status] of localThreadStatuses) {
+      next.set(threadId, status);
+    }
+    return next;
+  }, [liveThreadStatuses, localThreadStatuses]);
   const runningThreadIds = useMemo(
     () =>
       new Set(
-        Array.from(liveThreadStatuses)
+        Array.from(resolvedThreadStatuses)
           .filter(([, status]) => status === "running")
           .map(([threadId]) => threadId),
       ),
-    [liveThreadStatuses],
+    [resolvedThreadStatuses],
   );
 
   useEffect(() => {
@@ -195,18 +204,53 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const markThreadIdle = useCallback((threadId: string) => {
     const normalizedThreadId = threadId.trim();
     if (!normalizedThreadId) return;
-    setLiveThreadStatuses((current) => {
-      if (current.get(normalizedThreadId) === "idle") return current;
+    setLocalThreadStatuses((current) => {
+      const currentStatus =
+        current.get(normalizedThreadId) ?? liveThreadStatuses.get(normalizedThreadId);
+      if (currentStatus === "running" || currentStatus === "idle") {
+        return current;
+      }
       const next = new Map(current);
       next.set(normalizedThreadId, "idle");
       return next;
     });
+  }, [liveThreadStatuses]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleLocalThreadStatus = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (!detail || typeof detail !== "object") return;
+      const payload = detail as { threadId?: unknown; status?: unknown };
+      if (
+        typeof payload.threadId !== "string" ||
+        (payload.status !== "idle" && payload.status !== "running")
+      ) {
+        return;
+      }
+      const threadId = payload.threadId;
+      const status = payload.status;
+
+      setLocalThreadStatuses((current) => {
+        if (current.get(threadId) === status) return current;
+        const next = new Map(current);
+        next.set(threadId, status);
+        return next;
+      });
+    };
+
+    window.addEventListener("camelai:thread-status", handleLocalThreadStatus);
+    return () => {
+      window.removeEventListener("camelai:thread-status", handleLocalThreadStatus);
+    };
   }, []);
 
   useEffect(() => {
     const workspaceId = currentWorkspace?.id;
     if (!statusSocketEnabled || !workspaceId || typeof window === "undefined") {
       setLiveThreadStatuses(new Map());
+      setLocalThreadStatuses(new Map());
       setHasStatusSnapshot(false);
       return;
     }
@@ -267,9 +311,18 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               payload.status === "unread")
           ) {
             const threadId = payload.threadId;
-            const status = payload.status as ThreadStatus;
+            const status =
+              payload.status === "unread" && threadId === activeThreadIdRef.current
+                ? "idle"
+                : (payload.status as ThreadStatus);
             setHasStatusSnapshot(true);
             setLiveThreadStatuses((current) => {
+              const next = new Map(current);
+              next.set(threadId, status);
+              return next;
+            });
+            setLocalThreadStatuses((current) => {
+              if (current.get(threadId) === status) return current;
               const next = new Map(current);
               next.set(threadId, status);
               return next;
@@ -313,14 +366,14 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       runningThreadIds,
       hasStatusSnapshot,
       activeThreadId,
-      liveThreadStatuses,
+      resolvedThreadStatuses,
     );
   }, [
     activeThreadId,
     data?.chatGroups,
     hasStatusSnapshot,
-    liveThreadStatuses,
     matches,
+    resolvedThreadStatuses,
     runningThreadIds,
   ]);
 
@@ -330,7 +383,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     runningThreadIds,
     hasStatusSnapshot,
     markThreadIdle,
-  }), [groups, hasStatusSnapshot, matches, runningThreadIds]);
+  }), [groups, hasStatusSnapshot, markThreadIdle, matches, runningThreadIds]);
 
   return (
     <ChatGroupsContext.Provider value={value}>

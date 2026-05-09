@@ -69,6 +69,15 @@ function getOnboardingSystemMessage(
   return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : getDefaultOnboardingSystemMessage(provider);
 }
 
+function buildOnboardingInitialMessage(
+  onboardingSystemMessage: string,
+  salesPrompt: string | null,
+): string {
+  return salesPrompt
+    ? `<camelai system message>${onboardingSystemMessage}</camelai system message>\n\n${salesPrompt}`
+    : `<camelai system message>${onboardingSystemMessage}</camelai system message>`;
+}
+
 async function readAccessChoice(request: Request): Promise<OnboardingAccessChoice> {
   const contentType = request.headers.get('content-type') ?? '';
   if (!contentType.includes('application/json')) {
@@ -253,9 +262,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json({
         success: true,
         threadId: existingThread.id,
-        onboardingSystemMessage,
         salesPrompt,
-        redirectTo: `/chat/${existingThread.id}?newThread=1`,
+        redirectTo: `/chat/${existingThread.id}`,
+        initialMessageContent: buildOnboardingInitialMessage(
+          onboardingSystemMessage,
+          salesPrompt,
+        ),
+        showBootModal: true,
       });
     }
 
@@ -282,9 +295,13 @@ export async function action({ request, context }: Route.ActionArgs) {
     return Response.json({
       success: true,
       threadId: recoveryThread.id,
-      onboardingSystemMessage,
       salesPrompt,
-      redirectTo: `/chat/${recoveryThread.id}?newThread=1`,
+      redirectTo: `/chat/${recoveryThread.id}`,
+      initialMessageContent: buildOnboardingInitialMessage(
+        onboardingSystemMessage,
+        salesPrompt,
+      ),
+      showBootModal: true,
     });
   }
 
@@ -313,8 +330,12 @@ export async function action({ request, context }: Route.ActionArgs) {
   return Response.json({
     success: true,
     threadId: thread.id,
-    onboardingSystemMessage,
     salesPrompt,
-    redirectTo: `/chat/${thread.id}?newThread=1`,
+    redirectTo: `/chat/${thread.id}`,
+    initialMessageContent: buildOnboardingInitialMessage(
+      onboardingSystemMessage,
+      salesPrompt,
+    ),
+    showBootModal: true,
   });
 }
