@@ -405,10 +405,10 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		})
 		return nil
 	} else {
-		log.Printf("[SandboxHost] host Pi message history empty thread=%s sessionRoot=%s; checking explicit legacy history", threadID, s.cfg.HostPiSessionRoot)
+		log.Printf("[SandboxHost] host Pi message history empty thread=%s sessionRoot=%s; checking legacy history", threadID, s.cfg.HostPiSessionRoot)
 	}
 
-	sessionIDs, err := legacyClaudeSessionCandidates(claudeSessionID)
+	sessionIDs, err := legacyClaudeSessionCandidates(threadID, claudeSessionID)
 	if err != nil {
 		errorJSON(w, err.Error(), http.StatusBadRequest)
 		return nil
