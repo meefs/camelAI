@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   redirect,
   useLoaderData,
@@ -539,6 +539,9 @@ export default function ChatPage() {
   const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
   const chatDebugFlags = getChatDebugFlags();
   const markViewedEnabled = chatDebugFlags.markViewed;
+  const markThreadIdleRef = useRef(markThreadIdle);
+  const revalidateRef = useRef(revalidator.revalidate);
+  const lastMarkViewedKeyRef = useRef<string | null>(null);
   const [instantThreadId, setInstantThreadId] = useState<string | null>(null);
   const [chatDataByThreadId, setChatDataByThreadId] = useState<
     Record<string, ChatData>
@@ -626,15 +629,27 @@ export default function ChatPage() {
   const displayIsNewThread = shouldUseInstantThread ? false : isNewThread;
 
   useEffect(() => {
+    markThreadIdleRef.current = markThreadIdle;
+  }, [markThreadIdle]);
+
+  useEffect(() => {
+    revalidateRef.current = revalidator.revalidate;
+  }, [revalidator.revalidate]);
+
+  useEffect(() => {
     if (!markViewedEnabled || readOnly || !workspaceId || !displayThreadId) return;
-    markThreadIdle(displayThreadId);
+    const markKey = `${workspaceId}:${displayThreadId}`;
+    if (lastMarkViewedKeyRef.current === markKey) return;
+    lastMarkViewedKeyRef.current = markKey;
+
+    markThreadIdleRef.current(displayThreadId);
     const controller = new AbortController();
     void fetch(
       `/api/threads/${encodeURIComponent(displayThreadId)}/mark-viewed`,
       { method: "POST", signal: controller.signal },
     )
       .then((response) => {
-        if (response.ok) revalidator.revalidate();
+        if (response.ok) revalidateRef.current();
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -643,10 +658,8 @@ export default function ChatPage() {
     return () => controller.abort();
   }, [
     displayThreadId,
-    markThreadIdle,
     markViewedEnabled,
     readOnly,
-    revalidator,
     workspaceId,
   ]);
 

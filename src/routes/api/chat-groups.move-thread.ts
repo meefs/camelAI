@@ -2,6 +2,18 @@ import type { ActionFunctionArgs } from "react-router";
 import { requireSessionWorkspaceAccess } from "@/lib/auth.server";
 import { moveThreadToGroup } from "@/lib/chat-groups.server";
 
+function moveThreadErrorResponse(error: unknown): Response {
+  const message =
+    error instanceof Error ? error.message : "Failed to move thread";
+  if (message === "Thread not found" || message === "Chat group not found") {
+    return Response.json({ error: message }, { status: 404 });
+  }
+  return Response.json(
+    { error: message || "Failed to move thread" },
+    { status: 409 },
+  );
+}
+
 export async function action({ request, context }: ActionFunctionArgs) {
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -21,13 +33,18 @@ export async function action({ request, context }: ActionFunctionArgs) {
   if (!threadId || !targetGroupId) {
     return Response.json({ error: "Missing required fields" }, { status: 400 });
   }
-  const group = await moveThreadToGroup(context, {
-    userId,
-    orgId,
-    workspaceId,
-    threadId,
-    targetGroupId,
-    name: typeof body?.name === "string" ? body.name : undefined,
-  });
+  let group;
+  try {
+    group = await moveThreadToGroup(context, {
+      userId,
+      orgId,
+      workspaceId,
+      threadId,
+      targetGroupId,
+      name: typeof body?.name === "string" ? body.name : undefined,
+    });
+  } catch (error) {
+    return moveThreadErrorResponse(error);
+  }
   return Response.json({ group });
 }

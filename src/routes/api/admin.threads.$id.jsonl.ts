@@ -23,6 +23,10 @@ function messagesToJsonl(messages: unknown[]): string {
   return `${messages.map((message) => JSON.stringify(message)).join('\n')}\n`;
 }
 
+function legacyClaudeJsonlPath(sessionId: string): string {
+  return `/home/claude/.claude/projects/-home-claude/${sessionId}.jsonl`;
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     await requireSuperuser(request, context);
@@ -69,6 +73,28 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     };
 
     const codexSessionId = await getCodexSessionId(context, threadId);
+    const legacyClaudeCandidates = [
+      threadId,
+      legacyClaudeSessionId && legacyClaudeSessionId !== threadId
+        ? legacyClaudeSessionId
+        : null,
+    ].filter((candidate): candidate is string => Boolean(candidate));
+
+    for (const sessionId of legacyClaudeCandidates) {
+      const rawJsonl = await container.readFileStream(
+        legacyClaudeJsonlPath(sessionId),
+        { skipBanCheck: true },
+      );
+      if (!rawJsonl) continue;
+
+      const rawHeaders = new Headers(headers);
+      const contentLength = rawJsonl.headers.get('Content-Length');
+      if (contentLength) {
+        rawHeaders.set('Content-Length', contentLength);
+      }
+      return new Response(rawJsonl.body, { headers: rawHeaders });
+    }
+
     const streamResult = await container.readThreadMessagesStream(threadId, {
       claudeSessionId: legacyClaudeSessionId,
       codexSessionId,
