@@ -486,6 +486,61 @@ func TestHostPiBridgeSkipsReplayWhenInactive(t *testing.T) {
 	}
 }
 
+func TestHostPiBridgeEmitsStreamingStateOnActiveLifecycle(t *testing.T) {
+	bridge := &hostPiBridge{
+		server:   &Server{},
+		threadID: "thread-1",
+		nextSeq:  1,
+	}
+
+	bridge.beginActiveTurn()
+	bridge.endActiveTurn()
+
+	payloads := hostPiBufferedPayloads(t, bridge)
+	if len(payloads) != 2 {
+		t.Fatalf("payload count = %d, want 2 (%#v)", len(payloads), payloads)
+	}
+	if payloads[0]["type"] != "streaming_state" || payloads[0]["isStreaming"] != true {
+		t.Fatalf("first payload = %#v, want streaming_state true", payloads[0])
+	}
+	if payloads[1]["type"] != "streaming_state" || payloads[1]["isStreaming"] != false {
+		t.Fatalf("second payload = %#v, want streaming_state false", payloads[1])
+	}
+	if completedAt, ok := payloads[1]["completedAt"].(float64); !ok || completedAt <= 0 {
+		t.Fatalf("second payload completedAt = %#v, want positive timestamp", payloads[1]["completedAt"])
+	}
+}
+
+func TestHostPiBridgeInitSendsCurrentStreamingStateWhenInactive(t *testing.T) {
+	bridge := &hostPiBridge{
+		server:   &Server{},
+		threadID: "thread-1",
+		nextSeq:  1,
+		started:  true,
+	}
+	bridge.beginActiveTurn()
+	bridge.endActiveTurn()
+
+	if err := bridge.handleClientMessage([]byte(`{"type":"init","lastSeq":99}`)); err != nil {
+		t.Fatalf("handleClientMessage(init) returned error: %v", err)
+	}
+
+	state := hostPiLatestEventOfType(t, bridge, "streaming_state")
+	if state == nil {
+		t.Fatal("expected init to emit streaming_state")
+	}
+	if got := state["isStreaming"]; got != false {
+		t.Fatalf("init streaming state = %#v, want false", got)
+	}
+	if completedAt, ok := state["completedAt"].(float64); !ok || completedAt <= 0 {
+		t.Fatalf("init streaming state completedAt = %#v, want positive timestamp", state["completedAt"])
+	}
+	ready := hostPiLatestEventOfType(t, bridge, "ready")
+	if ready == nil {
+		t.Fatal("expected init to emit ready")
+	}
+}
+
 func TestHostPiBridgeDefersRetryableAgentEndUntilAutoRetryStarts(t *testing.T) {
 	bridge := &hostPiBridge{
 		server:   &Server{cfg: Config{HostPiSessionRoot: t.TempDir()}},

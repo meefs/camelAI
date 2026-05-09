@@ -32,7 +32,9 @@ const TOKEN_REFRESH_RETRY_MIN_MS = 30 * 1000;
 const TOKEN_REFRESH_RETRY_MAX_MS = 60 * 60 * 1000;
 // Fallback when rate-limited but provider omits Retry-After
 const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
-const THREAD_STREAMING_STATUS_TTL_MS = 10 * 60 * 1000;
+// Crash-cleanup horizon for detached turns. This should be much longer than a
+// normal coding-agent turn so long-running work does not disappear from status.
+const THREAD_STREAMING_STATUS_TTL_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_STATUS_SOCKET_TAG = 'status';
 
 /**
@@ -304,10 +306,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     );
   }
 
-  recordThreadStreaming(threadId: string, isStreaming: boolean): void {
+  recordThreadStreaming(
+    threadId: string,
+    isStreaming: boolean,
+    options?: { completedAt?: number },
+  ): void {
     const normalizedThreadId = threadId.trim();
     if (!normalizedThreadId) return;
     const now = Date.now();
+    const completedAt =
+      typeof options?.completedAt === 'number' && Number.isFinite(options.completedAt)
+        ? options.completedAt
+        : null;
     this.pruneStaleStreamingRows(now);
     if (isStreaming) {
       this.sql.exec(
@@ -324,7 +334,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         normalizedThreadId,
       );
     }
-    this.broadcastThreadStatus(normalizedThreadId, isStreaming ? 'running' : 'idle');
+    this.broadcastThreadStatus(
+      normalizedThreadId,
+      isStreaming ? 'running' : completedAt === null ? 'idle' : 'unread',
+      completedAt,
+    );
   }
 
   listStreamingThreadIds(): string[] {
@@ -339,9 +353,15 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
   private broadcastThreadStatus(
     threadId: string,
-    status: 'running' | 'idle',
+    status: 'running' | 'idle' | 'unread',
+    completedAt: number | null = null,
   ): void {
-    const payload = JSON.stringify({ type: 'thread_status', threadId, status });
+    const payload = JSON.stringify({
+      type: 'thread_status',
+      threadId,
+      status,
+      ...(completedAt === null ? {} : { completedAt }),
+    });
     for (const socket of this.ctx.getWebSockets(WORKSPACE_STATUS_SOCKET_TAG)) {
       if (socket.readyState !== WebSocket.OPEN) {
         continue;

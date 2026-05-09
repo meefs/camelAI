@@ -108,6 +108,7 @@ import { PreviewToolbar } from "@/components/preview-panel/preview-toolbar";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSetAppPublicPayload } from "@/lib/app-visibility";
+import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { buildSlugMap } from "@/lib/connection-mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
@@ -1523,6 +1524,8 @@ export default function Chat({
   const navigate = useNavigate();
   const location = useLocation();
   const revalidator = useRevalidator();
+  const chatDebugFlags = getChatDebugFlags();
+  const markViewedEnabled = chatDebugFlags.markViewed;
   const createThreadFetcher = useFetcher<{
     thread?: {
       id: string;
@@ -1855,20 +1858,20 @@ export default function Chat({
       return;
     }
 
-    // If users send before deferred history resolves, merge history with local optimistic turns.
+    // Merge loader history with the current client copy. Revalidation can lag
+    // behind live streaming/tool state, especially after reconnecting to an
+    // already-running thread.
     const wasAwaitingInitialHistory =
       !hasSyncedInitialLoaderMessagesRef.current &&
       (previousInitialMessages?.length ?? 0) === 0;
-
-    if (hasHadUserInteraction.current && !wasAwaitingInitialHistory) {
-      return;
-    }
+    const currentMessages = messagesRef.current;
 
     const nextMessages =
-      hasHadUserInteraction.current && wasAwaitingInitialHistory
+      currentMessages.length > 0 ||
+      (hasHadUserInteraction.current && wasAwaitingInitialHistory)
         ? mergeServerAndLocalMessages(
             parsedInitialMessages,
-            messagesRef.current,
+            currentMessages,
           )
         : parsedInitialMessages;
 
@@ -2315,7 +2318,14 @@ export default function Chat({
 
   const lastMarkedViewedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!threadId || readOnly || isStreaming || loading || isLoadingMessages) return;
+    if (
+      !markViewedEnabled ||
+      !threadId ||
+      readOnly ||
+      isStreaming ||
+      loading ||
+      isLoadingMessages
+    ) return;
     const latestMessageAt = messages[messages.length - 1]?.created_at ?? 0;
     const key = `${threadId}:${latestMessageAt}`;
     if (lastMarkedViewedKeyRef.current === key) return;
@@ -2323,7 +2333,15 @@ export default function Chat({
     void fetch(`/api/threads/${encodeURIComponent(threadId)}/mark-viewed`, {
       method: "POST",
     }).catch(() => {});
-  }, [isLoadingMessages, isStreaming, loading, messages, readOnly, threadId]);
+  }, [
+    isLoadingMessages,
+    isStreaming,
+    loading,
+    markViewedEnabled,
+    messages,
+    readOnly,
+    threadId,
+  ]);
 
   useEffect(() => {
     if (!currentTodos.length || isStreaming) return;

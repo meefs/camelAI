@@ -8,7 +8,11 @@ import {
 } from "./test-helpers";
 
 type WorkspaceStatusStub = DurableObjectStub<{
-  recordThreadStreaming(threadId: string, isStreaming: boolean): Promise<void>;
+  recordThreadStreaming(
+    threadId: string,
+    isStreaming: boolean,
+    options?: { completedAt?: number },
+  ): Promise<void>;
   listStreamingThreadIds(): Promise<string[]>;
 }>;
 

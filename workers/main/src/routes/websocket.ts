@@ -120,7 +120,7 @@ interface BridgeChatSocketArgs {
   userEmail?: string | null;
 }
 
-async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
+export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   const {
     server,
     env,
@@ -134,10 +134,12 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
   let runnerSocket: WebSocket | null = null;
   let closed = false;
+  let closingBecauseClientDisconnected = false;
   const queuedClientMessages: string[] = [];
   let clientMessageChain = Promise.resolve();
   const bridgeId = crypto.randomUUID();
   const startedAt = Date.now();
+  let completionRecordedAt: number | null = null;
 
   const logBridge = (event: string, fields: Record<string, unknown> = {}) => {
     console.log('[chat runner bridge]', {
@@ -193,11 +195,29 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     );
   };
   const recordStreaming = (isStreaming: boolean) => {
+    if (isStreaming) completionRecordedAt = null;
     waitUntil(
       recordWorkspaceThreadStreaming(env, workspaceId, threadId, isStreaming).catch((error) => {
         console.error('[chat websocket] failed to record workspace thread status', error);
       }),
     );
+  };
+  const recordAssistantCompletion = (rawCompletedAt?: unknown) => {
+    const completedAt = normalizeCompletionTimestamp(rawCompletedAt);
+    if (completionRecordedAt !== null) return completionRecordedAt;
+    completionRecordedAt = completedAt;
+    waitUntil(
+      recordThreadAssistantCompletion(
+        env,
+        orgId,
+        workspaceId,
+        threadId,
+        completedAt,
+      ).catch((error) => {
+        console.error('[chat websocket] failed to record assistant completion', error);
+      }),
+    );
+    return completedAt;
   };
 
   const handleClientMessage = async (raw: string) => {
@@ -283,13 +303,13 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       reason: event.reason || 'client closed',
       queuedMessages: queuedClientMessages.length,
     });
+    closingBecauseClientDisconnected = true;
     closeBoth(event.code || 1000, event.reason || 'client closed');
-    recordStreaming(false);
   });
   server.addEventListener('error', () => {
     logBridge('client_error', { queuedMessages: queuedClientMessages.length });
+    closingBecauseClientDisconnected = true;
     closeBoth(1011, 'client error');
-    recordStreaming(false);
   });
 
   const container = new WorkspaceContainer(env, workspaceId, orgId);
@@ -348,13 +368,27 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
         }),
       );
     }
-    if (
-      eventType === 'error' ||
-      eventType === 'result' ||
-      runtimeEvent?.method === 'turn/completed'
-    ) {
+    if (eventType === 'streaming_state' && typeof payload.isStreaming === 'boolean') {
+      if (payload.isStreaming) {
+        recordStreaming(true);
+      } else {
+        const completedAt = normalizeCompletionTimestampOrNull(payload.completedAt);
+        if (completedAt === null) {
+          recordStreaming(false);
+        } else {
+          recordAssistantCompletion(completedAt);
+        }
+      }
+    }
+    if (eventType === 'error') {
       sendJson(server, { type: 'streaming_state', isStreaming: false });
-      recordStreaming(false);
+      if (completionRecordedAt === null) {
+        recordStreaming(false);
+      }
+    }
+    if (eventType === 'result' || runtimeEvent?.method === 'turn/completed') {
+      const completedAt = recordAssistantCompletion(payload.completedAt);
+      sendJson(server, { type: 'streaming_state', isStreaming: false, completedAt });
     }
 
     sendJson(server, payload);
@@ -366,16 +400,18 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       queuedMessages: queuedClientMessages.length,
     });
     closeBoth(event.code || 1000, event.reason || 'runner closed');
-    recordStreaming(false);
+    if (!closingBecauseClientDisconnected && completionRecordedAt === null) {
+      recordStreaming(false);
+    }
   });
   runnerSocket.addEventListener('error', () => {
     logBridge('runner_error', { queuedMessages: queuedClientMessages.length });
     closeBoth(1011, 'runner error');
-    recordStreaming(false);
+    if (!closingBecauseClientDisconnected && completionRecordedAt === null) {
+      recordStreaming(false);
+    }
   });
 
-  sendJson(server, { type: 'streaming_state', isStreaming: false });
-  recordStreaming(false);
   runnerSocket.send(JSON.stringify({
     type: 'init',
     threadId,
@@ -432,6 +468,8 @@ async function updateThreadMetadataForUserMessage(
   if (!thread) return;
 
   await orgStub.touchThread(threadId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  await userStub.touchGroupForThread(threadId);
 
   const titleSourceMessage = getThreadTitleSourceMessage(messageContent);
   if (!titleSourceMessage) return;
@@ -453,12 +491,40 @@ async function updateThreadMetadataForUserMessage(
     });
     if (title) {
       await orgStub.updateThread(threadId, title);
-      const userStub = env.USER.get(env.USER.idFromName(userId));
       await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
     }
   } catch (error) {
     console.error('[chat websocket] failed to generate thread title', error);
   }
+}
+
+async function recordThreadAssistantCompletion(
+  env: RouteContext['env'],
+  orgId: string,
+  workspaceId: string,
+  threadId: string,
+  completedAt: number,
+): Promise<void> {
+  let movedThreadActivityForward = false;
+  try {
+    const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as unknown as {
+      touchThreadActivity(id: string, at?: number): Promise<boolean> | boolean;
+    };
+    movedThreadActivityForward = await orgStub.touchThreadActivity(
+      threadId,
+      completedAt,
+    );
+  } catch (error) {
+    console.error('[chat websocket] failed to touch thread activity', error);
+  }
+
+  await recordWorkspaceThreadStreaming(
+    env,
+    workspaceId,
+    threadId,
+    false,
+    movedThreadActivityForward ? { completedAt } : undefined,
+  );
 }
 
 function sendJson(ws: WebSocket, payload: unknown): void {
@@ -478,4 +544,13 @@ function closeWebSocket(ws: WebSocket, code: number, reason: string): void {
   } catch {
     // Ignore close races.
   }
+}
+
+function normalizeCompletionTimestamp(value: unknown): number {
+  return normalizeCompletionTimestampOrNull(value) ?? Date.now();
+}
+
+function normalizeCompletionTimestampOrNull(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return value;
 }

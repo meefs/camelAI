@@ -46,6 +46,45 @@ describe("UserDO chat groups", () => {
     expect(visible[9].name).toBe("Group 2");
   });
 
+  it("orders groups by last user message activity rather than selection", async () => {
+    const { userStub } = await createUserStub();
+    const orgId = crypto.randomUUID();
+    const workspaceId = crypto.randomUUID();
+    const first = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "First",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const second = await userStub.createChatGroup(orgId, workspaceId, {
+      name: "Second",
+    });
+    const firstThreadId = crypto.randomUUID();
+    const secondThreadId = crypto.randomUUID();
+
+    await userStub.addThreadToGroup(first.id, firstThreadId);
+    await userStub.addThreadToGroup(second.id, secondThreadId);
+
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await userStub.touchGroupForThread(firstThreadId);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+
+    await userStub.setGroupActiveThread(second.id, secondThreadId);
+    await userStub.ensureGroupForThread(
+      orgId,
+      workspaceId,
+      secondThreadId,
+      "Second",
+    );
+
+    let visible = await userStub.listChatGroups(orgId, workspaceId);
+    expect(visible.map((group) => group.id)).toEqual([first.id, second.id]);
+
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await userStub.touchGroupForThread(secondThreadId);
+
+    visible = await userStub.listChatGroups(orgId, workspaceId);
+    expect(visible.map((group) => group.id)).toEqual([second.id, first.id]);
+  });
+
   it("keeps each thread in exactly one group for a user", async () => {
     const { userStub } = await createUserStub();
     const orgId = crypto.randomUUID();

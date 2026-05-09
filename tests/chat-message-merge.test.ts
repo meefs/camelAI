@@ -8,6 +8,10 @@ function message(args: {
   role: Message["role"];
   createdAt: number;
   content: string | ContentBlock[];
+  isStreaming?: boolean;
+  isMeta?: boolean;
+  forkEntryId?: string;
+  sourceToolUseID?: string;
 }): Message {
   return {
     id: args.id,
@@ -15,10 +19,259 @@ function message(args: {
     role: args.role,
     content: args.content,
     created_at: args.createdAt,
+    isStreaming: args.isStreaming,
+    isMeta: args.isMeta,
+    forkEntryId: args.forkEntryId,
+    sourceToolUseID: args.sourceToolUseID,
   };
 }
 
 describe("mergeServerAndLocalMessages", () => {
+  it("keeps richer local tool blocks when a same-id server refresh is stale", () => {
+    const serverMessages = [
+      message({ id: "user", role: "user", createdAt: 1000, content: [{ type: "text", text: "Run pwd" }] }),
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        content: [{ type: "text", text: "I'll check." }],
+      }),
+    ];
+    const localMessages = [
+      serverMessages[0],
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "pwd" } },
+          { type: "tool_result", tool_use_id: "tool-1", content: "/home/claude\n[exit code: 0]" },
+          { type: "text", text: "The working directory is `/home/claude`." },
+        ],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged.map((entry) => entry.id)).toEqual(["user", "assistant"]);
+    const assistant = merged[1];
+    expect(Array.isArray(assistant.content)).toBe(true);
+    expect((assistant.content as ContentBlock[]).map((block) => block.type)).toEqual([
+      "tool_use",
+      "tool_result",
+      "text",
+    ]);
+  });
+
+  it("keeps streaming same-id content when the server only has an empty placeholder", () => {
+    const serverMessages = [
+      message({ id: "user", role: "user", createdAt: 1000, content: [{ type: "text", text: "Edit the file" }] }),
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        content: [],
+      }),
+    ];
+    const localMessages = [
+      serverMessages[0],
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        isStreaming: true,
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Edit", input: { file_path: "app.tsx" } },
+        ],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[1].isStreaming).toBe(true);
+    expect((merged[1].content as ContentBlock[])[0]).toMatchObject({
+      type: "tool_use",
+      id: "tool-1",
+    });
+  });
+
+  it("keeps richer local Kimi tool blocks when server history uses the grouped assistant id", () => {
+    const serverMessages = [
+      message({
+        id: "server-user",
+        role: "user",
+        createdAt: 1000,
+        content: [{ type: "text", text: "Inspect the app" }],
+      }),
+      message({
+        id: "pi-entry-root",
+        role: "assistant",
+        createdAt: 3000,
+        forkEntryId: "pi-entry-leaf",
+        content: [{ type: "text", text: "I'll inspect it." }],
+      }),
+    ];
+    const localMessages = [
+      serverMessages[0],
+      message({
+        id: "pi-entry-leaf",
+        role: "assistant",
+        createdAt: 3000,
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-kimi-1",
+            name: "Bash",
+            input: { command: "ls" },
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "tool-kimi-1",
+            content: "package.json\nsrc\n[exit code: 0]",
+          },
+          { type: "text", text: "The app has a package.json and src directory." },
+        ],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged.map((entry) => entry.id)).toEqual(["server-user", "pi-entry-root"]);
+    expect(merged[1].forkEntryId).toBe("pi-entry-leaf");
+    expect((merged[1].content as ContentBlock[]).map((block) => block.type)).toEqual([
+      "tool_use",
+      "tool_result",
+      "text",
+    ]);
+  });
+
+  it("deduplicates local rendered messages that match a server forkEntryId", () => {
+    const serverMessages = [
+      message({
+        id: "server-user",
+        role: "user",
+        createdAt: 1000,
+        content: [{ type: "text", text: "Run pwd" }],
+      }),
+      message({
+        id: "pi-entry-root",
+        role: "assistant",
+        createdAt: 3000,
+        forkEntryId: "pi-entry-leaf",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "pwd" } },
+          { type: "tool_result", tool_use_id: "tool-1", content: "/home/claude" },
+        ],
+      }),
+    ];
+    const localMessages = [
+      serverMessages[0],
+      message({
+        id: "pi-entry-leaf",
+        role: "assistant",
+        createdAt: 3000,
+        forkEntryId: "pi-entry-leaf",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "pwd" } },
+          { type: "tool_result", tool_use_id: "tool-1", content: "/home/claude" },
+        ],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged.map((entry) => entry.id)).toEqual(["server-user", "pi-entry-root"]);
+  });
+
+  it("preserves same-id meta source information when server history omits it", () => {
+    const serverMessages = [
+      message({
+        id: "meta-tool-1",
+        role: "user",
+        createdAt: 2500,
+        content: [{ type: "tool_result", tool_use_id: "tool-1", content: "done" }],
+      }),
+    ];
+    const localMessages = [
+      message({
+        id: "meta-tool-1",
+        role: "user",
+        createdAt: 2500,
+        content: [{ type: "tool_result", tool_use_id: "tool-1", content: "done" }],
+        isMeta: true,
+        sourceToolUseID: "tool-1",
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged[0].isMeta).toBe(true);
+    expect(merged[0].sourceToolUseID).toBe("tool-1");
+  });
+
+  it("prefers same-id server tool details when they are at least as rich", () => {
+    const serverMessages = [
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Bash",
+            input: { command: "pwd", description: "Check workspace directory" },
+          },
+          { type: "text", text: "Done." },
+        ],
+      }),
+    ];
+    const localMessages = [
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "pwd", status: "completed" } },
+          { type: "text", text: "Done." },
+        ],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+    const tool = (merged[0].content as ContentBlock[]).find(
+      (block) => block.type === "tool_use",
+    );
+
+    expect(tool?.type === "tool_use" ? tool.input.description : undefined).toBe(
+      "Check workspace directory",
+    );
+  });
+
+  it("does not treat nonempty server string content as an empty placeholder", () => {
+    const serverMessages = [
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        content: "Final server text",
+      }),
+    ];
+    const localMessages = [
+      message({
+        id: "assistant",
+        role: "assistant",
+        createdAt: 2000,
+        content: [{ type: "text", text: "Partial" }],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged[0].content).toBe("Final server text");
+  });
+
   it("drops stale local Pi assistant rows when the server has the parsed turn under a different id", () => {
     const promptText = "Use the bash tool to run pwd.";
     const serverUserText = `[Local Dev (local-dev@camelai.local)]: ${promptText}`;

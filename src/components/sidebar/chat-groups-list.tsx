@@ -38,6 +38,7 @@ export function ChatGroupRightSlot({
   status: ThreadStatus;
   count: number;
 }) {
+  const countLabel = `${count} open ${count === 1 ? "chat" : "chats"}`;
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs tabular-nums text-muted-foreground group-data-[collapsible=icon]:hidden">
       {status === "running" ? (
@@ -51,7 +52,7 @@ export function ChatGroupRightSlot({
           className="size-1.5 rounded-full bg-red-500"
         />
       ) : null}
-      <span className="tabular-nums" aria-label={`${count} chats`}>
+      <span className="tabular-nums" aria-label={countLabel}>
         {count}
       </span>
     </span>
@@ -147,7 +148,7 @@ export function ChatGroupsList({
                 </span>
                 <ChatGroupRightSlot
                   status={group.status}
-                  count={group.member_count}
+                  count={group.open_threads.length}
                 />
               </SidebarMenuButton>
               <SidebarMenuAction

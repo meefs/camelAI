@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CircleFadingPlus,
   Loader2,
@@ -197,11 +197,24 @@ export function ChatTabBar({
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [isRenameGroupOpen, setIsRenameGroupOpen] = useState(false);
+  const [contextMenuResetVersion, setContextMenuResetVersion] = useState(0);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const preventNextContextMenuFocusRestoreRef = useRef(false);
 
   useEffect(() => {
     setRenamingThreadId(null);
     setDraftName("");
+    setContextMenuResetVersion((version) => version + 1);
   }, [groupId]);
+
+  useEffect(() => {
+    if (!renamingThreadId) return;
+    const timeout = setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [renamingThreadId]);
 
   const otherGroups = useMemo(
     () => moveGroups.filter((group) => group.id !== groupId),
@@ -215,9 +228,22 @@ export function ChatTabBar({
     setDraftName("");
   };
 
+  const startThreadRename = (
+    threadId: string,
+    title: string,
+    options: { fromContextMenu?: boolean } = {},
+  ) => {
+    if (options.fromContextMenu) {
+      preventNextContextMenuFocusRestoreRef.current = true;
+    }
+    setRenamingThreadId(threadId);
+    setDraftName(title);
+  };
+
   return (
-    <div className="relative flex h-11 shrink-0 items-end gap-0 bg-muted/20 pl-2 pr-1 shadow-[inset_0_-1px_0_0_var(--border)]">
-      <div className="mr-1 flex h-11 shrink-0 items-center pb-1 md:hidden">
+    <div className="shrink-0 pt-[5px]">
+    <div className="relative flex h-9 items-end gap-0 bg-muted/20 pl-2 pr-1 shadow-[inset_0_-1px_0_0_var(--border)]">
+      <div className="mr-1 flex h-9 shrink-0 items-center pb-0.5 md:hidden">
         <SidebarTrigger />
       </div>
       <div className="flex min-w-0 flex-1 items-end gap-0 overflow-x-auto whitespace-nowrap">
@@ -228,7 +254,7 @@ export function ChatTabBar({
           const tabStatus =
             isActive && tab.status === "unread" ? "idle" : tab.status ?? "idle";
           return (
-            <ContextMenu key={tab.threadId}>
+            <ContextMenu key={`${tab.threadId}:${contextMenuResetVersion}`}>
               <ContextMenuTrigger asChild>
                 <div
                   role="button"
@@ -266,10 +292,10 @@ export function ChatTabBar({
                     onReorderTabs(nextOrder);
                   }}
                   className={cn(
-                    "group/tab relative flex w-44 shrink-0 items-center gap-2 rounded-t-md pl-2 pr-2 text-xs outline-none transition-[height,background-color,color] duration-150",
+                    "group/tab relative flex w-44 shrink-0 cursor-pointer items-center gap-2 rounded-t-md pl-2 pr-2 text-xs outline-none transition-[height,background-color,color] duration-150",
                     isActive
-                      ? "z-10 h-11 border border-b-0 bg-background pb-1 font-medium text-foreground"
-                      : "h-11 bg-transparent pb-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                      ? "z-10 h-9 border border-b-0 bg-background pb-0.5 font-medium text-foreground"
+                      : "h-9 bg-transparent pb-0.5 text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <span className="grid size-4 shrink-0 place-items-center">
@@ -280,11 +306,13 @@ export function ChatTabBar({
                   </span>
                   {isRenaming ? (
                     <Input
+                      ref={renameInputRef}
                       autoFocus
                       value={draftName}
                       onChange={(event) => setDraftName(event.target.value)}
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => {
+                        event.stopPropagation();
                         if (event.key === "Enter") submitThreadRename(tab.threadId);
                         if (event.key === "Escape") setRenamingThreadId(null);
                       }}
@@ -304,7 +332,7 @@ export function ChatTabBar({
                           "pointer-events-none absolute inset-y-px right-0 w-12 rounded-tr-[calc(var(--radius-md)-1px)] opacity-0 transition-opacity group-hover/tab:opacity-100 focus-within:opacity-100",
                           isActive
                             ? "bg-background"
-                            : "bg-muted/40 group-hover/tab:bg-muted/40",
+                            : "bg-[color-mix(in_srgb,var(--muted)_20%,var(--background))]",
                         )}
                       />
                       <span
@@ -313,7 +341,7 @@ export function ChatTabBar({
                           "pointer-events-none absolute inset-y-px right-12 w-2.5 opacity-0 transition-opacity group-hover/tab:opacity-100 focus-within:opacity-100",
                           isActive
                             ? "bg-gradient-to-l from-background to-transparent"
-                            : "bg-gradient-to-l from-muted/40 to-transparent",
+                            : "bg-gradient-to-l from-[color-mix(in_srgb,var(--muted)_20%,var(--background))] to-transparent",
                         )}
                       />
                       <span className="absolute inset-y-0 right-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/tab:opacity-100 focus-within:opacity-100">
@@ -323,8 +351,7 @@ export function ChatTabBar({
                           className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:text-foreground"
                           onClick={(event) => {
                             event.stopPropagation();
-                            setRenamingThreadId(tab.threadId);
-                            setDraftName(tabTitle);
+                            startThreadRename(tab.threadId, tabTitle);
                           }}
                         >
                           <Pencil className="size-3" />
@@ -345,14 +372,27 @@ export function ChatTabBar({
                   ) : null}
                 </div>
               </ContextMenuTrigger>
-              <ContextMenuContent>
+              <ContextMenuContent
+                onCloseAutoFocus={(event) => {
+                  if (!preventNextContextMenuFocusRestoreRef.current) return;
+                  preventNextContextMenuFocusRestoreRef.current = false;
+                  event.preventDefault();
+                }}
+              >
                 <ContextMenuItem onSelect={() => onCloseTab(tab.threadId)}>
                   Close tab
                 </ContextMenuItem>
                 <ContextMenuItem
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    startThreadRename(tab.threadId, tabTitle, {
+                      fromContextMenu: true,
+                    });
+                  }}
                   onSelect={() => {
-                    setRenamingThreadId(tab.threadId);
-                    setDraftName(tabTitle);
+                    startThreadRename(tab.threadId, tabTitle, {
+                      fromContextMenu: true,
+                    });
                   }}
                 >
                   Rename chat
@@ -364,14 +404,20 @@ export function ChatTabBar({
                     {otherGroups.map((group) => (
                       <ContextMenuItem
                         key={group.id}
-                        onSelect={() => onMoveTabToGroup(tab.threadId, group.id)}
+                        onSelect={() => {
+                          setContextMenuResetVersion((version) => version + 1);
+                          onMoveTabToGroup(tab.threadId, group.id);
+                        }}
                       >
                         {group.name || "Untitled group"}
                       </ContextMenuItem>
                     ))}
                     {otherGroups.length > 0 ? <ContextMenuSeparator /> : null}
                     <ContextMenuItem
-                      onSelect={() => onMoveTabToGroup(tab.threadId, "new")}
+                      onSelect={() => {
+                        setContextMenuResetVersion((version) => version + 1);
+                        onMoveTabToGroup(tab.threadId, "new");
+                      }}
                     >
                       New group
                     </ContextMenuItem>
@@ -386,13 +432,13 @@ export function ChatTabBar({
           aria-label="New chat in this group"
           variant="ghost"
           size="icon-sm"
-          className="mb-1 ml-0.5 h-9 w-8 shrink-0 rounded-t-md text-muted-foreground hover:text-foreground"
+          className="mb-0.5 ml-0.5 h-8 w-8 shrink-0 rounded-t-md text-muted-foreground hover:text-foreground"
           onClick={onNewTab}
         >
           <Plus className="size-4" />
         </Button>
       </div>
-      <div className="mb-1 ml-1 flex shrink-0 items-center gap-0">
+      <div className="mb-0.5 ml-1 flex shrink-0 items-center gap-0">
         {closedTabs.length > 0 ? (
           <Popover>
             <PopoverTrigger asChild>
@@ -401,7 +447,7 @@ export function ChatTabBar({
                 aria-label="Closed chat tabs"
                 variant="ghost"
                 size="icon-xs"
-                className="h-9 w-8 rounded-t-md"
+                className="h-8 w-8 rounded-t-md"
               >
                 <CircleFadingPlus className="size-4" />
               </Button>
@@ -436,7 +482,7 @@ export function ChatTabBar({
               aria-label="Group options"
               variant="ghost"
               size="icon-xs"
-              className="h-9 w-8 rounded-t-md"
+              className="h-8 w-8 rounded-t-md"
             >
               <MoreHorizontal className="size-4" />
             </Button>
@@ -454,6 +500,7 @@ export function ChatTabBar({
         initialName={groupName}
         onSubmit={onRenameGroup}
       />
+    </div>
     </div>
   );
 }

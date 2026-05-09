@@ -97,7 +97,9 @@ function selectMessagesForFork(
       (target) => message.id === target || message.forkEntryId === target,
     ),
   );
-  if (index < 0) return messages;
+  if (index < 0) {
+    throw new Error('Fork target not found in renderable history');
+  }
   return messages.slice(0, index + 1);
 }
 
@@ -120,16 +122,24 @@ function buildClaudeFallbackHistory(threadId: string, messages: Message[]): stri
         }),
       ];
     }
-    return [
-      JSON.stringify({
-        type: 'user',
-        uuid: message.id,
-        timestamp,
-        message: {
-          content,
-        },
-      }),
-    ];
+    const event: Record<string, unknown> = {
+      type: 'user',
+      uuid: message.id,
+      timestamp,
+      message: {
+        content,
+      },
+    };
+    if (message.isMeta) {
+      event.isMeta = true;
+    }
+    if (message.sourceToolUseID) {
+      event.sourceToolUseID = message.sourceToolUseID;
+    }
+    if (message.isCompactSummary) {
+      event.isCompactSummary = true;
+    }
+    return [JSON.stringify(event)];
   });
 
   if (lines.length === 0) {
@@ -165,11 +175,22 @@ async function forkViaRenderableHistory(
     };
   }
 
-  const messages = selectMessagesForFork(
-    await readMessagesFromResponse(streamResult.response),
-    options.forkEntryId,
-    options.renderedMessageId,
-  );
+  let messages: Message[];
+  try {
+    messages = selectMessagesForFork(
+      await readMessagesFromResponse(streamResult.response),
+      options.forkEntryId,
+      options.renderedMessageId,
+    );
+  } catch (error) {
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Fork target not found in renderable history',
+    };
+  }
   let history: string;
   try {
     history = buildClaudeFallbackHistory(options.targetThreadId, messages);

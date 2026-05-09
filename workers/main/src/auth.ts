@@ -1159,9 +1159,8 @@ export class UserDO extends DurableObject<DOEnv> {
   renameChatGroup(groupId: string, name: string): void {
     const nextName = this.normalizeChatGroupName(name);
     this.sql.exec(
-      "UPDATE chat_groups SET name = ?, updated_at = ? WHERE id = ?",
+      "UPDATE chat_groups SET name = ? WHERE id = ?",
       nextName,
-      Date.now(),
       groupId,
     );
   }
@@ -1200,9 +1199,8 @@ export class UserDO extends DurableObject<DOEnv> {
         now,
       );
       this.sql.exec(
-        "UPDATE chat_groups SET last_active_thread_id = ?, updated_at = ? WHERE id = ?",
+        "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
         threadId,
-        now,
         groupId,
       );
       if (sourceGroup && sourceGroup.id !== groupId) {
@@ -1267,9 +1265,8 @@ export class UserDO extends DurableObject<DOEnv> {
         this.orderedThreadIds(group.id, false)[0] ??
         null;
       this.sql.exec(
-        "UPDATE chat_groups SET last_active_thread_id = ?, updated_at = ? WHERE id = ?",
+        "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
         nextActive,
-        now,
         group.id,
       );
     });
@@ -1290,9 +1287,8 @@ export class UserDO extends DurableObject<DOEnv> {
         threadId,
       );
       this.sql.exec(
-        "UPDATE chat_groups SET last_active_thread_id = ?, updated_at = ? WHERE id = ?",
+        "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
         threadId,
-        now,
         group.id,
       );
     });
@@ -1302,7 +1298,6 @@ export class UserDO extends DurableObject<DOEnv> {
     this.ctx.storage.transactionSync(() => {
       const group = this.getChatGroupRow(groupId);
       if (!group) throw new Error("Chat group not found");
-      const now = Date.now();
       orderedIds.forEach((threadId, index) => {
         this.sql.exec(
           "UPDATE chat_group_members SET position = ? WHERE group_id = ? AND thread_id = ? AND is_open = 1",
@@ -1311,11 +1306,6 @@ export class UserDO extends DurableObject<DOEnv> {
           threadId,
         );
       });
-      this.sql.exec(
-        "UPDATE chat_groups SET updated_at = ? WHERE id = ?",
-        now,
-        groupId,
-      );
     });
   }
 
@@ -1329,9 +1319,8 @@ export class UserDO extends DurableObject<DOEnv> {
       .toArray();
     if (rows.length === 0) return;
     this.sql.exec(
-      "UPDATE chat_groups SET last_active_thread_id = ?, updated_at = ? WHERE id = ?",
+      "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
       threadId,
-      Date.now(),
       groupId,
     );
   }
@@ -1365,9 +1354,8 @@ export class UserDO extends DurableObject<DOEnv> {
           threadId,
         );
         this.sql.exec(
-          "UPDATE chat_groups SET last_active_thread_id = ?, updated_at = ? WHERE id = ?",
+          "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
           threadId,
-          now,
           group.id,
         );
         group = this.getChatGroupRow(group.id);
@@ -1380,7 +1368,8 @@ export class UserDO extends DurableObject<DOEnv> {
     const group = this.getChatGroupForThreadRow(threadId);
     if (!group) return;
     this.sql.exec(
-      "UPDATE chat_groups SET updated_at = ? WHERE id = ?",
+      "UPDATE chat_groups SET last_active_thread_id = ?, updated_at = ? WHERE id = ?",
+      threadId,
       at,
       group.id,
     );
@@ -1453,9 +1442,8 @@ export class UserDO extends DurableObject<DOEnv> {
         .toArray();
       if ((rows[0]?.count ?? 0) !== 1) return;
       this.sql.exec(
-        "UPDATE chat_groups SET name = ?, updated_at = ? WHERE id = ?",
+        "UPDATE chat_groups SET name = ? WHERE id = ?",
         name,
-        Date.now(),
         group.id,
       );
     });
@@ -4917,6 +4905,38 @@ export class OrgDO extends DurableObject<DOEnv> {
       .catch((err) => {
         console.error("Failed to sync thread touch to AdminIndex", err);
       });
+  }
+
+  /**
+   * Touch a thread for non-user activity without incrementing user message count.
+   * Returns true when the persisted activity timestamp moved forward.
+   */
+  touchThreadActivity(id: string, at = Date.now()): boolean {
+    const existing = this.getThread(id);
+    if (!existing) return false;
+    const activityAt = Number.isFinite(at) ? at : Date.now();
+    if (activityAt <= existing.updated_at) return false;
+    this.sql.exec(
+      "UPDATE threads SET updated_at = ? WHERE id = ?",
+      activityAt,
+      id,
+    );
+    const updated = {
+      ...existing,
+      updated_at: activityAt,
+    };
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync thread activity to AdminIndex", err);
+      });
+    return true;
   }
 
   async validateChatThreadAccess(

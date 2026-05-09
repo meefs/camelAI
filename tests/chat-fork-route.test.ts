@@ -389,6 +389,153 @@ describe('chat fork route', () => {
     );
   });
 
+  it('rolls back fallback forks when the requested target is missing from renderable history', async () => {
+    forkThreadSessionMock.mockResolvedValue({
+      success: false,
+      error: 'Not found',
+      code: 'HTTP_404',
+      status: 404,
+    });
+    readThreadMessagesStreamMock.mockResolvedValue({
+      success: true,
+      response: Response.json({
+        success: true,
+        messages: [
+          {
+            id: 'user_1',
+            thread_id: 'thread_source',
+            role: 'user',
+            content: 'Build it',
+            created_at: 1,
+          },
+          {
+            id: 'assistant_1',
+            forkEntryId: 'pi-entry-other',
+            thread_id: 'thread_source',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Done' }],
+            created_at: 2,
+          },
+        ],
+      }),
+    });
+
+    const response = await action({
+      request: new Request(
+        'https://camelai.com/api/workspaces/ws_123/chat/thread_source/fork',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messageId: 'pi-entry-missing',
+            renderedMessageId: 'rendered-missing',
+            groupId: 'group_123',
+          }),
+        },
+      ),
+      context: {},
+      params: { id: 'ws_123', threadId: 'thread_source' },
+    } as never);
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        'Sandbox fork endpoint returned 404 Not Found. Restart or deploy sandbox-host with chat fork support, and for local dev make sure SANDBOX_HOST_URL points at the control listener (:4400), not the proxy listener (:4401).; fallback history fork failed: Fork target not found in renderable history',
+    });
+    expect(writeFileMock).not.toHaveBeenCalled();
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_fork', 'ws_123');
+    expect(addThreadToExistingGroupMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves hidden and compact-summary metadata in fallback fork history', async () => {
+    forkThreadSessionMock.mockResolvedValue({
+      success: false,
+      error: 'Not found',
+      code: 'HTTP_404',
+      status: 404,
+    });
+    readThreadMessagesStreamMock.mockResolvedValue({
+      success: true,
+      response: Response.json({
+        success: true,
+        messages: [
+          {
+            id: 'user_1',
+            thread_id: 'thread_source',
+            role: 'user',
+            content: 'Build it',
+            created_at: 1,
+          },
+          {
+            id: 'meta_1',
+            thread_id: 'thread_source',
+            role: 'user',
+            content: 'Hidden tool output',
+            created_at: 2,
+            isMeta: true,
+            sourceToolUseID: 'tool_123',
+          },
+          {
+            id: 'compact_1',
+            thread_id: 'thread_source',
+            role: 'user',
+            content: 'Compacted context',
+            created_at: 3,
+            isCompactSummary: true,
+          },
+          {
+            id: 'rendered-assistant',
+            forkEntryId: 'pi-entry-leaf',
+            thread_id: 'thread_source',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Done' }],
+            created_at: 4,
+          },
+        ],
+      }),
+    });
+
+    const response = await action({
+      request: new Request(
+        'https://camelai.com/api/workspaces/ws_123/chat/thread_source/fork',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messageId: 'pi-entry-leaf',
+            renderedMessageId: 'rendered-assistant',
+            groupId: 'group_123',
+          }),
+        },
+      ),
+      context: {},
+      params: { id: 'ws_123', threadId: 'thread_source' },
+    } as never);
+
+    expect(response.status).toBe(200);
+    const written = String(writeFileMock.mock.calls[0]?.[1] ?? '');
+    const events = written
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'user',
+          uuid: 'meta_1',
+          isMeta: true,
+          sourceToolUseID: 'tool_123',
+        }),
+        expect.objectContaining({
+          type: 'user',
+          uuid: 'compact_1',
+          isCompactSummary: true,
+        }),
+      ]),
+    );
+    expect(deleteThreadMock).not.toHaveBeenCalled();
+  });
+
   it('returns a specific sandbox fork failure and rolls back the created thread', async () => {
     forkThreadSessionMock.mockResolvedValue({
       success: false,

@@ -14,6 +14,8 @@ import type {
   Message,
   PreviewTarget,
 } from "@/types";
+import { getChatDebugFlags } from "@/lib/chat-debug-flags";
+import { mergeServerAndLocalMessages } from "@/lib/chat-message-merge";
 
 const MAX_CACHED_THREADS = 20;
 
@@ -108,6 +110,12 @@ export function hasServerThreadHistory(
   );
 }
 
+export function hasRenderableThreadSnapshot(
+  snapshot: ChatThreadSnapshot | null | undefined,
+): snapshot is ChatThreadSnapshot {
+  return Boolean(snapshot && snapshot.messages.length > 0);
+}
+
 export function shouldFetchThreadHistory(
   snapshot: ChatThreadSnapshot | null | undefined,
 ): boolean {
@@ -121,6 +129,26 @@ export function upsertThreadSnapshot(
 ): Map<string, ChatThreadSnapshot> {
   const key = cacheKey(input.workspaceId, input.threadId);
   const existing = current.get(key);
+  const existingMessages = existing?.messages;
+  const inputMessages = input.messages;
+  const preserveExistingMessages =
+    existingMessages !== undefined &&
+    existingMessages.length > 0 &&
+    input.historyState === "server" &&
+    inputMessages !== undefined &&
+    inputMessages.length === 0;
+  const mergeExistingMessages =
+    existingMessages !== undefined &&
+    existingMessages.length > 0 &&
+    input.historyState === "server" &&
+    inputMessages !== undefined &&
+    inputMessages.length > 0;
+  const messages = preserveExistingMessages
+    ? existingMessages
+    : mergeExistingMessages
+      ? mergeServerAndLocalMessages(inputMessages, existingMessages)
+      : inputMessages ?? existing?.messages ?? [];
+  const hasActiveStream = messages.some((message) => message.isStreaming);
   const next = new Map(current);
   next.delete(key);
   next.set(key, {
@@ -133,7 +161,7 @@ export function upsertThreadSnapshot(
     threadModel: input.threadModel ?? existing?.threadModel ?? "sonnet",
     threadProvider:
       input.threadProvider ?? existing?.threadProvider ?? "claude",
-    messages: input.messages ?? existing?.messages ?? [],
+    messages,
     previewTabs: input.previewTabs ?? existing?.previewTabs ?? [],
     activeTabId:
       input.activeTabId !== undefined
@@ -144,7 +172,11 @@ export function upsertThreadSnapshot(
         ? input.previewTarget
         : existing?.previewTarget ?? null,
     historyState:
-      input.historyState ?? existing?.historyState ?? "local",
+      preserveExistingMessages
+        ? existing?.historyState ?? "local"
+        : hasActiveStream
+          ? "streaming"
+        : input.historyState ?? existing?.historyState ?? "local",
     loadedAt: Date.now(),
   });
 
@@ -167,6 +199,7 @@ export function ChatThreadCacheProvider({
   );
 
   const writeSnapshot = useCallback((snapshot: ChatThreadSnapshotInput) => {
+    if (!getChatDebugFlags().messageCache) return;
     snapshotsRef.current = upsertThreadSnapshot(
       snapshotsRef.current,
       snapshot,
@@ -175,6 +208,7 @@ export function ChatThreadCacheProvider({
 
   const getSnapshot = useCallback(
     (workspaceId: string | null | undefined, threadId: string | null | undefined) => {
+      if (!getChatDebugFlags().messageCache) return null;
       if (!workspaceId || !threadId) return null;
       return snapshotsRef.current.get(cacheKey(workspaceId, threadId)) ?? null;
     },
@@ -190,6 +224,7 @@ export function ChatThreadCacheProvider({
         "threadTitle" | "threadModel" | "threadProvider"
       >,
     ) => {
+      if (!getChatDebugFlags().messageCache) return null;
       const key = cacheKey(workspaceId, threadId);
       const existing = snapshotsRef.current.get(key);
       if (!shouldFetchThreadHistory(existing)) return existing ?? null;

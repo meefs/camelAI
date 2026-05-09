@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   ChatTabBar,
@@ -110,6 +111,33 @@ describe("ChatTabBar", () => {
     expect(onReopenClosedTab).toHaveBeenCalledWith("thread_3");
   });
 
+  it("closes the move-to-group context submenu immediately after selecting a group", async () => {
+    const onMoveTabToGroup = vi.fn();
+    renderTabBar({
+      onMoveTabToGroup,
+      moveGroups: [
+        ...moveGroups,
+        {
+          id: "group_2",
+          org_id: "org_1",
+          workspace_id: "workspace_1",
+          name: "Research",
+          last_active_thread_id: null,
+          created_at: 2,
+          updated_at: 2,
+        },
+      ],
+    });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Open API plan" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Move to group" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Research" }));
+
+    expect(onMoveTabToGroup).toHaveBeenCalledWith("thread_1", "group_2");
+    expect(screen.queryByRole("menuitem", { name: "Research" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Move to group" })).not.toBeInTheDocument();
+  });
+
   it("renders stable right slots for idle, running, and unread tabs", () => {
     const { rerender } = render(<TabRightSlot status="idle" model="haiku" />);
     expect(screen.getByAltText("claude")).toBeInTheDocument();
@@ -119,6 +147,28 @@ describe("ChatTabBar", () => {
 
     rerender(<TabRightSlot status="unread" model="haiku" />);
     expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-red-500");
+  });
+
+  it("allows spaces while renaming a chat tab", () => {
+    renderTabBar();
+
+    fireEvent.click(screen.getByLabelText("Rename API plan"));
+    const input = screen.getByDisplayValue("API plan");
+    fireEvent.keyDown(input, { key: " ", code: "Space" });
+    fireEvent.change(input, { target: { value: "API plan v2" } });
+
+    expect(input).toHaveValue("API plan v2");
+  });
+
+  it("focuses the rename input when renaming from the context menu", async () => {
+    const user = userEvent.setup();
+    renderTabBar();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Open API plan" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename chat" }));
+
+    const input = await screen.findByDisplayValue("API plan");
+    await waitFor(() => expect(input).toHaveFocus());
   });
 
   it("never renders the active tab as unread", () => {
@@ -199,9 +249,9 @@ describe("ChatTabBar", () => {
     expect(activeOverlays[1]).toHaveClass("from-background");
     expect(activeOverlays[1]).toHaveClass("w-2.5");
 
-    expect(inactiveOverlays[0]).toHaveClass("bg-muted/40");
+    expect(inactiveOverlays[0].className).toMatch(/bg-\[color-mix\(/);
     expect(inactiveOverlays[1]).toHaveClass("bg-gradient-to-l");
-    expect(inactiveOverlays[1]).toHaveClass("from-muted/40");
+    expect(inactiveOverlays[1].className).toMatch(/from-\[color-mix\(/);
   });
 
   it("anchors active and inactive tab titles to the same baseline", () => {
@@ -210,8 +260,8 @@ describe("ChatTabBar", () => {
     const activeTab = screen.getByRole("button", { name: "Open API plan" });
     const inactiveTab = screen.getByRole("button", { name: "Open UI polish" });
 
-    expect(activeTab).toHaveClass("pb-1");
-    expect(inactiveTab).toHaveClass("pb-1");
+    expect(activeTab).toHaveClass("pb-0.5");
+    expect(inactiveTab).toHaveClass("pb-0.5");
     expect(activeTab).toHaveClass("items-center");
     expect(inactiveTab).toHaveClass("items-center");
   });
@@ -266,19 +316,51 @@ describe("ChatGroupsList", () => {
 
   it("renders count-only idle group slots and status icons for active groups", () => {
     const { rerender } = render(<ChatGroupRightSlot status="idle" count={3} />);
-    expect(screen.getByLabelText("3 chats")).toBeInTheDocument();
+    expect(screen.getByLabelText("3 open chats")).toBeInTheDocument();
     expect(screen.queryByLabelText("Agent is working")).not.toBeInTheDocument();
 
     rerender(<ChatGroupRightSlot status="running" count={3} />);
     expect(screen.getByLabelText("Agent is working")).toHaveClass("animate-spin");
-    expect(screen.getByLabelText("3 chats")).toHaveClass("tabular-nums");
+    expect(screen.getByLabelText("3 open chats")).toHaveClass("tabular-nums");
 
     rerender(<ChatGroupRightSlot status="unread" count={3} />);
     expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-red-500");
-    expect(screen.getByLabelText("3 chats")).toBeInTheDocument();
-    const rightSlot = screen.getByLabelText("3 chats").parentElement;
+    expect(screen.getByLabelText("3 open chats")).toBeInTheDocument();
+    const rightSlot = screen.getByLabelText("3 open chats").parentElement;
     expect(rightSlot).not.toBeNull();
     expect(rightSlot!).not.toHaveClass("group-hover/menu-item:opacity-0");
+  });
+
+  it("counts visible open chats in the sidebar instead of closed tabs", () => {
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          groups={[
+            {
+              ...groupView,
+              member_count: 2,
+              closed_thread_ids: ["thread_2"],
+              closed_threads: [
+                {
+                  id: "thread_2",
+                  title: "Dismissed",
+                  model: "haiku",
+                  provider: "claude",
+                  updated_at: 1,
+                  status: "idle",
+                },
+              ],
+            },
+          ]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={vi.fn()}
+        />
+      </SidebarProvider>,
+    );
+
+    expect(screen.getByLabelText("1 open chat")).toHaveTextContent("1");
+    expect(screen.queryByLabelText("2 open chats")).not.toBeInTheDocument();
   });
 
   it("renders collapsed initials as decoration instead of selectable text", () => {
@@ -384,5 +466,73 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.status).toBe("idle");
     expect(group.open_threads[0].is_unread).toBe(false);
     expect(group.open_threads[0].status).toBe("idle");
+  });
+
+  it("treats an explicit idle status frame as authoritative before a snapshot", () => {
+    const [group] = applyLiveRunningStatuses(
+      [
+        {
+          ...groupView,
+          status: "running",
+          open_threads: [
+            {
+              id: "thread_1",
+              title: "API plan",
+              model: "haiku",
+              provider: "claude",
+              updated_at: 2,
+              status: "running",
+              is_unread: false,
+            },
+          ],
+        },
+      ],
+      new Set(),
+      false,
+      null,
+      new Map([["thread_1", "idle"] as const]),
+    );
+
+    expect(group.status).toBe("idle");
+    expect(group.open_threads[0].status).toBe("idle");
+  });
+
+  it("marks a completed background thread unread from live status", () => {
+    const [group] = applyLiveRunningStatuses(
+      [
+        {
+          ...groupView,
+          open_thread_ids: ["thread_1", "thread_2"],
+          open_threads: [
+            {
+              id: "thread_1",
+              title: "API plan",
+              model: "haiku",
+              provider: "claude",
+              updated_at: 2,
+              status: "running",
+              is_unread: false,
+            },
+            {
+              id: "thread_2",
+              title: "UI polish",
+              model: "haiku",
+              provider: "claude",
+              updated_at: 2,
+              status: "idle",
+              is_unread: false,
+            },
+          ],
+        },
+      ],
+      new Set(),
+      true,
+      "thread_2",
+      new Map([["thread_1", "unread"] as const]),
+    );
+
+    expect(group.status).toBe("unread");
+    expect(group.open_threads[0].status).toBe("unread");
+    expect(group.open_threads[1].status).toBe("idle");
   });
 });

@@ -5,12 +5,14 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
-import { useMatches, useRouteLoaderData } from "react-router";
-import type { ChatGroupView } from "@/types";
+import { useMatches, useRouteLoaderData, useRevalidator } from "react-router";
+import type { ChatGroupView, ThreadStatus } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
+import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { maxThreadStatus } from "@/lib/thread-status";
 
 interface AppChatGroupsLoaderData {
@@ -66,18 +68,27 @@ export function applyLiveRunningStatuses(
   runningThreadIds: Set<string>,
   hasStatusSnapshot: boolean,
   activeThreadId: string | null = null,
+  liveThreadStatuses: ReadonlyMap<string, ThreadStatus> = new Map(),
 ): ChatGroupView[] {
   return source.map((group) => {
     const resolveThread = (
       thread: ChatGroupView["open_threads"][number],
     ): ChatGroupView["open_threads"][number] => {
-      const status = runningThreadIds.has(thread.id)
-        ? "running" as const
-        : hasStatusSnapshot && thread.status === "running"
-          ? thread.is_unread
-            ? "unread" as const
-            : "idle" as const
-          : thread.status;
+      const liveStatus = liveThreadStatuses.get(thread.id);
+      const status =
+        liveStatus === "running" || liveStatus === "unread"
+          ? liveStatus
+          : liveStatus === "idle" && thread.status === "running"
+            ? thread.is_unread
+              ? "unread" as const
+              : "idle" as const
+            : runningThreadIds.has(thread.id)
+              ? "running" as const
+              : hasStatusSnapshot && thread.status === "running"
+                ? thread.is_unread
+                  ? "unread" as const
+                  : "idle" as const
+                : thread.status;
       const isActiveUnread = thread.id === activeThreadId && status === "unread";
       return {
         ...thread,
@@ -101,19 +112,55 @@ export function applyLiveRunningStatuses(
 
 export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const { currentWorkspace } = useAuthData();
+  const revalidator = useRevalidator();
+  const chatDebugFlags = getChatDebugFlags();
+  const statusSocketEnabled = chatDebugFlags.statusSocket;
+  const statusRevalidateEnabled = chatDebugFlags.statusRevalidate;
+  const revalidateRef = useRef(revalidator.revalidate);
   const data = useRouteLoaderData("routes/_app") as
     | AppChatGroupsLoaderData
     | undefined;
   const matches = useMatches();
-  const [runningThreadIds, setRunningThreadIds] = useState<Set<string>>(
-    () => new Set(),
+  const activeThreadId = getActiveThreadIdFromMatches(matches);
+  const activeThreadIdRef = useRef(activeThreadId);
+  const [liveThreadStatuses, setLiveThreadStatuses] = useState<
+    Map<string, ThreadStatus>
+  >(
+    () => new Map(),
   );
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
+  const runningThreadIds = useMemo(
+    () =>
+      new Set(
+        Array.from(liveThreadStatuses)
+          .filter(([, status]) => status === "running")
+          .map(([threadId]) => threadId),
+      ),
+    [liveThreadStatuses],
+  );
+
+  useEffect(() => {
+    revalidateRef.current = revalidator.revalidate;
+  }, [revalidator.revalidate]);
+
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    if (!activeThreadId) return;
+    setLiveThreadStatuses((current) => {
+      if (current.get(activeThreadId) !== "unread") return current;
+      const next = new Map(current);
+      next.delete(activeThreadId);
+      return next;
+    });
+  }, [activeThreadId]);
 
   useEffect(() => {
     const workspaceId = currentWorkspace?.id;
-    if (!workspaceId || typeof window === "undefined") {
-      setRunningThreadIds(new Set());
+    if (!statusSocketEnabled || !workspaceId || typeof window === "undefined") {
+      setLiveThreadStatuses(new Map());
       setHasStatusSnapshot(false);
       return;
     }
@@ -122,7 +169,18 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     const socketUrl = `${protocol}//${window.location.host}/ws/workspaces/${encodeURIComponent(workspaceId)}/status`;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let revalidateTimer: number | null = null;
     let closedByEffect = false;
+
+    const scheduleStatusRevalidate = (threadId: string) => {
+      if (!statusRevalidateEnabled) return;
+      if (threadId === activeThreadIdRef.current) return;
+      if (revalidateTimer !== null) return;
+      revalidateTimer = window.setTimeout(() => {
+        revalidateTimer = null;
+        revalidateRef.current();
+      }, 750);
+    };
 
     const connect = () => {
       const nextSocket = new WebSocket(socketUrl);
@@ -141,27 +199,38 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
             Array.isArray(payload.runningThreadIds)
           ) {
             setHasStatusSnapshot(true);
-            setRunningThreadIds(
-              new Set(
-                payload.runningThreadIds.filter(
-                  (threadId): threadId is string => typeof threadId === "string",
-                ),
-              ),
+            const nextRunningThreadIds = payload.runningThreadIds.filter(
+              (threadId): threadId is string => typeof threadId === "string",
             );
-          }
-          if (
-            payload.type === "thread_status" &&
-            typeof payload.threadId === "string"
-          ) {
-            setRunningThreadIds((current) => {
-              const next = new Set(current);
-              if (payload.status === "running") {
-                next.add(payload.threadId as string);
-              } else {
-                next.delete(payload.threadId as string);
+            setLiveThreadStatuses((current) => {
+              const next = new Map(current);
+              for (const [threadId, status] of next) {
+                if (status === "running") next.delete(threadId);
+              }
+              for (const threadId of nextRunningThreadIds) {
+                next.set(threadId, "running");
               }
               return next;
             });
+          }
+          if (
+            payload.type === "thread_status" &&
+            typeof payload.threadId === "string" &&
+            (payload.status === "idle" ||
+              payload.status === "running" ||
+              payload.status === "unread")
+          ) {
+            const threadId = payload.threadId;
+            const status = payload.status as ThreadStatus;
+            setHasStatusSnapshot(true);
+            setLiveThreadStatuses((current) => {
+              const next = new Map(current);
+              next.set(threadId, status);
+              return next;
+            });
+            if (status === "idle" || status === "unread") {
+              scheduleStatusRevalidate(threadId);
+            }
           }
         } catch {
           // Ignore malformed status frames.
@@ -170,14 +239,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
 
       nextSocket.addEventListener("close", () => {
         if (closedByEffect || socket !== nextSocket) return;
-        setHasStatusSnapshot(false);
-        setRunningThreadIds(new Set());
         reconnectTimer = window.setTimeout(connect, 1000);
       });
       nextSocket.addEventListener("error", () => {
         if (socket !== nextSocket) return;
-        setHasStatusSnapshot(false);
-        setRunningThreadIds(new Set());
         nextSocket.close();
       });
     };
@@ -187,9 +252,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     return () => {
       closedByEffect = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (revalidateTimer) window.clearTimeout(revalidateTimer);
       socket?.close();
     };
-  }, [currentWorkspace?.id]);
+  }, [currentWorkspace?.id, statusRevalidateEnabled, statusSocketEnabled]);
 
   const groups = useMemo(() => {
     const source = data?.chatGroups ?? [];
@@ -197,9 +263,16 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       source,
       runningThreadIds,
       hasStatusSnapshot,
-      getActiveThreadIdFromMatches(matches),
+      activeThreadId,
+      liveThreadStatuses,
     );
-  }, [data?.chatGroups, hasStatusSnapshot, matches, runningThreadIds]);
+  }, [
+    activeThreadId,
+    data?.chatGroups,
+    hasStatusSnapshot,
+    liveThreadStatuses,
+    runningThreadIds,
+  ]);
 
   const value = useMemo(() => ({
     groups,

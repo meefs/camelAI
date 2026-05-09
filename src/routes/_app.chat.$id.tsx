@@ -26,6 +26,7 @@ import {
   isLlmModel,
 } from "@/lib/llm-provider-config";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
+import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
@@ -38,7 +39,7 @@ import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { useChatGroups } from "@/hooks/use-chat-groups";
 import {
-  hasServerThreadHistory,
+  hasRenderableThreadSnapshot,
   useChatThreadCache,
   type ChatThreadSnapshot,
 } from "@/hooks/use-chat-thread-cache";
@@ -191,7 +192,7 @@ function chatDataFromSnapshot(snapshot: ChatThreadSnapshot): ChatData {
 }
 
 function hasUsefulSnapshot(snapshot: ChatThreadSnapshot | null): snapshot is ChatThreadSnapshot {
-  return hasServerThreadHistory(snapshot);
+  return hasRenderableThreadSnapshot(snapshot);
 }
 
 function getPreviewTabId(target: PreviewTarget): string {
@@ -524,6 +525,11 @@ export default function ChatPage() {
   const revalidator = useRevalidator();
   const { groups: liveChatGroups } = useChatGroups();
   const { getSnapshot, writeSnapshot, prefetchMessages } = useChatThreadCache();
+  const chatDebugFlags = getChatDebugFlags();
+  const messageCacheEnabled = chatDebugFlags.messageCache;
+  const snapshotsEnabled = messageCacheEnabled && chatDebugFlags.snapshots;
+  const prefetchEnabled = messageCacheEnabled && chatDebugFlags.prefetch;
+  const markViewedEnabled = chatDebugFlags.markViewed;
   const [optimisticThreadId, setOptimisticThreadId] = useState<string | null>(
     null,
   );
@@ -532,7 +538,8 @@ export default function ChatPage() {
     setOptimisticThreadId(null);
   }, [threadId]);
 
-  const routeSnapshot = workspaceId ? getSnapshot(workspaceId, threadId) : null;
+  const routeSnapshot =
+    snapshotsEnabled && workspaceId ? getSnapshot(workspaceId, threadId) : null;
   const [resolvedChatDataState, setResolvedChatDataState] = useState<{
     threadId: string;
     data: ChatData;
@@ -550,21 +557,29 @@ export default function ChatPage() {
     (resolvedThreadId: string, data: ChatData) => {
       setResolvedChatDataState({ threadId: resolvedThreadId, data });
       if (workspaceId) {
+        const hasResolvedMessages = data.messages.length > 0;
         writeSnapshot({
           workspaceId,
           threadId: resolvedThreadId,
           threadTitle,
           ...(threadModel ? { threadModel } : {}),
           ...(threadProvider ? { threadProvider } : {}),
-          messages: data.messages,
+          ...(hasResolvedMessages
+            ? { messages: data.messages, historyState: "server" as const }
+            : {}),
           previewTabs: data.previewTabs,
           activeTabId: data.activeTabId,
           previewTarget: data.previewTarget,
-          historyState: "server",
         });
       }
     },
-    [threadModel, threadProvider, threadTitle, workspaceId, writeSnapshot],
+    [
+      threadModel,
+      threadProvider,
+      threadTitle,
+      workspaceId,
+      writeSnapshot,
+    ],
   );
 
   const liveActiveChatGroup =
@@ -574,7 +589,9 @@ export default function ChatPage() {
       : activeChatGroup;
 
   const optimisticCandidateSnapshot = optimisticThreadId
-    ? getSnapshot(workspaceId, optimisticThreadId)
+    ? snapshotsEnabled
+      ? getSnapshot(workspaceId, optimisticThreadId)
+      : null
     : null;
   const optimisticSnapshot = hasUsefulSnapshot(optimisticCandidateSnapshot)
     ? optimisticCandidateSnapshot
@@ -618,7 +635,7 @@ export default function ChatPage() {
     resolvedChatData === null;
 
   useEffect(() => {
-    if (readOnly || !workspaceId || !displayThreadId) return;
+    if (!markViewedEnabled || readOnly || !workspaceId || !displayThreadId) return;
     const controller = new AbortController();
     void fetch(
       `/api/threads/${encodeURIComponent(displayThreadId)}/mark-viewed`,
@@ -632,7 +649,7 @@ export default function ChatPage() {
         console.warn("Failed to mark active chat viewed:", error);
       });
     return () => controller.abort();
-  }, [displayThreadId, readOnly, revalidator, workspaceId]);
+  }, [displayThreadId, markViewedEnabled, readOnly, revalidator, workspaceId]);
 
   const openTabs =
     liveActiveChatGroup?.open_threads.map((thread) => ({
@@ -645,6 +662,7 @@ export default function ChatPage() {
   const prefetchThread = useCallback(
     (targetThreadId: string) => {
       if (
+        !prefetchEnabled ||
         !workspaceId ||
         !liveActiveChatGroup ||
         targetThreadId === displayThreadId
@@ -661,7 +679,13 @@ export default function ChatPage() {
         threadProvider: targetThread.provider,
       });
     },
-    [displayThreadId, liveActiveChatGroup, prefetchMessages, workspaceId],
+    [
+      displayThreadId,
+      liveActiveChatGroup,
+      prefetchEnabled,
+      prefetchMessages,
+      workspaceId,
+    ],
   );
 
   const openThreadPrefetchKey = useMemo(
@@ -673,7 +697,7 @@ export default function ChatPage() {
   );
 
   useEffect(() => {
-    if (!workspaceId || !liveActiveChatGroup || readOnly) return;
+    if (!prefetchEnabled || !workspaceId || !liveActiveChatGroup || readOnly) return;
     const timeout = window.setTimeout(() => {
       for (const thread of liveActiveChatGroup.open_threads) {
         if (thread.id === displayThreadId) continue;
@@ -689,6 +713,7 @@ export default function ChatPage() {
     displayThreadId,
     liveActiveChatGroup,
     openThreadPrefetchKey,
+    prefetchEnabled,
     prefetchMessages,
     readOnly,
     workspaceId,
@@ -697,7 +722,9 @@ export default function ChatPage() {
   const selectTab = useCallback(
     (targetThreadId: string) => {
       const snapshot = workspaceId
-        ? getSnapshot(workspaceId, targetThreadId)
+        ? snapshotsEnabled
+          ? getSnapshot(workspaceId, targetThreadId)
+          : null
         : null;
       if (hasUsefulSnapshot(snapshot)) {
         setOptimisticThreadId(targetThreadId);
@@ -706,7 +733,7 @@ export default function ChatPage() {
       }
       navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
     },
-    [getSnapshot, navigate, prefetchThread, workspaceId],
+    [getSnapshot, navigate, prefetchThread, snapshotsEnabled, workspaceId],
   );
 
   const handleThreadSnapshotChange = useCallback(
@@ -719,6 +746,7 @@ export default function ChatPage() {
       previewTarget: PreviewTarget | null;
       historyState: "server" | "local" | "streaming";
     }) => {
+      if (!snapshotsEnabled) return;
       if (!workspaceId || snapshot.workspaceId !== workspaceId) return;
       const snapshotThread =
         liveActiveChatGroup?.open_threads.find(
@@ -756,6 +784,7 @@ export default function ChatPage() {
       liveActiveChatGroup?.closed_threads,
       liveActiveChatGroup?.open_threads,
       workspaceId,
+      snapshotsEnabled,
       writeSnapshot,
     ],
   );
@@ -897,7 +926,9 @@ export default function ChatPage() {
             recentModelScope={recentModelScope}
             isLoadingMessages={isLoadingMessages}
             readOnly={readOnly}
-            onThreadSnapshotChange={handleThreadSnapshotChange}
+            onThreadSnapshotChange={
+              snapshotsEnabled ? handleThreadSnapshotChange : undefined
+            }
           />
         </div>
       </div>

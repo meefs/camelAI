@@ -582,6 +582,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private usageIsPostCompaction: boolean = true;
   private cachedContextWindowByModel: Record<string, number> = {};
   private chatIsStreaming: boolean = false;
+  private assistantCompletionRecordedAt: number | null = null;
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
   private pendingExternalTurn: PendingExternalTurn | null = null;
   private titleGenerationInFlight: boolean = false;
@@ -1968,12 +1969,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private setChatIsStreaming(value: boolean): void {
-    if (this.chatIsStreaming === value) return;
+  private setChatIsStreaming(
+    value: boolean,
+    options: { markUnread?: boolean; completedAt?: number } = {},
+  ): void {
+    const shouldRecordCompletion =
+      !value && options.markUnread === true && this.assistantCompletionRecordedAt === null;
+    if (this.chatIsStreaming === value && !shouldRecordCompletion) return;
     this.trace("set_chat_is_streaming", {
       from: this.chatIsStreaming,
       to: value,
     });
+    if (value) {
+      this.assistantCompletionRecordedAt = null;
+    }
+    const statusChanged = this.chatIsStreaming !== value;
     this.chatIsStreaming = value;
     // Clear persisted todos when a new turn starts so they don't go stale
     // across reconnects. The next TodoWrite will re-persist fresh state.
@@ -1981,20 +1991,58 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.currentTodos = [];
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
     }
-    this.broadcastRealtime({ type: "streaming_state", isStreaming: value });
+    if (statusChanged) {
+      this.broadcastRealtime({ type: "streaming_state", isStreaming: value });
+    }
     const context = this.chatContext;
     if (context?.workspaceId && context.threadId) {
-      this.ctx.waitUntil(
-        recordWorkspaceThreadStreaming(
-          this.env,
-          context.workspaceId,
-          context.threadId,
-          value,
-        ).catch((error) => {
-          console.error("[ChatThreadDO] failed to record workspace thread status", error);
-        }),
-      );
+      if (shouldRecordCompletion) {
+        const completedAt = normalizeCompletionTimestamp(options.completedAt);
+        this.assistantCompletionRecordedAt = completedAt;
+        this.ctx.waitUntil(
+          this.recordThreadAssistantCompletion(context, completedAt).catch((error) => {
+            console.error("[ChatThreadDO] failed to record assistant completion", error);
+          }),
+        );
+      } else if (statusChanged) {
+        this.ctx.waitUntil(
+          recordWorkspaceThreadStreaming(
+            this.env,
+            context.workspaceId,
+            context.threadId,
+            value,
+          ).catch((error) => {
+            console.error("[ChatThreadDO] failed to record workspace thread status", error);
+          }),
+        );
+      }
     }
+  }
+
+  private async recordThreadAssistantCompletion(
+    context: ChatContextState,
+    completedAt: number,
+  ): Promise<void> {
+    let movedThreadActivityForward = false;
+    try {
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
+        touchThreadActivity(id: string, at?: number): Promise<boolean> | boolean;
+      };
+      movedThreadActivityForward = await orgStub.touchThreadActivity(
+        context.threadId,
+        completedAt,
+      );
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to touch thread activity", error);
+    }
+
+    await recordWorkspaceThreadStreaming(
+      this.env,
+      context.workspaceId,
+      context.threadId,
+      false,
+      movedThreadActivityForward ? { completedAt } : undefined,
+    );
   }
 
   private getSocketChatContext(ws: WebSocket): ChatContextState | null {
@@ -2331,6 +2379,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!thread) return;
 
     await orgStub.touchThread(context.threadId);
+    if (context.userId) {
+      const userStub = this.env.USER.get(this.env.USER.idFromName(context.userId));
+      await userStub.touchGroupForThread(context.threadId);
+    }
 
     const titleSourceMessage = getThreadTitleSourceMessage(messageContent);
     if (!titleSourceMessage) {
@@ -2811,7 +2863,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         // auto-timeout (1.5-2s after all todos are completed) and on next
         // streaming start. Clearing server-side on result races the client
         // and destroys persistence before reconnecting clients can replay.
-        this.setChatIsStreaming(false);
+        this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
         this.persistRunnerSeqIfNeeded("result");
         this.resolvePendingExternalTurn({ status: "result" });
@@ -2828,14 +2880,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           : null;
 
       if (method === 'turn/completed') {
-        this.setChatIsStreaming(false);
+        this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
         this.persistRunnerSeqIfNeeded('result');
       }
     }
 
     if (eventType === 'result') {
-      this.setChatIsStreaming(false);
+      this.setChatIsStreaming(false, { markUnread: true });
       this.setActiveTurnUserId(null);
       const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
       if (sessionId) {
@@ -3123,4 +3175,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
     }
   }
+}
+
+function normalizeCompletionTimestamp(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return Date.now();
 }
