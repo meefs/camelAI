@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ChatTabBar,
+  MAX_OPEN_CHAT_TABS_PER_GROUP,
   RenameGroupDialog,
   TabRightSlot,
 } from "@/components/chat-tab-bar";
@@ -129,6 +130,43 @@ describe("ChatTabBar", () => {
 
     expect(onSelectTab).toHaveBeenCalledWith("thread_2");
     expect(onNewTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("soft-disables new tabs at ten open chats without a tooltip", async () => {
+    const user = userEvent.setup();
+    const onNewTab = vi.fn();
+    renderTabBar({
+      onNewTab,
+      openTabs: Array.from({ length: MAX_OPEN_CHAT_TABS_PER_GROUP }, (_, index) => ({
+        threadId: `thread_${index + 1}`,
+        title: `Open chat ${index + 1}`,
+        model: "haiku",
+        status: "idle",
+      })),
+      closedTabs: [
+        {
+          threadId: "thread_closed",
+          title: "Archived idea",
+          model: "haiku",
+          status: "idle",
+        },
+      ],
+      activeThreadId: "thread_1",
+    });
+
+    const newChatButton = screen.getByRole("button", {
+      name: "New chat in this group",
+    });
+    expect(newChatButton).toBeDisabled();
+    expect(newChatButton).toHaveClass("disabled:pointer-events-none");
+
+    await user.hover(newChatButton);
+    expect(screen.queryByText("New chat")).not.toBeInTheDocument();
+    await user.click(newChatButton);
+    expect(onNewTab).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Closed chat tabs" }));
+    expect(await screen.findByText("Archived idea")).toBeInTheDocument();
   });
 
   it("reopens closed tabs from the overflow menu", async () => {

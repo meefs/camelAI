@@ -56,6 +56,8 @@ import {
 import { cn } from "@/lib/utils";
 
 const THREAD_DRAG_MIME = "application/x-camelai-thread-id";
+// Soft UI limit only: reopening closed chats can still take a group past this.
+export const MAX_OPEN_CHAT_TABS_PER_GROUP = 10;
 
 interface ChatTab {
   threadId: string;
@@ -240,6 +242,7 @@ export function ChatTabBar({
     () => moveGroups.filter((group) => group.id !== groupId),
     [groupId, moveGroups],
   );
+  const isNewTabDisabled = openTabs.length >= MAX_OPEN_CHAT_TABS_PER_GROUP;
 
   const submitThreadRename = (threadId: string) => {
     const nextName = draftName.trim();
@@ -456,21 +459,35 @@ export function ChatTabBar({
             </ContextMenu>
           );
         })}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              aria-label="New chat in this group"
-              variant="ghost"
-              size="icon-sm"
-              className="mb-0.5 ml-0.5 h-8 w-8 shrink-0 rounded-t-md text-muted-foreground hover:text-foreground"
-              onClick={onNewTab}
-            >
-              <Plus className="size-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>New chat</TooltipContent>
-        </Tooltip>
+        {isNewTabDisabled ? (
+          <Button
+            type="button"
+            aria-label="New chat in this group"
+            variant="ghost"
+            size="icon-sm"
+            className="mb-0.5 ml-0.5 h-8 w-8 shrink-0 rounded-t-md text-muted-foreground"
+            disabled
+            onClick={onNewTab}
+          >
+            <Plus className="size-4" />
+          </Button>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                aria-label="New chat in this group"
+                variant="ghost"
+                size="icon-sm"
+                className="mb-0.5 ml-0.5 h-8 w-8 shrink-0 rounded-t-md text-muted-foreground hover:text-foreground"
+                onClick={onNewTab}
+              >
+                <Plus className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>New chat</TooltipContent>
+          </Tooltip>
+        )}
       </div>
       <div className="mb-0.5 ml-1 flex shrink-0 items-center gap-0">
         {closedTabs.length > 0 ? (
