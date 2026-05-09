@@ -523,7 +523,7 @@ export default function ChatPage() {
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
-  const { groups: liveChatGroups } = useChatGroups();
+  const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
   const { getSnapshot, writeSnapshot, prefetchMessages } = useChatThreadCache();
   const chatDebugFlags = getChatDebugFlags();
   const messageCacheEnabled = chatDebugFlags.messageCache;
@@ -775,6 +775,14 @@ export default function ChatPage() {
         previewTarget: snapshot.previewTarget,
         historyState: snapshot.historyState,
       });
+      if (
+        snapshot.historyState !== "streaming" &&
+        snapshot.messages.some(
+          (message) => message.role === "assistant" && !message.isStreaming,
+        )
+      ) {
+        markThreadIdle(snapshot.threadId);
+      }
     },
     [
       displayThreadId,
@@ -786,6 +794,7 @@ export default function ChatPage() {
       workspaceId,
       snapshotsEnabled,
       writeSnapshot,
+      markThreadIdle,
     ],
   );
   const closedTabs =

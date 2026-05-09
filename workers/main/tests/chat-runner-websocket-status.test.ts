@@ -109,6 +109,16 @@ async function startBridge() {
   return { server, runner };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('chat runner websocket workspace status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -147,6 +157,83 @@ describe('chat runner websocket workspace status', () => {
       'thread_1',
       false,
     );
+  });
+
+  it('passes the browser resume event id to the runner as lastSeq', async () => {
+    const server = new FakeSocket();
+    const runner = new FakeSocket();
+    const runnerConnection = deferred<FakeSocket>();
+    buildChatRunnerEnvMock.mockResolvedValue({ envVars: {}, byokProxy: null });
+    connectChatWebSocketMock.mockReturnValue(runnerConnection.promise);
+
+    const bridgePromise = bridgeChatSocket({
+      server: server as unknown as WebSocket,
+      env: createEnv() as never,
+      orgId: 'org_1',
+      workspaceId: 'ws_1',
+      threadId: 'thread_1',
+      userId: 'user_1',
+      userName: 'Ada',
+      userEmail: 'ada@example.com',
+    });
+
+    await vi.waitFor(() => {
+      expect(connectChatWebSocketMock).toHaveBeenCalled();
+    });
+    server.emitMessage({ type: 'init', lastEventId: 42 });
+    runnerConnection.resolve(runner);
+    await bridgePromise;
+
+    expect(JSON.parse(runner.sent[0])).toMatchObject({
+      type: 'init',
+      threadId: 'thread_1',
+      lastSeq: 42,
+    });
+  });
+
+  it('does not initialize a runner that connects after the browser closes', async () => {
+    const server = new FakeSocket();
+    const runner = new FakeSocket();
+    const runnerConnection = deferred<FakeSocket>();
+    buildChatRunnerEnvMock.mockResolvedValue({ envVars: {}, byokProxy: null });
+    connectChatWebSocketMock.mockReturnValue(runnerConnection.promise);
+
+    const bridgePromise = bridgeChatSocket({
+      server: server as unknown as WebSocket,
+      env: createEnv() as never,
+      orgId: 'org_1',
+      workspaceId: 'ws_1',
+      threadId: 'thread_1',
+      userId: 'user_1',
+      userName: 'Ada',
+      userEmail: 'ada@example.com',
+    });
+
+    await vi.waitFor(() => {
+      expect(connectChatWebSocketMock).toHaveBeenCalled();
+    });
+    server.emitClose({ code: 1000, reason: 'tab switched' });
+    runnerConnection.resolve(runner);
+    await bridgePromise;
+
+    expect(runner.sent).toEqual([]);
+    expect(runner.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it('forwards runner seq as browser eventId for the next reconnect', async () => {
+    const { server, runner } = await startBridge();
+
+    runner.emitMessage({
+      type: 'runtime_event',
+      seq: 43,
+      event: { method: 'turn/completed', params: {} },
+    });
+
+    expect(JSON.parse(server.sent.at(-1) ?? '{}')).toMatchObject({
+      type: 'runtime_event',
+      seq: 43,
+      eventId: 43,
+    });
   });
 
   it('records assistant completion activity and unread status with a completedAt timestamp', async () => {

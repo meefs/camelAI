@@ -3,6 +3,7 @@
 import {
   createContext,
   useContext,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -30,6 +31,7 @@ interface ChatGroupsContextValue {
   activeGroupId: string | null;
   runningThreadIds: Set<string>;
   hasStatusSnapshot: boolean;
+  markThreadIdle: (threadId: string) => void;
 }
 
 const ChatGroupsContext = createContext<ChatGroupsContextValue | null>(null);
@@ -61,6 +63,16 @@ export function getGroupLandingHref(group: ChatGroupView): string {
   const firstClosed = group.closed_threads[0]?.id;
   if (firstClosed) return `/chat/${firstClosed}`;
   return `/chat?group=${encodeURIComponent(group.id)}`;
+}
+
+export function getCloseGroupRedirect(
+  groups: ChatGroupView[],
+  activeGroupId: string | null,
+  closingGroupId: string,
+): string | null {
+  if (closingGroupId !== activeGroupId) return null;
+  const nextGroup = groups.find((group) => group.id !== closingGroupId);
+  return nextGroup ? getGroupLandingHref(nextGroup) : "/chat";
 }
 
 export function applyLiveRunningStatuses(
@@ -156,6 +168,17 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       return next;
     });
   }, [activeThreadId]);
+
+  const markThreadIdle = useCallback((threadId: string) => {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) return;
+    setLiveThreadStatuses((current) => {
+      if (current.get(normalizedThreadId) === "idle") return current;
+      const next = new Map(current);
+      next.set(normalizedThreadId, "idle");
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const workspaceId = currentWorkspace?.id;
@@ -279,6 +302,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     activeGroupId: getActiveGroupIdFromMatches(matches),
     runningThreadIds,
     hasStatusSnapshot,
+    markThreadIdle,
   }), [groups, hasStatusSnapshot, matches, runningThreadIds]);
 
   return (

@@ -1,6 +1,8 @@
+import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/workspaces.$id.chat.$threadId.first-user-message';
 import { requireWorkspaceAccess } from './workspaces.utils';
 import * as chatDO from '@/lib/chat-do.server';
+import { isPlaceholderThreadTitle } from '@/lib/thread-title';
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   try {
@@ -13,7 +15,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ error: 'Thread ID required' }, { status: 400 });
     }
 
-    await requireWorkspaceAccess(request, context, workspaceId, { requireWrite: true });
+    const { userId } = await requireWorkspaceAccess(request, context, workspaceId, { requireWrite: true });
 
     const payload = await request.json() as { firstUserMessage?: unknown };
     const firstUserMessage = typeof payload.firstUserMessage === 'string'
@@ -31,6 +33,18 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     );
     if (!thread) {
       return Response.json({ error: 'Thread not found' }, { status: 404 });
+    }
+
+    if (isPlaceholderThreadTitle(thread.title)) {
+      waitUntil(
+        chatDO.generateThreadTitle(
+          context,
+          threadId,
+          workspaceId,
+          firstUserMessage,
+          userId,
+        ),
+      );
     }
 
     return Response.json({ success: true });

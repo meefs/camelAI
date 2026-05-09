@@ -143,9 +143,18 @@ function findLocalMessageForServerMessage(
 
 function findPriorUser(message: Message, messages: Message[]): Message | null {
   let prior: Message | null = null;
+  const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
   for (const candidate of messages) {
-    if (candidate.created_at > message.created_at) continue;
+    if (candidate.id === message.id) continue;
     if (candidate.role !== "user") continue;
+    const candidateIndex = messages.findIndex(
+      (entry) => entry.id === candidate.id,
+    );
+    const candidateAppearsBeforeMessage =
+      messageIndex >= 0 && candidateIndex >= 0 && candidateIndex < messageIndex;
+    if (!candidateAppearsBeforeMessage && candidate.created_at > message.created_at) {
+      continue;
+    }
     if (!prior || candidate.created_at > prior.created_at) {
       prior = candidate;
     }
@@ -233,6 +242,17 @@ export function mergeServerAndLocalMessages(
     matchedServerUsersByLocalId.set(msg.id, serverUser);
   }
 
+  const localSortTimestamp = (message: Message): number => {
+    if (message.role !== "assistant") return message.created_at;
+    const localUser = findPriorUser(message, localMessages);
+    if (!localUser) return message.created_at;
+    const serverUser = matchedServerUsersByLocalId.get(localUser.id);
+    if (!serverUser || serverUser.created_at < message.created_at) {
+      return message.created_at;
+    }
+    return serverUser.created_at + 1;
+  };
+
   const unsyncedLocalMessages = localMessages.filter((msg) => {
     if (consumedLocalIds.has(msg.id)) return false;
     if (serverIds.has(msg.id)) return false;
@@ -256,6 +276,6 @@ export function mergeServerAndLocalMessages(
     return mergedServerMessages;
   }
   return [...mergedServerMessages, ...unsyncedLocalMessages].sort(
-    (a, b) => a.created_at - b.created_at,
+    (a, b) => localSortTimestamp(a) - localSortTimestamp(b),
   );
 }

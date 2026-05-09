@@ -5,7 +5,11 @@ import { AppWindowMac, Cable, CircleHelp, LayoutGrid, MessagesSquare, Plus } fro
 import { Link, useLocation, useNavigate, useRevalidator } from "react-router"
 
 import { useAuthData } from "@/hooks/use-auth-data"
-import { getGroupLandingHref, useChatGroups } from "@/hooks/use-chat-groups"
+import {
+  getCloseGroupRedirect,
+  getGroupLandingHref,
+  useChatGroups,
+} from "@/hooks/use-chat-groups"
 import { GetHelpDialog } from "@/components/get-help-dialog"
 import { ChatGroupsList } from "@/components/sidebar/chat-groups-list"
 import { NavUser } from "@/components/sidebar/nav-user"
@@ -45,15 +49,14 @@ export function AppSidebar(props: AppSidebarProps) {
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null
 
   const handleCloseGroup = async (groupId: string) => {
-    const remainingGroups = groups.filter((group) => group.id !== groupId)
+    const redirect = getCloseGroupRedirect(groups, activeGroupId, groupId)
+    if (redirect) {
+      navigate(redirect, { replace: true })
+    }
     await fetch(`/api/chat-groups/${encodeURIComponent(groupId)}`, {
       method: "DELETE",
     })
     revalidator.revalidate()
-    if (groupId === activeGroupId) {
-      const nextGroup = remainingGroups[0]
-      navigate(nextGroup ? getGroupLandingHref(nextGroup) : "/chat")
-    }
   }
 
   const handleMoveThreadToGroup = async (threadId: string, targetGroupId: string) => {

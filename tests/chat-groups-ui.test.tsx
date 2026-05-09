@@ -11,7 +11,10 @@ import {
   ChatGroupRightSlot,
   ChatGroupsList,
 } from "@/components/sidebar/chat-groups-list";
-import { applyLiveRunningStatuses } from "@/hooks/use-chat-groups";
+import {
+  applyLiveRunningStatuses,
+  getCloseGroupRedirect,
+} from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import type { ChatGroup, ChatGroupView } from "@/types";
 
@@ -408,6 +411,41 @@ describe("ChatGroupsList", () => {
     const closeButton = screen.getByRole("button", { name: "Close Launch" });
     expect(closeButton).not.toHaveClass("top-1/2");
     expect(closeButton).not.toHaveClass("-translate-y-1/2");
+  });
+});
+
+describe("getCloseGroupRedirect", () => {
+  it("navigates away before closing the active group so the thread route cannot recreate it", () => {
+    expect(getCloseGroupRedirect([groupView], "group_1", "group_1")).toBe(
+      "/chat",
+    );
+  });
+
+  it("moves to another group when closing the active group and leaves inactive closes in place", () => {
+    const nextGroup: ChatGroupView = {
+      ...groupView,
+      id: "group_2",
+      name: "Research",
+      last_active_thread_id: "thread_2",
+      open_thread_ids: ["thread_2"],
+      open_threads: [
+        {
+          id: "thread_2",
+          title: "Research notes",
+          model: "haiku",
+          provider: "claude",
+          updated_at: 2,
+          status: "idle",
+        },
+      ],
+    };
+
+    expect(
+      getCloseGroupRedirect([groupView, nextGroup], "group_1", "group_1"),
+    ).toBe("/chat/thread_2");
+    expect(
+      getCloseGroupRedirect([groupView, nextGroup], "group_1", "group_2"),
+    ).toBeNull();
   });
 });
 

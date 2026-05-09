@@ -2055,7 +2055,9 @@ export default function Chat({
   useEffect(() => {
     if (!threadId || readOnly || !onThreadSnapshotChange) return;
     const hasActiveStream =
-      Boolean(streamingMessageId) || messages.some((message) => message.isStreaming);
+      loading ||
+      Boolean(streamingMessageId) ||
+      messages.some((message) => message.isStreaming);
     const hasPendingLocalMessages =
       pendingMessages.length > 0 ||
       messages.some(
@@ -2082,6 +2084,7 @@ export default function Chat({
     messages,
     onThreadSnapshotChange,
     pendingMessages,
+    loading,
     previewTabs,
     previewTarget,
     readOnly,
@@ -2123,7 +2126,6 @@ export default function Chat({
     ? Boolean(tabNotebookPdfExporting[activeTabId])
     : false;
   const [mobileView, setMobileView] = useState<"chat" | "preview">("chat");
-  const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
   const supportsPreviewTabsStateRef = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2157,7 +2159,8 @@ export default function Chat({
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const firstUserMessageBackfillAttemptedRef = useRef<Set<string>>(new Set());
   const sessionIdRef = useRef<string | null>(null);
-  const lastEventIdRef = useRef(0);
+  const lastSideChannelEventIdRef = useRef(0);
+  const lastRunnerSeqRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const fallbackRenderedAtRef = useRef<number>(Date.now());
 
@@ -2357,11 +2360,6 @@ export default function Chat({
     return () => clearTimeout(timeout);
   }, [currentTodos, isStreaming]);
 
-  // Sync current title from prop (e.g., when SSR data arrives)
-  useEffect(() => {
-    setCurrentTitle(threadTitle);
-  }, [threadTitle]);
-
   useEffect(() => {
     setActiveThreadProvider(initialThreadProvider);
     setSelectedThreadModel(
@@ -2541,18 +2539,29 @@ export default function Chat({
           const parsed = JSON.parse(stored) as {
             sessionId?: string;
             lastEventId?: number;
+            lastSideChannelEventId?: number;
+            lastRunnerSeq?: number;
           };
+          const legacyLastEventId =
+            typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
           sessionIdRef.current =
             typeof parsed.sessionId === "string" ? parsed.sessionId : null;
-          lastEventIdRef.current =
-            typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
+          lastSideChannelEventIdRef.current =
+            typeof parsed.lastSideChannelEventId === "number"
+              ? parsed.lastSideChannelEventId
+              : legacyLastEventId;
+          lastRunnerSeqRef.current =
+            typeof parsed.lastRunnerSeq === "number"
+              ? parsed.lastRunnerSeq
+              : legacyLastEventId;
           return;
         }
       } catch (e) {
         console.warn("Failed to load session state:", e);
       }
       sessionIdRef.current = null;
-      lastEventIdRef.current = 0;
+      lastSideChannelEventIdRef.current = 0;
+      lastRunnerSeqRef.current = 0;
     },
     [sessionStorageKey],
   );
@@ -2562,7 +2571,8 @@ export default function Chat({
       try {
         const payload = {
           sessionId: sessionIdRef.current,
-          lastEventId: lastEventIdRef.current,
+          lastSideChannelEventId: lastSideChannelEventIdRef.current,
+          lastRunnerSeq: lastRunnerSeqRef.current,
         };
         sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
       } catch (e) {
@@ -2575,7 +2585,8 @@ export default function Chat({
   useEffect(() => {
     if (!threadId) {
       sessionIdRef.current = null;
-      lastEventIdRef.current = 0;
+      lastSideChannelEventIdRef.current = 0;
+      lastRunnerSeqRef.current = 0;
       return;
     }
     loadSessionState(threadId);
@@ -3147,7 +3158,7 @@ export default function Chat({
       }
 
       if (data.type === "title_updated" && data.title) {
-        setCurrentTitle(data.title);
+        revalidator.revalidate();
         return;
       }
 
@@ -3189,6 +3200,7 @@ export default function Chat({
     [
       openTabForTarget,
       activeThreadProvider,
+      revalidator,
       setLocalPreviewSessionState,
       bumpIframeKey,
       bumpFilePreviewKey,
@@ -3254,9 +3266,6 @@ export default function Chat({
       ) {
         shouldFetchMessages = false;
         sessionStorage.removeItem(pendingMessageKey);
-        if (pendingPayload.threadTitle) {
-          setCurrentTitle(pendingPayload.threadTitle);
-        }
         if (pendingPayload.threadModel) {
           setSelectedThreadModel(pendingPayload.threadModel);
         }
@@ -3315,7 +3324,7 @@ export default function Chat({
             mode: "side_channel",
             threadId: id,
             sessionId: sessionIdRef.current,
-            lastEventId: lastEventIdRef.current,
+            lastEventId: lastSideChannelEventIdRef.current,
           }),
         );
       };
@@ -3328,8 +3337,8 @@ export default function Chat({
         const data = JSON.parse(event.data);
 
         if (typeof data?.eventId === "number") {
-          lastEventIdRef.current = Math.max(
-            lastEventIdRef.current,
+          lastSideChannelEventIdRef.current = Math.max(
+            lastSideChannelEventIdRef.current,
             data.eventId,
           );
           if (id) {
@@ -3340,7 +3349,7 @@ export default function Chat({
         if (data.type === "session" && typeof data.sessionId === "string") {
           const newSessionId = data.sessionId;
           if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-            lastEventIdRef.current = 0;
+            lastSideChannelEventIdRef.current = 0;
           }
           sessionIdRef.current = newSessionId;
           if (id) {
@@ -3426,7 +3435,8 @@ export default function Chat({
             type: "init",
             threadId: id,
             sessionId: sessionIdRef.current,
-            lastEventId: lastEventIdRef.current,
+            lastEventId: lastRunnerSeqRef.current,
+            lastSeq: lastRunnerSeqRef.current,
           }),
         );
       };
@@ -3440,8 +3450,8 @@ export default function Chat({
         const data = JSON.parse(event.data);
 
         if (typeof data?.eventId === "number") {
-          lastEventIdRef.current = Math.max(
-            lastEventIdRef.current,
+          lastRunnerSeqRef.current = Math.max(
+            lastRunnerSeqRef.current,
             data.eventId,
           );
           if (id) {
@@ -3500,7 +3510,7 @@ export default function Chat({
         ) {
           const newSessionId = data.sessionId;
           if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-            lastEventIdRef.current = 0;
+            lastRunnerSeqRef.current = 0;
           }
           sessionIdRef.current = newSessionId;
           if (id) {
@@ -4017,6 +4027,19 @@ export default function Chat({
           });
         } else if (data.type === "streaming_state") {
           const nextIsStreaming = Boolean(data.isStreaming);
+          if (!nextIsStreaming) {
+            splitStreamingMessageOnNextPartRef.current = false;
+            const msgId = streamingMessageIdRef.current;
+            if (msgId) {
+              lastCompletedAssistantMessageIdRef.current = msgId;
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === msgId ? finalizeStreamingMessage(msg) : msg,
+                ),
+              );
+            }
+            setStreamingMessageId(null);
+          }
           if (nextIsStreaming || pendingMessagesRef.current.length === 0) {
             setLoading(nextIsStreaming);
           }

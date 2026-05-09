@@ -140,6 +140,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
   const bridgeId = crypto.randomUUID();
   const startedAt = Date.now();
   let completionRecordedAt: number | null = null;
+  let clientLastSeq = 0;
 
   const logBridge = (event: string, fields: Record<string, unknown> = {}) => {
     console.log('[chat runner bridge]', {
@@ -219,6 +220,10 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
     );
     return completedAt;
   };
+  const updateClientLastSeq = (value: unknown) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return;
+    clientLastSeq = Math.max(clientLastSeq, Math.max(0, Math.floor(value)));
+  };
 
   const handleClientMessage = async (raw: string) => {
     let data: Record<string, unknown>;
@@ -230,7 +235,9 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
 
     const type = typeof data.type === 'string' ? data.type : '';
     if (type === 'init') {
-      logBridge('client_init_ignored');
+      updateClientLastSeq(data.lastSeq);
+      updateClientLastSeq(data.lastEventId);
+      logBridge('client_init_recorded', { lastSeq: clientLastSeq });
       return;
     }
 
@@ -270,18 +277,25 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
   };
 
   server.addEventListener('message', (event) => {
+    if (closed) return;
     if (typeof event.data !== 'string') return;
     if (!runnerSocket || runnerSocket.readyState !== WebSocket.OPEN) {
       try {
         const data = JSON.parse(event.data) as { type?: unknown };
-        if (data.type !== 'init') {
-          queuedClientMessages.push(event.data);
-          logBridge('client_message_queued', {
-            type: typeof data.type === 'string' ? data.type : 'unknown',
-            queueLength: queuedClientMessages.length,
-            runnerReadyState: runnerSocket?.readyState ?? null,
-          });
+        if (data.type === 'init') {
+          clientMessageChain = clientMessageChain
+            .then(() => handleClientMessage(event.data as string))
+            .catch((error) => {
+              console.error('[chat websocket] failed to handle client init', error);
+            });
+          return;
         }
+        queuedClientMessages.push(event.data);
+        logBridge('client_message_queued', {
+          type: typeof data.type === 'string' ? data.type : 'unknown',
+          queueLength: queuedClientMessages.length,
+          runnerReadyState: runnerSocket?.readyState ?? null,
+        });
       } catch {
         // Ignore invalid JSON while the runner is starting.
       }
@@ -327,6 +341,10 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
     userId,
     byokProxy,
   });
+  if (closed) {
+    closeWebSocket(runnerSocket, 1000, 'client closed');
+    return;
+  }
   runnerSocket.accept();
   logBridge('runner_connected', {
     provider,
@@ -334,6 +352,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
   });
 
   runnerSocket.addEventListener('message', (event) => {
+    if (closed) return;
     if (typeof event.data !== 'string') return;
     let payload: Record<string, unknown>;
     try {
@@ -345,6 +364,13 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
     payload.sessionId = threadId;
 
     const eventType = typeof payload.type === 'string' ? payload.type : '';
+    const seq =
+      typeof payload.seq === 'number' && Number.isFinite(payload.seq)
+        ? Math.max(0, Math.floor(payload.seq))
+        : null;
+    if (seq !== null && typeof payload.eventId !== 'number') {
+      payload.eventId = seq;
+    }
     const runtimeEvent = payload.event as { method?: unknown } | undefined;
     if (
       eventType === 'ready' ||
@@ -412,13 +438,14 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
     }
   });
 
+  await clientMessageChain;
   runnerSocket.send(JSON.stringify({
     type: 'init',
     threadId,
     env: envVars,
-    lastSeq: 0,
+    lastSeq: clientLastSeq,
   }));
-  logBridge('runner_init_sent');
+  logBridge('runner_init_sent', { lastSeq: clientLastSeq });
 
   while (queuedClientMessages.length > 0 && runnerSocket.readyState === WebSocket.OPEN) {
     const raw = queuedClientMessages.shift();
@@ -492,6 +519,7 @@ async function updateThreadMetadataForUserMessage(
     if (title) {
       await orgStub.updateThread(threadId, title);
       await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
+      await getThreadStub(env, threadId).setTitle(title);
     }
   } catch (error) {
     console.error('[chat websocket] failed to generate thread title', error);

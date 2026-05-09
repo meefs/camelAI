@@ -452,4 +452,70 @@ describe("mergeServerAndLocalMessages", () => {
       "server-assistant",
     ]);
   });
+
+  it("keeps a local assistant after its persisted user when server timestamps arrive later", () => {
+    const promptText = "Please continue";
+    const serverMessages = [
+      message({
+        id: "server-user",
+        role: "user",
+        createdAt: 5000,
+        content: [{ type: "text", text: `[Miguel]: ${promptText}` }],
+      }),
+    ];
+    const localMessages = [
+      message({
+        id: "local-user",
+        role: "user",
+        createdAt: 1000,
+        content: [{ type: "text", text: promptText }],
+      }),
+      message({
+        id: "local-assistant",
+        role: "assistant",
+        createdAt: 2200,
+        content: [{ type: "text", text: "Still working" }],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged.map((entry) => entry.id)).toEqual([
+      "server-user",
+      "local-assistant",
+    ]);
+  });
+
+  it("dedupes the local assistant after its persisted user has a later timestamp", () => {
+    const promptText = "Please continue";
+    const serverUser = message({
+      id: "server-user",
+      role: "user",
+      createdAt: 5000,
+      content: [{ type: "text", text: `[Miguel]: ${promptText}` }],
+    });
+    const localAssistant = message({
+      id: "local-assistant",
+      role: "assistant",
+      createdAt: 2200,
+      content: [{ type: "text", text: "Still working" }],
+    });
+    const localMessages = [serverUser, localAssistant];
+    const serverMessages = [
+      serverUser,
+      message({
+        id: "server-assistant",
+        role: "assistant",
+        createdAt: 6000,
+        content: [{ type: "text", text: "Still working" }],
+      }),
+    ];
+
+    const merged = mergeServerAndLocalMessages(serverMessages, localMessages);
+
+    expect(merged.map((entry) => entry.id)).toEqual([
+      "server-user",
+      "server-assistant",
+    ]);
+  });
 });
