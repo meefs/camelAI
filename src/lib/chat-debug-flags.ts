@@ -1,7 +1,4 @@
 export interface ChatDebugFlags {
-  messageCache: boolean;
-  snapshots: boolean;
-  prefetch: boolean;
   statusSocket: boolean;
   statusRevalidate: boolean;
   markViewed: boolean;
@@ -10,23 +7,12 @@ export interface ChatDebugFlags {
 export const CHAT_DEBUG_STORAGE_KEY = "camelai.chatDebug";
 
 const DEFAULT_CHAT_DEBUG_FLAGS: ChatDebugFlags = {
-  messageCache: true,
-  snapshots: true,
-  prefetch: true,
   statusSocket: true,
   statusRevalidate: true,
   markViewed: true,
 };
 
 const FLAG_ALIASES: Record<string, keyof ChatDebugFlags> = {
-  cache: "messageCache",
-  messagecache: "messageCache",
-  messageCache: "messageCache",
-  threadcache: "messageCache",
-  threadCache: "messageCache",
-  snapshot: "snapshots",
-  snapshots: "snapshots",
-  prefetch: "prefetch",
   status: "statusSocket",
   statussocket: "statusSocket",
   statusSocket: "statusSocket",

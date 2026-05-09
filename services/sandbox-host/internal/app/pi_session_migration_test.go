@@ -370,17 +370,47 @@ func TestHostPiSessionDirHasJSONL(t *testing.T) {
 	}
 }
 
-func TestLegacyCodexStatePathCandidatesIncludesStoredCodexSessionID(t *testing.T) {
+func TestLegacyCodexStatePathCandidatesRequiresStoredCodexSessionID(t *testing.T) {
+	paths, err := legacyCodexStatePathCandidates("camel-thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths != nil {
+		t.Fatalf("paths = %#v, want nil", paths)
+	}
+}
+
+func TestLegacyCodexStatePathCandidatesUsesOnlyStoredCodexSessionID(t *testing.T) {
 	paths, err := legacyCodexStatePathCandidates("camel-thread", "codex-session")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"/home/claude/.codex/threads/camel-thread/state_5.sqlite",
 		"/home/claude/.codex/threads/codex-session/state_5.sqlite",
 	}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
+func TestLegacyClaudeSessionCandidatesRequiresStoredClaudeSessionID(t *testing.T) {
+	sessions, err := legacyClaudeSessionCandidates("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessions != nil {
+		t.Fatalf("sessions = %#v, want nil", sessions)
+	}
+}
+
+func TestLegacyClaudeSessionCandidatesUsesOnlyStoredClaudeSessionID(t *testing.T) {
+	sessions, err := legacyClaudeSessionCandidates("claude-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"claude-session"}
+	if !reflect.DeepEqual(sessions, want) {
+		t.Fatalf("sessions = %#v, want %#v", sessions, want)
 	}
 }
 

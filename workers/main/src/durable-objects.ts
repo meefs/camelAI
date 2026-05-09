@@ -2485,7 +2485,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         provider,
       });
       const legacyClaudeSessionId = this.getLegacyClaudeSessionId();
-      if (legacyClaudeSessionId && legacyClaudeSessionId !== context.threadId) {
+      if (legacyClaudeSessionId) {
         envVars.CHIRIDION_CLAUDE_SESSION_ID = legacyClaudeSessionId;
       }
       if (provider === 'codex' && this.codexSessionId) {

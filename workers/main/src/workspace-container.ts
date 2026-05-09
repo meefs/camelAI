@@ -922,11 +922,11 @@ export class WorkspaceContainer {
 
     const query: Record<string, string> = { threadId: trimmedThreadId };
     const claudeSessionId = options.claudeSessionId?.trim();
-    if (claudeSessionId && claudeSessionId !== trimmedThreadId) {
+    if (claudeSessionId) {
       query.claudeSessionId = claudeSessionId;
     }
     const codexSessionId = options.codexSessionId?.trim();
-    if (codexSessionId && codexSessionId !== trimmedThreadId) {
+    if (codexSessionId) {
       query.codexSessionId = codexSessionId;
     }
 

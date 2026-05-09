@@ -23,6 +23,7 @@ const sourceHostPiExtensionPath = resolve(repoRoot, 'services/sandbox-host/pi/co
 const sourceHostPiSkillsPath = resolve(repoRoot, 'sandbox/skills');
 const piCodingAgentVersion = (process.env.PI_CODING_AGENT_VERSION || '0.73.0').trim() || '0.73.0';
 const typeboxVersion = (process.env.TYPEBOX_VERSION || '1.1.37').trim() || '1.1.37';
+const localDevSandboxProxySecret = 'local-dev-sandbox-proxy-secret';
 
 const watchImage = process.env.SANDBOX_WATCH_IMAGE !== '0';
 const watchDebounceMs = Number.parseInt(process.env.SANDBOX_WATCH_DEBOUNCE_MS || '1500', 10) || 1500;
@@ -300,6 +301,9 @@ async function main() {
   const loadedSandboxProxyFromDevVars = applyEnvFallback(env, 'SANDBOX_PROXY_SECRET', devVars.SANDBOX_PROXY_SECRET);
   const loadedSandboxProxyFromTfvars = !loadedSandboxProxyFromDevVars
     && applyEnvFallback(env, 'SANDBOX_PROXY_SECRET', tfVars.sandbox_proxy_secret);
+  const loadedSandboxProxyFromLocalDefault = !loadedSandboxProxyFromDevVars
+    && !loadedSandboxProxyFromTfvars
+    && applyEnvFallback(env, 'SANDBOX_PROXY_SECRET', localDevSandboxProxySecret);
 
   const r2KeyMappings = [
     ['R2_ACCESS_KEY_ID', 'r2_access_key_id'],
@@ -360,6 +364,8 @@ async function main() {
     console.log('[dev:sandbox-host] Loaded SANDBOX_PROXY_SECRET from .dev.vars');
   } else if (loadedSandboxProxyFromTfvars) {
     console.log('[dev:sandbox-host] Loaded SANDBOX_PROXY_SECRET from infra tfvars');
+  } else if (loadedSandboxProxyFromLocalDefault) {
+    console.log('[dev:sandbox-host] Using local development SANDBOX_PROXY_SECRET');
   }
 
   if (loadedR2FromDevVars) {
@@ -377,9 +383,6 @@ async function main() {
   }
   if (loadedWebProvidersFromTfvars.length > 0) {
     console.log(`[dev:sandbox-host] Loaded web provider vars from infra tfvars: ${loadedWebProvidersFromTfvars.join(', ')}`);
-  }
-  if (!env.SANDBOX_PROXY_SECRET) {
-    console.warn('[dev:sandbox-host] SANDBOX_PROXY_SECRET is not set; proxy calls from sandbox to worker will fail.');
   }
   const hasAllR2Vars = Boolean(env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME);
   if (!hasAllR2Vars) {

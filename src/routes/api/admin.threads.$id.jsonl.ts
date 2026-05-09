@@ -4,7 +4,6 @@ import { getEnv } from '@/lib/cloudflare.server';
 import {
   getCodexSessionId,
   getLegacyClaudeSessionId,
-  getThreadJsonlPathCandidates,
 } from '@/lib/chat-do.server';
 import { readMessagesFromResponse } from '@/lib/thread-messages.server';
 import {
@@ -59,16 +58,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       orgId
     );
 
-    let proxyResponse: Response | null = null;
     const legacyClaudeSessionId = await getLegacyClaudeSessionId(context, threadId);
-    for (const candidatePath of getThreadJsonlPathCandidates(threadId, legacyClaudeSessionId)) {
-      proxyResponse = await container.readFileStream(candidatePath, {
-        skipBanCheck: true,
-      });
-      if (proxyResponse) {
-        break;
-      }
-    }
 
     const filename = `${sanitizeFilename(threadId)}.jsonl`;
     const headers: Record<string, string> = {
@@ -77,14 +67,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
     };
-
-    if (proxyResponse) {
-      const contentLength = proxyResponse.headers.get('Content-Length');
-      if (contentLength) {
-        headers['Content-Length'] = contentLength;
-      }
-      return new Response(proxyResponse.body, { headers });
-    }
 
     const codexSessionId = await getCodexSessionId(context, threadId);
     const streamResult = await container.readThreadMessagesStream(threadId, {

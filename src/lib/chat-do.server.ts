@@ -512,24 +512,6 @@ export async function generateThreadTitle(
   }
 }
 
-export function getThreadJsonlPathCandidates(
-  threadId: string,
-  legacyClaudeSessionId?: string | null,
-): string[] {
-  // Claude stores sessions at ~/.claude/projects/{project-path}/{session_id}.jsonl.
-  // Current sandbox project path resolves to -home-claude. Legacy Claude threads
-  // may use a Claude SDK session id that differs from the camel thread id.
-  const sessionIds = [threadId];
-  const trimmedLegacySessionId = legacyClaudeSessionId?.trim();
-  if (trimmedLegacySessionId && trimmedLegacySessionId !== threadId) {
-    sessionIds.push(trimmedLegacySessionId);
-  }
-  return sessionIds.map(
-    (sessionId) =>
-      `/home/claude/.claude/projects/-home-claude/${sessionId}.jsonl`,
-  );
-}
-
 export async function getLegacyClaudeSessionId(
   context: AppLoadContext,
   threadId: string,
@@ -580,9 +562,8 @@ export async function getMessages(
 ): Promise<Message[]> {
   const env = getEnv(context);
 
-  // Messages are parsed on sandbox-host from the container's Claude JSONL file.
-  // Newer Claude threads use threadId as the session_id; legacy threads may have
-  // a separate Claude SDK session id stored as metadata.
+  // Sandbox-host owns message history parsing. New Pi threads read host session
+  // history; legacy readers only run when explicit legacy metadata is present.
   try {
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];

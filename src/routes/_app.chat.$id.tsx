@@ -1,4 +1,4 @@
-import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, use, useCallback, useEffect, useState } from "react";
 import { redirect, useLoaderData, useNavigate, useRevalidator } from "react-router";
 import type { Route } from "./+types/_app.chat.$id";
 import {
@@ -21,7 +21,6 @@ import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getDefaultThreadProvider,
-  getProviderForModel,
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
@@ -38,11 +37,6 @@ import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { useChatGroups } from "@/hooks/use-chat-groups";
-import {
-  hasRenderableThreadSnapshot,
-  useChatThreadCache,
-  type ChatThreadSnapshot,
-} from "@/hooks/use-chat-thread-cache";
 import type {
   ChatHarness,
   Integration,
@@ -181,19 +175,6 @@ const EMPTY_CHAT_DATA: ChatData = {
   activeTabId: null,
   previewTarget: null,
 };
-
-function chatDataFromSnapshot(snapshot: ChatThreadSnapshot): ChatData {
-  return {
-    messages: snapshot.messages,
-    previewTabs: snapshot.previewTabs,
-    activeTabId: snapshot.activeTabId,
-    previewTarget: snapshot.previewTarget,
-  };
-}
-
-function hasUsefulSnapshot(snapshot: ChatThreadSnapshot | null): snapshot is ChatThreadSnapshot {
-  return hasRenderableThreadSnapshot(snapshot);
-}
 
 function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === "app") return `app:${target.scriptName}`;
@@ -523,23 +504,10 @@ export default function ChatPage() {
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
-  const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
-  const { getSnapshot, writeSnapshot, prefetchMessages } = useChatThreadCache();
+  const { groups: liveChatGroups } = useChatGroups();
   const chatDebugFlags = getChatDebugFlags();
-  const messageCacheEnabled = chatDebugFlags.messageCache;
-  const snapshotsEnabled = messageCacheEnabled && chatDebugFlags.snapshots;
-  const prefetchEnabled = messageCacheEnabled && chatDebugFlags.prefetch;
   const markViewedEnabled = chatDebugFlags.markViewed;
-  const [optimisticThreadId, setOptimisticThreadId] = useState<string | null>(
-    null,
-  );
-
-  useEffect(() => {
-    setOptimisticThreadId(null);
-  }, [threadId]);
-
-  const routeSnapshot =
-    snapshotsEnabled && workspaceId ? getSnapshot(workspaceId, threadId) : null;
+  const [instantThreadId, setInstantThreadId] = useState<string | null>(null);
   const [resolvedChatDataState, setResolvedChatDataState] = useState<{
     threadId: string;
     data: ChatData;
@@ -548,38 +516,14 @@ export default function ChatPage() {
   const resolvedChatData =
     resolvedChatDataState?.threadId === threadId
       ? resolvedChatDataState.data
-      : hasUsefulSnapshot(routeSnapshot)
-        ? chatDataFromSnapshot(routeSnapshot)
       : null;
   const chatData = resolvedChatData ?? EMPTY_CHAT_DATA;
 
   const handleResolved = useCallback(
     (resolvedThreadId: string, data: ChatData) => {
       setResolvedChatDataState({ threadId: resolvedThreadId, data });
-      if (workspaceId) {
-        const hasResolvedMessages = data.messages.length > 0;
-        writeSnapshot({
-          workspaceId,
-          threadId: resolvedThreadId,
-          threadTitle,
-          ...(threadModel ? { threadModel } : {}),
-          ...(threadProvider ? { threadProvider } : {}),
-          ...(hasResolvedMessages
-            ? { messages: data.messages, historyState: "server" as const }
-            : {}),
-          previewTabs: data.previewTabs,
-          activeTabId: data.activeTabId,
-          previewTarget: data.previewTarget,
-        });
-      }
     },
-    [
-      threadModel,
-      threadProvider,
-      threadTitle,
-      workspaceId,
-      writeSnapshot,
-    ],
+    [],
   );
 
   const liveActiveChatGroup =
@@ -588,51 +532,50 @@ export default function ChatPage() {
         activeChatGroup
       : activeChatGroup;
 
-  const optimisticCandidateSnapshot = optimisticThreadId
-    ? snapshotsEnabled
-      ? getSnapshot(workspaceId, optimisticThreadId)
-      : null
-    : null;
-  const optimisticSnapshot = hasUsefulSnapshot(optimisticCandidateSnapshot)
-    ? optimisticCandidateSnapshot
-    : null;
-  const optimisticThread =
-    optimisticThreadId && liveActiveChatGroup
+  useEffect(() => {
+    setInstantThreadId(null);
+  }, [threadId]);
+
+  const instantThread =
+    instantThreadId && liveActiveChatGroup
       ? liveActiveChatGroup.open_threads.find(
-          (thread) => thread.id === optimisticThreadId,
-        ) ?? null
+          (thread) => thread.id === instantThreadId,
+        ) ??
+        liveActiveChatGroup.closed_threads.find(
+          (thread) => thread.id === instantThreadId,
+        ) ??
+        null
       : null;
-  const shouldUseOptimisticThread = Boolean(
-    optimisticSnapshot && optimisticThread,
+  const shouldUseInstantThread = Boolean(
+    instantThread && instantThreadId !== threadId,
   );
   const displayThreadId =
-    shouldUseOptimisticThread && optimisticSnapshot
-      ? optimisticSnapshot.threadId
-      : threadId;
-  const displayChatData =
-    shouldUseOptimisticThread && optimisticSnapshot
-      ? chatDataFromSnapshot(optimisticSnapshot)
-      : chatData;
+    shouldUseInstantThread && instantThread ? instantThread.id : threadId;
   const displayThreadTitle =
-    shouldUseOptimisticThread && optimisticSnapshot
-      ? optimisticSnapshot.threadTitle ?? optimisticThread?.title ?? null
-      : threadTitle;
+    shouldUseInstantThread && instantThread ? instantThread.title : threadTitle;
   const displayThreadModel =
-    shouldUseOptimisticThread && optimisticSnapshot
-      ? optimisticSnapshot.threadModel
-      : threadModel;
+    shouldUseInstantThread && instantThread ? instantThread.model : threadModel;
   const displayThreadProvider =
-    shouldUseOptimisticThread && optimisticSnapshot
-      ? optimisticSnapshot.threadProvider
+    shouldUseInstantThread && instantThread
+      ? instantThread.provider
       : threadProvider;
-  const cacheThreadModel = displayThreadModel ?? getDefaultLlmModel("claude");
-  const cacheThreadProvider =
-    displayThreadProvider ?? getProviderForModel(cacheThreadModel);
-  const displayIsNewThread = displayThreadId === threadId ? isNewThread : false;
+  const displayAllowedThreadModels =
+    shouldUseInstantThread && displayThreadModel && displayThreadProvider
+      ? getVisibleLlmModelOptions(
+          displayThreadProvider,
+          experimentalSettings,
+          displayThreadModel,
+          {
+            allowModelFamilySwitch: true,
+            orgProvider: llmProvider,
+          },
+        ).map((option) => option.value)
+      : allowedThreadModels;
+  const displayChatData = shouldUseInstantThread ? EMPTY_CHAT_DATA : chatData;
+  const displayIsNewThread = shouldUseInstantThread ? false : isNewThread;
   const isLoadingMessages =
     !displayIsNewThread &&
-    !shouldUseOptimisticThread &&
-    resolvedChatData === null;
+    (shouldUseInstantThread || resolvedChatData === null);
 
   useEffect(() => {
     if (!markViewedEnabled || readOnly || !workspaceId || !displayThreadId) return;
@@ -659,143 +602,14 @@ export default function ChatPage() {
       status: thread.status,
     })) ?? [];
 
-  const prefetchThread = useCallback(
-    (targetThreadId: string) => {
-      if (
-        !prefetchEnabled ||
-        !workspaceId ||
-        !liveActiveChatGroup ||
-        targetThreadId === displayThreadId
-      ) {
-        return;
-      }
-      const targetThread = liveActiveChatGroup.open_threads.find(
-        (thread) => thread.id === targetThreadId,
-      );
-      if (!targetThread) return;
-      void prefetchMessages(workspaceId, targetThreadId, {
-        threadTitle: targetThread.title,
-        threadModel: targetThread.model,
-        threadProvider: targetThread.provider,
-      });
-    },
-    [
-      displayThreadId,
-      liveActiveChatGroup,
-      prefetchEnabled,
-      prefetchMessages,
-      workspaceId,
-    ],
-  );
-
-  const openThreadPrefetchKey = useMemo(
-    () =>
-      liveActiveChatGroup?.open_threads
-        .map((thread) => `${thread.id}:${thread.updated_at}`)
-        .join("|") ?? "",
-    [liveActiveChatGroup?.open_threads],
-  );
-
-  useEffect(() => {
-    if (!prefetchEnabled || !workspaceId || !liveActiveChatGroup || readOnly) return;
-    const timeout = window.setTimeout(() => {
-      for (const thread of liveActiveChatGroup.open_threads) {
-        if (thread.id === displayThreadId) continue;
-        void prefetchMessages(workspaceId, thread.id, {
-          threadTitle: thread.title,
-          threadModel: thread.model,
-          threadProvider: thread.provider,
-        });
-      }
-    }, 200);
-    return () => window.clearTimeout(timeout);
-  }, [
-    displayThreadId,
-    liveActiveChatGroup,
-    openThreadPrefetchKey,
-    prefetchEnabled,
-    prefetchMessages,
-    readOnly,
-    workspaceId,
-  ]);
-
   const selectTab = useCallback(
     (targetThreadId: string) => {
-      const snapshot = workspaceId
-        ? snapshotsEnabled
-          ? getSnapshot(workspaceId, targetThreadId)
-          : null
-        : null;
-      if (hasUsefulSnapshot(snapshot)) {
-        setOptimisticThreadId(targetThreadId);
-      } else {
-        prefetchThread(targetThreadId);
+      if (targetThreadId !== threadId) {
+        setInstantThreadId(targetThreadId);
       }
       navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
     },
-    [getSnapshot, navigate, prefetchThread, snapshotsEnabled, workspaceId],
-  );
-
-  const handleThreadSnapshotChange = useCallback(
-    (snapshot: {
-      workspaceId: string;
-      threadId: string;
-      messages: Message[];
-      previewTabs: PreviewTarget[];
-      activeTabId: string | null;
-      previewTarget: PreviewTarget | null;
-      historyState: "server" | "local" | "streaming";
-    }) => {
-      if (!snapshotsEnabled) return;
-      if (!workspaceId || snapshot.workspaceId !== workspaceId) return;
-      const snapshotThread =
-        liveActiveChatGroup?.open_threads.find(
-          (thread) => thread.id === snapshot.threadId,
-        ) ??
-        liveActiveChatGroup?.closed_threads.find(
-          (thread) => thread.id === snapshot.threadId,
-        ) ??
-        null;
-      const isDisplayedThread = snapshot.threadId === displayThreadId;
-      writeSnapshot({
-        workspaceId: snapshot.workspaceId,
-        threadId: snapshot.threadId,
-        threadTitle: isDisplayedThread
-          ? displayThreadTitle
-          : snapshotThread?.title ?? null,
-        threadModel: isDisplayedThread
-          ? cacheThreadModel
-          : snapshotThread?.model ?? cacheThreadModel,
-        threadProvider: isDisplayedThread
-          ? cacheThreadProvider
-          : snapshotThread?.provider ?? cacheThreadProvider,
-        messages: snapshot.messages,
-        previewTabs: snapshot.previewTabs,
-        activeTabId: snapshot.activeTabId,
-        previewTarget: snapshot.previewTarget,
-        historyState: snapshot.historyState,
-      });
-      if (
-        snapshot.historyState !== "streaming" &&
-        snapshot.messages.some(
-          (message) => message.role === "assistant" && !message.isStreaming,
-        )
-      ) {
-        markThreadIdle(snapshot.threadId);
-      }
-    },
-    [
-      displayThreadId,
-      displayThreadTitle,
-      cacheThreadModel,
-      cacheThreadProvider,
-      liveActiveChatGroup?.closed_threads,
-      liveActiveChatGroup?.open_threads,
-      workspaceId,
-      snapshotsEnabled,
-      writeSnapshot,
-      markThreadIdle,
-    ],
+    [navigate, threadId],
   );
   const closedTabs =
     liveActiveChatGroup?.closed_threads.map((thread) => ({
@@ -896,7 +710,6 @@ export default function ChatPage() {
             activeThreadId={displayThreadId}
             moveGroups={moveChatGroups}
             onSelectTab={selectTab}
-            onTabIntent={prefetchThread}
             onCloseTab={closeTab}
             onRenameTab={renameTab}
             onReorderTabs={reorderTabs}
@@ -919,7 +732,7 @@ export default function ChatPage() {
             threadModel={displayThreadModel}
             threadProvider={displayThreadProvider}
             llmProvider={llmProvider}
-            allowedThreadModels={allowedThreadModels}
+            allowedThreadModels={displayAllowedThreadModels}
             effectivePickerDefaultModel={effectivePickerDefaultModel}
             hasEffectivePickerDefault={hasEffectivePickerDefault}
             experimentalSettings={experimentalSettings}
@@ -936,9 +749,6 @@ export default function ChatPage() {
             recentModelScope={recentModelScope}
             isLoadingMessages={isLoadingMessages}
             readOnly={readOnly}
-            onThreadSnapshotChange={
-              snapshotsEnabled ? handleThreadSnapshotChange : undefined
-            }
           />
         </div>
       </div>

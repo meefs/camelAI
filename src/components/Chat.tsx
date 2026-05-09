@@ -189,15 +189,6 @@ interface ChatProps {
   /** Superuser admin read-only viewer */
   readOnly?: boolean;
   chatGroupId?: string | null;
-  onThreadSnapshotChange?: (snapshot: {
-    workspaceId: string;
-    threadId: string;
-    messages: Message[];
-    previewTabs: PreviewTarget[];
-    activeTabId: string | null;
-    previewTarget: PreviewTarget | null;
-    historyState: "server" | "local" | "streaming";
-  }) => void;
   initialWelcomeInput?: string | null;
   connections?: Integration[];
   welcomeData?: {
@@ -1496,7 +1487,6 @@ export default function Chat({
   isLoadingMessages = false,
   readOnly = false,
   chatGroupId = null,
-  onThreadSnapshotChange,
   initialWelcomeInput,
   connections,
   welcomeData,
@@ -2023,46 +2013,6 @@ export default function Chat({
     [previewTabs, activeTabId],
   );
   const previewTarget = activeTab?.target ?? null;
-  useEffect(() => {
-    if (!threadId || readOnly || !onThreadSnapshotChange) return;
-    const hasActiveStream =
-      loading ||
-      Boolean(streamingMessageId) ||
-      messages.some((message) => message.isStreaming);
-    const hasPendingLocalMessages =
-      pendingMessages.length > 0 ||
-      messages.some(
-        (message) =>
-          Boolean(message.clientMessageId) ||
-          message.id.startsWith("client_") ||
-          message.id.startsWith("local_"),
-      );
-    onThreadSnapshotChange({
-      workspaceId,
-      threadId,
-      messages,
-      previewTabs: previewTabs.map((tab) => tab.target),
-      activeTabId,
-      previewTarget,
-      historyState: hasActiveStream
-        ? "streaming"
-        : hasPendingLocalMessages
-          ? "local"
-          : "server",
-    });
-  }, [
-    activeTabId,
-    messages,
-    onThreadSnapshotChange,
-    pendingMessages,
-    loading,
-    previewTabs,
-    previewTarget,
-    readOnly,
-    streamingMessageId,
-    threadId,
-    workspaceId,
-  ]);
   const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>(
     {},
   );
@@ -3241,8 +3191,11 @@ export default function Chat({
         reconnectAttempts.current = 0;
       }
 
-      // Fetch existing messages from REST API unless this is a new thread
-      let shouldFetchMessages = !isNewThread && !isLoadingMessages;
+      // Fetch existing messages from REST API unless this is a new thread.
+      // Do not wait for the route's preview-data promise here: it does not load
+      // chat history, and gating on it can leave refreshed single-tab threads
+      // blank.
+      let shouldFetchMessages = !isNewThread;
 
       // Check sessionStorage for welcome screen pending message (survives navigation)
       const pendingPayload = readPendingNewThreadMessage();
@@ -4383,10 +4336,9 @@ export default function Chat({
   ]);
 
   // Ensure existing threads hydrate full history once initial route loading
-  // settles. Cached tab snapshots may be local-only if the user switched away
-  // before the assistant response arrived.
+  // settles.
   useEffect(() => {
-    if (!threadId || !resolvedWorkspaceId || isNewThread || isLoadingMessages) {
+    if (!threadId || !resolvedWorkspaceId || isNewThread) {
       return;
     }
     if (historyFetchAbortRef.current) {
@@ -4395,7 +4347,6 @@ export default function Chat({
     void fetchMessages(threadId);
   }, [
     fetchMessages,
-    isLoadingMessages,
     isNewThread,
     resolvedWorkspaceId,
     threadId,

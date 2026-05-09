@@ -9,7 +9,6 @@ import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dia
 import { AppSidebar } from "@/components/sidebar/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
-import { ChatThreadCacheProvider } from "@/hooks/use-chat-thread-cache";
 import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
@@ -190,14 +189,12 @@ export default function AppLayout() {
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
-      <ChatThreadCacheProvider>
-        <ChatGroupsProvider>
-          <AppSidebar />
-          <SidebarInset className="h-svh overflow-hidden flex flex-col">
-            <Outlet />
-          </SidebarInset>
-        </ChatGroupsProvider>
-      </ChatThreadCacheProvider>
+      <ChatGroupsProvider>
+        <AppSidebar />
+        <SidebarInset className="h-svh overflow-hidden flex flex-col">
+          <Outlet />
+        </SidebarInset>
+      </ChatGroupsProvider>
       <LegacyUserBanner
         show={showLegacyBanner}
         userId={authState.user?.id ?? "legacy-user"}
