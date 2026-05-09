@@ -574,15 +574,11 @@ async function recordThreadAssistantCompletion(
   threadId: string,
   completedAt: number,
 ): Promise<void> {
-  let movedThreadActivityForward = false;
   try {
     const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as unknown as {
       touchThreadActivity(id: string, at?: number): Promise<boolean> | boolean;
     };
-    movedThreadActivityForward = await orgStub.touchThreadActivity(
-      threadId,
-      completedAt,
-    );
+    await orgStub.touchThreadActivity(threadId, completedAt);
   } catch (error) {
     console.error('[chat websocket] failed to touch thread activity', error);
   }
@@ -592,7 +588,7 @@ async function recordThreadAssistantCompletion(
     workspaceId,
     threadId,
     false,
-    movedThreadActivityForward ? { completedAt } : undefined,
+    { completedAt },
   );
 }
 

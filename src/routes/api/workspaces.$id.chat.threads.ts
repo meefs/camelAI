@@ -1,4 +1,4 @@
-import { waitUntil } from 'cloudflare:workers';
+import { waitUntil } from '@/lib/wait-until';
 import type { Route } from './+types/workspaces.$id.chat.threads';
 import { requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
@@ -10,6 +10,14 @@ import {
   createGroupForNewThread,
 } from '@/lib/chat-groups.server';
 import type { LlmModel } from '@/types';
+
+type CreateThreadRequestBody = {
+  initialTitle?: string;
+  firstMessage?: string;
+  previewApps?: string;
+  model?: LlmModel;
+  groupId?: string;
+};
 
 /**
  * Lightweight thread creation endpoint that validates workspace access
@@ -31,13 +39,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ error: 'Workspace mismatch' }, { status: 403 });
   }
 
-  const body = await request.json() as {
-    initialTitle?: string;
-    firstMessage?: string;
-    previewApps?: string;
-    model?: LlmModel;
-    groupId?: string;
-  };
+  let body: CreateThreadRequestBody;
+  try {
+    body = (await request.json()) as CreateThreadRequestBody;
+  } catch {
+    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);

@@ -9,7 +9,7 @@ import type {
 } from "@/types";
 import * as chatDO from "@/lib/chat-do.server";
 import { getAuthEnv } from "@/lib/auth-helpers";
-import type { UserDO } from "../../workers/main/src/auth";
+import type { OrgDO, UserDO } from "../../workers/main/src/auth";
 import { maxThreadStatus } from "@/lib/thread-status";
 import { getInitialChatGroupNameFromThreadTitle } from "@/lib/thread-title";
 
@@ -29,6 +29,12 @@ function getUserStub(context: AppLoadContext, userId: string): UserDO {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   return authEnv.USER.get(authEnv.USER.idFromName(userId)) as unknown as UserDO;
+}
+
+function getOrgStub(context: AppLoadContext, orgId: string): OrgDO {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  return authEnv.ORG.get(authEnv.ORG.idFromName(orgId)) as unknown as OrgDO;
 }
 
 async function getStreamingThreadIds(
@@ -314,11 +320,16 @@ export async function closeGroup(
   await userStub.closeChatGroup(args.groupId);
 }
 
-export async function removeDeletedThreadFromUserGroups(
+export async function removeDeletedThreadFromOrgGroups(
   context: AppLoadContext,
-  userId: string,
+  orgId: string,
   threadId: string,
 ): Promise<void> {
-  const userStub = getUserStub(context, userId);
-  await userStub.removeThreadMembership(threadId);
+  const orgStub = getOrgStub(context, orgId);
+  const members = await orgStub.getMembers();
+  await Promise.all(
+    members.map((member) =>
+      getUserStub(context, member.user_id).removeThreadMembership(threadId),
+    ),
+  );
 }

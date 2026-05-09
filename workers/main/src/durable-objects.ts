@@ -2023,15 +2023,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     context: ChatContextState,
     completedAt: number,
   ): Promise<void> {
-    let movedThreadActivityForward = false;
     try {
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
         touchThreadActivity(id: string, at?: number): Promise<boolean> | boolean;
       };
-      movedThreadActivityForward = await orgStub.touchThreadActivity(
-        context.threadId,
-        completedAt,
-      );
+      await orgStub.touchThreadActivity(context.threadId, completedAt);
     } catch (error) {
       console.error("[ChatThreadDO] failed to touch thread activity", error);
     }
@@ -2041,7 +2037,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       context.workspaceId,
       context.threadId,
       false,
-      movedThreadActivityForward ? { completedAt } : undefined,
+      { completedAt },
     );
   }
 

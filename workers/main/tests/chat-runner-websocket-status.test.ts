@@ -336,6 +336,25 @@ describe('chat runner websocket workspace status', () => {
     );
   });
 
+  it('emits unread completion even when activity timestamp does not advance', async () => {
+    touchThreadActivityMock.mockResolvedValue(false);
+    const { runner } = await startBridge();
+    const completedAt = Date.now();
+
+    runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
+
+    await vi.waitFor(() => {
+      expect(touchThreadActivityMock).toHaveBeenCalledWith('thread_1', completedAt);
+    });
+    expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'ws_1',
+      'thread_1',
+      false,
+      { completedAt },
+    );
+  });
+
   it('clears running status if a detached runner closes before sending completion', async () => {
     const { server, runner } = await startBridge();
 
