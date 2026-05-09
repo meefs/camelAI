@@ -499,26 +499,6 @@ function writePendingThreadMessages(
   }
 }
 
-function messagesAreOnlyPending(
-  messages: Message[],
-  pendingMessages: Message[],
-): boolean {
-  if (messages.length === 0 || pendingMessages.length === 0) {
-    return false;
-  }
-  const pendingIds = new Set(
-    pendingMessages.flatMap((message) => [
-      message.id,
-      message.clientMessageId ?? message.id,
-    ]),
-  );
-  return messages.every(
-    (message) =>
-      pendingIds.has(message.id) ||
-      (message.clientMessageId && pendingIds.has(message.clientMessageId)),
-  );
-}
-
 /**
  * True when the message was directly authored by the user — not a
  * system-generated message that happens to carry `role: 'user'`
@@ -3276,18 +3256,6 @@ export default function Chat({
         setLoading(true);
       }
 
-      // Skip fetch if we already have messages (use ref to avoid stale closure)
-      if (
-        shouldFetchMessages &&
-        messagesRef.current.length > 0 &&
-        !messagesAreOnlyPending(
-          messagesRef.current,
-          pendingMessagesRef.current,
-        )
-      ) {
-        shouldFetchMessages = false;
-      }
-
       if (shouldFetchMessages) {
         fetchMessages(id);
       }
@@ -4393,19 +4361,13 @@ export default function Chat({
   ]);
 
   // Ensure existing threads hydrate full history once initial route loading
-  // settles. Without this fallback, the connect path can skip fetch while
-  // `isLoadingMessages` is true and never retry.
+  // settles. Cached tab snapshots may be local-only if the user switched away
+  // before the assistant response arrived.
   useEffect(() => {
     if (!threadId || !resolvedWorkspaceId || isNewThread || isLoadingMessages) {
       return;
     }
     if (historyFetchAbortRef.current) {
-      return;
-    }
-    if (
-      messagesRef.current.length > 0 &&
-      !messagesAreOnlyPending(messagesRef.current, pendingMessagesRef.current)
-    ) {
       return;
     }
     void fetchMessages(threadId);
