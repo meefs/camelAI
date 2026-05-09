@@ -120,10 +120,53 @@ describe('contentToString', () => {
     expect(contentToString(blocks)).toBe('[Task completed] Report generation finished.');
   });
 
-  it('serializes redacted thinking blocks explicitly', () => {
+  it('omits redacted thinking blocks from copied text', () => {
     const blocks: ContentBlock[] = [
+      { type: 'text', text: 'Visible answer' },
       { type: 'redacted_thinking' },
     ];
-    expect(contentToString(blocks)).toBe('[Thinking redacted]');
+    expect(contentToString(blocks)).toBe('Visible answer');
+  });
+
+  it('does not render redacted thinking blocks', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: [
+          { type: 'text', text: 'Visible answer' },
+          { type: 'redacted_thinking' },
+        ] satisfies ContentBlock[],
+      }),
+    );
+
+    expect(screen.getByText('Visible answer')).toBeInTheDocument();
+    expect(screen.queryByText(/redacted/i)).not.toBeInTheDocument();
+  });
+
+  it('does not render normalized redacted thinking blocks', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: [
+          { type: 'text', text: 'Visible answer' },
+          {
+            type: 'thinking',
+            thinking: '[Reasoning redacted]',
+            redacted: true,
+            thinkingSignature: 'openrouter.reasoning:abc',
+          },
+        ] as ContentBlock[],
+      }),
+    );
+
+    expect(screen.getByText('Visible answer')).toBeInTheDocument();
+    expect(screen.queryByText(/Reasoning redacted/i)).not.toBeInTheDocument();
+    expect(contentToString([
+      { type: 'text', text: 'Visible answer' },
+      {
+        type: 'thinking',
+        thinking: '[Reasoning redacted]',
+        redacted: true,
+        thinkingSignature: 'openrouter.reasoning:abc',
+      },
+    ] as ContentBlock[])).toBe('Visible answer');
   });
 });
