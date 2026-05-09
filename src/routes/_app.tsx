@@ -33,7 +33,7 @@ export function shouldRevalidate({
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
-  if (formData?.get("intent") === "createThread") return true;
+  if (formData?.get("intent") === "createThread") return false;
   return defaultShouldRevalidate;
 }
 
