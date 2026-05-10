@@ -532,8 +532,8 @@ func TestHostPiBridgeInitSendsCurrentStreamingStateWhenInactive(t *testing.T) {
 	if got := state["isStreaming"]; got != false {
 		t.Fatalf("init streaming state = %#v, want false", got)
 	}
-	if completedAt, ok := state["completedAt"].(float64); !ok || completedAt <= 0 {
-		t.Fatalf("init streaming state completedAt = %#v, want positive timestamp", state["completedAt"])
+	if _, ok := state["completedAt"]; ok {
+		t.Fatalf("init streaming state completedAt = %#v, want absent", state["completedAt"])
 	}
 	ready := hostPiLatestEventOfType(t, bridge, "ready")
 	if ready == nil {

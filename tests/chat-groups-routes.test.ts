@@ -27,6 +27,7 @@ vi.mock("@/lib/chat-do.server", () => ({
 }));
 
 const closeRoute = await import("@/routes/api/chat-groups.$id.members.$threadId");
+const groupRoute = await import("@/routes/api/chat-groups.$id");
 const addRoute = await import("@/routes/api/chat-groups.$id.members");
 const reopenRoute = await import(
   "@/routes/api/chat-groups.$id.members.$threadId.reopen"
@@ -63,6 +64,17 @@ function makeAddArgs(body: unknown) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       },
+    ),
+    context: {},
+    params: { id: "group_1" },
+  } as never;
+}
+
+function makeGroupArgs(method: string) {
+  return {
+    request: new Request(
+      "https://camelai.com/api/chat-groups/group_1",
+      { method },
     ),
     context: {},
     params: { id: "group_1" },
@@ -151,6 +163,17 @@ describe("chat group tab routes", () => {
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({
       error: "Thread not found",
+    });
+  });
+
+  it("returns 404 JSON when deleting a stale group", async () => {
+    getChatGroupMock.mockResolvedValue(null);
+
+    const response = await groupRoute.action(makeGroupArgs("DELETE"));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "Chat group not found",
     });
   });
 

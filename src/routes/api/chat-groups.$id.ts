@@ -36,7 +36,18 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   }
 
   if (request.method === "DELETE") {
-    await closeGroup(context, { userId, orgId, workspaceId, groupId });
+    try {
+      await closeGroup(context, { userId, orgId, workspaceId, groupId });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Chat group not found") {
+        return Response.json({ error: error.message }, { status: 404 });
+      }
+      console.error("Failed to close chat group:", error);
+      return Response.json(
+        { error: "Failed to close chat group" },
+        { status: 500 },
+      );
+    }
     return Response.json({ success: true });
   }
 

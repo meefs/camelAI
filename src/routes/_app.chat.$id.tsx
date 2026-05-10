@@ -541,7 +541,6 @@ export default function ChatPage() {
   const markViewedEnabled = chatDebugFlags.markViewed;
   const markThreadIdleRef = useRef(markThreadIdle);
   const revalidateRef = useRef(revalidator.revalidate);
-  const lastMarkViewedKeyRef = useRef<string | null>(null);
   const [instantThreadId, setInstantThreadId] = useState<string | null>(null);
   const [chatDataByThreadId, setChatDataByThreadId] = useState<
     Record<string, ChatData>
@@ -638,9 +637,6 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!markViewedEnabled || readOnly || !workspaceId || !displayThreadId) return;
-    const markKey = `${workspaceId}:${displayThreadId}`;
-    if (lastMarkViewedKeyRef.current === markKey) return;
-    lastMarkViewedKeyRef.current = markKey;
 
     markThreadIdleRef.current(displayThreadId);
     const controller = new AbortController();
