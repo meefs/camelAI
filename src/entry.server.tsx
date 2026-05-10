@@ -2,6 +2,7 @@ import type { AppLoadContext, EntryContext, HandleErrorFunction } from 'react-ro
 import { isRouteErrorResponse, ServerRouter } from 'react-router';
 import { renderToReadableStream } from 'react-dom/server';
 import { isbot } from 'isbot';
+import type { CloudflareLoadContext } from './lib/cloudflare.server';
 
 // Increase stream timeout for deferred data (default is 4950ms)
 // Container boot can take 10+ seconds on cold start
@@ -9,6 +10,21 @@ export const streamTimeout = 60_000;
 
 type RouterErrorMap = Record<string, unknown>;
 const loggedErrors = new WeakSet<Error>();
+const MAX_ANALYTICS_BLOBS_BYTES = 15_500;
+const ANALYTICS_BLOB_FIELD_BYTES = {
+  source: 32,
+  routeId: 512,
+  name: 256,
+  message: 4_096,
+  url: 2_048,
+} as const;
+const textEncoder = new TextEncoder();
+
+type NormalizedError = {
+  name: string;
+  message: string;
+  stack?: string;
+};
 
 function getRouterErrors(routerContext: EntryContext): RouterErrorMap | null {
   const maybeErrors = (routerContext as EntryContext & { errors?: unknown }).errors;
@@ -26,11 +42,7 @@ function unwrapRouteError(err: unknown): unknown {
   return err;
 }
 
-function normalizeError(err: unknown): {
-  name: string;
-  message: string;
-  stack?: string;
-} {
+function normalizeError(err: unknown): NormalizedError {
   const unwrapped = unwrapRouteError(err);
 
   if (unwrapped instanceof Error) {
@@ -66,7 +78,83 @@ function normalizeError(err: unknown): {
   };
 }
 
-export const handleError: HandleErrorFunction = (error, { request, params }) => {
+function getErrorStatus(err: unknown): number | undefined {
+  if (!isRouteErrorResponse(err)) return undefined;
+  return err.status;
+}
+
+function getErrorAnalytics(context: AppLoadContext): AnalyticsEngineDataset | undefined {
+  return (context as Partial<CloudflareLoadContext>).cloudflare?.env.ERROR_ANALYTICS;
+}
+
+function getUtf8ByteLength(value: string): number {
+  return textEncoder.encode(value).byteLength;
+}
+
+function truncateUtf8(value: string | undefined, maxBytes: number): string {
+  if (!value || maxBytes <= 0) return '';
+  if (getUtf8ByteLength(value) <= maxBytes) return value;
+
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (getUtf8ByteLength(value.slice(0, mid)) <= maxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return value.slice(0, low);
+}
+
+function buildAnalyticsBlobs(input: {
+  source: 'handleError' | 'route' | 'stream';
+  routeId?: string;
+  details: NormalizedError;
+  request: Request;
+}): string[] {
+  const source = truncateUtf8(input.source, ANALYTICS_BLOB_FIELD_BYTES.source);
+  const routeId = truncateUtf8(input.routeId, ANALYTICS_BLOB_FIELD_BYTES.routeId);
+  const name = truncateUtf8(input.details.name, ANALYTICS_BLOB_FIELD_BYTES.name);
+  const message = truncateUtf8(input.details.message, ANALYTICS_BLOB_FIELD_BYTES.message);
+  const url = truncateUtf8(input.request.url, ANALYTICS_BLOB_FIELD_BYTES.url);
+
+  const usedBytes =
+    getUtf8ByteLength(source) +
+    getUtf8ByteLength(routeId) +
+    getUtf8ByteLength(name) +
+    getUtf8ByteLength(message) +
+    getUtf8ByteLength(url);
+  const remainingBytes = Math.max(0, MAX_ANALYTICS_BLOBS_BYTES - usedBytes);
+  const stack = truncateUtf8(input.details.stack, remainingBytes);
+
+  return [source, routeId, name, message, url, stack];
+}
+
+function captureSsrError(
+  context: AppLoadContext,
+  input: {
+    source: 'handleError' | 'route' | 'stream';
+    request: Request;
+    details: NormalizedError;
+    routeId?: string;
+    status?: number;
+  }
+): void {
+  try {
+    getErrorAnalytics(context)?.writeDataPoint({
+      blobs: buildAnalyticsBlobs(input),
+      doubles: [input.status ?? 0],
+      indexes: [input.source],
+    });
+  } catch (analyticsError) {
+    console.warn('[SSR error analytics failed]', analyticsError);
+  }
+}
+
+export const handleError: HandleErrorFunction = (error, { request, context, params }) => {
   if (request.signal.aborted) return;
 
   const unwrapped = unwrapRouteError(error);
@@ -84,9 +172,19 @@ export const handleError: HandleErrorFunction = (error, { request, params }) => 
     message: details.message,
     stack: details.stack,
   });
+  captureSsrError(context, {
+    source: 'handleError',
+    request,
+    details,
+    status: getErrorStatus(error),
+  });
 };
 
-function logRouteErrors(request: Request, routerContext: EntryContext): void {
+function logRouteErrors(
+  request: Request,
+  routerContext: EntryContext,
+  loadContext: AppLoadContext
+): void {
   const errors = getRouterErrors(routerContext);
   if (!errors) return;
 
@@ -99,6 +197,13 @@ function logRouteErrors(request: Request, routerContext: EntryContext): void {
       message: details.message,
       stack: details.stack,
     });
+    captureSsrError(loadContext, {
+      source: 'route',
+      request,
+      details,
+      routeId,
+      status: getErrorStatus(err),
+    });
   }
 }
 
@@ -107,11 +212,11 @@ export default async function handleRequest(
   responseStatusCode: number,
   responseHeaders: Headers,
   routerContext: EntryContext,
-  _loadContext: AppLoadContext
+  loadContext: AppLoadContext
 ) {
   // React Router captures loader/action errors here; log them explicitly so
   // staging/prod tails include route-level stack traces.
-  logRouteErrors(request, routerContext);
+  logRouteErrors(request, routerContext, loadContext);
 
   const userAgent = request.headers.get('user-agent');
 
@@ -127,6 +232,11 @@ export default async function handleRequest(
           name: details.name,
           message: details.message,
           stack: details.stack,
+        });
+        captureSsrError(loadContext, {
+          source: 'stream',
+          request,
+          details,
         });
         responseStatusCode = 500;
       },
