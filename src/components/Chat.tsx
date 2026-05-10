@@ -259,22 +259,6 @@ function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
 
 function summarizeMessagesForHistoryLog(messages: Message[]) {
   return messages.map((message) => {
-    const content =
-      typeof message.content === "string"
-        ? message.content
-        : Array.isArray(message.content)
-          ? message.content
-              .map((block) => {
-                if (!block || typeof block !== "object") return "";
-                if ("type" in block && block.type === "text" && "text" in block) {
-                  return String(block.text ?? "");
-                }
-                if ("type" in block) return `[${String(block.type)}]`;
-                return "";
-              })
-              .join(" ")
-          : "";
-
     return {
       id: message.id,
       clientMessageId: message.clientMessageId,
@@ -283,7 +267,13 @@ function summarizeMessagesForHistoryLog(messages: Message[]) {
       isStreaming: message.isStreaming === true,
       isMeta: message.isMeta === true,
       isCompactSummary: message.isCompactSummary === true,
-      contentPreview: content.slice(0, 80),
+      contentShape: Array.isArray(message.content)
+        ? message.content.map((block) =>
+            block && typeof block === "object" && "type" in block
+              ? String(block.type)
+              : "unknown",
+          )
+        : typeof message.content,
     };
   });
 }
@@ -293,6 +283,7 @@ function logChatHistoryClient(
   fields: Record<string, unknown> = {},
 ): void {
   if (import.meta.env.MODE === "test") return;
+  if (!getChatDebugFlags().historyLogs) return;
   console.info("[chat history client]", {
     event,
     at: new Date().toISOString(),

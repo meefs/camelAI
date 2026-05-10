@@ -2,6 +2,18 @@ import type { ActionFunctionArgs } from "react-router";
 import { requireSessionWorkspaceAccess } from "@/lib/auth.server";
 import { addThreadToExistingGroup } from "@/lib/chat-groups.server";
 
+function addThreadErrorResponse(error: unknown): Response {
+  const message =
+    error instanceof Error ? error.message : "Failed to add thread to group";
+  if (message === "Thread not found" || message === "Chat group not found") {
+    return Response.json({ error: message }, { status: 404 });
+  }
+  return Response.json(
+    { error: message || "Failed to add thread to group" },
+    { status: 409 },
+  );
+}
+
 export async function action({ request, context, params }: ActionFunctionArgs) {
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -23,12 +35,17 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   if (!threadId) {
     return Response.json({ error: "Thread ID required" }, { status: 400 });
   }
-  const group = await addThreadToExistingGroup(context, {
-    userId,
-    orgId,
-    workspaceId,
-    groupId,
-    threadId,
-  });
+  let group;
+  try {
+    group = await addThreadToExistingGroup(context, {
+      userId,
+      orgId,
+      workspaceId,
+      groupId,
+      threadId,
+    });
+  } catch (error) {
+    return addThreadErrorResponse(error);
+  }
   return Response.json({ group });
 }

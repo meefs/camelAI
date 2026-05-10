@@ -13,17 +13,19 @@ describe("parseChatDebugFlags", () => {
     expect(flags.statusRevalidate).toBe(false);
     expect(flags.markViewed).toBe(false);
     expect(flags.statusSocket).toBe(true);
+    expect(flags.historyLogs).toBe(false);
   });
 
   it("parses compact comma-separated flags", () => {
     const flags = parseChatDebugFlags(
-      "status=0,revalidate=0,viewed=0",
+      "status=0,revalidate=0,viewed=0,history=1",
     );
 
     expect(flags).toEqual({
       statusSocket: false,
       statusRevalidate: false,
       markViewed: false,
+      historyLogs: true,
     });
   });
 });

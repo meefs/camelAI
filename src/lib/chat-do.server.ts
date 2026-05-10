@@ -463,15 +463,16 @@ export async function deleteThread(
   context: AppLoadContext,
   id: string,
   workspaceId: string,
-): Promise<void> {
+): Promise<boolean> {
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return;
+  if (!wsInfo) return false;
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   // Verify the thread belongs to this workspace first
   const existing = await orgStub.getThread(id);
-  if (!existing || existing.workspace_id !== workspaceId) return;
+  if (!existing || existing.workspace_id !== workspaceId) return false;
   await orgStub.deleteThread(id);
+  return true;
 }
 
 export async function generateThreadTitle(

@@ -331,6 +331,28 @@ describe('Auth flow (full-stack with DOs)', () => {
       );
     });
 
+    it('clamps assistant activity after stale completion timestamps', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Activity thread', userId);
+      await orgStub.touchThread(thread.id);
+      const afterUserMessage = await orgStub.getThread(thread.id);
+      const staleCompletionAt = (afterUserMessage?.updated_at ?? Date.now()) - 1_000;
+
+      await expect(
+        orgStub.touchThreadActivity(thread.id, staleCompletionAt),
+      ).resolves.toBe(true);
+      const afterAssistantActivity = await orgStub.getThread(thread.id);
+
+      expect(afterAssistantActivity?.user_message_count).toBe(1);
+      expect(afterAssistantActivity?.updated_at ?? 0).toBeGreaterThan(
+        afterUserMessage?.updated_at ?? 0,
+      );
+    });
+
     it('persists model family changes on the active thread', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');

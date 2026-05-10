@@ -67,8 +67,15 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      await chatDO.deleteThread(context, threadId, workspaceId);
-      await removeDeletedThreadFromOrgGroups(context, authContext.currentOrg.id, threadId);
+      const deleted = await chatDO.deleteThread(context, threadId, workspaceId);
+      if (!deleted) {
+        return { error: 'Thread not found' };
+      }
+      await removeDeletedThreadFromOrgGroups(
+        context,
+        authContext.currentOrg.id,
+        threadId,
+      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete chat' };

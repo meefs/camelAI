@@ -17,7 +17,9 @@ import {
 import {
   applyLiveRunningStatuses,
   getCloseGroupRedirect,
+  getGroupLandingHref,
   mergeActiveChatGroup,
+  reconcileLocalThreadStatusesWithSnapshot,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import type { ChatGroup, ChatGroupView } from "@/types";
@@ -756,6 +758,21 @@ describe("getCloseGroupRedirect", () => {
   });
 });
 
+describe("getGroupLandingHref", () => {
+  it("opens the group landing page instead of a closed thread when no tabs are open", () => {
+    expect(
+      getGroupLandingHref({
+        ...groupView,
+        open_thread_ids: [],
+        closed_thread_ids: ["thread_1"],
+        open_threads: [],
+        closed_threads: groupView.open_threads,
+        member_count: 1,
+      }),
+    ).toBe("/chat?group=group_1");
+  });
+});
+
 describe("mergeActiveChatGroup", () => {
   it("replaces stale layout group data with the active route group", () => {
     const activeGroup: ChatGroupView = {
@@ -796,6 +813,34 @@ describe("mergeActiveChatGroup", () => {
     const merged = mergeActiveChatGroup([groupView], activeGroup);
 
     expect(merged.map((group) => group.id)).toEqual(["group_new", "group_1"]);
+  });
+});
+
+describe("reconcileLocalThreadStatusesWithSnapshot", () => {
+  it("clears stale local running statuses when the snapshot omits them", () => {
+    const current = new Map<string, "idle" | "running" | "unread">([
+      ["thread_1", "running"],
+      ["thread_2", "unread"],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(current, new Set());
+
+    expect(next).not.toBe(current);
+    expect(Array.from(next.entries())).toEqual([["thread_2", "unread"]]);
+  });
+
+  it("lets snapshot running state win over stale local non-running statuses", () => {
+    const current = new Map<string, "idle" | "running" | "unread">([
+      ["thread_1", "idle"],
+      ["thread_2", "unread"],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(
+      current,
+      new Set(["thread_1"]),
+    );
+
+    expect(Array.from(next.entries())).toEqual([["thread_2", "unread"]]);
   });
 });
 

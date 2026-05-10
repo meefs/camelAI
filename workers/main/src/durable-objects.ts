@@ -3174,7 +3174,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 }
 
-function normalizeCompletionTimestamp(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+function normalizeCompletionTimestamp(_value: unknown): number {
   return Date.now();
 }

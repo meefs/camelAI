@@ -70,9 +70,21 @@ export function getGroupLandingHref(group: ChatGroupView): string {
   if (activeThreadStillOpen) return `/chat/${group.last_active_thread_id}`;
   const firstOpen = group.open_threads[0]?.id;
   if (firstOpen) return `/chat/${firstOpen}`;
-  const firstClosed = group.closed_threads[0]?.id;
-  if (firstClosed) return `/chat/${firstClosed}`;
   return `/chat?group=${encodeURIComponent(group.id)}`;
+}
+
+export function reconcileLocalThreadStatusesWithSnapshot(
+  localStatuses: Map<string, ThreadStatus>,
+  runningThreadIds: Set<string>,
+): Map<string, ThreadStatus> {
+  let next: Map<string, ThreadStatus> | null = null;
+  for (const [threadId, status] of localStatuses) {
+    if (status === "running" || runningThreadIds.has(threadId)) {
+      next ??= new Map(localStatuses);
+      next.delete(threadId);
+    }
+  }
+  return next ?? localStatuses;
 }
 
 export function mergeActiveChatGroup(
@@ -292,6 +304,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
             const nextRunningThreadIds = payload.runningThreadIds.filter(
               (threadId): threadId is string => typeof threadId === "string",
             );
+            const nextRunningThreadIdSet = new Set(nextRunningThreadIds);
             setLiveThreadStatuses((current) => {
               const next = new Map(current);
               for (const [threadId, status] of next) {
@@ -302,6 +315,12 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               }
               return next;
             });
+            setLocalThreadStatuses((current) =>
+              reconcileLocalThreadStatusesWithSnapshot(
+                current,
+                nextRunningThreadIdSet,
+              ),
+            );
           }
           if (
             payload.type === "thread_status" &&

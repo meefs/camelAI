@@ -27,6 +27,7 @@ vi.mock("@/lib/chat-do.server", () => ({
 }));
 
 const closeRoute = await import("@/routes/api/chat-groups.$id.members.$threadId");
+const addRoute = await import("@/routes/api/chat-groups.$id.members");
 const reopenRoute = await import(
   "@/routes/api/chat-groups.$id.members.$threadId.reopen"
 );
@@ -50,6 +51,21 @@ function makeArgs(method: string) {
     ),
     context: {},
     params: { id: "group_1", threadId: "thread_1" },
+  } as never;
+}
+
+function makeAddArgs(body: unknown) {
+  return {
+    request: new Request(
+      "https://camelai.com/api/chat-groups/group_1/members",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+    context: {},
+    params: { id: "group_1" },
   } as never;
 }
 
@@ -125,6 +141,28 @@ describe("chat group tab routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ success: true });
     expect(closeThreadTabMock).toHaveBeenCalledWith("thread_1");
+  });
+
+  it("returns 404 JSON when adding a stale thread to a group", async () => {
+    getThreadMock.mockResolvedValue(null);
+
+    const response = await addRoute.action(makeAddArgs({ threadId: "thread_1" }));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "Thread not found",
+    });
+  });
+
+  it("returns 404 JSON when adding a thread to a stale group", async () => {
+    getChatGroupMock.mockResolvedValue(null);
+
+    const response = await addRoute.action(makeAddArgs({ threadId: "thread_1" }));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "Chat group not found",
+    });
   });
 
   it("rejects reopening a thread that is not closed in the URL group", async () => {

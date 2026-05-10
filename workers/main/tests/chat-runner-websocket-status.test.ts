@@ -162,7 +162,7 @@ describe('chat runner websocket workspace status', () => {
         'ws_1',
         'thread_1',
         false,
-        { completedAt },
+        { completedAt: expect.any(Number) },
       );
     });
     expect(runner.readyState).toBe(WebSocket.CLOSED);
@@ -297,7 +297,7 @@ describe('chat runner websocket workspace status', () => {
         'ws_1',
         'thread_1',
         false,
-        { completedAt },
+        { completedAt: expect.any(Number) },
       );
     });
   });
@@ -325,14 +325,17 @@ describe('chat runner websocket workspace status', () => {
     runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
 
     await vi.waitFor(() => {
-      expect(touchThreadActivityMock).toHaveBeenCalledWith('thread_1', completedAt);
+      expect(touchThreadActivityMock).toHaveBeenCalledWith(
+        'thread_1',
+        expect.any(Number),
+      );
     });
     expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
       expect.anything(),
       'ws_1',
       'thread_1',
       false,
-      { completedAt },
+      { completedAt: expect.any(Number) },
     );
   });
 
@@ -344,14 +347,17 @@ describe('chat runner websocket workspace status', () => {
     runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
 
     await vi.waitFor(() => {
-      expect(touchThreadActivityMock).toHaveBeenCalledWith('thread_1', completedAt);
+      expect(touchThreadActivityMock).toHaveBeenCalledWith(
+        'thread_1',
+        expect.any(Number),
+      );
     });
     expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
       expect.anything(),
       'ws_1',
       'thread_1',
       false,
-      { completedAt },
+      { completedAt: expect.any(Number) },
     );
   });
 

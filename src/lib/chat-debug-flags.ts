@@ -2,6 +2,7 @@ export interface ChatDebugFlags {
   statusSocket: boolean;
   statusRevalidate: boolean;
   markViewed: boolean;
+  historyLogs: boolean;
 }
 
 export const CHAT_DEBUG_STORAGE_KEY = "camelai.chatDebug";
@@ -10,6 +11,7 @@ const DEFAULT_CHAT_DEBUG_FLAGS: ChatDebugFlags = {
   statusSocket: true,
   statusRevalidate: true,
   markViewed: true,
+  historyLogs: false,
 };
 
 const FLAG_ALIASES: Record<string, keyof ChatDebugFlags> = {
@@ -22,6 +24,10 @@ const FLAG_ALIASES: Record<string, keyof ChatDebugFlags> = {
   markviewed: "markViewed",
   markViewed: "markViewed",
   viewed: "markViewed",
+  history: "historyLogs",
+  historylogs: "historyLogs",
+  historyLogs: "historyLogs",
+  logs: "historyLogs",
 };
 
 function normalizeFlagName(name: string): keyof ChatDebugFlags | null {

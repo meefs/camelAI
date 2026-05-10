@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams, useRevalidator, useFetcher } from 'react-router';
-import { toast } from 'sonner';
 import type { Thread, ThreadCreator, WorkspaceWithAccess } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
@@ -330,27 +329,9 @@ export default function HistoryClient({
     handleClearSelection();
   }, [handleClearSelection, handleDeleteThread, selectedIds]);
 
-  const openThreadAsNewGroup = useCallback(async (id: string) => {
-    try {
-      const response = await fetch("/api/chat-groups/move-thread", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ threadId: id, targetGroupId: "new" }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null) as
-          | { error?: string }
-          | null;
-        toast.error(payload?.error ?? "Failed to open chat");
-        return false;
-      }
-      navigate(`/chat/${id}`);
-      return true;
-    } catch (error) {
-      console.error("Failed to open history thread as a new group:", error);
-      toast.error("Failed to open chat");
-      return false;
-    }
+  const openHistoryThread = useCallback(async (id: string) => {
+    navigate(`/chat/${id}`);
+    return true;
   }, [navigate]);
 
   const handleOpenThread = useCallback((id: string) => {
@@ -358,18 +339,18 @@ export default function HistoryClient({
     if (!thread) return;
 
     if (!currentWorkspace || thread.workspace_id === currentWorkspace.id) {
-      void openThreadAsNewGroup(id);
+      void openHistoryThread(id);
       return;
     }
 
     const targetWorkspace = workspaceMap.get(thread.workspace_id);
     if (!targetWorkspace) {
-      void openThreadAsNewGroup(id);
+      void openHistoryThread(id);
       return;
     }
 
     setSwitchDialog({ open: true, threadId: id, workspace: targetWorkspace });
-  }, [allThreads, currentWorkspace, openThreadAsNewGroup, workspaceMap]);
+  }, [allThreads, currentWorkspace, openHistoryThread, workspaceMap]);
 
   const handleConfirmSwitch = async () => {
     if (!switchDialog.workspace || !switchDialog.threadId) return;
@@ -381,7 +362,7 @@ export default function HistoryClient({
       await switchWorkspace(targetWorkspace.id);
       setSwitchDialog({ open: false, threadId: null, workspace: null });
       setContainerDialog({ open: true, workspace: targetWorkspace });
-      await openThreadAsNewGroup(targetThreadId);
+      await openHistoryThread(targetThreadId);
     } catch (error) {
       console.error('Failed to switch workspace:', error);
     } finally {

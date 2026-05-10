@@ -611,11 +611,11 @@ function closeWebSocket(ws: WebSocket, code: number, reason: string): void {
   }
 }
 
-function normalizeCompletionTimestamp(value: unknown): number {
-  return normalizeCompletionTimestampOrNull(value) ?? Date.now();
+function normalizeCompletionTimestamp(_value: unknown): number {
+  return Date.now();
 }
 
 function normalizeCompletionTimestampOrNull(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  return value;
+  return Date.now();
 }

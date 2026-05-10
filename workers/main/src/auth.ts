@@ -4918,8 +4918,8 @@ export class OrgDO extends DurableObject<DOEnv> {
   touchThreadActivity(id: string, at = Date.now()): boolean {
     const existing = this.getThread(id);
     if (!existing) return false;
-    const activityAt = Number.isFinite(at) ? at : Date.now();
-    if (activityAt <= existing.updated_at) return false;
+    const requestedAt = Number.isFinite(at) ? at : Date.now();
+    const activityAt = Math.max(requestedAt, Date.now(), existing.updated_at + 1);
     this.sql.exec(
       "UPDATE threads SET updated_at = ? WHERE id = ?",
       activityAt,
