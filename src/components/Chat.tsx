@@ -200,6 +200,41 @@ interface ChatProps {
   };
 }
 
+function resolveSelectedThreadModel(args: {
+  threadId?: string;
+  threadModel?: LlmModel | null;
+  allowedThreadModels?: LlmModel[] | null;
+  initialThreadProvider: ChatHarness;
+  llmProvider?: LlmProvider | null;
+  availableThreadModels: ReadonlyArray<ModelCatalogEntry>;
+  effectivePickerDefaultModel: LlmModel | null;
+  hasEffectivePickerDefault: boolean;
+  recentModelScope: RecentModelScope | null;
+}): LlmModel {
+  if (args.threadId && args.threadModel) {
+    return args.threadModel;
+  }
+
+  const recentModel =
+    !args.threadId && args.recentModelScope
+      ? getRecentModel(args.recentModelScope)
+      : null;
+  const resolvedModel = resolveDefaultModelForChat({
+    effectiveDefaultModel: args.hasEffectivePickerDefault
+      ? args.effectivePickerDefaultModel
+      : null,
+    recentModel,
+    visibleCatalog: args.availableThreadModels,
+  });
+
+  return (
+    resolvedModel ??
+    args.threadModel ??
+    args.allowedThreadModels?.[0] ??
+    getDefaultLlmModel(args.initialThreadProvider, args.llmProvider)
+  );
+}
+
 type InitialChatMessageState = {
   initialMessageContent?: string;
 };
@@ -1828,11 +1863,6 @@ export default function Chat({
   const [welcomeInput, setWelcomeInput] = useState(
     () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
   );
-  const [selectedThreadModel, setSelectedThreadModel] = useState<LlmModel>(
-    threadModel ??
-      allowedThreadModels?.[0] ??
-      getDefaultLlmModel(initialThreadProvider, llmProvider),
-  );
   const [activeThreadProvider, setActiveThreadProvider] = useState<ChatHarness>(
     initialThreadProvider,
   );
@@ -1860,12 +1890,33 @@ export default function Chat({
     () => new Set(availableThreadModels.map((entry) => entry.id)),
     [availableThreadModels],
   );
+  const shouldUseRecentModelFallback = !hasEffectivePickerDefault;
   const modelRecentScope = useMemo<RecentModelScope | null>(() => {
     if (readOnly) return null;
+    if (!shouldUseRecentModelFallback) return null;
     if (recentModelScope) return recentModelScope;
     if (!currentOrg?.id || !resolvedWorkspaceId) return null;
     return { orgId: currentOrg.id, workspaceId: resolvedWorkspaceId };
-  }, [currentOrg?.id, readOnly, recentModelScope, resolvedWorkspaceId]);
+  }, [
+    currentOrg?.id,
+    readOnly,
+    recentModelScope,
+    resolvedWorkspaceId,
+    shouldUseRecentModelFallback,
+  ]);
+  const [selectedThreadModel, setSelectedThreadModel] = useState<LlmModel>(() =>
+    resolveSelectedThreadModel({
+      threadId,
+      threadModel,
+      allowedThreadModels,
+      initialThreadProvider,
+      llmProvider,
+      availableThreadModels,
+      effectivePickerDefaultModel,
+      hasEffectivePickerDefault,
+      recentModelScope: modelRecentScope,
+    }),
+  );
   const noModelsMessage =
     availableThreadModels.length === 0
       ? "No models are available. Ask an admin to add a model in Settings > Models."
@@ -2198,14 +2249,25 @@ export default function Chat({
   useEffect(() => {
     setActiveThreadProvider(initialThreadProvider);
     setSelectedThreadModel(
-      threadModel ??
-        allowedThreadModels?.[0] ??
-        getDefaultLlmModel(initialThreadProvider, llmProvider),
+      resolveSelectedThreadModel({
+        threadId,
+        threadModel,
+        allowedThreadModels,
+        initialThreadProvider,
+        llmProvider,
+        availableThreadModels,
+        effectivePickerDefaultModel,
+        hasEffectivePickerDefault,
+        recentModelScope: modelRecentScope,
+      }),
     );
   }, [
     allowedThreadModels,
+    effectivePickerDefaultModel,
+    hasEffectivePickerDefault,
     initialThreadProvider,
     llmProvider,
+    modelRecentScope,
     threadId,
     threadModel,
   ]);
@@ -4726,9 +4788,17 @@ export default function Chat({
     if (updateThreadModelFetcher.data.error) {
       setActiveThreadProvider(initialThreadProvider);
       setSelectedThreadModel(
-        threadModel ??
-          allowedThreadModels?.[0] ??
-          getDefaultLlmModel(initialThreadProvider, llmProvider),
+        resolveSelectedThreadModel({
+          threadId,
+          threadModel,
+          allowedThreadModels,
+          initialThreadProvider,
+          llmProvider,
+          availableThreadModels,
+          effectivePickerDefaultModel,
+          hasEffectivePickerDefault,
+          recentModelScope: modelRecentScope,
+        }),
       );
       toast.error(updateThreadModelFetcher.data.error);
       return;
@@ -4760,9 +4830,9 @@ export default function Chat({
   }, [
     initialThreadProvider,
     llmProvider,
+    threadId,
     ready,
     revalidator,
-    threadId,
     threadModel,
     updateThreadModelFetcher.state,
     updateThreadModelFetcher.data,
@@ -4819,17 +4889,21 @@ export default function Chat({
 
     const recentModel = getRecentModel(modelRecentScope);
     const nextModel = resolveDefaultModelForChat({
-      effectiveDefaultModel: effectivePickerDefaultModel,
+      effectiveDefaultModel: null,
       recentModel,
       visibleCatalog: availableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
       handleThreadModelChange(nextModel);
+    } else if (nextModel) {
+      setActiveThreadProvider(
+        getProviderForModel(nextModel, initialThreadProvider),
+      );
     }
   }, [
     availableThreadModels,
-    effectivePickerDefaultModel,
     handleThreadModelChange,
+    initialThreadProvider,
     modelRecentScope,
     noModelsMessage,
     readOnly,
@@ -4851,7 +4925,9 @@ export default function Chat({
     }
 
     const nextModel = resolveDefaultModelForChat({
-      effectiveDefaultModel: effectivePickerDefaultModel,
+      effectiveDefaultModel: hasEffectivePickerDefault
+        ? effectivePickerDefaultModel
+        : null,
       visibleCatalog: availableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
@@ -4861,6 +4937,7 @@ export default function Chat({
     availableThreadModelIds,
     availableThreadModels,
     effectivePickerDefaultModel,
+    hasEffectivePickerDefault,
     handleThreadModelChange,
     isStreaming,
     loading,
