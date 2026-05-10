@@ -209,21 +209,15 @@ function resolveSelectedThreadModel(args: {
   availableThreadModels: ReadonlyArray<ModelCatalogEntry>;
   effectivePickerDefaultModel: LlmModel | null;
   hasEffectivePickerDefault: boolean;
-  recentModelScope: RecentModelScope | null;
 }): LlmModel {
   if (args.threadId && args.threadModel) {
     return args.threadModel;
   }
 
-  const recentModel =
-    !args.threadId && args.recentModelScope
-      ? getRecentModel(args.recentModelScope)
-      : null;
   const resolvedModel = resolveDefaultModelForChat({
     effectiveDefaultModel: args.hasEffectivePickerDefault
       ? args.effectivePickerDefaultModel
       : null,
-    recentModel,
     fallbackModel: getDefaultLlmModel(
       args.initialThreadProvider,
       args.llmProvider,
@@ -1918,7 +1912,6 @@ export default function Chat({
       availableThreadModels,
       effectivePickerDefaultModel,
       hasEffectivePickerDefault,
-      recentModelScope: modelRecentScope,
     }),
   );
   const noModelsMessage =
@@ -2262,7 +2255,6 @@ export default function Chat({
         availableThreadModels,
         effectivePickerDefaultModel,
         hasEffectivePickerDefault,
-        recentModelScope: modelRecentScope,
       }),
     );
   }, [
@@ -4801,7 +4793,6 @@ export default function Chat({
           availableThreadModels,
           effectivePickerDefaultModel,
           hasEffectivePickerDefault,
-          recentModelScope: modelRecentScope,
         }),
       );
       toast.error(updateThreadModelFetcher.data.error);

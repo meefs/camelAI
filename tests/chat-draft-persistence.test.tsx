@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
+import { renderToString } from 'react-dom/server';
 import { loadDraft } from '@/hooks/use-draft-persistence';
 
 const mockNavigate = vi.fn();
@@ -437,7 +438,7 @@ describe('Chat draft persistence', () => {
 
     localStorage.setItem('camelai.recentModel.org-1.ws-1', 'opus');
 
-    const { rerender } = render(
+    const noDefaultChat = (
       <Chat
         workspaceId="ws-1"
         initialMessages={[]}
@@ -445,10 +446,18 @@ describe('Chat draft persistence', () => {
         allowedThreadModels={['sonnet', 'opus']}
         effectivePickerDefaultModel={null}
         hasEffectivePickerDefault={false}
-      />,
+      />
     );
 
-    expect(screen.getByTestId('welcome-model')).toHaveTextContent('opus');
+    expect(renderToString(noDefaultChat)).toContain(
+      'data-testid="welcome-model">sonnet',
+    );
+
+    const { rerender } = render(noDefaultChat);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('welcome-model')).toHaveTextContent('opus');
+    });
     expect(screen.getByTestId('welcome-recent-model-scope')).toHaveTextContent(
       'enabled',
     );

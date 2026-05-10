@@ -59,34 +59,81 @@ The displayed words (`low/medium/high`, `slow/balanced/fast`) are pulled directl
 
 ---
 
-## Mapping
+## Per-model scores
 
-Three buckets map to a fixed score on a 0–5 scale (half-step granularity). The mapping is the same for both intelligence and speed:
+Replace the bucketed `Intelligence` / `Speed` string-union types with a numeric `RatingScore` type that allows any of the 10 half-steps from `0.5` through `5.0`. Each model gets its own intelligence and speed score, set per-model in the catalog, so we are no longer forced to give clusters of models identical ratings.
 
-| Catalog value (intelligence)         | Score (out of 5) | Visual                        |
-| ------------------------------------ | ---------------- | ----------------------------- |
-| `"high"`                             | **5.0**          | ● ● ● ● ●                     |
-| `"medium"`                           | **3.5**          | ● ● ● ◐ ○                     |
-| `"low"`                              | **2.0**          | ● ● ○ ○ ○                     |
+### Type change in [src/lib/model-catalog.ts](../src/lib/model-catalog.ts)
 
-| Catalog value (speed)                | Score (out of 5) | Visual                        |
-| ------------------------------------ | ---------------- | ----------------------------- |
-| `"fast"`                             | **5.0**          | ● ● ● ● ●                     |
-| `"balanced"`                         | **3.5**          | ● ● ● ◐ ○                     |
-| `"slow"`                             | **2.0**          | ● ● ○ ○ ○                     |
+Replace lines 32–33:
 
-**Rationale for these anchor values:**
-- We have 3 buckets but want 5 circles with half-fill. A naive 1/3/5 mapping leaves the half-circle slot unused entirely — wasteful given the point of half-circles is to make the scale feel calibrated rather than coarse.
-- Anchoring `"high"`/`"fast"` at 5.0 (not 4.5) is intentional: top-bucket models should look unambiguously top-tier.
-- Anchoring `"low"`/`"slow"` at 2.0 (not 1.0 or 0.5) avoids making legitimate, intentionally-cheap-and-fast models look like they're failing some test. They're still clearly the bottom bucket compared to medium (3.5) and high (5.0).
-- `"medium"` / `"balanced"` at 3.5 puts the half-circle into use and visually separates it from both extremes.
+```ts
+export type Intelligence = "low" | "medium" | "high";
+export type Speed = "slow" | "balanced" | "fast";
+```
 
-**Decision to keep buckets in the catalog data type (not expand to floats):**
-- Keeping `Intelligence = "low" | "medium" | "high"` means the catalog stays compact and self-explanatory; reviewers don't have to debate "is this a 4 or a 4.5?" per model.
-- All visual tuning is one constant table away in the picker component — easy to revisit if Illiana wants to spread models out later.
-- If we later decide we *do* want per-model granular tuning (e.g., Opus 4.7 = 5.0 but Opus 4.6 = 4.5), that becomes a follow-up that expands the type without rewriting the rendering layer.
+with:
 
-> **For Illiana to confirm:** Are these three anchor values (`5.0 / 3.5 / 2.0`) correct? If you want low/slow to read more punishing (e.g., 1.5) or medium to lean higher/lower (3.0 or 4.0), say so and the table above gets one edit.
+```ts
+// Half-step rating, 0.5 through 5.0. Used for both intelligence and speed.
+// Renders as 5 circles in the model picker hover tooltip.
+export type RatingScore =
+  | 0.5 | 1 | 1.5 | 2 | 2.5 | 3 | 3.5 | 4 | 4.5 | 5;
+```
+
+And update the interface (lines 35–44):
+
+```ts
+export interface ModelCatalogEntry {
+  id: LlmModel;
+  label: string;
+  providerLogo: ProviderLogoType;
+  providerOrder: number;
+  modelOrder: number;
+  cost: CostBucket;
+  intelligence: RatingScore;
+  speed: RatingScore;
+}
+```
+
+The `Intelligence` and `Speed` exports are removed — no other file in the repo imports them (verified: `grep -r "type Intelligence\|type Speed\b" src/ workers/ tests/` returns zero non-definition hits).
+
+### Proposed per-model scores
+
+This is a first-draft proposal — **every cell is yours to tweak before this plan is handed to the implementer**. Edit any number you disagree with directly in this file.
+
+Notation: scores are out of 5, in 0.5 steps. The "Visual" columns show what each score renders as (● = full, ◐ = half, ○ = empty) so you can eyeball the picker as you tune.
+
+| Model                   | Provider | Cost  | Intelligence | Visual          | Speed | Visual          | Quick justification                                  |
+| ----------------------- | -------- | ----- | -----------: | --------------- | ----: | --------------- | ---------------------------------------------------- |
+| Opus 4.7                | Claude   | `$$$` | **5.0**      | ● ● ● ● ●        | **2.0** | ● ● ○ ○ ○        | Newest flagship; deeper thinking → slowest.          |
+| Opus 4.6                | Claude   | `$$$` | **4.5**      | ● ● ● ● ◐        | **2.0** | ● ● ○ ○ ○        | Prior flagship; nearly as smart, slightly faster.    |
+| Sonnet 4.6              | Claude   | `$$`  | **4.0**      | ● ● ● ● ○        | **4.0** | ● ● ● ● ○        | Workhorse — strong all-rounder, brisk.               |
+| Haiku 4.5               | Claude   | `$`   | **2.5**      | ● ● ◐ ○ ○        | **5.0** | ● ● ● ● ●        | Smallest Claude; very fast.                          |
+| GPT-5.5                 | OpenAI   | `$$$` | **5.0**      | ● ● ● ● ●        | **3.0** | ● ● ● ○ ○        | Newest OpenAI flagship; mid-pack on speed.           |
+| GPT-5.4                 | OpenAI   | `$$`  | **4.5**      | ● ● ● ● ◐        | **3.5** | ● ● ● ◐ ○        | Prior flagship; a touch faster than 5.5.             |
+| GPT-5.4 Mini            | OpenAI   | `$`   | **2.5**      | ● ● ◐ ○ ○        | **5.0** | ● ● ● ● ●        | Small/fast OpenAI variant.                           |
+| Gemini 3.1 Pro Preview  | Gemini   | `$$`  | **4.5**      | ● ● ● ● ◐        | **3.5** | ● ● ● ◐ ○        | Frontier-competitive; comparable to GPT-5.4.         |
+| Gemini 3 Flash Preview  | Gemini   | `$`   | **2.5**      | ● ● ◐ ○ ○        | **5.0** | ● ● ● ● ●        | Small/fast Gemini.                                   |
+| DeepSeek V4 Pro         | DeepSeek | `$`   | **3.5**      | ● ● ● ◐ ○        | **3.5** | ● ● ● ◐ ○        | Strong mid-tier open-source.                         |
+| DeepSeek V4 Flash       | DeepSeek | `$`   | **2.0**      | ● ● ○ ○ ○        | **5.0** | ● ● ● ● ●        | Smallest DeepSeek; very fast.                        |
+| Kimi K2.6               | Kimi     | `$`   | **3.5**      | ● ● ● ◐ ○        | **3.5** | ● ● ● ◐ ○        | Comparable to DeepSeek V4 Pro.                       |
+| Grok 4.3                | Grok     | `$`   | **3.5**      | ● ● ● ◐ ○        | **4.5** | ● ● ● ● ◐        | Mid-intelligence, leans fast.                        |
+
+**How the scores were anchored:**
+- Top of intelligence (`5.0`) reserved for the two newest frontier flagships (Opus 4.7, GPT-5.5). Their immediate predecessors (Opus 4.6, GPT-5.4, Gemini 3.1 Pro) sit at `4.5` so the lineage shows.
+- Sonnet 4.6 at `4.0` separates the "everyday Claude" from the very top tier (`4.5+`) and from the open-source mid-tier (`3.5`).
+- Mini/Flash variants (Haiku, GPT Mini, Gemini Flash) cluster at `2.5` intelligence — clearly weaker than the pros but not punishingly low. DeepSeek Flash at `2.0` is the only one a half-step below; tweak if you disagree.
+- Top of speed (`5.0`) reserved for the explicit "fast/mini/flash" variants. Sonnet 4.6 at `4.0` is the fastest non-mini. Opus 4.7 at `1.5` is the only one below `2.0` — it's noticeably slower than 4.6 in practice; bump to `2.0` if you'd rather not single it out.
+- No model uses `0.5` or `1.0`. Reserve those slots for future cases if a truly punishing rating is ever appropriate; with a 10-step scale we don't need to use every step.
+
+> **Tweaking workflow:** edit numbers directly in the table above. The implementing agent will lift these into [src/lib/model-catalog.ts](../src/lib/model-catalog.ts) verbatim, so whatever you finalize here is what ships.
+
+### Why move to per-model numerics (not keep buckets + remap)
+
+- The user's stated reason: the previous 3-bucket type forced models with meaningfully different qualitative levels into the same value (e.g., Opus 4.7 and Opus 4.6 both `"high"`). The new 10-value scale lets each model's score reflect its actual position.
+- The catalog file is already the canonical place each model is tuned (cost bucket, ordering, label). Adding per-model numeric scores keeps all tuning in one file rather than scattering a remap table inside the picker.
+- Type safety: `RatingScore` as a numeric union prevents typos like `4.7` (not a half-step). Tests can simply assert "is one of the 10 allowed values" rather than maintaining a bucket-list.
 
 ---
 
@@ -94,36 +141,32 @@ Three buckets map to a fixed score on a 0–5 scale (half-step granularity). The
 
 ### Goal layout
 
+Using the proposed scores. Sonnet 4.6 → intelligence 4.0, speed 4.0:
+
 ```
 ┌─────────────────────────────────────┐
 │ Sonnet 4.6                          │ ← model name (unchanged)
 │ ─────────────────────────────────── │ ← divider (unchanged)
 │ cost              $$                │ ← cost row (unchanged)
-│ intelligence      ● ● ● ◐ ○         │ ← was "medium"
-│ speed             ● ● ● ◐ ○         │ ← was "balanced"
+│ intelligence      ● ● ● ● ○         │ ← was "medium"; now 4.0
+│ speed             ● ● ● ● ○         │ ← was "balanced"; now 4.0
 └─────────────────────────────────────┘
 ```
 
-A few example rows in context:
+A few more example rows in context:
 
 ```
-Opus 4.7
-─────────────────────────────────────
-cost               $$$
-intelligence       ● ● ● ● ●
-speed              ● ● ○ ○ ○
+Opus 4.7                              Haiku 4.5
+─────────────────────────────         ─────────────────────────────
+cost               $$$                cost               $
+intelligence       ● ● ● ● ●          intelligence       ● ● ◐ ○ ○
+speed              ● ◐ ○ ○ ○          speed              ● ● ● ● ●
 
-Haiku 4.5
-─────────────────────────────────────
-cost               $
-intelligence       ● ● ○ ○ ○
-speed              ● ● ● ● ●
-
-GPT-5.5
-─────────────────────────────────────
-cost               $$$
-intelligence       ● ● ● ● ●
-speed              ● ● ● ◐ ○
+GPT-5.5                               Grok 4.3
+─────────────────────────────         ─────────────────────────────
+cost               $$$                cost               $
+intelligence       ● ● ● ● ●          intelligence       ● ● ● ○ ○
+speed              ● ● ● ○ ○          speed              ● ● ● ● ◐
 ```
 
 ### Circle visual specs
@@ -223,36 +266,32 @@ Notes:
 - **`currentColor` + `className` on `<circle>`:** the `className` sets `color`, and `fill="currentColor"` inherits it. This keeps both light and dark themes correct without a media query.
 - **Accessibility:** the cluster is a single `role="img"` with an `aria-label` describing the score. Individual pips are `aria-hidden`. Screen readers will announce "Intelligence rating: 3.5 out of 5" rather than five "circle" announcements.
 
-### 2. Add the score-mapping table
+### 2. Update `MODEL_CATALOG` to use the per-model numeric scores
 
-Place these two const maps just below the imports in `model-picker.tsx`:
+In [src/lib/model-catalog.ts](../src/lib/model-catalog.ts), edit each entry's `intelligence` and `speed` fields to the values from the [Per-model scores](#per-model-scores) table. (No bucket→score map exists; the catalog *is* the source of truth.)
 
-```tsx
-const INTELLIGENCE_SCORE: Record<Intelligence, number> = {
-  low: 2,
-  medium: 3.5,
-  high: 5,
-};
+For example, the Opus 4.7 entry ([src/lib/model-catalog.ts:87-96](../src/lib/model-catalog.ts#L87-L96)) becomes:
 
-const SPEED_SCORE: Record<Speed, number> = {
-  slow: 2,
-  balanced: 3.5,
-  fast: 5,
-};
+```ts
+"opus-4.7": {
+  id: "opus-4.7",
+  label: "Opus 4.7",
+  providerLogo: "claude",
+  providerOrder: 0,
+  modelOrder: 0,
+  cost: "$$$",
+  intelligence: 5,
+  speed: 1.5,
+},
 ```
 
-You'll need to import the types — extend the existing import:
+Apply the analogous edit to all 13 entries using the table values. Type-check (`bun run typecheck`) catches any number that isn't one of the 10 allowed half-steps.
+
+The picker import only needs `ModelCatalogEntry` now — no `Intelligence` / `Speed` types to import (they no longer exist):
 
 ```tsx
-import {
-  MODEL_CATALOG,
-  type Intelligence,
-  type ModelCatalogEntry,
-  type Speed,
-} from '@/lib/model-catalog';
+import { MODEL_CATALOG, type ModelCatalogEntry } from '@/lib/model-catalog';
 ```
-
-(`Intelligence` and `Speed` are already exported from `model-catalog.ts` — see [src/lib/model-catalog.ts:32-33](../src/lib/model-catalog.ts#L32-L33). No edits to that file.)
 
 ### 3. Update `ModelMetadataCard` to use rating dots for intelligence and speed
 
@@ -260,8 +299,6 @@ Replace the body of `ModelMetadataCard` ([src/components/model-picker.tsx:52-66]
 
 ```tsx
 function ModelMetadataCard({ entry }: { entry: ModelCatalogEntry }) {
-  const intelligenceScore = INTELLIGENCE_SCORE[entry.intelligence];
-  const speedScore = SPEED_SCORE[entry.speed];
   return (
     <HoverCardContent side="right" align="start" sideOffset={8} className="w-48">
       <div className="space-y-2">
@@ -271,13 +308,13 @@ function ModelMetadataCard({ entry }: { entry: ModelCatalogEntry }) {
           <MetadataRow label="cost" value={entry.cost} />
           <RatingRow
             label="intelligence"
-            score={intelligenceScore}
-            ariaLabel={`Intelligence rating: ${intelligenceScore} out of 5`}
+            score={entry.intelligence}
+            ariaLabel={`Intelligence rating: ${entry.intelligence} out of 5`}
           />
           <RatingRow
             label="speed"
-            score={speedScore}
-            ariaLabel={`Speed rating: ${speedScore} out of 5`}
+            score={entry.speed}
+            ariaLabel={`Speed rating: ${entry.speed} out of 5`}
           />
         </div>
       </div>
@@ -309,7 +346,7 @@ function RatingRow({
 
 `MetadataRow` stays exactly as is — it's still used for the cost row.
 
-### 4. Update the existing picker test
+### 4. Update the picker test
 
 [tests/model-picker.test.tsx:89-104](../tests/model-picker.test.tsx#L89-L104) currently asserts:
 
@@ -319,42 +356,70 @@ expect(screen.queryByText('slow')).not.toBeInTheDocument();
 expect(screen.getByText('balanced')).toBeInTheDocument();
 ```
 
-These will break — those words no longer render. Replace them with assertions on the `aria-label`s of the rating clusters, which are stable and meaningful:
+These will break — those words no longer render. Replace them with assertions on the `aria-label`s of the rating clusters, which are stable and meaningful. Use the proposed scores from the [Per-model scores](#per-model-scores) table — Opus 4.6 = 4.5 intel / 2.0 speed; Sonnet 4.6 = 4.0 intel / 4.0 speed:
 
 ```ts
-// Opus 4.6: intelligence "high" → 5, speed "slow" → 2
+// Opus 4.6: intelligence 4.5, speed 2
 fireEvent.focus(getModelItem('Opus 4.6'));
 expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.6');
 expect(
-  screen.getByLabelText('Intelligence rating: 5 out of 5'),
+  screen.getByLabelText('Intelligence rating: 4.5 out of 5'),
 ).toBeInTheDocument();
 expect(
   screen.getByLabelText('Speed rating: 2 out of 5'),
 ).toBeInTheDocument();
 
-// Sonnet 4.6: intelligence "medium" → 3.5, speed "balanced" → 3.5
+// Sonnet 4.6: intelligence 4, speed 4
 fireEvent.focus(getModelItem('Sonnet 4.6'));
 expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 4.6');
 expect(
-  screen.getByLabelText('Intelligence rating: 3.5 out of 5'),
+  screen.getByLabelText('Intelligence rating: 4 out of 5'),
 ).toBeInTheDocument();
 expect(
-  screen.getByLabelText('Speed rating: 3.5 out of 5'),
+  screen.getByLabelText('Speed rating: 4 out of 5'),
 ).toBeInTheDocument();
 expect(screen.getAllByText('cost')).toHaveLength(1);
 ```
 
 The other test in the file (`'delays pointer metadata and cancels pending opens on leave'`, [tests/model-picker.test.tsx:106-126](../tests/model-picker.test.tsx#L106-L126)) only asserts on the tooltip's `Opus 4.6` / `Sonnet 4.6` text — those still render — so it doesn't need changes.
 
-### 5. Nothing else changes
+### 5. Update the catalog test
+
+[tests/model-catalog.test.ts:105-114](../tests/model-catalog.test.ts#L105-L114) currently asserts:
+
+```ts
+expect(['low', 'medium', 'high']).toContain(entry.intelligence);
+expect(['slow', 'balanced', 'fast']).toContain(entry.speed);
+```
+
+Replace with assertions that the values are valid `RatingScore`s:
+
+```ts
+const ALLOWED_SCORES = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+expect(ALLOWED_SCORES).toContain(entry.intelligence);
+expect(ALLOWED_SCORES).toContain(entry.speed);
+```
+
+[tests/model-catalog.test.ts:11-66](../tests/model-catalog.test.ts#L11-L66) (`NEW_OPENROUTER_MODELS`) hard-codes string values for `intelligence` and `speed` and feeds them into `toMatchObject`. Update each entry's expected values to match the numeric scores from the proposal table:
+
+| id                       | intelligence | speed |
+| ------------------------ | -----------: | ----: |
+| `gemini-3-flash-preview` |          2.5 |     5 |
+| `gemini-3.1-pro-preview` |          4.5 |   3.5 |
+| `deepseek-v4-pro`        |          3.5 |   3.5 |
+| `deepseek-v4-flash`      |            2 |     5 |
+
+(Also widen the field types on the `NEW_OPENROUTER_MODELS` array declaration from `string` to `number` for `intelligence` / `speed`.)
+
+### 6. Nothing else changes
 
 Explicitly do NOT modify:
-- `MODEL_CATALOG`, `Intelligence`, or `Speed` in [src/lib/model-catalog.ts](../src/lib/model-catalog.ts).
 - The `cost` field anywhere — it stays as `$` / `$$` / `$$$` text.
 - The hover-card open/close timing, anchor, or trigger logic in `ModelPicker` ([src/components/model-picker.tsx:78-180](../src/components/model-picker.tsx#L78-L180)).
 - The dropdown menu items (logo, label, check icon) — only the floating tooltip card content changes.
 - The tooltip width (`w-48`) — the cluster fits.
 - The org settings models page ([src/routes/_app.settings.organization.models.tsx](../src/routes/_app.settings.organization.models.tsx)) — it doesn't display intelligence/speed today and shouldn't start now.
+- Any pricing logic in [services/sandbox-host/internal/app/usage_pricing.go](../services/sandbox-host/internal/app/usage_pricing.go) — intelligence/speed are display-only metadata and have no effect on billing.
 
 ---
 
@@ -363,40 +428,36 @@ Explicitly do NOT modify:
 | Case                                                                          | Expected                                                                                            |
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Hovering each model in the picker                                             | Tooltip shows model name, divider, `cost: $/$$/$$$`, intelligence dots, speed dots.                 |
-| Model with `intelligence: "high"` (e.g. Opus 4.7)                             | Five fully-filled circles for intelligence.                                                         |
-| Model with `intelligence: "medium"` (e.g. Sonnet 4.6)                         | Three full + one half + one empty.                                                                  |
-| Model with `intelligence: "low"` (e.g. Haiku 4.5)                             | Two full + three empty.                                                                             |
-| Same cases for speed (`fast` / `balanced` / `slow`)                           | Same visual mapping as intelligence.                                                                |
-| Light vs dark mode                                                            | Filled circles use `text-foreground`; empty circles use `text-muted-foreground/40`. Both adapt automatically. |
+| Each model's circles match its catalog score                                  | E.g. Opus 4.7 intelligence = 5.0 → 5 full; Sonnet 4.6 intelligence = 4.0 → 4 full + 1 empty; Grok 4.3 speed = 4.5 → 4 full + 1 half. (Cross-reference the [Per-model scores](#per-model-scores) table.) |
+| A score of 5.0                                                                | Five fully-filled circles, no empty.                                                                |
+| A score of 0.5                                                                | One half + four empty (renderer must handle this even though no current model uses it).             |
+| A score that ends in `.0` vs `.5`                                             | `.0` scores show whole-circle counts only; `.5` scores include exactly one half-pip in the position immediately after the last full pip. |
+| Light vs dark mode                                                            | Filled circles use `text-foreground`; empty circles use a solid `text-muted-foreground/30` fill. Both adapt automatically. |
 | Hovering the same model repeatedly                                            | Tooltip re-renders identically. No layout shift between text rows and circle rows.                  |
 | Keyboard navigation (`↑/↓`) through the dropdown                              | Tooltip swaps content between models without flicker. Aria labels announce the new score.           |
 | Focus moves to a different model while a previous tooltip is closing          | Existing single-tooltip-at-a-time behavior in [src/components/model-picker.tsx:99-105](../src/components/model-picker.tsx#L99-L105) is unchanged.        |
 | Screen reader user                                                            | Hears "Intelligence rating: X out of 5" and "Speed rating: Y out of 5" instead of just "circle circle circle". |
 | Half-circle on Safari                                                         | `clipPath="inset(0 50% 0 0)"` renders as left half filled, right half empty. (Verified support; flag if not.) |
-| Tooltip cluster width vs `w-48`                                               | 5 × 10px + 4 × 2px gap = 58px. Plus left label and `gap-6`, comfortably fits the 192px tooltip.     |
+| Tooltip cluster width vs `w-48`                                               | 5 × 12px + 4 × 4px gap = 76px. Plus left label and `gap-6`, comfortably fits the 192px tooltip.     |
 
 ---
 
 ## Verification checklist
 
-- [ ] `bun run typecheck` passes.
+- [ ] `bun run typecheck` passes (catches any out-of-step number assigned to `intelligence` / `speed`).
 - [ ] `bun run lint` passes.
-- [ ] `bun run test:run tests/model-picker.test.tsx` passes (with the assertion updates from step 4).
-- [ ] `bun run test:run tests/model-catalog.test.ts tests/model-logo-and-pricing.test.ts tests/model-settings-ui.test.tsx` still pass (no expected changes — these don't touch the tooltip).
-- [ ] Open the chat composer model picker locally (`bun run dev`), hover each model, and visually confirm:
-  - Cost row still shows `$` / `$$` / `$$$`.
-  - Intelligence row shows 5 / 3.5 / 2 circles for `high` / `medium` / `low` models.
-  - Speed row shows 5 / 3.5 / 2 circles for `fast` / `balanced` / `slow` models.
-  - Half-circle renders cleanly (left half filled, no jagged edge) in both light and dark themes.
-  - Empty circle outline is visible but clearly subordinate to the filled fill color.
-  - Cluster sits flush right against the tooltip's right padding, vertically centered with the label.
+- [ ] `bun run test:run tests/model-picker.test.tsx tests/model-catalog.test.ts` passes (with the assertion updates from steps 4 and 5).
+- [ ] `bun run test:run tests/model-logo-and-pricing.test.ts tests/model-settings-ui.test.tsx tests/model-picker-config.test.ts` still pass (no expected changes — these don't touch intelligence/speed).
+- [ ] Open the chat composer model picker locally (`bun run dev`), hover each of the 13 models, and visually confirm the dot counts match the [Per-model scores](#per-model-scores) table cell-for-cell.
+- [ ] Half-pip renders cleanly (left half foreground, right half muted, no jagged seam) in both light and dark themes.
+- [ ] Empty pip is a solid muted-color fill (not an outlined ring), matching the screenshot.
+- [ ] Cluster sits flush-right against the tooltip's right padding, vertically centered with the label.
 - [ ] Tab through the picker with the keyboard — aria-labels announce the score correctly via screen reader (or VoiceOver / NVDA quick check).
 
 ---
 
 ## Out of scope
 
-- Per-model fine-tuning (e.g., making Opus 4.7 a `4.5` instead of `5.0`). If desired later, expand the type in `model-catalog.ts` to a numeric and remove the bucket → score map.
 - Showing the numeric score as a label next to the circles (e.g., "3.5 ● ● ● ◐ ○"). The visual *is* the value.
 - Displaying ratings anywhere outside the picker tooltip (settings page, model selection in onboarding, paywall, etc.). Those surfaces don't show intelligence/speed today.
 - Tooltip-on-the-rating ("Intelligence: 3.5/5 means…"). The category label and the visual are sufficient; an explanation tooltip is a separate UX call.
