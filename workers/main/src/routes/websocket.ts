@@ -433,7 +433,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
         recordStreaming(true);
       } else {
         const completedAt = normalizeCompletionTimestampOrNull(payload.completedAt);
-        if (completedAt !== null || activeOrPendingUserTurn) {
+        if (activeOrPendingUserTurn) {
           recordAssistantCompletion(completedAt);
         } else {
           recordStreaming(false);

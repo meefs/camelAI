@@ -345,6 +345,7 @@ describe('chat runner websocket workspace status', () => {
     const { runner } = await startBridge();
     const completedAt = Date.now();
 
+    runner.emitMessage({ type: 'streaming_state', isStreaming: true });
     runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
 
     await vi.waitFor(() => {
@@ -367,6 +368,7 @@ describe('chat runner websocket workspace status', () => {
     const { runner } = await startBridge();
     const completedAt = Date.now();
 
+    runner.emitMessage({ type: 'streaming_state', isStreaming: true });
     runner.emitMessage({ type: 'streaming_state', isStreaming: false, completedAt });
 
     await vi.waitFor(() => {
@@ -381,6 +383,24 @@ describe('chat runner websocket workspace status', () => {
       'thread_1',
       false,
       { completedAt: expect.any(Number) },
+    );
+  });
+
+  it('does not record stale completedAt frames as unread without an active turn', async () => {
+    const { runner } = await startBridge();
+
+    runner.emitMessage({
+      type: 'streaming_state',
+      isStreaming: false,
+      completedAt: Date.now() - 10_000,
+    });
+
+    expect(touchThreadActivityMock).not.toHaveBeenCalled();
+    expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'ws_1',
+      'thread_1',
+      false,
     );
   });
 

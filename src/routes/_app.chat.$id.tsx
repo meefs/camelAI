@@ -553,7 +553,7 @@ export default function ChatPage() {
       : activeChatGroup;
 
   useEffect(() => {
-    if (import.meta.env.MODE !== "test") {
+    if (chatDebugFlags.historyLogs) {
       console.info("[chat history route]", {
         event: "loader_data_received",
         at: new Date().toISOString(),
@@ -576,6 +576,7 @@ export default function ChatPage() {
   }, [
     activeChatGroup?.id,
     chatData,
+    chatDebugFlags.historyLogs,
     isNewThread,
     location.pathname,
     location.search,

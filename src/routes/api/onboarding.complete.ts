@@ -263,7 +263,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         success: true,
         threadId: existingThread.id,
         salesPrompt,
-        redirectTo: `/chat/${existingThread.id}`,
+        redirectTo: `/chat/${existingThread.id}?newThread=1`,
         initialMessageContent: buildOnboardingInitialMessage(
           onboardingSystemMessage,
           salesPrompt,
@@ -296,7 +296,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       success: true,
       threadId: recoveryThread.id,
       salesPrompt,
-      redirectTo: `/chat/${recoveryThread.id}`,
+      redirectTo: `/chat/${recoveryThread.id}?newThread=1`,
       initialMessageContent: buildOnboardingInitialMessage(
         onboardingSystemMessage,
         salesPrompt,
@@ -331,7 +331,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     success: true,
     threadId: thread.id,
     salesPrompt,
-    redirectTo: `/chat/${thread.id}`,
+    redirectTo: `/chat/${thread.id}?newThread=1`,
     initialMessageContent: buildOnboardingInitialMessage(
       onboardingSystemMessage,
       salesPrompt,
