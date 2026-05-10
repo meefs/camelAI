@@ -291,6 +291,7 @@ async function buildChatData(
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
+  const isNewThread = url.searchParams.get("newThread") === "1";
   const hostname = request.headers.get("host")?.split(":")[0] || undefined;
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
@@ -354,6 +355,50 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     };
   }
 
+  if (isNewThread) {
+    const { orgId, workspaceId } = await requireSessionWorkspaceAccess(
+      request,
+      context,
+    );
+    const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+    const [thread, org] = await Promise.all([
+      orgStub.getThread(params.id),
+      orgStub.getInfo().catch(() => null),
+    ]);
+
+    if (!thread || thread.workspace_id !== workspaceId) {
+      throw redirect("/chat");
+    }
+    if ((thread.user_message_count ?? 0) > 0) {
+      throw redirect(`/chat/${params.id}`);
+    }
+
+    return {
+      threadId: params.id,
+      workspaceId,
+      chatData: EMPTY_CHAT_DATA,
+      threadTitle: thread.title ?? null,
+      threadModel: thread.model,
+      threadProvider: thread.provider,
+      llmProvider: null as LlmProvider | null,
+      allowedThreadModels: [thread.model],
+      effectivePickerDefaultModel: null,
+      hasEffectivePickerDefault: false,
+      experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+      billingCreditStatus: null,
+      initialChatError: getDevChatInitialError(url.searchParams),
+      isNewThread: true,
+      hostname,
+      orgSlug: org?.slug,
+      connections: [] as Integration[],
+      isOrgAdmin: false,
+      recentModelScope: { orgId, workspaceId },
+      readOnly: false,
+      activeChatGroup: null,
+      moveChatGroups: [],
+    };
+  }
+
   const authContext = await requireAuthContext(request, context);
 
   if (!authContext.currentWorkspace?.id) {
@@ -384,7 +429,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const orgId = authContext.currentOrg.id;
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
-  const isNewThread = url.searchParams.get("newThread") === "1";
   const orgStub = authEnv.ORG
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
     : null;

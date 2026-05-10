@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const requireSuperuserMock = vi.fn();
 const requireAuthContextMock = vi.fn();
+const requireSessionWorkspaceAccessMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
 const adminGetThreadContextByIdMock = vi.fn();
@@ -15,6 +16,7 @@ const readThreadMessagesMock = vi.fn();
 vi.mock('@/lib/auth.server', () => ({
   requireSuperuser: requireSuperuserMock,
   requireAuthContext: requireAuthContextMock,
+  requireSessionWorkspaceAccess: requireSessionWorkspaceAccessMock,
   getAuthEnv: getAuthEnvMock,
 }));
 
@@ -54,7 +56,15 @@ describe('chat loader admin readonly mode', () => {
         }),
       },
     });
-    getAuthEnvMock.mockReturnValue({});
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getThread: async () => null,
+          getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
+        }),
+      },
+    });
     getThreadPreviewStateMock.mockResolvedValue({
       target: null,
       tabs: [],
@@ -126,6 +136,12 @@ describe('chat loader admin readonly mode', () => {
       previewTabs: [],
       activeTabId: null,
       previewTarget: null,
+    });
+    requireSessionWorkspaceAccessMock.mockResolvedValue({
+      orgId: 'org_active',
+      workspaceId: 'ws_active',
+      userId: 'user_123',
+      access: 'full',
     });
   });
 });
@@ -249,16 +265,21 @@ describe('chat loader workspace mismatch handling', () => {
   });
 
   it('keeps the saved thread model for new-thread navigations', async () => {
-    requireAuthContextMock.mockResolvedValue({
-      currentWorkspace: { id: 'ws_active' },
-      currentOrg: { id: 'org_active', slug: 'acme' },
-      orgs: [{ org_id: 'org_active', role: 'admin' }],
-    });
-    getThreadMock.mockResolvedValue({
-      id: 'thread_123',
-      workspace_id: 'ws_active',
-      title: 'Workspace Thread',
-      model: 'opus',
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getThread: async () => ({
+            id: 'thread_123',
+            workspace_id: 'ws_active',
+            title: 'Workspace Thread',
+            provider: 'claude',
+            model: 'opus',
+            user_message_count: 0,
+          }),
+          getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
+        }),
+      },
     });
 
     const result = await loader({
@@ -270,36 +291,33 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.readOnly).toBe(false);
     expect(result.isNewThread).toBe(true);
     expect(result.threadModel).toBe('opus');
-    expect(result.allowedThreadModels).toEqual(['sonnet']);
-    expect(result.isOrgAdmin).toBe(true);
+    expect(result.allowedThreadModels).toEqual(['opus']);
+    expect(result.isOrgAdmin).toBe(false);
     expect(result.recentModelScope).toEqual({
       orgId: 'org_active',
       workspaceId: 'ws_active',
     });
-    expect(getThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_active');
+    expect(requireSessionWorkspaceAccessMock).toHaveBeenCalledTimes(1);
+    expect(requireAuthContextMock).not.toHaveBeenCalled();
+    expect(getThreadMock).not.toHaveBeenCalled();
   });
 
-  it('returns picker policy state for OpenAI-only new-thread navigations', async () => {
-    requireAuthContextMock.mockResolvedValue({
-      currentWorkspace: { id: 'ws_active' },
-      currentOrg: { id: 'org_active', slug: 'acme' },
-      orgs: [{ org_id: 'org_active', role: 'owner' }],
-    });
-    getThreadMock.mockResolvedValue({
-      id: 'thread_123',
-      workspace_id: 'ws_active',
-      title: 'Workspace Thread',
-      provider: 'codex',
-      model: 'gpt-5.4-mini',
-    });
-    getWorkspaceModelPickerStateMock.mockResolvedValue({
-      provider: 'codex',
-      llmProvider: 'openai',
-      experimentalSettings: { claude_proxy_models: false },
-      allowedThreadModels: ['gpt-5.4', 'gpt-5.4-mini'],
-      effectivePickerDefaultModel: 'gpt-5.4',
-      hasEffectivePickerDefault: true,
-      defaultModel: 'gpt-5.4',
+  it('returns minimal model state for OpenAI-only new-thread navigations', async () => {
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getThread: async () => ({
+            id: 'thread_123',
+            workspace_id: 'ws_active',
+            title: 'Workspace Thread',
+            provider: 'codex',
+            model: 'gpt-5.4-mini',
+            user_message_count: 0,
+          }),
+          getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
+        }),
+      },
     });
 
     const result = await loader({
@@ -311,13 +329,14 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.isNewThread).toBe(true);
     expect(result.threadProvider).toBe('codex');
     expect(result.threadModel).toBe('gpt-5.4-mini');
-    expect(result.llmProvider).toBe('openai');
-    expect(result.allowedThreadModels).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+    expect(result.llmProvider).toBe(null);
+    expect(result.allowedThreadModels).toEqual(['gpt-5.4-mini']);
     expect(result.allowedThreadModels).not.toContain('sonnet');
     expect(result.allowedThreadModels).not.toContain('opus');
-    expect(result.effectivePickerDefaultModel).toBe('gpt-5.4');
-    expect(result.hasEffectivePickerDefault).toBe(true);
-    expect(result.isOrgAdmin).toBe(true);
+    expect(result.effectivePickerDefaultModel).toBe(null);
+    expect(result.hasEffectivePickerDefault).toBe(false);
+    expect(result.isOrgAdmin).toBe(false);
+    expect(getWorkspaceModelPickerStateMock).not.toHaveBeenCalled();
     expect(result.recentModelScope).toEqual({
       orgId: 'org_active',
       workspaceId: 'ws_active',
