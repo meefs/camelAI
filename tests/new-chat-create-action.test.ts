@@ -5,6 +5,7 @@ const requireSessionWorkspaceAccessMock = vi.fn();
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const createThreadMock = vi.fn();
+const deleteThreadMock = vi.fn();
 const generateThreadTitleMock = vi.fn();
 const createGroupForNewThreadMock = vi.fn();
 const addThreadToExistingGroupMock = vi.fn();
@@ -37,6 +38,7 @@ vi.mock('@/lib/auth-do', () => ({
 
 vi.mock('@/lib/chat-do.server', () => ({
   createThread: createThreadMock,
+  deleteThread: deleteThreadMock,
   generateThreadTitle: generateThreadTitleMock,
   getRecentThreads: vi.fn(),
   getWorkspaceModelPickerState: vi.fn(),
@@ -66,6 +68,7 @@ describe('new chat create action', () => {
       title: 'New Chat',
       workspace_id: 'ws_123',
     });
+    deleteThreadMock.mockResolvedValue(true);
     generateThreadTitleMock.mockResolvedValue(undefined);
     createGroupForNewThreadMock.mockResolvedValue({
       id: 'group_123',
@@ -198,5 +201,29 @@ describe('new chat create action', () => {
         initialThreadTitle: 'Review production logs',
       }),
     );
+  });
+
+  it('returns 404 when creating a thread into a stale group', async () => {
+    addThreadToExistingGroupMock.mockRejectedValueOnce(
+      new Error('Chat group not found'),
+    );
+    const formData = new FormData();
+    formData.set('intent', 'createThread');
+    formData.set('groupId', 'group_stale');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Chat group not found',
+    });
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
   });
 });

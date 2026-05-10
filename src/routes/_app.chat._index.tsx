@@ -433,12 +433,21 @@ export async function action({ request, context }: Route.ActionArgs) {
               });
         } catch (groupError) {
           await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+          const message =
+            groupError instanceof Error ? groupError.message : "";
+          if (
+            groupId &&
+            (message === "Chat group not found" || message === "Thread not found")
+          ) {
+            throw Response.json({ error: message }, { status: 404 });
+          }
           throw groupError;
         }
       })();
 
       return Response.json({ thread, groupId: group.id, group });
     } catch (error) {
+      if (error instanceof Response) return error;
       console.error("Failed to create thread:", error);
       const message =
         error instanceof Error ? error.message : "Failed to create thread";
