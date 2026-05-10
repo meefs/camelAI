@@ -34,6 +34,60 @@ interface ModelPickerProps {
   manageModelsHref?: string;
 }
 
+const RATING_MAX = 5;
+
+function RatingDot({ fill }: { fill: 'full' | 'half' | 'empty' }) {
+  return (
+    <svg viewBox="0 0 10 10" aria-hidden="true" className="size-1.5 shrink-0">
+      <circle
+        cx="5"
+        cy="5"
+        r="5"
+        fill="currentColor"
+        className="text-muted-foreground/30"
+      />
+      {fill !== 'empty' && (
+        <circle
+          cx="5"
+          cy="5"
+          r="5"
+          fill="currentColor"
+          className="text-foreground"
+          clipPath={fill === 'half' ? 'inset(0 50% 0 0)' : undefined}
+        />
+      )}
+    </svg>
+  );
+}
+
+function RatingDots({
+  score,
+  ariaLabel,
+}: {
+  score: number;
+  ariaLabel: string;
+}) {
+  const clamped = Math.max(0, Math.min(RATING_MAX, score));
+  const dots: Array<'full' | 'half' | 'empty'> = [];
+  for (let i = 0; i < RATING_MAX; i++) {
+    const remaining = clamped - i;
+    if (remaining >= 1) dots.push('full');
+    else if (remaining >= 0.5) dots.push('half');
+    else dots.push('empty');
+  }
+  return (
+    <span
+      className="flex items-center gap-1"
+      role="img"
+      aria-label={ariaLabel}
+    >
+      {dots.map((fill, i) => (
+        <RatingDot key={i} fill={fill} />
+      ))}
+    </span>
+  );
+}
+
 function MetadataRow({
   label,
   value,
@@ -49,6 +103,23 @@ function MetadataRow({
   );
 }
 
+function RatingRow({
+  label,
+  score,
+  ariaLabel,
+}: {
+  label: string;
+  score: number;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-6">
+      <span className="text-muted-foreground">{label}</span>
+      <RatingDots score={score} ariaLabel={ariaLabel} />
+    </div>
+  );
+}
+
 function ModelMetadataCard({ entry }: { entry: ModelCatalogEntry }) {
   return (
     <HoverCardContent side="right" align="start" sideOffset={8} className="w-48">
@@ -57,8 +128,16 @@ function ModelMetadataCard({ entry }: { entry: ModelCatalogEntry }) {
         <div className="h-px bg-border/60" />
         <div className="space-y-1.5">
           <MetadataRow label="cost" value={entry.cost} />
-          <MetadataRow label="intelligence" value={entry.intelligence} />
-          <MetadataRow label="speed" value={entry.speed} />
+          <RatingRow
+            label="intelligence"
+            score={entry.intelligence}
+            ariaLabel={`Intelligence rating: ${entry.intelligence} out of 5`}
+          />
+          <RatingRow
+            label="speed"
+            score={entry.speed}
+            ariaLabel={`Speed rating: ${entry.speed} out of 5`}
+          />
         </div>
       </div>
     </HoverCardContent>

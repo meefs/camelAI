@@ -15,7 +15,7 @@ describe('model picker config RPC compatibility', () => {
           ),
       }),
     ).resolves.toMatchObject({
-      default_model: 'sonnet',
+      default_model: null,
       models: expect.arrayContaining([expect.objectContaining({ id: 'sonnet' })]),
     });
 

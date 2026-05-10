@@ -16,8 +16,8 @@ const NEW_OPENROUTER_MODELS: Array<{
   modelOrder: number;
   pricingKey: string;
   cost: string;
-  intelligence: string;
-  speed: string;
+  intelligence: number;
+  speed: number;
 }> = [
   {
     id: 'gemini-3-flash-preview',
@@ -27,8 +27,8 @@ const NEW_OPENROUTER_MODELS: Array<{
     modelOrder: 1,
     pricingKey: 'google/gemini-3-flash-preview',
     cost: '$',
-    intelligence: 'low',
-    speed: 'fast',
+    intelligence: 2.5,
+    speed: 5,
   },
   {
     id: 'gemini-3.1-pro-preview',
@@ -38,8 +38,8 @@ const NEW_OPENROUTER_MODELS: Array<{
     modelOrder: 0,
     pricingKey: 'google/gemini-3.1-pro-preview',
     cost: '$$',
-    intelligence: 'high',
-    speed: 'balanced',
+    intelligence: 4.5,
+    speed: 3.5,
   },
   {
     id: 'deepseek-v4-pro',
@@ -49,8 +49,8 @@ const NEW_OPENROUTER_MODELS: Array<{
     modelOrder: 0,
     pricingKey: 'deepseek/deepseek-v4-pro',
     cost: '$',
-    intelligence: 'medium',
-    speed: 'balanced',
+    intelligence: 3.5,
+    speed: 3.5,
   },
   {
     id: 'deepseek-v4-flash',
@@ -60,8 +60,8 @@ const NEW_OPENROUTER_MODELS: Array<{
     modelOrder: 1,
     pricingKey: 'deepseek/deepseek-v4-flash',
     cost: '$',
-    intelligence: 'low',
-    speed: 'fast',
+    intelligence: 2,
+    speed: 5,
   },
 ];
 
@@ -103,12 +103,13 @@ describe('MODEL_CATALOG', () => {
   });
 
   it('keeps metadata values in the expected finite sets', () => {
+    const ALLOWED_SCORES = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
     for (const entry of Object.values(MODEL_CATALOG)) {
       expect([0, 1, 2, 3, 4, 5]).toContain(entry.providerOrder);
       expect(entry.modelOrder).toBeGreaterThanOrEqual(0);
       expect(['$', '$$', '$$$']).toContain(entry.cost);
-      expect(['low', 'medium', 'high']).toContain(entry.intelligence);
-      expect(['slow', 'balanced', 'fast']).toContain(entry.speed);
+      expect(ALLOWED_SCORES).toContain(entry.intelligence);
+      expect(ALLOWED_SCORES).toContain(entry.speed);
       expect(entry.label.trim()).not.toBe('');
     }
   });

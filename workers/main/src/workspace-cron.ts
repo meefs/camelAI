@@ -12,6 +12,7 @@ import {
 } from "./cron-schedule";
 import type { WorkspaceDO } from "./workspace";
 import {
+  getDefaultLlmModel,
   getDefaultThreadProvider,
   getProviderForModel,
 } from "../../../src/lib/llm-provider-config";
@@ -337,6 +338,10 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     });
     const model = resolveDefaultModelForChat({
       effectiveDefaultModel: effectiveConfig.default_model,
+      fallbackModel: getDefaultLlmModel(
+        baseProvider,
+        llmProviderConfig?.provider,
+      ),
       visibleCatalog,
     });
     if (!model) {

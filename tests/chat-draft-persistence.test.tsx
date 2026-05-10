@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
+import { renderToString } from 'react-dom/server';
 import { loadDraft } from '@/hooks/use-draft-persistence';
 
 const mockNavigate = vi.fn();
@@ -86,11 +87,15 @@ vi.mock('@/components/welcome-screen', () => ({
     onPromptChange,
     onSubmit,
     attachments = [],
+    model,
+    recentModelScope,
   }: {
     inputValue: string;
     onPromptChange: (value: string) => void;
     onSubmit: () => void;
     attachments?: Array<{ id: string }>;
+    model?: string;
+    recentModelScope?: { orgId: string; workspaceId: string } | null;
   }) => (
     <form
       onSubmit={(event) => {
@@ -103,6 +108,10 @@ vi.mock('@/components/welcome-screen', () => ({
         value={inputValue}
         onChange={(event) => onPromptChange(event.currentTarget.value)}
       />
+      <div data-testid="welcome-model">{model}</div>
+      <div data-testid="welcome-recent-model-scope">
+        {recentModelScope ? 'enabled' : 'disabled'}
+      </div>
       <div data-testid="welcome-attachment-count">{attachments.length}</div>
       <button type="submit">Start</button>
     </form>
@@ -422,6 +431,68 @@ describe('Chat draft persistence', () => {
 
     expect(loadDraft('ws-1', 'thread-new')?.text).toBe('Hello from welcome');
     expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
+  });
+
+  it('uses the saved recent model for a new chat only when no picker default is set', async () => {
+    const user = userEvent.setup();
+
+    localStorage.setItem('camelai.recentModel.org-1.ws-1', 'opus');
+
+    const noDefaultChat = (
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+        threadModel="sonnet"
+        allowedThreadModels={['sonnet', 'opus']}
+        effectivePickerDefaultModel={null}
+        hasEffectivePickerDefault={false}
+      />
+    );
+
+    expect(renderToString(noDefaultChat)).toContain(
+      'data-testid="welcome-model">sonnet',
+    );
+
+    const { rerender } = render(noDefaultChat);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('welcome-model')).toHaveTextContent('opus');
+    });
+    expect(screen.getByTestId('welcome-recent-model-scope')).toHaveTextContent(
+      'enabled',
+    );
+
+    await user.type(
+      screen.getByLabelText('Welcome prompt'),
+      'Use the recent model',
+    );
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(mockFetcher.submit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        intent: 'createThread',
+        model: 'opus',
+      }),
+      { method: 'post', action: '/chat' },
+    );
+
+    mockFetcher = createFetcher();
+
+    rerender(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+        threadModel="sonnet"
+        allowedThreadModels={['sonnet', 'opus']}
+        effectivePickerDefaultModel="sonnet"
+        hasEffectivePickerDefault
+      />,
+    );
+
+    expect(screen.getByTestId('welcome-model')).toHaveTextContent('sonnet');
+    expect(screen.getByTestId('welcome-recent-model-scope')).toHaveTextContent(
+      'disabled',
+    );
   });
 
   it('sends an attachment-only thread draft through the websocket', async () => {

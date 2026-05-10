@@ -22,6 +22,7 @@ import {
   type WorkspaceContainerEnv,
 } from "../../workers/main/src/workspace-container";
 import {
+  getDefaultLlmModel,
   isLlmModelAllowedForNewThread,
   getDefaultThreadProvider,
   getProviderForModel,
@@ -172,6 +173,7 @@ export async function getWorkspaceModelPickerState(
   });
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
+    fallbackModel: getDefaultLlmModel(baseProvider, llmProviderConfig?.provider),
     visibleCatalog,
   });
   const provider = defaultModel

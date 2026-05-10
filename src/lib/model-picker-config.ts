@@ -5,12 +5,7 @@ import type {
   OrgModelPickerConfig,
   WorkspaceModelPickerConfig,
 } from "../types";
-import {
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_LLM_MODEL,
-  DEFAULT_OPENROUTER_MODEL,
-  isLlmModel,
-} from "./llm-provider-config";
+import { isLlmModel } from "./llm-provider-config";
 
 export const MODEL_PICKER_MAX_MODELS = 10;
 
@@ -63,19 +58,6 @@ function defaultModelOrderForProvider(
   }
 }
 
-function defaultModelForProvider(
-  orgProvider: LlmProvider | string | null | undefined,
-  models: readonly LlmModel[],
-): LlmModel | null {
-  let preferred: LlmModel = DEFAULT_LLM_MODEL;
-  if (orgProvider === "openai") {
-    preferred = DEFAULT_CODEX_MODEL;
-  } else if (orgProvider === "openrouter") {
-    preferred = DEFAULT_OPENROUTER_MODEL;
-  }
-  return models.includes(preferred) ? preferred : (models[0] ?? null);
-}
-
 function parseMaybeJson(raw: unknown): unknown {
   if (typeof raw !== "string") return raw;
   try {
@@ -123,7 +105,7 @@ export function defaultOrgModelPickerConfig(
   const now = Date.now();
   const defaultOrder = defaultModelOrderForProvider(orgProvider);
   return {
-    default_model: defaultModelForProvider(orgProvider, defaultOrder),
+    default_model: null,
     models: defaultOrder.map((id, index) => ({
       id,
       added_at: now - index,
@@ -202,6 +184,7 @@ export function resolveDefaultModelForChat(args: {
   effectiveDefaultModel: LlmModel | null;
   visibleCatalog: ReadonlyArray<ModelIdEntry>;
   recentModel?: LlmModel | null;
+  fallbackModel?: LlmModel | null;
 }): LlmModel | null {
   const visibleIds = new Set(args.visibleCatalog.map((entry) => entry.id));
 
@@ -214,6 +197,10 @@ export function resolveDefaultModelForChat(args: {
 
   if (args.recentModel && visibleIds.has(args.recentModel)) {
     return args.recentModel;
+  }
+
+  if (args.fallbackModel && visibleIds.has(args.fallbackModel)) {
+    return args.fallbackModel;
   }
 
   return args.visibleCatalog[0]?.id ?? null;
