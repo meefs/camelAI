@@ -1407,7 +1407,7 @@ export default function Chat({
     };
     groupId?: string;
     error?: string;
-  }>();
+  }>({ key: "chat-create-thread" });
   const updateThreadModelFetcher = useFetcher<{
     thread?: { id: string; model: LlmModel; provider: ChatHarness };
     error?: string;

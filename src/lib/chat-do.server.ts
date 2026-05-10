@@ -302,27 +302,14 @@ export async function createThread(
   model?: LlmModel,
 ): Promise<Thread> {
   const env = getEnv(context);
-  const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) {
-    throw new Error("Workspace not found");
-  }
-  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const [llmProviderConfig, experimentalSettings] = await Promise.all([
-    orgStub.getLlmProviderConfig(),
-    orgStub.getExperimentalSettings(),
-  ]);
-  const defaultProvider = getDefaultThreadProvider(
-    llmProviderConfig?.provider,
-    experimentalSettings,
-  );
   const pickerState = await getWorkspaceModelPickerState(
     context,
     workspaceId,
-    defaultProvider,
   );
   if (!pickerState || pickerState.allowedThreadModels.length === 0) {
     throw new Error("No models are available");
   }
+  const orgStub = env.ORG.get(env.ORG.idFromName(pickerState.orgId));
   const selectedModel = model ?? pickerState.defaultModel;
   if (!selectedModel) {
     throw new Error("No models are available");
@@ -330,14 +317,14 @@ export async function createThread(
   if (
     !isLlmModelAllowedForNewThread(
       selectedModel,
-      llmProviderConfig?.provider,
-      experimentalSettings,
+      pickerState.llmProvider,
+      pickerState.experimentalSettings,
     ) ||
     !pickerState.allowedThreadModels.includes(selectedModel)
   ) {
     throw new Error("Invalid thread model");
   }
-  const provider = getProviderForModel(selectedModel, defaultProvider);
+  const provider = getProviderForModel(selectedModel, pickerState.provider);
   const thread = await orgStub.createThread(
     workspaceId,
     title,
