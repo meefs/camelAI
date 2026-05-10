@@ -2,6 +2,15 @@ import { useNavigation, useFetchers } from 'react-router';
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 
+function isInitialChatNavigation(navigation: ReturnType<typeof useNavigation>) {
+  if (navigation.state === 'idle') return false;
+
+  return (
+    navigation.location?.pathname.startsWith('/chat/') &&
+    navigation.location.search.includes('newThread=1')
+  );
+}
+
 /**
  * Global navigation progress bar that shows at the top of the page
  * when a navigation or fetcher takes longer than 1 second.
@@ -9,8 +18,11 @@ import { cn } from '@/lib/utils';
 export function NavigationProgress() {
   const navigation = useNavigation();
   const fetchers = useFetchers();
-  const isNavigating = navigation.state !== 'idle';
-  const hasFetcherLoading = fetchers.some(f => f.state !== 'idle');
+  const isNavigating =
+    navigation.state !== 'idle' && !isInitialChatNavigation(navigation);
+  const hasFetcherLoading = fetchers.some(
+    (f) => f.state !== 'idle' && f.key !== 'chat-create-thread',
+  );
   const isLoading = isNavigating || hasFetcherLoading;
   const [visible, setVisible] = useState(false);
 
