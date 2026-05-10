@@ -168,7 +168,7 @@ describe('chat runner websocket workspace status', () => {
     expect(runner.readyState).toBe(WebSocket.CLOSED);
   });
 
-  it('records authoritative runner streaming_state events', async () => {
+  it('records active runner streaming_state completion without a completedAt timestamp as unread', async () => {
     const { runner } = await startBridge();
 
     runner.emitMessage({ type: 'streaming_state', isStreaming: true });
@@ -181,8 +181,31 @@ describe('chat runner websocket workspace status', () => {
       'thread_1',
       true,
     );
-    expect(recordWorkspaceThreadStreamingMock).toHaveBeenNthCalledWith(
-      2,
+    await vi.waitFor(() => {
+      expect(recordWorkspaceThreadStreamingMock).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        'ws_1',
+        'thread_1',
+        false,
+        { completedAt: expect.any(Number) },
+      );
+    });
+    await vi.waitFor(() => {
+      expect(touchThreadActivityMock).toHaveBeenCalledWith(
+        'thread_1',
+        expect.any(Number),
+      );
+    });
+  });
+
+  it('records idle streaming_state false without a pending user turn as idle', async () => {
+    const { runner } = await startBridge();
+
+    runner.emitMessage({ type: 'streaming_state', isStreaming: false });
+
+    expect(touchThreadActivityMock).not.toHaveBeenCalled();
+    expect(recordWorkspaceThreadStreamingMock).toHaveBeenLastCalledWith(
       expect.anything(),
       'ws_1',
       'thread_1',

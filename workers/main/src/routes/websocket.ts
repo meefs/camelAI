@@ -433,10 +433,10 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
         recordStreaming(true);
       } else {
         const completedAt = normalizeCompletionTimestampOrNull(payload.completedAt);
-        if (completedAt === null) {
-          recordStreaming(false);
-        } else {
+        if (completedAt !== null || activeOrPendingUserTurn) {
           recordAssistantCompletion(completedAt);
+        } else {
+          recordStreaming(false);
         }
         closeDetachedRunnerIfDone('runner completed after client detached');
       }

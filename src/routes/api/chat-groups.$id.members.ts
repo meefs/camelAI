@@ -8,9 +8,10 @@ function addThreadErrorResponse(error: unknown): Response {
   if (message === "Thread not found" || message === "Chat group not found") {
     return Response.json({ error: message }, { status: 404 });
   }
+  console.error("Failed to add thread to chat group", error);
   return Response.json(
-    { error: message || "Failed to add thread to group" },
-    { status: 409 },
+    { error: "Failed to add thread to group" },
+    { status: 500 },
   );
 }
 

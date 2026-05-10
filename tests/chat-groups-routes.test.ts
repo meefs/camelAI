@@ -165,6 +165,22 @@ describe("chat group tab routes", () => {
     });
   });
 
+  it("returns generic 500 JSON when adding a thread fails unexpectedly", async () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    getThreadMock.mockRejectedValueOnce(new Error("database exploded"));
+
+    const response = await addRoute.action(makeAddArgs({ threadId: "thread_1" }));
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "Failed to add thread to group",
+    });
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
   it("rejects reopening a thread that is not closed in the URL group", async () => {
     getChatGroupSummaryMock.mockResolvedValue({
       ...group,
