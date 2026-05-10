@@ -91,12 +91,21 @@ describe('ModelPicker metadata card state', () => {
 
     fireEvent.focus(getModelItem('Opus 4.6'));
     expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.6');
-    expect(screen.getByText('high')).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Intelligence rating: 4.5 out of 5'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Speed rating: 2 out of 5'),
+    ).toBeInTheDocument();
 
     fireEvent.focus(getModelItem('Sonnet 4.6'));
     expect(screen.getByRole('tooltip')).toHaveTextContent('Sonnet 4.6');
-    expect(screen.queryByText('slow')).not.toBeInTheDocument();
-    expect(screen.getByText('balanced')).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Intelligence rating: 4 out of 5'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Speed rating: 3.5 out of 5'),
+    ).toBeInTheDocument();
     expect(screen.getAllByText('cost')).toHaveLength(1);
 
     fireEvent.blur(getModelItem('Sonnet 4.6'));
