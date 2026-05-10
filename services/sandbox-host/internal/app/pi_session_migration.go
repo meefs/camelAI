@@ -82,12 +82,9 @@ func hostPiSessionDirHasJSONL(sessionDir string) (bool, error) {
 }
 
 func (s *Server) readLegacyMessagesForHostPiMigration(containerName, threadID string, sessionEnv map[string]string) ([]parsedChatMessage, string, error) {
-	sessionIDs := []string{threadID}
-	if legacyClaudeSessionID := strings.TrimSpace(sessionEnv["CHIRIDION_CLAUDE_SESSION_ID"]); legacyClaudeSessionID != "" && legacyClaudeSessionID != threadID {
-		if strings.ContainsAny(legacyClaudeSessionID, `/\`) {
-			return nil, "", fmt.Errorf("invalid legacy Claude session id")
-		}
-		sessionIDs = append(sessionIDs, legacyClaudeSessionID)
+	sessionIDs, err := legacyClaudeSessionCandidates(threadID, sessionEnv["CHIRIDION_CLAUDE_SESSION_ID"])
+	if err != nil {
+		return nil, "", err
 	}
 
 	log.Printf("[SandboxHost] host Pi legacy migration scanning Claude history thread=%s container=%s candidateSessions=%d", threadID, containerName, len(sessionIDs))
@@ -155,22 +152,48 @@ func (s *Server) readLegacyMessagesForHostPiMigration(containerName, threadID st
 	return nil, "", nil
 }
 
-func legacyCodexStatePathCandidates(threadID, codexSessionID string) ([]string, error) {
+func legacyClaudeSessionCandidates(threadID, claudeSessionID string) ([]string, error) {
 	threadID = strings.TrimSpace(threadID)
-	codexSessionID = strings.TrimSpace(codexSessionID)
+	claudeSessionID = strings.TrimSpace(claudeSessionID)
 	if threadID == "" {
-		return nil, nil
+		return nil, fmt.Errorf("thread id required for legacy Claude history")
 	}
 	if strings.ContainsAny(threadID, `/\`) {
 		return nil, fmt.Errorf("invalid thread id")
 	}
+
+	sessionIDs := []string{threadID}
+	if claudeSessionID != "" {
+		if strings.ContainsAny(claudeSessionID, `/\`) {
+			return nil, fmt.Errorf("invalid legacy Claude session id")
+		}
+		if claudeSessionID != threadID {
+			sessionIDs = append(sessionIDs, claudeSessionID)
+		}
+	}
+	return sessionIDs, nil
+}
+
+func legacyCodexStatePathCandidates(threadID, codexSessionID string) ([]string, error) {
+	threadID = strings.TrimSpace(threadID)
+	codexSessionID = strings.TrimSpace(codexSessionID)
+	if threadID == "" {
+		return nil, fmt.Errorf("thread id required for legacy Codex history")
+	}
+	if strings.ContainsAny(threadID, `/\`) {
+		return nil, fmt.Errorf("invalid thread id")
+	}
+
 	ids := []string{threadID}
-	if codexSessionID != "" && codexSessionID != threadID {
+	if codexSessionID != "" {
 		if strings.ContainsAny(codexSessionID, `/\`) {
 			return nil, fmt.Errorf("invalid legacy Codex session id")
 		}
-		ids = append(ids, codexSessionID)
+		if codexSessionID != threadID {
+			ids = append(ids, codexSessionID)
+		}
 	}
+
 	paths := make([]string, 0, len(ids))
 	for _, id := range ids {
 		paths = append(paths, fmt.Sprintf("/home/claude/.codex/threads/%s/state_5.sqlite", id))

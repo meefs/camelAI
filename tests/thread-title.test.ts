@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAppThreadFallbackTitle,
+  getInitialChatGroupNameFromThreadTitle,
   getThreadTitleSourceMessage,
   isPlaceholderThreadTitle,
 } from '@/lib/thread-title';
@@ -14,6 +15,17 @@ describe('thread title helpers', () => {
     expect(isPlaceholderThreadTitle('New Chat')).toBe(true);
     expect(isPlaceholderThreadTitle('Working on my-todo-app')).toBe(true);
     expect(isPlaceholderThreadTitle('Fix the app auth flow')).toBe(false);
+  });
+
+  it('derives initial chat group names only from real thread titles', () => {
+    expect(getInitialChatGroupNameFromThreadTitle('Fix the app auth flow')).toBe(
+      'Fix the app auth flow',
+    );
+    expect(getInitialChatGroupNameFromThreadTitle('New Chat')).toBeUndefined();
+    expect(
+      getInitialChatGroupNameFromThreadTitle('Working on my-todo-app'),
+    ).toBeUndefined();
+    expect(getInitialChatGroupNameFromThreadTitle('')).toBeUndefined();
   });
 
   it('extracts a real user message from attributed content', () => {

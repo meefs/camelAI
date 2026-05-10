@@ -1,5 +1,11 @@
-import { Suspense, use, useCallback, useEffect, useState } from "react";
-import { redirect, useLoaderData } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import {
+  redirect,
+  useLoaderData,
+  useLocation,
+  useNavigate,
+  useRevalidator,
+} from "react-router";
 import type { Route } from "./+types/_app.chat.$id";
 import {
   requireAuthContext,
@@ -25,11 +31,19 @@ import {
   isLlmModel,
 } from "@/lib/llm-provider-config";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
+import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
+import {
+  ensureGroupForThread,
+  listGroupsForMove,
+} from "@/lib/chat-groups.server";
+import { readThreadMessages } from "@/lib/chat-history.server";
 import Chat from "@/components/Chat";
+import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
+import { useChatGroups } from "@/hooks/use-chat-groups";
 import type {
   ChatHarness,
   Integration,
@@ -157,6 +171,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
 interface ChatData {
   messages: Message[];
+  messagesError: string | null;
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
   previewTarget: PreviewTarget | null;
@@ -164,6 +179,7 @@ interface ChatData {
 
 const EMPTY_CHAT_DATA: ChatData = {
   messages: [],
+  messagesError: null,
   previewTabs: [],
   activeTabId: null,
   previewTarget: null,
@@ -174,13 +190,18 @@ function getPreviewTabId(target: PreviewTarget): string {
   return `file:${target.workspaceId}:${target.source}:${target.path}`;
 }
 
-function buildPreviewChatDataPromise(
+async function buildChatData(
   context: Route.LoaderArgs["context"],
   authEnv: ReturnType<typeof getAuthEnv>,
-  orgId: string,
   threadId: string,
+  options: {
+    orgId: string;
+    workspaceId: string;
+    loadMessages: boolean;
+    skipBanCheck?: boolean;
+  },
 ): Promise<ChatData> {
-  return (async () => {
+  const previewDataPromise = (async () => {
     const previewStateRaw = await chatDO
       .getThreadPreviewState(context, threadId)
       .catch(() => ({
@@ -196,7 +217,11 @@ function buildPreviewChatDataPromise(
       if (target.kind !== "app") {
         return target;
       }
-      const script = await getWorkerScript(authEnv, orgId, target.scriptName);
+      const script = await getWorkerScript(
+        authEnv,
+        options.orgId,
+        target.scriptName,
+      );
       if (!script) {
         return target;
       }
@@ -229,12 +254,38 @@ function buildPreviewChatDataPromise(
     }
 
     return {
-      messages: [],
       previewTabs,
       activeTabId,
       previewTarget,
     };
   })();
+
+  const messagesPromise = options.loadMessages
+    ? readThreadMessages(context, {
+        workspaceId: options.workspaceId,
+        orgId: options.orgId,
+        threadId,
+        skipBanCheck: options.skipBanCheck,
+      })
+        .then((messages) => ({ messages, messagesError: null }))
+        .catch((error) => {
+          console.error("Failed to load chat route messages:", error);
+          return {
+            messages: [] as Message[],
+            messagesError: "Failed to load message history",
+          };
+        })
+    : Promise.resolve({ messages: [], messagesError: null });
+
+  const [previewData, messageData] = await Promise.all([
+    previewDataPromise,
+    messagesPromise,
+  ]);
+  return {
+    ...previewData,
+    messages: messageData.messages,
+    messagesError: messageData.messagesError,
+  };
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -265,12 +316,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: threadContext.workspace_id,
-      chatDataPromise: buildPreviewChatDataPromise(
-        context,
-        authEnv,
-        threadContext.org_id,
-        params.id,
-      ),
+      chatData: await buildChatData(context, authEnv, params.id, {
+        orgId: threadContext.org_id,
+        workspaceId: threadContext.workspace_id,
+        loadMessages: true,
+        skipBanCheck: true,
+      }),
       threadTitle: thread?.title ?? threadContext.title ?? null,
       threadModel:
         thread?.model ??
@@ -298,6 +349,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isOrgAdmin: false,
       recentModelScope: null,
       readOnly: true,
+      activeChatGroup: null,
+      moveChatGroups: [],
     };
   }
 
@@ -307,7 +360,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: null,
-      chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
+      chatData: EMPTY_CHAT_DATA,
       threadTitle: null,
       threadModel: getDefaultLlmModel("claude"),
       threadProvider: "claude" as const,
@@ -329,6 +382,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   const workspaceId = authContext.currentWorkspace.id;
   const orgId = authContext.currentOrg.id;
+  const actingUserId =
+    authContext.user?.id ?? authContext.session?.user_id ?? null;
   const isNewThread = url.searchParams.get("newThread") === "1";
   const orgStub = authEnv.ORG
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
@@ -374,9 +429,32 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     },
   ).map((option) => option.value);
 
-  const chatDataPromise: Promise<ChatData> = isNewThread
-    ? Promise.resolve(EMPTY_CHAT_DATA)
-    : buildPreviewChatDataPromise(context, authEnv, orgId, params.id);
+  const chatData = thread
+    ? await buildChatData(context, authEnv, params.id, {
+        orgId,
+        workspaceId,
+        loadMessages: true,
+      })
+    : EMPTY_CHAT_DATA;
+  const [activeChatGroup, moveChatGroups] = thread && actingUserId
+    ? await Promise.all([
+        ensureGroupForThread(context, {
+          userId: actingUserId,
+          orgId,
+          workspaceId,
+          threadId: params.id,
+          fallbackName: thread.title,
+        }).catch((error) => {
+          console.error("Failed to ensure chat group:", error);
+          return null;
+        }),
+        listGroupsForMove(context, {
+          userId: actingUserId,
+          orgId,
+          workspaceId,
+        }).catch(() => []),
+      ])
+    : ([null, []] as const);
   const connections = await env.WORKSPACE.get(
     env.WORKSPACE.idFromName(workspaceId),
   )
@@ -390,7 +468,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   return {
     threadId: params.id,
     workspaceId,
-    chatDataPromise,
+    chatData,
     threadTitle: thread?.title ?? null,
     threadModel:
       thread?.model ??
@@ -425,31 +503,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ),
     recentModelScope: { orgId, workspaceId },
     readOnly: false,
+    activeChatGroup,
+    moveChatGroups,
   };
-}
-
-function ResolveChatData({
-  threadId,
-  chatDataPromise,
-  onResolved,
-}: {
-  threadId: string;
-  chatDataPromise: Promise<ChatData>;
-  onResolved: (threadId: string, data: ChatData) => void;
-}) {
-  const chatData = use(chatDataPromise);
-  useEffect(() => {
-    onResolved(threadId, chatData);
-  }, [threadId, chatData, onResolved]);
-
-  return null;
 }
 
 export default function ChatPage() {
   const {
     threadId,
     workspaceId,
-    chatDataPromise,
+    chatData,
     threadTitle,
     threadModel,
     threadProvider,
@@ -467,70 +530,299 @@ export default function ChatPage() {
     isOrgAdmin,
     recentModelScope,
     readOnly,
+    activeChatGroup,
+    moveChatGroups,
   } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const revalidator = useRevalidator();
+  const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
+  const chatDebugFlags = getChatDebugFlags();
+  const markViewedEnabled = chatDebugFlags.markViewed;
+  const markThreadIdleRef = useRef(markThreadIdle);
+  const revalidateRef = useRef(revalidator.revalidate);
+  const [instantThreadId, setInstantThreadId] = useState<string | null>(null);
+  const [chatDataByThreadId, setChatDataByThreadId] = useState<
+    Record<string, ChatData>
+  >(() => ({ [threadId]: chatData }));
+
+  const liveActiveChatGroup =
+    activeChatGroup && !readOnly
+      ? liveChatGroups.find((group) => group.id === activeChatGroup.id) ??
+        activeChatGroup
+      : activeChatGroup;
+
+  useEffect(() => {
+    if (chatDebugFlags.historyLogs) {
+      console.info("[chat history route]", {
+        event: "loader_data_received",
+        at: new Date().toISOString(),
+        location: `${location.pathname}${location.search}`,
+        threadId,
+        isNewThread,
+        routeMessageCount: chatData.messages.length,
+        routeMessageIds: chatData.messages.map((message) => ({
+          id: message.id,
+          clientMessageId: message.clientMessageId,
+          role: message.role,
+          created_at: message.created_at,
+        })),
+        messagesError: chatData.messagesError,
+        activeChatGroupId: activeChatGroup?.id ?? null,
+      });
+    }
+    setChatDataByThreadId((prev) => ({ ...prev, [threadId]: chatData }));
+    setInstantThreadId(null);
+  }, [
+    activeChatGroup?.id,
+    chatData,
+    chatDebugFlags.historyLogs,
+    isNewThread,
+    location.pathname,
+    location.search,
+    threadId,
+  ]);
+
+  const instantThread =
+    instantThreadId && liveActiveChatGroup
+      ? liveActiveChatGroup.open_threads.find(
+          (thread) => thread.id === instantThreadId,
+        ) ??
+        liveActiveChatGroup.closed_threads.find(
+          (thread) => thread.id === instantThreadId,
+        ) ??
+        null
+      : null;
+  const instantChatData = instantThreadId
+    ? chatDataByThreadId[instantThreadId]
+    : null;
+  const shouldUseInstantThread = Boolean(
+    instantThread &&
+      instantChatData &&
+      instantThreadId &&
+      instantThreadId !== threadId,
+  );
+  const displayThreadId =
+    shouldUseInstantThread && instantThread ? instantThread.id : threadId;
+  const displayThreadTitle =
+    shouldUseInstantThread && instantThread ? instantThread.title : threadTitle;
+  const displayThreadModel =
+    shouldUseInstantThread && instantThread ? instantThread.model : threadModel;
+  const displayThreadProvider =
+    shouldUseInstantThread && instantThread
+      ? instantThread.provider
+      : threadProvider;
+  const displayAllowedThreadModels =
+    shouldUseInstantThread && displayThreadModel && displayThreadProvider
+      ? getVisibleLlmModelOptions(
+          displayThreadProvider,
+          experimentalSettings,
+          displayThreadModel,
+          {
+            allowModelFamilySwitch: true,
+            orgProvider: llmProvider,
+          },
+        ).map((option) => option.value)
+      : allowedThreadModels;
+  const displayChatData =
+    shouldUseInstantThread && instantChatData ? instantChatData : chatData;
+  const displayIsNewThread = shouldUseInstantThread ? false : isNewThread;
+
+  useEffect(() => {
+    markThreadIdleRef.current = markThreadIdle;
+  }, [markThreadIdle]);
+
+  useEffect(() => {
+    revalidateRef.current = revalidator.revalidate;
+  }, [revalidator.revalidate]);
+
+  useEffect(() => {
+    if (!markViewedEnabled || readOnly || !workspaceId || !displayThreadId) return;
+
+    markThreadIdleRef.current(displayThreadId);
+    const controller = new AbortController();
+    void fetch(
+      `/api/threads/${encodeURIComponent(displayThreadId)}/mark-viewed`,
+      { method: "POST", signal: controller.signal },
+    )
+      .then((response) => {
+        if (response.ok) revalidateRef.current();
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        console.warn("Failed to mark active chat viewed:", error);
+      });
+    return () => controller.abort();
+  }, [
+    displayThreadId,
+    markViewedEnabled,
+    readOnly,
+    workspaceId,
+  ]);
+
+  const openTabs =
+    liveActiveChatGroup?.open_threads.map((thread) => ({
+      threadId: thread.id,
+      title: thread.title,
+      model: thread.model,
+      status: thread.status,
+    })) ?? [];
+
+  const closedTabs =
+    liveActiveChatGroup?.closed_threads.map((thread) => ({
+      threadId: thread.id,
+      title: thread.title,
+      model: thread.model,
+      status: thread.status,
+    })) ?? [];
+
+  const selectTab = (targetThreadId: string) => {
+    if (displayThreadId) {
+      markThreadIdle(displayThreadId);
+    }
+    if (
+      targetThreadId !== threadId &&
+      chatDataByThreadId[targetThreadId]
+    ) {
+      setInstantThreadId(targetThreadId);
+    }
+    navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
+  };
+
+  const closeTab = async (targetThreadId: string) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(targetThreadId)}`,
+      { method: "DELETE" },
+    );
+    const remaining = openTabs.filter((tab) => tab.threadId !== targetThreadId);
+    if (targetThreadId === displayThreadId) {
+      navigate(
+        remaining[0]
+          ? `/chat/${remaining[0].threadId}`
+          : `/chat?group=${encodeURIComponent(activeChatGroup.id)}`,
+      );
+      return;
+    }
+    revalidator.revalidate();
+  };
+
+  const reopenTab = async (targetThreadId: string) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(targetThreadId)}/reopen`,
+      { method: "POST" },
+    );
+    revalidator.revalidate();
+    navigate(`/chat/${targetThreadId}`);
+  };
+
+  const renameTab = async (targetThreadId: string, name: string) => {
+    await fetch(`/api/threads/${encodeURIComponent(targetThreadId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: name }),
+    });
+    revalidator.revalidate();
+  };
+
+  const renameGroup = async (name: string) => {
+    if (!activeChatGroup) return;
+    await fetch(`/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    revalidator.revalidate();
+  };
+
+  const reorderTabs = async (orderedThreadIds: string[]) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/reorder-tabs`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedThreadIds }),
+      },
+    );
+    revalidator.revalidate();
+  };
+
+  const moveTabToGroup = async (
+    targetThreadId: string,
+    targetGroupId: string | "new",
+  ) => {
+    const response = await fetch("/api/chat-groups/move-thread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: targetThreadId, targetGroupId }),
+    });
+    if (response.ok) {
+      revalidator.revalidate();
+      navigate(`/chat/${targetThreadId}`);
+    }
+  };
 
   if (!workspaceId) {
     return <NoWorkspacesError />;
   }
 
-  const [resolvedChatDataState, setResolvedChatDataState] = useState<{
-    threadId: string;
-    data: ChatData;
-  } | null>(() => (isNewThread ? { threadId, data: EMPTY_CHAT_DATA } : null));
-
-  const resolvedChatData =
-    resolvedChatDataState?.threadId === threadId
-      ? resolvedChatDataState.data
-      : null;
-  const chatData = resolvedChatData ?? EMPTY_CHAT_DATA;
-  const isLoadingMessages = !isNewThread && resolvedChatData === null;
-
-  const handleResolved = useCallback(
-    (resolvedThreadId: string, data: ChatData) => {
-      setResolvedChatDataState({ threadId: resolvedThreadId, data });
-    },
-    [],
-  );
-
   return (
     <>
-      <Chat
-        key={threadId}
-        threadId={threadId}
-        workspaceId={workspaceId}
-        initialMessages={chatData.messages}
-        threadTitle={threadTitle}
-        threadModel={threadModel}
-        threadProvider={threadProvider}
-        llmProvider={llmProvider}
-        allowedThreadModels={allowedThreadModels}
-        effectivePickerDefaultModel={effectivePickerDefaultModel}
-        hasEffectivePickerDefault={hasEffectivePickerDefault}
-        experimentalSettings={experimentalSettings}
-        billingCreditStatus={billingCreditStatus}
-        initialError={initialChatError}
-        initialPreviewTarget={chatData.previewTarget}
-        initialPreviewTabs={chatData.previewTabs}
-        initialActiveTabId={chatData.activeTabId}
-        isNewThread={isNewThread}
-        hostname={hostname}
-        orgSlug={orgSlug}
-        connections={connections}
-        isOrgAdmin={isOrgAdmin}
-        recentModelScope={recentModelScope}
-        isLoadingMessages={isLoadingMessages}
-        readOnly={readOnly}
-      />
-      {!isNewThread && (
-        <Suspense fallback={null}>
-          <ResolveChatData
-            key={threadId}
-            threadId={threadId}
-            chatDataPromise={chatDataPromise}
-            onResolved={handleResolved}
+      <div className="flex h-full min-h-0 flex-col">
+        {!readOnly && activeChatGroup ? (
+          <ChatTabBar
+            groupId={liveActiveChatGroup?.id ?? activeChatGroup.id}
+            groupName={liveActiveChatGroup?.name ?? activeChatGroup.name}
+            openTabs={openTabs}
+            closedTabs={closedTabs}
+            activeThreadId={displayThreadId}
+            prefetchTabs
+            moveGroups={moveChatGroups}
+            onSelectTab={selectTab}
+            onCloseTab={closeTab}
+            onRenameTab={renameTab}
+            onReorderTabs={reorderTabs}
+            onNewTab={() =>
+              navigate(`/chat?group=${encodeURIComponent(activeChatGroup.id)}`)
+            }
+            onReopenClosedTab={reopenTab}
+            onRenameGroup={renameGroup}
+            onMoveTabToGroup={moveTabToGroup}
           />
-        </Suspense>
-      )}
+        ) : null}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <Chat
+            key={displayThreadId}
+            threadId={displayThreadId}
+            workspaceId={workspaceId}
+            chatGroupId={liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null}
+            initialMessages={displayChatData.messages}
+            threadTitle={displayThreadTitle}
+            threadModel={displayThreadModel}
+            threadProvider={displayThreadProvider}
+            llmProvider={llmProvider}
+            allowedThreadModels={displayAllowedThreadModels}
+            effectivePickerDefaultModel={effectivePickerDefaultModel}
+            hasEffectivePickerDefault={hasEffectivePickerDefault}
+            experimentalSettings={experimentalSettings}
+            billingCreditStatus={billingCreditStatus}
+            initialError={initialChatError ?? displayChatData.messagesError}
+            initialPreviewTarget={displayChatData.previewTarget}
+            initialPreviewTabs={displayChatData.previewTabs}
+            initialActiveTabId={displayChatData.activeTabId}
+            isNewThread={displayIsNewThread}
+            hostname={hostname}
+            orgSlug={orgSlug}
+            connections={connections}
+            isOrgAdmin={isOrgAdmin}
+            recentModelScope={recentModelScope}
+            isLoadingMessages={false}
+            readOnly={readOnly}
+          />
+        </div>
+      </div>
     </>
   );
 }

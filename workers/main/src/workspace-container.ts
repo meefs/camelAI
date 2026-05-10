@@ -202,6 +202,52 @@ export class WorkspaceContainer {
     return url.toString();
   }
 
+  private controlUrlForKnownProxyUrl(url: string): string | null {
+    if (!this.getSandboxHostUrlOverride()) return null;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return null;
+      }
+      if (parsed.port === "4401") {
+        parsed.port = "4400";
+        return parsed.toString();
+      }
+      if (parsed.port === "8081") {
+        parsed.port = parsed.protocol === "http:" ? "" : "80";
+        return parsed.toString();
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  private async sandboxErrorText(response: Response): Promise<string> {
+    const body = await response.text();
+    let error = body;
+    try {
+      const parsed = JSON.parse(body) as { error?: unknown };
+      if (typeof parsed.error === "string" && parsed.error.trim()) {
+        error = parsed.error;
+      }
+    } catch {
+      // Keep the raw body.
+    }
+    return error.trim();
+  }
+
+  private sandboxForkEndpointError(status: number, error: string): string | null {
+    if (status !== 404 || error.trim().toLowerCase() !== "not found") {
+      return null;
+    }
+    return (
+      "Sandbox fork endpoint returned 404 Not Found. " +
+      "Restart or deploy sandbox-host with chat fork support, and for local dev make sure " +
+      "SANDBOX_HOST_URL points at the control listener (:4400), not the proxy listener (:4401)."
+    );
+  }
+
   private normalizeFsPath(path: string): string {
     if (!path) return "/";
     return path.startsWith("/") ? path : `/${path}`;
@@ -876,11 +922,11 @@ export class WorkspaceContainer {
 
     const query: Record<string, string> = { threadId: trimmedThreadId };
     const claudeSessionId = options.claudeSessionId?.trim();
-    if (claudeSessionId && claudeSessionId !== trimmedThreadId) {
+    if (claudeSessionId) {
       query.claudeSessionId = claudeSessionId;
     }
     const codexSessionId = options.codexSessionId?.trim();
-    if (codexSessionId && codexSessionId !== trimmedThreadId) {
+    if (codexSessionId) {
       query.codexSessionId = codexSessionId;
     }
 
@@ -908,7 +954,7 @@ export class WorkspaceContainer {
     sourceThreadId: string;
     targetThreadId: string;
     entryId: string;
-  }): Promise<{ success: boolean; error?: string }> {
+  }): Promise<{ success: boolean; error?: string; code?: string; status?: number }> {
     const sourceThreadId = options.sourceThreadId.trim();
     const targetThreadId = options.targetThreadId.trim();
     const entryId = options.entryId.trim();
@@ -919,33 +965,38 @@ export class WorkspaceContainer {
       };
     }
 
-    const response = await this.fetchSandbox(
-      this.sandboxUrl("/chat/fork"),
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ sourceThreadId, targetThreadId, entryId }),
+    const url = this.sandboxUrl("/chat/fork");
+    const init: RequestInit = {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
       },
-      { skipBanCheck: true },
-    );
+      body: JSON.stringify({ sourceThreadId, targetThreadId, entryId }),
+    };
+
+    let response = await this.fetchSandbox(url, init, { skipBanCheck: true });
 
     if (!response.ok) {
-      const body = await response.text();
-      let error = body;
-      try {
-        const parsed = JSON.parse(body) as { error?: unknown };
-        if (typeof parsed.error === "string" && parsed.error.trim()) {
-          error = parsed.error;
+      let error = await this.sandboxErrorText(response);
+      const retryUrl = this.sandboxForkEndpointError(response.status, error)
+        ? this.controlUrlForKnownProxyUrl(url)
+        : null;
+      if (retryUrl && retryUrl !== url) {
+        response = await fetch(retryUrl, init);
+        if (response.ok) {
+          return { success: true };
         }
-      } catch {
-        // Keep the raw body.
+        error = await this.sandboxErrorText(response);
       }
+      const endpointError = this.sandboxForkEndpointError(response.status, error);
       return {
         success: false,
-        error: error || `Fork thread session failed: HTTP ${response.status}`,
+        error: endpointError || error || `Fork thread session failed: HTTP ${response.status}`,
+        code: endpointError
+          ? "SANDBOX_FORK_ENDPOINT_NOT_FOUND"
+          : `HTTP_${response.status}`,
+        status: response.status,
       };
     }
 

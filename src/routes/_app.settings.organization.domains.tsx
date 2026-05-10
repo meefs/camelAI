@@ -341,21 +341,10 @@ export default function DomainsPage() {
     if (chatFetcher.state !== 'idle' || !chatFetcher.data) return;
     if (!chatFetcher.data.thread) return;
 
-    const threadId = chatFetcher.data.thread.id;
-    sessionStorage.setItem(
-      'pendingMessage:newThread',
-      JSON.stringify({
-        message: chatPrompt,
-        threadId,
-        threadTitle: chatTitle,
-        threadModel: chatFetcher.data.thread.model,
-        threadProvider: chatFetcher.data.thread.provider,
-        workspaceId,
-        orgSlug: org.slug,
-      })
-    );
-    navigate(`/chat/${threadId}?newThread=1`);
-  }, [chatFetcher.state, chatFetcher.data, chatPrompt, workspaceId, org.slug, navigate]);
+    navigate(`/chat/${chatFetcher.data.thread.id}`, {
+      state: { initialMessageContent: chatPrompt },
+    });
+  }, [chatFetcher.state, chatFetcher.data, chatPrompt, navigate]);
 
   const startCustomDomainChat = () => {
     if (chatLoading || !workspaceId) return;
@@ -363,6 +352,7 @@ export default function DomainsPage() {
       {
         intent: 'createThread',
         initialTitle: chatTitle,
+        firstMessage: chatTitle,
       },
       { method: 'post', action: '/chat' }
     );

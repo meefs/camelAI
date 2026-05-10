@@ -463,15 +463,16 @@ export async function deleteThread(
   context: AppLoadContext,
   id: string,
   workspaceId: string,
-): Promise<void> {
+): Promise<boolean> {
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
-  if (!wsInfo) return;
+  if (!wsInfo) return false;
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   // Verify the thread belongs to this workspace first
   const existing = await orgStub.getThread(id);
-  if (!existing || existing.workspace_id !== workspaceId) return;
+  if (!existing || existing.workspace_id !== workspaceId) return false;
   await orgStub.deleteThread(id);
+  return true;
 }
 
 export async function generateThreadTitle(
@@ -479,6 +480,7 @@ export async function generateThreadTitle(
   threadId: string,
   workspaceId: string,
   message: string,
+  userId?: string | null,
 ): Promise<void> {
   try {
     const env = getEnv(context);
@@ -496,6 +498,10 @@ export async function generateThreadTitle(
     // Update title in OrgDO
     const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
     await orgStub.updateThread(threadId, title);
+    if (userId) {
+      await env.USER.get(env.USER.idFromName(userId))
+        .renameEmptySingleThreadGroupForThread(threadId, title);
+    }
 
     // Broadcast via ChatThreadDO
     const threadStub = env.CHAT_THREAD.get(
@@ -505,24 +511,6 @@ export async function generateThreadTitle(
   } catch (e) {
     console.error("[generateThreadTitle] Error:", e);
   }
-}
-
-export function getThreadJsonlPathCandidates(
-  threadId: string,
-  legacyClaudeSessionId?: string | null,
-): string[] {
-  // Claude stores sessions at ~/.claude/projects/{project-path}/{session_id}.jsonl.
-  // Current sandbox project path resolves to -home-claude. Legacy Claude threads
-  // may use a Claude SDK session id that differs from the camel thread id.
-  const sessionIds = [threadId];
-  const trimmedLegacySessionId = legacyClaudeSessionId?.trim();
-  if (trimmedLegacySessionId && trimmedLegacySessionId !== threadId) {
-    sessionIds.push(trimmedLegacySessionId);
-  }
-  return sessionIds.map(
-    (sessionId) =>
-      `/home/claude/.claude/projects/-home-claude/${sessionId}.jsonl`,
-  );
 }
 
 export async function getLegacyClaudeSessionId(
@@ -575,9 +563,8 @@ export async function getMessages(
 ): Promise<Message[]> {
   const env = getEnv(context);
 
-  // Messages are parsed on sandbox-host from the container's Claude JSONL file.
-  // Newer Claude threads use threadId as the session_id; legacy threads may have
-  // a separate Claude SDK session id stored as metadata.
+  // Sandbox-host owns message history parsing. New Pi threads read host session
+  // history; legacy readers only run when explicit legacy metadata is present.
   try {
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];

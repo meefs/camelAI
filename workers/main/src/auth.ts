@@ -17,6 +17,8 @@ import type {
   LlmModel,
   OrgModelPickerConfig,
   OnboardingPreferences,
+  ChatGroup,
+  ChatGroupSummary,
 } from "../../../src/types";
 import type { ChatThreadDO } from "./durable-objects";
 import { WorkspaceDO } from "./workspace";
@@ -570,7 +572,48 @@ export class UserDO extends DurableObject<DOEnv> {
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 8;
+    if (version < 9) {
+      // V9: Per-user chat groups and per-thread viewed timestamps.
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS chat_groups (
+          id TEXT PRIMARY KEY,
+          org_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          name TEXT NOT NULL DEFAULT '',
+          last_active_thread_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS chat_groups_workspace ON chat_groups(org_id, workspace_id, updated_at DESC)",
+      );
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS chat_group_members (
+          group_id TEXT NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+          thread_id TEXT NOT NULL,
+          is_open INTEGER NOT NULL DEFAULT 1,
+          position INTEGER NOT NULL DEFAULT 0,
+          closed_at INTEGER,
+          added_at INTEGER NOT NULL,
+          PRIMARY KEY (group_id, thread_id)
+        )
+      `);
+      this.sql.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS chat_group_members_thread ON chat_group_members(thread_id)",
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS chat_group_members_open ON chat_group_members(group_id, is_open, position)",
+      );
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS chat_thread_views (
+          thread_id TEXT PRIMARY KEY,
+          viewed_at INTEGER NOT NULL
+        )
+      `);
+    }
+
+    const CURRENT_SCHEMA_VERSION = 9;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -943,6 +986,471 @@ export class UserDO extends DurableObject<DOEnv> {
       .toArray();
     if (rows.length === 0) return null;
     return (rows[0] as { role: string }).role as OrgRole;
+  }
+
+  private normalizeChatGroupName(name: string | null | undefined): string {
+    return (name ?? "").trim().slice(0, 120);
+  }
+
+  private toChatGroup(row: unknown): ChatGroup {
+    const group = row as {
+      id: string;
+      org_id: string;
+      workspace_id: string;
+      name: string;
+      last_active_thread_id: string | null;
+      created_at: number;
+      updated_at: number;
+    };
+    return {
+      id: group.id,
+      org_id: group.org_id,
+      workspace_id: group.workspace_id,
+      name: group.name,
+      last_active_thread_id: group.last_active_thread_id ?? null,
+      created_at: group.created_at,
+      updated_at: group.updated_at,
+    };
+  }
+
+  private getChatGroupRow(groupId: string): ChatGroup | null {
+    const rows = this.sql
+      .exec("SELECT * FROM chat_groups WHERE id = ?", groupId)
+      .toArray();
+    return rows[0] ? this.toChatGroup(rows[0]) : null;
+  }
+
+  private getChatGroupForThreadRow(threadId: string): ChatGroup | null {
+    const rows = this.sql
+      .exec(
+        `SELECT g.*
+         FROM chat_groups g
+         INNER JOIN chat_group_members m ON m.group_id = g.id
+         WHERE m.thread_id = ?
+         LIMIT 1`,
+        threadId,
+      )
+      .toArray();
+    return rows[0] ? this.toChatGroup(rows[0]) : null;
+  }
+
+  private orderedThreadIds(groupId: string, isOpen: boolean): string[] {
+    const rows = this.sql
+      .exec<{ thread_id: string }>(
+        `SELECT thread_id
+         FROM chat_group_members
+         WHERE group_id = ? AND is_open = ?
+         ORDER BY position ASC, added_at ASC`,
+        groupId,
+        isOpen ? 1 : 0,
+      )
+      .toArray();
+    return rows.map((row) => row.thread_id);
+  }
+
+  private getNextOpenPosition(groupId: string): number {
+    const rows = this.sql
+      .exec<{ position: number | null }>(
+        "SELECT MAX(position) AS position FROM chat_group_members WHERE group_id = ? AND is_open = 1",
+        groupId,
+      )
+      .toArray();
+    return (rows[0]?.position ?? -1) + 1;
+  }
+
+  private getMemberCount(groupId: string): number {
+    const rows = this.sql
+      .exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM chat_group_members WHERE group_id = ?",
+        groupId,
+      )
+      .toArray();
+    return rows[0]?.count ?? 0;
+  }
+
+  private deleteGroupIfEmpty(groupId: string): void {
+    if (this.getMemberCount(groupId) > 0) return;
+    this.sql.exec("DELETE FROM chat_group_members WHERE group_id = ?", groupId);
+    this.sql.exec("DELETE FROM chat_groups WHERE id = ?", groupId);
+  }
+
+  private summarizeChatGroup(group: ChatGroup): ChatGroupSummary {
+    return {
+      ...group,
+      open_thread_ids: this.orderedThreadIds(group.id, true),
+      closed_thread_ids: this.orderedThreadIds(group.id, false),
+    };
+  }
+
+  getChatGroup(groupId: string): ChatGroup | null {
+    return this.getChatGroupRow(groupId);
+  }
+
+  getChatGroupForThread(threadId: string): ChatGroupSummary | null {
+    const group = this.getChatGroupForThreadRow(threadId);
+    return group ? this.summarizeChatGroup(group) : null;
+  }
+
+  getChatGroupSummary(groupId: string): ChatGroupSummary | null {
+    const group = this.getChatGroupRow(groupId);
+    return group ? this.summarizeChatGroup(group) : null;
+  }
+
+  listChatGroups(
+    orgId: string,
+    workspaceId: string,
+    opts: { limit?: number } = {},
+  ): ChatGroupSummary[] {
+    const limit = Math.max(1, Math.min(opts.limit ?? 10, 1000));
+    const groups = this.sql
+      .exec(
+        `SELECT *
+         FROM chat_groups
+         WHERE org_id = ? AND workspace_id = ?
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+        orgId,
+        workspaceId,
+        limit,
+      )
+      .toArray()
+      .map((row) => this.toChatGroup(row));
+    return groups.map((group) => this.summarizeChatGroup(group));
+  }
+
+  listChatGroupsForMove(orgId: string, workspaceId: string): ChatGroup[] {
+    return this.sql
+      .exec(
+        `SELECT *
+         FROM chat_groups
+         WHERE org_id = ? AND workspace_id = ?
+         ORDER BY updated_at DESC`,
+        orgId,
+        workspaceId,
+      )
+      .toArray()
+      .map((row) => this.toChatGroup(row));
+  }
+
+  createChatGroup(
+    orgId: string,
+    workspaceId: string,
+    opts: { name?: string; lastActiveThreadId?: string } = {},
+  ): ChatGroup {
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    const name = this.normalizeChatGroupName(opts.name);
+    const lastActiveThreadId = opts.lastActiveThreadId?.trim() || null;
+    this.sql.exec(
+      `INSERT INTO chat_groups
+       (id, org_id, workspace_id, name, last_active_thread_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      orgId,
+      workspaceId,
+      name,
+      lastActiveThreadId,
+      now,
+      now,
+    );
+    return this.getChatGroupRow(id)!;
+  }
+
+  renameChatGroup(groupId: string, name: string): void {
+    const nextName = this.normalizeChatGroupName(name);
+    this.sql.exec(
+      "UPDATE chat_groups SET name = ? WHERE id = ?",
+      nextName,
+      groupId,
+    );
+  }
+
+  closeChatGroup(groupId: string): void {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec("DELETE FROM chat_group_members WHERE group_id = ?", groupId);
+      this.sql.exec("DELETE FROM chat_groups WHERE id = ?", groupId);
+    });
+  }
+
+  addThreadToGroup(
+    groupId: string,
+    threadId: string,
+    opts: { position?: number; reopenIfClosed?: boolean } = {},
+  ): void {
+    this.ctx.storage.transactionSync(() => {
+      const group = this.getChatGroupRow(groupId);
+      if (!group) throw new Error("Chat group not found");
+      const now = Date.now();
+      const sourceGroup = this.getChatGroupForThreadRow(threadId);
+      const position =
+        typeof opts.position === "number" && Number.isFinite(opts.position)
+          ? Math.max(0, Math.floor(opts.position))
+          : this.getNextOpenPosition(groupId);
+      this.sql.exec("DELETE FROM chat_group_members WHERE thread_id = ?", threadId);
+      this.sql.exec(
+        `INSERT INTO chat_group_members
+         (group_id, thread_id, is_open, position, closed_at, added_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        groupId,
+        threadId,
+        opts.reopenIfClosed === false ? 0 : 1,
+        position,
+        opts.reopenIfClosed === false ? now : null,
+        now,
+      );
+      this.sql.exec(
+        "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
+        threadId,
+        groupId,
+      );
+      if (sourceGroup && sourceGroup.id !== groupId) {
+        this.deleteGroupIfEmpty(sourceGroup.id);
+      }
+    });
+  }
+
+  moveThreadToGroup(
+    threadId: string,
+    targetGroupId: string,
+    opts: { position?: number } = {},
+  ): void {
+    this.addThreadToGroup(targetGroupId, threadId, {
+      position: opts.position,
+      reopenIfClosed: true,
+    });
+  }
+
+  moveThreadToNewGroup(
+    orgId: string,
+    workspaceId: string,
+    threadId: string,
+    opts: { name?: string } = {},
+  ): { group: ChatGroup } {
+    let group: ChatGroup | null = null;
+    this.ctx.storage.transactionSync(() => {
+      const sourceGroup = this.getChatGroupForThreadRow(threadId);
+      group = this.createChatGroup(orgId, workspaceId, {
+        name: opts.name,
+        lastActiveThreadId: threadId,
+      });
+      const now = Date.now();
+      this.sql.exec("DELETE FROM chat_group_members WHERE thread_id = ?", threadId);
+      this.sql.exec(
+        `INSERT INTO chat_group_members
+         (group_id, thread_id, is_open, position, closed_at, added_at)
+         VALUES (?, ?, 1, 0, NULL, ?)`,
+        group.id,
+        threadId,
+        now,
+      );
+      if (sourceGroup && sourceGroup.id !== group.id) {
+        this.deleteGroupIfEmpty(sourceGroup.id);
+      }
+    });
+    return { group: group! };
+  }
+
+  closeThreadTab(threadId: string): void {
+    this.ctx.storage.transactionSync(() => {
+      const group = this.getChatGroupForThreadRow(threadId);
+      if (!group) return;
+      const now = Date.now();
+      this.sql.exec(
+        "UPDATE chat_group_members SET is_open = 0, closed_at = ? WHERE thread_id = ?",
+        now,
+        threadId,
+      );
+      const nextActive =
+        this.orderedThreadIds(group.id, true)[0] ??
+        this.orderedThreadIds(group.id, false)[0] ??
+        null;
+      this.sql.exec(
+        "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
+        nextActive,
+        group.id,
+      );
+    });
+  }
+
+  reopenThreadTab(threadId: string, opts: { position?: number } = {}): void {
+    this.ctx.storage.transactionSync(() => {
+      const group = this.getChatGroupForThreadRow(threadId);
+      if (!group) return;
+      const position =
+        typeof opts.position === "number" && Number.isFinite(opts.position)
+          ? Math.max(0, Math.floor(opts.position))
+          : this.getNextOpenPosition(group.id);
+      const now = Date.now();
+      this.sql.exec(
+        "UPDATE chat_group_members SET is_open = 1, position = ?, closed_at = NULL WHERE thread_id = ?",
+        position,
+        threadId,
+      );
+      this.sql.exec(
+        "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
+        threadId,
+        group.id,
+      );
+    });
+  }
+
+  reorderThreadTabs(groupId: string, orderedIds: string[]): void {
+    this.ctx.storage.transactionSync(() => {
+      const group = this.getChatGroupRow(groupId);
+      if (!group) throw new Error("Chat group not found");
+      orderedIds.forEach((threadId, index) => {
+        this.sql.exec(
+          "UPDATE chat_group_members SET position = ? WHERE group_id = ? AND thread_id = ? AND is_open = 1",
+          index,
+          groupId,
+          threadId,
+        );
+      });
+    });
+  }
+
+  setGroupActiveThread(groupId: string, threadId: string): void {
+    const rows = this.sql
+      .exec(
+        "SELECT 1 FROM chat_group_members WHERE group_id = ? AND thread_id = ?",
+        groupId,
+        threadId,
+      )
+      .toArray();
+    if (rows.length === 0) return;
+    this.sql.exec(
+      "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
+      threadId,
+      groupId,
+    );
+  }
+
+  ensureGroupForThread(
+    orgId: string,
+    workspaceId: string,
+    threadId: string,
+    fallbackName: string,
+  ): ChatGroupSummary {
+    let group: ChatGroup | null = null;
+    this.ctx.storage.transactionSync(() => {
+      group = this.getChatGroupForThreadRow(threadId);
+      const now = Date.now();
+      if (!group) {
+        group = this.createChatGroup(orgId, workspaceId, {
+          name: fallbackName,
+          lastActiveThreadId: threadId,
+        });
+        this.sql.exec(
+          `INSERT INTO chat_group_members
+           (group_id, thread_id, is_open, position, closed_at, added_at)
+           VALUES (?, ?, 1, 0, NULL, ?)`,
+          group.id,
+          threadId,
+          now,
+        );
+      } else {
+        const membership = this.sql
+          .exec<{ is_open: number }>(
+            "SELECT is_open FROM chat_group_members WHERE thread_id = ?",
+            threadId,
+          )
+          .toArray()[0];
+        if (membership?.is_open === 1) {
+          this.sql.exec(
+            "UPDATE chat_groups SET last_active_thread_id = ? WHERE id = ?",
+            threadId,
+            group.id,
+          );
+        }
+        group = this.getChatGroupRow(group.id);
+      }
+    });
+    return this.summarizeChatGroup(group!);
+  }
+
+  touchGroupForThread(threadId: string, at: number = Date.now()): void {
+    const group = this.getChatGroupForThreadRow(threadId);
+    if (!group) return;
+    this.sql.exec(
+      "UPDATE chat_groups SET last_active_thread_id = ?, updated_at = ? WHERE id = ?",
+      threadId,
+      at,
+      group.id,
+    );
+  }
+
+  forgetThreadView(threadId: string): void {
+    this.sql.exec("DELETE FROM chat_thread_views WHERE thread_id = ?", threadId);
+  }
+
+  markThreadViewed(threadId: string, at: number = Date.now()): void {
+    this.sql.exec(
+      `INSERT INTO chat_thread_views (thread_id, viewed_at)
+       VALUES (?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET viewed_at = excluded.viewed_at`,
+      threadId,
+      at,
+    );
+  }
+
+  listThreadViews(threadIds: string[]): Record<string, number> {
+    if (threadIds.length === 0) return {};
+    const result: Record<string, number> = {};
+    for (const threadId of threadIds) {
+      const rows = this.sql
+        .exec<{ viewed_at: number }>(
+          "SELECT viewed_at FROM chat_thread_views WHERE thread_id = ?",
+          threadId,
+        )
+        .toArray();
+      if (typeof rows[0]?.viewed_at === "number") {
+        result[threadId] = rows[0].viewed_at;
+      }
+    }
+    return result;
+  }
+
+  removeThreadMembership(threadId: string): void {
+    this.ctx.storage.transactionSync(() => {
+      const group = this.getChatGroupForThreadRow(threadId);
+      this.sql.exec("DELETE FROM chat_group_members WHERE thread_id = ?", threadId);
+      this.sql.exec("DELETE FROM chat_thread_views WHERE thread_id = ?", threadId);
+      if (group) this.deleteGroupIfEmpty(group.id);
+    });
+  }
+
+  pruneMissingThreads(threadIds: string[]): void {
+    this.ctx.storage.transactionSync(() => {
+      for (const threadId of threadIds) {
+        const group = this.getChatGroupForThreadRow(threadId);
+        this.sql.exec(
+          "DELETE FROM chat_group_members WHERE thread_id = ?",
+          threadId,
+        );
+        if (group) this.deleteGroupIfEmpty(group.id);
+      }
+    });
+  }
+
+  renameEmptySingleThreadGroupForThread(threadId: string, title: string): void {
+    const name = this.normalizeChatGroupName(title);
+    if (!name) return;
+    this.ctx.storage.transactionSync(() => {
+      const group = this.getChatGroupForThreadRow(threadId);
+      if (!group || group.name.trim().length > 0) return;
+      const rows = this.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM chat_group_members WHERE group_id = ?",
+          group.id,
+        )
+        .toArray();
+      if ((rows[0]?.count ?? 0) !== 1) return;
+      this.sql.exec(
+        "UPDATE chat_groups SET name = ? WHERE id = ?",
+        name,
+        group.id,
+      );
+    });
   }
 
   // OAuth provider methods
@@ -4401,6 +4909,38 @@ export class OrgDO extends DurableObject<DOEnv> {
       .catch((err) => {
         console.error("Failed to sync thread touch to AdminIndex", err);
       });
+  }
+
+  /**
+   * Touch a thread for non-user activity without incrementing user message count.
+   * Returns true when the persisted activity timestamp moved forward.
+   */
+  touchThreadActivity(id: string, at = Date.now()): boolean {
+    const existing = this.getThread(id);
+    if (!existing) return false;
+    const requestedAt = Number.isFinite(at) ? at : Date.now();
+    const activityAt = Math.max(requestedAt, Date.now(), existing.updated_at + 1);
+    this.sql.exec(
+      "UPDATE threads SET updated_at = ? WHERE id = ?",
+      activityAt,
+      id,
+    );
+    const updated = {
+      ...existing,
+      updated_at: activityAt,
+    };
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync thread activity to AdminIndex", err);
+      });
+    return true;
   }
 
   async validateChatThreadAccess(

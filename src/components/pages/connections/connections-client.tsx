@@ -89,7 +89,6 @@ const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   notion_connected: 'Successfully connected to Notion!',
 };
 
-const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
 const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
   '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to.</camelai system message>';
 
@@ -251,12 +250,9 @@ export default function ConnectionsClient({
     if (createThreadFetcher.state !== 'idle' || !createThreadFetcher.data) return;
 
     if (createThreadFetcher.data.thread) {
-      const threadId = createThreadFetcher.data.thread.id;
-      sessionStorage.setItem(
-        PENDING_NEW_THREAD_MESSAGE_KEY,
-        JSON.stringify({ message: CUSTOM_CONNECTION_SYSTEM_MESSAGE, threadId })
-      );
-      navigate(`/chat/${threadId}?newThread=1`);
+      navigate(`/chat/${createThreadFetcher.data.thread.id}`, {
+        state: { initialMessageContent: CUSTOM_CONNECTION_SYSTEM_MESSAGE },
+      });
       return;
     }
 

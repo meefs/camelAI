@@ -87,6 +87,10 @@ func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessa
 		if id == "" {
 			id = fmt.Sprintf("pi_assistant_%d", len(messages))
 		}
+		forkEntryID := id
+		if lastID := assistantSegments[len(assistantSegments)-1].ID; lastID != "" {
+			forkEntryID = lastID
+		}
 
 		createdAt := assistantSegments[0].CreatedAt
 		if assistantGroupCreatedAt != nil {
@@ -97,11 +101,12 @@ func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessa
 		}
 
 		messages = append(messages, parsedChatMessage{
-			ID:        id,
-			ThreadID:  threadID,
-			Role:      "assistant",
-			Content:   content,
-			CreatedAt: createdAt,
+			ID:          id,
+			ThreadID:    threadID,
+			Role:        "assistant",
+			Content:     content,
+			CreatedAt:   createdAt,
+			ForkEntryID: forkEntryID,
 		})
 
 		assistantSegments = assistantSegments[:0]
@@ -195,11 +200,12 @@ func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessa
 				id = fmt.Sprintf("pi_user_%d", len(messages))
 			}
 			messages = append(messages, parsedChatMessage{
-				ID:        id,
-				ThreadID:  threadID,
-				Role:      "user",
-				Content:   content,
-				CreatedAt: createdAt,
+				ID:          id,
+				ThreadID:    threadID,
+				Role:        "user",
+				Content:     content,
+				CreatedAt:   createdAt,
+				ForkEntryID: id,
 			})
 		case "assistant":
 			content := piContentBlocks(messageMap["content"])

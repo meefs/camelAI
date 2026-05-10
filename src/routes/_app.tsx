@@ -8,28 +8,27 @@ import { LegacyUserBanner } from "@/components/legacy-user-banner";
 import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
 import { AppSidebar } from "@/components/sidebar/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
 import type { AuthState } from "@/types";
+import type { ChatGroupView } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
   isConfiguredEnterpriseOrg,
 } from "@/lib/billing.server";
+import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 
 /**
- * Skip revalidation after createThread — the layout auth state hasn't changed
- * and requireAuthContext() is expensive (~200-300ms of DO RPCs).
- * Use defaultShouldRevalidate as fallback so navigations within the layout
- * (where no params changed) also skip the expensive loader.
+ * Keep the default route revalidation behavior. The layout loader owns chat
+ * group sidebar state, so create-thread actions must be allowed to refresh it.
  */
 export function shouldRevalidate({
-  formData,
   defaultShouldRevalidate,
 }: {
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
-  if (formData?.get("intent") === "createThread") return false;
   return defaultShouldRevalidate;
 }
 
@@ -89,20 +88,41 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     error: null,
   };
 
+  const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
+  const actingUserId =
+    authContext.user?.id ?? authContext.session?.user_id ?? null;
+  const currentChatGroups: ChatGroupView[] = currentWorkspaceId && actingUserId
+    ? await listGroupsForWorkspace(context, {
+        userId: actingUserId,
+        orgId: currentOrg.id,
+        workspaceId: currentWorkspaceId,
+      }).catch((error) => {
+        console.error("Failed to load chat groups:", error);
+        return [];
+      })
+    : [];
   let showLegacyBanner = false;
   const legacyMigration = await getVerifiedLegacyStripeMigrationEligibility({
     env,
     org: currentOrg,
-    userEmail: authContext.user.email,
+    userEmail: authContext.user?.email ?? authContext.session?.user_email ?? "",
   });
   try {
-    const normalizedEmail = authContext.user.email.trim().toLowerCase();
+    const normalizedEmail = (
+      authContext.user?.email ??
+      authContext.session?.user_email ??
+      ""
+    )
+      .trim()
+      .toLowerCase();
     const isDevelopment = env.NEXTJS_ENV === "development";
     const [legacyUserValue, dismissedValue] = await Promise.all([
       isDevelopment || !normalizedEmail
         ? Promise.resolve(isDevelopment ? "1" : null)
         : env.APP_KV.get(`legacy_user:${normalizedEmail}`),
-      env.APP_KV.get(`legacy_banner_dismissed:${authContext.user.id}`),
+      actingUserId
+        ? env.APP_KV.get(`legacy_banner_dismissed:${actingUserId}`)
+        : Promise.resolve(null),
     ]);
     const isLegacyUser = isDevelopment || Boolean(legacyUserValue);
     showLegacyBanner = isLegacyUser && !Boolean(dismissedValue);
@@ -114,6 +134,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     defaultSidebarOpen,
     showLegacyBanner,
     legacyMigration,
+    chatGroups: currentChatGroups,
   };
 
   // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
@@ -132,7 +153,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function AppLayout() {
-  const { authState, defaultSidebarOpen, showLegacyBanner, legacyMigration } =
+  const {
+    authState,
+    defaultSidebarOpen,
+    showLegacyBanner,
+    legacyMigration,
+  } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const legacyMigrationKey = legacyMigration?.eligible
@@ -163,10 +189,12 @@ export default function AppLayout() {
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
-      <AppSidebar />
-      <SidebarInset className="h-svh overflow-hidden flex flex-col">
-        <Outlet />
-      </SidebarInset>
+      <ChatGroupsProvider>
+        <AppSidebar />
+        <SidebarInset className="h-svh overflow-hidden flex flex-col">
+          <Outlet />
+        </SidebarInset>
+      </ChatGroupsProvider>
       <LegacyUserBanner
         show={showLegacyBanner}
         userId={authState.user?.id ?? "legacy-user"}

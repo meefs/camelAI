@@ -147,6 +147,26 @@ export default [
   route("api/legacy-banner/dismiss", "routes/api/legacy-banner.dismiss.ts"),
   route("api/help", "routes/api/help.ts"),
   route("api/history", "routes/api/history.tsx"),
+  route("api/chat-groups/:id", "routes/api/chat-groups.$id.ts"),
+  route("api/chat-groups/:id/members", "routes/api/chat-groups.$id.members.ts"),
+  route(
+    "api/chat-groups/:id/members/:threadId",
+    "routes/api/chat-groups.$id.members.$threadId.ts",
+  ),
+  route(
+    "api/chat-groups/:id/members/:threadId/reopen",
+    "routes/api/chat-groups.$id.members.$threadId.reopen.ts",
+  ),
+  route(
+    "api/chat-groups/:id/reorder-tabs",
+    "routes/api/chat-groups.$id.reorder-tabs.ts",
+  ),
+  route("api/chat-groups/move-thread", "routes/api/chat-groups.move-thread.ts"),
+  route("api/threads/:id", "routes/api/threads.$id.ts"),
+  route(
+    "api/threads/:id/mark-viewed",
+    "routes/api/threads.$id.mark-viewed.ts",
+  ),
   route("api/dev/sent-emails", "routes/api/dev.sent-emails.ts"),
   route("api/dev/sent-emails/:id", "routes/api/dev.sent-emails.$id.ts"),
   route("api/dev/verify-email", "routes/api/dev.verify-email.ts"),

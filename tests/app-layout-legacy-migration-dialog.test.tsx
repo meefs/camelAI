@@ -48,6 +48,10 @@ vi.mock("@/components/sidebar/app-sidebar", () => ({
   AppSidebar: () => <div data-testid="app-sidebar" />,
 }));
 
+vi.mock("@/hooks/use-chat-groups", () => ({
+  ChatGroupsProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+
 vi.mock("@/components/legacy-user-banner", () => ({
   LegacyUserBanner: () => <div data-testid="legacy-user-banner" />,
 }));

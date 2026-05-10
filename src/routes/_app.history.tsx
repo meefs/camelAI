@@ -2,6 +2,7 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.history';
 import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
+import { removeDeletedThreadFromOrgGroups } from '@/lib/chat-groups.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import HistoryClient from '@/components/pages/history/history-client';
 import { HistoryLoadingSkeleton } from '@/components/history/history-loading';
@@ -26,7 +27,7 @@ export function meta() {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  await requireAuthContext(request, context);
+  const authContext = await requireAuthContext(request, context);
 
   const formData = await request.formData();
   const intent = formData.get('intent');
@@ -57,7 +58,15 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      await chatDO.deleteThread(context, threadId, workspaceId);
+      const deleted = await chatDO.deleteThread(context, threadId, workspaceId);
+      if (!deleted) {
+        return { error: 'Thread not found' };
+      }
+      await removeDeletedThreadFromOrgGroups(
+        context,
+        authContext.currentOrg.id,
+        threadId,
+      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete thread' };

@@ -1,11 +1,23 @@
-import { waitUntil } from 'cloudflare:workers';
+import { waitUntil } from '@/lib/wait-until';
 import type { Route } from './+types/workspaces.$id.chat.threads';
 import { requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do.server';
+import {
+  addThreadToExistingGroup,
+  createGroupForNewThread,
+} from '@/lib/chat-groups.server';
 import type { LlmModel } from '@/types';
+
+type CreateThreadRequestBody = {
+  initialTitle?: string;
+  firstMessage?: string;
+  previewApps?: string;
+  model?: LlmModel;
+  groupId?: string;
+};
 
 /**
  * Lightweight thread creation endpoint that validates workspace access
@@ -27,12 +39,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ error: 'Workspace mismatch' }, { status: 403 });
   }
 
-  const body = await request.json() as {
-    initialTitle?: string;
-    firstMessage?: string;
-    previewApps?: string;
-    model?: LlmModel;
-  };
+  let body: CreateThreadRequestBody;
+  try {
+    body = (await request.json()) as CreateThreadRequestBody;
+  } catch {
+    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
@@ -76,10 +88,32 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         context,
         thread.id,
         workspaceId,
-        body.firstMessage
+        body.firstMessage,
+        userId,
       )
     );
   }
 
-  return Response.json({ thread });
+  try {
+    const group = body.groupId
+      ? await addThreadToExistingGroup(context, {
+          userId,
+          orgId,
+          workspaceId,
+          groupId: body.groupId,
+          threadId: thread.id,
+        })
+      : await createGroupForNewThread(context, {
+          userId,
+          orgId,
+          workspaceId,
+          threadId: thread.id,
+          initialThreadTitle: body.initialTitle,
+        });
+    return Response.json({ thread, groupId: group.id, group });
+  } catch (error) {
+    await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+    const message = error instanceof Error ? error.message : 'Failed to group thread';
+    return Response.json({ error: message }, { status: 500 });
+  }
 }

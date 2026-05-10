@@ -24,7 +24,6 @@ interface OnboardingLoaderData {
   legacyMigration: LegacyMigrationDialogData | null;
 }
 
-const PENDING_NEW_THREAD_MESSAGE_KEY = "pendingMessage:newThread";
 const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
 const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
 
@@ -183,38 +182,12 @@ export default function OnboardingRoute() {
         const data = (await response.json()) as {
           redirectTo?: string;
           threadId?: string;
-          onboardingSystemMessage?: string | null;
           salesPrompt?: string | null;
+          initialMessageContent?: string | null;
+          showBootModal?: boolean;
         };
 
-        const threadId = data.threadId?.trim();
-        const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
-        const salesPrompt = data.salesPrompt?.trim();
-
-        let shouldShowBootModal = false;
-
-        if (threadId && onboardingSystemMessage) {
-          shouldShowBootModal = true;
-          try {
-            const pendingMessage = salesPrompt
-              ? `<camelai system message>${onboardingSystemMessage}</camelai system message>\n\n${salesPrompt}`
-              : `<camelai system message>${onboardingSystemMessage}</camelai system message>`;
-            sessionStorage.setItem(
-              PENDING_NEW_THREAD_MESSAGE_KEY,
-              JSON.stringify({
-                message: pendingMessage,
-                threadId,
-              }),
-            );
-          } catch (error) {
-            console.error(
-              "Failed to persist onboarding prefill message:",
-              error,
-            );
-          }
-        }
-
-        if (shouldShowBootModal) {
+        if (data.showBootModal) {
           try {
             sessionStorage.setItem("showBootModal", "1");
           } catch {
@@ -223,13 +196,15 @@ export default function OnboardingRoute() {
         } else {
           try {
             sessionStorage.removeItem("showBootModal");
-            sessionStorage.removeItem(PENDING_NEW_THREAD_MESSAGE_KEY);
           } catch {
             // Ignore storage failures.
           }
         }
 
-        navigate(data.redirectTo || "/chat");
+        const initialMessageContent = data.initialMessageContent?.trim();
+        navigate(data.redirectTo || "/chat", {
+          state: initialMessageContent ? { initialMessageContent } : null,
+        });
       })();
 
       completeOnboardingRequestRef.current = completeRequest;

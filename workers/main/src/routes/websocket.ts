@@ -4,7 +4,7 @@
 
 import { waitUntil } from 'cloudflare:workers';
 import type { RouteContext } from '../types.js';
-import { requireChatWebSocketAccess } from '../helpers/auth.js';
+import { requireChatWebSocketAccess, requireWorkspaceAccess } from '../helpers/auth.js';
 import { getThreadStub } from '../helpers/stubs.js';
 import { text } from '../helpers/response.js';
 import { WorkspaceContainer } from '../workspace-container.js';
@@ -19,6 +19,7 @@ import {
   isPlaceholderThreadTitle,
 } from '../../../../src/lib/thread-title.js';
 import { generateThreadTitleWithOpenAI } from '../../../../src/lib/thread-title-generation.server.js';
+import { recordWorkspaceThreadStreaming } from '../thread-status.js';
 
 export async function handleChatWebSocket({ req, env, url }: RouteContext): Promise<Response> {
   const threadIdFromUrl = url.searchParams.get('threadId');
@@ -84,6 +85,30 @@ export async function handleChatRunnerWebSocket({ req, env, url }: RouteContext)
   return new Response(null, { status: 101, webSocket: client });
 }
 
+export async function handleWorkspaceStatusWebSocket({
+  req,
+  env,
+  match,
+}: RouteContext): Promise<Response> {
+  const workspaceIdFromPath = decodeURIComponent(match[1] ?? '').trim();
+  if (!workspaceIdFromPath) {
+    return text('Missing workspaceId', 400);
+  }
+
+  const access = await requireWorkspaceAccess(req, env);
+  if ('error' in access) return access.error;
+  if (access.workspaceId !== workspaceIdFromPath) {
+    return text('Forbidden', 403);
+  }
+
+  const doUrl = new URL('https://workspace/status');
+  const modifiedReq = new Request(doUrl.toString(), {
+    method: 'GET',
+    headers: req.headers,
+  });
+  return access.wsStub.fetch(modifiedReq);
+}
+
 interface BridgeChatSocketArgs {
   server: WebSocket;
   env: RouteContext['env'];
@@ -95,7 +120,7 @@ interface BridgeChatSocketArgs {
   userEmail?: string | null;
 }
 
-async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
+export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   const {
     server,
     env,
@@ -109,10 +134,15 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
   let runnerSocket: WebSocket | null = null;
   let closed = false;
+  let clientConnected = true;
+  let activeOrPendingUserTurn = false;
+  let suppressNextRunnerCloseIdle = false;
   const queuedClientMessages: string[] = [];
   let clientMessageChain = Promise.resolve();
   const bridgeId = crypto.randomUUID();
   const startedAt = Date.now();
+  let completionRecordedAt: number | null = null;
+  let clientLastSeq = 0;
 
   const logBridge = (event: string, fields: Record<string, unknown> = {}) => {
     console.log('[chat runner bridge]', {
@@ -134,7 +164,18 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     logBridge('close_both', { code, reason });
     closeWebSocket(server, code, reason);
     if (runnerSocket) {
+      suppressNextRunnerCloseIdle = !activeOrPendingUserTurn && completionRecordedAt === null;
       closeWebSocket(runnerSocket, code, reason);
+    }
+  };
+  const closeClient = (code = 1000, reason = 'client closed') => {
+    clientConnected = false;
+    closeWebSocket(server, code, reason);
+  };
+  const shouldKeepRunnerAfterClientClose = () => activeOrPendingUserTurn;
+  const closeDetachedRunnerIfDone = (reason: string) => {
+    if (!clientConnected && !activeOrPendingUserTurn) {
+      closeBoth(1000, reason);
     }
   };
 
@@ -154,11 +195,49 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
   const updateThreadMetadata = (messageContent: string) => {
     waitUntil(
-      updateThreadMetadataForUserMessage(env, orgId, threadId, messageContent)
+      updateThreadMetadataForUserMessage(
+        env,
+        orgId,
+        workspaceId,
+        threadId,
+        userId,
+        messageContent,
+      )
         .catch((error) => {
           console.error('[chat websocket] failed to update thread metadata', error);
         }),
     );
+  };
+  const recordStreaming = (isStreaming: boolean) => {
+    activeOrPendingUserTurn = isStreaming;
+    if (isStreaming) completionRecordedAt = null;
+    waitUntil(
+      recordWorkspaceThreadStreaming(env, workspaceId, threadId, isStreaming).catch((error) => {
+        console.error('[chat websocket] failed to record workspace thread status', error);
+      }),
+    );
+  };
+  const recordAssistantCompletion = (rawCompletedAt?: unknown) => {
+    const completedAt = normalizeCompletionTimestamp(rawCompletedAt);
+    activeOrPendingUserTurn = false;
+    if (completionRecordedAt !== null) return completionRecordedAt;
+    completionRecordedAt = completedAt;
+    waitUntil(
+      recordThreadAssistantCompletion(
+        env,
+        orgId,
+        workspaceId,
+        threadId,
+        completedAt,
+      ).catch((error) => {
+        console.error('[chat websocket] failed to record assistant completion', error);
+      }),
+    );
+    return completedAt;
+  };
+  const updateClientLastSeq = (value: unknown) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return;
+    clientLastSeq = Math.max(clientLastSeq, Math.max(0, Math.floor(value)));
   };
 
   const handleClientMessage = async (raw: string) => {
@@ -171,7 +250,9 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
 
     const type = typeof data.type === 'string' ? data.type : '';
     if (type === 'init') {
-      logBridge('client_init_ignored');
+      updateClientLastSeq(data.lastSeq);
+      updateClientLastSeq(data.lastEventId);
+      logBridge('client_init_recorded', { lastSeq: clientLastSeq });
       return;
     }
 
@@ -183,6 +264,7 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     }
 
     if (type === 'message') {
+      activeOrPendingUserTurn = true;
       const rawContent = typeof data.content === 'string' ? data.content : '';
       const attributedContent = await buildRunnerUserMessageContent(
         env,
@@ -190,12 +272,16 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
         rawContent,
         { userName, userEmail },
       );
-      if (!attributedContent) return;
+      if (!attributedContent) {
+        activeOrPendingUserTurn = false;
+        return;
+      }
       logBridge('client_user_message_prepared', {
         rawLength: rawContent.length,
         attributedLength: attributedContent.length,
       });
       sendJson(server, { type: 'streaming_state', isStreaming: true });
+      recordStreaming(true);
       updateThreadMetadata(attributedContent);
       return sendToRunner({
         ...data,
@@ -210,18 +296,28 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   };
 
   server.addEventListener('message', (event) => {
+    if (closed) return;
     if (typeof event.data !== 'string') return;
     if (!runnerSocket || runnerSocket.readyState !== WebSocket.OPEN) {
       try {
         const data = JSON.parse(event.data) as { type?: unknown };
-        if (data.type !== 'init') {
-          queuedClientMessages.push(event.data);
-          logBridge('client_message_queued', {
-            type: typeof data.type === 'string' ? data.type : 'unknown',
-            queueLength: queuedClientMessages.length,
-            runnerReadyState: runnerSocket?.readyState ?? null,
-          });
+        if (data.type === 'init') {
+          clientMessageChain = clientMessageChain
+            .then(() => handleClientMessage(event.data as string))
+            .catch((error) => {
+              console.error('[chat websocket] failed to handle client init', error);
+            });
+          return;
         }
+        if (data.type === 'message') {
+          activeOrPendingUserTurn = true;
+        }
+        queuedClientMessages.push(event.data);
+        logBridge('client_message_queued', {
+          type: typeof data.type === 'string' ? data.type : 'unknown',
+          queueLength: queuedClientMessages.length,
+          runnerReadyState: runnerSocket?.readyState ?? null,
+        });
       } catch {
         // Ignore invalid JSON while the runner is starting.
       }
@@ -243,10 +339,24 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       reason: event.reason || 'client closed',
       queuedMessages: queuedClientMessages.length,
     });
+    closeClient(event.code || 1000, event.reason || 'client closed');
+    if (shouldKeepRunnerAfterClientClose()) {
+      logBridge('client_detached_runner_kept', {
+        queuedMessages: queuedClientMessages.length,
+      });
+      return;
+    }
     closeBoth(event.code || 1000, event.reason || 'client closed');
   });
   server.addEventListener('error', () => {
     logBridge('client_error', { queuedMessages: queuedClientMessages.length });
+    closeClient(1011, 'client error');
+    if (shouldKeepRunnerAfterClientClose()) {
+      logBridge('client_error_runner_kept', {
+        queuedMessages: queuedClientMessages.length,
+      });
+      return;
+    }
     closeBoth(1011, 'client error');
   });
 
@@ -265,6 +375,10 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     userId,
     byokProxy,
   });
+  if (closed) {
+    closeWebSocket(runnerSocket, 1000, 'client closed');
+    return;
+  }
   runnerSocket.accept();
   logBridge('runner_connected', {
     provider,
@@ -272,6 +386,7 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
   });
 
   runnerSocket.addEventListener('message', (event) => {
+    if (closed) return;
     if (typeof event.data !== 'string') return;
     let payload: Record<string, unknown>;
     try {
@@ -283,6 +398,13 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
     payload.sessionId = threadId;
 
     const eventType = typeof payload.type === 'string' ? payload.type : '';
+    const seq =
+      typeof payload.seq === 'number' && Number.isFinite(payload.seq)
+        ? Math.max(0, Math.floor(payload.seq))
+        : null;
+    if (seq !== null && typeof payload.eventId !== 'number') {
+      payload.eventId = seq;
+    }
     const runtimeEvent = payload.event as { method?: unknown } | undefined;
     if (
       eventType === 'ready' ||
@@ -306,12 +428,30 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
         }),
       );
     }
-    if (
-      eventType === 'error' ||
-      eventType === 'result' ||
-      runtimeEvent?.method === 'turn/completed'
-    ) {
+    if (eventType === 'streaming_state' && typeof payload.isStreaming === 'boolean') {
+      if (payload.isStreaming) {
+        recordStreaming(true);
+      } else {
+        const completedAt = normalizeCompletionTimestampOrNull(payload.completedAt);
+        if (activeOrPendingUserTurn) {
+          recordAssistantCompletion(completedAt);
+        } else {
+          recordStreaming(false);
+        }
+        closeDetachedRunnerIfDone('runner completed after client detached');
+      }
+    }
+    if (eventType === 'error') {
       sendJson(server, { type: 'streaming_state', isStreaming: false });
+      if (completionRecordedAt === null) {
+        recordStreaming(false);
+      }
+      closeDetachedRunnerIfDone('runner errored after client detached');
+    }
+    if (eventType === 'result' || runtimeEvent?.method === 'turn/completed') {
+      const completedAt = recordAssistantCompletion(payload.completedAt);
+      sendJson(server, { type: 'streaming_state', isStreaming: false, completedAt });
+      closeDetachedRunnerIfDone('runner completed after client detached');
     }
 
     sendJson(server, payload);
@@ -323,20 +463,30 @@ async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void> {
       queuedMessages: queuedClientMessages.length,
     });
     closeBoth(event.code || 1000, event.reason || 'runner closed');
+    const suppressIdle = suppressNextRunnerCloseIdle;
+    suppressNextRunnerCloseIdle = false;
+    if (!suppressIdle && completionRecordedAt === null) {
+      recordStreaming(false);
+    }
   });
   runnerSocket.addEventListener('error', () => {
     logBridge('runner_error', { queuedMessages: queuedClientMessages.length });
     closeBoth(1011, 'runner error');
+    const suppressIdle = suppressNextRunnerCloseIdle;
+    suppressNextRunnerCloseIdle = false;
+    if (!suppressIdle && completionRecordedAt === null) {
+      recordStreaming(false);
+    }
   });
 
-  sendJson(server, { type: 'streaming_state', isStreaming: false });
+  await clientMessageChain;
   runnerSocket.send(JSON.stringify({
     type: 'init',
     threadId,
     env: envVars,
-    lastSeq: 0,
+    lastSeq: clientLastSeq,
   }));
-  logBridge('runner_init_sent');
+  logBridge('runner_init_sent', { lastSeq: clientLastSeq });
 
   while (queuedClientMessages.length > 0 && runnerSocket.readyState === WebSocket.OPEN) {
     const raw = queuedClientMessages.shift();
@@ -376,7 +526,9 @@ export async function buildRunnerUserMessageContent(
 async function updateThreadMetadataForUserMessage(
   env: RouteContext['env'],
   orgId: string,
+  workspaceId: string,
   threadId: string,
+  userId: string,
   messageContent: string,
 ): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
@@ -384,6 +536,8 @@ async function updateThreadMetadataForUserMessage(
   if (!thread) return;
 
   await orgStub.touchThread(threadId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  await userStub.touchGroupForThread(threadId);
 
   const titleSourceMessage = getThreadTitleSourceMessage(messageContent);
   if (!titleSourceMessage) return;
@@ -405,10 +559,37 @@ async function updateThreadMetadataForUserMessage(
     });
     if (title) {
       await orgStub.updateThread(threadId, title);
+      await userStub.renameEmptySingleThreadGroupForThread(threadId, title);
+      await getThreadStub(env, threadId).setTitle(title);
     }
   } catch (error) {
     console.error('[chat websocket] failed to generate thread title', error);
   }
+}
+
+async function recordThreadAssistantCompletion(
+  env: RouteContext['env'],
+  orgId: string,
+  workspaceId: string,
+  threadId: string,
+  completedAt: number,
+): Promise<void> {
+  try {
+    const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as unknown as {
+      touchThreadActivity(id: string, at?: number): Promise<boolean> | boolean;
+    };
+    await orgStub.touchThreadActivity(threadId, completedAt);
+  } catch (error) {
+    console.error('[chat websocket] failed to touch thread activity', error);
+  }
+
+  await recordWorkspaceThreadStreaming(
+    env,
+    workspaceId,
+    threadId,
+    false,
+    { completedAt },
+  );
 }
 
 function sendJson(ws: WebSocket, payload: unknown): void {
@@ -428,4 +609,13 @@ function closeWebSocket(ws: WebSocket, code: number, reason: string): void {
   } catch {
     // Ignore close races.
   }
+}
+
+function normalizeCompletionTimestamp(_value: unknown): number {
+  return Date.now();
+}
+
+function normalizeCompletionTimestampOrNull(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Date.now();
 }

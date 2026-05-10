@@ -204,19 +204,33 @@ function safeJsonStringify(value: unknown): string {
   }
 }
 
+function isRedactedThinkingBlock(block: ContentBlock): boolean {
+  if (block.type === 'redacted_thinking') return true;
+  if (block.type !== 'thinking') return false;
+
+  const rawBlock = block as ContentBlock & {
+    redacted?: boolean;
+    thinkingSignature?: string;
+  };
+  return rawBlock.redacted === true
+    || rawBlock.thinkingSignature?.startsWith('openrouter.reasoning:') === true
+    || block.signature?.startsWith('openrouter.reasoning:') === true
+    || block.thinking.trim() === '[Reasoning redacted]';
+}
+
 function normalizeToolResultContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
       .map(block => {
         if (block.type === 'text') return block.text;
+        if (isRedactedThinkingBlock(block)) return '';
         if (block.type === 'thinking') {
           const summaryText = Array.isArray(block.summaries) ? block.summaries.join('\n\n') : '';
           return summaryText
             ? `[Thinking Summary]\n${summaryText}\n\n[Thinking]\n${block.thinking}`
             : `[Thinking]\n${block.thinking}`;
         }
-        if (block.type === 'redacted_thinking') return '[Thinking redacted]';
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
         if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
@@ -247,7 +261,10 @@ function hasVisibleContent(content: string | ContentBlock[]): boolean {
     if (block.type === 'text') {
       return stripSystemMessageTags(block.text).length > 0;
     }
-    // Other block types (tool_use, tool_result, thinking, redacted_thinking) are always visible
+    if (isRedactedThinkingBlock(block)) {
+      return false;
+    }
+    // Other block types (tool_use, tool_result, thinking) are always visible
     return true;
   });
 }
@@ -260,13 +277,13 @@ export function contentToString(content: string | ContentBlock[]): string {
       if (block.type === 'text') return stripSystemMessageTags(block.text);
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
+      if (isRedactedThinkingBlock(block)) return '';
       if (block.type === 'thinking') {
         const summaryText = Array.isArray(block.summaries) ? block.summaries.join('\n\n') : '';
         return summaryText
           ? `[Thinking Summary]\n${summaryText}\n\n[Thinking]\n${block.thinking}`
           : `[Thinking]\n${block.thinking}`;
       }
-      if (block.type === 'redacted_thinking') return '[Thinking redacted]';
       if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
       if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
       return '';
@@ -348,20 +365,15 @@ export function ContentBlockRenderer({
       return;
     }
 
+    if (isRedactedThinkingBlock(block)) {
+      return;
+    }
+
     if (block.type === 'thinking') {
       items.push({
         kind: 'other',
         key: `thinking-${index}`,
         node: <ThinkingBlock thinking={block.thinking} label={block.label} summaries={block.summaries} />,
-      });
-      return;
-    }
-
-    if (block.type === 'redacted_thinking') {
-      items.push({
-        kind: 'other',
-        key: `redacted-thinking-${index}`,
-        node: <ThinkingBlock thinking="This thinking content was redacted by the model." />,
       });
       return;
     }
@@ -488,7 +500,7 @@ interface MessageBubbleProps {
   message: Message;
   onCopy: (id: string, content: string) => void;
   copiedId: string | null;
-  onFork?: (id: string) => void;
+  onFork?: (id: string, renderedId?: string) => void;
   forkingId?: string | null;
   /** Whether to show the streaming loading indicator (only true for the last streaming message) */
   showStreamingIndicator?: boolean;
@@ -566,7 +578,8 @@ export function MessageBubble({
   }
 
   const isCopied = copiedId === message.id;
-  const isForking = forkingId === message.id;
+  const forkTargetId = message.forkEntryId || message.id;
+  const isForking = forkingId === message.id || forkingId === forkTargetId;
   const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
   const hasContent = typeof message.content === 'string'
     ? message.content.length > 0
@@ -770,7 +783,7 @@ export function MessageBubble({
                   size="icon-sm"
                   className="text-muted-foreground"
                   disabled={isForking}
-                  onClick={() => onFork(message.id)}
+                  onClick={() => onFork(forkTargetId, message.id)}
                 >
                   <GitFork />
                 </Button>

@@ -13,6 +13,7 @@ type parsedChatMessage struct {
 	Role             string `json:"role"`
 	Content          any    `json:"content"`
 	CreatedAt        int64  `json:"created_at"`
+	ForkEntryID      string `json:"forkEntryId,omitempty"`
 	IsMeta           bool   `json:"isMeta,omitempty"`
 	SourceToolUseID  string `json:"sourceToolUseID,omitempty"`
 	IsCompactSummary bool   `json:"isCompactSummary,omitempty"`
@@ -52,6 +53,10 @@ func parseClaudeJSONLMessages(fileContent string, threadID string) []parsedChatM
 				id = fmt.Sprintf("assistant_%d", len(messages))
 			}
 		}
+		forkEntryID := id
+		if lastID := assistantSegments[len(assistantSegments)-1].ID; lastID != "" {
+			forkEntryID = lastID
+		}
 
 		createdAt := nowMillis()
 		if assistantGroupCreatedAt != nil {
@@ -61,11 +66,12 @@ func parseClaudeJSONLMessages(fileContent string, threadID string) []parsedChatM
 		}
 
 		messages = append(messages, parsedChatMessage{
-			ID:        id,
-			ThreadID:  threadID,
-			Role:      "assistant",
-			Content:   content,
-			CreatedAt: createdAt,
+			ID:          id,
+			ThreadID:    threadID,
+			Role:        "assistant",
+			Content:     content,
+			CreatedAt:   createdAt,
+			ForkEntryID: forkEntryID,
 		})
 
 		assistantSegments = assistantSegments[:0]
@@ -198,6 +204,7 @@ func parseClaudeJSONLMessages(fileContent string, threadID string) []parsedChatM
 					Role:             "user",
 					Content:          messageContent,
 					CreatedAt:        createdAt,
+					ForkEntryID:      id,
 					IsCompactSummary: true,
 				})
 			case isMeta || sourceToolUseID != "":
@@ -215,6 +222,7 @@ func parseClaudeJSONLMessages(fileContent string, threadID string) []parsedChatM
 					Role:            "user",
 					Content:         messageContent,
 					CreatedAt:       createdAt,
+					ForkEntryID:     id,
 					IsMeta:          true,
 					SourceToolUseID: sourceToolUseID,
 				})
@@ -225,11 +233,12 @@ func parseClaudeJSONLMessages(fileContent string, threadID string) []parsedChatM
 					id = fmt.Sprintf("user_%d", len(messages))
 				}
 				messages = append(messages, parsedChatMessage{
-					ID:        id,
-					ThreadID:  threadID,
-					Role:      "user",
-					Content:   messageContent,
-					CreatedAt: createdAt,
+					ID:          id,
+					ThreadID:    threadID,
+					Role:        "user",
+					Content:     messageContent,
+					CreatedAt:   createdAt,
+					ForkEntryID: id,
 				})
 			}
 			continue

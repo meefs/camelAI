@@ -82,26 +82,19 @@ export default function AppsClient({
     if (chatFetcher.state !== 'idle' || !chatFetcher.data) return;
 
     if (chatFetcher.data.thread && pendingChatAppRef.current) {
-      // Build the camelai system message
       const app = pendingChatAppRef.current;
       const appUrl = getPreferredAppUrl(app, { hostname, orgSlug, orgCustomDomain });
       const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
       const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
-      const threadTitle = buildAppThreadFallbackTitle(app.script_name);
-
-      // Store message in sessionStorage for the chat page to pick up
-      sessionStorage.setItem(
-        'pendingMessage:newThread',
-        JSON.stringify({ message: systemMessage, threadId: chatFetcher.data.thread.id, threadTitle })
-      );
-
       pendingChatAppRef.current = null;
-      navigate(`/chat/${chatFetcher.data.thread.id}?newThread=1`);
+      navigate(`/chat/${chatFetcher.data.thread.id}`, {
+        state: { initialMessageContent: systemMessage },
+      });
     } else if (chatFetcher.data.error) {
       toast.error(chatFetcher.data.error);
       pendingChatAppRef.current = null;
     }
-  }, [chatFetcher.state, chatFetcher.data, navigate, hostname]);
+  }, [chatFetcher.state, chatFetcher.data, navigate, hostname, orgSlug, orgCustomDomain]);
 
   const loading = revalidator.state === 'loading';
   const apps = initialApps;
@@ -152,6 +145,7 @@ export default function AppsClient({
       {
         intent: 'createThread',
         initialTitle: threadTitle,
+        firstMessage: threadTitle,
         previewApps: app.script_name,
       },
       { method: 'post', action: '/chat' }

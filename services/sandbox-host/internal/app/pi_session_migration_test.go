@@ -370,6 +370,19 @@ func TestHostPiSessionDirHasJSONL(t *testing.T) {
 	}
 }
 
+func TestLegacyCodexStatePathCandidatesUsesThreadIDWhenStoredCodexSessionIDMissing(t *testing.T) {
+	paths, err := legacyCodexStatePathCandidates("camel-thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"/home/claude/.codex/threads/camel-thread/state_5.sqlite",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
 func TestLegacyCodexStatePathCandidatesIncludesStoredCodexSessionID(t *testing.T) {
 	paths, err := legacyCodexStatePathCandidates("camel-thread", "codex-session")
 	if err != nil {
@@ -381,6 +394,52 @@ func TestLegacyCodexStatePathCandidatesIncludesStoredCodexSessionID(t *testing.T
 	}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
+func TestLegacyCodexStatePathCandidatesDeduplicatesStoredCodexSessionID(t *testing.T) {
+	paths, err := legacyCodexStatePathCandidates("camel-thread", "camel-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"/home/claude/.codex/threads/camel-thread/state_5.sqlite",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
+func TestLegacyClaudeSessionCandidatesUsesThreadIDWhenStoredClaudeSessionIDMissing(t *testing.T) {
+	sessions, err := legacyClaudeSessionCandidates("camel-thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"camel-thread"}
+	if !reflect.DeepEqual(sessions, want) {
+		t.Fatalf("sessions = %#v, want %#v", sessions, want)
+	}
+}
+
+func TestLegacyClaudeSessionCandidatesIncludesStoredClaudeSessionID(t *testing.T) {
+	sessions, err := legacyClaudeSessionCandidates("camel-thread", "claude-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"camel-thread", "claude-session"}
+	if !reflect.DeepEqual(sessions, want) {
+		t.Fatalf("sessions = %#v, want %#v", sessions, want)
+	}
+}
+
+func TestLegacyClaudeSessionCandidatesDeduplicatesStoredClaudeSessionID(t *testing.T) {
+	sessions, err := legacyClaudeSessionCandidates("camel-thread", "camel-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"camel-thread"}
+	if !reflect.DeepEqual(sessions, want) {
+		t.Fatalf("sessions = %#v, want %#v", sessions, want)
 	}
 }
 

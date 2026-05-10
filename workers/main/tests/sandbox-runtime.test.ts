@@ -121,4 +121,67 @@ describe('sandbox runtime', () => {
     expect(result.files.some((file) => file.relativePath === 'src/main.ts')).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  it('classifies sandbox-host fork endpoint 404s as routing failures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Not found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const env = {
+      SANDBOX_HOST: { fetch: fetchMock },
+    } as unknown as WorkspaceContainerEnv;
+
+    const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
+    const result = await container.forkThreadSession({
+      sourceThreadId: 'thread-source',
+      targetThreadId: 'thread-target',
+      entryId: 'entry-1',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('SANDBOX_FORK_ENDPOINT_NOT_FOUND');
+    expect(result.error).toContain('Restart or deploy sandbox-host');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries fork on the control port when SANDBOX_HOST_URL points at the local proxy port', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.port === '4401') {
+        return new Response(JSON.stringify({ error: 'Not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.port === '4400') {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('unexpected url', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const env = {
+        SANDBOX_HOST_URL: 'http://localhost:4401',
+      } as unknown as WorkspaceContainerEnv;
+
+      const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
+      const result = await container.forkThreadSession({
+        sourceThreadId: 'thread-source',
+        targetThreadId: 'thread-target',
+        entryId: 'entry-1',
+      });
+
+      expect(result.success).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain('localhost:4401');
+      expect(String(fetchMock.mock.calls[1]?.[0])).toContain('localhost:4400');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

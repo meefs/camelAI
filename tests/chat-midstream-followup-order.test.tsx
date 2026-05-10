@@ -5,6 +5,7 @@ import React from 'react';
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
+let mockLocation = { pathname: '/', search: '', hash: '', state: null as unknown, key: 'default' };
 
 function createFetcher() {
   return {
@@ -20,7 +21,7 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useNavigate: () => mockNavigate,
-    useLocation: () => ({ pathname: '/', search: '', hash: '', state: null, key: 'default' }),
+    useLocation: () => mockLocation,
     useRevalidator: () => ({ state: 'idle' as const, revalidate: mockRevalidate }),
     useFetcher: () => createFetcher(),
   };
@@ -290,6 +291,7 @@ beforeAll(() => {
 beforeEach(() => {
   MockWebSocket.instances = [];
   vi.clearAllMocks();
+  mockLocation = { pathname: '/', search: '', hash: '', state: null, key: 'default' };
   localStorage.clear();
   sessionStorage.clear();
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
@@ -307,6 +309,186 @@ afterEach(() => {
 });
 
 describe('Chat mid-stream follow-up ordering', () => {
+  it('keeps the first navigation message visible while the assistant starts streaming', async () => {
+    mockLocation = {
+      pathname: '/chat/thread-1',
+      search: '?newThread=1',
+      hash: '',
+      state: { initialMessageContent: 'write a long poem' },
+      key: 'new-thread',
+    };
+
+    const { rerender } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        isNewThread
+        initialMessages={[]}
+      />,
+    );
+
+    const mainSocket = getMainSocket();
+    await act(async () => {
+      mainSocket.emitOpen();
+      mainSocket.emitMessage({ type: 'ready' });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('user: write a long poem')).toBeInTheDocument();
+      expect(mainSocket.send).toHaveBeenCalledWith(
+        expect.stringContaining('write a long poem'),
+      );
+    });
+
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        isNewThread
+        initialMessages={[]}
+      />,
+    );
+
+    await act(async () => {
+      emitStreamTextPart(mainSocket, 'assistant-1', 'Line one');
+    });
+
+    await waitFor(() => {
+      expect(getTranscriptRows()).toEqual([
+        'user: write a long poem',
+        'assistant: Line one',
+      ]);
+    });
+
+    await act(async () => {
+      mainSocket.emitMessage({ type: 'streaming_state', isStreaming: false });
+      mainSocket.emitMessage({ type: 'result' });
+    });
+
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[
+          {
+            id: 'server-user-1',
+            thread_id: 'thread-1',
+            role: 'user',
+            content: 'write a long poem',
+            created_at: 1,
+          },
+          {
+            id: 'server-assistant-1',
+            thread_id: 'thread-1',
+            role: 'assistant',
+            content: 'Line one',
+            created_at: 2,
+          },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('user: write a long poem')).toHaveLength(1);
+      expect(screen.getAllByText('assistant: Line one')).toHaveLength(1);
+    });
+  });
+
+  it('uses route history as the source of truth for new threads', async () => {
+    const { rerender } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        isNewThread
+        initialMessages={[]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText('user: first message')).not.toBeInTheDocument();
+      expect(screen.queryByText('assistant: assistant response')).not.toBeInTheDocument();
+    });
+
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[
+          {
+            id: 'server-user-1',
+            thread_id: 'thread-1',
+            role: 'user',
+            content: 'first message',
+            created_at: 1,
+          },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('user: first message')).toBeInTheDocument();
+      expect(screen.queryByText('assistant: assistant response')).not.toBeInTheDocument();
+    });
+
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[
+          {
+            id: 'server-user-1',
+            thread_id: 'thread-1',
+            role: 'user',
+            content: 'first message',
+            created_at: 1,
+          },
+          {
+            id: 'server-assistant-1',
+            thread_id: 'thread-1',
+            role: 'assistant',
+            content: 'assistant response',
+            created_at: 2,
+          },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('user: first message')).toHaveLength(1);
+      expect(screen.getAllByText('assistant: assistant response')).toHaveLength(1);
+    });
+  });
+
+  it('syncs route-loaded history when initial messages arrive after an empty render', async () => {
+    const { rerender } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    rerender(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[
+          {
+            id: 'message-1',
+            thread_id: 'thread-1',
+            role: 'user',
+            content: 'Loaded question',
+            created_at: 1,
+          },
+        ]}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('user: Loaded question')).toBeInTheDocument();
+    });
+  });
+
   it('splits assistant output at the next part when user follows up mid-stream', async () => {
     const user = userEvent.setup();
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useLoaderData, useRevalidator } from "react-router";
+import { useLoaderData, useNavigate, useRevalidator } from "react-router";
 import type { Route } from "./+types/_app.chat._index";
 import {
   requireAuthContext,
@@ -25,11 +25,19 @@ import {
 } from "@/lib/llm-provider-config";
 import * as chatDO from "@/lib/chat-do.server";
 import {
+  addThreadToExistingGroup,
+  createGroupForNewThread,
+  getGroupForWorkspace,
+  listGroupsForMove,
+} from "@/lib/chat-groups.server";
+import {
   consumeSalesPrompt,
   getPromptKeyFromUrl,
 } from "@/lib/sales-prompt.server";
 import Chat from "@/components/Chat";
+import { ChatTabBar } from "@/components/chat-tab-bar";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import type {
   ChatHarness,
   Integration,
@@ -38,6 +46,7 @@ import type {
   WorkerScriptWithCreator,
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
+import { useChatGroups } from "@/hooks/use-chat-groups";
 
 function buildBillingCreditStatus(
   overview: OrgBillingOverview | null,
@@ -98,6 +107,11 @@ export function meta() {
   ];
 }
 
+function formStringValue(formData: FormData, key: string): string | null {
+  const value = formData.get(key);
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
@@ -106,6 +120,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const promptKey = getPromptKeyFromUrl(url);
   const hostname = request.headers.get("host")?.split(":")[0] || undefined;
   const workspaceId = authContext.currentWorkspace?.id;
+  const groupId = url.searchParams.get("group")?.trim() || null;
   const userId = authContext.user?.id ?? null;
   const userName = authContext.user?.name ?? null;
   const renderedAt = Date.now();
@@ -216,6 +231,26 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     recentThreadsPromise,
     connectionsPromise,
   ]);
+  const activeChatGroup =
+    workspaceId && userId && groupId
+      ? await getGroupForWorkspace(context, {
+          userId,
+          orgId: authContext.currentOrg.id,
+          workspaceId,
+          groupId,
+        }).catch((error) => {
+          console.error("Failed to load chat group for welcome screen:", error);
+          return null;
+        })
+      : null;
+  const moveChatGroups =
+    workspaceId && userId
+      ? await listGroupsForMove(context, {
+          userId,
+          orgId: authContext.currentOrg.id,
+          workspaceId,
+        }).catch(() => [])
+      : [];
   const orgStub =
     workspaceId && authContext.currentOrg?.id
       ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
@@ -308,6 +343,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     recentThreads,
     renderedAt,
     salesPrompt,
+    activeChatGroup,
+    moveChatGroups,
   };
 }
 
@@ -330,11 +367,16 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   if (intent === "createThread") {
     try {
-      const initialTitle = formData.get("initialTitle") as string | null;
-      const firstMessage = formData.get("firstMessage") as string | null;
-      const previewAppsRaw = formData.get("previewApps") as string | null;
+      const initialTitle = formStringValue(formData, "initialTitle");
+      const firstMessage = formStringValue(formData, "firstMessage");
+      const previewAppsRaw = formStringValue(formData, "previewApps");
       const rawModel = formData.get("model");
       const model = typeof rawModel === "string" ? rawModel : null;
+      const rawGroupId = formData.get("groupId");
+      const groupId =
+        typeof rawGroupId === "string" && rawGroupId.trim()
+          ? rawGroupId.trim()
+          : null;
 
       const thread = await chatDO.createThread(
         context,
@@ -367,12 +409,45 @@ export async function action({ request, context }: Route.ActionArgs) {
             thread.id,
             workspaceId,
             firstMessage,
+            userId,
           ),
         );
       }
 
-      return Response.json({ thread });
+      const group = await (async () => {
+        try {
+          return groupId
+            ? await addThreadToExistingGroup(context, {
+                userId,
+                orgId,
+                workspaceId,
+                groupId,
+                threadId: thread.id,
+              })
+            : await createGroupForNewThread(context, {
+                userId,
+                orgId,
+                workspaceId,
+                threadId: thread.id,
+                initialThreadTitle: initialTitle,
+              });
+        } catch (groupError) {
+          await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+          const message =
+            groupError instanceof Error ? groupError.message : "";
+          if (
+            groupId &&
+            (message === "Chat group not found" || message === "Thread not found")
+          ) {
+            throw Response.json({ error: message }, { status: 404 });
+          }
+          throw groupError;
+        }
+      })();
+
+      return Response.json({ thread, groupId: group.id, group });
     } catch (error) {
+      if (error instanceof Response) return error;
       console.error("Failed to create thread:", error);
       const message =
         error instanceof Error ? error.message : "Failed to create thread";
@@ -409,12 +484,16 @@ export default function NewChatPage() {
     recentThreads,
     renderedAt,
     salesPrompt,
+    activeChatGroup,
+    moveChatGroups,
     experimentalSettings,
     isOrgAdmin,
     recentModelScope,
   } = useLoaderData<typeof loader>();
   const { currentWorkspace } = useAuthData();
+  const navigate = useNavigate();
   const revalidator = useRevalidator();
+  const { groups: liveChatGroups } = useChatGroups();
   const prevWorkspaceRef = useRef(currentWorkspace?.id);
 
   useEffect(() => {
@@ -429,30 +508,139 @@ export default function NewChatPage() {
     return <NoWorkspacesError />;
   }
 
+  const liveActiveChatGroup = activeChatGroup
+    ? liveChatGroups.find((group) => group.id === activeChatGroup.id) ??
+      activeChatGroup
+    : activeChatGroup;
+
+  const openTabs =
+    liveActiveChatGroup?.open_threads.map((thread) => ({
+      threadId: thread.id,
+      title: thread.title,
+      model: thread.model,
+      status: thread.status,
+    })) ?? [];
+  const closedTabs =
+    liveActiveChatGroup?.closed_threads.map((thread) => ({
+      threadId: thread.id,
+      title: thread.title,
+      model: thread.model,
+      status: thread.status,
+    })) ?? [];
+  const refresh = () => revalidator.revalidate();
+  const closeTab = async (threadId: string) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(threadId)}`,
+      { method: "DELETE" },
+    );
+    refresh();
+  };
+  const reopenTab = async (threadId: string) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(threadId)}/reopen`,
+      { method: "POST" },
+    );
+    refresh();
+    navigate(`/chat/${threadId}`);
+  };
+  const renameTab = async (threadId: string, name: string) => {
+    await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: name }),
+    });
+    refresh();
+  };
+  const renameGroup = async (name: string) => {
+    if (!activeChatGroup) return;
+    await fetch(`/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    refresh();
+  };
+  const reorderTabs = async (orderedThreadIds: string[]) => {
+    if (!activeChatGroup) return;
+    await fetch(
+      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/reorder-tabs`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedThreadIds }),
+      },
+    );
+    refresh();
+  };
+  const moveTabToGroup = async (
+    threadId: string,
+    targetGroupId: string | "new",
+  ) => {
+    const response = await fetch("/api/chat-groups/move-thread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId, targetGroupId }),
+    });
+    if (response.ok) {
+      refresh();
+      navigate(`/chat/${threadId}`);
+    }
+  };
+
   return (
-    <Chat
-      workspaceId={workspaceId}
-      threadProvider={threadProvider}
-      hostname={hostname}
-      welcomeData={{
-        userId,
-        userName,
-        allApps,
-        connections,
-        recentThreads,
-        renderedAt,
-      }}
-      experimentalSettings={experimentalSettings}
-      llmProvider={llmProvider}
-      threadModel={threadModel}
-      allowedThreadModels={allowedThreadModels}
-      effectivePickerDefaultModel={effectivePickerDefaultModel}
-      hasEffectivePickerDefault={hasEffectivePickerDefault}
-      isOrgAdmin={isOrgAdmin}
-      recentModelScope={recentModelScope}
-      billingCreditStatus={billingCreditStatus}
-      initialError={initialChatError}
-      initialWelcomeInput={salesPrompt}
-    />
+    <div className="flex h-full min-h-0 flex-col">
+      {activeChatGroup ? (
+        <ChatTabBar
+          groupId={liveActiveChatGroup?.id ?? activeChatGroup.id}
+          groupName={liveActiveChatGroup?.name ?? activeChatGroup.name}
+          openTabs={openTabs}
+          closedTabs={closedTabs}
+          activeThreadId={null}
+          moveGroups={moveChatGroups}
+          onCloseTab={closeTab}
+          onRenameTab={renameTab}
+          onReorderTabs={reorderTabs}
+          onNewTab={() =>
+            navigate(`/chat?group=${encodeURIComponent(activeChatGroup.id)}`)
+          }
+          onReopenClosedTab={reopenTab}
+          onRenameGroup={renameGroup}
+          onMoveTabToGroup={moveTabToGroup}
+        />
+      ) : (
+        <div className="flex h-11 shrink-0 items-center border-b bg-muted/20 px-2 md:hidden">
+          <SidebarTrigger />
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <Chat
+          workspaceId={workspaceId}
+          threadProvider={threadProvider}
+          hostname={hostname}
+          chatGroupId={liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null}
+          welcomeData={{
+            userId,
+            userName,
+            allApps,
+            connections,
+            recentThreads,
+            renderedAt,
+          }}
+          experimentalSettings={experimentalSettings}
+          llmProvider={llmProvider}
+          threadModel={threadModel}
+          allowedThreadModels={allowedThreadModels}
+          effectivePickerDefaultModel={effectivePickerDefaultModel}
+          hasEffectivePickerDefault={hasEffectivePickerDefault}
+          isOrgAdmin={isOrgAdmin}
+          recentModelScope={recentModelScope}
+          billingCreditStatus={billingCreditStatus}
+          initialError={initialChatError}
+          initialWelcomeInput={salesPrompt}
+        />
+      </div>
+    </div>
   );
 }

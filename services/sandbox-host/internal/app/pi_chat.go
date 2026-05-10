@@ -98,15 +98,16 @@ type hostPiBridge struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
-	stateMu  sync.Mutex
-	nextSeq  int64
-	events   []hostPiBufferedEvent
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	started  bool
-	active   bool
-	finalBuf strings.Builder
+	mu                sync.Mutex
+	stateMu           sync.Mutex
+	nextSeq           int64
+	events            []hostPiBufferedEvent
+	cmd               *exec.Cmd
+	stdin             io.WriteCloser
+	started           bool
+	active            bool
+	finalBuf          strings.Builder
+	lastCompletedAtMS int64
 
 	activeItem    string
 	activeItemBuf strings.Builder
@@ -183,6 +184,7 @@ func (b *hostPiBridge) handleClientMessage(data []byte) error {
 			log.Printf("[SandboxHost] host Pi replay skipped inactive thread=%s lastSeq=%d bufferedEvents=%d", b.threadID, lastSeq, buffered)
 		}
 		b.sendEvent(map[string]any{"type": "session", "sessionId": b.threadID})
+		b.sendStreamingState(active, false)
 		b.sendEvent(map[string]any{"type": "ready"})
 	case "ping":
 		b.sendEvent(map[string]any{"type": "pong", "ts": msg["ts"]})
@@ -996,10 +998,17 @@ func (b *hostPiBridge) finalizePendingRetryCompletion(reason string) {
 	}
 	b.pendingRetryCompletion = nil
 	b.pendingRetryTimer = nil
+	wasActive := b.active
 	b.active = false
+	if wasActive {
+		b.lastCompletedAtMS = time.Now().UnixMilli()
+	}
 	b.stateMu.Unlock()
 
 	log.Printf("[SandboxHost] host Pi retryable agent_end finalized thread=%s reason=%s finalBytes=%d error=%s", b.threadID, reason, len(pending.FinalText), pending.ErrorMessage)
+	if wasActive {
+		b.sendStreamingState(false, true)
+	}
 	b.sendEvent(map[string]any{
 		"type":   "error",
 		"error":  pending.ErrorMessage,
@@ -1156,12 +1165,16 @@ func (b *hostPiBridge) beginActiveTurn() {
 		b.pendingRetryTimer = nil
 	}
 	b.pendingRetryCompletion = nil
+	wasActive := b.active
 	b.active = true
 	b.finalBuf.Reset()
 	b.activeItemBuf.Reset()
 	b.activeItem = fmt.Sprintf("pi_agent_%s", randomID())
 	b.reasoningItem = ""
 	b.stateMu.Unlock()
+	if !wasActive {
+		b.sendStreamingState(true, false)
+	}
 }
 
 func (b *hostPiBridge) endActiveTurn() {
@@ -1171,8 +1184,31 @@ func (b *hostPiBridge) endActiveTurn() {
 		b.pendingRetryTimer = nil
 	}
 	b.pendingRetryCompletion = nil
+	wasActive := b.active
 	b.active = false
+	if wasActive {
+		b.lastCompletedAtMS = time.Now().UnixMilli()
+	}
 	b.stateMu.Unlock()
+	if wasActive {
+		b.sendStreamingState(false, true)
+	}
+}
+
+func (b *hostPiBridge) sendStreamingState(isStreaming bool, includeCompletion bool) {
+	payload := map[string]any{
+		"type":        "streaming_state",
+		"isStreaming": isStreaming,
+	}
+	if !isStreaming && includeCompletion {
+		b.stateMu.Lock()
+		completedAt := b.lastCompletedAtMS
+		b.stateMu.Unlock()
+		if completedAt > 0 {
+			payload["completedAt"] = completedAt
+		}
+	}
+	b.sendEvent(payload)
 }
 
 func (s *Server) hostPiBridgeForThread(threadID string) *hostPiBridge {

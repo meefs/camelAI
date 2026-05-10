@@ -329,23 +329,28 @@ export default function HistoryClient({
     handleClearSelection();
   }, [handleClearSelection, handleDeleteThread, selectedIds]);
 
+  const openHistoryThread = useCallback(async (id: string) => {
+    navigate(`/chat/${id}`);
+    return true;
+  }, [navigate]);
+
   const handleOpenThread = useCallback((id: string) => {
     const thread = allThreads.find((entry) => entry.id === id);
     if (!thread) return;
 
     if (!currentWorkspace || thread.workspace_id === currentWorkspace.id) {
-      navigate(`/chat/${id}`);
+      void openHistoryThread(id);
       return;
     }
 
     const targetWorkspace = workspaceMap.get(thread.workspace_id);
     if (!targetWorkspace) {
-      navigate(`/chat/${id}`);
+      void openHistoryThread(id);
       return;
     }
 
     setSwitchDialog({ open: true, threadId: id, workspace: targetWorkspace });
-  }, [allThreads, currentWorkspace, navigate, workspaceMap]);
+  }, [allThreads, currentWorkspace, openHistoryThread, workspaceMap]);
 
   const handleConfirmSwitch = async () => {
     if (!switchDialog.workspace || !switchDialog.threadId) return;
@@ -357,7 +362,7 @@ export default function HistoryClient({
       await switchWorkspace(targetWorkspace.id);
       setSwitchDialog({ open: false, threadId: null, workspace: null });
       setContainerDialog({ open: true, workspace: targetWorkspace });
-      navigate(`/chat/${targetThreadId}`);
+      await openHistoryThread(targetThreadId);
     } catch (error) {
       console.error('Failed to switch workspace:', error);
     } finally {

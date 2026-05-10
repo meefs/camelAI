@@ -408,11 +408,11 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		log.Printf("[SandboxHost] host Pi message history empty thread=%s sessionRoot=%s; checking legacy history", threadID, s.cfg.HostPiSessionRoot)
 	}
 
-	sessionIDs := []string{threadID}
-	if claudeSessionID != "" && claudeSessionID != threadID {
-		sessionIDs = append(sessionIDs, claudeSessionID)
+	sessionIDs, err := legacyClaudeSessionCandidates(threadID, claudeSessionID)
+	if err != nil {
+		errorJSON(w, err.Error(), http.StatusBadRequest)
+		return nil
 	}
-
 	log.Printf("[SandboxHost] chat messages scanning Claude legacy history thread=%s container=%s claudeSession=%s candidateSessions=%d", threadID, name, claudeSessionID, len(sessionIDs))
 	for _, sessionID := range sessionIDs {
 		jsonlPath := fmt.Sprintf("/home/claude/.claude/projects/-home-claude/%s.jsonl", sessionID)

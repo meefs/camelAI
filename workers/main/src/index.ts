@@ -37,7 +37,11 @@ import {
   handleSalesforceOAuthStart,
   handleSalesforceOAuthCallback,
 } from './routes/integrations.js';
-import { handleChatRunnerWebSocket, handleChatWebSocket } from './routes/websocket.js';
+import {
+  handleChatRunnerWebSocket,
+  handleChatWebSocket,
+  handleWorkspaceStatusWebSocket,
+} from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known.js';
 import {
@@ -195,6 +199,7 @@ const routes: Route[] = [
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
+  { method: 'GET', path: /^\/ws\/workspaces\/([^/]+)\/status$/, handler: handleWorkspaceStatusWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/runner\/[^/]+$/, handler: handleChatRunnerWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/[^/]+$/, handler: handleChatWebSocket, websocket: true },
 ];

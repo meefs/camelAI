@@ -4,6 +4,7 @@ import type { Route } from './+types/_app.settings.workspace.chats';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
+import { removeDeletedThreadFromOrgGroups } from '@/lib/chat-groups.server';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import {
@@ -66,7 +67,15 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
-      await chatDO.deleteThread(context, threadId, workspaceId);
+      const deleted = await chatDO.deleteThread(context, threadId, workspaceId);
+      if (!deleted) {
+        return { error: 'Thread not found' };
+      }
+      await removeDeletedThreadFromOrgGroups(
+        context,
+        authContext.currentOrg.id,
+        threadId,
+      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete chat' };

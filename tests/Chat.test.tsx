@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { useState } from 'react';
+import { isFileDrag } from '@/lib/file-drag';
 
 // Mock the streaming state logic extracted from Chat.tsx
 interface ContentBlock {
@@ -167,6 +168,26 @@ describe('Streaming State Logic - Partial Messages', () => {
     expect(state.isStreaming).toBe(false);
     expect(state.content).toHaveLength(1);
     expect(state.content[0].text).toBe('Hello world!');
+  });
+});
+
+describe('Chat file drag detection', () => {
+  function dataTransfer(
+    types: string[],
+    items: Array<{ kind: string }> = [],
+  ): DataTransfer {
+    return { types, items } as unknown as DataTransfer;
+  }
+
+  it('ignores chat tab drags so the file upload overlay stays hidden', () => {
+    expect(
+      isFileDrag(dataTransfer(['application/x-camelai-thread-id'])),
+    ).toBe(false);
+  });
+
+  it('accepts browser file drags by type or item kind', () => {
+    expect(isFileDrag(dataTransfer(['Files']))).toBe(true);
+    expect(isFileDrag(dataTransfer([], [{ kind: 'file' }]))).toBe(true);
   });
 });
 
