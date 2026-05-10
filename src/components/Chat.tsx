@@ -5682,7 +5682,9 @@ type SendOptions = {
     const sendKey = `${threadId}:${initialMessageContent}`;
     if (sentInitialNavigationMessageRef.current === sendKey) return;
     if (resolvedWorkspaceId) {
-      writeDraft(resolvedWorkspaceId, threadId, initialMessageContent, []);
+      if (!loadDraft(resolvedWorkspaceId, threadId)) {
+        writeDraft(resolvedWorkspaceId, threadId, initialMessageContent, []);
+      }
       pendingDeliveryDraftRef.current = {
         workspaceId: resolvedWorkspaceId,
         threadId,

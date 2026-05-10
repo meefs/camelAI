@@ -95,6 +95,26 @@ export function shouldMarkActiveUnreadThreadViewed(
   return status === "unread" && threadId === activeThreadId;
 }
 
+export function getThreadIdsRequiringSnapshotRevalidation(
+  liveStatuses: ReadonlyMap<string, ThreadStatus>,
+  localStatuses: ReadonlyMap<string, ThreadStatus>,
+  runningThreadIds: Set<string>,
+  activeThreadId: string | null,
+): string[] {
+  const threadIds = new Set<string>();
+  for (const [threadId, status] of liveStatuses) {
+    if (status === "running") threadIds.add(threadId);
+  }
+  for (const [threadId, status] of localStatuses) {
+    if (status === "running") threadIds.add(threadId);
+  }
+
+  return Array.from(threadIds).filter(
+    (threadId) =>
+      threadId !== activeThreadId && !runningThreadIds.has(threadId),
+  );
+}
+
 export function mergeActiveChatGroup(
   groups: ChatGroupView[],
   activeGroup: ChatGroupView | null,
@@ -186,6 +206,8 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const [localThreadStatuses, setLocalThreadStatuses] = useState<
     Map<string, ThreadStatus>
   >(() => new Map());
+  const liveThreadStatusesRef = useRef(liveThreadStatuses);
+  const localThreadStatusesRef = useRef(localThreadStatuses);
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
   const resolvedThreadStatuses = useMemo(() => {
     const next = new Map(liveThreadStatuses);
@@ -211,6 +233,14 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     activeThreadIdRef.current = activeThreadId;
   }, [activeThreadId]);
+
+  useEffect(() => {
+    liveThreadStatusesRef.current = liveThreadStatuses;
+  }, [liveThreadStatuses]);
+
+  useEffect(() => {
+    localThreadStatusesRef.current = localThreadStatuses;
+  }, [localThreadStatuses]);
 
   useEffect(() => {
     if (!activeThreadId) return;
@@ -320,6 +350,13 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               (threadId): threadId is string => typeof threadId === "string",
             );
             const nextRunningThreadIdSet = new Set(nextRunningThreadIds);
+            const staleRunningThreadIds =
+              getThreadIdsRequiringSnapshotRevalidation(
+                liveThreadStatusesRef.current,
+                localThreadStatusesRef.current,
+                nextRunningThreadIdSet,
+                activeThreadIdRef.current,
+              );
             setLiveThreadStatuses((current) => {
               const next = new Map(current);
               for (const [threadId, status] of next) {
@@ -336,6 +373,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
                 nextRunningThreadIdSet,
               ),
             );
+            if (staleRunningThreadIds.length > 0) {
+              scheduleStatusRevalidate(staleRunningThreadIds[0]);
+            }
           }
           if (
             payload.type === "thread_status" &&

@@ -16,6 +16,7 @@ import {
 } from "@/components/sidebar/chat-groups-list";
 import {
   applyLiveRunningStatuses,
+  getThreadIdsRequiringSnapshotRevalidation,
   getCloseGroupRedirect,
   getGroupLandingHref,
   mergeActiveChatGroup,
@@ -912,6 +913,28 @@ describe("applyLiveRunningStatuses", () => {
     expect(
       shouldMarkActiveUnreadThreadViewed("idle", "thread_1", "thread_1"),
     ).toBe(false);
+  });
+
+  it("revalidates when a snapshot drops a background running thread", () => {
+    expect(
+      getThreadIdsRequiringSnapshotRevalidation(
+        new Map([["thread_1", "running"] as const]),
+        new Map([["thread_2", "running"] as const]),
+        new Set(["thread_2"]),
+        "thread_active",
+      ),
+    ).toEqual(["thread_1"]);
+  });
+
+  it("does not revalidate when a snapshot drops the active running thread", () => {
+    expect(
+      getThreadIdsRequiringSnapshotRevalidation(
+        new Map([["thread_1", "running"] as const]),
+        new Map(),
+        new Set(),
+        "thread_1",
+      ),
+    ).toEqual([]);
   });
 
   it("treats an explicit idle status frame as authoritative before a snapshot", () => {

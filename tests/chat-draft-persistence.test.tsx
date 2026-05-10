@@ -661,6 +661,52 @@ describe('Chat draft persistence', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
+  it('keeps attachment-backed initial drafts when navigation-state delivery fails', async () => {
+    mockLocationState = {
+      initialMessageContent: `(user uploaded file to ${attachmentDraft.path})`,
+    };
+    localStorage.setItem(
+      'draft:ws-1:thread-1',
+      JSON.stringify({
+        text: '',
+        attachments: [attachmentDraft],
+        savedAt: Date.now(),
+      }),
+    );
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    expect(screen.getByTestId('thread-attachment-count')).toHaveTextContent('0');
+
+    const socket = getMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await waitFor(() => {
+      expect(sentMessagePayloads(socket)).toHaveLength(1);
+    });
+    expect(loadDraft('ws-1', 'thread-1')?.attachments[0]?.path).toBe(
+      attachmentDraft.path,
+    );
+
+    act(() => {
+      socket.emitMessage({ type: 'error', error: 'delivery failed' });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('thread-attachment-count')).toHaveTextContent('1');
+    });
+    expect(screen.getByLabelText('Thread prompt')).toHaveValue('');
+  });
+
   it('hydrates the thread composer from localStorage without a browser pending handoff', () => {
     localStorage.setItem(
       'draft:ws-1:thread-new',
