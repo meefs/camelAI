@@ -6,6 +6,10 @@ vi.mock('@/lib/cloudflare.server', () => ({
   getEnv: getEnvMock,
 }));
 
+vi.mock('@/lib/thread-title-generation.server', () => ({
+  generateThreadTitleWithOpenAI: vi.fn(),
+}));
+
 const { getWorkspaceModelPickerState } = await import('@/lib/chat-do.server');
 
 describe('getWorkspaceModelPickerState rollout compatibility', () => {
@@ -52,8 +56,8 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       orgId: 'org_123',
       provider: 'claude',
       llmProvider: null,
-      effectivePickerDefaultModel: 'sonnet',
-      hasEffectivePickerDefault: true,
+      effectivePickerDefaultModel: null,
+      hasEffectivePickerDefault: false,
       defaultModel: 'sonnet',
     });
     expect(state?.allowedThreadModels).toContain('sonnet');

@@ -15,6 +15,7 @@ import {
   encryptCredentials,
 } from "../../../../src/lib/integration-crypto.js";
 import {
+  getDefaultLlmModel,
   getDefaultThreadProvider,
   getProviderForModel,
 } from "../../../../src/lib/llm-provider-config.js";
@@ -82,6 +83,7 @@ async function resolveDefaultSlackThreadModel(
   });
   const model = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
+    fallbackModel: getDefaultLlmModel(baseProvider, llmProviderConfig?.provider),
     visibleCatalog,
   });
   if (!model) {

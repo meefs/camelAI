@@ -65,6 +65,7 @@ describe('model picker config parsing', () => {
     const config = defaultOrgModelPickerConfig();
 
     expect(MODEL_PICKER_MAX_MODELS).toBe(10);
+    expect(config.default_model).toBeNull();
     expect(config.models.map((model) => model.id)).toEqual([
       'opus-4.7',
       'sonnet',
@@ -81,6 +82,14 @@ describe('model picker config parsing', () => {
     expect(config.models.length).toBeLessThanOrEqual(MODEL_PICKER_MAX_MODELS);
   });
 
+  it('does not set an org default model until a user explicitly chooses one', () => {
+    expect(defaultOrgModelPickerConfig().default_model).toBeNull();
+    expect(defaultOrgModelPickerConfig('openrouter').default_model).toBeNull();
+    expect(defaultOrgModelPickerConfig('openai').default_model).toBeNull();
+    expect(defaultOrgModelPickerConfig('anthropic').default_model).toBeNull();
+    expect(defaultOrgModelPickerConfig('bedrock').default_model).toBeNull();
+  });
+
   it('uses provider-aware default suites for direct BYOK providers', () => {
     expect(defaultOrgModelPickerConfig('openrouter').models.map((model) => model.id)).toEqual([
       'opus-4.7',
@@ -95,7 +104,7 @@ describe('model picker config parsing', () => {
       'grok-4.3',
     ]);
     expect(defaultOrgModelPickerConfig('openai')).toMatchObject({
-      default_model: 'gpt-5.4',
+      default_model: null,
       models: [
         { id: 'gpt-5.5' },
         { id: 'gpt-5.4' },
@@ -103,7 +112,7 @@ describe('model picker config parsing', () => {
       ],
     });
     expect(defaultOrgModelPickerConfig('anthropic')).toMatchObject({
-      default_model: 'sonnet',
+      default_model: null,
       models: [
         { id: 'opus-4.7' },
         { id: 'opus' },
@@ -112,7 +121,7 @@ describe('model picker config parsing', () => {
       ],
     });
     expect(defaultOrgModelPickerConfig('bedrock')).toMatchObject({
-      default_model: 'sonnet',
+      default_model: null,
       models: [
         { id: 'opus-4.7' },
         { id: 'opus' },
@@ -230,6 +239,17 @@ describe('default model resolution', () => {
         visibleCatalog: visible(['gpt-5.4']),
       }),
     ).toBe('gpt-5.4');
+  });
+
+  it('uses the fallback model before the first visible model', () => {
+    expect(
+      resolveDefaultModelForChat({
+        effectiveDefaultModel: null,
+        recentModel: null,
+        fallbackModel: 'sonnet',
+        visibleCatalog: visible(['opus', 'sonnet']),
+      }),
+    ).toBe('sonnet');
   });
 
   it('returns null when no models are visible', () => {

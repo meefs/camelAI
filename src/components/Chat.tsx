@@ -224,6 +224,10 @@ function resolveSelectedThreadModel(args: {
       ? args.effectivePickerDefaultModel
       : null,
     recentModel,
+    fallbackModel: getDefaultLlmModel(
+      args.initialThreadProvider,
+      args.llmProvider,
+    ),
     visibleCatalog: args.availableThreadModels,
   });
 
@@ -4891,6 +4895,7 @@ export default function Chat({
     const nextModel = resolveDefaultModelForChat({
       effectiveDefaultModel: null,
       recentModel,
+      fallbackModel: getDefaultLlmModel(initialThreadProvider, llmProvider),
       visibleCatalog: availableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
@@ -4904,6 +4909,7 @@ export default function Chat({
     availableThreadModels,
     handleThreadModelChange,
     initialThreadProvider,
+    llmProvider,
     modelRecentScope,
     noModelsMessage,
     readOnly,
@@ -4928,6 +4934,7 @@ export default function Chat({
       effectiveDefaultModel: hasEffectivePickerDefault
         ? effectivePickerDefaultModel
         : null,
+      fallbackModel: getDefaultLlmModel(initialThreadProvider, llmProvider),
       visibleCatalog: availableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
@@ -4939,7 +4946,9 @@ export default function Chat({
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
     handleThreadModelChange,
+    initialThreadProvider,
     isStreaming,
+    llmProvider,
     loading,
     noModelsMessage,
     readOnly,
