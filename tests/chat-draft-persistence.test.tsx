@@ -420,7 +420,7 @@ describe('Chat draft persistence', () => {
       expect(loadDraft('ws-1', null)).toBeNull();
     });
 
-    expect(loadDraft('ws-1', 'thread-new')).toBeNull();
+    expect(loadDraft('ws-1', 'thread-new')?.text).toBe('Hello from welcome');
     expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
   });
 
@@ -588,7 +588,38 @@ describe('Chat draft persistence', () => {
         preventScrollReset: true,
       });
     });
+    const threadDraft = loadDraft('ws-1', 'thread-new');
+    expect(threadDraft?.text).toBe('');
+    expect(threadDraft?.attachments[0]?.path).toBe(attachmentDraft.path);
     expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
+  });
+
+  it('moves a new-chat first prompt draft to the created thread until delivery completes', async () => {
+    const user = userEvent.setup();
+
+    const { rerender } = render(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    await user.type(screen.getByLabelText('Welcome prompt'), 'first prompt');
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    mockFetcher.data = { thread: { id: 'thread-new' } };
+
+    rerender(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    await waitFor(() => {
+      expect(loadDraft('ws-1', 'thread-new')?.text).toBe('first prompt');
+    });
+    expect(loadDraft('ws-1', null)).toBeNull();
   });
 
   it('sends a navigation-state initial message through the normal websocket path', async () => {
@@ -617,6 +648,15 @@ describe('Chat draft persistence', () => {
           threadId: 'thread-1',
         }),
       ]);
+    });
+    expect(loadDraft('ws-1', 'thread-1')?.text).toBe('write a long poem');
+
+    act(() => {
+      socket.emitMessage({ type: 'sdk_event', event: { type: 'result' } });
+    });
+
+    await waitFor(() => {
+      expect(loadDraft('ws-1', 'thread-1')).toBeNull();
     });
     expect(mockNavigate).not.toHaveBeenCalled();
   });

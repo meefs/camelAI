@@ -87,6 +87,14 @@ export function reconcileLocalThreadStatusesWithSnapshot(
   return next ?? localStatuses;
 }
 
+export function shouldMarkActiveUnreadThreadViewed(
+  status: ThreadStatus,
+  threadId: string,
+  activeThreadId: string | null,
+): boolean {
+  return status === "unread" && threadId === activeThreadId;
+}
+
 export function mergeActiveChatGroup(
   groups: ChatGroupView[],
   activeGroup: ChatGroupView | null,
@@ -162,6 +170,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const chatDebugFlags = getChatDebugFlags();
   const statusSocketEnabled = chatDebugFlags.statusSocket;
   const statusRevalidateEnabled = chatDebugFlags.statusRevalidate;
+  const markViewedEnabled = chatDebugFlags.markViewed;
   const revalidateRef = useRef(revalidator.revalidate);
   const data = useRouteLoaderData("routes/_app") as
     | AppChatGroupsLoaderData
@@ -283,6 +292,12 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         revalidateRef.current();
       }, 750);
     };
+    const markActiveThreadViewed = (threadId: string) => {
+      if (!markViewedEnabled) return;
+      void fetch(`/api/threads/${encodeURIComponent(threadId)}/mark-viewed`, {
+        method: "POST",
+      }).catch(() => {});
+    };
 
     const connect = () => {
       const nextSocket = new WebSocket(socketUrl);
@@ -330,10 +345,16 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               payload.status === "unread")
           ) {
             const threadId = payload.threadId;
-            const status =
-              payload.status === "unread" && threadId === activeThreadIdRef.current
-                ? "idle"
-                : (payload.status as ThreadStatus);
+            const payloadStatus = payload.status as ThreadStatus;
+            const isActiveUnread = shouldMarkActiveUnreadThreadViewed(
+              payloadStatus,
+              threadId,
+              activeThreadIdRef.current,
+            );
+            if (isActiveUnread) {
+              markActiveThreadViewed(threadId);
+            }
+            const status = isActiveUnread ? "idle" : payloadStatus;
             setHasStatusSnapshot(true);
             setLiveThreadStatuses((current) => {
               const next = new Map(current);
@@ -373,7 +394,12 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       if (revalidateTimer) window.clearTimeout(revalidateTimer);
       socket?.close();
     };
-  }, [currentWorkspace?.id, statusRevalidateEnabled, statusSocketEnabled]);
+  }, [
+    currentWorkspace?.id,
+    markViewedEnabled,
+    statusRevalidateEnabled,
+    statusSocketEnabled,
+  ]);
 
   const groups = useMemo(() => {
     const source = mergeActiveChatGroup(

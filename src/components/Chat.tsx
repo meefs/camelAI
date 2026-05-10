@@ -1418,6 +1418,9 @@ export default function Chat({
   const resolvedWorkspaceId = readOnly
     ? workspaceId
     : (currentWorkspace?.id ?? workspaceId);
+  const initialNavigationMessage = getInitialMessageContentFromState(
+    location.state,
+  );
   // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
   // synchronous localStorage reads on every streaming re-render.
   const initialDraftsRef = useRef<
@@ -1426,7 +1429,7 @@ export default function Chat({
   if (initialDraftsRef.current === undefined) {
     const shouldRestore = !readOnly;
     initialDraftsRef.current = {
-      thread: shouldRestore
+      thread: shouldRestore && !initialNavigationMessage
         ? loadDraft(resolvedWorkspaceId, threadId ?? null)
         : null,
       welcome:
@@ -4647,8 +4650,22 @@ export default function Chat({
           draftAttachments,
         } = pendingNewChatRef.current;
 
-        pendingDeliveryDraftRef.current = null;
-        pendingDraftCountRef.current = 0;
+        if (resolvedWorkspaceId && initialMessageContent) {
+          writeDraft(
+            resolvedWorkspaceId,
+            data.thread.id,
+            draftText ?? initialMessageContent,
+            draftAttachments ?? [],
+          );
+          pendingDeliveryDraftRef.current = {
+            workspaceId: resolvedWorkspaceId,
+            threadId: data.thread.id,
+          };
+          pendingDraftCountRef.current = 1;
+        } else {
+          pendingDeliveryDraftRef.current = null;
+          pendingDraftCountRef.current = 0;
+        }
         setSelectedThreadModel(data.thread.model ?? threadModel);
         if (resolvedWorkspaceId && draftText !== undefined && draftAttachments) {
           if (
@@ -5469,9 +5486,9 @@ type SendOptions = {
   skipAttachmentRefs?: boolean;
 };
 
-  function sendMessage(opts?: SendOptions) {
+  function sendMessage(opts?: SendOptions): boolean {
     if (readOnly) {
-      return;
+      return false;
     }
     const currentInput = inputRef.current;
     const currentAttachments = attachmentsRef.current;
@@ -5490,7 +5507,7 @@ type SendOptions = {
       !threadId ||
       noModelsMessage
     ) {
-      return;
+      return false;
     }
 
     const wasSentDuringStreaming = assistantTurnActive;
@@ -5647,6 +5664,7 @@ type SendOptions = {
       }
       // If connected but not ready, the message will be sent when ready event arrives
     }
+    return true;
   }
 
   const sendMessageRef = useRef(sendMessage);
@@ -5663,13 +5681,26 @@ type SendOptions = {
 
     const sendKey = `${threadId}:${initialMessageContent}`;
     if (sentInitialNavigationMessageRef.current === sendKey) return;
-    sentInitialNavigationMessageRef.current = sendKey;
+    if (resolvedWorkspaceId) {
+      writeDraft(resolvedWorkspaceId, threadId, initialMessageContent, []);
+      pendingDeliveryDraftRef.current = {
+        workspaceId: resolvedWorkspaceId,
+        threadId,
+      };
+      pendingDraftCountRef.current = Math.max(
+        1,
+        pendingDraftCountRef.current,
+      );
+    }
 
-    sendMessageRef.current({
+    const didStartDelivery = sendMessageRef.current({
       contentOverride: initialMessageContent,
       preserveDraft: true,
       skipAttachmentRefs: true,
     });
+    if (!didStartDelivery) return;
+
+    sentInitialNavigationMessageRef.current = sendKey;
     clearInitialMessageContentHistoryState(
       `${location.pathname}${location.search}`,
     );
@@ -5677,8 +5708,12 @@ type SendOptions = {
     location.pathname,
     location.search,
     location.state,
+    isLoadingMessages,
+    noModelsMessage,
     ready,
     readOnly,
+    resolvedWorkspaceId,
+    shouldShowChat,
     threadId,
   ]);
 

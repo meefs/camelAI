@@ -20,6 +20,7 @@ import {
   getGroupLandingHref,
   mergeActiveChatGroup,
   reconcileLocalThreadStatusesWithSnapshot,
+  shouldMarkActiveUnreadThreadViewed,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import type { ChatGroup, ChatGroupView } from "@/types";
@@ -899,6 +900,18 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.status).toBe("idle");
     expect(group.open_threads[0].is_unread).toBe(false);
     expect(group.open_threads[0].status).toBe("idle");
+  });
+
+  it("identifies active unread completion frames as viewed work", () => {
+    expect(
+      shouldMarkActiveUnreadThreadViewed("unread", "thread_1", "thread_1"),
+    ).toBe(true);
+    expect(
+      shouldMarkActiveUnreadThreadViewed("unread", "thread_1", "thread_2"),
+    ).toBe(false);
+    expect(
+      shouldMarkActiveUnreadThreadViewed("idle", "thread_1", "thread_1"),
+    ).toBe(false);
   });
 
   it("treats an explicit idle status frame as authoritative before a snapshot", () => {
