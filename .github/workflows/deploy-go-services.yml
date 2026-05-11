@@ -2,7 +2,7 @@ name: Deploy Go Services
 
 on:
   push:
-    branches: [main]
+    branches: [main, production]
     paths:
       - "services/sandbox-host/**"
       - "sandbox/skills/**"
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: go-services-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'staging' }}
+      group: go-services-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref == 'refs/heads/production' && 'prod' || 'staging') }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +69,18 @@ jobs:
               exit 1
             fi
           else
-            deploy_env="staging"
+            case "${GITHUB_REF}" in
+              refs/heads/main)
+                deploy_env="staging"
+                ;;
+              refs/heads/production)
+                deploy_env="prod"
+                ;;
+              *)
+                echo "Unsupported deploy branch: ${GITHUB_REF}" >&2
+                exit 1
+                ;;
+            esac
             deploy_target="all"
           fi
 

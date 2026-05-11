@@ -80,6 +80,7 @@ function createEnv() {
       get: () => ({
         setTodoState: vi.fn().mockResolvedValue(undefined),
         setBrowserTurnStreaming: setBrowserTurnStreamingMock,
+        completeTodoStateForTurnEnd: vi.fn().mockResolvedValue(undefined),
       }),
     },
     USER: {

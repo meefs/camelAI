@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     if: github.event.inputs.confirm == 'deploy'
     steps:
       - uses: actions/checkout@v4
@@ -19,4 +20,48 @@ jobs:
           fetch-depth: 0
 
       - name: Push main to production
-        run: git push origin main:production --force
+        id: promote
+        run: |
+          git fetch origin main
+          production_sha="$(git rev-parse origin/main)"
+          git push origin "${production_sha}:refs/heads/production" --force
+          echo "production_sha=${production_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy production Go services
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          production_sha="${{ steps.promote.outputs.production_sha }}"
+          dispatched_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          gh workflow run deploy-go-services.yml \
+            --ref production \
+            -f environment=prod \
+            -f target=all \
+            -f confirm_prod=deploy-prod
+
+          echo "Waiting for Deploy Go Services run for ${production_sha}..."
+          run_id=""
+          for _ in $(seq 1 60); do
+            run_id="$(
+              gh run list \
+                --workflow deploy-go-services.yml \
+                --branch production \
+                --event workflow_dispatch \
+                --limit 100 \
+                --json databaseId,createdAt,headSha \
+                --jq ".[] | select(.headSha == \"${production_sha}\" and .createdAt >= \"${dispatched_after}\") | .databaseId" \
+                | head -n 1
+            )"
+            if [[ -n "${run_id}" ]]; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [[ -z "${run_id}" ]]; then
+            echo "Could not find the dispatched Deploy Go Services workflow run." >&2
+            exit 1
+          fi
+
+          gh run watch "${run_id}" --compact --exit-status

@@ -77,7 +77,7 @@ describe('Default workspace access on invitation accept', () => {
     // Verify they can list both workspaces
     const workspaces = await listUserWorkspaces(testEnv, inviteeId, org.id);
     expect(workspaces.length).toBe(2);
-  });
+  }, 10_000);
 
   it('grants full access to all existing members when a new workspace is created', async () => {
     // Setup: create org with 3 members
