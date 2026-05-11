@@ -21,7 +21,7 @@ import type { Components } from 'react-markdown';
 import type { Options as RehypeSanitizeSchema } from 'rehype-sanitize';
 import type { PluggableList } from 'unified';
 import { cn } from '@/lib/utils';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, ImageOff } from 'lucide-react';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
 import { MentionChip } from '@/components/connection-mention-menu/mention-chip';
 import {
@@ -507,16 +507,41 @@ const createComponents = (
   br: () => <br />,
 
   // Images
-  img: ({ src, alt }) => (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={replaceWorkspaceIdPlaceholder(src, workspaceId)}
-      alt={alt || ''}
-      className="max-w-full h-auto rounded-lg my-4"
-    />
-  ),
+  img: ({ src, alt }) => {
+    const resolvedSrc = replaceWorkspaceIdPlaceholder(src, workspaceId);
+    return <MarkdownImage key={resolvedSrc} src={resolvedSrc} alt={alt} />;
+  },
 });
 };
+
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const [hasError, setHasError] = useState(false);
+
+  if (!src || hasError) {
+    return (
+      <span
+        role="img"
+        aria-label={alt || 'Image unavailable'}
+        className="inline-flex max-w-full items-center gap-2 my-4 px-3 py-2 rounded-lg border border-border bg-muted/40 text-xs text-muted-foreground"
+      >
+        <ImageOff className="size-4 shrink-0" aria-hidden="true" />
+        <span className="truncate">{alt || 'Image unavailable'}</span>
+      </span>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={alt || ''}
+      loading="lazy"
+      decoding="async"
+      onError={() => setHasError(true)}
+      className="max-w-full h-auto rounded-lg my-4"
+    />
+  );
+}
 
 function MarkdownRendererBase({
   content,
