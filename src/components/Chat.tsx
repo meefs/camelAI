@@ -3068,7 +3068,6 @@ export default function Chat({
         oobWs.send(
           JSON.stringify({
             type: "init",
-            mode: "side_channel",
             threadId: id,
             sessionId: sessionIdRef.current,
             lastEventId: lastSideChannelEventIdRef.current,

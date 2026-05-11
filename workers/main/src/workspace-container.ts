@@ -7,7 +7,7 @@
  *   and API traffic.
  * - This module: Provides FS/exec APIs for dashboard routes, builds
  *   thread-specific env vars (integrations), and exposes
- *   connectChatWebSocket() for ChatThreadDO.
+ *   connectChatWebSocket() for the chat runner bridge and external turns.
  *
  * Base env vars (API keys, proxy URLs) are set as Docker -e flags at container
  * creation. API traffic from containers routes through the sandbox host proxy

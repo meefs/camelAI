@@ -48,7 +48,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       waitUntil: vi.fn(),
     };
     fake.trace = vi.fn();
-    fake.persistRunnerSeqIfNeeded = vi.fn();
     fake.setChatIsStreaming = vi.fn();
     fake.pushChatEvent = vi.fn();
     fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
@@ -93,7 +92,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
     };
     fake.trace = vi.fn();
-    fake.persistRunnerSeqIfNeeded = vi.fn();
     fake.setChatIsStreaming = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.pushChatEvent = vi.fn();
@@ -111,6 +109,104 @@ describe('ChatThreadDO Codex external turn completion', () => {
       todos: [],
     });
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('dedupes replayed runner events by sequence', () => {
+    const resolve = vi.fn();
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.lastRunnerSeq = 5;
+    fake.pendingQuestions = new Map();
+    fake.pendingExternalTurn = {
+      resolve,
+      streamingText: '',
+      latestAssistantText: '',
+    };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+    };
+    fake.trace = vi.fn();
+    fake.setChatIsStreaming = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.clearIncompleteTodoStateOnTurnCompletion = vi.fn();
+    fake.pushChatEvent = vi.fn();
+    fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
+
+    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
+      type: 'result',
+      seq: 5,
+      result: 'stale reply',
+    });
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(fake.pendingExternalTurn).not.toBeNull();
+
+    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
+      type: 'result',
+      seq: 6,
+      result: 'fresh reply',
+    });
+
+    expect(resolve).toHaveBeenCalledWith({
+      status: 'result',
+      reply: 'fresh reply',
+    });
+    expect(fake.lastRunnerSeq).toBe(6);
+  });
+
+  it('persists the last seen runner sequence', () => {
+    const put = vi.fn();
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.lastRunnerSeq = 0;
+    fake.pendingQuestions = new Map();
+    fake.pendingExternalTurn = null;
+    fake.ctx = {
+      storage: { kv: { put } },
+    };
+    fake.trace = vi.fn();
+    fake.pushChatEvent = vi.fn();
+
+    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
+      type: 'todo_state',
+      seq: 9,
+      todos: [],
+    });
+
+    expect(fake.lastRunnerSeq).toBe(9);
+    expect(put).toHaveBeenCalledWith('chatRunnerLastSeq', 9);
+  });
+
+  it('clears pending questions when the runner disconnects', () => {
+    const sent: string[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.pendingQuestions = new Map([
+      ['question1', { questionId: 'question1', questions: [] }],
+      ['question2', { questionId: 'question2', questions: [] }],
+    ]);
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+      getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
+    };
+    fake.chatContext = { threadId: 'thread1' };
+    fake.nextChatEventId = 1;
+    fake.chatEventBuffer = [];
+    fake.trace = vi.fn();
+
+    ChatThreadDO.prototype['clearPendingQuestions'].call(fake, 'runner_socket_close');
+
+    expect(fake.pendingQuestions.size).toBe(0);
+    expect(sent.map((message) => JSON.parse(message))).toEqual([
+      expect.objectContaining({
+        type: 'question_answered',
+        questionId: 'question1',
+      }),
+      expect.objectContaining({
+        type: 'question_answered',
+        questionId: 'question2',
+      }),
+    ]);
   });
 
   it('applies connection mention context before sending external turns', async () => {
@@ -145,7 +241,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     };
     fake.trace = vi.fn();
     fake.ensureRunnerConnected = vi.fn().mockResolvedValue(undefined);
-    fake.sendRunnerCommandWithReconnect = vi.fn(async (command: any) => {
+    fake.sendRunnerCommand = vi.fn((command: any) => {
       sentCommands.push(command);
       return false;
     });

@@ -5,10 +5,7 @@ import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from "./workspace-container";
-import {
-  formatAttributedUserMessage,
-  type ChatAuthorIdentity,
-} from './chat-author-attribution';
+import { formatAttributedUserMessage } from './chat-author-attribution';
 import { injectFileSafetyMessage } from './file-safety';
 import { applyConnectionMentionContext } from './connection-mention-context';
 import {
@@ -205,12 +202,6 @@ interface ChatClientInitMessage {
   type: "init";
   threadId?: string;
   lastEventId?: number;
-  mode?: "side_channel";
-}
-
-interface ChatClientMessage {
-  type: "message";
-  content?: string;
 }
 
 interface ChatClientQuestionResponse {
@@ -265,7 +256,6 @@ const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const RUNNER_PING_INTERVAL_MS = 10_000;
-const RUNNER_RECONNECT_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const RUNNER_CLOSE_CODE_BYOK_CHANGED = 4001;
 const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
 
@@ -549,8 +539,8 @@ const TRACE_CHAT_THREAD_DO = false;
 const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
 
 /**
- * ChatThreadDO - One per thread, holds preview state + chat websocket bridge.
- * Chat path: client WS <-> ChatThreadDO <-> sandbox control plane (/chat WS)
+ * ChatThreadDO - One per thread, holds preview state, prompts, and external turns.
+ * Browser runner traffic uses /ws/runner and is bridged directly to sandbox-host.
  */
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
@@ -591,11 +581,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
   private runnerPingTimer: number | null = null;
-  private runnerReconnectTimer: number | null = null;
-  private runnerReconnectAttempt: number = 0;
-  private runnerReconnectArmed: boolean = false;
   private lastRunnerSeq: number = 0;
-  private lastPersistedRunnerSeq: number = 0;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
 
   private trace(event: string, details: Record<string, unknown> = {}): void {
@@ -805,8 +791,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         CHAT_RUNNER_LAST_SEQ_KEY,
       );
       if (typeof storedRunnerLastSeq === "number" && storedRunnerLastSeq > 0) {
-        this.lastRunnerSeq = storedRunnerLastSeq;
-        this.lastPersistedRunnerSeq = storedRunnerLastSeq;
+        this.lastRunnerSeq = Math.floor(storedRunnerLastSeq);
       }
 
       const storedActiveTurnUserId = ctx.storage.kv.get<string>(
@@ -1063,12 +1048,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       if (data.type === "message") {
-        await this.handleChatMessage(ws, data as unknown as ChatClientMessage);
+        await this.handleChatMessage(ws);
         return;
       }
 
       if (data.type === "stop") {
-        await this.handleChatStop();
+        await this.handleChatStop(ws);
         return;
       }
 
@@ -1117,7 +1102,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       remainingChatSockets: this.getChatSockets().length,
     });
     if (this.getChatSockets().length === 0) {
-      this.stopRunnerReconnectLoop("no_chat_sockets");
       if (this.pendingQuestions.size > 0) {
         this.markRunnerActivity("chat_socket_closed_question_unavailable");
         this.ctx.waitUntil(
@@ -1127,8 +1111,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         );
       }
     }
-    // Intentional no-op on chat socket close. Runner lifecycle is handled
-    // by runner-side control events and explicit reconnect-on-demand.
+    // Intentional no-op on side-channel socket close. Browser runner traffic
+    // is handled by /ws/runner; external turns close their runner socket directly.
   }
 
   webSocketError(_ws: WebSocket, error: unknown): void {
@@ -1280,6 +1264,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
     }
     this.broadcastRealtime({ type: 'todo_state', todos: this.currentTodos });
+  }
+
+  async setBrowserTurnStreaming(isStreaming: boolean): Promise<void> {
+    this.setChatIsStreaming(isStreaming);
   }
 
   private clearIncompleteTodoStateOnTurnCompletion(): void {
@@ -1462,7 +1450,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   async refreshRunnerConfig(): Promise<void> {
     await this.withRunnerTransitionLock('refresh_runner_config', async () => {
-      this.stopRunnerReconnectLoop('refresh_runner_config');
       if (!this.runnerSocket) {
         return;
       }
@@ -1476,7 +1463,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   async byokChanged(): Promise<void> {
     await this.withRunnerTransitionLock('byok_changed', async () => {
-      this.stopRunnerReconnectLoop('byok_changed');
       if (!this.runnerSocket) {
         return;
       }
@@ -1588,7 +1574,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       incomingThreadId: typeof data.threadId === "string" ? data.threadId : "",
       lastEventId:
         typeof data.lastEventId === "number" ? data.lastEventId : null,
-      mode: data.mode === "side_channel" ? "side_channel" : "chat",
     });
     const incomingThreadId =
       typeof data.threadId === "string" ? data.threadId.trim() : "";
@@ -1682,69 +1667,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       pendingQuestions: this.pendingQuestions.size,
       currentTodos: this.currentTodos.length,
       chatIsStreaming: this.chatIsStreaming,
-      mode: data.mode === "side_channel" ? "side_channel" : "chat",
     });
-
-    if (data.mode === "side_channel") {
-      this.trace("handle_chat_init_side_channel_skip_runner_connect");
-      return;
-    }
-
-    // Ensure we are connected to the sandbox control plane so in-flight output can resume.
-    this.ctx.waitUntil(
-      this.ensureRunnerConnected().catch((err) => {
-        this.trace("ensure_runner_connected_init_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        this.runnerReconnectArmed = true;
-        this.scheduleRunnerReconnect("chat_init_connect_failed");
-      }),
-    );
   }
 
-  private async handleChatMessage(
-    ws: WebSocket,
-    data: ChatClientMessage,
-  ): Promise<void> {
-    if (!this.chatContext) {
-      this.emitChatError("No session - send init first");
-      return;
-    }
-
-    const rawContent = typeof data.content === 'string' ? data.content : '';
-    const safeRawContent = injectFileSafetyMessage(rawContent);
-    const mentionAugmented = await this.applyConnectionMentionsForTurn(safeRawContent);
-    const attributedContent = formatAttributedUserMessage(
-      mentionAugmented,
-      this.getSocketAuthorIdentity(ws)
-    );
-    if (!attributedContent) return;
-    this.trace("handle_chat_message", {
-      rawLength: rawContent.length,
-      attributedLength: attributedContent.length,
+  private async handleChatMessage(ws: WebSocket): Promise<void> {
+    this.trace("handle_chat_message_rejected_side_channel");
+    this.sendDirect(ws, {
+      type: "error",
+      error: "Chat messages must use the runner WebSocket",
     });
-
-    const authorUserId =
-      this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
-    this.markRunnerActivity("chat_message");
-    await this.ensureRunnerConnected();
-    if (
-      !(await this.sendRunnerCommandWithReconnect({
-        type: "message",
-        content: attributedContent,
-        userId: authorUserId ?? undefined,
-      }))
-    ) {
-      this.emitChatError("Failed to send message to sandbox");
-      return;
-    }
-    this.setChatIsStreaming(true);
-
-    this.ctx.waitUntil(
-      this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
-        console.error('[ChatThreadDO] failed to update thread metadata after user message', err);
-      })
-    );
   }
 
   private async applyConnectionMentionsForTurn(content: string): Promise<string> {
@@ -1768,10 +1699,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private async handleChatStop(): Promise<void> {
-    this.trace("handle_chat_stop");
-    this.markRunnerActivity("chat_stop");
-    await this.sendRunnerCommandWithReconnect({ type: "stop" });
+  private async handleChatStop(ws: WebSocket): Promise<void> {
+    this.trace("handle_chat_stop_rejected_side_channel");
+    this.sendDirect(ws, {
+      type: "error",
+      error: "Stop requests must use the runner WebSocket",
+    });
   }
 
   private async handleQuestionResponse(
@@ -1791,12 +1724,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const answeringUserId =
       this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
     if (
-      !(await this.sendRunnerCommandWithReconnect({
+      !this.sendRunnerCommand({
         type: "question_response",
         questionId: data.questionId,
         answers: data.answers,
         userId: answeringUserId ?? undefined,
-      }))
+      })
     ) {
       this.emitChatError("Sandbox is not connected");
     }
@@ -2094,21 +2027,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  private getSocketAuthorIdentity(ws: WebSocket): ChatAuthorIdentity {
-    const socketContext = this.getSocketChatContext(ws);
-    if (socketContext) {
-      return {
-        userName: socketContext.userName,
-        userEmail: socketContext.userEmail,
-      };
-    }
-
-    return {
-      userName: this.chatContext?.userName ?? null,
-      userEmail: this.chatContext?.userEmail ?? null,
-    };
-  }
-
   async externalMessage(
     body: ExternalMessageRequest,
   ): Promise<ExternalTurnResult> {
@@ -2178,14 +2096,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const pendingResult = this.createPendingExternalTurn();
     if (
-      !(await this.sendRunnerCommandWithReconnect({
+      !this.sendRunnerCommand({
         type: "message",
         content: attributedContent,
         userId:
           typeof body.userId === "string" && body.userId.trim()
             ? body.userId.trim()
             : undefined,
-      }))
+      })
     ) {
       this.resolvePendingExternalTurn({
         status: "error",
@@ -2270,7 +2188,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     questionId: string,
     unavailableMessage: string,
   ): Promise<boolean> {
-    const sent = await this.sendRunnerCommandWithReconnect({
+    const sent = this.sendRunnerCommand({
       type: "question_response",
       questionId,
       answers: {
@@ -2302,6 +2220,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           },
         );
       }
+    }
+  }
+
+  private clearPendingQuestions(reason: string): void {
+    if (this.pendingQuestions.size === 0) return;
+
+    const questionIds = [...this.pendingQuestions.keys()];
+    this.pendingQuestions.clear();
+    this.trace("pending_questions_cleared", {
+      reason,
+      count: questionIds.length,
+    });
+    for (const questionId of questionIds) {
+      this.broadcastRealtime({
+        type: "question_answered",
+        questionId,
+      });
     }
   }
 
@@ -2532,9 +2467,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       console.log(
         `[ChatThreadDO] ensureRunnerConnected: connected for thread=${context.threadId}`,
       );
-      this.runnerReconnectArmed = false;
-      this.runnerReconnectAttempt = 0;
-      this.stopRunnerReconnectLoop("runner_connected");
       this.trace("ensure_runner_connected_complete", {
         lastSeq: this.lastRunnerSeq,
       });
@@ -2591,31 +2523,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             reason: event.reason || "",
           });
 
-          if (event.code === RUNNER_CLOSE_CODE_BYOK_CHANGED) {
-            const shouldReconnectImmediately =
-              this.getChatSockets().length > 0 ||
-              this.pendingExternalTurn !== null ||
-              this.chatIsStreaming;
-            this.stopRunnerReconnectLoop('byok_changed_close');
-            this.persistRunnerSeqIfNeeded('disconnect');
-
-            if (!shouldReconnectImmediately) {
-              return;
-            }
-
-            this.runnerReconnectArmed = true;
-            this.ctx.waitUntil(
-              this.tryRunnerReconnect('byok_changed_close').catch((err) => {
-                console.error('[ChatThreadDO] BYOK reconnect failed', err);
-              })
-            );
-            return;
-          }
-
-          if (this.getChatSockets().length > 0) {
-            this.runnerReconnectArmed = true;
-            this.scheduleRunnerReconnect("runner_socket_close");
-          }
+          this.setChatIsStreaming(false);
+          this.setActiveTurnUserId(null);
+          this.clearPendingQuestions("runner_socket_close");
+          this.resolvePendingExternalTurn({
+            status: "error",
+            error:
+              event.code === RUNNER_CLOSE_CODE_BYOK_CHANGED
+                ? "BYOK credentials changed during turn"
+                : "Runner websocket closed",
+          });
         }).catch((err) => {
           console.error(
             "[ChatThreadDO] runner socket close transition failed",
@@ -2656,15 +2573,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         });
         return;
       }
-      if (seq > this.lastRunnerSeq + 1) {
-        this.trace("runner_event_seq_gap", {
-          seq,
-          lastRunnerSeq: this.lastRunnerSeq,
-          eventType: eventType || "unknown",
-        });
-      }
       this.lastRunnerSeq = seq;
-      this.persistRunnerSeqIfNeeded("event");
+      this.ctx.storage.kv.put(CHAT_RUNNER_LAST_SEQ_KEY, this.lastRunnerSeq);
     }
 
     this.trace("handle_runner_event", {
@@ -2731,7 +2641,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const questions = Array.isArray(event.questions) ? event.questions : [];
       if (questionId && questions.length > 0) {
         if (this.pendingQuestions.has(questionId)) {
-          this.trace("runner_question_duplicate", { questionId, seq });
+          this.trace("runner_question_duplicate", { questionId });
           return;
         }
 
@@ -2877,7 +2787,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
         this.clearIncompleteTodoStateOnTurnCompletion();
-        this.persistRunnerSeqIfNeeded("result");
         this.resolvePendingExternalTurn({ status: "result" });
       }
 
@@ -2895,7 +2804,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
         this.clearIncompleteTodoStateOnTurnCompletion();
-        this.persistRunnerSeqIfNeeded('result');
       }
     }
 
@@ -2939,80 +2847,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.pushChatEvent(event);
   }
 
-  private persistRunnerSeqIfNeeded(
-    reason: "event" | "result" | "disconnect",
-  ): void {
-    if (this.lastRunnerSeq <= this.lastPersistedRunnerSeq) return;
-    const delta = this.lastRunnerSeq - this.lastPersistedRunnerSeq;
-    if (reason === "event" && delta < 25) return;
-    this.lastPersistedRunnerSeq = this.lastRunnerSeq;
-    this.ctx.storage.kv.put(CHAT_RUNNER_LAST_SEQ_KEY, this.lastRunnerSeq);
-    this.trace("runner_seq_persisted", {
-      reason,
-      lastRunnerSeq: this.lastRunnerSeq,
-    });
-  }
-
-  private scheduleRunnerReconnect(reason: string): void {
-    if (!this.runnerReconnectArmed) return;
-    if (
-      this.runnerSocket ||
-      this.runnerConnectPromise ||
-      this.runnerReconnectTimer !== null
-    )
-      return;
-    const attemptIndex = Math.min(
-      this.runnerReconnectAttempt,
-      RUNNER_RECONNECT_BACKOFF_MS.length - 1,
-    );
-    const delayMs = RUNNER_RECONNECT_BACKOFF_MS[attemptIndex];
-    this.runnerReconnectAttempt += 1;
-    this.runnerReconnectTimer = setTimeout(() => {
-      this.runnerReconnectTimer = null;
-      this.ctx.waitUntil(
-        this.tryRunnerReconnect("timer").catch((err) => {
-          console.error("[ChatThreadDO] runner reconnect timer failed", err);
-        }),
-      );
-    }, delayMs) as unknown as number;
-    this.trace("runner_reconnect_scheduled", {
-      reason,
-      attempt: this.runnerReconnectAttempt,
-      delayMs,
-    });
-  }
-
-  private async tryRunnerReconnect(source: string): Promise<void> {
-    if (!this.runnerReconnectArmed) return;
-    if (this.runnerSocket || this.runnerConnectPromise) return;
-    if (!this.chatContext) return;
-
-    try {
-      await this.ensureRunnerConnected();
-      this.trace("runner_reconnect_succeeded", {
-        source,
-        attempt: this.runnerReconnectAttempt,
-      });
-    } catch (err) {
-      this.trace("runner_reconnect_failed", {
-        source,
-        attempt: this.runnerReconnectAttempt,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      this.scheduleRunnerReconnect("connect_failed");
-    }
-  }
-
-  private stopRunnerReconnectLoop(reason: string): void {
-    if (this.runnerReconnectTimer !== null) {
-      clearTimeout(this.runnerReconnectTimer);
-      this.runnerReconnectTimer = null;
-    }
-    this.runnerReconnectAttempt = 0;
-    this.runnerReconnectArmed = false;
-    this.trace("runner_reconnect_stopped", { reason });
-  }
-
   private sendRunnerCommand(message: Record<string, unknown>): boolean {
     if (!this.runnerSocket) return false;
     try {
@@ -3030,29 +2864,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private async sendRunnerCommandWithReconnect(
-    message: Record<string, unknown>,
-  ): Promise<boolean> {
-    if (this.sendRunnerCommand(message)) return true;
-    this.runnerReconnectArmed = true;
-    try {
-      await this.ensureRunnerConnected();
-    } catch {
-      this.scheduleRunnerReconnect("send_retry_connect_failed");
-      return false;
-    }
-    return this.sendRunnerCommand(message);
-  }
-
   private startRunnerPingLoop(): void {
     this.stopRunnerPingLoop("restart");
     this.runnerPingTimer = setInterval(() => {
       const sent = this.sendRunnerCommand({ type: "ping", ts: Date.now() });
       this.trace(sent ? "runner_ping_sent" : "runner_ping_send_failed");
-      if (!sent && this.getChatSockets().length > 0) {
-        this.runnerReconnectArmed = true;
-        this.scheduleRunnerReconnect("runner_ping_send_failed");
-      }
     }, RUNNER_PING_INTERVAL_MS) as unknown as number;
     this.trace("runner_ping_started", { intervalMs: RUNNER_PING_INTERVAL_MS });
   }

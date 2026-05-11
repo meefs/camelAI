@@ -4,6 +4,7 @@ const buildChatRunnerEnvMock = vi.hoisted(() => vi.fn());
 const connectChatWebSocketMock = vi.hoisted(() => vi.fn());
 const recordWorkspaceThreadStreamingMock = vi.hoisted(() => vi.fn());
 const touchThreadActivityMock = vi.hoisted(() => vi.fn());
+const setBrowserTurnStreamingMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../src/workspace-container.js', () => ({
   WorkspaceContainer: class WorkspaceContainer {
@@ -78,6 +79,7 @@ function createEnv() {
       idFromName: (id: string) => id,
       get: () => ({
         setTodoState: vi.fn().mockResolvedValue(undefined),
+        setBrowserTurnStreaming: setBrowserTurnStreamingMock,
       }),
     },
     USER: {
@@ -124,6 +126,7 @@ describe('chat runner websocket workspace status', () => {
     vi.clearAllMocks();
     recordWorkspaceThreadStreamingMock.mockResolvedValue(undefined);
     touchThreadActivityMock.mockResolvedValue(true);
+    setBrowserTurnStreamingMock.mockResolvedValue(undefined);
   });
 
   it('does not record idle on bridge init or browser client disconnect', async () => {
@@ -166,6 +169,38 @@ describe('chat runner websocket workspace status', () => {
       );
     });
     expect(runner.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it('syncs browser turn streaming state to ChatThreadDO', async () => {
+    const { server, runner } = await startBridge();
+
+    server.emitMessage({ type: 'message', content: 'Build it' });
+
+    await vi.waitFor(() => {
+      expect(setBrowserTurnStreamingMock).toHaveBeenCalledWith(true);
+    });
+
+    runner.emitMessage({ type: 'streaming_state', isStreaming: false });
+
+    await vi.waitFor(() => {
+      expect(setBrowserTurnStreamingMock).toHaveBeenLastCalledWith(false);
+    });
+  });
+
+  it('syncs browser turn streaming false on runner error', async () => {
+    const { server, runner } = await startBridge();
+
+    server.emitMessage({ type: 'message', content: 'Build it' });
+
+    await vi.waitFor(() => {
+      expect(setBrowserTurnStreamingMock).toHaveBeenCalledWith(true);
+    });
+
+    runner.emitMessage({ type: 'error', error: 'failed' });
+
+    await vi.waitFor(() => {
+      expect(setBrowserTurnStreamingMock).toHaveBeenLastCalledWith(false);
+    });
   });
 
   it('records active runner streaming_state completion without a completedAt timestamp as unread', async () => {

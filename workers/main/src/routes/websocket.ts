@@ -208,9 +208,20 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
         }),
     );
   };
+  const setChatThreadBrowserTurnStreaming = (isStreaming: boolean) => {
+    const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId)) as unknown as {
+      setBrowserTurnStreaming(isStreaming: boolean): Promise<void>;
+    };
+    waitUntil(
+      chatThread.setBrowserTurnStreaming(isStreaming).catch((error) => {
+        console.error('[chat websocket] failed to sync browser turn status', error);
+      }),
+    );
+  };
   const recordStreaming = (isStreaming: boolean) => {
     activeOrPendingUserTurn = isStreaming;
     if (isStreaming) completionRecordedAt = null;
+    setChatThreadBrowserTurnStreaming(isStreaming);
     waitUntil(
       recordWorkspaceThreadStreaming(env, workspaceId, threadId, isStreaming).catch((error) => {
         console.error('[chat websocket] failed to record workspace thread status', error);
@@ -220,6 +231,7 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
   const recordAssistantCompletion = (rawCompletedAt?: unknown) => {
     const completedAt = normalizeCompletionTimestamp(rawCompletedAt);
     activeOrPendingUserTurn = false;
+    setChatThreadBrowserTurnStreaming(false);
     if (completionRecordedAt !== null) return completionRecordedAt;
     completionRecordedAt = completedAt;
     waitUntil(
