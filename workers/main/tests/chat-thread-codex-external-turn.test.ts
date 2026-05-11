@@ -32,6 +32,75 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(deleteKey).toHaveBeenCalledWith('chatTodos');
   });
 
+  it('marks todos complete and removes persisted todo state when a turn ends', async () => {
+    const deleteKey = vi.fn();
+    const sent: string[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.currentTodos = [
+      { content: 'Check state', status: 'in_progress', activeForm: 'Checking state' },
+      { content: 'Summarize', status: 'pending', activeForm: 'Summarizing' },
+    ];
+    fake.ctx = {
+      storage: { kv: { delete: deleteKey } },
+      getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
+    };
+    fake.trace = vi.fn();
+
+    await ChatThreadDO.prototype.completeTodoStateForTurnEnd.call(fake);
+
+    expect(fake.currentTodos).toEqual([]);
+    expect(deleteKey).toHaveBeenCalledWith('chatTodos');
+    expect(sent.map((message) => JSON.parse(message))).toContainEqual({
+      type: 'todo_state',
+      todos: [
+        { content: 'Check state', status: 'completed', activeForm: 'Checking state' },
+        { content: 'Summarize', status: 'completed', activeForm: 'Summarizing' },
+      ],
+    });
+  });
+
+  it('clears stale non-streaming todo state when a chat initializes', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const sent: string[] = [];
+
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+    };
+    fake.chatIsStreaming = false;
+    fake.currentTodos = [{ content: 'Old task', status: 'in_progress' }];
+    fake.pendingQuestions = new Map();
+    fake.previewTarget = null;
+    fake.previewTabs = [];
+    fake.previewActiveTabId = null;
+    fake.previewVersion = 0;
+    fake.chatEventBuffer = [];
+    fake.transientContextUsedPercent = null;
+    fake.contextUsedPercent = null;
+    fake.trace = vi.fn();
+    fake.sendPendingPromptsToWebSocket = vi.fn();
+    fake.replayChatEvents = vi.fn();
+    fake.completeTodoStateForTurnEnd = vi.fn(async () => {
+      fake.currentTodos = [];
+    });
+
+    const ws = { send: vi.fn((message: string) => sent.push(message)) };
+
+    await ChatThreadDO.prototype['handleChatInit'].call(fake, ws, {
+      type: 'init',
+      mode: 'side_channel',
+      threadId: 'thread1',
+    });
+
+    expect(fake.completeTodoStateForTurnEnd).toHaveBeenCalledTimes(1);
+    expect(sent.map((message) => JSON.parse(message))).not.toContainEqual({
+      type: 'todo_state',
+      todos: [{ content: 'Old task', status: 'in_progress' }],
+    });
+  });
+
   it('waits for the final result event instead of resolving on turn/completed', () => {
     const resolve = vi.fn();
     const fake = Object.create(ChatThreadDO.prototype) as any;
@@ -50,6 +119,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.trace = vi.fn();
     fake.setChatIsStreaming = vi.fn();
     fake.pushChatEvent = vi.fn();
+    fake.completeTodoStateForTurnEnd = vi.fn();
     fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
 
     ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
@@ -59,6 +129,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     expect(resolve).not.toHaveBeenCalled();
     expect(fake.pendingExternalTurn).not.toBeNull();
+    expect(fake.completeTodoStateForTurnEnd).toHaveBeenCalledTimes(1);
 
     ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
       type: 'result',
@@ -106,7 +177,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(deleteKey).toHaveBeenCalledWith('chatTodos');
     expect(sent.map((message) => JSON.parse(message))).toContainEqual({
       type: 'todo_state',
-      todos: [],
+      todos: [{ content: 'Ship fix', status: 'completed' }],
     });
     expect(resolve).not.toHaveBeenCalled();
   });
@@ -128,7 +199,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.trace = vi.fn();
     fake.setChatIsStreaming = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
-    fake.clearIncompleteTodoStateOnTurnCompletion = vi.fn();
+    fake.completeTodoStateForTurnEnd = vi.fn();
     fake.pushChatEvent = vi.fn();
     fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
 

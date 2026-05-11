@@ -752,7 +752,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
       if (Array.isArray(storedTodos)) {
-        this.currentTodos = storedTodos;
+        ctx.storage.kv.delete(CHAT_TODOS_KEY);
       }
 
       const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
@@ -1270,19 +1270,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.setChatIsStreaming(isStreaming);
   }
 
-  private clearIncompleteTodoStateOnTurnCompletion(): void {
-    if (!Array.isArray(this.currentTodos) || this.currentTodos.length === 0) return;
+  async completeTodoStateForTurnEnd(): Promise<void> {
+    if (this.currentTodos.length === 0) return;
 
-    const hasIncompleteTodo = this.currentTodos.some((todo) => {
-      if (!todo || typeof todo !== 'object') return false;
-      const status = (todo as { status?: unknown }).status;
-      return status === 'pending' || status === 'in_progress';
+    const completedTodos = this.currentTodos.map((todo) => {
+      if (!todo || typeof todo !== "object") {
+        return todo;
+      }
+      return {
+        ...(todo as Record<string, unknown>),
+        status: "completed",
+      };
     });
-    if (!hasIncompleteTodo) return;
 
     this.currentTodos = [];
     this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
-    this.broadcastRealtime({ type: 'todo_state', todos: [] });
+    this.broadcastRealtime({ type: "todo_state", todos: completedTodos });
   }
 
   getLegacyClaudeSessionId(): string | null {
@@ -1644,6 +1647,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     this.replayChatEvents(ws, lastEventId);
+
+    if (!this.chatIsStreaming && this.currentTodos.length > 0) {
+      await this.completeTodoStateForTurnEnd();
+    }
 
     // Send todo_state AFTER event replay so it arrives after any sdk_event that
     // triggers streaming state. The client clears todos when streaming starts,
@@ -2609,7 +2616,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
-      this.clearIncompleteTodoStateOnTurnCompletion();
+      this.completeTodoStateForTurnEnd();
       this.resolvePendingExternalTurn({
         status: "error",
         error: typeof event.error === "string" ? event.error : "Runner error",
@@ -2782,11 +2789,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       if (sdkEvent?.type === "result") {
-        // Preserve fully completed todos for short client-side completion UI,
-        // but never replay pending/in-progress todos after a finished turn.
         this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
-        this.clearIncompleteTodoStateOnTurnCompletion();
+        this.completeTodoStateForTurnEnd();
         this.resolvePendingExternalTurn({ status: "result" });
       }
 
@@ -2803,14 +2808,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (method === 'turn/completed') {
         this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
-        this.clearIncompleteTodoStateOnTurnCompletion();
+        this.completeTodoStateForTurnEnd();
       }
     }
 
     if (eventType === 'result') {
       this.setChatIsStreaming(false, { markUnread: true });
       this.setActiveTurnUserId(null);
-      this.clearIncompleteTodoStateOnTurnCompletion();
+      this.completeTodoStateForTurnEnd();
       const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
       if (sessionId) {
         this.codexSessionId = sessionId;

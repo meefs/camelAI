@@ -440,6 +440,20 @@ export async function bridgeChatSocket(args: BridgeChatSocketArgs): Promise<void
         }),
       );
     }
+    if (
+      eventType === 'error' ||
+      eventType === 'result' ||
+      runtimeEvent?.method === 'turn/completed'
+    ) {
+      const chatThread = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId)) as unknown as {
+        completeTodoStateForTurnEnd(): Promise<void>;
+      };
+      waitUntil(
+        chatThread.completeTodoStateForTurnEnd().catch((error) => {
+          console.error('[chat websocket] failed to complete todo state', error);
+        }),
+      );
+    }
     if (eventType === 'streaming_state' && typeof payload.isStreaming === 'boolean') {
       if (payload.isStreaming) {
         recordStreaming(true);
