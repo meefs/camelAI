@@ -949,16 +949,7 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 		return
 	}
 
-	if !hostPiLoopback && isInferenceProxyPath(proxy.UpstreamPath) {
-		s.trace("proxy_request_rejected_container_inference", map[string]any{
-			"requestId":       requestID,
-			"sourceIp":        sourceIP,
-			"callerContainer": caller.Name,
-			"method":          req.Method,
-			"upstreamPath":    proxy.UpstreamPath,
-			"threadId":        proxy.ThreadID,
-		})
-		errorJSON(w, "Inference proxy is only available to the host Pi harness", http.StatusForbidden)
+	if s.rejectContainerInferenceProxy(w, req, proxy, caller, requestID, sourceIP, threadKey, hostPiLoopback) {
 		return
 	}
 
@@ -2534,6 +2525,37 @@ func isInferenceProxyPath(upstreamPath string) bool {
 		strings.HasPrefix(upstreamPath, "/api/openrouter/")
 }
 
+func (s *Server) rejectContainerInferenceProxy(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	caller *container.ContainerRecord,
+	requestID string,
+	sourceIP string,
+	threadKey string,
+	hostPiLoopback bool,
+) bool {
+	if hostPiLoopback || !isInferenceProxyPath(proxy.UpstreamPath) {
+		return false
+	}
+
+	callerName := ""
+	if caller != nil {
+		callerName = caller.Name
+	}
+	s.trace("proxy_request_rejected_container_inference", map[string]any{
+		"requestId":       requestID,
+		"sourceIp":        sourceIP,
+		"callerContainer": callerName,
+		"method":          req.Method,
+		"upstreamPath":    proxy.UpstreamPath,
+		"threadId":        proxy.ThreadID,
+		"threadKey":       threadKey,
+	})
+	errorJSON(w, "Inference proxy is only available to the host Pi harness", http.StatusForbidden)
+	return true
+}
+
 func (s *Server) runProxyThreadCleanup() {
 	ticker := time.NewTicker(s.cfg.ProxyThreadCleanupInterval)
 	defer ticker.Stop()
@@ -2661,6 +2683,27 @@ func (s *Server) deleteProxyThreadState(key string) {
 	}
 	if err := s.state.DeleteProxyThread(key); err != nil {
 		log.Printf("[SandboxHost] failed to delete proxy thread state for %s: %v", key, err)
+	}
+}
+
+func (s *Server) markProxyThreadClosed(threadKey string, now time.Time) {
+	threadKey = strings.TrimSpace(threadKey)
+	if threadKey == "" {
+		return
+	}
+
+	var closed *ProxyThreadContext
+	s.proxyMu.Lock()
+	if thread := s.proxyThreads[threadKey]; thread != nil {
+		thread.ClosedAt = &now
+		thread.LastSeenAt = now
+		thread.ExpiresAt = now.Add(s.cfg.ProxyThreadCloseGrace)
+		closed = copyProxyThreadContext(thread)
+	}
+	s.proxyMu.Unlock()
+
+	if closed != nil {
+		s.upsertProxyThreadState(closed)
 	}
 }
 

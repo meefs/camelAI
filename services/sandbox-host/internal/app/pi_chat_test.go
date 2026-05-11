@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/chiridion/sandbox-host/internal/container"
+	"github.com/gorilla/websocket"
 )
 
 func TestHostPiBridgeResolvePiModel(t *testing.T) {
@@ -483,6 +484,22 @@ func TestHostPiBridgeSkipsReplayWhenInactive(t *testing.T) {
 	}
 	if !hostPiShouldReplayBufferedEvents(true) {
 		t.Fatal("active bridge should replay buffered events")
+	}
+}
+
+func TestHostPiBridgeDetachIgnoresSupersededClient(t *testing.T) {
+	current := &websocket.Conn{}
+	superseded := &websocket.Conn{}
+	bridge := &hostPiBridge{
+		threadID: "thread-1",
+		client:   current,
+	}
+
+	if bridge.detachClient(superseded) {
+		t.Fatal("superseded client should not detach the current bridge client")
+	}
+	if bridge.client != current {
+		t.Fatal("current client should remain attached after superseded detach")
 	}
 }
 

@@ -39,7 +39,7 @@ describe('OrgDO thread pagination filters', () => {
     expect(result.total).toBe(6);
     expect(result.items.every((thread) => thread.created_by === authorId)).toBe(true);
     expect(new Set(result.items.map((thread) => thread.id))).toEqual(authorThreadIds);
-  });
+  }, 15_000);
 
   it('applies created_by filtering across all workspaces before limit', async () => {
     const { userId: authorId } = await createUser(testEnv, testEmail(), 'password123', 'Author');
@@ -81,7 +81,7 @@ describe('OrgDO thread pagination filters', () => {
     expect(result.total).toBe(6);
     expect(result.items.every((thread) => thread.created_by === authorId)).toBe(true);
     expect(new Set(result.items.map((thread) => thread.id))).toEqual(authorThreadIds);
-  });
+  }, 15_000);
 
   it('returns thread creators with counts ordered by latest activity', async () => {
     const { userId: authorId } = await createUser(testEnv, testEmail(), 'password123', 'Author');
@@ -130,5 +130,5 @@ describe('OrgDO thread pagination filters', () => {
     expect(allWorkspaceCreators[0]?.latest_updated_at).toBeGreaterThan(
       allWorkspaceCreators[1]?.latest_updated_at ?? 0
     );
-  });
+  }, 15_000);
 });

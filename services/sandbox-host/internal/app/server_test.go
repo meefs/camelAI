@@ -420,6 +420,39 @@ func TestHostPiInferenceRouteUsesThreadContextWithoutContainerCaller(t *testing.
 	}
 }
 
+func TestMarkProxyThreadClosedSetsCloseGrace(t *testing.T) {
+	now := time.Now().UTC()
+	threadKey := proxyThreadKey("test-container", "thread-1")
+	server := &Server{
+		cfg: Config{
+			ProxyThreadCloseGrace: 2 * time.Minute,
+		},
+		proxyThreads: map[string]*ProxyThreadContext{
+			threadKey: {
+				Key:           threadKey,
+				ContainerName: "test-container",
+				OrgID:         "org-1",
+				WorkspaceID:   "ws-1",
+				ThreadID:      "thread-1",
+				WorkerBaseURL: "https://worker.example.com",
+				CreatedAt:     now.Add(-time.Minute),
+				LastSeenAt:    now.Add(-time.Second),
+				ExpiresAt:     now.Add(time.Minute),
+			},
+		},
+	}
+
+	server.markProxyThreadClosed(threadKey, now)
+
+	closed := server.proxyThreads[threadKey]
+	if closed.ClosedAt == nil || !closed.ClosedAt.Equal(now) {
+		t.Fatalf("closed at = %v, want %v", closed.ClosedAt, now)
+	}
+	if !closed.ExpiresAt.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("expires at = %v, want %v", closed.ExpiresAt, now.Add(2*time.Minute))
+	}
+}
+
 func ptrTime(v time.Time) *time.Time {
 	return &v
 }

@@ -73,6 +73,46 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.pendingExternalTurn).toBeNull();
   });
 
+  it('clears persisted incomplete todos when a turn completes', () => {
+    const resolve = vi.fn();
+    const deleteKey = vi.fn();
+    const sent: string[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.lastRunnerSeq = 0;
+    fake.currentTodos = [{ content: 'Ship fix', status: 'in_progress' }];
+    fake.pendingQuestions = new Map();
+    fake.pendingExternalTurn = {
+      resolve,
+      streamingText: '',
+      latestAssistantText: '',
+    };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: deleteKey } },
+      waitUntil: vi.fn(),
+      getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
+    };
+    fake.trace = vi.fn();
+    fake.persistRunnerSeqIfNeeded = vi.fn();
+    fake.setChatIsStreaming = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.pushChatEvent = vi.fn();
+    fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
+
+    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
+      type: 'runtime_event',
+      event: { method: 'turn/completed' },
+    });
+
+    expect(fake.currentTodos).toEqual([]);
+    expect(deleteKey).toHaveBeenCalledWith('chatTodos');
+    expect(sent.map((message) => JSON.parse(message))).toContainEqual({
+      type: 'todo_state',
+      todos: [],
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('applies connection mention context before sending external turns', async () => {
     const workspaceStub = {
       getIntegrations: vi.fn().mockResolvedValue([

@@ -1282,6 +1282,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.broadcastRealtime({ type: 'todo_state', todos: this.currentTodos });
   }
 
+  private clearIncompleteTodoStateOnTurnCompletion(): void {
+    if (!Array.isArray(this.currentTodos) || this.currentTodos.length === 0) return;
+
+    const hasIncompleteTodo = this.currentTodos.some((todo) => {
+      if (!todo || typeof todo !== 'object') return false;
+      const status = (todo as { status?: unknown }).status;
+      return status === 'pending' || status === 'in_progress';
+    });
+    if (!hasIncompleteTodo) return;
+
+    this.currentTodos = [];
+    this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
+    this.broadcastRealtime({ type: 'todo_state', todos: [] });
+  }
+
   getLegacyClaudeSessionId(): string | null {
     try {
       const rows = this.ctx.storage.sql
@@ -2684,6 +2699,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
+      this.clearIncompleteTodoStateOnTurnCompletion();
       this.resolvePendingExternalTurn({
         status: "error",
         error: typeof event.error === "string" ? event.error : "Runner error",
@@ -2856,12 +2872,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       if (sdkEvent?.type === "result") {
-        // Don't clear todos here — the client handles clearing via its own
-        // auto-timeout (1.5-2s after all todos are completed) and on next
-        // streaming start. Clearing server-side on result races the client
-        // and destroys persistence before reconnecting clients can replay.
+        // Preserve fully completed todos for short client-side completion UI,
+        // but never replay pending/in-progress todos after a finished turn.
         this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
+        this.clearIncompleteTodoStateOnTurnCompletion();
         this.persistRunnerSeqIfNeeded("result");
         this.resolvePendingExternalTurn({ status: "result" });
       }
@@ -2879,6 +2894,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (method === 'turn/completed') {
         this.setChatIsStreaming(false, { markUnread: true });
         this.setActiveTurnUserId(null);
+        this.clearIncompleteTodoStateOnTurnCompletion();
         this.persistRunnerSeqIfNeeded('result');
       }
     }
@@ -2886,6 +2902,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (eventType === 'result') {
       this.setChatIsStreaming(false, { markUnread: true });
       this.setActiveTurnUserId(null);
+      this.clearIncompleteTodoStateOnTurnCompletion();
       const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
       if (sessionId) {
         this.codexSessionId = sessionId;

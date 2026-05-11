@@ -48,7 +48,10 @@ func (s *Server) serveHostPiChat(
 	closeAll := func(code int, reason string) {
 		closeOnce.Do(func() {
 			log.Printf("[SandboxHost] host Pi websocket detached thread=%s container=%s code=%d reason=%s", threadID, name, code, reason)
-			bridge.detachClient(clientConn)
+			detachedCurrentClient := bridge.detachClient(clientConn)
+			if detachedCurrentClient && !bridge.isActive() {
+				s.markProxyThreadClosed(threadKey, time.Now().UTC())
+			}
 
 			s.trace("host_pi_chat_ws_close", map[string]any{
 				"container": name,
@@ -1116,18 +1119,25 @@ func (b *hostPiBridge) attachClient(client *websocket.Conn) {
 	b.mu.Unlock()
 }
 
-func (b *hostPiBridge) detachClient(client *websocket.Conn) {
+func (b *hostPiBridge) detachClient(client *websocket.Conn) bool {
+	if client == nil {
+		return false
+	}
+
 	b.mu.Lock()
+	detachedCurrentClient := false
 	if b.client == client {
 		b.client = nil
+		detachedCurrentClient = true
 	}
 	nextSeq := b.nextSeq
 	buffered := len(b.events)
 	b.mu.Unlock()
 	log.Printf("[SandboxHost] host Pi client detached thread=%s nextSeq=%d bufferedEvents=%d active=%t", b.threadID, nextSeq, buffered, b.isActive())
-	if client != nil {
+	if detachedCurrentClient {
 		_ = client.Close()
 	}
+	return detachedCurrentClient
 }
 
 func (b *hostPiBridge) ensureNextSeqAfter(lastSeq int64) int64 {
