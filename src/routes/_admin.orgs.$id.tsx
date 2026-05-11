@@ -43,8 +43,10 @@ import {
 } from "@/components/ui/table";
 import { getContrastTextColor } from "@/lib/avatar";
 import { billingStatusBadgeVariant, billingStatusLabel } from "@/lib/billing";
+import { getByokProviderLabel } from "@/lib/byok-providers";
+import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
 import { cn } from "@/lib/utils";
-import type { BillingStatus } from "@/types";
+import type { BillingStatus, LlmProviderConfigPublic } from "@/types";
 import { RefreshCw } from "lucide-react";
 
 const ADMIN_BILLING_STATUSES: BillingStatus[] = [
@@ -129,6 +131,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspaces,
     recentActivity,
     experimentalSettings,
+    llmProvider,
     customDomainApps,
     [usageSpend, usageLog],
     orgBan,
@@ -142,6 +145,23 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       includeCounts: "cheap",
     }),
     orgStub.getExperimentalSettings(),
+    orgStub
+      .getLlmProviderConfig()
+      .then(async (record) => {
+        if (!record) {
+          return { config: null, createdByUser: null };
+        }
+        const [config, createdByUser] = await Promise.all([
+          buildPublicLlmProviderConfig(record, env.INTEGRATION_SECRET_KEY),
+          authEnv.USER.get(authEnv.USER.idFromName(record.created_by))
+            .getProfile()
+            .then((user) =>
+              user ? { id: user.id, email: user.email } : null,
+            )
+            .catch(() => null),
+        ]);
+        return { config, createdByUser };
+      }),
     orgStub.listWorkerScripts(),
     usagePromise as Promise<[any, any]>,
     getOrgBanById(getEnv(context).APP_KV, id),
@@ -200,6 +220,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
     experimentalSettings,
+    llmProviderConfig: llmProvider.config,
+    llmProviderCreatedByUser: llmProvider.createdByUser,
     customDomainApps,
     memberOptions,
     orgBan,
@@ -228,6 +250,85 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       }>;
     } | null,
   };
+}
+
+function AdminAiProviderCard({
+  config,
+  createdByUser,
+}: {
+  config: LlmProviderConfigPublic | null;
+  createdByUser: { id: string; email: string } | null;
+}) {
+  const providerLabel = config
+    ? (getByokProviderLabel(config.provider) ?? config.provider)
+    : null;
+  const createdByLabel = createdByUser?.email ?? config?.created_by ?? "";
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>AI Provider</CardTitle>
+        <CardDescription>
+          Bring-your-own-key provider status for this organization.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {config ? (
+          <dl className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <dt className="text-sm font-medium text-muted-foreground">
+                Status
+              </dt>
+              <dd className="text-sm">API key configured</dd>
+            </div>
+            <div>
+              <dt className="text-sm font-medium text-muted-foreground">
+                Provider
+              </dt>
+              <dd className="text-sm">{providerLabel}</dd>
+            </div>
+            <div>
+              <dt className="text-sm font-medium text-muted-foreground">
+                Key Hint
+              </dt>
+              <dd className="font-mono text-sm">{config.key_hint}</dd>
+            </div>
+            {config.config.aws_region ? (
+              <div>
+                <dt className="text-sm font-medium text-muted-foreground">
+                  AWS Region
+                </dt>
+                <dd className="font-mono text-sm">
+                  {config.config.aws_region}
+                </dd>
+              </div>
+            ) : null}
+            <div>
+              <dt className="text-sm font-medium text-muted-foreground">
+                Updated
+              </dt>
+              <dd className="text-sm">{formatTimestamp(config.updated_at)}</dd>
+            </div>
+            <div>
+              <dt className="text-sm font-medium text-muted-foreground">
+                Created By
+              </dt>
+              <dd>
+                <Link
+                  to={`/qaml-backdoor/users/${config.created_by}`}
+                  className="text-sm hover:underline"
+                >
+                  {createdByLabel}
+                </Link>
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="text-sm">No API key configured</p>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
@@ -539,6 +640,8 @@ export default function AdminOrgDetailPage() {
     threadCount,
     appCount,
     experimentalSettings,
+    llmProviderConfig,
+    llmProviderCreatedByUser,
     customDomainApps,
     memberOptions,
     orgBan,
@@ -650,6 +753,11 @@ export default function AdminOrgDetailPage() {
                 </dl>
               </CardContent>
             </Card>
+
+            <AdminAiProviderCard
+              config={llmProviderConfig}
+              createdByUser={llmProviderCreatedByUser}
+            />
 
             <Card>
               <CardHeader>
