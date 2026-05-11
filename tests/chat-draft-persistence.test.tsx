@@ -652,7 +652,7 @@ describe('Chat draft persistence', () => {
     );
 
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/chat/thread-new', {
+      expect(mockNavigate).toHaveBeenCalledWith('/chat/thread-new?newThread=1', {
         state: {
           initialMessageContent: `(user uploaded file to ${attachmentDraft.path})`,
         },

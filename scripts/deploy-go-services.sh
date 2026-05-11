@@ -61,7 +61,7 @@ case "$ENVIRONMENT" in
     VM="${VM:-${SANDBOX_GO_DEPLOY_HOST:-chiridion-vm}}"
     ;;
   staging)
-    VM="${VM:-${SANDBOX_GO_DEPLOY_HOST:-chiridion-vm-staging}}"
+    VM="${VM:-${SANDBOX_GO_DEPLOY_HOST:-chiridion@100.115.221.105}}"
     ;;
   *)
     echo "Unknown environment: $ENVIRONMENT"

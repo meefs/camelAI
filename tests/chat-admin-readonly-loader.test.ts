@@ -12,6 +12,9 @@ const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
 const readThreadMessagesMock = vi.fn();
+const ensureGroupForThreadMock = vi.fn();
+const getGroupForWorkspaceMock = vi.fn();
+const listGroupsForMoveMock = vi.fn();
 
 vi.mock('@/lib/auth.server', () => ({
   requireSuperuser: requireSuperuserMock,
@@ -41,6 +44,12 @@ vi.mock('@/lib/auth-do', () => ({
 
 vi.mock('@/lib/chat-history.server', () => ({
   readThreadMessages: readThreadMessagesMock,
+}));
+
+vi.mock('@/lib/chat-groups.server', () => ({
+  ensureGroupForThread: ensureGroupForThreadMock,
+  getGroupForWorkspace: getGroupForWorkspaceMock,
+  listGroupsForMove: listGroupsForMoveMock,
 }));
 
 const { loader } = await import('@/routes/_app.chat.$id');
@@ -82,6 +91,9 @@ describe('chat loader admin readonly mode', () => {
     });
     getWorkerScriptMock.mockResolvedValue(null);
     readThreadMessagesMock.mockResolvedValue([]);
+    ensureGroupForThreadMock.mockResolvedValue(null);
+    getGroupForWorkspaceMock.mockResolvedValue(null);
+    listGroupsForMoveMock.mockResolvedValue([]);
   });
 
   it('requires superuser for adminReadonly mode', async () => {
@@ -300,6 +312,16 @@ describe('chat loader workspace mismatch handling', () => {
     expect(requireSessionWorkspaceAccessMock).toHaveBeenCalledTimes(1);
     expect(requireAuthContextMock).not.toHaveBeenCalled();
     expect(getThreadMock).not.toHaveBeenCalled();
+    expect(ensureGroupForThreadMock).toHaveBeenCalledWith(
+      {},
+      {
+        userId: 'user_123',
+        orgId: 'org_active',
+        workspaceId: 'ws_active',
+        threadId: 'thread_123',
+        fallbackName: 'Workspace Thread',
+      },
+    );
   });
 
   it('returns minimal model state for OpenAI-only new-thread navigations', async () => {

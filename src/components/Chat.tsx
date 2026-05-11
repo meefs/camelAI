@@ -4736,7 +4736,15 @@ export default function Chat({
           }
         }
 
-        navigate(`/chat/${data.thread.id}`, {
+        const nextUrl = new URL(
+          `/chat/${data.thread.id}?newThread=1`,
+          window.location.origin,
+        );
+        if (data.groupId) {
+          nextUrl.searchParams.set("group", data.groupId);
+        }
+
+        navigate(`${nextUrl.pathname}${nextUrl.search}`, {
           state: initialMessageContent ? { initialMessageContent } : null,
           preventScrollReset: true,
         });
@@ -5735,8 +5743,12 @@ type SendOptions = {
         }, 5000);
       }
 
-      // If not connected at all, trigger reconnect
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      const socketState = wsRef.current?.readyState;
+      if (
+        socketState == null ||
+        socketState === WebSocket.CLOSING ||
+        socketState === WebSocket.CLOSED
+      ) {
         connectWebSocketRef.current?.(threadId, true);
       }
       // If connected but not ready, the message will be sent when ready event arrives
@@ -5750,7 +5762,6 @@ type SendOptions = {
 
   useEffect(() => {
     if (!threadId || readOnly) return;
-    if (!ready || wsRef.current?.readyState !== WebSocket.OPEN) return;
     const initialMessageContent = getInitialMessageContentFromState(
       location.state,
     );
@@ -5780,16 +5791,15 @@ type SendOptions = {
     if (!didStartDelivery) return;
 
     sentInitialNavigationMessageRef.current = sendKey;
-    clearInitialMessageContentHistoryState(
-      `${location.pathname}${location.search}`,
-    );
+    const url = new URL(window.location.href);
+    url.searchParams.delete("newThread");
+    clearInitialMessageContentHistoryState(`${url.pathname}${url.search}`);
   }, [
     location.pathname,
     location.search,
     location.state,
     isLoadingMessages,
     noModelsMessage,
-    ready,
     readOnly,
     resolvedWorkspaceId,
     shouldShowChat,

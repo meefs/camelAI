@@ -36,6 +36,7 @@ import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
   ensureGroupForThread,
+  getGroupForWorkspace,
   listGroupsForMove,
 } from "@/lib/chat-groups.server";
 import { readThreadMessages } from "@/lib/chat-history.server";
@@ -356,10 +357,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   }
 
   if (isNewThread) {
-    const { orgId, workspaceId } = await requireSessionWorkspaceAccess(
+    const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
       request,
       context,
     );
+    const groupId = url.searchParams.get("group")?.trim() || null;
     const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     const [thread, org] = await Promise.all([
       orgStub.getThread(params.id),
@@ -372,6 +374,33 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     if ((thread.user_message_count ?? 0) > 0) {
       throw redirect(`/chat/${params.id}`);
     }
+    const [activeChatGroup, moveChatGroups] = await Promise.all([
+      groupId
+        ? getGroupForWorkspace(context, {
+            userId,
+            orgId,
+            workspaceId,
+            groupId,
+          }).catch((error) => {
+            console.error("Failed to load new thread chat group:", error);
+            return null;
+          })
+        : ensureGroupForThread(context, {
+            userId,
+            orgId,
+            workspaceId,
+            threadId: params.id,
+            fallbackName: thread.title,
+          }).catch((error) => {
+            console.error("Failed to ensure new thread chat group:", error);
+            return null;
+          }),
+      listGroupsForMove(context, {
+        userId,
+        orgId,
+        workspaceId,
+      }).catch(() => []),
+    ]);
 
     return {
       threadId: params.id,
@@ -394,8 +423,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isOrgAdmin: false,
       recentModelScope: { orgId, workspaceId },
       readOnly: false,
-      activeChatGroup: null,
-      moveChatGroups: [],
+      activeChatGroup,
+      moveChatGroups,
     };
   }
 

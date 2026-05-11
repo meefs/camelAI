@@ -3,10 +3,11 @@
  * Deploy script for main worker to staging or prod.
  *
  * This script:
- * 1. Copies the environment-specific wrangler config to build/server/
- * 2. Fixes paths to be relative to build/server/
- * 3. Updates the .wrangler/deploy/config.json redirect
- * 4. Runs wrangler deploy
+ * 1. Builds the app from the current checkout
+ * 2. Copies the environment-specific wrangler config to build/server/
+ * 3. Fixes paths to be relative to build/server/
+ * 4. Updates the .wrangler/deploy/config.json redirect
+ * 5. Runs wrangler deploy
  *
  * Usage: node scripts/deploy-main.mjs [staging|prod]
  */
@@ -30,9 +31,19 @@ const sourceConfig = path.join(rootDir, `wrangler.${env}.jsonc`);
 const targetConfig = path.join(rootDir, 'build/server', `wrangler.${env}.json`);
 const redirectConfig = path.join(rootDir, '.wrangler/deploy/config.json');
 
+if (process.env.SKIP_BUILD === '1') {
+  console.log('Skipping build because SKIP_BUILD=1');
+} else {
+  console.log('Building app...');
+  execSync('bun run build', {
+    cwd: rootDir,
+    stdio: 'inherit'
+  });
+}
+
 // Check that build exists
 if (!fs.existsSync(path.join(rootDir, 'build/server/index.js'))) {
-  console.error('Build not found. Run "npm run build" first.');
+  console.error('Build not found. Run "bun run build" first.');
   process.exit(1);
 }
 
