@@ -19,6 +19,7 @@ import {
   getUserOrgs,
   listUserWorkspacesAcrossOrgs,
   listOrgWorkspaces,
+  getWorkspace,
 } from "./auth-do";
 
 const LOCAL_AUTH_USER_ID = "local-dev-user";
@@ -514,7 +515,7 @@ async function getAuthContextUncached(
   };
 
   // Get all workspaces across all orgs (for workspace switcher).
-  const allWorkspaces = await listUserWorkspacesAcrossOrgs(
+  let allWorkspaces = await listUserWorkspacesAcrossOrgs(
     authEnv,
     sessionContext.session.user_id,
     orgs,
@@ -522,21 +523,58 @@ async function getAuthContextUncached(
 
   // Workspaces in the current org only (for settings/management).
   // Derive from allWorkspaces to avoid duplicate current-org RPC traversal.
-  const workspaces = allWorkspaces.filter((ws) => ws.org_id === currentOrg.id);
+  let workspaces = allWorkspaces.filter((ws) => ws.org_id === currentOrg.id);
 
   // Check if org has workspaces the user can't access (only when user has none)
   let orgWorkspaceCount = workspaces.length;
   if (workspaces.length === 0) {
-    const allOrgWorkspaces = await listOrgWorkspaces(authEnv, currentOrg.id);
-    orgWorkspaceCount = allOrgWorkspaces.length;
+    try {
+      const allOrgWorkspaces = await listOrgWorkspaces(authEnv, currentOrg.id);
+      orgWorkspaceCount = allOrgWorkspaces.length;
+    } catch (error) {
+      console.warn("[auth] failed to count current org workspaces", {
+        user_id: sessionContext.session.user_id,
+        org_id: currentOrg.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // Select current workspace - must be from current org to maintain consistency
   // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
   const sessionWorkspaceId = sessionContext.session.workspace_id;
-  const sessionWorkspaceStillValid = sessionWorkspaceId
+  let sessionWorkspaceStillValid = sessionWorkspaceId
     ? workspaces.some((ws) => ws.id === sessionWorkspaceId)
     : false;
+
+  if (sessionWorkspaceId && !sessionWorkspaceStillValid) {
+    try {
+      const sessionWorkspace = await getWorkspace(authEnv, sessionWorkspaceId);
+      if (sessionWorkspace?.org_id === currentOrg.id) {
+        const workspaceWithAccess: WorkspaceWithAccess = {
+          ...sessionWorkspace,
+          access_level: "full",
+        };
+        allWorkspaces = [
+          ...allWorkspaces.filter((ws) => ws.id !== workspaceWithAccess.id),
+          workspaceWithAccess,
+        ];
+        workspaces = [
+          ...workspaces.filter((ws) => ws.id !== workspaceWithAccess.id),
+          workspaceWithAccess,
+        ];
+        orgWorkspaceCount = Math.max(orgWorkspaceCount, workspaces.length);
+        sessionWorkspaceStillValid = true;
+      }
+    } catch (error) {
+      console.warn("[auth] failed to load session workspace fallback", {
+        user_id: sessionContext.session.user_id,
+        org_id: currentOrg.id,
+        workspace_id: sessionWorkspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   const currentWorkspace = sessionWorkspaceStillValid
     ? workspaces.find((ws) => ws.id === sessionWorkspaceId)!

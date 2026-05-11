@@ -8,7 +8,7 @@
  * Run with: bun run test:workers
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createSignedSession, type SignedSessionData } from '../src/signed-session';
 import { getAuthContext, requireOrgAdmin } from '../../../src/lib/auth.server';
@@ -24,6 +24,10 @@ import {
   listOrgWorkspaces,
   type TestEnv,
 } from './test-helpers';
+import {
+  listOrgWorkspaces as prodListOrgWorkspaces,
+  listUserWorkspacesAcrossOrgs as prodListUserWorkspacesAcrossOrgs,
+} from '../../../src/lib/auth-do';
 
 describe('Auth context building (parallel DO calls)', () => {
   const testEnv = env as unknown as TestEnv;
@@ -166,6 +170,108 @@ describe('Auth context building (parallel DO calls)', () => {
 
       // Member should see workspaces from both orgs
       expect(allWorkspaces.length).toBe(2);
+    });
+  });
+
+  describe('transient workspace RPC failures', () => {
+    it('falls back to the org workspace index row when WorkspaceDO info is unavailable', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const env = {
+        ORG: {
+          idFromName: (id: string) => id,
+          get: () => ({
+            getWorkspaces: async () => [
+              { id: 'ws-fallback', name: 'Fallback Workspace', created_at: 123, archived: 0 },
+            ],
+          }),
+        },
+        WORKSPACE: {
+          idFromName: (id: string) => id,
+          get: () => ({
+            getInfo: async () => {
+              throw new Error('Network connection lost.');
+            },
+          }),
+        },
+      };
+
+      const workspaces = await prodListOrgWorkspaces(env as any, 'org-1');
+
+      expect(workspaces).toHaveLength(1);
+      expect(workspaces[0]).toMatchObject({
+        id: 'ws-fallback',
+        org_id: 'org-1',
+        name: 'Fallback Workspace',
+        created_at: 123,
+        archived: false,
+        compute_tier: 'standard',
+        email_handle: null,
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[auth] failed to load workspace info, using org index row',
+        expect.objectContaining({ orgId: 'org-1', workspaceId: 'ws-fallback' }),
+      );
+
+      warnSpy.mockRestore();
+    });
+
+    it('skips one failing org workspace list without failing the full switcher list', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const workspace = {
+        id: 'ws-ok',
+        org_id: 'org-ok',
+        name: 'OK Workspace',
+        description: null,
+        created_by: 'user-1',
+        created_at: 456,
+        avatar: { color: '#4F46E5', content: 'OK' },
+        archived: false,
+        archived_at: null,
+        archived_by: null,
+        compute_tier: 'standard',
+        email_handle: null,
+      };
+      const env = {
+        ORG: {
+          idFromName: (id: string) => id,
+          get: (id: string) => ({
+            getWorkspaces: async () => {
+              if (id === 'org-failing') {
+                throw new Error('Durable Object storage operation exceeded timeout');
+              }
+              return [{ id: 'ws-ok', name: 'OK Workspace', created_at: 456, archived: 0 }];
+            },
+          }),
+        },
+        WORKSPACE: {
+          idFromName: (id: string) => id,
+          get: () => ({
+            getInfo: async () => workspace,
+          }),
+        },
+      };
+
+      const workspaces = await prodListUserWorkspacesAcrossOrgs(
+        env as any,
+        'user-1',
+        [
+          { org_id: 'org-failing', org_name: 'Failing Org', role: 'member', joined_at: 1 },
+          { org_id: 'org-ok', org_name: 'OK Org', role: 'member', joined_at: 2 },
+        ],
+      );
+
+      expect(workspaces).toHaveLength(1);
+      expect(workspaces[0]).toMatchObject({
+        id: 'ws-ok',
+        org_id: 'org-ok',
+        access_level: 'full',
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[auth] failed to load org workspaces, skipping org in workspace switcher',
+        expect.objectContaining({ userId: 'user-1', orgId: 'org-failing' }),
+      );
+
+      warnSpy.mockRestore();
     });
   });
 

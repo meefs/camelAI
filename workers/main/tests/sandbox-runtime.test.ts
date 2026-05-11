@@ -146,6 +146,77 @@ describe('sandbox runtime', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('retries transient message history fetch handshake failures', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const timeout = new Error('handshake timeout');
+    timeout.name = 'HandshakeTimeoutError';
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true, messages: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    const env = {
+      SANDBOX_HOST: { fetch: fetchMock },
+    } as unknown as WorkspaceContainerEnv;
+
+    const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
+    const result = await container.readThreadMessagesStream('thread-1');
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Sandbox] transient sandbox fetch failed; retrying',
+      expect.objectContaining({
+        operation: 'chat_messages',
+        workspaceId: 'ws-1',
+        orgId: 'org-1',
+        attempt: 1,
+      }),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('retries transient chat websocket handshake failures', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const timeout = new Error('handshake timeout');
+    timeout.name = 'HandshakeTimeoutError';
+    const socket = new WebSocketPair()[0];
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce(new Response(null, { status: 101, webSocket: socket }));
+
+    const env = {
+      SANDBOX_HOST: { fetch: fetchMock },
+      WORKER_BASE_URL: 'https://camelai.dev',
+    } as unknown as WorkspaceContainerEnv;
+
+    const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
+    const result = await container.connectChatWebSocket({ threadId: 'thread-1' });
+
+    expect(result).toBe(socket);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Sandbox] transient sandbox fetch failed; retrying',
+      expect.objectContaining({
+        operation: 'chat_websocket',
+        workspaceId: 'ws-1',
+        orgId: 'org-1',
+        attempt: 1,
+      }),
+    );
+
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it('retries fork on the control port when SANDBOX_HOST_URL points at the local proxy port', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));

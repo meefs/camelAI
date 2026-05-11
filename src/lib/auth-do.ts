@@ -20,6 +20,7 @@ import {
   getBlocklistFromKV,
 } from "./email-domain-blocklist";
 import { getBillingPlanLimits } from "./billing-plans";
+import { generateDefaultAvatar } from "./avatar";
 
 import {
   type AuthEnv,
@@ -35,6 +36,33 @@ interface GetUserOrgsOptions {
     Promise<Organization | null> | Organization | null
   >;
   preloadedUserOrgs?: UserOrg[];
+}
+
+type OrgWorkspaceRow = {
+  id: string;
+  name: string;
+  created_at: number;
+  archived: number;
+};
+
+function fallbackWorkspaceFromOrgRow(
+  orgId: string,
+  row: OrgWorkspaceRow,
+): Workspace {
+  return {
+    id: row.id,
+    org_id: orgId,
+    name: row.name,
+    description: null,
+    created_by: "",
+    created_at: row.created_at,
+    avatar: generateDefaultAvatar(row.name),
+    archived: Boolean(row.archived),
+    archived_at: null,
+    archived_by: null,
+    compute_tier: "standard",
+    email_handle: null,
+  };
 }
 
 function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
@@ -719,14 +747,37 @@ export async function listOrgWorkspaces(
   includeArchived = false,
 ): Promise<Workspace[]> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  const workspaceIds = await stub.getWorkspaces(includeArchived);
+  const workspaceIds = (await stub.getWorkspaces(
+    includeArchived,
+  )) as OrgWorkspaceRow[];
 
-  const infos = await Promise.all(
-    workspaceIds.map(async (ws) => {
+  const results = await Promise.allSettled(
+    workspaceIds.map(async (ws): Promise<Workspace | null> => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      return wsStub.getInfo();
+      try {
+        return await wsStub.getInfo();
+      } catch (error) {
+        console.warn("[auth] failed to load workspace info, using org index row", {
+          orgId,
+          workspaceId: ws.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return fallbackWorkspaceFromOrgRow(orgId, ws);
+      }
     }),
   );
+  const infos = results.flatMap((result, index) => {
+    if (result.status === "fulfilled") return [result.value];
+    const ws = workspaceIds[index];
+    if (!ws) return [];
+    console.warn("[auth] failed to load workspace info, using org index row", {
+      orgId,
+      workspaceId: ws.id,
+      error:
+        result.reason instanceof Error ? result.reason.message : String(result.reason),
+    });
+    return [fallbackWorkspaceFromOrgRow(orgId, ws)];
+  });
 
   if (includeArchived) {
     return infos.filter((info) => info !== null) as Workspace[];
@@ -781,7 +832,7 @@ export async function listUserWorkspacesAcrossOrgs(
   if (memberships.length === 0) return [];
 
   // When orgs are pre-validated (passed in), skip redundant isOrgMember checks
-  const workspaces = await Promise.all(
+  const results = await Promise.allSettled(
     orgs
       ? memberships.map((membership) =>
           listOrgWorkspacesForMember(env, membership.org_id),
@@ -790,7 +841,18 @@ export async function listUserWorkspacesAcrossOrgs(
           listUserWorkspaces(env, userId, membership.org_id),
         ),
   );
-  return workspaces.flat();
+  return results.flatMap((result, index) => {
+    if (result.status === "fulfilled") return result.value;
+
+    const membership = memberships[index];
+    console.warn("[auth] failed to load org workspaces, skipping org in workspace switcher", {
+      userId,
+      orgId: membership?.org_id,
+      error:
+        result.reason instanceof Error ? result.reason.message : String(result.reason),
+    });
+    return [];
+  });
 }
 
 export async function getWorkspace(

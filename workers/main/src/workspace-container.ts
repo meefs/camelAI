@@ -98,6 +98,12 @@ interface ReadThreadMessagesStreamOptions {
   skipBanCheck?: boolean;
 }
 
+interface SandboxFetchRetryOptions {
+  operation: string;
+  attempts?: number;
+  initialDelayMs?: number;
+}
+
 interface ControlPlaneExistsResponse {
   exists: boolean;
   isFile?: boolean;
@@ -142,6 +148,36 @@ const INTEGRATION_ENV_FILE_PATH = "/home/claude/.chiridion/integration.env";
 
 function toIsoTime(ms: number): string {
   return new Date(ms).toISOString();
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorName(error: unknown): string {
+  if (error instanceof Error) return error.name;
+  if (typeof error === "object" && error && "name" in error) {
+    return String((error as { name?: unknown }).name ?? "");
+  }
+  return "";
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return String(error);
+}
+
+function isTransientSandboxFetchError(error: unknown): boolean {
+  const text = `${getErrorName(error)} ${getErrorMessage(error)}`.toLowerCase();
+  return (
+    text.includes("handshaketimeouterror") ||
+    text.includes("handshake timeout") ||
+    text.includes("network connection lost") ||
+    text.includes("connection reset") ||
+    text.includes("connection closed") ||
+    text.includes("fetch failed")
+  );
 }
 
 export class WorkspaceContainer {
@@ -289,6 +325,40 @@ export class WorkspaceContainer {
       );
     }
     return this.env.SANDBOX_HOST.fetch(url, init);
+  }
+
+  private async fetchSandboxWithRetry(
+    url: string,
+    init: RequestInit = {},
+    options: { skipBanCheck?: boolean } = {},
+    retry: SandboxFetchRetryOptions,
+  ): Promise<Response> {
+    const attempts = Math.max(1, retry.attempts ?? 3);
+    const initialDelayMs = Math.max(0, retry.initialDelayMs ?? 150);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.fetchSandbox(url, init, options);
+      } catch (error) {
+        lastError = error;
+        const canRetry =
+          attempt < attempts && isTransientSandboxFetchError(error);
+        if (!canRetry) throw error;
+
+        console.warn("[Sandbox] transient sandbox fetch failed; retrying", {
+          operation: retry.operation,
+          workspaceId: this.workspaceId,
+          orgId: this.orgId,
+          attempt,
+          attempts,
+          error: getErrorMessage(error),
+        });
+        await delay(initialDelayMs * 2 ** (attempt - 1));
+      }
+    }
+
+    throw lastError;
   }
 
   /**
@@ -705,9 +775,12 @@ export class WorkspaceContainer {
       headers["X-Chiridion-Byok-OpenRouter-Key"] = options.byokProxy.apiKey;
     }
 
-    const response = await this.fetchSandbox(this.sandboxUrl("/chat"), {
-      headers,
-    });
+    const response = await this.fetchSandboxWithRetry(
+      this.sandboxUrl("/chat"),
+      { headers },
+      {},
+      { operation: "chat_websocket", attempts: 2, initialDelayMs: 250 },
+    );
 
     if (response.status !== 101 || !response.webSocket) {
       const body = await response.text();
@@ -930,12 +1003,13 @@ export class WorkspaceContainer {
       query.codexSessionId = codexSessionId;
     }
 
-    const response = await this.fetchSandbox(
+    const response = await this.fetchSandboxWithRetry(
       this.sandboxUrl("/chat/messages", query),
       {
         headers: { Accept: "application/json" },
       },
       { skipBanCheck: options.skipBanCheck },
+      { operation: "chat_messages", attempts: 3, initialDelayMs: 150 },
     );
 
     if (!response.ok) {
