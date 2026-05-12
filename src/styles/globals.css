@@ -271,17 +271,46 @@
   color: var(--shiki-dark) !important;
 }
 
-.code-preview-lines code {
-  counter-reset: line;
-  display: flex;
-  flex-direction: column;
+.source-preview-lines,
+.code-preview-lines {
+  --source-line-number-gap: 1rem;
+  --source-line-number-width: max(
+    1.25rem,
+    calc(var(--source-line-number-digits, 2) * 0.65em)
+  );
+  overflow-x: hidden;
 }
 
+.source-preview-lines pre,
+.code-preview-lines pre {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: normal;
+}
+
+.source-preview-lines code,
+.code-preview-lines code {
+  counter-reset: line;
+  display: block;
+}
+
+.source-preview-lines .line,
+.code-preview-lines .line {
+  display: block;
+  min-height: 1.25rem;
+  padding-left: calc(var(--source-line-number-width) + var(--source-line-number-gap));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.source-preview-lines .line::before,
 .code-preview-lines .line::before {
   content: counter(line);
   counter-increment: line;
   display: inline-block;
-  margin-right: 1rem;
+  width: var(--source-line-number-width);
+  margin-left: calc(-1 * (var(--source-line-number-width) + var(--source-line-number-gap)));
+  margin-right: var(--source-line-number-gap);
   text-align: right;
   color: var(--color-muted-foreground);
   opacity: 0.3;

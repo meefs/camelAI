@@ -4,7 +4,7 @@ import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'reac
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
-import { CodePreview } from './code-preview';
+import { CodePreview, SourcePreview } from './code-preview';
 import { getPreviewType, isBinarySpreadsheet } from './file-type-utils';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
@@ -335,32 +335,22 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'text' && (
-        <div>
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
           {(textStatus === 'loading' || textStatus === 'idle') && (
-            <p className="text-sm text-muted-foreground">Loading preview...</p>
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
           )}
           {textStatus === 'error' && (
-            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && (
-            <>
-              <pre
-                className={cn(
-                  'w-full min-w-0 overflow-auto text-xs',
-                  layout === 'panel'
-                    ? 'h-full max-h-full p-4'
-                    : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
-                  textPreview ? 'text-foreground' : 'text-muted-foreground'
-                )}
-              >
-                {textPreview || 'No preview content available.'}
-              </pre>
-              {lineInfo.truncated && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
-                </p>
-              )}
-            </>
+            <SourcePreview
+              code={textPreview}
+              filename={filename}
+              layout={layout}
+              truncated={lineInfo.truncated}
+              totalLines={lineInfo.totalLines}
+              maxLines={MAX_TEXT_LINES}
+            />
           )}
         </div>
       )}
@@ -429,35 +419,35 @@ function FilePreviewContentComponent({
           )}
           {textStatus === 'ready' && (
             (markdownViewMode ?? 'rendered') === 'rendered' ? (
-              <div
-                className={cn(
-                  layout === 'panel'
-                    ? 'h-full overflow-auto'
-                    : 'max-h-[60vh] overflow-auto'
-                )}
-              >
-                <div className="mx-auto max-w-3xl px-6 py-6">
-                  <MarkdownRenderer content={textPreview} />
+              <>
+                <div
+                  className={cn(
+                    layout === 'panel'
+                      ? 'h-full overflow-auto'
+                      : 'max-h-[60vh] overflow-auto'
+                  )}
+                >
+                  <div className="px-6 py-6">
+                    <MarkdownRenderer content={textPreview} />
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <pre
-                className={cn(
-                  'w-full min-w-0 overflow-auto whitespace-pre-wrap text-xs',
-                  layout === 'panel'
-                    ? 'h-full max-h-full'
-                    : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
-                  textPreview ? 'text-foreground' : 'text-muted-foreground'
+                {lineInfo.truncated && (
+                  <p className="mt-2 px-3 text-xs text-muted-foreground">
+                    Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
+                  </p>
                 )}
-              >
-                {textPreview || 'No preview content available.'}
-              </pre>
+              </>
+            ) : (
+              <SourcePreview
+                code={textPreview}
+                filename={filename}
+                layout={layout}
+                truncated={lineInfo.truncated}
+                totalLines={lineInfo.totalLines}
+                maxLines={MAX_TEXT_LINES}
+                languageOverride="markdown"
+              />
             )
-          )}
-          {lineInfo.truncated && (
-            <p className="mt-2 px-3 text-xs text-muted-foreground">
-              Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
-            </p>
           )}
         </div>
       )}
