@@ -16,6 +16,16 @@ func assertReportedCost(t *testing.T, usage UsageTokens, want float64) {
 	}
 }
 
+func assertUpstreamInferenceCost(t *testing.T, usage UsageTokens, want float64) {
+	t.Helper()
+	if usage.UpstreamInferenceCostUSD == nil {
+		t.Fatalf("expected upstream inference cost %.6f, got nil", want)
+	}
+	if diff := *usage.UpstreamInferenceCostUSD - want; diff > 0.000001 || diff < -0.000001 {
+		t.Fatalf("expected upstream inference cost %.6f, got %.6f", want, *usage.UpstreamInferenceCostUSD)
+	}
+}
+
 func TestCopySSEStreamWithUsage(t *testing.T) {
 	sseStream := strings.Join([]string{
 		"event: message_start",
@@ -100,6 +110,31 @@ func TestCopyNonStreamingWithUsage(t *testing.T) {
 	}
 }
 
+func TestCopyNonStreamingWithUsage_OpenRouterAnthropicBYOKUpstreamCost(t *testing.T) {
+	jsonBody := `{"id":"gen-1","type":"message","model":"anthropic/claude-4.6-sonnet-20260217","provider":"Amazon Bedrock","usage":{"input_tokens":12,"output_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cost":0,"is_byok":true,"cost_details":{"upstream_inference_cost":0.000096,"upstream_inference_prompt_cost":0.000036,"upstream_inference_completions_cost":0.00006}}}`
+
+	w := httptest.NewRecorder()
+	usage, err := copyNonStreamingWithUsage(w, strings.NewReader(jsonBody))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if usage.Model != "anthropic/claude-4.6-sonnet-20260217" {
+		t.Errorf("expected model anthropic/claude-4.6-sonnet-20260217, got %s", usage.Model)
+	}
+	if usage.InputTokens != 12 {
+		t.Errorf("expected 12 input tokens, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 4 {
+		t.Errorf("expected 4 output tokens, got %d", usage.OutputTokens)
+	}
+	assertReportedCost(t, usage, 0)
+	assertUpstreamInferenceCost(t, usage, 0.000096)
+	if got, want := usage.EffectiveCostUSD(), 0.000096; got-want > 0.000001 || want-got > 0.000001 {
+		t.Fatalf("EffectiveCostUSD() = %.6f, want %.6f", got, want)
+	}
+}
+
 func TestCopyResponsesSSEStreamWithUsage(t *testing.T) {
 	sseStream := strings.Join([]string{
 		"event: response.created",
@@ -166,6 +201,38 @@ func TestCopyOpenRouterChatCompletionSSEStreamWithUsage(t *testing.T) {
 	assertReportedCost(t, usage, 0.95)
 	if !strings.Contains(w.Body.String(), `"cost":0.95`) {
 		t.Fatal("expected stream body to be forwarded unchanged")
+	}
+}
+
+func TestCopyOpenRouterChatCompletionSSEStreamWithUsage_BYOKUpstreamCost(t *testing.T) {
+	sseStream := strings.Join([]string{
+		`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"anthropic/claude-4.6-sonnet-20260217","provider":"Amazon Bedrock","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}],"usage":null}`,
+		"",
+		`data: {"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"anthropic/claude-4.6-sonnet-20260217","provider":"Amazon Bedrock","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16,"cost":0,"is_byok":true,"cost_details":{"upstream_inference_cost":0.000096,"upstream_inference_prompt_cost":0.000036,"upstream_inference_completions_cost":0.00006}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	w := httptest.NewRecorder()
+	usage, err := copySSEStreamWithUsage(w, strings.NewReader(sseStream))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if usage.Model != "anthropic/claude-4.6-sonnet-20260217" {
+		t.Errorf("expected model anthropic/claude-4.6-sonnet-20260217, got %s", usage.Model)
+	}
+	if usage.InputTokens != 12 {
+		t.Errorf("expected 12 input tokens, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 4 {
+		t.Errorf("expected 4 output tokens, got %d", usage.OutputTokens)
+	}
+	assertReportedCost(t, usage, 0)
+	assertUpstreamInferenceCost(t, usage, 0.000096)
+	if got, want := usage.EffectiveCostUSD(), 0.000096; got-want > 0.000001 || want-got > 0.000001 {
+		t.Fatalf("EffectiveCostUSD() = %.6f, want %.6f", got, want)
 	}
 }
 
@@ -304,6 +371,34 @@ func TestUsageTokensEffectiveCostUSDUsesReportedCost(t *testing.T) {
 
 	if got := usage.EffectiveCostUSD(); got != reported {
 		t.Fatalf("EffectiveCostUSD() = %.6f, want %.6f", got, reported)
+	}
+}
+
+func TestUsageTokensEffectiveCostUSDAddsReportedAndUpstreamCosts(t *testing.T) {
+	reported := 0.0012
+	upstream := 0.0048
+	usage := UsageTokens{
+		Model:                    "anthropic/claude-4.6-sonnet-20260217",
+		InputTokens:              1000000,
+		ReportedCostUSD:          &reported,
+		UpstreamInferenceCostUSD: &upstream,
+	}
+
+	if got, want := usage.EffectiveCostUSD(), 0.006; got-want > 0.000001 || want-got > 0.000001 {
+		t.Fatalf("EffectiveCostUSD() = %.6f, want %.6f", got, want)
+	}
+}
+
+func TestUsageTokensEffectiveCostUSDFallsBackWhenReportedCostIsZero(t *testing.T) {
+	reported := 0.0
+	usage := UsageTokens{
+		Model:           "anthropic/claude-4.6-sonnet-20260217",
+		OutputTokens:    1000,
+		ReportedCostUSD: &reported,
+	}
+
+	if got, want := usage.EffectiveCostUSD(), 0.015; got-want > 0.000001 || want-got > 0.000001 {
+		t.Fatalf("EffectiveCostUSD() = %.6f, want %.6f", got, want)
 	}
 }
 

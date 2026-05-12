@@ -271,6 +271,7 @@ type UsageTokens struct {
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
 	ReportedCostUSD          *float64
+	UpstreamInferenceCostUSD *float64
 }
 
 func (u UsageTokens) HasBillableTokens() bool {
@@ -278,7 +279,8 @@ func (u UsageTokens) HasBillableTokens() bool {
 		u.OutputTokens > 0 ||
 		u.CacheCreationInputTokens > 0 ||
 		u.CacheReadInputTokens > 0 ||
-		(u.ReportedCostUSD != nil && *u.ReportedCostUSD > 0)
+		(u.ReportedCostUSD != nil && *u.ReportedCostUSD > 0) ||
+		(u.UpstreamInferenceCostUSD != nil && *u.UpstreamInferenceCostUSD > 0)
 }
 
 // CostUSD calculates the total cost in USD for the given usage.
@@ -291,11 +293,18 @@ func (u *UsageTokens) CostUSD() float64 {
 }
 
 func (u *UsageTokens) EffectiveCostUSD() float64 {
-	if u != nil && u.ReportedCostUSD != nil {
-		return *u.ReportedCostUSD
-	}
 	if u == nil {
 		return 0
+	}
+	var reportedCost float64
+	if u.ReportedCostUSD != nil && *u.ReportedCostUSD > 0 {
+		reportedCost += *u.ReportedCostUSD
+	}
+	if u.UpstreamInferenceCostUSD != nil && *u.UpstreamInferenceCostUSD > 0 {
+		reportedCost += *u.UpstreamInferenceCostUSD
+	}
+	if reportedCost > 0 {
+		return reportedCost
 	}
 	return u.CostUSD()
 }
