@@ -436,7 +436,7 @@ function FilePreviewContentComponent({
                     : 'max-h-[60vh] overflow-auto'
                 )}
               >
-                <div className="mx-auto max-w-3xl px-6 py-6">
+                <div className="px-6 py-6">
                   <MarkdownRenderer content={textPreview} />
                 </div>
               </div>
@@ -445,7 +445,7 @@ function FilePreviewContentComponent({
                 className={cn(
                   'w-full min-w-0 overflow-auto whitespace-pre-wrap text-xs',
                   layout === 'panel'
-                    ? 'h-full max-h-full'
+                    ? 'h-full max-h-full p-4'
                     : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
                   textPreview ? 'text-foreground' : 'text-muted-foreground'
                 )}
