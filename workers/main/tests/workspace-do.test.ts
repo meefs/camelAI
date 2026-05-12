@@ -90,6 +90,63 @@ describe('Workspace DO (full-stack with DOs)', () => {
     expect(actions).toContain('workspace_updated');
   });
 
+  it('serves full workspace metadata from OrgDO without per-workspace reads', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Workspace Owner');
+    const { org } = await createOrg(testEnv, 'Org Workspace Metadata', userId);
+
+    const workspace = await createWorkspace(testEnv, org.id, 'Metadata', userId, 'Stored on org');
+    const updated = await updateWorkspace(
+      testEnv,
+      workspace.id,
+      {
+        name: 'Metadata Updated',
+        description: 'Updated on workspace and mirrored to org',
+      },
+      userId,
+    );
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<{
+      getWorkspaceInfos: () => Promise<Workspace[]>;
+    }>;
+    const orgWorkspaces = await orgStub.getWorkspaceInfos();
+    const fromOrg = orgWorkspaces.find((entry) => entry.id === workspace.id);
+
+    expect(fromOrg).toMatchObject({
+      id: workspace.id,
+      org_id: org.id,
+      name: 'Metadata Updated',
+      description: 'Updated on workspace and mirrored to org',
+      created_by: userId,
+      archived: false,
+      compute_tier: 'standard',
+    });
+    expect(fromOrg?.avatar).toEqual(updated?.avatar);
+    expect(fromOrg?.email_handle).toBe(updated?.email_handle);
+  });
+
+  it('skips stale org workspace rows when WorkspaceDO info is missing', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Workspace Owner');
+    const { org } = await createOrg(testEnv, 'Org Stale Workspace Rows', userId);
+    const orphanWorkspaceId = `orphan-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id)) as DurableObjectStub<{
+      addWorkspace: (
+        workspaceId: string,
+        name: string,
+        createdAt: number,
+        actorId: string
+      ) => Promise<void>;
+      getWorkspaceInfos: () => Promise<Workspace[]>;
+    }>;
+    await orgStub.addWorkspace(orphanWorkspaceId, 'Orphan Workspace', Date.now(), userId);
+
+    const orgWorkspaces = await orgStub.getWorkspaceInfos();
+
+    expect(orgWorkspaces.some((entry) => entry.id === orphanWorkspaceId)).toBe(false);
+  });
+
   it('archives workspace and preserves metadata for audit', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Archive Owner');

@@ -43,32 +43,46 @@ type OrgWorkspaceRow = {
   name: string;
   created_at: number;
   archived: number;
+  description?: string | null;
+  created_by?: string | null;
+  avatar_color?: string | null;
+  avatar_content?: string | null;
+  archived_at?: number | null;
+  archived_by?: string | null;
+  compute_tier?: Workspace["compute_tier"] | string | null;
+  email_handle?: string | null;
 };
 
 function fallbackWorkspaceFromOrgRow(
   orgId: string,
   row: OrgWorkspaceRow,
 ): Workspace {
+  const avatar =
+    row.avatar_color && row.avatar_content
+      ? { color: row.avatar_color, content: row.avatar_content }
+      : generateDefaultAvatar(row.name);
   return {
     id: row.id,
     org_id: orgId,
     name: row.name,
-    description: null,
-    created_by: "",
+    description: row.description ?? null,
+    created_by: row.created_by ?? "",
     created_at: row.created_at,
-    avatar: generateDefaultAvatar(row.name),
+    avatar,
     archived: Boolean(row.archived),
-    archived_at: null,
-    archived_by: null,
+    archived_at: row.archived_at ?? null,
+    archived_by: row.archived_by ?? null,
     compute_tier: "standard",
-    email_handle: null,
+    email_handle: row.email_handle ?? null,
   };
 }
 
 function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
   return (
     error instanceof TypeError &&
-    error.message.includes(`does not implement "${methodName}"`)
+    (error.message.includes(`does not implement "${methodName}"`) ||
+      error.message.includes(`${methodName} is not a function`) ||
+      error.message.includes(`.${methodName} is not a function`))
   );
 }
 
@@ -747,6 +761,19 @@ export async function listOrgWorkspaces(
   includeArchived = false,
 ): Promise<Workspace[]> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  try {
+    const workspaces = await (stub as unknown as {
+      getWorkspaceInfos(includeArchived?: boolean): Promise<Workspace[]>;
+    }).getWorkspaceInfos(includeArchived);
+    return includeArchived
+      ? workspaces
+      : workspaces.filter((workspace) => !workspace.archived);
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, "getWorkspaceInfos")) {
+      throw error;
+    }
+  }
+
   const workspaceIds = (await stub.getWorkspaces(
     includeArchived,
   )) as OrgWorkspaceRow[];

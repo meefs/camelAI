@@ -259,6 +259,21 @@ export interface WorkerScriptPreviewUpdateResult {
   stale: boolean;
 }
 
+type OrgWorkspaceInfoRow = {
+  id: string;
+  name: string;
+  created_at: number;
+  archived: number;
+  description?: string | null;
+  created_by?: string | null;
+  avatar_color?: string | null;
+  avatar_content?: string | null;
+  archived_at?: number | null;
+  archived_by?: string | null;
+  compute_tier?: Workspace["compute_tier"] | string | null;
+  email_handle?: string | null;
+};
+
 export interface WorkerScriptCustomDomainUpdateInput {
   hostname: string | null;
   cf_hostname_id?: string | null;
@@ -1664,7 +1679,15 @@ export class OrgDO extends DurableObject<DOEnv> {
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
           created_at INTEGER NOT NULL,
-          archived INTEGER NOT NULL DEFAULT 0
+          archived INTEGER NOT NULL DEFAULT 0,
+          description TEXT,
+          created_by TEXT,
+          avatar_color TEXT,
+          avatar_content TEXT,
+          archived_at INTEGER,
+          archived_by TEXT,
+          compute_tier TEXT NOT NULL DEFAULT 'standard',
+          email_handle TEXT
         )
       `);
       this.sql.exec(`
@@ -2227,7 +2250,32 @@ export class OrgDO extends DurableObject<DOEnv> {
       `);
     }
 
-    const CURRENT_SCHEMA_VERSION = 22;
+    if (version < 23) {
+      const workspaceColumns = new Set(
+        this.sql
+          .exec<{ name: string }>("PRAGMA table_info(workspaces)")
+          .toArray()
+          .map((column) => column.name),
+      );
+      const addWorkspaceColumn = (name: string, definition: string) => {
+        if (!workspaceColumns.has(name)) {
+          this.sql.exec(`ALTER TABLE workspaces ADD COLUMN ${definition}`);
+        }
+      };
+      addWorkspaceColumn("description", "description TEXT");
+      addWorkspaceColumn("created_by", "created_by TEXT");
+      addWorkspaceColumn("avatar_color", "avatar_color TEXT");
+      addWorkspaceColumn("avatar_content", "avatar_content TEXT");
+      addWorkspaceColumn("archived_at", "archived_at INTEGER");
+      addWorkspaceColumn("archived_by", "archived_by TEXT");
+      addWorkspaceColumn(
+        "compute_tier",
+        "compute_tier TEXT NOT NULL DEFAULT 'standard'",
+      );
+      addWorkspaceColumn("email_handle", "email_handle TEXT");
+    }
+
+    const CURRENT_SCHEMA_VERSION = 23;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -4115,13 +4163,79 @@ export class OrgDO extends DurableObject<DOEnv> {
         `A workspace named "${name}" already exists in this organization`,
       );
     }
+    const avatar = generateDefaultAvatar(name);
     this.sql.exec(
-      "INSERT INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at",
+      `INSERT INTO workspaces (
+        id,
+        name,
+        created_at,
+        archived,
+        created_by,
+        avatar_color,
+        avatar_content,
+        compute_tier
+      )
+      VALUES (?, ?, ?, 0, ?, ?, ?, 'standard')
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        created_at = excluded.created_at,
+        created_by = COALESCE(workspaces.created_by, excluded.created_by),
+        avatar_color = COALESCE(workspaces.avatar_color, excluded.avatar_color),
+        avatar_content = COALESCE(workspaces.avatar_content, excluded.avatar_content),
+        compute_tier = COALESCE(workspaces.compute_tier, excluded.compute_tier)`,
       workspaceId,
       name,
       createdAt,
+      actorId,
+      avatar.color,
+      avatar.content,
     );
     this.log("workspace_created", actorId, workspaceId, { name });
+  }
+
+  async upsertWorkspaceInfo(info: Workspace): Promise<void> {
+    const avatar = info.avatar ?? generateDefaultAvatar(info.name);
+    this.sql.exec(
+      `INSERT INTO workspaces (
+        id,
+        name,
+        created_at,
+        archived,
+        description,
+        created_by,
+        avatar_color,
+        avatar_content,
+        archived_at,
+        archived_by,
+        compute_tier,
+        email_handle
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        created_at = excluded.created_at,
+        archived = excluded.archived,
+        description = excluded.description,
+        created_by = excluded.created_by,
+        avatar_color = excluded.avatar_color,
+        avatar_content = excluded.avatar_content,
+        archived_at = excluded.archived_at,
+        archived_by = excluded.archived_by,
+        compute_tier = excluded.compute_tier,
+        email_handle = excluded.email_handle`,
+      info.id,
+      info.name,
+      info.created_at,
+      info.archived ? 1 : 0,
+      info.description ?? null,
+      info.created_by,
+      avatar.color,
+      avatar.content,
+      info.archived_at ?? null,
+      info.archived_by ?? null,
+      info.compute_tier ?? "standard",
+      info.email_handle ?? null,
+    );
   }
 
   async updateWorkspaceName(workspaceId: string, name: string): Promise<void> {
@@ -4143,6 +4257,82 @@ export class OrgDO extends DurableObject<DOEnv> {
       "UPDATE workspaces SET archived = 1 WHERE id = ?",
       workspaceId,
     );
+  }
+
+  private workspaceFromRow(row: OrgWorkspaceInfoRow): Workspace {
+    const orgId = this.getInfoSync()?.id ?? "";
+    const avatar =
+      row.avatar_color && row.avatar_content
+        ? { color: row.avatar_color, content: row.avatar_content }
+        : generateDefaultAvatar(row.name);
+    return {
+      id: row.id,
+      org_id: orgId,
+      name: row.name,
+      description: row.description ?? null,
+      created_by: row.created_by ?? "",
+      created_at: row.created_at,
+      avatar,
+      archived: row.archived === 1,
+      archived_at: row.archived_at ?? null,
+      archived_by: row.archived_by ?? null,
+      compute_tier: "standard",
+      email_handle: row.email_handle ?? null,
+    };
+  }
+
+  private shouldHydrateWorkspaceRow(row: OrgWorkspaceInfoRow): boolean {
+    return (
+      !row.created_by ||
+      !row.avatar_color ||
+      !row.avatar_content ||
+      row.email_handle == null
+    );
+  }
+
+  private async hydrateWorkspaceRow(
+    row: OrgWorkspaceInfoRow,
+  ): Promise<Workspace | null> {
+    if (!this.shouldHydrateWorkspaceRow(row)) {
+      return this.workspaceFromRow(row);
+    }
+    try {
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(row.id),
+      ) as unknown as WorkspaceDO;
+      const info = await workspaceStub.getInfo();
+      if (info) {
+        await this.upsertWorkspaceInfo(info);
+        return info;
+      }
+      return null;
+    } catch (error) {
+      console.warn("[OrgDO] failed to hydrate workspace metadata", {
+        workspaceId: row.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return this.workspaceFromRow(row);
+  }
+
+  async getWorkspaceInfos(includeArchived = false): Promise<Workspace[]> {
+    const query = includeArchived
+      ? `SELECT id, name, created_at, archived, description, created_by,
+                avatar_color, avatar_content, archived_at, archived_by,
+                compute_tier, email_handle
+           FROM workspaces
+          ORDER BY created_at ASC`
+      : `SELECT id, name, created_at, archived, description, created_by,
+                avatar_color, avatar_content, archived_at, archived_by,
+                compute_tier, email_handle
+           FROM workspaces
+          WHERE archived = 0
+          ORDER BY created_at ASC`;
+    const rows = this.sql.exec<OrgWorkspaceInfoRow>(query).toArray();
+    const workspaces = await Promise.all(
+      rows.map((row) => this.hydrateWorkspaceRow(row)),
+    );
+    return workspaces.filter((workspace): workspace is Workspace => !!workspace);
   }
 
   async getWorkspaces(

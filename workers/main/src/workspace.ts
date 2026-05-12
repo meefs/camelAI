@@ -509,6 +509,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       'data',
       JSON.stringify(info)
     );
+    const orgStub = this.env.ORG.get(
+      this.env.ORG.idFromName(info.org_id)
+    ) as unknown as OrgDO;
+    await orgStub.upsertWorkspaceInfo(info);
     this.dispatchWorkspaceUpsert(info);
   }
 
