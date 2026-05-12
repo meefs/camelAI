@@ -1,6 +1,7 @@
 import { render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SourcePreview } from '@/components/chat-file-preview/code-preview';
+import { FilePreviewContent } from '@/components/chat-file-preview/file-preview-content';
 
 const codeToHtmlMock = vi.hoisted(() =>
   vi.fn(() => new Promise<string>(() => {}))
@@ -64,6 +65,63 @@ describe('SourcePreview', () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toHaveTextContent('line 1');
     expect(lines[1]).toHaveTextContent('line 2');
+  });
+
+  it('uses text highlighting fallback for plain text filenames', async () => {
+    const { container } = render(
+      <SourcePreview
+        code={'first line\nsecond line'}
+        filename="notes.txt"
+        layout="panel"
+        truncated={false}
+        totalLines={2}
+      />
+    );
+
+    const lines = container.querySelectorAll('.source-preview-lines .line');
+    expect(lines).toHaveLength(2);
+
+    await waitFor(() => {
+      expect(codeToHtmlMock).toHaveBeenCalledWith(
+        'first line\nsecond line',
+        expect.objectContaining({ lang: 'text' })
+      );
+    });
+  });
+
+  it('renders plain text file previews through SourcePreview', async () => {
+    const originalFetch = globalThis.fetch;
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue('hello\nfrom txt'),
+      }),
+    });
+
+    try {
+      const { container } = render(
+        <FilePreviewContent
+          filename="notes.txt"
+          previewUrl="/preview/notes.txt"
+          contentType="text/plain"
+          layout="panel"
+        />
+      );
+
+      await waitFor(() => {
+        const lines = container.querySelectorAll('.source-preview-lines .line');
+        expect(lines).toHaveLength(2);
+      });
+    } finally {
+      Object.defineProperty(globalThis, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    }
   });
 
   it('does not apply horizontal-scroll-only classes to the source wrapper', () => {

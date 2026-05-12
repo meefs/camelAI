@@ -335,32 +335,22 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'text' && (
-        <div>
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
           {(textStatus === 'loading' || textStatus === 'idle') && (
-            <p className="text-sm text-muted-foreground">Loading preview...</p>
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
           )}
           {textStatus === 'error' && (
-            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && (
-            <>
-              <pre
-                className={cn(
-                  'w-full min-w-0 overflow-auto text-xs',
-                  layout === 'panel'
-                    ? 'h-full max-h-full p-4'
-                    : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
-                  textPreview ? 'text-foreground' : 'text-muted-foreground'
-                )}
-              >
-                {textPreview || 'No preview content available.'}
-              </pre>
-              {lineInfo.truncated && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
-                </p>
-              )}
-            </>
+            <SourcePreview
+              code={textPreview}
+              filename={filename}
+              layout={layout}
+              truncated={lineInfo.truncated}
+              totalLines={lineInfo.totalLines}
+              maxLines={MAX_TEXT_LINES}
+            />
           )}
         </div>
       )}
