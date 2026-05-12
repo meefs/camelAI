@@ -145,7 +145,14 @@ export function ConnectionMentionMenu({
           onValueChange={(v) => onActiveIdChange(v)}
           className="bg-transparent p-0 rounded-none"
         >
-          <CommandList ref={listRef} className="max-h-[200px] py-1">
+          <CommandList
+            ref={listRef}
+            className="py-1"
+            style={{
+              maxHeight:
+                'min(200px, var(--radix-popover-content-available-height, 200px))',
+            }}
+          >
             <CommandGroup className="p-0">
               {showAddRow ? (
                 <CommandItem

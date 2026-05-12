@@ -445,7 +445,7 @@ export function WelcomeScreen({
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}
             mentionableConnections={mentionableConnections}
-            mentionMenuSide="bottom"
+            mentionMenuSide="top"
             onMentionAddNewClick={() => navigate('/connections')}
           />
         )}
