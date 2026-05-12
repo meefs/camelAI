@@ -96,6 +96,7 @@ const CODE_HIGHLIGHT_MAP: Record<string, string> = {
   hpp: 'cpp',
   html: 'html',
   css: 'css',
+  md: 'markdown',
   json: 'json',
   jsonl: 'json',
   yaml: 'yaml',

@@ -17,6 +17,7 @@ describe('file-type-utils', () => {
 
   it('classifies markdown preview type separately from text', () => {
     expect(getPreviewType('README.md')).toBe('markdown');
+    expect(getShikiLanguage('README.md')).toBe('markdown');
     expect(getPreviewType('notes.txt')).toBe('text');
   });
 
@@ -64,6 +65,7 @@ describe('file-type-utils', () => {
   it('maps file extensions to shiki languages', () => {
     expect(getShikiLanguage('main.py')).toBe('python');
     expect(getShikiLanguage('app.tsx')).toBe('tsx');
+    expect(getShikiLanguage('README.md')).toBe('markdown');
     expect(getShikiLanguage('notes.txt')).toBeNull();
   });
 });
