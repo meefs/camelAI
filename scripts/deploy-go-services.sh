@@ -123,6 +123,23 @@ restart_service() {
   ssh "$VM" "sudo systemctl restart $unit"
 }
 
+deploy_sandbox_image() {
+  echo "==> Building sandbox renderer bundle..."
+  (cd "$LOCAL_ROOT" && bun run build:renderer)
+
+  echo "==> Syncing sandbox image context to $VM..."
+  ssh "$VM" "mkdir -p /opt/chiridion"
+  rsync -az --delete \
+    "$LOCAL_ROOT/sandbox/" \
+    "$VM:/opt/chiridion/sandbox/"
+  rsync -az \
+    "$LOCAL_ROOT/services/sandbox-host/Dockerfile.sandbox" \
+    "$VM:/opt/chiridion/Dockerfile.sandbox"
+
+  echo "==> Building sandbox image on $VM..."
+  ssh "$VM" "cd /opt/chiridion && sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox ."
+}
+
 if [[ "$TARGET" != "all" && "$TARGET" != "sandbox-host" && "$TARGET" != "data-proxy" ]]; then
   usage
 fi
@@ -141,6 +158,8 @@ rsync -az --delete \
   "$VM:$REMOTE_BUILD/services/sandbox-host/"
 
 if [[ " ${TARGETS[*]} " == *" sandbox-host "* ]]; then
+  deploy_sandbox_image
+
   echo "==> Syncing sandbox skills to $VM..."
   ssh "$VM" "mkdir -p '$REMOTE_BUILD/sandbox/skills'"
   rsync -az --delete \

@@ -179,8 +179,8 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 - Go service code lives in `services/sandbox-host/`.
 - The host manages Docker + gVisor lifecycle, workspace filesystem operations, chat transcript retrieval, OpenAI proxying/usage tracking, and data proxy forwarding.
-- Prod and staging sandbox-hosts should be separate VMs/VPC services. Prod SSH target is `chiridion-vm` (`20.46.233.68`, Central US); public SSH remains available on prod until explicitly removed. Staging admin/deploy SSH goes through Tailscale at `100.115.221.105` (`chiridion-sandbox-staging`), and direct public SSH to staging should remain closed except for temporary break-glass. Keep deploys explicit with `bun run deploy:go:sandbox-host:prod` or `bun run deploy:go:sandbox-host:staging`.
-- GitHub Actions staging deploys join Tailscale as ephemeral `tag:ci` nodes using `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`; the OAuth client needs writable `auth_keys` scope for `tag:ci`, and the tailnet policy must allow `tag:ci` to reach staging TCP/22.
+- Prod and staging sandbox-hosts should be separate VMs/VPC services. GitHub Actions deploy SSH goes through Tailscale: prod `100.112.135.2` (`chiridion-sandbox-prod`) and staging `100.115.221.105` (`chiridion-sandbox-staging`). Direct public SSH should remain closed except for temporary break-glass. Keep deploys explicit with `bun run deploy:go:sandbox-host:prod` or `bun run deploy:go:sandbox-host:staging`.
+- GitHub Actions sandbox-host deploys join Tailscale as ephemeral `tag:ci` nodes using `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`; the OAuth client needs writable `auth_keys` scope for `tag:ci`, and the tailnet policy must allow `tag:ci` to reach prod and staging TCP/22.
 - Terraform examples for the Azure sandbox-host environments live in `infra/`; see `infra/README.md`, `infra/prod.tfvars.example`, and `infra/staging.tfvars.example`.
 - Run `bun run test:sandbox-host` for Go changes.
 - Local sandbox-host development uses `bun run dev:sandbox-host`.

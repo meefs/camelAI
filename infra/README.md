@@ -59,20 +59,20 @@ SANDBOX_GO_DEPLOY_HOST=chiridion@203.0.113.10 bun run deploy:go:staging
 ```
 
 Default SSH targets are `chiridion-vm` for prod and `chiridion-vm-staging`
-for staging.
+for staging. GitHub Actions deploys use the VM Tailscale IPs directly: prod
+`100.112.135.2` (`chiridion-sandbox-prod`) and staging `100.115.221.105`
+(`chiridion-sandbox-staging`).
 
-Public SSH ingress is intentionally not opened by Terraform. Administrative SSH
-and staging deploy SSH should go through Tailscale. Keep `sshd` running on the
-host so Tailscale clients can reach it, but do not add Azure NSG port 22 rules
-except as a temporary break-glass action.
+Public SSH ingress is intentionally not opened by Terraform. Administrative and
+deploy SSH should go through Tailscale. Keep `sshd` running on the host so
+Tailscale clients can reach it, but do not add Azure NSG port 22 rules except
+as a temporary break-glass action.
 
-Staging GitHub Actions deploys join the tailnet with `tailscale/github-action`
-and connect to the staging VM Tailscale IP `100.115.221.105`
-(`chiridion-sandbox-staging`). Configure the repository with a Tailscale
-OAuth client (`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`) that can create
-ephemeral `tag:ci` nodes. The OAuth client needs writable `auth_keys` scope for
-`tag:ci`, and the tailnet policy must allow that tag to reach the staging VM on
-TCP/22.
+GitHub Actions deploys join the tailnet with `tailscale/github-action`.
+Configure the repository with a Tailscale OAuth client (`TS_OAUTH_CLIENT_ID` and
+`TS_OAUTH_SECRET`) that can create ephemeral `tag:ci` nodes. The OAuth client
+needs writable `auth_keys` scope for `tag:ci`, and the tailnet policy must allow
+that tag to reach the prod and staging VMs on TCP/22.
 
 ## Cloudflare Wiring
 

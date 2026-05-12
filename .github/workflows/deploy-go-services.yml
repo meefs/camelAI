@@ -5,7 +5,22 @@ on:
     branches: [main, production]
     paths:
       - "services/sandbox-host/**"
-      - "sandbox/skills/**"
+      - "sandbox/**"
+      - "src/components/chat-file-preview/**"
+      - "src/components/connection-mention-menu/mention-chip.tsx"
+      - "src/components/markdown-renderer.tsx"
+      - "src/components/ui/**"
+      - "src/hooks/use-mobile.ts"
+      - "src/lib/connection-mentions.ts"
+      - "src/lib/integration-registry.ts"
+      - "src/lib/shiki-config.ts"
+      - "src/lib/utils.ts"
+      - "src/styles/**"
+      - "src/types.ts"
+      - "package.json"
+      - "postcss.config.mjs"
+      - "bun.lock"
+      - "vite.renderer.config.ts"
       - "scripts/deploy-go-services.sh"
       - "scripts/install-host-pi.sh"
       - ".github/workflows/deploy-go-services.yml"
@@ -55,6 +70,11 @@ jobs:
         run: go test ./...
         working-directory: services/sandbox-host
 
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
       - name: Resolve target
         id: target
         shell: bash
@@ -90,8 +110,8 @@ jobs:
               use_tailscale="true"
               ;;
             prod)
-              host="20.46.233.68"
-              use_tailscale="false"
+              host="100.112.135.2"
+              use_tailscale="true"
               ;;
             *)
               echo "Unknown deploy environment: $deploy_env" >&2
