@@ -25,8 +25,12 @@ import { cn } from '@/lib/utils';
 import type { PreviewTarget } from '@/types';
 import { getFileExtension } from '@/components/chat-file-preview/file-type-utils';
 import type { NotebookPreviewLoadState } from '@/components/chat-file-preview';
-import { getTabIcon, getToolbarFileType } from './preview-utils';
-import { PreviewSourceToggle } from './preview-source-toggle';
+import {
+  getTabIcon,
+  getToolbarFileType,
+  supportsPreviewSourceToggle,
+} from './preview-utils';
+import { PreviewSourceToggle, type PreviewSourceMode } from './preview-source-toggle';
 
 export type OpenElsewhereKind = 'app' | 'computer';
 
@@ -41,8 +45,8 @@ interface PreviewToolbarProps {
   appShareButton?: ReactNode;
   notebookViewMode?: 'report' | 'notebook';
   onNotebookViewModeChange?: (mode: 'report' | 'notebook') => void;
-  markdownViewMode?: 'rendered' | 'source';
-  onMarkdownViewModeChange?: (mode: 'rendered' | 'source') => void;
+  fileViewMode?: PreviewSourceMode;
+  onFileViewModeChange?: (mode: PreviewSourceMode) => void;
   filePreviewOpenUrl?: string;
   notebookState?: NotebookPreviewLoadState;
   isNotebookPdfExporting?: boolean;
@@ -446,8 +450,8 @@ function PreviewToolbarComponent({
   appShareButton,
   notebookViewMode,
   onNotebookViewModeChange,
-  markdownViewMode,
-  onMarkdownViewModeChange,
+  fileViewMode,
+  onFileViewModeChange,
   filePreviewOpenUrl,
   notebookState,
   isNotebookPdfExporting,
@@ -466,12 +470,12 @@ function PreviewToolbarComponent({
             onNotebookViewModeChange?.(mode === 'source' ? 'notebook' : 'report');
           }}
         />
-      ) : fileType === 'markdown' ? (
+      ) : supportsPreviewSourceToggle(activeTarget) ? (
         <PreviewSourceToggle
           target={activeTarget}
-          value={markdownViewMode === 'source' ? 'source' : 'preview'}
+          value={fileViewMode ?? 'preview'}
           onChange={(mode) => {
-            onMarkdownViewModeChange?.(mode === 'source' ? 'source' : 'rendered');
+            onFileViewModeChange?.(mode);
           }}
         />
       ) : null}

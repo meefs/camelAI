@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { PreviewTarget } from '@/types';
-import { getPreviewTabId, getToolbarFileType } from '@/components/preview-panel/preview-utils';
+import {
+  getPreviewTabId,
+  getToolbarFileType,
+  supportsPreviewSourceToggle,
+} from '@/components/preview-panel/preview-utils';
 
 describe('preview-utils', () => {
   it('builds stable app tab IDs', () => {
@@ -28,6 +32,8 @@ describe('preview-utils', () => {
     const cases: Array<{ path: string; expected: ReturnType<typeof getToolbarFileType> }> = [
       { path: 'notebook.ipynb', expected: 'notebook' },
       { path: 'readme.md', expected: 'markdown' },
+      { path: 'index.html', expected: 'html' },
+      { path: 'index.htm', expected: 'html' },
       { path: 'notes.txt', expected: 'text' },
       { path: 'table.csv', expected: 'spreadsheet' },
       { path: 'table.tsv', expected: 'spreadsheet' },
@@ -47,6 +53,87 @@ describe('preview-utils', () => {
         path: `/tmp/${testCase.path}`,
       };
       expect(getToolbarFileType(target)).toBe(testCase.expected);
+    }
+  });
+
+  it('maps toolbar file types by content type for extensionless targets', () => {
+    const cases: Array<{
+      contentType: string;
+      expected: ReturnType<typeof getToolbarFileType>;
+    }> = [
+      { contentType: 'text/html; charset=utf-8', expected: 'html' },
+      { contentType: 'image/svg+xml', expected: 'svg' },
+      { contentType: 'application/json', expected: 'json' },
+      { contentType: 'application/x-ndjson', expected: 'json' },
+      { contentType: 'text/tab-separated-values', expected: 'spreadsheet' },
+    ];
+
+    for (const testCase of cases) {
+      const target: PreviewTarget = {
+        kind: 'file',
+        source: 'workspace',
+        workspaceId: 'ws_123',
+        path: '/tmp/file',
+        contentType: testCase.contentType,
+      };
+      expect(getToolbarFileType(target)).toBe(testCase.expected);
+    }
+  });
+
+  it('lets source-toggleable content types override generic text extensions', () => {
+    const jsonTextTarget: PreviewTarget = {
+      kind: 'file',
+      source: 'workspace',
+      workspaceId: 'ws_123',
+      path: '/tmp/config.txt',
+      contentType: 'application/json',
+    };
+    const csvTextTarget: PreviewTarget = {
+      kind: 'file',
+      source: 'workspace',
+      workspaceId: 'ws_123',
+      path: '/tmp/data.txt',
+      contentType: 'text/csv',
+    };
+
+    expect(getToolbarFileType(jsonTextTarget)).toBe('json');
+    expect(supportsPreviewSourceToggle(jsonTextTarget)).toBe(true);
+    expect(getToolbarFileType(csvTextTarget)).toBe('spreadsheet');
+    expect(supportsPreviewSourceToggle(csvTextTarget)).toBe(true);
+  });
+
+  it('reports preview/source toggle support for source-toggleable file types', () => {
+    const targetFor = (path: string, contentType?: string): PreviewTarget => ({
+      kind: 'file',
+      source: 'workspace',
+      workspaceId: 'ws_123',
+      path: `/tmp/${path}`,
+      contentType,
+    });
+
+    for (const target of [
+      targetFor('readme.md'),
+      targetFor('index.html'),
+      targetFor('index.htm'),
+      targetFor('icon.svg'),
+      targetFor('config.json'),
+      targetFor('events.jsonl'),
+      targetFor('table.csv'),
+      targetFor('table.tsv'),
+      targetFor('file', 'text/html'),
+    ]) {
+      expect(supportsPreviewSourceToggle(target)).toBe(true);
+    }
+
+    for (const target of [
+      targetFor('report.xlsx'),
+      targetFor('report.xls'),
+      targetFor('image.png'),
+      targetFor('report.pdf'),
+      targetFor('main.py'),
+      targetFor('notes.txt'),
+    ]) {
+      expect(supportsPreviewSourceToggle(target)).toBe(false);
     }
   });
 });

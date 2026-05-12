@@ -25,6 +25,10 @@ export type PreviewType =
   | 'pdf'
   | 'notebook'
   | 'markdown'
+  | 'html'
+  | 'svg'
+  | 'json'
+  | 'jsonl'
   | 'code'
   | 'spreadsheet'
   | 'text'
@@ -56,6 +60,7 @@ const CODE_EXTENSIONS = new Set([
   'jsonl',
   'xml',
   'html',
+  'htm',
   'css',
   'js',
   'jsx',
@@ -95,6 +100,7 @@ const CODE_HIGHLIGHT_MAP: Record<string, string> = {
   h: 'c',
   hpp: 'cpp',
   html: 'html',
+  htm: 'html',
   css: 'css',
   md: 'markdown',
   json: 'json',
@@ -157,15 +163,34 @@ export function getShikiLanguage(filename: string): string | null {
 export function getPreviewType(filename: string, contentType?: string): PreviewType {
   const category = getFileCategory(filename, contentType);
   const extension = getFileExtension(filename);
+  const normalizedContentType = contentType?.toLowerCase().split(';', 1)[0]?.trim() ?? '';
 
+  if (extension === 'md') return 'markdown';
+  if (
+    extension === 'html' ||
+    extension === 'htm' ||
+    normalizedContentType === 'text/html'
+  ) {
+    return 'html';
+  }
+  if (extension === 'svg' || normalizedContentType === 'image/svg+xml') return 'svg';
+  if (category === 'notebook') return 'notebook';
+  if (extension === 'jsonl' || normalizedContentType === 'application/x-ndjson') {
+    return 'jsonl';
+  }
+  if (
+    extension === 'json' ||
+    normalizedContentType === 'application/json' ||
+    normalizedContentType.endsWith('+json')
+  ) {
+    return 'json';
+  }
+  if (isSpreadsheetPreviewSupported(filename, contentType)) return 'spreadsheet';
   if (category === 'image') return 'image';
   if (category === 'pdf') return 'pdf';
-  if (category === 'notebook') return 'notebook';
   if (category === 'audio') return 'audio';
   if (category === 'video') return 'video';
-  if (extension === 'md') return 'markdown';
   if (getShikiLanguage(filename) !== null) return 'code';
-  if (isSpreadsheetPreviewSupported(filename, contentType)) return 'spreadsheet';
   if (category === 'code' || category === 'text') return 'text';
   return 'other';
 }

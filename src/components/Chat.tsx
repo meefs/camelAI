@@ -1246,9 +1246,8 @@ type TabRenderState = {
   filePreviewOpenUrl: string;
   previewFileName: string;
   notebookViewMode: "report" | "notebook";
-  markdownViewMode: "rendered" | "source";
+  fileViewMode: "preview" | "source";
   isNotebookPreview: boolean;
-  isMarkdownPreview: boolean;
 };
 
 interface PreviewPanelShellProps {
@@ -1264,8 +1263,8 @@ interface PreviewPanelShellProps {
   appShareButton?: ReactNode;
   notebookViewMode: "report" | "notebook";
   onNotebookViewModeChange: (mode: "report" | "notebook") => void;
-  markdownViewMode: "rendered" | "source";
-  onMarkdownViewModeChange: (mode: "rendered" | "source") => void;
+  fileViewMode: "preview" | "source";
+  onFileViewModeChange: (mode: "preview" | "source") => void;
   filePreviewOpenUrl: string;
   activeNotebookState: NotebookPreviewLoadState;
   isNotebookPdfExporting: boolean;
@@ -1293,8 +1292,8 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
   appShareButton,
   notebookViewMode,
   onNotebookViewModeChange,
-  markdownViewMode,
-  onMarkdownViewModeChange,
+  fileViewMode,
+  onFileViewModeChange,
   filePreviewOpenUrl,
   activeNotebookState,
   isNotebookPdfExporting,
@@ -1311,7 +1310,6 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
 
   const activeTabState = tabRenderStates.find((s) => s.tabId === activeTabId);
   const isNotebookPreview = activeTabState?.isNotebookPreview ?? false;
-  const isMarkdownPreview = activeTabState?.isMarkdownPreview ?? false;
 
   return (
     <>
@@ -1333,8 +1331,8 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
         appShareButton={appShareButton}
         notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
         onNotebookViewModeChange={onNotebookViewModeChange}
-        markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
-        onMarkdownViewModeChange={onMarkdownViewModeChange}
+        fileViewMode={fileViewMode}
+        onFileViewModeChange={onFileViewModeChange}
         filePreviewOpenUrl={filePreviewOpenUrl}
         notebookState={isNotebookPreview ? activeNotebookState : undefined}
         isNotebookPdfExporting={
@@ -1384,9 +1382,7 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
                   notebookViewMode={
                     state.isNotebookPreview ? state.notebookViewMode : undefined
                   }
-                  markdownViewMode={
-                    state.isMarkdownPreview ? state.markdownViewMode : undefined
-                  }
+                  fileViewMode={state.fileViewMode}
                   onNotebookStateChange={
                     state.isNotebookPreview
                       ? (nextState) =>
@@ -1991,8 +1987,8 @@ export default function Chat({
   const [tabNotebookViewModes, setTabNotebookViewModes] = useState<
     Record<string, "report" | "notebook">
   >({});
-  const [tabMarkdownViewModes, setTabMarkdownViewModes] = useState<
-    Record<string, "rendered" | "source">
+  const [tabFileViewModes, setTabFileViewModes] = useState<
+    Record<string, "preview" | "source">
   >({});
   const [tabNotebookStates, setTabNotebookStates] = useState<
     Record<string, NotebookPreviewLoadState>
@@ -2006,9 +2002,9 @@ export default function Chat({
   const notebookViewMode = activeTabId
     ? (tabNotebookViewModes[activeTabId] ?? "report")
     : "report";
-  const markdownViewMode = activeTabId
-    ? (tabMarkdownViewModes[activeTabId] ?? "rendered")
-    : "rendered";
+  const fileViewMode = activeTabId
+    ? (tabFileViewModes[activeTabId] ?? "preview")
+    : "preview";
   const activeNotebookState = activeTabId
     ? (tabNotebookStates[activeTabId] ?? DEFAULT_NOTEBOOK_PREVIEW_STATE)
     : DEFAULT_NOTEBOOK_PREVIEW_STATE;
@@ -2094,7 +2090,7 @@ export default function Chat({
     setTabIframeKeys({});
     setTabFilePreviewKeys({});
     setTabNotebookViewModes({});
-    setTabMarkdownViewModes({});
+    setTabFileViewModes({});
     setTabNotebookStates({});
     setTabNotebookPdfExporting({});
     setTabAppLoading({});
@@ -2113,7 +2109,7 @@ export default function Chat({
       setTabIframeKeys({});
       setTabFilePreviewKeys({});
       setTabNotebookViewModes({});
-      setTabMarkdownViewModes({});
+      setTabFileViewModes({});
       setTabAppLoading({});
       supportsPreviewTabsStateRef.current = false;
       clearAllIframeRefreshTimeouts();
@@ -2615,10 +2611,10 @@ export default function Chat({
     [activeTabId],
   );
 
-  const setActiveMarkdownViewMode = useCallback(
-    (mode: "rendered" | "source") => {
+  const setActiveFileViewMode = useCallback(
+    (mode: "preview" | "source") => {
       if (!activeTabId) return;
-      setTabMarkdownViewModes((prev) => ({
+      setTabFileViewModes((prev) => ({
         ...prev,
         [activeTabId]: mode,
       }));
@@ -2717,7 +2713,7 @@ export default function Chat({
       delete next[tabId];
       return next;
     });
-    setTabMarkdownViewModes((prev) => {
+    setTabFileViewModes((prev) => {
       if (!(tabId in prev)) return prev;
       const next = { ...prev };
       delete next[tabId];
@@ -5510,7 +5506,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     setTabIframeKeys({});
     setTabFilePreviewKeys({});
     setTabNotebookViewModes({});
-    setTabMarkdownViewModes({});
+    setTabFileViewModes({});
     setTabAppLoading({});
     clearAllIframeRefreshTimeouts();
   }, [setLocalPreviewSessionState, clearAllIframeRefreshTimeouts]);
@@ -5853,9 +5849,8 @@ type SendOptions = {
           filePreviewOpenUrl: "",
           previewFileName: "",
           notebookViewMode: "report",
-          markdownViewMode: "rendered",
+          fileViewMode: "preview",
           isNotebookPreview: false,
-          isMarkdownPreview: false,
         };
       }
 
@@ -5872,7 +5867,6 @@ type SendOptions = {
         target.path.split("/").filter(Boolean).pop() ||
         "file";
       const isNotebook = filename.toLowerCase().endsWith(".ipynb");
-      const isMarkdown = filename.toLowerCase().endsWith(".md");
       return {
         tabId,
         target,
@@ -5884,9 +5878,8 @@ type SendOptions = {
         filePreviewOpenUrl: `/api/workspaces/${target.workspaceId}/${route}`,
         previewFileName: filename,
         notebookViewMode: tabNotebookViewModes[tabId] ?? "report",
-        markdownViewMode: tabMarkdownViewModes[tabId] ?? "rendered",
+        fileViewMode: tabFileViewModes[tabId] ?? "preview",
         isNotebookPreview: isNotebook,
-        isMarkdownPreview: isMarkdown,
       };
     });
   }, [
@@ -5895,7 +5888,7 @@ type SendOptions = {
     tabAppLoading,
     tabFilePreviewKeys,
     tabNotebookViewModes,
-    tabMarkdownViewModes,
+    tabFileViewModes,
     hostname,
     orgSlug,
     encodePathSegments,
@@ -6011,8 +6004,8 @@ type SendOptions = {
       appShareButton={previewShareButton}
       notebookViewMode={notebookViewMode}
       onNotebookViewModeChange={setActiveNotebookViewMode}
-      markdownViewMode={markdownViewMode}
-      onMarkdownViewModeChange={setActiveMarkdownViewMode}
+      fileViewMode={fileViewMode}
+      onFileViewModeChange={setActiveFileViewMode}
       filePreviewOpenUrl={filePreviewOpenUrl}
       activeNotebookState={activeNotebookState}
       isNotebookPdfExporting={isNotebookPdfExporting}

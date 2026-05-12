@@ -20,6 +20,10 @@ type PreviewLayout = 'dialog' | 'panel';
 
 type TextStatus = 'idle' | 'loading' | 'ready' | 'error';
 
+type FormattedTextResult =
+  | { ok: true; text: string; truncated: boolean; totalLines: number }
+  | { ok: false; message: string };
+
 function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
   const lines = text.split('\n');
   const totalLines = lines.length;
@@ -30,6 +34,38 @@ function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
     text: lines.slice(0, maxLines).join('\n'),
     truncated: true,
     totalLines,
+  };
+}
+
+function formatJsonPreview(raw: string): FormattedTextResult {
+  try {
+    const formatted = JSON.stringify(JSON.parse(raw), null, 2);
+    return { ok: true, ...truncateTextLines(formatted ?? 'null', MAX_TEXT_LINES) };
+  } catch {
+    return { ok: false, message: 'Invalid JSON. Showing raw source.' };
+  }
+}
+
+function formatJsonLinesPreview(raw: string): FormattedTextResult {
+  const formattedValues: string[] = [];
+  const lines = raw.split('\n');
+
+  for (const [index, line] of lines.entries()) {
+    if (!line.trim()) continue;
+    try {
+      const formatted = JSON.stringify(JSON.parse(line), null, 2);
+      formattedValues.push(formatted ?? 'null');
+    } catch {
+      return {
+        ok: false,
+        message: `Invalid JSONL on line ${index + 1}. Showing raw source.`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    ...truncateTextLines(formattedValues.join('\n\n'), MAX_TEXT_LINES),
   };
 }
 
@@ -91,13 +127,36 @@ function ImagePreview({
   );
 }
 
+function HtmlPreview({
+  src,
+  title,
+  layout,
+}: {
+  src: string;
+  title: string;
+  layout: PreviewLayout;
+}) {
+  return (
+    <iframe
+      src={src}
+      title={title}
+      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+      referrerPolicy="no-referrer"
+      className={cn(
+        'w-full bg-white',
+        layout === 'panel' ? 'h-full' : 'h-[60vh]'
+      )}
+    />
+  );
+}
+
 export interface FilePreviewContentProps {
   filename: string;
   previewUrl: string;
   contentType?: string;
   layout?: PreviewLayout;
   notebookViewMode?: 'report' | 'notebook';
-  markdownViewMode?: 'rendered' | 'source';
+  fileViewMode?: 'preview' | 'source';
   onNotebookStateChange?: (state: NotebookPreviewLoadState) => void;
   onSpreadsheetToolbarStateChange?: (state: SpreadsheetToolbarState | null) => void;
 }
@@ -113,7 +172,7 @@ function FilePreviewContentComponent({
   contentType,
   layout = 'dialog',
   notebookViewMode,
-  markdownViewMode,
+  fileViewMode,
   onNotebookStateChange,
   onSpreadsheetToolbarStateChange,
 }: FilePreviewContentProps) {
@@ -126,6 +185,15 @@ function FilePreviewContentComponent({
   const [spreadsheetBinary, setSpreadsheetBinary] = useState<ArrayBuffer | null>(null);
   const [textStatus, setTextStatus] = useState<TextStatus>('idle');
   const [textErrorMessage, setTextErrorMessage] = useState('Unable to preview this file.');
+  const [formattedTextPreview, setFormattedTextPreview] = useState('');
+  const [formattedTextError, setFormattedTextError] = useState<string | null>(null);
+  const [formattedLineInfo, setFormattedLineInfo] = useState<{
+    truncated: boolean;
+    totalLines: number;
+  }>({
+    truncated: false,
+    totalLines: 0,
+  });
   const [notebook, setNotebook] = useState<NotebookFile | null>(null);
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState(false);
@@ -138,6 +206,7 @@ function FilePreviewContentComponent({
     () => previewType === 'spreadsheet' && isBinarySpreadsheet(filename, contentType),
     [contentType, filename, previewType]
   );
+  const currentFileViewMode = fileViewMode ?? 'preview';
 
   useEffect(() => {
     notebookStateChangeRef.current = onNotebookStateChange;
@@ -157,7 +226,11 @@ function FilePreviewContentComponent({
       previewType === 'code' ||
       previewType === 'spreadsheet' ||
       previewType === 'notebook' ||
-      previewType === 'markdown';
+      previewType === 'markdown' ||
+      previewType === 'html' ||
+      previewType === 'svg' ||
+      previewType === 'json' ||
+      previewType === 'jsonl';
     if (!shouldFetchText) return;
 
     const controller = new AbortController();
@@ -168,6 +241,9 @@ function FilePreviewContentComponent({
     setTextPreview('');
     setSpreadsheetBinary(null);
     setLineInfo({ truncated: false, totalLines: 0 });
+    setFormattedTextPreview('');
+    setFormattedTextError(null);
+    setFormattedLineInfo({ truncated: false, totalLines: 0 });
     setNotebook(null);
     if (previewType === 'notebook') {
       notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
@@ -219,6 +295,24 @@ function FilePreviewContentComponent({
         const { text: truncatedText, truncated, totalLines } = truncateTextLines(bodyText);
         setTextPreview(truncatedText);
         setLineInfo({ truncated, totalLines });
+        if (previewType === 'json' || previewType === 'jsonl') {
+          const formatted =
+            previewType === 'json'
+              ? formatJsonPreview(bodyText)
+              : formatJsonLinesPreview(bodyText);
+          if (formatted.ok) {
+            setFormattedTextPreview(formatted.text);
+            setFormattedLineInfo({
+              truncated: formatted.truncated,
+              totalLines: formatted.totalLines,
+            });
+            setFormattedTextError(null);
+          } else {
+            setFormattedTextPreview('');
+            setFormattedLineInfo({ truncated: false, totalLines: 0 });
+            setFormattedTextError(formatted.message);
+          }
+        }
         setTextStatus('ready');
       })
       .catch((error) => {
@@ -252,6 +346,111 @@ function FilePreviewContentComponent({
       {previewType === 'image' && (
         <div className={cn(layout === 'panel' && 'p-3')}>
           <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+        </div>
+      )}
+
+      {previewType === 'html' && (
+        <div
+          className={cn(
+            layout === 'panel' &&
+              (currentFileViewMode === 'preview' ? 'h-full overflow-hidden' : 'h-full overflow-auto')
+          )}
+        >
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' &&
+            (currentFileViewMode === 'preview' ? (
+              <HtmlPreview src={previewUrl} title={filename} layout={layout} />
+            ) : (
+              <SourcePreview
+                code={textPreview}
+                filename={filename}
+                layout={layout}
+                truncated={lineInfo.truncated}
+                totalLines={lineInfo.totalLines}
+                maxLines={MAX_TEXT_LINES}
+                languageOverride="html"
+              />
+            ))}
+        </div>
+      )}
+
+      {previewType === 'svg' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' &&
+            (currentFileViewMode === 'preview' ? (
+              <div className={cn(layout === 'panel' && 'p-3')}>
+                <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+              </div>
+            ) : (
+              <SourcePreview
+                code={textPreview}
+                filename={filename}
+                layout={layout}
+                truncated={lineInfo.truncated}
+                totalLines={lineInfo.totalLines}
+                maxLines={MAX_TEXT_LINES}
+                languageOverride="html"
+              />
+            ))}
+        </div>
+      )}
+
+      {(previewType === 'json' || previewType === 'jsonl') && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' &&
+            (currentFileViewMode === 'preview' ? (
+              formattedTextError ? (
+                <>
+                  <p className="p-3 text-sm text-muted-foreground">{formattedTextError}</p>
+                  <SourcePreview
+                    code={textPreview}
+                    filename={filename}
+                    layout={layout}
+                    truncated={lineInfo.truncated}
+                    totalLines={lineInfo.totalLines}
+                    maxLines={MAX_TEXT_LINES}
+                    languageOverride="json"
+                  />
+                </>
+              ) : (
+                <SourcePreview
+                  code={formattedTextPreview}
+                  filename={filename}
+                  layout={layout}
+                  truncated={formattedLineInfo.truncated}
+                  totalLines={formattedLineInfo.totalLines}
+                  maxLines={MAX_TEXT_LINES}
+                  languageOverride="json"
+                />
+              )
+            ) : (
+              <SourcePreview
+                code={textPreview}
+                filename={filename}
+                layout={layout}
+                truncated={lineInfo.truncated}
+                totalLines={lineInfo.totalLines}
+                maxLines={MAX_TEXT_LINES}
+                languageOverride="json"
+              />
+            ))}
         </div>
       )}
 
@@ -384,7 +583,16 @@ function FilePreviewContentComponent({
           {textStatus === 'error' && (
             <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
-          {textStatus === 'ready' && (
+          {textStatus === 'ready' && currentFileViewMode === 'source' && !binarySpreadsheet ? (
+            <SourcePreview
+              code={textPreview}
+              filename={filename}
+              layout={layout}
+              truncated={lineInfo.truncated}
+              totalLines={lineInfo.totalLines}
+              maxLines={MAX_SPREADSHEET_LINES}
+            />
+          ) : textStatus === 'ready' ? (
             <Suspense
               fallback={
                 <div className="flex min-h-[200px] items-center justify-center">
@@ -400,8 +608,11 @@ function FilePreviewContentComponent({
                 onToolbarStateChange={onSpreadsheetToolbarStateChange}
               />
             </Suspense>
-          )}
-          {textStatus === 'ready' && !binarySpreadsheet && lineInfo.truncated && (
+          ) : null}
+          {textStatus === 'ready' &&
+            currentFileViewMode === 'preview' &&
+            !binarySpreadsheet &&
+            lineInfo.truncated && (
             <p className="mt-2 px-4 text-xs text-muted-foreground">
               Showing first {MAX_SPREADSHEET_LINES} of {lineInfo.totalLines} lines.
             </p>
@@ -418,7 +629,7 @@ function FilePreviewContentComponent({
             <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && (
-            (markdownViewMode ?? 'rendered') === 'rendered' ? (
+            currentFileViewMode === 'preview' ? (
               <>
                 <div
                   className={cn(
@@ -489,7 +700,7 @@ function areFilePreviewContentPropsEqual(
     prev.contentType === next.contentType &&
     prev.layout === next.layout &&
     prev.notebookViewMode === next.notebookViewMode &&
-    prev.markdownViewMode === next.markdownViewMode &&
+    prev.fileViewMode === next.fileViewMode &&
     prev.onSpreadsheetToolbarStateChange === next.onSpreadsheetToolbarStateChange
   );
 }
