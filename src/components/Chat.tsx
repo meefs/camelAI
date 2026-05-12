@@ -103,7 +103,10 @@ import {
 } from "@/components/chat-file-preview";
 import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
 import { PreviewTabRow } from "@/components/preview-panel/preview-tabs";
-import { PreviewToolbar } from "@/components/preview-panel/preview-toolbar";
+import {
+  PreviewToolbar,
+  type OpenElsewhereKind,
+} from "@/components/preview-panel/preview-toolbar";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSetAppPublicPayload } from "@/lib/app-visibility";
@@ -1255,8 +1258,9 @@ interface PreviewPanelShellProps {
   onTabSelect: (tabId: string) => void;
   onTabClose: (tabId: string) => void;
   onRefresh: () => void;
-  onOpenExternal: () => void;
-  onBugReportOpen: () => void;
+  openElsewhereKind: OpenElsewhereKind | null;
+  onOpenElsewhere: () => void;
+  onBugReportOpen?: () => void;
   appShareButton?: ReactNode;
   notebookViewMode: "report" | "notebook";
   onNotebookViewModeChange: (mode: "report" | "notebook") => void;
@@ -1283,7 +1287,8 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
   onTabSelect,
   onTabClose,
   onRefresh,
-  onOpenExternal,
+  openElsewhereKind,
+  onOpenElsewhere,
   onBugReportOpen,
   appShareButton,
   notebookViewMode,
@@ -1322,7 +1327,8 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
         vanityUrl={vanityUrl}
         vanityHost={vanityHost}
         onRefresh={onRefresh}
-        onOpenExternal={onOpenExternal}
+        openElsewhereKind={openElsewhereKind}
+        onOpenElsewhere={onOpenElsewhere}
         onBugReport={onBugReportOpen}
         appShareButton={appShareButton}
         notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
@@ -5929,19 +5935,14 @@ type SendOptions = {
 
   const fileExternalOpenUrl = useMemo(() => {
     if (previewTarget?.kind !== "file") return "";
-    if (previewTarget.source === "workspace") {
-      const query = new URLSearchParams();
-      query.set("file", previewTarget.path);
-      if (readOnly) {
-        query.set("adminReadonly", "1");
-      }
-      return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
+    if (previewTarget.source !== "workspace") return "";
+    const query = new URLSearchParams();
+    query.set("file", previewTarget.path);
+    if (readOnly) {
+      query.set("adminReadonly", "1");
     }
-    const normalizedPath = previewTarget.path.replace(/^\/+/, "");
-    const encodedPath = encodePathSegments(normalizedPath);
-    const route = previewTarget.source === "upload" ? "uploads" : "outputs";
-    return `/api/workspaces/${previewTarget.workspaceId}/${route}/${encodedPath}`;
-  }, [previewTarget, encodePathSegments, readOnly]);
+    return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
+  }, [previewTarget, readOnly]);
 
   const handlePreviewRefresh = useCallback(() => {
     if (!previewTarget) return;
@@ -5952,13 +5953,14 @@ type SendOptions = {
     refreshActiveFilePreview();
   }, [previewTarget, refreshActiveIframe, refreshActiveFilePreview]);
 
-  const handlePreviewOpenExternal = useCallback(() => {
+  const handlePreviewOpenElsewhere = useCallback(() => {
     if (!previewTarget) return;
     if (previewTarget.kind === "app") {
       if (!appPreviewVanityUrl) return;
       window.open(appPreviewVanityUrl, "_blank", "noopener,noreferrer");
       return;
     }
+    if (previewTarget.source !== "workspace") return;
     if (!fileExternalOpenUrl) return;
     window.open(fileExternalOpenUrl, "_blank", "noopener,noreferrer");
   }, [previewTarget, appPreviewVanityUrl, fileExternalOpenUrl]);
@@ -5976,6 +5978,12 @@ type SendOptions = {
   );
   const isAdmin =
     currentMembership?.role === "owner" || currentMembership?.role === "admin";
+  const openElsewhereKind: OpenElsewhereKind | null =
+    previewTarget?.kind === "app"
+      ? "app"
+      : previewTarget?.kind === "file" && previewTarget.source === "workspace"
+        ? "computer"
+        : null;
   const previewShareButton = useMemo(() => {
     if (readOnly) return undefined;
     if (previewTarget?.kind !== "app") return undefined;
@@ -5997,8 +6005,9 @@ type SendOptions = {
       onTabSelect={selectTab}
       onTabClose={closeTab}
       onRefresh={handlePreviewRefresh}
-      onOpenExternal={handlePreviewOpenExternal}
-      onBugReportOpen={handlePreviewBugReportOpen}
+      openElsewhereKind={openElsewhereKind}
+      onOpenElsewhere={handlePreviewOpenElsewhere}
+      onBugReportOpen={readOnly ? undefined : handlePreviewBugReportOpen}
       appShareButton={previewShareButton}
       notebookViewMode={notebookViewMode}
       onNotebookViewModeChange={setActiveNotebookViewMode}

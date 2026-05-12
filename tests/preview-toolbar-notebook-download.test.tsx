@@ -18,7 +18,8 @@ function renderToolbar(overrides?: Partial<React.ComponentProps<typeof PreviewTo
     <PreviewToolbar
       activeTarget={NOTEBOOK_TARGET}
       onRefresh={() => {}}
-      onOpenExternal={() => {}}
+      openElsewhereKind="computer"
+      onOpenElsewhere={() => {}}
       notebookViewMode="report"
       onNotebookViewModeChange={() => {}}
       filePreviewOpenUrl="/api/workspaces/workspace-123/fs/content/reports/analysis.ipynb"
@@ -65,14 +66,28 @@ describe('PreviewToolbar notebook downloads', () => {
     expect(screen.getByRole('menuitem', { name: /download report as pdf/i })).toBeInTheDocument();
   });
 
-  it('keeps the open-in-new-tab action for file previews', async () => {
+  it('keeps the open-in-computer action for workspace file previews', async () => {
     const user = userEvent.setup();
-    const onOpenExternal = vi.fn();
-    renderToolbar({ onOpenExternal });
+    const onOpenElsewhere = vi.fn();
+    renderToolbar({ onOpenElsewhere });
 
-    await user.click(screen.getByRole('button', { name: /open in new tab/i }));
+    await user.click(screen.getByRole('button', { name: /open in computer/i }));
 
-    expect(onOpenExternal).toHaveBeenCalledTimes(1);
+    expect(onOpenElsewhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits open-elsewhere for upload file previews', () => {
+    renderToolbar({
+      activeTarget: {
+        ...NOTEBOOK_TARGET,
+        source: 'upload',
+      },
+      openElsewhereKind: null,
+    });
+
+    expect(screen.queryByRole('button', { name: /open in computer/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open live app/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /download/i })).toBeInTheDocument();
   });
 
   it('disables the PDF export action while the notebook is still loading', async () => {
