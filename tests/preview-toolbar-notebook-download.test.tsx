@@ -114,4 +114,53 @@ describe('PreviewToolbar notebook downloads', () => {
     expect(screen.getByRole('button', { name: /exporting/i })).toBeInTheDocument();
     expect(screen.getByText('Exporting…')).toBeInTheDocument();
   });
+
+  it('shows a generic preview/source toggle for supported file previews', async () => {
+    const user = userEvent.setup();
+    const onFileViewModeChange = vi.fn();
+
+    renderToolbar({
+      activeTarget: {
+        kind: 'file',
+        source: 'workspace',
+        workspaceId: 'workspace-123',
+        path: '/site/index.html',
+        filename: 'index.html',
+        contentType: 'text/html',
+      },
+      notebookViewMode: undefined,
+      onNotebookViewModeChange: undefined,
+      fileViewMode: 'preview',
+      onFileViewModeChange,
+      filePreviewOpenUrl: '/api/workspaces/workspace-123/fs/content/site/index.html',
+      notebookState: undefined,
+      onNotebookReportPdfDownload: undefined,
+    });
+
+    await user.click(screen.getByRole('tab', { name: /source code/i }));
+
+    expect(onFileViewModeChange).toHaveBeenCalledWith('source');
+  });
+
+  it('omits the generic preview/source toggle for binary spreadsheets', () => {
+    renderToolbar({
+      activeTarget: {
+        kind: 'file',
+        source: 'workspace',
+        workspaceId: 'workspace-123',
+        path: '/data/report.xlsx',
+        filename: 'report.xlsx',
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+      notebookViewMode: undefined,
+      onNotebookViewModeChange: undefined,
+      fileViewMode: 'preview',
+      onFileViewModeChange: vi.fn(),
+      filePreviewOpenUrl: '/api/workspaces/workspace-123/fs/content/data/report.xlsx',
+      notebookState: undefined,
+      onNotebookReportPdfDownload: undefined,
+    });
+
+    expect(screen.queryByRole('tab', { name: /source code/i })).not.toBeInTheDocument();
+  });
 });

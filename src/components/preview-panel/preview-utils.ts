@@ -10,7 +10,11 @@ import {
   NotebookPen,
 } from 'lucide-react';
 import type { PreviewTarget } from '@/types';
-import { getFileCategory, getFileExtension } from '@/components/chat-file-preview/file-type-utils';
+import {
+  getFileCategory,
+  getFileExtension,
+  getPreviewType,
+} from '@/components/chat-file-preview/file-type-utils';
 
 const CODE_EXTENSIONS = new Set([
   'py',
@@ -19,6 +23,7 @@ const CODE_EXTENSIONS = new Set([
   'ts',
   'tsx',
   'html',
+  'htm',
   'css',
   'rs',
   'go',
@@ -80,6 +85,7 @@ export type ToolbarFileType =
   | 'app'
   | 'notebook'
   | 'markdown'
+  | 'html'
   | 'text'
   | 'spreadsheet'
   | 'json'
@@ -88,29 +94,63 @@ export type ToolbarFileType =
   | 'image'
   | 'other';
 
+const DELIMITED_SPREADSHEET_CONTENT_TYPES = new Set([
+  'text/csv',
+  'text/tab-separated-values',
+  'application/csv',
+  'application/tab-separated-values',
+]);
+
 export function getToolbarFileType(target: PreviewTarget): ToolbarFileType {
   if (target.kind === 'app') return 'app';
 
   const fileName = getTargetFileName(target);
+  const previewType = getPreviewType(fileName, target.contentType);
+  switch (previewType) {
+    case 'notebook':
+    case 'markdown':
+    case 'html':
+    case 'spreadsheet':
+    case 'svg':
+    case 'image':
+    case 'code':
+    case 'text':
+      return previewType;
+    case 'json':
+    case 'jsonl':
+      return 'json';
+    default:
+      return 'other';
+  }
+}
+
+export function isDelimitedSpreadsheetTarget(target: PreviewTarget): boolean {
+  if (target.kind !== 'file') return false;
+
+  const fileName = getTargetFileName(target);
   const ext = getFileExtension(fileName);
+  if (ext === 'csv' || ext === 'tsv') return true;
+  if (ext === 'xlsx' || ext === 'xls') return false;
 
-  if (ext === 'ipynb') return 'notebook';
-  if (ext === 'md') return 'markdown';
-  if (ext === 'txt') return 'text';
-  if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx' || ext === 'xls') return 'spreadsheet';
-  if (ext === 'json' || ext === 'jsonl') return 'json';
-  if (ext === 'svg') return 'svg';
-  if (RASTER_IMAGE_EXTENSIONS.has(ext)) return 'image';
-  if (CODE_EXTENSIONS.has(ext)) return 'code';
+  const contentType = target.contentType?.toLowerCase().split(';', 1)[0]?.trim();
+  return contentType ? DELIMITED_SPREADSHEET_CONTENT_TYPES.has(contentType) : false;
+}
 
-  const category = getFileCategory(fileName, target.contentType);
-  if (category === 'notebook') return 'notebook';
-  if (category === 'spreadsheet') return 'spreadsheet';
-  if (category === 'image') return 'image';
-  if (category === 'text') return 'text';
-  if (category === 'code') return 'code';
+export function supportsPreviewSourceToggle(target: PreviewTarget): boolean {
+  if (target.kind !== 'file') return false;
 
-  return 'other';
+  const fileType = getToolbarFileType(target);
+  if (
+    fileType === 'notebook' ||
+    fileType === 'markdown' ||
+    fileType === 'html' ||
+    fileType === 'svg' ||
+    fileType === 'json'
+  ) {
+    return true;
+  }
+
+  return fileType === 'spreadsheet' && isDelimitedSpreadsheetTarget(target);
 }
 
 export function getPreviewTabId(target: PreviewTarget): string {

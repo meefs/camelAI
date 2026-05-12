@@ -106,7 +106,7 @@ set_preview(
 ```
 
 Output rules:
-- Never paste raw HTML in chat. HTML does not render in the preview pane; deploy it as a Worker instead.
+- Never paste raw HTML in chat. To show an HTML page, write the file and pull it up with set_preview().
 - Never use "download and open" workflows. If it is meant to be seen, show it in the preview pane or deploy it.
 - Prefer notebooks for data analysis.
 - Deploy for live or interactive apps.

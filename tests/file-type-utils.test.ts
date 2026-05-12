@@ -25,7 +25,19 @@ describe('file-type-utils', () => {
     expect(getPreviewType('main.py')).toBe('code');
     expect(getPreviewType('main.py', 'text/plain')).toBe('code');
     expect(getPreviewType('index.ts')).toBe('code');
-    expect(getPreviewType('config.json')).toBe('code');
+  });
+
+  it('routes source-toggleable renderers to explicit preview types', () => {
+    expect(getPreviewType('index.html')).toBe('html');
+    expect(getPreviewType('index.htm')).toBe('html');
+    expect(getPreviewType('index', 'text/html')).toBe('html');
+    expect(getPreviewType('icon.svg')).toBe('svg');
+    expect(getPreviewType('icon', 'image/svg+xml')).toBe('svg');
+    expect(getPreviewType('config.json')).toBe('json');
+    expect(getPreviewType('config', 'application/json')).toBe('json');
+    expect(getPreviewType('schema', 'application/schema+json')).toBe('json');
+    expect(getPreviewType('events.jsonl')).toBe('jsonl');
+    expect(getPreviewType('events', 'application/x-ndjson')).toBe('jsonl');
   });
 
   it('routes spreadsheet files to spreadsheet preview and keeps plain text on text preview', () => {
