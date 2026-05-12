@@ -12,6 +12,7 @@ import {
   type DashboardSummaryResponse,
   type DashboardWorkspaceMetricsRow,
 } from './admin-dashboard-metrics.js';
+import { getAppIndexDatabase } from './app-index-db.js';
 
 // ---------------------------------------------------------------------------
 // Filter types for paginated queries
@@ -128,6 +129,39 @@ const ORG_DIRECTORY_SORT_COLS: Record<string, string> = { created_at: 'o.created
 const WORKSPACE_SORT_COLS: Record<string, string> = { created_at: 'w.created_at', name: 'w.name' };
 const APP_SORT_COLS: Record<string, string> = { created_at: 'a.created_at', updated_at: 'a.updated_at' };
 const ORG_MEMBERSHIP_SYNC_CONCURRENCY = 8;
+const APP_INDEX_SYNC_BATCH_SIZE = 500;
+const APP_INDEX_SYNC_TABLES = [
+  'users',
+  'orgs',
+  'workspaces',
+  'threads',
+  'apps',
+  'invitations',
+  'blocked_signup_ips',
+  'org_memberships',
+] as const;
+
+const APP_INDEX_SYNC_ORDER_BY: Record<(typeof APP_INDEX_SYNC_TABLES)[number], string> = {
+  users: 'id',
+  orgs: 'id',
+  workspaces: 'id',
+  threads: 'id',
+  apps: 'app_id',
+  invitations: 'id',
+  blocked_signup_ips: 'ip',
+  org_memberships: 'org_id, user_id',
+};
+
+const APP_INDEX_SYNC_KEY_COLUMNS: Record<(typeof APP_INDEX_SYNC_TABLES)[number], readonly string[]> = {
+  users: ['id'],
+  orgs: ['id'],
+  workspaces: ['id'],
+  threads: ['id'],
+  apps: ['app_id'],
+  invitations: ['id'],
+  blocked_signup_ips: ['ip'],
+  org_memberships: ['org_id', 'user_id'],
+};
 
 function normalizeSqlStringList(values: string[] | undefined): string[] {
   return Array.from(
@@ -775,6 +809,51 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     } catch (err) {
       console.error('AdminIndexDO event error:', err);
     }
+  }
+
+  async syncAppIndexDatabase(): Promise<{ enabled: boolean; imported: Record<string, number> }> {
+    const appIndex = getAppIndexDatabase(this.env);
+    if (!appIndex) {
+      return { enabled: false, imported: {} };
+    }
+
+    const imported: Record<string, number> = {};
+    await appIndex.markNotReady();
+    for (const table of APP_INDEX_SYNC_TABLES) {
+      await appIndex.clearAdminIndexTable(table);
+      const orderBy = APP_INDEX_SYNC_ORDER_BY[table];
+      const keyColumns = APP_INDEX_SYNC_KEY_COLUMNS[table];
+      let cursor: Record<string, unknown> | null = null;
+      let count = 0;
+      while (true) {
+        const cursorConditions: string[] = [];
+        const cursorParams: unknown[] = [];
+        if (cursor) {
+          for (let index = 0; index < keyColumns.length; index++) {
+            const equalPrefix = keyColumns
+              .slice(0, index)
+              .map((column) => `${column} = ?`)
+              .join(' AND ');
+            const condition = `${equalPrefix ? `${equalPrefix} AND ` : ''}${keyColumns[index]} > ?`;
+            cursorConditions.push(`(${condition})`);
+            for (let prefixIndex = 0; prefixIndex < index; prefixIndex++) {
+              cursorParams.push(cursor[keyColumns[prefixIndex]]);
+            }
+            cursorParams.push(cursor[keyColumns[index]]);
+          }
+        }
+        const where = cursorConditions.length ? ` WHERE ${cursorConditions.join(' OR ')}` : '';
+        const rows = this.sql
+          .exec(`SELECT * FROM ${table}${where} ORDER BY ${orderBy} LIMIT ?`, ...cursorParams, APP_INDEX_SYNC_BATCH_SIZE)
+          .toArray() as Record<string, unknown>[];
+        if (rows.length === 0) break;
+        count += await appIndex.importAdminIndexRows(table, rows);
+        cursor = rows[rows.length - 1];
+      }
+      imported[table] = count;
+    }
+    await appIndex.markReady();
+    return { enabled: true, imported };
   }
 
   private loadAllUsersForDashboardMetrics(): AdminUserSummaryRow[] {

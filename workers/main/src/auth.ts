@@ -54,6 +54,7 @@ export interface DOEnv {
   ADMIN_INDEX: DurableObjectNamespace<
     import("./admin-index-do.js").AdminIndexDO
   >;
+  APP_DB?: D1Database;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
 }

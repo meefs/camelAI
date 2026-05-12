@@ -75,6 +75,8 @@ export interface Env
   EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
   // Admin CLI API key (set via wrangler secret)
   ADMIN_API_KEY?: string;
+  // Derived global admin/index read model. Tenant-owned state remains authoritative in DOs.
+  APP_DB?: D1Database;
   // Optional static OAuth client id for the remote admin MCP server.
   ADMIN_MCP_CLIENT_ID?: string;
   // Comma/whitespace-separated redirect URI allowlist for ADMIN_MCP_CLIENT_ID.

@@ -52,6 +52,17 @@
 		{ "binding": "APP_KV", "id": "e894eb2caf1641ad8870da994b992fce" },
 		{ "binding": "SESSIONS", "id": "c632a963433e4949b6dea43728034b36" }
 	],
+	"d1_databases": [
+		{
+			"binding": "APP_DB",
+			"database_name": "chiridion-app-dev-illiana-db",
+			"database_id": "5c2ede0c-5b0c-47db-a69d-b15e0d423de7",
+			"migrations_dir": "migrations"
+		}
+	],
+	"triggers": {
+		"crons": ["*/10 * * * *"]
+	},
 	"queues": {
 		"producers": [
 			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots-dev-illiana" },

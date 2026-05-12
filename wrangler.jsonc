@@ -69,6 +69,17 @@
 			"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 		}
 	],
+	"d1_databases": [
+		{
+			"binding": "APP_DB",
+			"database_name": "chiridion-app-staging-db",
+			"database_id": "f73a764a-e6e2-4813-aa5c-6058b0212c51",
+			"migrations_dir": "migrations"
+		}
+	],
+	"triggers": {
+		"crons": ["*/10 * * * *"]
+	},
 	"queues": {
 		"producers": [
 			{
@@ -206,6 +217,17 @@
 					"id": "67958a5b0d104621bd93c91c802ccd1c"
 				}
 			],
+			"d1_databases": [
+				{
+					"binding": "APP_DB",
+					"database_name": "chiridion-app-db",
+					"database_id": "d4e6f5ca-08ec-4920-a4da-5651336beb79",
+					"migrations_dir": "migrations"
+				}
+			],
+			"triggers": {
+				"crons": ["*/10 * * * *"]
+			},
 			"queues": {
 				"producers": [
 					{
@@ -323,6 +345,17 @@
 					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 				}
 			],
+			"d1_databases": [
+				{
+					"binding": "APP_DB",
+					"database_name": "chiridion-app-staging-db",
+					"database_id": "f73a764a-e6e2-4813-aa5c-6058b0212c51",
+					"migrations_dir": "migrations"
+				}
+			],
+			"triggers": {
+				"crons": ["*/10 * * * *"]
+			},
 			"queues": {
 				"producers": [
 					{
@@ -435,6 +468,17 @@
 					"id": "a38773869d2e465fbf705c81fa2e01eb"
 				}
 			],
+			"d1_databases": [
+				{
+					"binding": "APP_DB",
+					"database_name": "chiridion-app-dev-miguel-db",
+					"database_id": "1f903d02-d870-47bf-8438-b7739088175f",
+					"migrations_dir": "migrations"
+				}
+			],
+			"triggers": {
+				"crons": ["*/10 * * * *"]
+			},
 			"queues": {
 				"producers": [
 					{
@@ -547,6 +591,17 @@
 					"id": "c632a963433e4949b6dea43728034b36"
 				}
 			],
+			"d1_databases": [
+				{
+					"binding": "APP_DB",
+					"database_name": "chiridion-app-dev-illiana-db",
+					"database_id": "5c2ede0c-5b0c-47db-a69d-b15e0d423de7",
+					"migrations_dir": "migrations"
+				}
+			],
+			"triggers": {
+				"crons": ["*/10 * * * *"]
+			},
 			"queues": {
 				"producers": [
 					{

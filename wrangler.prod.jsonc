@@ -60,6 +60,17 @@
     { "binding": "APP_KV", "id": "0ee80299e67c4c7fa0c1ad618b7e7a9c" },
     { "binding": "SESSIONS", "id": "67958a5b0d104621bd93c91c802ccd1c" },
   ],
+  "d1_databases": [
+    {
+      "binding": "APP_DB",
+      "database_name": "chiridion-app-db",
+      "database_id": "d4e6f5ca-08ec-4920-a4da-5651336beb79",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "triggers": {
+    "crons": ["*/10 * * * *"],
+  },
   "queues": {
     "producers": [
       {

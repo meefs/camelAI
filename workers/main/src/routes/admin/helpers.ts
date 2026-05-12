@@ -5,6 +5,7 @@
 import type { Env } from '../../types.js';
 import type { OrgDO, UserDO } from '../../auth.js';
 import type { AdminIndexDO } from '../../admin-index-do.js';
+import { getAppIndexReadDatabase } from '../../app-index-db.js';
 import { ensureAdminIndexReady } from '../../../../../src/lib/auth-do.server';
 import {
   WorkspaceContainer,
@@ -15,7 +16,7 @@ import {
 // DO stub helpers
 // ---------------------------------------------------------------------------
 
-type AdminIndexEnv = Pick<Env, 'ADMIN_INDEX'>;
+type AdminIndexEnv = Pick<Env, 'ADMIN_INDEX' | 'APP_DB'>;
 type OrgEnv = Pick<Env, 'ORG'>;
 type UserEnv = Pick<Env, 'USER'>;
 type AdminThreadContextLookup = {
@@ -56,7 +57,55 @@ async function getOptionalChatThreadSessionId(
 }
 
 export function getAdminIndexStub(env: AdminIndexEnv) {
-  return env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index')) as DurableObjectStub<AdminIndexDO>;
+  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index')) as DurableObjectStub<AdminIndexDO>;
+  const appIndex = getAppIndexReadDatabase(env);
+  if (!appIndex) {
+    return adminIndex;
+  }
+
+  const indexWriteMethods = new Set(['blockSignupIp', 'unblockSignupIp', 'handleEvent']);
+  const adminIndexOnlyMethods = new Set([
+    // AdminIndexDO repairs legacy/stale org membership rows before answering.
+    'getUsersByOrgIds',
+    // Thread admin flows need read-after-write freshness for newly-created threads.
+    'getThreadContextById',
+    // Thread update fallback scans orgs to recover from stale indexes.
+    'getOrgsPaginated',
+  ]);
+  return new Proxy(adminIndex as unknown as Record<string, unknown>, {
+    get(target, prop, receiver) {
+      if (typeof prop !== 'string' || indexWriteMethods.has(prop) || adminIndexOnlyMethods.has(prop)) {
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? (...args: unknown[]) => value(...args) : value;
+      }
+
+      const d1Value = Reflect.get(appIndex as unknown as Record<string, unknown>, prop, appIndex);
+      if (typeof d1Value !== 'function') {
+        return Reflect.get(target, prop, receiver);
+      }
+
+      const fallbackValue = Reflect.get(target, prop, receiver);
+      if (typeof fallbackValue !== 'function') {
+        return d1Value.bind(appIndex);
+      }
+
+      return async (...args: unknown[]) => {
+        try {
+          const appIndexReady = await appIndex.isReady().catch((error) => {
+            console.warn('D1 admin index readiness check failed, falling back to AdminIndex', error);
+            return false;
+          });
+          if (!appIndexReady) {
+            return fallbackValue(...args);
+          }
+          return await d1Value.apply(appIndex, args);
+        } catch (error) {
+          console.warn(`D1 admin index read failed for ${prop}, falling back to AdminIndex`, error);
+          return fallbackValue(...args);
+        }
+      };
+    },
+  }) as unknown as DurableObjectStub<AdminIndexDO>;
 }
 
 export function getOrgStub(env: OrgEnv, orgId: string) {
