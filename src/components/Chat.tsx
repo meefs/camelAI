@@ -5166,35 +5166,15 @@ export default function Chat({
     [pendingQuestion],
   );
 
-  // Handle connection setup response - send via chat WebSocket
+  // Handle connection setup response through ChatThreadDO. This mirrors
+  // ask_user_question: the DO owns the pending waiter, and the modal closes
+  // only after the DO broadcasts connection_setup_answered.
   const handleConnectionSetupResponse = useCallback(
     async (response: ConnectionSetupResponse) => {
       const payload = {
         type: "connection_setup_response",
         ...response,
       };
-      if (resolvedWorkspaceId && threadId) {
-        try {
-          const apiResponse = await fetch(
-            `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(threadId)}/connection-setup-response`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(response),
-            },
-          );
-          if (!apiResponse.ok) {
-            throw new Error(`HTTP ${apiResponse.status}`);
-          }
-          setConnectionSetupPrompt(null);
-          return;
-        } catch (error) {
-          console.warn(
-            "[Chat] Falling back to WebSocket for connection setup response",
-            error,
-          );
-        }
-      }
 
       const socket =
         oobWsRef.current?.readyState === WebSocket.OPEN
@@ -5206,15 +5186,12 @@ export default function Chat({
         console.error(
           "[Chat] WebSocket not available for connection setup response",
         );
-        return;
+        throw new Error("Chat connection is not available. Please try again.");
       }
 
       socket.send(JSON.stringify(payload));
-
-      // Clear the prompt
-      setConnectionSetupPrompt(null);
     },
-    [resolvedWorkspaceId, threadId],
+    [threadId],
   );
 
   const handleConnectionSetupCancel = useCallback(() => {

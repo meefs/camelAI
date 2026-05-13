@@ -48,7 +48,7 @@ export interface ConnectionSetupResponse {
 
 interface ConnectionSetupPromptProps {
   data: ConnectionSetupPromptData;
-  onSubmit: (response: ConnectionSetupResponse) => void;
+  onSubmit: (response: ConnectionSetupResponse) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -109,7 +109,7 @@ export function ConnectionSetupPrompt({
   }, [typeDef, isDynamic]);
 
   const handleCancel = () => {
-    onSubmit({
+    void onSubmit({
       requestId: data.requestId,
       cancelled: true,
     });
@@ -117,7 +117,7 @@ export function ConnectionSetupPrompt({
   };
 
   const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
+    async (e: React.FormEvent) => {
       e.preventDefault();
 
       // OAuth flow handles submission via redirect, not form submit
@@ -148,16 +148,21 @@ export function ConnectionSetupPrompt({
           }
         }
 
-        onSubmit({
-          requestId: data.requestId,
-          cancelled: false,
-          integration: {
-            type: data.integrationType,
-            name: name.trim(),
-            config: {}, // Config is handled server-side for dynamic integrations
-            credentials,
-          },
-        });
+        try {
+          await onSubmit({
+            requestId: data.requestId,
+            cancelled: false,
+            integration: {
+              type: data.integrationType,
+              name: name.trim(),
+              config: {}, // Config is handled server-side for dynamic integrations
+              credentials,
+            },
+          });
+        } catch (submitError) {
+          setError(submitError instanceof Error ? submitError.message : 'Failed to submit connection details');
+          setIsSubmitting(false);
+        }
       } else if (typeDef) {
         // Validate required fields for static integrations
         for (const field of typeDef.configSchema) {
@@ -180,16 +185,21 @@ export function ConnectionSetupPrompt({
           }
         }
 
-        onSubmit({
-          requestId: data.requestId,
-          cancelled: false,
-          integration: {
-            type: data.integrationType,
-            name: name.trim(),
-            config,
-            credentials,
-          },
-        });
+        try {
+          await onSubmit({
+            requestId: data.requestId,
+            cancelled: false,
+            integration: {
+              type: data.integrationType,
+              name: name.trim(),
+              config,
+              credentials,
+            },
+          });
+        } catch (submitError) {
+          setError(submitError instanceof Error ? submitError.message : 'Failed to submit connection details');
+          setIsSubmitting(false);
+        }
       }
     },
     [data.requestId, data.integrationType, typeDef, isDynamic, dynamicSchema, isOAuthWithFlow, name, config, credentials, onSubmit]
