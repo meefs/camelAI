@@ -7,17 +7,18 @@ import { describe, expect, it } from 'vitest';
 const root = process.cwd();
 const validatorPath = path.join(root, 'sandbox/validate-notebook.py');
 
-function findPython(): string {
+function findPython(): string | null {
   for (const command of ['python3', 'python']) {
     const result = spawnSync(command, ['--version'], { encoding: 'utf8' });
     if (result.status === 0) {
       return command;
     }
   }
-  throw new Error('Python is required to run validate-notebook tests');
+  return null;
 }
 
 const python = findPython();
+const describeIfPython = python ? describe : describe.skip;
 
 function writeNotebook(cells: unknown[]): string {
   const directory = mkdtempSync(path.join(tmpdir(), 'validate-notebook-'));
@@ -36,6 +37,10 @@ function writeNotebook(cells: unknown[]): string {
 }
 
 function runValidator(notebookPath: string) {
+  if (!python) {
+    throw new Error('Python is required to run validate-notebook tests');
+  }
+
   return spawnSync(python, [validatorPath, notebookPath], {
     cwd: root,
     encoding: 'utf8',
@@ -56,7 +61,7 @@ function codeCell(outputs: unknown[]) {
   };
 }
 
-describe('validate-notebook', () => {
+describeIfPython('validate-notebook', () => {
   it('warns for ignorable setup repr text outputs', () => {
     const notebookPath = writeNotebook([
       codeCell([
