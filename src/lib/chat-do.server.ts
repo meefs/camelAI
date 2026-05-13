@@ -580,6 +580,30 @@ export async function getPiCoreMessages(
   return Array.isArray(messages) ? messages : [];
 }
 
+export async function getTodoState(
+  context: AppLoadContext,
+  threadId: string,
+): Promise<unknown[]> {
+  const env = getEnv(context);
+  if (
+    !env ||
+    typeof env !== "object" ||
+    !("CHAT_THREAD" in env) ||
+    !env.CHAT_THREAD
+  ) {
+    return [];
+  }
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const todos = await Promise.resolve(
+    (
+      threadStub as unknown as {
+        getTodoState(): Promise<unknown[]> | unknown[];
+      }
+    ).getTodoState(),
+  ).catch(() => []);
+  return Array.isArray(todos) ? todos : [];
+}
+
 export async function getMessages(
   context: AppLoadContext,
   threadId: string,

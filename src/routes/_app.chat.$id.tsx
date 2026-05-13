@@ -45,6 +45,7 @@ import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { useChatGroups } from "@/hooks/use-chat-groups";
+import type { TodoItem } from "@/components/floating-todo";
 import type {
   ChatHarness,
   Integration,
@@ -173,6 +174,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 interface ChatData {
   messages: Message[];
   messagesError: string | null;
+  todos: TodoItem[];
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
   previewTarget: PreviewTarget | null;
@@ -181,6 +183,7 @@ interface ChatData {
 const EMPTY_CHAT_DATA: ChatData = {
   messages: [],
   messagesError: null,
+  todos: [],
   previewTabs: [],
   activeTabId: null,
   previewTarget: null,
@@ -277,15 +280,20 @@ async function buildChatData(
           };
         })
     : Promise.resolve({ messages: [], messagesError: null });
+  const todosPromise = chatDO
+    .getTodoState(context, threadId)
+    .catch(() => [] as unknown[]);
 
-  const [previewData, messageData] = await Promise.all([
+  const [previewData, messageData, todos] = await Promise.all([
     previewDataPromise,
     messagesPromise,
+    todosPromise,
   ]);
   return {
     ...previewData,
     messages: messageData.messages,
     messagesError: messageData.messagesError,
+    todos: Array.isArray(todos) ? (todos as TodoItem[]) : [],
   };
 }
 
@@ -872,6 +880,7 @@ export default function ChatPage() {
             workspaceId={workspaceId}
             chatGroupId={liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null}
             initialMessages={displayChatData.messages}
+            initialTodos={displayChatData.todos}
             threadTitle={displayThreadTitle}
             threadModel={displayThreadModel}
             threadProvider={displayThreadProvider}

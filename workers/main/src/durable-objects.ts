@@ -3236,7 +3236,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
       if (Array.isArray(storedTodos)) {
-        ctx.storage.kv.delete(CHAT_TODOS_KEY);
+        this.currentTodos = normalizeTodoItems(storedTodos);
       }
 
       const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
@@ -3832,6 +3832,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
     }
     this.broadcastRealtime({ type: 'todo_state', todos: this.currentTodos });
+  }
+
+  getTodoState(): unknown[] {
+    return this.currentTodos;
   }
 
   async askUserQuestion(input: {
@@ -5808,6 +5812,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (value && this.currentTodos.length > 0) {
       this.currentTodos = [];
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
+      this.broadcastRealtime({ type: "todo_state", todos: [] });
     }
     if (statusChanged) {
       this.broadcastRealtime({ type: "streaming_state", isStreaming: value });

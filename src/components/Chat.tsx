@@ -166,6 +166,7 @@ interface ChatProps {
   threadId?: string;
   workspaceId: string;
   initialMessages?: Message[];
+  initialTodos?: TodoItem[];
   threadTitle?: string | null;
   threadModel?: LlmModel | null;
   threadProvider?: ChatHarness | null;
@@ -1477,6 +1478,7 @@ export default function Chat({
   threadId,
   workspaceId,
   initialMessages,
+  initialTodos = [],
   threadTitle,
   threadModel,
   threadProvider,
@@ -1581,8 +1583,7 @@ export default function Chat({
   >(null);
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
-  const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
-  const todoStateByThreadRef = useRef<Record<string, TodoItem[]>>({});
+  const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
   const [connectionSetupPrompt, setConnectionSetupPrompt] =
@@ -1789,24 +1790,6 @@ export default function Chat({
     readOnly,
   };
 
-  const setCurrentTodosForThread = useCallback(
-    (sourceThreadId: string | null | undefined, todos: TodoItem[]) => {
-      const nextTodos = Array.isArray(todos) ? todos : [];
-      if (sourceThreadId) {
-        if (nextTodos.length > 0) {
-          todoStateByThreadRef.current[sourceThreadId] = nextTodos;
-        } else {
-          delete todoStateByThreadRef.current[sourceThreadId];
-        }
-      }
-
-      if (pendingThreadContextRef.current.threadId === sourceThreadId) {
-        setCurrentTodos(nextTodos);
-      }
-    },
-    [],
-  );
-
   // Wrapper setters that update both state and ref
   const setMessages = useCallback(
     (updater: Message[] | ((prev: Message[]) => Message[])) => {
@@ -1921,7 +1904,6 @@ export default function Chat({
   ]);
 
   const isStreaming = streamingMessageId !== null;
-  const wasStreamingRef = useRef(isStreaming);
   const activeAssistantMessageId = useMemo(() => {
     if (streamingMessageId) {
       const trackedMessageExists = messages.some(
@@ -2156,9 +2138,7 @@ export default function Chat({
     initialScrollDoneRef.current = false;
     stickToBottomRef.current = true;
     splitStreamingMessageOnNextPartRef.current = false;
-    setCurrentTodos(
-      threadId ? (todoStateByThreadRef.current[threadId] ?? []) : [],
-    );
+    setCurrentTodos(initialTodos);
     setPendingQuestion(null);
     setContextUsedPercent(null);
     lastCompletedAssistantMessageIdRef.current = null;
@@ -2300,15 +2280,6 @@ export default function Chat({
     [activeTabId],
   );
 
-  // Todo state comes directly from server via todo_state events
-  // Clear todos when streaming starts (new message turn)
-  useEffect(() => {
-    if (!wasStreamingRef.current && isStreaming) {
-      setCurrentTodosForThread(threadId, []);
-    }
-    wasStreamingRef.current = isStreaming;
-  }, [isStreaming, setCurrentTodosForThread, threadId]);
-
   const lastMarkedViewedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -2343,12 +2314,12 @@ export default function Chat({
     );
     const timeout = setTimeout(
       () => {
-        setCurrentTodosForThread(threadId, []);
+        setCurrentTodos([]);
       },
       allComplete ? 1500 : 2000,
     );
     return () => clearTimeout(timeout);
-  }, [currentTodos, isStreaming, setCurrentTodosForThread, threadId]);
+  }, [currentTodos, isStreaming]);
 
   useEffect(() => {
     setActiveThreadProvider(initialThreadProvider);
@@ -3181,7 +3152,7 @@ export default function Chat({
           }
         } else if (data.type === "todo_state") {
           if (Array.isArray(data.todos)) {
-            setCurrentTodosForThread(id, data.todos);
+            setCurrentTodos(data.todos);
           }
         } else if (data.type === "context_usage_state") {
           if (data.usedPercent === null) {
@@ -3851,7 +3822,7 @@ export default function Chat({
         } else if (data.type === "todo_state") {
           // Direct todo state from server - no extraction needed
           if (Array.isArray(data.todos)) {
-            setCurrentTodosForThread(id, data.todos);
+            setCurrentTodos(data.todos);
           }
         } else if (data.type === "context_usage_state") {
           if (data.usedPercent === null) {
@@ -4044,7 +4015,6 @@ export default function Chat({
       setMessages,
       setPendingMessages,
       setStreamingMessageId,
-      setCurrentTodosForThread,
       handleRealtimeSideChannelEvent,
     ],
   );
