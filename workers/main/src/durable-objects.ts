@@ -109,17 +109,6 @@ export interface DynamicIntegrationSchema {
   fields: DynamicField[];
 }
 
-// Connection setup prompt request
-export interface ConnectionSetupRequest {
-  requestId: string;
-  integrationType: string; // Required: the integration type to set up
-  suggestedName?: string; // Optional: suggested name for the connection
-  message?: string; // Optional: message to show user
-  instructions?: string; // Optional: markdown setup instructions to show user
-  createdAt: number;
-  dynamicSchema?: DynamicIntegrationSchema; // Optional: custom fields for "other" type
-}
-
 // Connection setup response from user
 export interface ConnectionSetupResponse {
   requestId: string;
@@ -172,7 +161,6 @@ export interface Message {
 
 // Forward declaration for MCP DO RPC methods - used for callback from ChatThreadDO
 interface ChiridionMcpRpc {
-  receiveConnectionSetupResponse(response: ConnectionSetupResponse): void;
   receiveBugReportCaptureResponse(response: BugReportCaptureResponse): void;
 }
 
@@ -250,9 +238,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   CHIRIDION_WEB_PROVIDER_ORDER?: string;
 }
 
-// Pending connection setup with MCP callback info
-interface PendingConnectionSetupInfo {
-  mcpDoId: string;
+interface PendingConnectionSetupPromptInfo {
   createdAt: number;
   integrationType: string;
   suggestedName?: string;
@@ -348,6 +334,7 @@ interface PendingConnectionSetupWaiter {
   resolve: (response: ConnectionSetupResponse) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
+  info: PendingConnectionSetupPromptInfo;
 }
 
 interface PendingBugReportWaiter {
@@ -3061,11 +3048,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private previewActiveTabId: string | null = null;
   private previewVersion: number = 0;
 
-  // Pending connection setup requests (requestId -> MCP DO callback info)
-  // This is also persisted to storage to survive hibernation
-  private pendingConnectionSetups: Map<string, PendingConnectionSetupInfo> =
-    new Map();
-
   // Pending bug report captures (requestId -> MCP DO callback info)
   private pendingBugReports: Map<string, PendingBugReportInfo> = new Map();
 
@@ -3211,35 +3193,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.ctx.storage.kv.put("previewTabs", this.previewTabs);
       this.ctx.storage.kv.put("previewActiveTabId", this.previewActiveTabId);
       this.ctx.storage.kv.put("previewTarget", this.previewTarget);
-
-      // Restore pending connection setups from storage (sync KV)
-      const pendingEntries = ctx.storage.kv.list({
-        prefix: "pending_connection:",
-      });
-      for (const [key, value] of pendingEntries) {
-        const info = value as Partial<PendingConnectionSetupInfo>;
-        const requestId = key.replace("pending_connection:", "");
-        if (
-          typeof info?.createdAt === "number" &&
-          typeof info?.mcpDoId === "string" &&
-          typeof info?.integrationType === "string"
-        ) {
-          // Only restore if not expired (30 minutes)
-          if (
-            Date.now() - info.createdAt <
-            ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS
-          ) {
-            this.pendingConnectionSetups.set(
-              requestId,
-              info as PendingConnectionSetupInfo,
-            );
-          } else {
-            ctx.storage.kv.delete(key);
-          }
-        } else {
-          ctx.storage.kv.delete(key);
-        }
-      }
 
       // Restore pending bug reports from storage (sync KV)
       const bugReportEntries = ctx.storage.kv.list({
@@ -3557,69 +3510,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
     }
 
-    // HTTP API for connection setup prompts (called by MCP server)
-    if (
-      url.pathname === "/connection-setup/prompt" &&
-      request.method === "POST"
-    ) {
-      const body = (await request.json()) as ConnectionSetupRequest & {
-        mcpDoId?: string;
-        dynamicSchema?: DynamicIntegrationSchema;
-      };
-      const requestId = body.requestId || crypto.randomUUID();
-      const mcpDoId = body.mcpDoId;
-
-      if (!mcpDoId) {
-        return new Response(
-          JSON.stringify({ error: "Missing MCP DO ID for callback" }),
-          {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-
-      if (!body.integrationType) {
-        return new Response(
-          JSON.stringify({
-            error:
-              "Missing integrationType - connection type must be specified",
-          }),
-          {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-
-      const pendingInfo: PendingConnectionSetupInfo = {
-        mcpDoId,
-        createdAt: Date.now(),
-        integrationType: body.integrationType,
-        suggestedName: body.suggestedName,
-        message: body.message,
-        instructions: body.instructions,
-        dynamicSchema: body.dynamicSchema,
-      };
-      this.pendingConnectionSetups.set(requestId, pendingInfo);
-      this.ctx.storage.kv.put(`pending_connection:${requestId}`, pendingInfo);
-
-      this.broadcastRealtime({
-        type: "connection_setup_prompt",
-        requestId,
-        integrationType: body.integrationType,
-        suggestedName: body.suggestedName,
-        message: body.message,
-        instructions: body.instructions,
-        dynamicSchema: body.dynamicSchema,
-        mcpDoId,
-      });
-
-      return new Response(JSON.stringify({ requestId }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     // HTTP API for bug report capture prompts (called by MCP server)
     if (url.pathname === "/bug-report/prompt" && request.method === "POST") {
       const body = (await request.json()) as BugReportCaptureRequest & {
@@ -3684,11 +3574,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
 
     try {
-      if (this.isRunnerClientSocket(ws)) {
-        await this.handleRunnerClientMessage(ws, data);
-        return;
-      }
-
       if (data.type === "connection_setup_response") {
         await this.handleConnectionSetupResponse(
           data as unknown as ConnectionSetupResponse,
@@ -3700,6 +3585,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         await this.handleBugReportResponse(
           data as unknown as BugReportCaptureResponse,
         );
+        return;
+      }
+
+      if (this.isRunnerClientSocket(ws)) {
+        await this.handleRunnerClientMessage(ws, data);
         return;
       }
 
@@ -4002,6 +3892,30 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return { requestId: "", cancelled: true };
     }
     const requestId = crypto.randomUUID();
+    const info: PendingConnectionSetupPromptInfo = {
+      createdAt: Date.now(),
+      integrationType,
+      suggestedName: input.suggestedName,
+      message: input.message,
+      instructions: input.instructions,
+      dynamicSchema: input.dynamicSchema,
+    };
+    const pendingResponse = new Promise<ConnectionSetupResponse>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingConnectionSetupWaiters.delete(requestId);
+        this.broadcastRealtime({
+          type: "connection_setup_answered",
+          requestId,
+        });
+        reject(new Error("Connection setup timed out"));
+      }, ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS);
+      this.pendingConnectionSetupWaiters.set(requestId, {
+        resolve,
+        reject,
+        timeoutId,
+        info,
+      });
+    });
     this.broadcastRealtime({
       type: "connection_setup_prompt",
       requestId,
@@ -4011,17 +3925,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       instructions: input.instructions,
       dynamicSchema: input.dynamicSchema,
     });
-    return new Promise<ConnectionSetupResponse>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.pendingConnectionSetupWaiters.delete(requestId);
-        reject(new Error("Connection setup timed out"));
-      }, ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS);
-      this.pendingConnectionSetupWaiters.set(requestId, {
-        resolve,
-        reject,
-        timeoutId,
-      });
-    });
+    return pendingResponse;
+  }
+
+  async receiveConnectionSetupResponse(response: ConnectionSetupResponse): Promise<void> {
+    await this.handleConnectionSetupResponse(response);
   }
 
   async captureBugReport(input: {
@@ -5245,25 +5153,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.pendingConnectionSetupWaiters.delete(response.requestId);
       clearTimeout(nativeWaiter.timeoutId);
       nativeWaiter.resolve(response);
+      this.broadcastRealtime({
+        type: "connection_setup_answered",
+        requestId: response.requestId,
+      });
       return;
     }
 
-    const pendingInfo = this.pendingConnectionSetups.get(response.requestId);
-
-    if (response.requestId && pendingInfo) {
-      this.pendingConnectionSetups.delete(response.requestId);
-      this.ctx.storage.kv.delete(`pending_connection:${response.requestId}`);
-
-      try {
-        const mcpDoId = this.env.MCP_OBJECT.idFromString(pendingInfo.mcpDoId);
-        const mcpStub = this.env.MCP_OBJECT.get(
-          mcpDoId,
-        ) as unknown as ChiridionMcpRpc;
-        await mcpStub.receiveConnectionSetupResponse(response);
-      } catch (err) {
-        console.error("[ChatThreadDO] Failed to call MCP DO callback:", err);
-      }
-    }
+    console.warn("[ChatThreadDO] Received connection setup response with no pending waiter", {
+      requestId: response.requestId,
+    });
   }
 
   private async handleBugReportResponse(
@@ -8696,13 +8595,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private pruneExpiredPendingPrompts(): void {
     const now = Date.now();
 
-    for (const [requestId, info] of this.pendingConnectionSetups.entries()) {
-      if (now - info.createdAt >= ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS) {
-        this.pendingConnectionSetups.delete(requestId);
-        this.ctx.storage.kv.delete(`pending_connection:${requestId}`);
-      }
-    }
-
     for (const [requestId, info] of this.pendingBugReports.entries()) {
       if (now - info.createdAt >= ChatThreadDO.BUG_REPORT_TIMEOUT_MS) {
         this.pendingBugReports.delete(requestId);
@@ -8714,10 +8606,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private sendPendingPromptsToWebSocket(ws: WebSocket): void {
     this.pruneExpiredPendingPrompts();
 
-    const pendingConnectionPrompts = Array.from(
-      this.pendingConnectionSetups.entries(),
-    ).sort(([, a], [, b]) => a.createdAt - b.createdAt);
-    for (const [requestId, info] of pendingConnectionPrompts) {
+    const nativeConnectionPrompts = Array.from(
+      this.pendingConnectionSetupWaiters.entries(),
+    ).sort(([, a], [, b]) => a.info.createdAt - b.info.createdAt);
+    for (const [requestId, waiter] of nativeConnectionPrompts) {
+      const info = waiter.info;
       this.sendDirect(ws, {
         type: "connection_setup_prompt",
         requestId,
@@ -8726,7 +8619,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         message: info.message,
         instructions: info.instructions,
         dynamicSchema: info.dynamicSchema,
-        mcpDoId: info.mcpDoId,
       });
     }
 

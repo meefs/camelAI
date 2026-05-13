@@ -98,6 +98,13 @@ vi.mock('@/components/message-bubble', () => ({
   isInterruptMessage: () => false,
   parseSlashCommand: () => null,
   parseLocalCommandStdout: () => null,
+  userFacingContentToString: (content: string | Array<{ type: string; text?: string }>) => {
+    if (typeof content === 'string') return content.trim();
+    return content
+      .map((block) => (block.type === 'text' ? block.text?.trim() ?? '' : ''))
+      .filter(Boolean)
+      .join('\n\n');
+  },
 }));
 
 vi.mock('@/components/loading-dots', () => ({

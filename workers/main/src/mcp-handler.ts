@@ -10,7 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
-import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
+import type { ChatThreadDO, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
 import type { WorkspaceCronDO } from './workspace-cron';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
 import {
@@ -76,13 +76,6 @@ const TEMP_PREVIEW_PREFIXES = [
   { prefix: '/mnt/user-outputs/', source: 'output' as const },
 ];
 
-// Pending connection setup request with resolver
-interface PendingConnectionSetup {
-  resolve: (response: ConnectionSetupResponse) => void;
-  reject: (error: Error) => void;
-  timeoutId: ReturnType<typeof setTimeout>;
-}
-
 // Pending bug report capture request with resolver
 interface PendingBugReportCapture {
   resolve: (response: BugReportCaptureResponse) => void;
@@ -118,8 +111,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
   private workspaceId: string | null = null;
   private threadId: string | null = null;
 
-  // Pending connection setup promises (requestId -> resolver)
-  private pendingConnectionSetups: Map<string, PendingConnectionSetup> = new Map();
   // Pending bug report capture promises (requestId -> resolver)
   private pendingBugReports: Map<string, PendingBugReportCapture> = new Map();
 
@@ -207,33 +198,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
   }
 
   /**
-   * RPC method called by ChatThreadDO when user completes connection setup.
-   * Resolves the pending promise for the corresponding request.
-   * Also cleans up persisted storage for hibernation recovery.
-   */
-  receiveConnectionSetupResponse(response: ConnectionSetupResponse): void {
-    // Clean up persisted storage (for hibernation recovery) - sync KV is faster
-    this.ctx.storage.kv.delete(`pending_connection:${response.requestId}`);
-
-    // Resolve in-memory promise if it exists (DO didn't hibernate)
-    const pending = this.pendingConnectionSetups.get(response.requestId);
-    if (pending) {
-      clearTimeout(pending.timeoutId);
-      this.pendingConnectionSetups.delete(response.requestId);
-      pending.resolve(response);
-    }
-    // If not in Map, the tool call already timed out - nothing more to do
-  }
-
-  /**
-   * Persist a pending connection setup to storage (for hibernation recovery).
-   * Uses sync KV for better performance.
-   */
-  private persistPendingConnectionSetup(requestId: string): void {
-    this.ctx.storage.kv.put(`pending_connection:${requestId}`, Date.now().toString());
-  }
-
-  /**
    * RPC method called by ChatThreadDO when a bug report capture response is received.
    * Also cleans up persisted storage for hibernation recovery.
    */
@@ -257,23 +221,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
    */
   private persistPendingBugReport(requestId: string): void {
     this.ctx.storage.kv.put(`pending_bug_report:${requestId}`, Date.now().toString());
-  }
-
-  /**
-   * Register a pending connection setup and return a promise that resolves when user responds.
-   * Call persistPendingConnectionSetup() first to ensure storage is written.
-   */
-  private waitForConnectionSetup(requestId: string, timeoutMs: number): Promise<ConnectionSetupResponse> {
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.pendingConnectionSetups.delete(requestId);
-        // Clean up storage on timeout - sync KV
-        this.ctx.storage.kv.delete(`pending_connection:${requestId}`);
-        reject(new Error('Connection setup timed out'));
-      }, timeoutMs);
-
-      this.pendingConnectionSetups.set(requestId, { resolve, reject, timeoutId });
-    });
   }
 
   /**
@@ -1196,258 +1143,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           return this.textResponse({
             success: false,
             error: err instanceof Error ? err.message : 'Failed to create integration',
-          });
-        }
-      }
-    );
-
-    // Prompt user to set up a connection via UI modal
-    this.server.tool(
-      'prompt_connection_setup',
-      'Prompt the user to set up a new integration/connection through a UI modal in the chat interface. This allows the user to securely enter credentials without exposing them in the chat. The tool will wait for the user to complete the setup and return the result. For direct database integrations, include a note in instructions reminding the user to allowlist 20.46.233.68 on their database firewall. For custom integrations, use integration_type="other" with the fields parameter to define custom credential fields.',
-      {
-        integration_type: z
-          .string()
-          .describe('The type of integration to set up (e.g., "stripe", "notion", "slack", "github", "other"). Use "other" for custom APIs not in the registry.'),
-        suggested_name: z
-          .string()
-          .optional()
-          .describe('Optional: Suggested name for the connection that will be pre-filled in the form.'),
-        message: z
-          .string()
-          .optional()
-          .describe('Optional: A message to show the user explaining why this connection is needed.'),
-        display_name: z
-          .string()
-          .optional()
-          .describe('Optional: Display name for custom integrations (when integration_type="other"). E.g., "Acme API"'),
-        description: z
-          .string()
-          .optional()
-          .describe('Optional: Description for custom integrations. E.g., "Connect to Acme\'s product catalog API"'),
-        instructions: z
-          .string()
-          .optional()
-          .describe('Optional: Setup instructions shown above the form. Supports markdown. E.g., "Find your API key in Acme dashboard under Settings > API Keys"'),
-        fields: z
-          .array(z.object({
-            name: z.string().describe('Field name for env var suffix (e.g., "api_key" becomes _API_KEY)'),
-            label: z.string().describe('Display label shown in UI'),
-            type: z.enum(['password', 'text', 'url', 'number']).describe('Input type'),
-            required: z.boolean().describe('Whether the field is required'),
-            placeholder: z.string().optional().describe('Placeholder text'),
-            description: z.string().optional().describe('Help text below input'),
-          }))
-          .max(10)
-          .optional()
-          .describe('Optional: Custom credential fields for "other" integrations. Max 10 fields.'),
-      },
-      async ({ integration_type, suggested_name, message, display_name, description, instructions, fields }) => {
-        const { orgId, userId, workspaceId } = this.requireAuth();
-        if (!workspaceId) {
-          return this.textResponse({ error: 'No workspace context available' });
-        }
-
-        // Thread ID comes from the proxy auth headers
-        const threadId = this.threadId;
-        if (!threadId) {
-          return this.textResponse({
-            success: false,
-            error: 'No thread context available.',
-          });
-        }
-
-        // Validate integration type and get definition for default name
-        const definition = getIntegrationDefinition(integration_type);
-        if (!definition) {
-          return this.textResponse({
-            success: false,
-            error: `Unknown integration type: ${integration_type}. Use list_integration_types to see available types.`,
-          });
-        }
-
-        // Build dynamic schema for "other" type with custom fields
-        let dynamicSchema: DynamicIntegrationSchema | undefined;
-        if (integration_type === 'other' && fields && fields.length > 0) {
-          dynamicSchema = {
-            displayName: display_name || suggested_name || 'Custom Integration',
-            description: description,
-            instructions: instructions,
-            fields: fields,
-          };
-        }
-
-        // Generate default name if not provided (e.g., "Stripe", "Notion")
-        // For dynamic "other" integrations, prefer the display_name
-        const defaultName = suggested_name || (integration_type === 'other' && display_name) || definition.displayName;
-
-        const requestId = crypto.randomUUID();
-        const timeoutMs = 30 * 60 * 1000; // 30 minutes
-
-        try {
-          // Get the MCP DO's own ID so ChatThreadDO can call back
-          const mcpDoId = this.ctx.id.toString();
-
-          // Persist to storage first (for hibernation recovery) - sync KV
-          this.persistPendingConnectionSetup(requestId);
-
-          // Register the pending request BEFORE sending to ChatThreadDO
-          const responsePromise = this.waitForConnectionSetup(requestId, timeoutMs);
-
-          // Send prompt to ChatThreadDO with callback info
-          const chatThreadStub = this.getChatThreadStub(threadId);
-          const promptResponse = await chatThreadStub.fetch(
-            new Request('http://internal/connection-setup/prompt', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                requestId,
-                integrationType: integration_type,
-                suggestedName: defaultName,
-                message,
-                instructions,
-                createdAt: Date.now(),
-                // Callback info for RPC
-                mcpDoId,
-                // Dynamic schema for custom "other" integrations
-                dynamicSchema,
-              } as ConnectionSetupRequest & { mcpDoId: string; dynamicSchema?: DynamicIntegrationSchema }),
-            })
-          );
-
-          if (!promptResponse.ok) {
-            // Clean up pending request (both in-memory and storage)
-            const pending = this.pendingConnectionSetups.get(requestId);
-            if (pending) {
-              clearTimeout(pending.timeoutId);
-              this.pendingConnectionSetups.delete(requestId);
-            }
-            this.ctx.storage.kv.delete(`pending_connection:${requestId}`);
-            return this.textResponse({
-              success: false,
-              error: 'Failed to send prompt to user',
-            });
-          }
-
-          // Wait for user response (via RPC callback from ChatThreadDO)
-          const userResponse = await responsePromise;
-
-          if (userResponse.cancelled) {
-            return this.textResponse({
-              success: false,
-              cancelled: true,
-              message: 'User cancelled the connection setup',
-            });
-          }
-
-          if (!userResponse.integration) {
-            return this.textResponse({
-              success: false,
-              error: 'Invalid response from user - missing integration data',
-            });
-          }
-
-          // Create the integration
-          const { type, name, config, credentials } = userResponse.integration;
-          const intDefinition = getIntegrationDefinition(type);
-
-          if (!intDefinition) {
-            return this.textResponse({
-              success: false,
-              error: `Unknown integration type from user response: ${type}`,
-            });
-          }
-
-          // Check if OAuth flow already created the integration
-          // This happens when user completes OAuth flow in browser
-          if (credentials._oauth_completed && credentials.integration_id) {
-            const integrationId = credentials.integration_id as string;
-            const envFileRefreshed = await this.refreshWorkspaceIntegrationEnvFile(workspaceId, orgId);
-            const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
-            const envVarSuffixes = getEnvVarSuffixesForType(type);
-            return this.textResponse({
-              success: true,
-              integration: {
-                id: integrationId,
-                type,
-                name,
-                category: intDefinition.category,
-                env_var_prefix: envVarPrefix,
-                env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
-                env_file_refreshed: envFileRefreshed,
-              },
-              message: `Integration '${name}' connected successfully via OAuth. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
-            });
-          }
-
-          // For dynamic "other" integrations, store the field definitions in config
-          // so env var mapping can use them later
-          let finalConfig = config;
-          if (type === 'other' && dynamicSchema && dynamicSchema.fields.length > 0) {
-            finalConfig = {
-              ...config,
-              display_name: dynamicSchema.displayName,
-              dynamic_fields: dynamicSchema.fields,
-            };
-          }
-
-          // Encrypt credentials and create integration
-          const credentialsEncrypted = shouldStoreIntegrationCredentials(type, credentials)
-            ? await encryptCredentials(credentials, this.env.INTEGRATION_SECRET_KEY)
-            : '';
-          const integrationId = crypto.randomUUID();
-
-          // Get workspace stub for creating integration
-          const workspaceStub = this.getWorkspaceStub(workspaceId);
-          await workspaceStub.createIntegration(
-            integrationId,
-            type,
-            name,
-            intDefinition.category,
-            intDefinition.authMethod,
-            JSON.stringify(finalConfig),
-            credentialsEncrypted,
-            userId
-          );
-
-          // Kick off worker secret sync immediately so deployed workers are not
-          // blocked by sandbox env-file refresh latency.
-          this.ctx.waitUntil(
-            syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
-              .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err))
-          );
-
-          // Refresh live integration env file in the sandbox.
-          const envFileRefreshed = await this.refreshWorkspaceIntegrationEnvFile(workspaceId, orgId);
-
-          // For dynamic "other" integrations, generate env var suffixes from field names
-          const dynamicFields = type === 'other' && dynamicSchema?.fields ? dynamicSchema.fields : undefined;
-          const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
-          const envVarSuffixes = getEnvVarSuffixesForType(type, dynamicFields);
-          return this.textResponse({
-            success: true,
-            integration: {
-              id: integrationId,
-              type,
-              name,
-              category: definition.category,
-              env_var_prefix: envVarPrefix,
-              env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
-              env_file_refreshed: envFileRefreshed,
-            },
-            message: `Integration '${name}' created successfully via user prompt. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
-          });
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : 'Failed to prompt for connection setup';
-          const isTimeout = errorMessage.includes('timed out');
-
-          return this.textResponse({
-            success: false,
-            timeout: isTimeout,
-            error: errorMessage,
-            message: isTimeout
-              ? 'Connection setup timed out. The user did not complete the setup in time.'
-              : undefined,
           });
         }
       }

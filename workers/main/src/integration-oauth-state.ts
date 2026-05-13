@@ -9,9 +9,6 @@ export interface IntegrationOAuthState {
   user_id: string;
   redirect_url: string;
   created_at: number;
-  // MCP callback context for completing prompt_connection_setup requests
-  mcp_request_id?: string;
-  mcp_do_id?: string;
   // Extra config for providers that need additional state (e.g., subdomain for Zendesk, shop_domain for Shopify)
   extra_config?: Record<string, unknown>;
 }
@@ -32,7 +29,6 @@ export async function createIntegrationOAuthState(
   workspaceId: string,
   userId: string,
   redirectUrl: string,
-  mcpContext?: { requestId: string; doId: string },
   extraConfig?: Record<string, unknown>
 ): Promise<string> {
   const state = crypto.randomUUID();
@@ -42,8 +38,6 @@ export async function createIntegrationOAuthState(
     user_id: userId,
     redirect_url: redirectUrl,
     created_at: Date.now(),
-    mcp_request_id: mcpContext?.requestId,
-    mcp_do_id: mcpContext?.doId,
     extra_config: extraConfig,
   };
 

@@ -45,9 +45,8 @@ import type { SlackEventCallbackPayload } from "../slack-types.js";
 import { isOrgBanned } from "../ban-list.js";
 import type { LlmModel } from "../../../../src/types.js";
 
-// RPC interface for MCP DO callback
-interface ChiridionMcpRpc {
-  receiveConnectionSetupResponse(response: ConnectionSetupResponse): void;
+interface ChatThreadConnectionSetupRpc {
+  receiveConnectionSetupResponse(response: ConnectionSetupResponse): Promise<void>;
 }
 
 async function resolveDefaultSlackThreadModel(
@@ -328,28 +327,27 @@ async function postSlackThreadMessage(
 }
 
 /**
- * Complete MCP connection setup request after OAuth flow succeeds.
- * Called when OAuth state contains MCP callback context.
+ * Complete a chat connection setup prompt after OAuth succeeds.
  */
-async function completeMcpConnectionSetup(
+async function completeConnectionSetupPrompt(
   env: RouteContext["env"],
   stateData: IntegrationOAuthState,
   integrationId: string,
   integrationType: string,
   integrationName: string,
 ): Promise<void> {
-  if (!stateData.mcp_request_id || !stateData.mcp_do_id) {
-    return; // No MCP context
+  const chatRequestId = stateData.extra_config?.chat_request_id;
+  const chatThreadId = stateData.extra_config?.chat_thread_id;
+  if (typeof chatRequestId !== "string" || typeof chatThreadId !== "string") {
+    return;
   }
 
   try {
-    const mcpDoId = env.MCP_OBJECT.idFromString(stateData.mcp_do_id);
-    const mcpStub = env.MCP_OBJECT.get(mcpDoId) as unknown as ChiridionMcpRpc;
-
-    // Send success response to MCP - credentials are already stored via OAuth
-    // We send empty credentials since they're already encrypted in the integration
-    await mcpStub.receiveConnectionSetupResponse({
-      requestId: stateData.mcp_request_id,
+    const chatThreadStub = env.CHAT_THREAD.get(
+      env.CHAT_THREAD.idFromName(chatThreadId),
+    ) as unknown as ChatThreadConnectionSetupRpc;
+    const response: ConnectionSetupResponse = {
+      requestId: chatRequestId,
       cancelled: false,
       integration: {
         type: integrationType,
@@ -357,10 +355,34 @@ async function completeMcpConnectionSetup(
         config: {},
         credentials: { _oauth_completed: true, integration_id: integrationId },
       },
-    });
+    };
+    await chatThreadStub.receiveConnectionSetupResponse(response);
   } catch (err) {
-    console.error("[Integration OAuth] Failed to complete MCP request:", err);
+    console.error("[Integration OAuth] Failed to complete chat connection setup request:", err);
   }
+}
+
+function buildConnectionSetupOAuthExtraConfig(
+  reauthIntegrationId: string | undefined,
+  chatRequestId: string | null,
+  chatThreadId: string | null,
+): Record<string, unknown> | undefined {
+  const extraConfig: Record<string, unknown> = {};
+  if (reauthIntegrationId) {
+    extraConfig.reauth_integration_id = reauthIntegrationId;
+  }
+  if (chatRequestId && chatThreadId) {
+    extraConfig.chat_request_id = chatRequestId;
+    extraConfig.chat_thread_id = chatThreadId;
+  }
+  return Object.keys(extraConfig).length > 0 ? extraConfig : undefined;
+}
+
+function hasConnectionSetupPromptContext(stateData: IntegrationOAuthState): boolean {
+  return Boolean(
+    typeof stateData.extra_config?.chat_request_id === "string" &&
+      typeof stateData.extra_config?.chat_thread_id === "string",
+  );
 }
 
 /**
@@ -419,13 +441,8 @@ export async function handleSlackOAuthStart({
   const reauthIntegrationId = url.searchParams.get("integration_id")?.trim();
   const callbackUrl = `${url.origin}/api/integrations/slack/callback`;
 
-  // Check for MCP callback context (from chat connection setup prompt)
-  const mcpRequestId = url.searchParams.get("mcp_request_id");
-  const mcpDoId = url.searchParams.get("mcp_do_id");
-  const mcpContext =
-    mcpRequestId && mcpDoId
-      ? { requestId: mcpRequestId, doId: mcpDoId }
-      : undefined;
+  const chatRequestId = url.searchParams.get("chat_request_id");
+  const chatThreadId = url.searchParams.get("chat_thread_id");
 
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
@@ -433,8 +450,7 @@ export async function handleSlackOAuthStart({
     session.workspace_id,
     session.user_id,
     redirectTo,
-    mcpContext,
-    reauthIntegrationId ? { reauth_integration_id: reauthIntegrationId } : undefined,
+    buildConnectionSetupOAuthExtraConfig(reauthIntegrationId, chatRequestId, chatThreadId),
   );
 
   const authUrl = new URL(slackDef.oauthConfig.authorizationUrl);
@@ -592,9 +608,9 @@ export async function handleSlackOAuthCallback({
       ),
     );
 
-    // Complete MCP request if this OAuth flow was initiated from chat
-    if (stateData.mcp_request_id && stateData.mcp_do_id) {
-      await completeMcpConnectionSetup(
+    // Complete the waiting chat connection prompt if OAuth was started there.
+    if (hasConnectionSetupPromptContext(stateData)) {
+      await completeConnectionSetupPrompt(
         env,
         stateData,
         integrationId,
@@ -966,13 +982,8 @@ export async function handleNotionOAuthStart({
   const reauthIntegrationId = url.searchParams.get("integration_id")?.trim();
   const callbackUrl = `${url.origin}/api/integrations/notion/callback`;
 
-  // Check for MCP callback context (from chat connection setup prompt)
-  const mcpRequestId = url.searchParams.get("mcp_request_id");
-  const mcpDoId = url.searchParams.get("mcp_do_id");
-  const mcpContext =
-    mcpRequestId && mcpDoId
-      ? { requestId: mcpRequestId, doId: mcpDoId }
-      : undefined;
+  const chatRequestId = url.searchParams.get("chat_request_id");
+  const chatThreadId = url.searchParams.get("chat_thread_id");
 
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
@@ -980,8 +991,7 @@ export async function handleNotionOAuthStart({
     session.workspace_id,
     session.user_id,
     redirectTo,
-    mcpContext,
-    reauthIntegrationId ? { reauth_integration_id: reauthIntegrationId } : undefined,
+    buildConnectionSetupOAuthExtraConfig(reauthIntegrationId, chatRequestId, chatThreadId),
   );
 
   const authUrl = new URL(notionDef.oauthConfig.authorizationUrl);
@@ -1159,9 +1169,9 @@ export async function handleNotionOAuthCallback({
       ),
     );
 
-    // Complete MCP request if this OAuth flow was initiated from chat
-    if (stateData.mcp_request_id && stateData.mcp_do_id) {
-      await completeMcpConnectionSetup(
+    // Complete the waiting chat connection prompt if OAuth was started there.
+    if (hasConnectionSetupPromptContext(stateData)) {
+      await completeConnectionSetupPrompt(
         env,
         stateData,
         integrationId,
@@ -1208,13 +1218,8 @@ export async function handleSalesforceOAuthStart({
   const reauthIntegrationId = url.searchParams.get("integration_id")?.trim();
   const callbackUrl = `${url.origin}/api/integrations/salesforce/callback`;
 
-  // Check for MCP callback context (from chat connection setup prompt)
-  const mcpRequestId = url.searchParams.get("mcp_request_id");
-  const mcpDoId = url.searchParams.get("mcp_do_id");
-  const mcpContext =
-    mcpRequestId && mcpDoId
-      ? { requestId: mcpRequestId, doId: mcpDoId }
-      : undefined;
+  const chatRequestId = url.searchParams.get("chat_request_id");
+  const chatThreadId = url.searchParams.get("chat_thread_id");
 
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
@@ -1222,8 +1227,7 @@ export async function handleSalesforceOAuthStart({
     session.workspace_id,
     session.user_id,
     redirectTo,
-    mcpContext,
-    reauthIntegrationId ? { reauth_integration_id: reauthIntegrationId } : undefined,
+    buildConnectionSetupOAuthExtraConfig(reauthIntegrationId, chatRequestId, chatThreadId),
   );
 
   const authUrl = new URL(salesforceDef.oauthConfig.authorizationUrl);
@@ -1391,9 +1395,9 @@ export async function handleSalesforceOAuthCallback({
       ),
     );
 
-    // Complete MCP request if this OAuth flow was initiated from chat
-    if (stateData.mcp_request_id && stateData.mcp_do_id) {
-      await completeMcpConnectionSetup(
+    // Complete the waiting chat connection prompt if OAuth was started there.
+    if (hasConnectionSetupPromptContext(stateData)) {
+      await completeConnectionSetupPrompt(
         env,
         stateData,
         integrationId,

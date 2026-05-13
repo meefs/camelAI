@@ -33,7 +33,6 @@ export interface ConnectionSetupPromptData {
   message?: string;
   instructions?: string;
   dynamicSchema?: DynamicIntegrationSchema;
-  mcpDoId?: string; // MCP DO ID for OAuth callback completion
 }
 
 export interface ConnectionSetupResponse {
@@ -85,13 +84,16 @@ export function ConnectionSetupPrompt({
     // Build OAuth URL with MCP context for callback completion
     const params = new URLSearchParams();
     params.set('redirect', window.location.pathname);
-    if (data.requestId && data.mcpDoId) {
-      params.set('mcp_request_id', data.requestId);
-      params.set('mcp_do_id', data.mcpDoId);
+    if (data.requestId) {
+      const match = window.location.pathname.match(/^\/chat\/([^/?#]+)/);
+      if (match?.[1]) {
+        params.set('chat_request_id', data.requestId);
+        params.set('chat_thread_id', decodeURIComponent(match[1]));
+      }
     }
     // Redirect to OAuth flow - this will complete the MCP request via callback
     window.location.href = `/api/integrations/${data.integrationType}/oauth?${params.toString()}`;
-  }, [data.integrationType, data.requestId, data.mcpDoId]);
+  }, [data.integrationType, data.requestId]);
 
   // Set defaults from config schema on mount
   useEffect(() => {

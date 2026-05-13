@@ -3033,8 +3033,14 @@ export default function Chat({
           instructions: data.instructions as string | undefined,
           dynamicSchema:
             data.dynamicSchema as ConnectionSetupPromptData["dynamicSchema"],
-          mcpDoId: data.mcpDoId as string | undefined,
         });
+        return;
+      }
+
+      if (data.type === "connection_setup_answered" && data.requestId) {
+        setConnectionSetupPrompt((prev) =>
+          prev?.requestId === data.requestId ? null : prev,
+        );
         return;
       }
 
@@ -3188,6 +3194,7 @@ export default function Chat({
           data.type === "title_updated" ||
           data.type === "thread_model_updated" ||
           data.type === "connection_setup_prompt" ||
+          data.type === "connection_setup_answered" ||
           data.type === "bug_report_prompt"
         ) {
           handleRealtimeSideChannelEvent(data);
@@ -3932,6 +3939,7 @@ export default function Chat({
           data.type === "title_updated" ||
           data.type === "thread_model_updated" ||
           data.type === "connection_setup_prompt" ||
+          data.type === "connection_setup_answered" ||
           data.type === "bug_report_prompt"
         ) {
           handleRealtimeSideChannelEvent(data);
@@ -5169,7 +5177,12 @@ export default function Chat({
   // Handle connection setup response - send via chat WebSocket
   const handleConnectionSetupResponse = useCallback(
     (response: ConnectionSetupResponse) => {
-      const socket = oobWsRef.current;
+      const socket =
+        oobWsRef.current?.readyState === WebSocket.OPEN
+          ? oobWsRef.current
+          : wsRef.current?.readyState === WebSocket.OPEN
+            ? wsRef.current
+            : null;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.error(
           "[Chat] WebSocket not available for connection setup response",
