@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
 import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
+import { APP_BUILD_ID } from '@/lib/app-build-id';
 import { getPreferredAppUrl } from '@/lib/app-url';
 import { buildAppThreadFallbackTitle } from '@/lib/thread-title';
 import { PageHeader } from '@/components/page-header';
@@ -144,6 +145,7 @@ export default function AppsClient({
     chatFetcher.submit(
       {
         intent: 'createThread',
+        clientBuildId: APP_BUILD_ID,
         initialTitle: threadTitle,
         firstMessage: threadTitle,
         previewApps: app.script_name,
@@ -205,6 +207,7 @@ export default function AppsClient({
         chatFetcher.submit(
           {
             intent: 'createThread',
+            clientBuildId: APP_BUILD_ID,
             initialTitle: threadTitle,
             previewApps: targetApp.script_name,
           },

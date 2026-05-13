@@ -272,13 +272,6 @@ async function buildChatData(
         skipBanCheck: options.skipBanCheck,
       })
         .then((messages) => ({ messages, messagesError: null }))
-        .catch((error) => {
-          console.error("Failed to load chat route messages:", error);
-          return {
-            messages: [] as Message[],
-            messagesError: "Failed to load message history",
-          };
-        })
     : Promise.resolve({ messages: [], messagesError: null });
   const todosPromise = chatDO
     .getTodoState(context, threadId)
@@ -820,7 +813,6 @@ export default function ChatPage() {
             openTabs={openTabs}
             closedTabs={closedTabs}
             activeThreadId={displayThreadId}
-            prefetchTabs
             moveGroups={moveChatGroups}
             onSelectTab={selectTab}
             onCloseTab={closeTab}

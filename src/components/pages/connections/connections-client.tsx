@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useFetcher, useNavigate, useRevalidator, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
+import { APP_BUILD_ID } from '@/lib/app-build-id';
 
 // Note: Auth is handled by the (app) layout - no need to check here
 import type { Integration } from '@/types';
@@ -301,6 +302,7 @@ export default function ConnectionsClient({
     createThreadFetcher.submit(
       {
         intent: 'createThread',
+        clientBuildId: APP_BUILD_ID,
         firstMessage: 'Set up a custom connection',
       },
       { method: 'post', action: '/chat' }

@@ -1,3 +1,5 @@
+import { isUserUploadMountPath } from '@/lib/chat-attachment-refs';
+
 const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
 const DEFAULT_PART_SIZE_BYTES = 10 * 1024 * 1024;
 const MIN_PART_SIZE_BYTES = 5 * 1024 * 1024;
@@ -143,6 +145,7 @@ export async function uploadWorkspaceFile(
   let uploadId: string | null = null;
   let filename: string | null = null;
   let uploadedPath: string | null = null;
+  let completedUpload = false;
 
   try {
     const createResponse = await fetch(
@@ -241,9 +244,10 @@ export async function uploadWorkspaceFile(
       throw new Error(await readUploadError(completeResponse));
     }
 
+    completedUpload = true;
     const completePayload = await completeResponse.json() as MultipartCompleteResponse;
     const finalPath = typeof completePayload.path === 'string' ? completePayload.path : uploadedPath;
-    if (!finalPath) {
+    if (!finalPath || !isUserUploadMountPath(finalPath)) {
       throw new Error('Upload API returned an invalid multipart complete response');
     }
 
@@ -264,7 +268,7 @@ export async function uploadWorkspaceFile(
       contentType,
     };
   } catch (error) {
-    if (uploadId && filename) {
+    if (!completedUpload && uploadId && filename) {
       await abortMultipartUpload(workspaceId, uploadId, filename);
     }
     if (error instanceof Error) {

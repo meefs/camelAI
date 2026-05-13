@@ -42,6 +42,7 @@ import type {
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { APP_BUILD_ID } from "@/lib/app-build-id";
 import {
   Tooltip,
   TooltipContent,
@@ -161,6 +162,10 @@ import {
   writeDraft,
   type DraftData,
 } from "@/hooks/use-draft-persistence";
+import {
+  appendUserUploadReferences,
+  isUserUploadMountPath,
+} from "@/lib/chat-attachment-refs";
 
 interface ChatProps {
   threadId?: string;
@@ -369,16 +374,10 @@ function getCompletedAttachments(attachments: Attachment[]): Attachment[] {
 }
 
 function buildMessageContent(text: string, attachments: Attachment[]): string {
-  const rawContent = text.trim();
-  const completedAttachments = getCompletedAttachments(attachments);
-  if (completedAttachments.length === 0) {
-    return rawContent;
-  }
-
-  const fileRefs = completedAttachments
-    .map((attachment) => `(user uploaded file to ${attachment.path})`)
-    .join("\n");
-  return rawContent ? `${rawContent}\n\n${fileRefs}` : fileRefs;
+  return appendUserUploadReferences(
+    text,
+    getCompletedAttachments(attachments).map((attachment) => attachment.path),
+  );
 }
 
 const FREE_TIER_MODAL_SEEN_PREFIX = "freeTierModalSeen:";
@@ -1518,6 +1517,7 @@ export default function Chat({
     };
     groupId?: string;
     error?: string;
+    reloadRequired?: boolean;
   }>({ key: "chat-create-thread" });
   const updateThreadModelFetcher = useFetcher<{
     thread?: { id: string; model: LlmModel; provider: ChatHarness };
@@ -4660,6 +4660,11 @@ export default function Chat({
               );
             },
           });
+          if (!isUserUploadMountPath(data.path)) {
+            throw new Error(
+              `Upload completed without a readable /mnt/user-uploads/ path`,
+            );
+          }
 
           // Update state to complete
           setAttachments((prev) =>
@@ -4817,8 +4822,16 @@ export default function Chat({
         pendingNewChatRef.current = null;
       } else if (data.error) {
         // Thread creation failed
+        const pendingNewChat = pendingNewChatRef.current;
         setIsCreatingThread(false);
         setError(normalizeChatErrorMessage(data.error));
+        if (data.reloadRequired) {
+          toast.error(normalizeChatErrorMessage(data.error));
+        }
+        if (pendingNewChat?.draftText !== undefined) {
+          setWelcomeInput(pendingNewChat.draftText);
+          setAttachments(pendingNewChat.draftAttachments ?? []);
+        }
         const pendingDraft = pendingDeliveryDraftRef.current;
         pendingDeliveryDraftRef.current = null;
         pendingDraftCountRef.current = 0;
@@ -5060,6 +5073,7 @@ export default function Chat({
       createThreadFetcher.submit(
         {
           intent: "createThread",
+          clientBuildId: APP_BUILD_ID,
           initialTitle: threadTitle,
           previewApps: app.script_name,
           model: selectedThreadModel,
@@ -5115,7 +5129,14 @@ export default function Chat({
     const userMessage = currentWelcomeInput.trim();
     setWelcomeInput("");
 
-    const finalContent = buildMessageContent(userMessage, currentAttachments);
+    let finalContent: string;
+    try {
+      finalContent = buildMessageContent(userMessage, currentAttachments);
+    } catch (error) {
+      setIsCreatingThread(false);
+      setError(normalizeChatErrorMessage(error));
+      return;
+    }
 
     // Clear attachments (revoke any blob URLs to avoid memory leaks)
     setAttachments((prev) => {
@@ -5135,13 +5156,14 @@ export default function Chat({
     // Submit to route action to create thread
     const createThreadPayload: Record<string, string> = {
       intent: "createThread",
+      clientBuildId: APP_BUILD_ID,
       model: selectedThreadModel,
     };
     if (chatGroupId) {
       createThreadPayload.groupId = chatGroupId;
     }
-    if (userMessage) {
-      createThreadPayload.firstMessage = userMessage;
+    if (finalContent) {
+      createThreadPayload.firstMessage = finalContent;
     }
     createThreadFetcher.submit(createThreadPayload, {
       method: "post",
@@ -5686,9 +5708,15 @@ type SendOptions = {
 
     const shouldIncludeAttachmentRefs =
       !opts?.skipAttachmentRefs && !opts?.contentOverride;
-    const finalContent = shouldIncludeAttachmentRefs
-      ? buildMessageContent(rawContent, currentAttachments)
-      : rawContent;
+    let finalContent: string;
+    try {
+      finalContent = shouldIncludeAttachmentRefs
+        ? buildMessageContent(rawContent, currentAttachments)
+        : rawContent;
+    } catch (error) {
+      setError(normalizeChatErrorMessage(error));
+      return false;
+    }
 
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
     const clientMessageId = `client_${Date.now()}_${Math.random()

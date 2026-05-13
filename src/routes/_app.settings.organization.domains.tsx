@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useFetcher, useLoaderData, useNavigate, useRevalidator } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.domains';
 import { requireAuthContext } from '@/lib/auth.server';
+import { APP_BUILD_ID } from '@/lib/app-build-id';
 import { getEnv } from '@/lib/cloudflare.server';
 import type { AuthEnv } from '@/lib/auth-helpers';
 import { isOrgAdmin } from '@/lib/auth-do';
@@ -351,6 +352,7 @@ export default function DomainsPage() {
     chatFetcher.submit(
       {
         intent: 'createThread',
+        clientBuildId: APP_BUILD_ID,
         initialTitle: chatTitle,
         firstMessage: chatTitle,
       },

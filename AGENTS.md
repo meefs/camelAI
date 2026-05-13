@@ -190,6 +190,12 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - For changes crossing browser chat, worker routing, and sandbox behavior, test the smallest representative path plus typecheck.
 - Add tests when changing auth, billing/usage, admin purge/ban behavior, proxy auth, file safety, or persistence semantics.
 
+## Error Handling Culture
+
+- Prefer failing loudly and early over silently swallowing errors or falling back to unclear behavior. Hidden failures make production bugs much harder to debug.
+- Only add fallbacks when they preserve a clearly defined user experience and still expose enough signal through errors, logs, or tests to diagnose the original failure.
+- Do not convert unexpected persistence, auth, upload, billing, or runtime/tool failures into empty data unless the caller explicitly treats "not found" as a valid state.
+
 ## Local Environment Notes
 
 Minimal prerequisites: Node.js 22+, Bun, Go 1.24+ for sandbox-host, and Cloudflare credentials for deployed/bound services.

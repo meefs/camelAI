@@ -3,6 +3,11 @@ import { cloudflare, type WorkerConfig } from '@cloudflare/vite-plugin';
 import { defineConfig, type DepOptimizationOptions, type Plugin } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
+const camelaiBuildId =
+  process.env.CAMELAI_BUILD_ID ||
+  process.env.GITHUB_SHA ||
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
 // Plugin to suppress benign "terminated" errors from undici/miniflare
 // These occur when WebSocket connections are aborted during HMR/navigation
 function suppressUndiciTerminatedErrors(): Plugin {
@@ -156,6 +161,9 @@ export default defineConfig(({ command }) => {
       target: 'esnext',
       // Only enable source maps in development to avoid exposing server code in production
       sourcemap: command !== 'build',
+    },
+    define: {
+      'import.meta.env.VITE_CAMELAI_BUILD_ID': JSON.stringify(camelaiBuildId),
     },
     optimizeDeps: {
       include: clientOptimizeDepsInclude,

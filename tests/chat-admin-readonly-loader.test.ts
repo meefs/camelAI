@@ -8,6 +8,7 @@ const getEnvMock = vi.fn();
 const adminGetThreadContextByIdMock = vi.fn();
 const getThreadMock = vi.fn();
 const getThreadPreviewStateMock = vi.fn();
+const getTodoStateMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
@@ -34,6 +35,7 @@ vi.mock('@/lib/auth-do.server', () => ({
 vi.mock('@/lib/chat-do.server', () => ({
   getThread: getThreadMock,
   getThreadPreviewState: getThreadPreviewStateMock,
+  getTodoState: getTodoStateMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
 }));
 
@@ -80,6 +82,7 @@ describe('chat loader admin readonly mode', () => {
       activeTabId: null,
       version: 0,
     });
+    getTodoStateMock.mockResolvedValue([]);
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       provider: 'claude',
       llmProvider: null,
@@ -145,15 +148,10 @@ describe('chat loader admin readonly mode', () => {
     expect(result.chatData).toEqual({
       messages: [],
       messagesError: null,
+      todos: [],
       previewTabs: [],
       activeTabId: null,
       previewTarget: null,
-    });
-    requireSessionWorkspaceAccessMock.mockResolvedValue({
-      orgId: 'org_active',
-      workspaceId: 'ws_active',
-      userId: 'user_123',
-      access: 'full',
     });
   });
 });
@@ -176,6 +174,7 @@ describe('chat loader workspace mismatch handling', () => {
       activeTabId: null,
       version: 0,
     });
+    getTodoStateMock.mockResolvedValue([]);
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       provider: 'claude',
       llmProvider: null,
@@ -184,6 +183,12 @@ describe('chat loader workspace mismatch handling', () => {
       effectivePickerDefaultModel: 'sonnet',
       hasEffectivePickerDefault: true,
       defaultModel: 'sonnet',
+    });
+    requireSessionWorkspaceAccessMock.mockResolvedValue({
+      orgId: 'org_active',
+      workspaceId: 'ws_active',
+      userId: 'user_123',
+      access: 'full',
     });
   });
 
@@ -234,6 +239,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.chatData).toEqual({
       messages: [],
       messagesError: null,
+      todos: [],
       previewTabs: [],
       activeTabId: null,
       previewTarget: null,
@@ -366,6 +372,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.chatData).toEqual({
       messages: [],
       messagesError: null,
+      todos: [],
       previewTabs: [],
       activeTabId: null,
       previewTarget: null,
