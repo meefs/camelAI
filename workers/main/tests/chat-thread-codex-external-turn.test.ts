@@ -21,6 +21,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.touchPiTurnRecovery = vi.fn();
     fake.setChatIsStreaming = vi.fn();
     fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.upsertPiCoreMessages = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.clearPiTurnRecovery = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn();
@@ -1099,6 +1100,12 @@ describe('ChatThreadDO Codex external turn completion', () => {
       status: 'result',
       reply: 'Hello',
     });
+    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
+      expect.objectContaining({
+        role: 'assistant',
+        responseId: 'resp1',
+      }),
+    ]);
   });
 
   it('emits completed agent messages for non-streamed Pi message_end text', () => {
@@ -1143,6 +1150,18 @@ describe('ChatThreadDO Codex external turn completion', () => {
       type: 'result',
       result: 'Whole reply',
     }));
+    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
+      expect.objectContaining({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Whole reply' }],
+      }),
+    ]);
+    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
+      expect.objectContaining({
+        role: 'assistant',
+        responseId: 'resp2',
+      }),
+    ]);
   });
 
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {
@@ -1585,4 +1604,5 @@ describe('ChatThreadDO Codex external turn completion', () => {
       error: 'Fork target not found in Durable Object Pi messages',
     });
   });
+
 });

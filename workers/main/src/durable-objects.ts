@@ -4485,6 +4485,52 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.appendPiCoreMessages(missing);
   }
 
+  private upsertPiCoreMessages(messages: AgentMessage[]): void {
+    if (messages.length === 0) return;
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ idx: number; payload: string }>(
+        "SELECT idx, payload FROM pi_core_messages ORDER BY idx ASC",
+      )
+      .toArray();
+    const existingByKey = new Map<string, number>();
+    let nextIndex = 0;
+    for (const row of rows) {
+      nextIndex = Math.max(nextIndex, Math.floor(Number(row.idx) || 0) + 1);
+      try {
+        const parsed = JSON.parse(row.payload) as AgentMessage;
+        if (parsed && typeof parsed === "object" && "role" in parsed) {
+          existingByKey.set(this.piCoreMessageKey(parsed), row.idx);
+        }
+      } catch {
+        // Ignore corrupt rows here; loadPiCoreMessages skips them too.
+      }
+    }
+
+    const now = Date.now();
+    for (const message of messages) {
+      const key = this.piCoreMessageKey(message);
+      const existingIndex = existingByKey.get(key);
+      if (existingIndex !== undefined) {
+        this.ctx.storage.sql.exec(
+          "UPDATE pi_core_messages SET payload = ? WHERE idx = ?",
+          JSON.stringify(message),
+          existingIndex,
+        );
+        continue;
+      }
+
+      this.ctx.storage.sql.exec(
+        "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
+        nextIndex,
+        JSON.stringify(message),
+        now,
+      );
+      existingByKey.set(key, nextIndex);
+      nextIndex += 1;
+    }
+  }
+
   private loadPiTurnRecovery(): PiTurnRecoveryRow | null {
     this.ensurePiCoreTables();
     const row = this.ctx.storage.sql
@@ -4554,6 +4600,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       now,
       now,
     );
+    this.upsertPiCoreMessages([userMessage]);
     this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
   }
 
@@ -7865,6 +7912,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.piActiveItemId = `pi_agent_${crypto.randomUUID()}`;
         this.piActiveItemText = "";
       }
+      this.upsertPiCoreMessages(
+        this.ensurePiAssistantTextMessage([event.message], text),
+      );
       return;
     }
 
@@ -7926,7 +7976,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         event.messages,
         this.piAssistantText,
       );
-      this.appendPiCoreMessagesIfMissing(newMessages);
+      this.upsertPiCoreMessages(newMessages);
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
       let finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
