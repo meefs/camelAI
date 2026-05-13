@@ -7,7 +7,14 @@ import type {
   ParsedTable,
   TocEntry,
 } from './types';
-import { extractTocEntries, getNotebookCells, getOutputRender, getOutputText, toText } from './utils';
+import {
+  extractTocEntries,
+  getNotebookCells,
+  getOutputRender,
+  getOutputText,
+  isIgnorableTextOutput,
+  toText,
+} from './utils';
 
 export interface NotebookReportExportModel {
   header: NotebookHeader;
@@ -77,7 +84,8 @@ export function buildNotebookReportExportModel(
     }
 
     const outputs = Array.isArray(cell.outputs) ? cell.outputs : [];
-    outputs.forEach((output, outputIndex) => {
+    const reportOutputs = outputs.filter((output) => !isIgnorableTextOutput(output));
+    reportOutputs.forEach((output, outputIndex) => {
       const id = `cell-${index}-output-${outputIndex}`;
       const title = `Output ${outputIndex + 1}`;
 

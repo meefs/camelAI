@@ -177,6 +177,8 @@ Notebooks preview reliabily with rich Altair charts and markdown rendering, and 
 uv run jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
 ```
 
+Setup calls whose return value is not meaningful report content, such as `alt.data_transformers.disable_max_rows()` or `plt.plot(...)`, should be silenced with a trailing `;` or assigned to `_` so object reprs do not leak into notebook outputs.
+
 **Always validate after execution.** Run the notebook validator to catch errors that `nbconvert` may not surface (cell exceptions, charts that fell back to text/plain, blank charts with constant data):
 
 ```bash

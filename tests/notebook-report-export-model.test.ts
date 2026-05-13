@@ -108,4 +108,87 @@ describe('notebook report export model', () => {
       }),
     ]);
   });
+
+  it('excludes ignorable plain-text repr outputs but keeps normal text outputs', () => {
+    const notebook: NotebookFile = {
+      cells: [
+        {
+          cell_type: 'code',
+          source: 'show_results()',
+          outputs: [
+            {
+              output_type: 'execute_result',
+              data: {
+                'text/plain': "DataTransformerRegistry.enable('default')",
+              },
+            },
+            {
+              output_type: 'stream',
+              text: 'ready\n',
+            },
+          ],
+        },
+      ],
+    };
+
+    const model = buildNotebookReportExportModel(notebook);
+
+    expect(model.blocks).toEqual([
+      expect.objectContaining({
+        id: 'cell-0-output-0',
+        kind: 'text',
+        text: 'ready\n',
+      }),
+    ]);
+  });
+
+  it('keeps rich markdown, table, and chart outputs with text/plain fallbacks', () => {
+    const notebook: NotebookFile = {
+      cells: [
+        {
+          cell_type: 'code',
+          source: 'display_results()',
+          outputs: [
+            {
+              output_type: 'display_data',
+              data: {
+                'text/markdown': '## Result',
+                'text/plain': '<IPython.core.display.Markdown object>',
+              },
+            },
+            {
+              output_type: 'display_data',
+              data: {
+                'text/html': [
+                  '<table>',
+                  '<thead><tr><th>Metric</th><th>Value</th></tr></thead>',
+                  '<tbody><tr><td>Accuracy</td><td>0.91</td></tr></tbody>',
+                  '</table>',
+                ],
+                'text/plain': '<IPython.core.display.HTML object>',
+              },
+            },
+            {
+              output_type: 'display_data',
+              data: {
+                'application/vnd.vegalite.v5+json': {
+                  mark: 'bar',
+                  data: { values: [{ x: 'A', y: 1 }] },
+                  encoding: {
+                    x: { field: 'x', type: 'nominal' },
+                    y: { field: 'y', type: 'quantitative' },
+                  },
+                },
+                'text/plain': '<IPython.core.display.JSON object>',
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const model = buildNotebookReportExportModel(notebook);
+
+    expect(model.blocks.map((block) => block.kind)).toEqual(['markdown', 'table', 'chart']);
+  });
 });

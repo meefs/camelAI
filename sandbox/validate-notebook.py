@@ -6,6 +6,33 @@ import re
 import sys
 
 
+MEANINGFUL_RICH_MIME_TYPES = {
+    "text/html",
+    "text/markdown",
+    "image/png",
+    "image/jpeg",
+    "image/svg+xml",
+    "application/json",
+}
+
+MEANINGFUL_RICH_MIME_PATTERNS = (
+    re.compile(r"^application/vnd\.vega\.v\d+\+json$", re.I),
+    re.compile(r"^application/vnd\.vegalite\.v\d+\+json$", re.I),
+    re.compile(r"^application/vnd\.plotly\.v\d+\+json$", re.I),
+)
+
+IGNORABLE_TEXT_OUTPUT_PATTERNS = (
+    re.compile(r"^DataTransformerRegistry\.enable\(['\"][^'\"]+['\"]\)$"),
+    re.compile(r"^<IPython\.core\.display\.[A-Za-z_][\w.]* object>$"),
+    re.compile(r"^<matplotlib\.[\w.]+(?: object)? at 0x[0-9a-fA-F]+>$"),
+    re.compile(
+        r"^\[\s*<matplotlib\.[\w.]+(?: object)? at 0x[0-9a-fA-F]+>"
+        r"(?:,\s*<matplotlib\.[\w.]+(?: object)? at 0x[0-9a-fA-F]+>)*\s*\]$"
+    ),
+    re.compile(r"^<Figure size \d+(?:\.\d+)?x\d+(?:\.\d+)? with \d+ Axes>$"),
+)
+
+
 def validate_notebook(path: str) -> str:
     with open(path) as f:
         nb = json.load(f)
@@ -34,7 +61,16 @@ def validate_notebook(path: str) -> str:
             if is_chart and not has_rich:
                 issues.append(f"Cell {i} ERROR: chart rendered as text/plain only")
 
-        # Check 3: Vega-Lite spec with all-identical quantitative data (blank chart)
+        # Check 3: Setup/config object reprs accidentally emitted as final expressions
+        for out in outputs:
+            ignorable_text = _ignorable_text_output(out)
+            if ignorable_text is not None:
+                issues.append(
+                    f"Cell {i} WARNING: setup output {json.dumps(ignorable_text)} "
+                    "should be suppressed with ; or assignment to _"
+                )
+
+        # Check 4: Vega-Lite spec with all-identical quantitative data (blank chart)
         for out in outputs:
             spec = _extract_vegalite_spec(out)
             if spec is None:
@@ -55,6 +91,61 @@ def validate_notebook(path: str) -> str:
                     issues.append(f"Cell {i} WARNING: field '{field}' all identical ({vals[0]})")
 
     return "OK" if not issues else "\n".join(issues)
+
+
+def _to_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(str(item) for item in value)
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return json.dumps(value, indent=2)
+    return str(value)
+
+
+def _has_non_empty_mime_value(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_non_empty_mime_value(item) for item in value)
+    if isinstance(value, dict):
+        return True
+    return True
+
+
+def _has_meaningful_rich_mime_data(data):
+    for mime_type, value in data.items():
+        if not _has_non_empty_mime_value(value):
+            continue
+        if mime_type in MEANINGFUL_RICH_MIME_TYPES:
+            return True
+        if any(pattern.match(mime_type) for pattern in MEANINGFUL_RICH_MIME_PATTERNS):
+            return True
+    return False
+
+
+def _ignorable_text_output(out):
+    if out.get("output_type") not in ("execute_result", "display_data"):
+        return None
+
+    data = out.get("data", {})
+    if "text/plain" not in data:
+        return None
+
+    if _has_meaningful_rich_mime_data(data):
+        return None
+
+    plain = _to_text(data.get("text/plain")).strip()
+    if not plain:
+        return None
+
+    if any(pattern.match(plain) for pattern in IGNORABLE_TEXT_OUTPUT_PATTERNS):
+        return plain
+    return None
 
 
 def _extract_vegalite_spec(out):

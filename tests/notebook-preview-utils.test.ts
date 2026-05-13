@@ -9,6 +9,7 @@ import {
   getNotebookCells,
   getOutputRender,
   hasVisualOutput,
+  isIgnorableTextOutput,
 } from '@/components/chat-file-preview/notebook-preview/utils';
 
 describe('notebook preview utils', () => {
@@ -54,6 +55,106 @@ describe('notebook preview utils', () => {
         { id: 'toc-1', text: 'Findings', level: 3, cellIndex: 0 },
         { id: 'toc-2', text: 'Conclusion', level: 2, cellIndex: 1 },
       ]);
+    });
+  });
+
+  describe('isIgnorableTextOutput', () => {
+    it('detects Altair transformer registry text output', () => {
+      const output: NotebookOutput = {
+        output_type: 'execute_result',
+        data: {
+          'text/plain': "DataTransformerRegistry.enable('default')",
+        },
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(true);
+    });
+
+    it('detects matplotlib line-list text output', () => {
+      const output: NotebookOutput = {
+        output_type: 'execute_result',
+        data: {
+          'text/plain': '[<matplotlib.lines.Line2D at 0x12abc1230>]',
+        },
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(true);
+    });
+
+    it('detects IPython display object fallbacks when only text/plain exists', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/plain': '<IPython.core.display.Markdown object>',
+        },
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(true);
+    });
+
+    it('keeps IPython display object fallbacks when real markdown exists', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/markdown': '## Result',
+          'text/plain': '<IPython.core.display.Markdown object>',
+        },
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(false);
+    });
+
+    it('does not suppress stream outputs', () => {
+      const output: NotebookOutput = {
+        output_type: 'stream',
+        text: '[<matplotlib.lines.Line2D at 0x12abc1230>]',
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(false);
+    });
+
+    it('does not suppress error outputs', () => {
+      const output: NotebookOutput = {
+        output_type: 'error',
+        ename: 'ValueError',
+        evalue: 'bad value',
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(false);
+    });
+
+    it('does not suppress outputs with application/json payloads', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'application/json': {},
+          'text/plain': '<IPython.core.display.JSON object>',
+        },
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(false);
+    });
+
+    it('does not suppress normal plain text outputs', () => {
+      const output: NotebookOutput = {
+        output_type: 'execute_result',
+        data: {
+          'text/plain': 'ready',
+        },
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(false);
+    });
+
+    it('does not suppress scalar outputs', () => {
+      const output: NotebookOutput = {
+        output_type: 'execute_result',
+        data: {
+          'text/plain': '42',
+        },
+      };
+
+      expect(isIgnorableTextOutput(output)).toBe(false);
     });
   });
 
