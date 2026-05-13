@@ -3617,9 +3617,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     try {
       if (data.type === "connection_setup_response") {
-        await this.handleConnectionSetupResponse(
+        const result = await this.handleConnectionSetupResponse(
           data as unknown as ConnectionSetupResponse,
         );
+        if (!result.accepted) {
+          this.sendDirect(ws, {
+            type: "connection_setup_error",
+            requestId: typeof data.requestId === "string" ? data.requestId : "",
+            error: "Connection setup request is no longer pending. Please ask the agent to start connection setup again.",
+          });
+        }
         return;
       }
 
@@ -4085,9 +4092,25 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     forkEntryId: string;
   }> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
-    return this.loadPiCoreMessages().flatMap((message, index) =>
-      this.piCoreMessageToParsedChatMessage(message, index, normalizedThreadId),
-    );
+    const parsed: Array<{
+      id: string;
+      thread_id: string;
+      role: "user" | "assistant";
+      content: unknown;
+      created_at: number;
+      forkEntryId: string;
+    }> = [];
+
+    const storedMessages = this.loadPiCoreMessages();
+    storedMessages.forEach((message, index) => {
+      const record = message as unknown as Record<string, unknown>;
+      if (record.role === "toolResult") {
+        this.attachPiToolResultToParsedMessages(parsed, record);
+        return;
+      }
+      parsed.push(...this.piCoreMessageToParsedChatMessage(message, index, normalizedThreadId));
+    });
+    return parsed;
   }
 
   getPiCoreForkMessages(options: {
@@ -4428,6 +4451,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private piCoreMessageKey(message: AgentMessage): string {
     const record = message as unknown as Record<string, unknown>;
+    if (record.role === "assistant" && typeof record.responseId === "string" && record.responseId.trim()) {
+      return `assistant:${record.responseId.trim()}`;
+    }
+    if (record.role === "toolResult" && typeof record.toolCallId === "string" && record.toolCallId.trim()) {
+      return [
+        "toolResult",
+        record.toolCallId.trim(),
+        record.isError === true ? "error" : "ok",
+        JSON.stringify(record.content ?? null),
+      ].join(":");
+    }
     return [
       record.role,
       typeof record.timestamp === "number" ? record.timestamp : "",
@@ -4439,8 +4473,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private appendPiCoreMessagesIfMissing(messages: AgentMessage[]): void {
     if (messages.length === 0) return;
+    const existingMessages = this.loadPiCoreMessages();
     const existingKeys = new Set(
-      this.loadPiCoreMessages().map((message) => this.piCoreMessageKey(message)),
+      existingMessages.map((message) => this.piCoreMessageKey(message)),
     );
     const missing = messages.filter((message) => {
       const key = this.piCoreMessageKey(message);
@@ -4884,6 +4919,83 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }];
     }
     return blocks;
+  }
+
+  private attachPiToolResultToParsedMessages(
+    messages: Array<{
+      id: string;
+      thread_id: string;
+      role: "user" | "assistant";
+      content: unknown;
+      created_at: number;
+      forkEntryId: string;
+    }>,
+    toolResult: Record<string, unknown>,
+  ): void {
+    const toolCallId =
+      typeof toolResult.toolCallId === "string" && toolResult.toolCallId.trim()
+        ? toolResult.toolCallId.trim()
+        : "";
+    if (!toolCallId) return;
+
+    const block = {
+      type: "tool_result",
+      tool_use_id: toolCallId,
+      content: this.piToolResultContentToChatContent(toolResult.content),
+      itemId: toolCallId,
+      itemKind:
+        typeof toolResult.toolName === "string" &&
+        toolResult.toolName.trim().toLowerCase() === "bash"
+          ? "commandExecution"
+          : "dynamicToolCall",
+    };
+
+    let fallbackAssistantIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if (message.role !== "assistant") continue;
+      if (fallbackAssistantIndex === -1) fallbackAssistantIndex = index;
+      const content = Array.isArray(message.content) ? message.content : [];
+      if (
+        content.some((part) => {
+          if (!part || typeof part !== "object") return false;
+          const item = part as Record<string, unknown>;
+          return item.type === "tool_use" && item.id === toolCallId;
+        })
+      ) {
+        messages[index] = {
+          ...message,
+          content: [...content, block],
+        };
+        return;
+      }
+    }
+
+    if (fallbackAssistantIndex !== -1) {
+      const message = messages[fallbackAssistantIndex];
+      const content = Array.isArray(message.content) ? message.content : [];
+      messages[fallbackAssistantIndex] = {
+        ...message,
+        content: [...content, block],
+      };
+    }
+  }
+
+  private piToolResultContentToChatContent(content: unknown): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return this.safeLegacyString(content);
+    const text = content
+      .flatMap((part): string[] => {
+        if (!part || typeof part !== "object") return [];
+        const item = part as Record<string, unknown>;
+        if (item.type === "text" && typeof item.text === "string") {
+          return [item.text];
+        }
+        return [this.safeLegacyString(item)];
+      })
+      .filter(Boolean)
+      .join("\n");
+    return text || this.safeLegacyString(content);
   }
 
   private async hydratePiCoreMessagesFromLegacy(
@@ -7642,6 +7754,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return "";
   }
 
+  private piToolResultContent(result: unknown): Array<Record<string, unknown>> {
+    if (result && typeof result === "object" && !Array.isArray(result)) {
+      const content = (result as Record<string, unknown>).content;
+      if (Array.isArray(content)) {
+        return content.flatMap((item): Array<Record<string, unknown>> => {
+          if (!item || typeof item !== "object") return [];
+          const part = item as Record<string, unknown>;
+          if (part.type === "text" && typeof part.text === "string") {
+            return [{ type: "text", text: part.text }];
+          }
+          return [];
+        });
+      }
+    }
+    const text = this.piToolResultText(result) || this.safeLegacyString(result);
+    return text ? [{ type: "text", text }] : [];
+  }
+
   private piRuntimeContentItems(result: unknown): unknown[] {
     if (!result || typeof result !== "object") return [];
     const content = (result as Record<string, unknown>).content;
@@ -7862,6 +7992,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         threadId: this.piRuntimeThreadId(),
         item,
       });
+      this.upsertPiCoreMessages([{
+        role: "toolResult",
+        toolCallId,
+        toolName,
+        content: this.piToolResultContent(event.result),
+        details:
+          event.result && typeof event.result === "object" && !Array.isArray(event.result)
+            ? (event.result as Record<string, unknown>).details
+            : undefined,
+        isError: event.isError === true,
+        timestamp: Date.now(),
+      } as unknown as AgentMessage]);
       return;
     }
 

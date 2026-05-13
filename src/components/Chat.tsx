@@ -42,6 +42,7 @@ import type {
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { APP_BUILD_ID } from "@/lib/app-build-id";
 import {
   Tooltip,
   TooltipContent,
@@ -161,6 +162,10 @@ import {
   writeDraft,
   type DraftData,
 } from "@/hooks/use-draft-persistence";
+import {
+  appendUserUploadReferences,
+  isUserUploadMountPath,
+} from "@/lib/chat-attachment-refs";
 
 interface ChatProps {
   threadId?: string;
@@ -369,16 +374,10 @@ function getCompletedAttachments(attachments: Attachment[]): Attachment[] {
 }
 
 function buildMessageContent(text: string, attachments: Attachment[]): string {
-  const rawContent = text.trim();
-  const completedAttachments = getCompletedAttachments(attachments);
-  if (completedAttachments.length === 0) {
-    return rawContent;
-  }
-
-  const fileRefs = completedAttachments
-    .map((attachment) => `(user uploaded file to ${attachment.path})`)
-    .join("\n");
-  return rawContent ? `${rawContent}\n\n${fileRefs}` : fileRefs;
+  return appendUserUploadReferences(
+    text,
+    getCompletedAttachments(attachments).map((attachment) => attachment.path),
+  );
 }
 
 const FREE_TIER_MODAL_SEEN_PREFIX = "freeTierModalSeen:";
@@ -1518,6 +1517,7 @@ export default function Chat({
     };
     groupId?: string;
     error?: string;
+    reloadRequired?: boolean;
   }>({ key: "chat-create-thread" });
   const updateThreadModelFetcher = useFetcher<{
     thread?: { id: string; model: LlmModel; provider: ChatHarness };
@@ -2115,6 +2115,7 @@ export default function Chat({
   const wsRef = useRef<WebSocket | null>(null);
   const oobWsRef = useRef<WebSocket | null>(null);
   const questionResponseSocketRef = useRef<"runner" | "oob">("runner");
+  const connectionSetupResponseSocketRef = useRef<"runner" | "oob">("runner");
   const lastRunnerModelSelectionRef = useRef<string | null>(null);
   const iframeRefreshTimeoutsRef = useRef<
     Record<string, ReturnType<typeof setTimeout>>
@@ -2914,7 +2915,7 @@ export default function Chat({
   }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
   const handleRealtimeSideChannelEvent = useCallback(
-    (data: any) => {
+    (data: any, source: "runner" | "oob" = "runner") => {
       if (data.type === "preview_state") {
         const newVersion = typeof data.version === "number" ? data.version : 0;
         const hasVersionBump = newVersion > previewVersionRef.current;
@@ -3017,6 +3018,7 @@ export default function Chat({
         data.requestId &&
         data.integrationType
       ) {
+        connectionSetupResponseSocketRef.current = source;
         setConnectionSetupPrompt({
           requestId: data.requestId as string,
           integrationType: data.integrationType as string,
@@ -3032,6 +3034,18 @@ export default function Chat({
       if (data.type === "connection_setup_answered" && data.requestId) {
         setConnectionSetupPrompt((prev) =>
           prev?.requestId === data.requestId ? null : prev,
+        );
+        return;
+      }
+
+      if (data.type === "connection_setup_error" && data.requestId) {
+        setConnectionSetupPrompt((prev) =>
+          prev?.requestId === data.requestId ? null : prev,
+        );
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : "Connection setup failed. Please ask the agent to start connection setup again.",
         );
         return;
       }
@@ -3187,9 +3201,10 @@ export default function Chat({
           data.type === "thread_model_updated" ||
           data.type === "connection_setup_prompt" ||
           data.type === "connection_setup_answered" ||
+          data.type === "connection_setup_error" ||
           data.type === "bug_report_prompt"
         ) {
-          handleRealtimeSideChannelEvent(data);
+          handleRealtimeSideChannelEvent(data, "oob");
         }
       };
 
@@ -3932,9 +3947,10 @@ export default function Chat({
           data.type === "thread_model_updated" ||
           data.type === "connection_setup_prompt" ||
           data.type === "connection_setup_answered" ||
+          data.type === "connection_setup_error" ||
           data.type === "bug_report_prompt"
         ) {
-          handleRealtimeSideChannelEvent(data);
+          handleRealtimeSideChannelEvent(data, "runner");
         }
       };
 
@@ -4644,6 +4660,11 @@ export default function Chat({
               );
             },
           });
+          if (!isUserUploadMountPath(data.path)) {
+            throw new Error(
+              `Upload completed without a readable /mnt/user-uploads/ path`,
+            );
+          }
 
           // Update state to complete
           setAttachments((prev) =>
@@ -4801,8 +4822,16 @@ export default function Chat({
         pendingNewChatRef.current = null;
       } else if (data.error) {
         // Thread creation failed
+        const pendingNewChat = pendingNewChatRef.current;
         setIsCreatingThread(false);
         setError(normalizeChatErrorMessage(data.error));
+        if (data.reloadRequired) {
+          toast.error(normalizeChatErrorMessage(data.error));
+        }
+        if (pendingNewChat?.draftText !== undefined) {
+          setWelcomeInput(pendingNewChat.draftText);
+          setAttachments(pendingNewChat.draftAttachments ?? []);
+        }
         const pendingDraft = pendingDeliveryDraftRef.current;
         pendingDeliveryDraftRef.current = null;
         pendingDraftCountRef.current = 0;
@@ -5044,6 +5073,7 @@ export default function Chat({
       createThreadFetcher.submit(
         {
           intent: "createThread",
+          clientBuildId: APP_BUILD_ID,
           initialTitle: threadTitle,
           previewApps: app.script_name,
           model: selectedThreadModel,
@@ -5099,7 +5129,14 @@ export default function Chat({
     const userMessage = currentWelcomeInput.trim();
     setWelcomeInput("");
 
-    const finalContent = buildMessageContent(userMessage, currentAttachments);
+    let finalContent: string;
+    try {
+      finalContent = buildMessageContent(userMessage, currentAttachments);
+    } catch (error) {
+      setIsCreatingThread(false);
+      setError(normalizeChatErrorMessage(error));
+      return;
+    }
 
     // Clear attachments (revoke any blob URLs to avoid memory leaks)
     setAttachments((prev) => {
@@ -5119,13 +5156,14 @@ export default function Chat({
     // Submit to route action to create thread
     const createThreadPayload: Record<string, string> = {
       intent: "createThread",
+      clientBuildId: APP_BUILD_ID,
       model: selectedThreadModel,
     };
     if (chatGroupId) {
       createThreadPayload.groupId = chatGroupId;
     }
-    if (userMessage) {
-      createThreadPayload.firstMessage = userMessage;
+    if (finalContent) {
+      createThreadPayload.firstMessage = finalContent;
     }
     createThreadFetcher.submit(createThreadPayload, {
       method: "post",
@@ -5166,55 +5204,33 @@ export default function Chat({
     [pendingQuestion],
   );
 
-  // Handle connection setup response - send via chat WebSocket
+  // Handle connection setup response through ChatThreadDO. This mirrors
+  // ask_user_question: the DO owns the pending waiter, and the modal closes
+  // only after the DO broadcasts connection_setup_answered.
   const handleConnectionSetupResponse = useCallback(
     async (response: ConnectionSetupResponse) => {
       const payload = {
         type: "connection_setup_response",
         ...response,
       };
-      if (resolvedWorkspaceId && threadId) {
-        try {
-          const apiResponse = await fetch(
-            `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(threadId)}/connection-setup-response`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(response),
-            },
-          );
-          if (!apiResponse.ok) {
-            throw new Error(`HTTP ${apiResponse.status}`);
-          }
-          setConnectionSetupPrompt(null);
-          return;
-        } catch (error) {
-          console.warn(
-            "[Chat] Falling back to WebSocket for connection setup response",
-            error,
-          );
-        }
-      }
 
-      const socket =
-        oobWsRef.current?.readyState === WebSocket.OPEN
-          ? oobWsRef.current
-          : wsRef.current?.readyState === WebSocket.OPEN
-            ? wsRef.current
-            : null;
+      const source = connectionSetupResponseSocketRef.current;
+      const socket = source === "oob" ? oobWsRef.current : wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.error(
           "[Chat] WebSocket not available for connection setup response",
+          { source },
         );
-        return;
+        throw new Error(
+          source === "oob"
+            ? "The chat side-channel disconnected before the connection details could be submitted. Please try again."
+            : "The chat runner connection disconnected before the connection details could be submitted. Please try again.",
+        );
       }
 
       socket.send(JSON.stringify(payload));
-
-      // Clear the prompt
-      setConnectionSetupPrompt(null);
     },
-    [resolvedWorkspaceId, threadId],
+    [threadId],
   );
 
   const handleConnectionSetupCancel = useCallback(() => {
@@ -5692,9 +5708,15 @@ type SendOptions = {
 
     const shouldIncludeAttachmentRefs =
       !opts?.skipAttachmentRefs && !opts?.contentOverride;
-    const finalContent = shouldIncludeAttachmentRefs
-      ? buildMessageContent(rawContent, currentAttachments)
-      : rawContent;
+    let finalContent: string;
+    try {
+      finalContent = shouldIncludeAttachmentRefs
+        ? buildMessageContent(rawContent, currentAttachments)
+        : rawContent;
+    } catch (error) {
+      setError(normalizeChatErrorMessage(error));
+      return false;
+    }
 
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
     const clientMessageId = `client_${Date.now()}_${Math.random()

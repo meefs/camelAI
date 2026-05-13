@@ -567,7 +567,7 @@ export async function getPiCoreMessages(
     !("CHAT_THREAD" in env) ||
     !env.CHAT_THREAD
   ) {
-    return [];
+    throw new Error("CHAT_THREAD binding is not available");
   }
   const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
   const messages = await Promise.resolve(
@@ -576,7 +576,7 @@ export async function getPiCoreMessages(
         getPiCoreParsedMessages(threadId: string): Promise<ParsedThreadMessage[]> | ParsedThreadMessage[];
       }
     ).getPiCoreParsedMessages(threadId),
-  ).catch(() => []);
+  );
   return Array.isArray(messages) ? messages : [];
 }
 

@@ -194,4 +194,34 @@ describe('uploadWorkspaceFile', () => {
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('rejects uploads that complete without a mounted upload path', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const { action } = parseAction(input);
+      if (action === 'mpu-create') {
+        return jsonResponse({
+          uploadId: 'upload-bad-path',
+          filename: 'file.txt',
+          path: '/mnt/user-uploads/file.txt',
+        });
+      }
+      if (action === 'mpu-uploadpart') {
+        return jsonResponse({ partNumber: 1, etag: 'etag-1' });
+      }
+      if (action === 'mpu-complete') {
+        return jsonResponse({
+          path: '/tmp/file.txt',
+          filename: 'file.txt',
+          size: 3,
+        });
+      }
+      throw new Error(`Unexpected action ${action}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const file = new File(['abc'], 'demo.txt', { type: 'text/plain' });
+    await expect(uploadWorkspaceFile('ws-1', file)).rejects.toThrow(
+      'invalid multipart complete response',
+    );
+  });
 });

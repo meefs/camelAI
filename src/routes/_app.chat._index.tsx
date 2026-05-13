@@ -5,6 +5,7 @@ import {
   requireAuthContext,
   requireSessionWorkspaceAccess,
 } from "@/lib/auth.server";
+import { APP_BUILD_ID } from "@/lib/app-build-id";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   getOrgBillingOverview,
@@ -369,6 +370,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       const initialTitle = formStringValue(formData, "initialTitle");
       const firstMessage = formStringValue(formData, "firstMessage");
+      const clientBuildId = formStringValue(formData, "clientBuildId");
       const previewAppsRaw = formStringValue(formData, "previewApps");
       const rawModel = formData.get("model");
       const model = typeof rawModel === "string" ? rawModel : null;
@@ -377,6 +379,17 @@ export async function action({ request, context }: Route.ActionArgs) {
         typeof rawGroupId === "string" && rawGroupId.trim()
           ? rawGroupId.trim()
           : null;
+
+      if (!clientBuildId || clientBuildId !== APP_BUILD_ID) {
+        return Response.json(
+          {
+            error:
+              "camelAI was updated while this page was open. Please reload and send your message again.",
+            reloadRequired: true,
+          },
+          { status: 409 },
+        );
+      }
 
       const thread = await chatDO.createThread(
         context,

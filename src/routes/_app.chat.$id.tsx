@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   redirect,
   useLoaderData,
@@ -272,13 +272,6 @@ async function buildChatData(
         skipBanCheck: options.skipBanCheck,
       })
         .then((messages) => ({ messages, messagesError: null }))
-        .catch((error) => {
-          console.error("Failed to load chat route messages:", error);
-          return {
-            messages: [] as Message[],
-            messagesError: "Failed to load message history",
-          };
-        })
     : Promise.resolve({ messages: [], messagesError: null });
   const todosPromise = chatDO
     .getTodoState(context, threadId)
@@ -622,11 +615,6 @@ export default function ChatPage() {
   const markViewedEnabled = chatDebugFlags.markViewed;
   const markThreadIdleRef = useRef(markThreadIdle);
   const revalidateRef = useRef(revalidator.revalidate);
-  const [instantThreadId, setInstantThreadId] = useState<string | null>(null);
-  const [chatDataByThreadId, setChatDataByThreadId] = useState<
-    Record<string, ChatData>
-  >(() => ({ [threadId]: chatData }));
-
   const liveActiveChatGroup =
     activeChatGroup && !readOnly
       ? liveChatGroups.find((group) => group.id === activeChatGroup.id) ??
@@ -652,8 +640,6 @@ export default function ChatPage() {
         activeChatGroupId: activeChatGroup?.id ?? null,
       });
     }
-    setChatDataByThreadId((prev) => ({ ...prev, [threadId]: chatData }));
-    setInstantThreadId(null);
   }, [
     activeChatGroup?.id,
     chatData,
@@ -664,37 +650,12 @@ export default function ChatPage() {
     threadId,
   ]);
 
-  const instantThread =
-    instantThreadId && liveActiveChatGroup
-      ? liveActiveChatGroup.open_threads.find(
-          (thread) => thread.id === instantThreadId,
-        ) ??
-        liveActiveChatGroup.closed_threads.find(
-          (thread) => thread.id === instantThreadId,
-        ) ??
-        null
-      : null;
-  const instantChatData = instantThreadId
-    ? chatDataByThreadId[instantThreadId]
-    : null;
-  const shouldUseInstantThread = Boolean(
-    instantThread &&
-      instantChatData &&
-      instantThreadId &&
-      instantThreadId !== threadId,
-  );
-  const displayThreadId =
-    shouldUseInstantThread && instantThread ? instantThread.id : threadId;
-  const displayThreadTitle =
-    shouldUseInstantThread && instantThread ? instantThread.title : threadTitle;
-  const displayThreadModel =
-    shouldUseInstantThread && instantThread ? instantThread.model : threadModel;
-  const displayThreadProvider =
-    shouldUseInstantThread && instantThread
-      ? instantThread.provider
-      : threadProvider;
+  const displayThreadId = threadId;
+  const displayThreadTitle = threadTitle;
+  const displayThreadModel = threadModel;
+  const displayThreadProvider = threadProvider;
   const displayAllowedThreadModels =
-    shouldUseInstantThread && displayThreadModel && displayThreadProvider
+    displayThreadModel && displayThreadProvider
       ? getVisibleLlmModelOptions(
           displayThreadProvider,
           experimentalSettings,
@@ -705,9 +666,8 @@ export default function ChatPage() {
           },
         ).map((option) => option.value)
       : allowedThreadModels;
-  const displayChatData =
-    shouldUseInstantThread && instantChatData ? instantChatData : chatData;
-  const displayIsNewThread = shouldUseInstantThread ? false : isNewThread;
+  const displayChatData = chatData;
+  const displayIsNewThread = isNewThread;
 
   useEffect(() => {
     markThreadIdleRef.current = markThreadIdle;
@@ -760,12 +720,6 @@ export default function ChatPage() {
   const selectTab = (targetThreadId: string) => {
     if (displayThreadId) {
       markThreadIdle(displayThreadId);
-    }
-    if (
-      targetThreadId !== threadId &&
-      chatDataByThreadId[targetThreadId]
-    ) {
-      setInstantThreadId(targetThreadId);
     }
     navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
   };
@@ -859,7 +813,6 @@ export default function ChatPage() {
             openTabs={openTabs}
             closedTabs={closedTabs}
             activeThreadId={displayThreadId}
-            prefetchTabs
             moveGroups={moveChatGroups}
             onSelectTab={selectTab}
             onCloseTab={closeTab}

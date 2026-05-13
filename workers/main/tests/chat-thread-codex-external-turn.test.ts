@@ -1084,6 +1084,60 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
   });
 
+  it('renders persisted Pi tool result messages with their assistant tool calls', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiCoreMessages = vi.fn(() => [
+      { role: 'user', content: 'run it', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'tool1',
+          name: 'bash',
+          arguments: { command: 'echo hi' },
+        }],
+        responseId: 'resp_tool',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'toolUse',
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'tool1',
+        toolName: 'bash',
+        content: [{ type: 'text', text: 'hi\n' }],
+        isError: false,
+        timestamp: 300,
+      },
+    ]);
+
+    const messages = ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toMatchObject({
+      id: 'resp_tool',
+      role: 'assistant',
+    });
+    expect(messages[1].content).toEqual([
+      {
+        type: 'tool_use',
+        id: 'tool1',
+        name: 'bash',
+        input: { command: 'echo hi' },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 'tool1',
+        content: 'hi\n',
+        itemId: 'tool1',
+        itemKind: 'commandExecution',
+      },
+    ]);
+  });
+
   it('does not emit an extra completed agent message after streamed Pi text', () => {
     const { fake, events } = createPiEventFake();
 

@@ -8,6 +8,7 @@ const getEnvMock = vi.fn();
 const adminGetThreadContextByIdMock = vi.fn();
 const getThreadMock = vi.fn();
 const getThreadPreviewStateMock = vi.fn();
+const getTodoStateMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
 const getTodoStateMock = vi.fn();
 const getOrgMock = vi.fn();
@@ -35,6 +36,7 @@ vi.mock('@/lib/auth-do.server', () => ({
 vi.mock('@/lib/chat-do.server', () => ({
   getThread: getThreadMock,
   getThreadPreviewState: getThreadPreviewStateMock,
+  getTodoState: getTodoStateMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
   getTodoState: getTodoStateMock,
 }));
@@ -189,6 +191,12 @@ describe('chat loader workspace mismatch handling', () => {
       effectivePickerDefaultModel: 'sonnet',
       hasEffectivePickerDefault: true,
       defaultModel: 'sonnet',
+    });
+    requireSessionWorkspaceAccessMock.mockResolvedValue({
+      orgId: 'org_active',
+      workspaceId: 'ws_active',
+      userId: 'user_123',
+      access: 'full',
     });
   });
 
