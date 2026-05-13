@@ -294,6 +294,17 @@ export function contentToString(content: string | ContentBlock[]): string {
     .filter(Boolean)
     .join('\n\n');
 }
+
+export function userFacingContentToString(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return stripSystemMessageTags(content).trim();
+  return content
+    .map(block => {
+      if (block.type !== 'text') return '';
+      return stripSystemMessageTags(block.text).trim();
+    })
+    .filter(Boolean)
+    .join('\n\n');
+}
 interface ContentBlockRendererProps {
   content: string | ContentBlock[];
   messageId?: string;

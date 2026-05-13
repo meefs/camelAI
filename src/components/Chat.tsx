@@ -88,7 +88,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   MessageBubble,
-  contentToString,
+  userFacingContentToString,
   isInterruptMessage,
   parseSlashCommand,
   parseLocalCommandStdout,
@@ -1170,10 +1170,10 @@ const ChatMessagesView = memo(function ChatMessagesView({
       const messages = visibleMessages.slice(index, endIndex);
       const actionMessage = messages[messages.length - 1];
       const copyContent = isAssistantTurn
-        ? messages
-            .map((message) => contentToString(message.content))
-            .filter(Boolean)
-            .join("\n\n")
+        ? [...messages]
+            .reverse()
+            .map((message) => userFacingContentToString(message.content))
+            .find(Boolean) ?? ""
         : undefined;
 
       groups.push({
