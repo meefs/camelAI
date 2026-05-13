@@ -8,7 +8,12 @@ import { ReportHeader } from './report-header';
 import { ReportMarkdownCell } from './report-markdown-cell';
 import { ReportSidebar } from './report-sidebar';
 import type { NotebookFile, TocEntry } from './types';
-import { extractTocEntries, getNotebookCells, toText } from './utils';
+import {
+  extractTocEntries,
+  getNotebookCells,
+  isIgnorableTextOutput,
+  toText,
+} from './utils';
 
 interface ReportModeProps {
   notebook: NotebookFile;
@@ -69,11 +74,12 @@ function ReportModeComponent({ notebook, layout }: ReportModeProps) {
               }
 
               const outputs = Array.isArray(cell.outputs) ? cell.outputs : [];
-              if (outputs.length === 0) return null;
+              const reportOutputs = outputs.filter((output) => !isIgnorableTextOutput(output));
+              if (reportOutputs.length === 0) return null;
 
               return (
                 <div key={`cell-${index}`} className="min-w-0 space-y-8">
-                  {outputs.map((output, outputIndex) => (
+                  {reportOutputs.map((output, outputIndex) => (
                     <OutputRenderer
                       key={`output-${index}-${outputIndex}`}
                       output={output}

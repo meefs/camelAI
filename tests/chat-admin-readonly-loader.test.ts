@@ -10,6 +10,7 @@ const getThreadMock = vi.fn();
 const getThreadPreviewStateMock = vi.fn();
 const getTodoStateMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
+const getTodoStateMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
 const readThreadMessagesMock = vi.fn();
@@ -37,6 +38,7 @@ vi.mock('@/lib/chat-do.server', () => ({
   getThreadPreviewState: getThreadPreviewStateMock,
   getTodoState: getTodoStateMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
+  getTodoState: getTodoStateMock,
 }));
 
 vi.mock('@/lib/auth-do', () => ({
@@ -175,6 +177,12 @@ describe('chat loader workspace mismatch handling', () => {
       version: 0,
     });
     getTodoStateMock.mockResolvedValue([]);
+    requireSessionWorkspaceAccessMock.mockResolvedValue({
+      orgId: 'org_active',
+      workspaceId: 'ws_active',
+      userId: 'user_123',
+      access: 'full',
+    });
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       provider: 'claude',
       llmProvider: null,
@@ -244,6 +252,37 @@ describe('chat loader workspace mismatch handling', () => {
       activeTabId: null,
       previewTarget: null,
     });
+  });
+
+  it('loads todo state into chat data for existing threads', async () => {
+    const context = {};
+    const todos = [
+      {
+        content: 'Review results',
+        status: 'in_progress',
+        activeForm: 'Reviewing results',
+      },
+    ];
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+    });
+    getTodoStateMock.mockResolvedValue(todos);
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123'),
+      context,
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(getTodoStateMock).toHaveBeenCalledWith(context, 'thread_123');
+    expect(result.chatData.todos).toEqual(todos);
   });
 
   it('falls back to legacy visible models when picker state fails to load', async () => {

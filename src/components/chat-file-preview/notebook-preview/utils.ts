@@ -923,6 +923,67 @@ export function getOutputText(output: NotebookOutput): string {
   return '';
 }
 
+const MEANINGFUL_RICH_MIME_TYPES = new Set([
+  'text/html',
+  'text/markdown',
+  'image/png',
+  'image/jpeg',
+  'image/svg+xml',
+  'application/json',
+]);
+
+const MEANINGFUL_RICH_MIME_PATTERNS = [
+  /^application\/vnd\.vega\.v\d+\+json$/i,
+  /^application\/vnd\.vegalite\.v\d+\+json$/i,
+  /^application\/vnd\.plotly\.v\d+\+json$/i,
+];
+
+const IGNORABLE_TEXT_OUTPUT_PATTERNS = [
+  /^DataTransformerRegistry\.enable\(['"][^'"]+['"]\)$/,
+  /^<IPython\.core\.display\.[A-Za-z_][\w.]* object>$/,
+  /^<matplotlib\.[\w.]+(?: object)? at 0x[0-9a-fA-F]+>$/,
+  /^\[\s*<matplotlib\.[\w.]+(?: object)? at 0x[0-9a-fA-F]+>(?:,\s*<matplotlib\.[\w.]+(?: object)? at 0x[0-9a-fA-F]+>)*\s*\]$/,
+  /^<Figure size \d+(?:\.\d+)?x\d+(?:\.\d+)? with \d+ Axes>$/,
+];
+
+function hasNonEmptyMimeValue(value: unknown): boolean {
+  if (value === null || typeof value === 'undefined') return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.some((item) => hasNonEmptyMimeValue(item));
+  if (typeof value === 'object') return true;
+  return true;
+}
+
+function hasMeaningfulRichMimeData(data: Record<string, unknown>): boolean {
+  return Object.entries(data).some(([mimeType, value]) => {
+    if (!hasNonEmptyMimeValue(value)) return false;
+    if (MEANINGFUL_RICH_MIME_TYPES.has(mimeType)) return true;
+    return MEANINGFUL_RICH_MIME_PATTERNS.some((pattern) => pattern.test(mimeType));
+  });
+}
+
+export function isIgnorableTextOutput(output: NotebookOutput): boolean {
+  if (output.output_type !== 'execute_result' && output.output_type !== 'display_data') {
+    return false;
+  }
+
+  const data = output.data ?? {};
+  if (typeof data['text/plain'] === 'undefined') {
+    return false;
+  }
+
+  if (hasMeaningfulRichMimeData(data)) {
+    return false;
+  }
+
+  const normalizedText = toText(data['text/plain']).trim();
+  if (!normalizedText) {
+    return false;
+  }
+
+  return IGNORABLE_TEXT_OUTPUT_PATTERNS.some((pattern) => pattern.test(normalizedText));
+}
+
 function getMarkdownOutput(output: NotebookOutput): string | null {
   const data = output.data ?? {};
   if (typeof data['text/markdown'] === 'undefined') {
