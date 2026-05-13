@@ -1582,6 +1582,7 @@ export default function Chat({
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
+  const todoStateByThreadRef = useRef<Record<string, TodoItem[]>>({});
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
   const [connectionSetupPrompt, setConnectionSetupPrompt] =
@@ -1787,6 +1788,24 @@ export default function Chat({
     isNewThread,
     readOnly,
   };
+
+  const setCurrentTodosForThread = useCallback(
+    (sourceThreadId: string | null | undefined, todos: TodoItem[]) => {
+      const nextTodos = Array.isArray(todos) ? todos : [];
+      if (sourceThreadId) {
+        if (nextTodos.length > 0) {
+          todoStateByThreadRef.current[sourceThreadId] = nextTodos;
+        } else {
+          delete todoStateByThreadRef.current[sourceThreadId];
+        }
+      }
+
+      if (pendingThreadContextRef.current.threadId === sourceThreadId) {
+        setCurrentTodos(nextTodos);
+      }
+    },
+    [],
+  );
 
   // Wrapper setters that update both state and ref
   const setMessages = useCallback(
@@ -2137,7 +2156,9 @@ export default function Chat({
     initialScrollDoneRef.current = false;
     stickToBottomRef.current = true;
     splitStreamingMessageOnNextPartRef.current = false;
-    setCurrentTodos([]);
+    setCurrentTodos(
+      threadId ? (todoStateByThreadRef.current[threadId] ?? []) : [],
+    );
     setPendingQuestion(null);
     setContextUsedPercent(null);
     lastCompletedAssistantMessageIdRef.current = null;
@@ -2283,10 +2304,10 @@ export default function Chat({
   // Clear todos when streaming starts (new message turn)
   useEffect(() => {
     if (!wasStreamingRef.current && isStreaming) {
-      setCurrentTodos([]);
+      setCurrentTodosForThread(threadId, []);
     }
     wasStreamingRef.current = isStreaming;
-  }, [isStreaming]);
+  }, [isStreaming, setCurrentTodosForThread, threadId]);
 
   const lastMarkedViewedKeyRef = useRef<string | null>(null);
   useEffect(() => {
@@ -2322,12 +2343,12 @@ export default function Chat({
     );
     const timeout = setTimeout(
       () => {
-        setCurrentTodos([]);
+        setCurrentTodosForThread(threadId, []);
       },
       allComplete ? 1500 : 2000,
     );
     return () => clearTimeout(timeout);
-  }, [currentTodos, isStreaming]);
+  }, [currentTodos, isStreaming, setCurrentTodosForThread, threadId]);
 
   useEffect(() => {
     setActiveThreadProvider(initialThreadProvider);
@@ -3160,7 +3181,7 @@ export default function Chat({
           }
         } else if (data.type === "todo_state") {
           if (Array.isArray(data.todos)) {
-            setCurrentTodos(data.todos);
+            setCurrentTodosForThread(id, data.todos);
           }
         } else if (data.type === "context_usage_state") {
           if (data.usedPercent === null) {
@@ -3830,7 +3851,7 @@ export default function Chat({
         } else if (data.type === "todo_state") {
           // Direct todo state from server - no extraction needed
           if (Array.isArray(data.todos)) {
-            setCurrentTodos(data.todos);
+            setCurrentTodosForThread(id, data.todos);
           }
         } else if (data.type === "context_usage_state") {
           if (data.usedPercent === null) {
@@ -4023,6 +4044,7 @@ export default function Chat({
       setMessages,
       setPendingMessages,
       setStreamingMessageId,
+      setCurrentTodosForThread,
       handleRealtimeSideChannelEvent,
     ],
   );
