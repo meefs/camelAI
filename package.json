@@ -8,6 +8,8 @@
 		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 WORKER_BASE_URL=http://localhost:3001 react-router dev",
 		"build": "react-router build",
 		"build:cf": "react-router build",
+		"generate:pi-skills": "node scripts/generate-pi-skills-bundle.mjs",
+		"check:pi-skills": "node scripts/generate-pi-skills-bundle.mjs --check",
 		"start": "wrangler dev",
 		"lint": "eslint .",
 		"typecheck": "react-router typegen && tsc",

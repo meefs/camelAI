@@ -66,10 +66,13 @@ import {
   listConnectionTools,
 } from "./connections-runtime";
 import {
-  PI_SKILL_FILES,
   PI_SKILL_NAMES,
   PI_SKILLS_ROOT,
 } from "./pi-skills-bundle";
+import {
+  listPiBundledSkillFiles,
+  readPiBundledSkillFile,
+} from "./pi-skill-bundle-helpers";
 import {
   PiContainerTools,
   PI_CONTAINER_TOOL_DEFINITIONS,
@@ -1339,12 +1342,44 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("bash", args);
 
       case "read":
+        {
+          const path = typeof args.path === "string" ? args.path : "";
+          const skill = readPiBundledSkillFile(path);
+          if (skill) {
+            return {
+              text: skill.text,
+              content: [{ type: "text", text: skill.text }],
+              details: {
+                path: skill.path,
+                size: skill.size,
+                encoding: skill.encoding,
+                source: skill.source,
+              },
+            };
+          }
+        }
         return this.piContainerTools.callTool("read", args);
 
       case "write":
         return this.piContainerTools.callTool("write", args);
 
       case "ls":
+        {
+          if (typeof args.path === "string") {
+            const listing = listPiBundledSkillFiles(args.path);
+            if (listing) {
+              return {
+                text: listing.text,
+                content: [{ type: "text", text: listing.text }],
+                details: {
+                  path: listing.path,
+                  files: listing.files,
+                  source: listing.source,
+                },
+              };
+            }
+          }
+        }
         return this.piContainerTools.callTool("ls", args);
 
       case "edit":
@@ -7083,24 +7118,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return [{ type: "text", text: this.extractToolText(result) }];
   }
 
-  private normalizeSkillBundlePath(rawPath: string): string | null {
-    const trimmed = rawPath.trim();
-    if (!trimmed) return "";
-    const candidates = [
-      PI_SKILLS_ROOT,
-      "/opt/chiridion-host-pi/skills",
-      ".agents/skills",
-      "/home/claude/.agents/skills",
-    ];
-    for (const root of candidates) {
-      if (trimmed === root) return "";
-      if (trimmed.startsWith(`${root}/`)) {
-        return trimmed.slice(root.length + 1).replace(/^\/+/, "");
-      }
-    }
-    return null;
-  }
-
   private createPiToolDefinitions(
     context: ChatContextState,
     options: PiToolDefinitionOptions = {},
@@ -7114,58 +7131,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       };
     };
 
-    const readSkillFile = (rawPath: string) => {
-      const normalized = this.normalizeSkillBundlePath(rawPath);
-      if (!normalized) return null;
-      const content = PI_SKILL_FILES[normalized];
-      if (typeof content !== "string") return null;
-      return {
-        content: [{ type: "text" as const, text: content }],
-        details: {
-          success: true,
-          path: `${PI_SKILLS_ROOT}/${normalized}`,
-          size: content.length,
-          encoding: "utf8",
-          source: "bundled_skill",
-        },
-      };
-    };
-
-    const listSkillFiles = (rawPath: string) => {
-      const normalized = this.normalizeSkillBundlePath(rawPath) ?? "";
-      const prefix = normalized ? `${normalized.replace(/\/+$/, "")}/` : "";
-      const entries = new Set<string>();
-      for (const filePath of Object.keys(PI_SKILL_FILES)) {
-        if (prefix && !filePath.startsWith(prefix)) continue;
-        const rest = prefix ? filePath.slice(prefix.length) : filePath;
-        const [entry] = rest.split("/");
-        if (entry) entries.add(entry);
-      }
-      if (entries.size === 0) return null;
-      const text = [...entries].sort().join("\n");
-      return {
-        content: [{ type: "text" as const, text }],
-        details: {
-          success: true,
-          path: `${PI_SKILLS_ROOT}${normalized ? `/${normalized}` : ""}`,
-          files: [...entries].sort(),
-          source: "bundled_skill",
-        },
-      };
-    };
-
     const definitions: AgentTool[] = [
       {
         name: PI_CONTAINER_TOOL_DEFINITIONS.read.name,
         label: PI_CONTAINER_TOOL_DEFINITIONS.read.label,
         description: `${PI_CONTAINER_TOOL_DEFINITIONS.read.description} Also supports bundled skill files.`,
         parameters: PI_CONTAINER_TOOL_DEFINITIONS.read.parameters,
-        execute: async (_id, params) => {
-          const path = typeof (params as { path?: unknown }).path === "string"
-            ? (params as { path: string }).path
-            : "";
-          return readSkillFile(path) ?? call("read", params as Record<string, unknown>);
-        },
+        execute: async (_id, params) => call("read", params as Record<string, unknown>),
       },
       {
         name: PI_CONTAINER_TOOL_DEFINITIONS.write.name,
@@ -7187,12 +7159,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         label: PI_CONTAINER_TOOL_DEFINITIONS.ls.label,
         description: `${PI_CONTAINER_TOOL_DEFINITIONS.ls.description} Also supports bundled skill directories.`,
         parameters: PI_CONTAINER_TOOL_DEFINITIONS.ls.parameters,
-        execute: async (_id, params) => {
-          const path = typeof (params as { path?: unknown }).path === "string"
-            ? (params as { path: string }).path
-            : "";
-          return listSkillFiles(path) ?? call("ls", params as Record<string, unknown>);
-        },
+        execute: async (_id, params) => call("ls", params as Record<string, unknown>),
       },
       {
         name: PI_CONTAINER_TOOL_DEFINITIONS.grep.name,

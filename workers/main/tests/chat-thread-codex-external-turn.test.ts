@@ -442,14 +442,18 @@ describe('ChatThreadDO Codex external turn completion', () => {
   });
 
   it('serves bundled skills through the Pi core read and ls tools', async () => {
+    const containerTool = vi.fn(async () => {
+      throw new Error('workspace tool should not be called for bundled skills');
+    });
+    const toolsBinding = Object.create(CodeModeToolsBinding.prototype) as any;
+    Object.defineProperty(toolsBinding, 'piContainerTools', {
+      value: { callTool: containerTool },
+    });
+    const bindingFactory = vi.fn(() => toolsBinding);
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       exports: {
-        CodeModeToolsBinding: vi.fn(() => ({
-          callTool: vi.fn(async () => {
-            throw new Error('workspace tool should not be called for bundled skills');
-          }),
-        })),
+        CodeModeToolsBinding: bindingFactory,
       },
     };
 
@@ -470,7 +474,32 @@ describe('ChatThreadDO Codex external turn completion', () => {
       path: '/opt/chiridion-host-pi/skills/developing-software/SKILL.md',
     });
     expect(skill.content[0].text).toContain('name: developing-software');
-    expect(skill.details.source).toBe('bundled_skill');
+    expect(skill.details.details.source).toBe('bundled_skill');
+    expect(bindingFactory).toHaveBeenCalled();
+    expect(containerTool).not.toHaveBeenCalled();
+  });
+
+  it('serves bundled skills through js_exec tools.read and tools.ls', async () => {
+    const containerTool = vi.fn(async () => {
+      throw new Error('workspace tool should not be called for bundled skills');
+    });
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    Object.defineProperty(fake, 'piContainerTools', {
+      value: { callTool: containerTool },
+    });
+
+    const skill = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      path: '/opt/chiridion-host-pi/skills/data-analysis/SKILL.md',
+    });
+    expect((skill as any).text).toContain('name: data-analysis');
+    expect((skill as any).details.source).toBe('bundled_skill');
+
+    const listing = await CodeModeToolsBinding.prototype.callTool.call(fake, 'ls', {
+      path: '/opt/chiridion-host-pi/skills',
+    });
+    expect((listing as any).text).toContain('data-analysis');
+    expect((listing as any).details.source).toBe('bundled_skill');
+    expect(containerTool).not.toHaveBeenCalled();
   });
 
   it('runs the Pi js_exec tool through the DO code mode runner', async () => {
