@@ -2,8 +2,6 @@ import { Type } from "typebox";
 import type { WorkspaceContainer } from "./workspace-container";
 
 const CONTAINER_CWD = "/home/claude";
-const USER_UPLOADS_ROOT = "/mnt/user-uploads";
-const USER_OUTPUTS_ROOT = "/mnt/user-outputs";
 const DEFAULT_MAX_LINES = 2000;
 const DEFAULT_MAX_BYTES = 50 * 1024;
 const GREP_MAX_LINE_LENGTH = 500;
@@ -22,17 +20,6 @@ type FileReadResponse = {
   size?: number;
   isBinary?: boolean;
   mimeType?: string;
-  error?: string;
-};
-
-type FileWriteResponse = {
-  success: boolean;
-  error?: string;
-};
-
-type ListFilesResponse = {
-  success?: boolean;
-  files?: Array<{ name: string; type: "file" | "directory" }>;
   error?: string;
 };
 
@@ -110,14 +97,14 @@ export const PI_CONTAINER_TOOL_DEFINITIONS = {
     name: "read",
     label: "read",
     description:
-      `Read the contents of a file. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB. Images are returned as image content when the sandbox file API can read them.`,
+      `Read the contents of a file from inside the workspace container. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB. Images are returned as image content when possible.`,
     parameters: PI_READ_PARAMETERS,
   },
   write: {
     name: "write",
     label: "write",
     description:
-      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+      "Write content to a file from inside the workspace container. Creates the file if it doesn't exist, overwrites if it does, and automatically creates parent directories.",
     parameters: PI_WRITE_PARAMETERS,
   },
   edit: {
@@ -165,10 +152,6 @@ function formatSize(value: number): string {
   if (value < 1024) return `${value}B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}KB`;
   return `${(value / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function result(text: string, details?: Record<string, unknown>): PiContainerToolResult {
@@ -253,18 +236,9 @@ function truncateTail(text: string, maxLines = DEFAULT_MAX_LINES, maxBytes = DEF
 function normalizePath(value: unknown, fallback = CONTAINER_CWD): string {
   if (typeof value !== "string" || !value.trim()) return fallback;
   const raw = value.trim();
-  if (
-    raw === CONTAINER_CWD ||
-    raw.startsWith(`${CONTAINER_CWD}/`) ||
-    raw === USER_UPLOADS_ROOT ||
-    raw.startsWith(`${USER_UPLOADS_ROOT}/`) ||
-    raw === USER_OUTPUTS_ROOT ||
-    raw.startsWith(`${USER_OUTPUTS_ROOT}/`)
-  ) {
-    return raw;
-  }
-  if (raw === "/") return CONTAINER_CWD;
-  if (raw.startsWith("/")) return `${CONTAINER_CWD}${raw}`;
+  if (raw === "~") return CONTAINER_CWD;
+  if (raw.startsWith("~/")) return `${CONTAINER_CWD}/${raw.slice(2)}`;
+  if (raw.startsWith("/")) return raw;
   return `${CONTAINER_CWD}/${raw}`;
 }
 
@@ -359,21 +333,86 @@ function simpleDiff(before: string, after: string) {
   return { diff: lines.join("\n"), firstChangedLine: start + 1 };
 }
 
-function assertRead(read: FileReadResponse, path: string): FileReadResponse {
-  if (!read.success) throw new Error(read.error || `Failed to read ${path}`);
-  return read;
-}
-
-function assertWrite(write: FileWriteResponse, path: string) {
-  if (!write.success) throw new Error(write.error || `Failed to write ${path}`);
-}
-
 function assertExec(exec: ExecResponse, fallback = "Sandbox command failed") {
   if (exec.success === false || (typeof exec.exitCode === "number" && exec.exitCode !== 0)) {
     const message = [exec.stderr, exec.stdout, exec.error].filter(Boolean).join("\n") || fallback;
     throw new Error(message.length > 100_000 ? `${message.slice(0, 100_000)}\n\n[Truncated]` : message);
   }
 }
+
+function parseExecJson<T>(exec: ExecResponse, fallback: string): T {
+  assertExec(exec, fallback);
+  try {
+    return JSON.parse(String(exec.stdout || "{}")) as T;
+  } catch (error) {
+    throw new Error(`${fallback}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function utf8Base64(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64");
+}
+
+const READ_FILE_SCRIPT = String.raw`
+import base64
+import json
+import mimetypes
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    data = handle.read()
+
+is_binary = b"\x00" in data
+content = None
+if not is_binary:
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError:
+        is_binary = True
+
+if is_binary:
+    content = base64.b64encode(data).decode("ascii")
+
+print(json.dumps({
+    "success": True,
+    "content": content,
+    "size": len(data),
+    "isBinary": is_binary,
+    "mimeType": mimetypes.guess_type(path)[0],
+}))
+`;
+
+const WRITE_FILE_SCRIPT = String.raw`
+import base64
+import os
+import sys
+
+path = sys.argv[1]
+content = base64.b64decode(sys.argv[2])
+parent = os.path.dirname(path)
+if parent:
+    os.makedirs(parent, exist_ok=True)
+with open(path, "wb") as handle:
+    handle.write(content)
+`;
+
+const LIST_FILES_SCRIPT = String.raw`
+import json
+import os
+import sys
+
+path = sys.argv[1]
+entries = []
+for name in os.listdir(path):
+    full = os.path.join(path, name)
+    entries.append({
+        "name": name,
+        "type": "directory" if os.path.isdir(full) else "file",
+    })
+entries.sort(key=lambda entry: entry["name"].lower())
+print(json.dumps({"success": True, "files": entries}))
+`;
 
 export class PiContainerTools {
   constructor(
@@ -392,6 +431,20 @@ export class PiContainerTools {
       }
     }
     return Object.keys(clean).length > 0 ? clean : undefined;
+  }
+
+  private async readFileInContainer(path: string): Promise<FileReadResponse> {
+    return parseExecJson<FileReadResponse>(
+      await this.workspace.execOnSandbox(["python3", "-c", READ_FILE_SCRIPT, path], { cwd: CONTAINER_CWD }) as ExecResponse,
+      `Failed to read ${path}`,
+    );
+  }
+
+  private async writeFileInContainer(path: string, content: string): Promise<void> {
+    assertExec(
+      await this.workspace.execOnSandbox(["python3", "-c", WRITE_FILE_SCRIPT, path, utf8Base64(content)], { cwd: CONTAINER_CWD }) as ExecResponse,
+      `Failed to write ${path}`,
+    );
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<PiContainerToolResult> {
@@ -417,7 +470,7 @@ export class PiContainerTools {
 
   private async read(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     const path = normalizePath(args.path);
-    const file = assertRead(await this.workspace.readFile(path) as FileReadResponse, path);
+    const file = await this.readFileInContainer(path);
     if (file.isBinary) {
       const mimeType = file.mimeType || imageMime(path);
       if (mimeType?.startsWith("image/") && typeof file.content === "string") {
@@ -446,7 +499,7 @@ export class PiContainerTools {
   private async write(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     if (typeof args.content !== "string") throw new Error("content must be a string");
     const path = normalizePath(args.path);
-    assertWrite(await this.workspace.writeFile(path, args.content) as FileWriteResponse, path);
+    await this.writeFileInContainer(path, args.content);
     return result(`Successfully wrote ${args.content.length} bytes to ${path}`);
   }
 
@@ -454,20 +507,22 @@ export class PiContainerTools {
     const path = normalizePath(args.path);
     const edits = normalizeEdits(args);
     if (edits.length === 0) throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
-    const file = assertRead(await this.workspace.readFile(path) as FileReadResponse, path);
+    const file = await this.readFileInContainer(path);
     if (file.isBinary) throw new Error(`Cannot edit binary file: ${path}`);
     const before = String(file.content ?? "");
     const after = applyExactEdits(before, edits, path);
-    assertWrite(await this.workspace.writeFile(path, after) as FileWriteResponse, path);
+    await this.writeFileInContainer(path, after);
     return result(`Successfully replaced ${edits.length} block(s) in ${path}.`, simpleDiff(before, after));
   }
 
   private async ls(args: Record<string, unknown>): Promise<PiContainerToolResult> {
     const path = normalizePath(args.path);
     const limit = Math.max(1, typeof args.limit === "number" ? args.limit : 500);
-    const listing = await this.workspace.listFiles(path, { recursive: false, includeHidden: true }) as ListFilesResponse;
-    if (listing.success === false) throw new Error(listing.error || `Failed to list ${path}`);
-    const entries = [...(listing.files || [])].sort((a, b) => a.name.localeCompare(b.name));
+    const listing = parseExecJson<{ success: boolean; files?: Array<{ name: string; type: "file" | "directory" }> }>(
+      await this.workspace.execOnSandbox(["python3", "-c", LIST_FILES_SCRIPT, path], { cwd: CONTAINER_CWD }) as ExecResponse,
+      `Failed to list ${path}`,
+    );
+    const entries = [...(listing.files || [])];
     const output = entries.slice(0, limit).map((entry) => `${entry.name}${entry.type === "directory" ? "/" : ""}`).join("\n");
     if (!output) return result("(empty directory)");
     const { content, truncation } = truncateHead(output, Number.MAX_SAFE_INTEGER);
