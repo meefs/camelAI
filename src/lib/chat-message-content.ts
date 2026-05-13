@@ -8,7 +8,6 @@ function safeJsonStringify(value: unknown): string {
     return String(value);
   }
 }
-
 function isContentBlock(value: unknown): value is ContentBlock {
   if (!value || typeof value !== "object" || !("type" in value)) return false;
   const type = (value as { type?: string }).type;
@@ -19,7 +18,8 @@ function isContentBlock(value: unknown): value is ContentBlock {
     type === "thinking" ||
     type === "redacted_thinking" ||
     type === "teammate_message" ||
-    type === "task_notification"
+    type === "task_notification" ||
+    type === "error"
   );
 }
 
@@ -53,4 +53,3 @@ export function parseMessageContent(
 
   return content;
 }
-

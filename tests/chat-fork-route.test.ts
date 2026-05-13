@@ -5,17 +5,12 @@ const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const createThreadMock = vi.fn();
 const deleteThreadMock = vi.fn();
-const getLegacyClaudeSessionIdMock = vi.fn();
-const getCodexSessionIdMock = vi.fn();
 const orgGetThreadMock = vi.fn();
 const userGetChatGroupSummaryMock = vi.fn();
 const userGetChatGroupForThreadMock = vi.fn();
 const addThreadToExistingGroupMock = vi.fn();
-const workspaceContainerConstructorMock = vi.fn();
-const forkThreadSessionMock = vi.fn();
-const readThreadMessagesStreamMock = vi.fn();
-const mkdirMock = vi.fn();
-const writeFileMock = vi.fn();
+const getPiCoreForkMessagesMock = vi.fn();
+const replacePiCoreForkMessagesMock = vi.fn();
 const getForkStateSnapshotMock = vi.fn();
 const applyForkStateSnapshotMock = vi.fn();
 
@@ -34,36 +29,10 @@ vi.mock('@/lib/auth-helpers', () => ({
 vi.mock('@/lib/chat-do.server', () => ({
   createThread: createThreadMock,
   deleteThread: deleteThreadMock,
-  getLegacyClaudeSessionId: getLegacyClaudeSessionIdMock,
-  getCodexSessionId: getCodexSessionIdMock,
 }));
 
 vi.mock('@/lib/chat-groups.server', () => ({
   addThreadToExistingGroup: addThreadToExistingGroupMock,
-}));
-
-vi.mock('../workers/main/src/workspace-container', () => ({
-  WorkspaceContainer: class WorkspaceContainer {
-    constructor(...args: unknown[]) {
-      workspaceContainerConstructorMock(...args);
-    }
-
-    forkThreadSession(...args: unknown[]) {
-      return forkThreadSessionMock(...args);
-    }
-
-    readThreadMessagesStream(...args: unknown[]) {
-      return readThreadMessagesStreamMock(...args);
-    }
-
-    mkdir(...args: unknown[]) {
-      return mkdirMock(...args);
-    }
-
-    writeFile(...args: unknown[]) {
-      return writeFileMock(...args);
-    }
-  },
 }));
 
 const { action } = await import('@/routes/api/workspaces.$id.chat.$threadId.fork');
@@ -82,8 +51,14 @@ describe('chat fork route', () => {
         idFromName: (id: string) => id,
         get: (id: string) =>
           id === 'thread_source'
-            ? { getForkStateSnapshot: getForkStateSnapshotMock }
-            : { applyForkStateSnapshot: applyForkStateSnapshotMock },
+            ? {
+                getPiCoreForkMessages: getPiCoreForkMessagesMock,
+                getForkStateSnapshot: getForkStateSnapshotMock,
+              }
+            : {
+                replacePiCoreForkMessages: replacePiCoreForkMessagesMock,
+                applyForkStateSnapshot: applyForkStateSnapshotMock,
+              },
       },
     });
     getAuthEnvMock.mockReturnValue({
@@ -117,15 +92,25 @@ describe('chat fork route', () => {
       model: 'opus',
       provider: 'claude',
     });
-    forkThreadSessionMock.mockResolvedValue({ success: true });
-    getLegacyClaudeSessionIdMock.mockResolvedValue(null);
-    getCodexSessionIdMock.mockResolvedValue(null);
-    readThreadMessagesStreamMock.mockResolvedValue({
+    getPiCoreForkMessagesMock.mockResolvedValue({
       success: true,
-      response: Response.json({ success: true, messages: [] }),
+      messages: [
+        { role: 'user', content: 'Build it', timestamp: 1 },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Done' }],
+          responseId: 'pi-entry-leaf',
+          timestamp: 2,
+          usage: {},
+          stopReason: 'stop',
+          provider: 'test',
+          model: 'test',
+          api: 'test',
+        },
+      ],
+      messageCount: 2,
     });
-    mkdirMock.mockResolvedValue({ success: true });
-    writeFileMock.mockResolvedValue({ success: true });
+    replacePiCoreForkMessagesMock.mockResolvedValue(undefined);
     deleteThreadMock.mockResolvedValue(undefined);
     getForkStateSnapshotMock.mockResolvedValue({ preview: null });
     applyForkStateSnapshotMock.mockResolvedValue(undefined);
@@ -212,7 +197,7 @@ describe('chat fork route', () => {
     expect(deleteThreadMock).not.toHaveBeenCalled();
   });
 
-  it('adds forks to the requested source group and returns the group id', async () => {
+  it('copies Durable Object Pi history to the forked thread and returns the group id', async () => {
     const response = await action({
       request: new Request(
         'https://camelai.com/api/workspaces/ws_123/chat/thread_source/fork',
@@ -232,14 +217,26 @@ describe('chat fork route', () => {
       groupId: 'group_123',
     });
     expect(userGetChatGroupSummaryMock).toHaveBeenCalledWith('group_123');
-    expect(forkThreadSessionMock).toHaveBeenCalledWith({
-      sourceThreadId: 'thread_source',
-      targetThreadId: 'thread_fork',
-      entryId: 'msg_123',
+    expect(getPiCoreForkMessagesMock).toHaveBeenCalledWith({
+      forkEntryId: 'msg_123',
+      renderedMessageId: '',
     });
-    expect(readThreadMessagesStreamMock).not.toHaveBeenCalled();
-    expect(mkdirMock).not.toHaveBeenCalled();
-    expect(writeFileMock).not.toHaveBeenCalled();
+    expect(replacePiCoreForkMessagesMock).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({ role: 'assistant', responseId: 'pi-entry-leaf' }),
+      ]),
+    );
+    expect(getForkStateSnapshotMock).toHaveBeenCalled();
+    expect(applyForkStateSnapshotMock).toHaveBeenCalledWith(
+      { preview: null },
+      {
+        threadId: 'thread_fork',
+        workspaceId: 'ws_123',
+        orgId: 'org_123',
+        userId: 'user_123',
+      },
+    );
     expect(addThreadToExistingGroupMock).toHaveBeenCalledWith(
       {},
       expect.objectContaining({
@@ -303,44 +300,7 @@ describe('chat fork route', () => {
     expect(createThreadMock).not.toHaveBeenCalled();
   });
 
-  it('falls back to renderable history when the sandbox fork endpoint is unavailable', async () => {
-    forkThreadSessionMock.mockResolvedValue({
-      success: false,
-      error: 'Not found',
-      code: 'HTTP_404',
-      status: 404,
-    });
-    readThreadMessagesStreamMock.mockResolvedValue({
-      success: true,
-      response: Response.json({
-        success: true,
-        messages: [
-          {
-            id: 'user_1',
-            thread_id: 'thread_source',
-            role: 'user',
-            content: 'Build it',
-            created_at: 1,
-          },
-          {
-            id: 'rendered-assistant',
-            forkEntryId: 'pi-entry-leaf',
-            thread_id: 'thread_source',
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Done' }],
-            created_at: 2,
-          },
-          {
-            id: 'later_user',
-            thread_id: 'thread_source',
-            role: 'user',
-            content: 'Too far',
-            created_at: 3,
-          },
-        ],
-      }),
-    });
-
+  it('passes rendered message ids through to the Durable Object fork selector', async () => {
     const response = await action({
       request: new Request(
         'https://camelai.com/api/workspaces/ws_123/chat/thread_source/fork',
@@ -359,189 +319,18 @@ describe('chat fork route', () => {
     } as never);
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      thread: { id: 'thread_fork' },
-      groupId: 'group_123',
+    expect(getPiCoreForkMessagesMock).toHaveBeenCalledWith({
+      forkEntryId: 'pi-entry-leaf',
+      renderedMessageId: 'rendered-assistant',
     });
-    expect(forkThreadSessionMock).toHaveBeenCalledWith({
-      sourceThreadId: 'thread_source',
-      targetThreadId: 'thread_fork',
-      entryId: 'pi-entry-leaf',
-    });
-    expect(readThreadMessagesStreamMock).toHaveBeenCalledWith('thread_source', {
-      claudeSessionId: undefined,
-      codexSessionId: undefined,
-      skipBanCheck: true,
-    });
-    expect(mkdirMock).toHaveBeenCalledWith('/home/claude/.claude/projects/-home-claude');
-    expect(writeFileMock).toHaveBeenCalledWith(
-      '/home/claude/.claude/projects/-home-claude/thread_fork.jsonl',
-      expect.stringContaining('"uuid":"rendered-assistant"'),
-    );
-    expect(String(writeFileMock.mock.calls[0]?.[1])).not.toContain('later_user');
-    expect(deleteThreadMock).not.toHaveBeenCalled();
-    expect(addThreadToExistingGroupMock).toHaveBeenCalledWith(
-      {},
-      expect.objectContaining({
-        groupId: 'group_123',
-        threadId: 'thread_fork',
-      }),
-    );
+    expect(replacePiCoreForkMessagesMock).toHaveBeenCalled();
   });
 
-  it('rolls back fallback forks when the requested target is missing from renderable history', async () => {
-    forkThreadSessionMock.mockResolvedValue({
+  it('rolls back the created thread when the Durable Object fork target is missing', async () => {
+    getPiCoreForkMessagesMock.mockResolvedValue({
       success: false,
-      error: 'Not found',
-      code: 'HTTP_404',
-      status: 404,
-    });
-    readThreadMessagesStreamMock.mockResolvedValue({
-      success: true,
-      response: Response.json({
-        success: true,
-        messages: [
-          {
-            id: 'user_1',
-            thread_id: 'thread_source',
-            role: 'user',
-            content: 'Build it',
-            created_at: 1,
-          },
-          {
-            id: 'assistant_1',
-            forkEntryId: 'pi-entry-other',
-            thread_id: 'thread_source',
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Done' }],
-            created_at: 2,
-          },
-        ],
-      }),
-    });
-
-    const response = await action({
-      request: new Request(
-        'https://camelai.com/api/workspaces/ws_123/chat/thread_source/fork',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            messageId: 'pi-entry-missing',
-            renderedMessageId: 'rendered-missing',
-            groupId: 'group_123',
-          }),
-        },
-      ),
-      context: {},
-      params: { id: 'ws_123', threadId: 'thread_source' },
-    } as never);
-
-    expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toEqual({
-      error:
-        'Sandbox fork endpoint returned 404 Not Found. Restart or deploy sandbox-host with chat fork support, and for local dev make sure SANDBOX_HOST_URL points at the control listener (:4400), not the proxy listener (:4401).; fallback history fork failed: Fork target not found in renderable history',
-    });
-    expect(writeFileMock).not.toHaveBeenCalled();
-    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_fork', 'ws_123');
-    expect(addThreadToExistingGroupMock).not.toHaveBeenCalled();
-  });
-
-  it('preserves hidden and compact-summary metadata in fallback fork history', async () => {
-    forkThreadSessionMock.mockResolvedValue({
-      success: false,
-      error: 'Not found',
-      code: 'HTTP_404',
-      status: 404,
-    });
-    readThreadMessagesStreamMock.mockResolvedValue({
-      success: true,
-      response: Response.json({
-        success: true,
-        messages: [
-          {
-            id: 'user_1',
-            thread_id: 'thread_source',
-            role: 'user',
-            content: 'Build it',
-            created_at: 1,
-          },
-          {
-            id: 'meta_1',
-            thread_id: 'thread_source',
-            role: 'user',
-            content: 'Hidden tool output',
-            created_at: 2,
-            isMeta: true,
-            sourceToolUseID: 'tool_123',
-          },
-          {
-            id: 'compact_1',
-            thread_id: 'thread_source',
-            role: 'user',
-            content: 'Compacted context',
-            created_at: 3,
-            isCompactSummary: true,
-          },
-          {
-            id: 'rendered-assistant',
-            forkEntryId: 'pi-entry-leaf',
-            thread_id: 'thread_source',
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Done' }],
-            created_at: 4,
-          },
-        ],
-      }),
-    });
-
-    const response = await action({
-      request: new Request(
-        'https://camelai.com/api/workspaces/ws_123/chat/thread_source/fork',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            messageId: 'pi-entry-leaf',
-            renderedMessageId: 'rendered-assistant',
-            groupId: 'group_123',
-          }),
-        },
-      ),
-      context: {},
-      params: { id: 'ws_123', threadId: 'thread_source' },
-    } as never);
-
-    expect(response.status).toBe(200);
-    const written = String(writeFileMock.mock.calls[0]?.[1] ?? '');
-    const events = written
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'user',
-          uuid: 'meta_1',
-          isMeta: true,
-          sourceToolUseID: 'tool_123',
-        }),
-        expect.objectContaining({
-          type: 'user',
-          uuid: 'compact_1',
-          isCompactSummary: true,
-        }),
-      ]),
-    );
-    expect(deleteThreadMock).not.toHaveBeenCalled();
-  });
-
-  it('returns a specific sandbox fork failure and rolls back the created thread', async () => {
-    forkThreadSessionMock.mockResolvedValue({
-      success: false,
-      error: 'target Pi session already exists',
-      code: 'HTTP_400',
-      status: 400,
+      code: 'TARGET_NOT_FOUND',
+      error: 'Fork target not found in Durable Object Pi messages',
     });
 
     const response = await action({
@@ -559,7 +348,7 @@ describe('chat fork route', () => {
 
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({
-      error: 'Sandbox fork failed: target Pi session already exists',
+      error: 'Fork target not found in Durable Object Pi messages',
     });
     expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_fork', 'ws_123');
     expect(addThreadToExistingGroupMock).not.toHaveBeenCalled();

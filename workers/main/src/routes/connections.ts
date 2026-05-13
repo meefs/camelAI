@@ -1,15 +1,16 @@
 /**
  * Connections API route for sandbox containers.
  *
- * This endpoint is only trusted when forwarded through sandbox-host's
- * `/proxy/:threadId/*` path, which injects sandbox auth and workspace identity.
+ * This endpoint is only trusted when called by an internal sandbox-authenticated
+ * proxy that injects workspace identity.
  */
 
 import type { RouteContext } from '../types.js';
 import { validateSandboxProxy } from '../sandbox-auth.js';
 import {
-  callConnectionTool,
   getConnection,
+  invokeConnectionMethod,
+  listConnectionMethods,
   listConnections,
   listConnectionTools,
 } from '../connections-runtime.js';
@@ -18,7 +19,8 @@ type ConnectionsAction =
   | { action: 'list' }
   | { action: 'get'; connection?: unknown }
   | { action: 'tools'; connection?: unknown }
-  | { action: 'call'; connection?: unknown; tool?: unknown; input?: unknown };
+  | { action: 'methods' }
+  | { action: 'invoke'; connection?: unknown; method?: unknown; input?: unknown };
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -81,13 +83,18 @@ export async function handleConnections({ req, env }: RouteContext): Promise<Res
       case 'tools':
         return jsonResponse(await listConnectionTools(env, auth, requireString(payload.connection, 'connection')));
 
-      case 'call':
-        return jsonResponse(await callConnectionTool(
+      case 'methods':
+        return jsonResponse(await listConnectionMethods(env, auth));
+
+      case 'invoke':
+        return jsonResponse(await invokeConnectionMethod(
           env,
           auth,
-          requireString(payload.connection, 'connection'),
-          requireString(payload.tool, 'tool'),
-          optionalObject(payload.input)
+          {
+            connection: requireString(payload.connection, 'connection'),
+            method: typeof payload.method === 'string' ? payload.method : undefined,
+            input: optionalObject(payload.input),
+          }
         ));
 
       default:
@@ -102,7 +109,11 @@ export async function handleConnections({ req, env }: RouteContext): Promise<Res
     return errorResponse(
       error instanceof Error ? error.message : 'Connections request failed',
       statusForError(error, 500),
-      { matches: (error as { matches?: unknown })?.matches }
+      {
+        code: (error as { code?: unknown })?.code,
+        data: (error as { data?: unknown })?.data,
+        matches: (error as { matches?: unknown })?.matches,
+      }
     );
   }
 }

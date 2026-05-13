@@ -25,6 +25,11 @@ export async function readThreadMessages(
   }: ReadThreadMessagesOptions,
 ): Promise<Message[]> {
   const env = getEnv(context);
+  const piMessages = await chatDO.getPiCoreMessages(context, threadId);
+  if (piMessages.length > 0) {
+    return piMessages as Message[];
+  }
+
   const container = new WorkspaceContainer(
     env as unknown as WorkspaceContainerEnv,
     workspaceId,

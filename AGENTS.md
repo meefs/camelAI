@@ -120,10 +120,9 @@ waitUntil(
 
 - Browser chat connects to `/ws/{workspace}`.
 - The main worker validates access and routes to `ChatThreadDO`.
-- `ChatThreadDO` opens a sandbox-host chat connection for the workspace/thread.
-- The sandbox-host Go service runs the Pi coding agent on the host. Pi tools dispatch file and shell work into the Docker workspace container so filesystem scope still comes from the sandbox.
+- `ChatThreadDO` runs the Pi coding agent in the Durable Object. File, shell, and container operations are forwarded to the sandbox-host control plane.
 - Thread records store provider/model state on org thread data. Verify current fields in `OrgDO` before changing related behavior.
-- Message history is loaded through sandbox-host chat message APIs rather than by parsing transcripts in the Worker runtime.
+- Active message history is stored in `ChatThreadDO`; sandbox-host chat message APIs are retained for legacy session migration.
 - Slash commands are allowlisted in `ChatThreadDO`; check `SLASH_COMMANDS` before adding or changing one.
 - Clarifying questions use the Pi `AskUserQuestion`/`ask_user_question` tools.
 
@@ -139,13 +138,11 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - Workspace file API routes live under `/api/workspaces/:id/fs/*`.
 - Computer tab file mutations may be intentionally blocked during beta; check `src/routes/api/workspaces.utils.ts` before changing write behavior.
 - File safety logic lives in `workers/main/src/file-safety.ts` and is applied before agent turns for suspicious uploaded-file/deploy/bridge workflows.
-- The Pi system-prompt appendix in `services/sandbox-host/internal/app/pi_system_prompt.md` contains standing prohibited-activity rules. Keep security-relevant prompt changes explicit and tested.
+- The Pi system prompt is assembled in `workers/main/src/durable-objects.ts`; keep security-relevant prompt changes explicit and tested.
 
 ## Proxies And Bindings
 
-- Sandbox container egress goes through sandbox-host `/proxy/:threadId/*`.
-- Sandbox-host injects sandbox auth and tenant headers (`x-sandbox-secret`, org/workspace/thread ids) on upstream worker requests.
-- Claude proxy routes and OpenAI-compatible routes should accept sandbox-host injected auth, not user-provided secrets from containers.
+- Sandbox containers do not get a generic Worker API proxy. File, shell, and runtime operations go through explicit sandbox-host control-plane APIs.
 - BYOK credentials are scoped by org/thread and should not be placed into container environment variables.
 - User app deploys can rewrite internal service bindings such as the data proxy, virtual AI binding, and virtual R2 bucket. Relevant files include `workers/main/src/cf-api-proxy.ts`, `data-proxy-service.ts`, `ai-virtual-binding.ts`, and `r2-virtual-bucket.ts`.
 - Outbound database traffic from the data proxy egresses from the sandbox host VM IP `20.46.233.68`. This IP is surfaced in direct database connection setup UIs (postgres, mysql, clickhouse, mongodb, redis, snowflake) for firewall/VPC allowlisting; constant lives in `src/lib/sandbox-network.ts`.
@@ -153,7 +150,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 ## Stripe Billing And Credits
 
 - Org billing state lives on `org_info` JSON. Key fields include `billing_status`, Stripe customer/subscription ids, purchased credit cents, included/granted credit cents, trial credit grant metadata, and the last included-credit invoice id.
-- Hosted model access is enforced in `services/sandbox-host/internal/app/server.go`. Hosted `trialing` and `active` usage requires positive included/purchased credits; BYOK can be used from the free onboarding path and does not consume camelAI credits; `enterprise` bypasses Stripe subscription and credits.
+- Hosted model access is enforced in the Worker/DO inference path. Hosted `trialing` and `active` usage requires positive included/purchased credits; BYOK can be used from the free onboarding path and does not consume camelAI credits; `enterprise` bypasses Stripe subscription and credits.
 - Hosted credit allowances come from `src/lib/billing-plans.ts`: Starter includes $10/month, Pro includes $30/month, and Team includes $10/month per paid seat. `BILLING_TRIAL_CREDIT_CENTS` and `BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS` are global emergency overrides; do not set them for normal tier-specific pricing.
 - Admins can grant credits manually with `POST /api/admin/orgs/:id/credits`; credits add to `billing_credit_grant_total_cents` and can use an idempotency key.
 - `STRIPE_MODE` can be set to `test` or `live`; Stripe API calls reject secret keys whose `sk_`/`rk_` prefix does not match. Staging should use `STRIPE_MODE=test`, and production should use `STRIPE_MODE=live`.

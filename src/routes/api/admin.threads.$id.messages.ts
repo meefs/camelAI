@@ -31,6 +31,18 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Thread not found' }, { status: 404 });
     }
 
+    const piMessages = await chatDO.getPiCoreMessages(context, threadId);
+    if (piMessages.length > 0) {
+      return Response.json(
+        { success: true, messages: piMessages },
+        {
+          headers: {
+            'Cache-Control': 'no-cache, no-transform',
+          },
+        },
+      );
+    }
+
     const container = new WorkspaceContainer(
       env as unknown as WorkspaceContainerEnv,
       threadContext.workspace_id,

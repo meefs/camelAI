@@ -13,7 +13,14 @@ import type { WorkspaceDO } from './workspace';
 import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
 import type { WorkspaceCronDO } from './workspace-cron';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
-import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';
+import {
+  getAllIntegrations,
+  getIntegrationsByCategory,
+  getIntegrationDefinition,
+  shouldStoreIntegrationCredentials,
+  validateConfig,
+  validateCredentials,
+} from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
@@ -1140,7 +1147,10 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
 
         try {
           // Encrypt credentials
-          const credentialsEncrypted = await encryptCredentials(credentials as Record<string, unknown>, this.env.INTEGRATION_SECRET_KEY);
+          const credentialPayload = credentials as Record<string, unknown>;
+          const credentialsEncrypted = shouldStoreIntegrationCredentials(integration_type, credentialPayload)
+            ? await encryptCredentials(credentialPayload, this.env.INTEGRATION_SECRET_KEY)
+            : '';
 
           // Generate ID and create integration
           const integrationId = crypto.randomUUID();
@@ -1382,7 +1392,9 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           }
 
           // Encrypt credentials and create integration
-          const credentialsEncrypted = await encryptCredentials(credentials, this.env.INTEGRATION_SECRET_KEY);
+          const credentialsEncrypted = shouldStoreIntegrationCredentials(type, credentials)
+            ? await encryptCredentials(credentials, this.env.INTEGRATION_SECRET_KEY)
+            : '';
           const integrationId = crypto.randomUUID();
 
           // Get workspace stub for creating integration

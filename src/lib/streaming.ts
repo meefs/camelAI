@@ -315,7 +315,7 @@ function buildToolUseIndex(messages: Message[]): Map<string, ToolUseIndexEntry> 
 }
 
 function isSubAgentTool(name?: string): boolean {
-  return name === 'Task' || name === 'Agent';
+  return name === 'Task' || name === 'Agent' || name === 'agent' || name === 'Explore' || name === 'explore';
 }
 
 function findTaskToolUseIdByPrompt(messages: Message[], prompt?: string): string | undefined {

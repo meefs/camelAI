@@ -41,6 +41,7 @@
 	"images": { "binding": "IMAGES" },
 	"browser": { "binding": "BROWSER" },
 	"ai": { "binding": "AI", "remote": true },
+	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
 	"r2_buckets": [
 		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" }
 	],

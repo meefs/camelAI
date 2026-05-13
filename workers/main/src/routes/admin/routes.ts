@@ -78,6 +78,8 @@ import {
   OrgUsageLimitsSchema,
   OrgUsageLogSchema,
   OrgUsageLogSumSchema,
+  BackfillHostUsageBodySchema,
+  BackfillHostUsageResponseSchema,
   SpamOrgIdsResponseSchema,
   AdminOrgListItemSchema,
   AdminOrgLlmProviderListItemSchema,
@@ -130,27 +132,9 @@ import {
 } from "../../ban-list.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
+import { backfillHostUsageToOrgDOs } from "./usage-backfill.js";
 
 type HonoEnv = { Bindings: Env };
-
-// ---------------------------------------------------------------------------
-// Sandbox host usage proxy helper
-// ---------------------------------------------------------------------------
-
-async function fetchSandboxHostUsage(
-  env: Env,
-  path: string,
-  init?: RequestInit,
-): Promise<Response> {
-  const url = `http://sandbox${path}`;
-  if (!env.SANDBOX_HOST) {
-    return Response.json(
-      { error: "SANDBOX_HOST binding not configured" },
-      { status: 502 },
-    );
-  }
-  return env.SANDBOX_HOST.fetch(url, init);
-}
 
 function centsFromUsd(value: number): number {
   return Math.round(value * 100);
@@ -160,14 +144,7 @@ async function fetchChargeableUsageCents(
   env: Env,
   orgId: string,
 ): Promise<number> {
-  const response = await fetchSandboxHostUsage(
-    env,
-    `/v1/usage/orgs/${encodeURIComponent(orgId)}/log/sum?from=0&to=${Date.now()}&chargeable_only=1`,
-  );
-  if (!response.ok) {
-    throw new Error(`Sandbox host returned ${response.status}`);
-  }
-  const data = (await response.json()) as { total_cost_usd?: number };
+  const data = await getOrgStub(env, orgId).getUsageLogSum(0, Date.now(), true);
   return centsFromUsd(Number(data.total_cost_usd ?? 0));
 }
 
@@ -1984,7 +1961,7 @@ routes.get(
 );
 
 // ---------------------------------------------------------------------------
-// GET /orgs/:id/usage/spend — proxy to sandbox-host usage API
+// GET /orgs/:id/usage/spend
 // ---------------------------------------------------------------------------
 
 routes.get(
@@ -1998,19 +1975,12 @@ routes.get(
   }),
   async (c) => {
     const orgId = c.req.param("id");
-    const resp = await fetchSandboxHostUsage(
-      c.env,
-      `/v1/usage/orgs/${encodeURIComponent(orgId)}/spend`,
-    );
-    if (!resp.ok) {
-      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
-    }
-    return c.json(await resp.json());
+    return c.json(await getOrgStub(c.env, orgId).getUsageSpend());
   },
 );
 
 // ---------------------------------------------------------------------------
-// GET /orgs/:id/usage/limits — proxy to sandbox-host usage API
+// GET /orgs/:id/usage/limits
 // ---------------------------------------------------------------------------
 
 routes.get(
@@ -2024,19 +1994,12 @@ routes.get(
   }),
   async (c) => {
     const orgId = c.req.param("id");
-    const resp = await fetchSandboxHostUsage(
-      c.env,
-      `/v1/usage/orgs/${encodeURIComponent(orgId)}/limits`,
-    );
-    if (!resp.ok) {
-      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
-    }
-    return c.json(await resp.json());
+    return c.json(await getOrgStub(c.env, orgId).getUsageLimits());
   },
 );
 
 // ---------------------------------------------------------------------------
-// PUT /orgs/:id/usage/limits — proxy to sandbox-host usage API
+// PUT /orgs/:id/usage/limits
 // ---------------------------------------------------------------------------
 
 routes.put(
@@ -2054,24 +2017,12 @@ routes.put(
   async (c) => {
     const orgId = c.req.param("id");
     const body = c.req.valid("json");
-    const resp = await fetchSandboxHostUsage(
-      c.env,
-      `/v1/usage/orgs/${encodeURIComponent(orgId)}/limits`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    );
-    if (!resp.ok) {
-      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
-    }
-    return c.json(await resp.json());
+    return c.json(await getOrgStub(c.env, orgId).setUsageLimits(body.limits));
   },
 );
 
 // ---------------------------------------------------------------------------
-// GET /orgs/:id/usage/log — proxy to sandbox-host usage API
+// GET /orgs/:id/usage/log
 // ---------------------------------------------------------------------------
 
 routes.get(
@@ -2104,20 +2055,9 @@ routes.get(
   async (c) => {
     const orgId = c.req.param("id");
     const { limit, cursor, from, to } = c.req.valid("query");
-    const params = new URLSearchParams();
-    if (limit) params.set("limit", String(limit));
-    if (cursor) params.set("cursor", cursor);
-    if (from) params.set("from", String(from));
-    if (to) params.set("to", String(to));
-    const qs = params.toString() ? `?${params}` : "";
-    const resp = await fetchSandboxHostUsage(
-      c.env,
-      `/v1/usage/orgs/${encodeURIComponent(orgId)}/log${qs}`,
+    return c.json(
+      await getOrgStub(c.env, orgId).getUsageLog({ limit, cursor, from, to }),
     );
-    if (!resp.ok) {
-      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
-    }
-    return c.json(await resp.json());
   },
 );
 
@@ -2141,6 +2081,17 @@ routes.get(
           .int()
           .min(0)
           .describe("End timestamp (ms since epoch, exclusive)"),
+        chargeable_only: z
+          .preprocess((value) => {
+            if (value === undefined) return undefined;
+            if (typeof value === "boolean") return value;
+            if (typeof value === "string") {
+              const normalized = value.trim().toLowerCase();
+              if (normalized === "true" || normalized === "1") return true;
+              if (normalized === "false" || normalized === "0") return false;
+            }
+            return value;
+          }, z.boolean().optional()),
       }),
     },
     responses: {
@@ -2150,16 +2101,56 @@ routes.get(
   }),
   async (c) => {
     const orgId = c.req.param("id");
-    const { from, to } = c.req.valid("query");
-    const params = new URLSearchParams({ from: String(from), to: String(to) });
-    const resp = await fetchSandboxHostUsage(
-      c.env,
-      `/v1/usage/orgs/${encodeURIComponent(orgId)}/log/sum?${params}`,
+    const { from, to, chargeable_only } = c.req.valid("query");
+    return c.json(
+      await getOrgStub(c.env, orgId).getUsageLogSum(
+        from,
+        to,
+        chargeable_only === true,
+      ),
     );
-    if (!resp.ok) {
-      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /usage/backfill-host
+// ---------------------------------------------------------------------------
+
+routes.post(
+  "/usage/backfill-host",
+  openApi({
+    summary: "Backfill legacy sandbox-host usage rows into OrgDO usage tables",
+    request: {
+      json: BackfillHostUsageBodySchema,
+    },
+    responses: {
+      200: BackfillHostUsageResponseSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    try {
+      const body = c.req.valid("json");
+      return c.json(
+        await backfillHostUsageToOrgDOs(c.env, {
+          orgIds: body.org_ids,
+          dryRun: body.dry_run,
+          pageLimit: body.page_limit,
+          maxOrgs: body.max_orgs,
+          maxEntries: body.max_entries,
+        }),
+      );
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to backfill host usage",
+        },
+        502,
+      );
     }
-    return c.json(await resp.json());
   },
 );
 

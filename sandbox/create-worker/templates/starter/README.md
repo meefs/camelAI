@@ -78,14 +78,17 @@ The starter includes a `CONNECTIONS` service binding for workspace connections.
 
 - Local dev: binding points to `LocalConnectionsService` (`workers/connections.ts`), which forwards to `CAMELAI_CONNECTIONS_URL` when set
 - camelAI deploy: platform rewrites `CONNECTIONS` to its internal service binding
-- Typegen: run `bun run connections:typegen` to write `.camelai/connections.ts` from live MCP tool schemas
+
+Use `CONNECTIONS.methods()` to inspect available connection aliases, method names, and input schemas. Use `createConnections()` for method-style calls:
 
 ```typescript
-import { createConnections } from "../../.camelai/connections";
+import { createConnections } from "~/lib/connections";
 
 export async function action({ context }: Route.ActionArgs) {
+  const methods = await context.cloudflare.env.CONNECTIONS.methods();
   const connections = createConnections(context.cloudflare.env);
-  return connections.stripeProd.createCustomer({ email: "customer@example.com" });
+  const customers = await connections.stripeProd.listCustomers({ limit: 10 });
+  return { methods, customers };
 }
 ```
 

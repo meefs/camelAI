@@ -219,6 +219,7 @@ func TestGetUsageLog(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_ = store.RecordUsage(UsageRecord{
 			OrgID: "org-1", Model: "claude-sonnet-4-5-20250929",
+			BillingSource: "hosted", CreditChargeable: true,
 			InputTokens: 100, OutputTokens: 50, CostUSD: 0.001,
 		})
 	}
@@ -247,6 +248,7 @@ func TestGetUsageLogPaginated(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_ = store.RecordUsage(UsageRecord{
 			OrgID: "org-1", Model: "claude-sonnet-4-5-20250929",
+			BillingSource: "hosted", CreditChargeable: true,
 			InputTokens: 100, OutputTokens: 50, CostUSD: 0.001,
 		})
 	}
@@ -258,6 +260,9 @@ func TestGetUsageLogPaginated(t *testing.T) {
 	}
 	if page1.Count != 2 {
 		t.Fatalf("expected 2 entries, got %d", page1.Count)
+	}
+	if page1.Entries[0].BillingSource != "hosted" || page1.Entries[0].CreditChargeable != 1 {
+		t.Fatalf("expected billing metadata in paginated log entry, got %+v", page1.Entries[0])
 	}
 	if !page1.HasMore {
 		t.Fatal("expected has_more=true")

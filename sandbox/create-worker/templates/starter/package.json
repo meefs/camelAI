@@ -6,7 +6,6 @@
 	"scripts": {
 		"build": "react-router build",
 		"cf-typegen": "bun wrangler types",
-		"connections:typegen": "camelai-connections types --write-types",
 		"postinstall": "bun run cf-typegen",
 		"deploy": "bun run build && bun wrangler deploy --dispatch-namespace chiridion",
 		"dev": "react-router dev",

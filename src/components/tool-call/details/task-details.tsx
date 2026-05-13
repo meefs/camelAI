@@ -69,7 +69,12 @@ export function TaskDetails({ tool, result, results, progressCount }: TaskDetail
   const finalResult = resolvedResults.find((block) => !block.isTaskUpdate);
   const finalResultText = finalResult ? getResultText(finalResult) : '';
   const hasHeaderDetails = Boolean(agent || model || description || prompt);
-  const isAgent = tool?.name === 'Task' || tool?.name === 'Agent';
+  const isAgent =
+    tool?.name === 'Task' ||
+    tool?.name === 'Agent' ||
+    tool?.name === 'agent' ||
+    tool?.name === 'Explore' ||
+    tool?.name === 'explore';
   const showProgress = isAgent && totalResults > 0;
   const showResultsList = isAgent && resolvedResults.length > 0;
 

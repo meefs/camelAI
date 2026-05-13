@@ -36,6 +36,18 @@ import {
 } from "./model-picker-config";
 import { readMessagesFromResponse } from "./thread-messages.server";
 
+interface ParsedThreadMessage {
+  id: string;
+  thread_id: string;
+  role: "user" | "assistant";
+  content: unknown;
+  created_at: number;
+  forkEntryId?: string;
+  isMeta?: boolean;
+  sourceToolUseID?: string;
+  isCompactSummary?: boolean;
+}
+
 export interface ThreadPreviewState {
   target: PreviewTarget | null;
   tabs: PreviewTarget[];
@@ -544,6 +556,30 @@ export async function getCodexSessionId(
     : null;
 }
 
+export async function getPiCoreMessages(
+  context: AppLoadContext,
+  threadId: string,
+): Promise<ParsedThreadMessage[]> {
+  const env = getEnv(context);
+  if (
+    !env ||
+    typeof env !== "object" ||
+    !("CHAT_THREAD" in env) ||
+    !env.CHAT_THREAD
+  ) {
+    return [];
+  }
+  const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  const messages = await Promise.resolve(
+    (
+      threadStub as unknown as {
+        getPiCoreParsedMessages(threadId: string): Promise<ParsedThreadMessage[]> | ParsedThreadMessage[];
+      }
+    ).getPiCoreParsedMessages(threadId),
+  ).catch(() => []);
+  return Array.isArray(messages) ? messages : [];
+}
+
 export async function getMessages(
   context: AppLoadContext,
   threadId: string,
@@ -552,9 +588,12 @@ export async function getMessages(
 ): Promise<Message[]> {
   const env = getEnv(context);
 
-  // Sandbox-host owns message history parsing. New Pi threads read host session
-  // history; legacy readers only run when explicit legacy metadata is present.
   try {
+    const piMessages = await getPiCoreMessages(context, threadId);
+    if (piMessages.length > 0) {
+      return piMessages as Message[];
+    }
+
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];
 

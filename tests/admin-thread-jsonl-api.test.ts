@@ -5,6 +5,7 @@ const getAuthEnvMock = vi.fn();
 const getEnvMock = vi.fn();
 const getLegacyClaudeSessionIdMock = vi.fn();
 const getCodexSessionIdMock = vi.fn();
+const getPiCoreMessagesMock = vi.fn();
 const orgGetMock = vi.fn();
 const orgIdFromNameMock = vi.fn((id: string) => id);
 const orgGetThreadMock = vi.fn();
@@ -24,6 +25,7 @@ vi.mock('@/lib/chat-do.server', async (importOriginal) => {
     ...actual,
     getLegacyClaudeSessionId: getLegacyClaudeSessionIdMock,
     getCodexSessionId: getCodexSessionIdMock,
+    getPiCoreMessages: getPiCoreMessagesMock,
   };
 });
 
@@ -52,6 +54,7 @@ describe('GET /api/admin/threads/:id/jsonl', () => {
     });
     getLegacyClaudeSessionIdMock.mockResolvedValue(null);
     getCodexSessionIdMock.mockResolvedValue(null);
+    getPiCoreMessagesMock.mockResolvedValue([]);
   });
 
   it('streams the raw Claude JSONL transcript when it exists', async () => {
@@ -159,5 +162,45 @@ describe('GET /api/admin/threads/:id/jsonl', () => {
       codexSessionId: 'codex_session_123',
       skipBanCheck: true,
     });
+  });
+
+  it('exports Durable Object Pi messages before checking sandbox JSONL', async () => {
+    getPiCoreMessagesMock.mockResolvedValue([
+      {
+        id: 'pi_msg_1',
+        thread_id: 'thread_123',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'from do' }],
+        created_at: 1,
+        forkEntryId: 'pi_msg_1',
+      },
+    ]);
+    const readFileStream = vi.spyOn(WorkspaceContainer.prototype, 'readFileStream');
+    const readThreadMessagesStream = vi.spyOn(
+      WorkspaceContainer.prototype,
+      'readThreadMessagesStream',
+    );
+
+    const response = await loader({
+      request: new Request(
+        'https://camelai.com/api/admin/threads/thread_123/jsonl?orgId=org_123&workspaceId=ws_123'
+      ),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(
+      `${JSON.stringify({
+        id: 'pi_msg_1',
+        thread_id: 'thread_123',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'from do' }],
+        created_at: 1,
+        forkEntryId: 'pi_msg_1',
+      })}\n`,
+    );
+    expect(readFileStream).not.toHaveBeenCalled();
+    expect(readThreadMessagesStream).not.toHaveBeenCalled();
   });
 });

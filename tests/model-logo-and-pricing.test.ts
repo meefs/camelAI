@@ -37,29 +37,27 @@ describe('model logo registry', () => {
 });
 
 describe('model pricing coverage', () => {
-  it('has Go pricing keys for every supported chat model', () => {
-    const goSource = fs.readFileSync(
-      path.join(root, 'services/sandbox-host/internal/app/usage_pricing.go'),
+  it('has pricing table keys for every supported chat model', () => {
+    const pricingSource = fs.readFileSync(
+      path.join(root, 'src/lib/usage-pricing.ts'),
       'utf8',
     );
 
     for (const model of ALL_LLM_MODELS) {
       const pricingKey = LLM_MODEL_TO_PRICING_KEY[model];
-      expect(goSource).toContain(`"${pricingKey}"`);
+      expect(pricingSource).toContain(`"${pricingKey}"`);
     }
   });
 
-  it('registers new Pi models with the expected harness APIs', () => {
+  it('registers new Pi models with the expected DO harness providers', () => {
     const source = fs.readFileSync(
-      path.join(root, 'services/sandbox-host/pi/container-tools.ts'),
+      path.join(root, 'workers/main/src/durable-objects.ts'),
       'utf8',
     );
 
-    expect(source).toMatch(
-      /id: "openai\/gpt-5\.5"[\s\S]*?api: "openai-responses"[\s\S]*?contextWindow: 272000/,
-    );
-    expect(source).toMatch(
-      /id: "anthropic\/claude-opus-4\.7"[\s\S]*?api: "anthropic-messages"/,
-    );
+    expect(source).toContain('case "gpt-5.5":');
+    expect(source).toContain('return openAiReference(normalizedModelId);');
+    expect(source).toContain('case "opus-4.7":');
+    expect(source).toContain('return reference("claude-opus-4-7");');
   });
 });

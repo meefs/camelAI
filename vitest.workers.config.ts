@@ -1,7 +1,24 @@
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
 import path from 'path';
+import { defineConfig } from 'vitest/config';
 
-export default defineWorkersConfig({
+export default defineConfig({
+  plugins: [
+    cloudflareTest({
+      remoteBindings: false,
+      wrangler: { configPath: './wrangler.test.jsonc' },
+      miniflare: {
+        compatibilityDate: '2025-12-01',
+        compatibilityFlags: ['nodejs_compat'],
+        cachePersist: false,
+        d1Persist: false,
+        durableObjectsPersist: false,
+        kvPersist: false,
+        r2Persist: false,
+        workflowsPersist: false,
+      },
+    }),
+  ],
   resolve: {
     alias: [
       { find: '@', replacement: path.resolve(__dirname, './src') },
@@ -13,22 +30,5 @@ export default defineWorkersConfig({
   },
   test: {
     include: ['workers/**/tests/**/*.test.ts'],
-    poolOptions: {
-      workers: {
-        isolatedStorage: false,
-        remoteBindings: false,
-        wrangler: { configPath: './wrangler.test.jsonc' },
-        miniflare: {
-          compatibilityDate: '2025-12-01',
-          compatibilityFlags: ['nodejs_compat'],
-          cachePersist: false,
-          d1Persist: false,
-          durableObjectsPersist: false,
-          kvPersist: false,
-          r2Persist: false,
-          workflowsPersist: false,
-        },
-      },
-    },
   },
 });

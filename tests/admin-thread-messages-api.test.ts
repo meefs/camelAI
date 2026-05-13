@@ -6,6 +6,7 @@ const getEnvMock = vi.fn();
 const adminGetThreadContextByIdMock = vi.fn();
 const getLegacyClaudeSessionIdMock = vi.fn();
 const getCodexSessionIdMock = vi.fn();
+const getPiCoreMessagesMock = vi.fn();
 const orgGetMock = vi.fn();
 const orgIdFromNameMock = vi.fn((id: string) => id);
 const orgGetThreadMock = vi.fn();
@@ -29,6 +30,7 @@ vi.mock('@/lib/chat-do.server', async (importOriginal) => {
     ...actual,
     getLegacyClaudeSessionId: getLegacyClaudeSessionIdMock,
     getCodexSessionId: getCodexSessionIdMock,
+    getPiCoreMessages: getPiCoreMessagesMock,
   };
 });
 
@@ -49,6 +51,7 @@ describe('GET /api/admin/threads/:id/messages', () => {
     });
     getLegacyClaudeSessionIdMock.mockResolvedValue(null);
     getCodexSessionIdMock.mockResolvedValue(null);
+    getPiCoreMessagesMock.mockResolvedValue([]);
 
     ({ WorkspaceContainer } = await import('../workers/main/src/workspace-container'));
     ({ loader } = await import('@/routes/api/admin.threads.$id.messages'));
@@ -127,5 +130,55 @@ describe('GET /api/admin/threads/:id/messages', () => {
       'thread_123',
       { claudeSessionId: null, codexSessionId: null, skipBanCheck: true }
     );
+  });
+
+  it('serves Durable Object Pi messages before falling back to sandbox history', async () => {
+    requireSuperuserMock.mockResolvedValue({
+      user: { is_superuser: true },
+    });
+    adminGetThreadContextByIdMock.mockResolvedValue({
+      org_id: 'org_123',
+      workspace_id: 'ws_123',
+    });
+    orgGetThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_123',
+    });
+    getPiCoreMessagesMock.mockResolvedValue([
+      {
+        id: 'pi_msg_1',
+        thread_id: 'thread_123',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'from do' }],
+        created_at: 1,
+        forkEntryId: 'pi_msg_1',
+      },
+    ]);
+    const readThreadMessagesStream = vi.spyOn(
+      WorkspaceContainer.prototype,
+      'readThreadMessagesStream',
+    );
+
+    const response = await loader({
+      request: new Request('https://camelai.com/api/admin/threads/thread_123/messages'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      messages: [
+        {
+          id: 'pi_msg_1',
+          thread_id: 'thread_123',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'from do' }],
+          created_at: 1,
+          forkEntryId: 'pi_msg_1',
+        },
+      ],
+    });
+    expect(readThreadMessagesStream).not.toHaveBeenCalled();
   });
 });

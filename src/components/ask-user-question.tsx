@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -75,6 +75,66 @@ function createInitialQuestionStates(
   return initial;
 }
 
+function normalizeQuestionOption(value: unknown): QuestionOption | null {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    const label = String(value).trim();
+    return label ? { label, description: "" } : null;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const rawLabel = record.label ?? record.value ?? record.text ?? record.name;
+  const label =
+    typeof rawLabel === "string" ||
+    typeof rawLabel === "number" ||
+    typeof rawLabel === "boolean"
+      ? String(rawLabel).trim()
+      : "";
+  if (!label) return null;
+
+  return {
+    label,
+    description:
+      typeof record.description === "string" ? record.description.trim() : "",
+  };
+}
+
+function normalizeQuestionForDisplay(value: Question): Question | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as unknown as Record<string, unknown>;
+  const question = typeof record.question === "string" ? record.question.trim() : "";
+  if (!question) return null;
+
+  const options = Array.isArray(record.options)
+    ? record.options
+        .map(normalizeQuestionOption)
+        .filter((option): option is QuestionOption => option !== null)
+    : [];
+
+  return {
+    question,
+    header: typeof record.header === "string" ? record.header.trim() : "",
+    options,
+    multiSelect: record.multiSelect === true || record.multi_select === true,
+  };
+}
+
+function normalizeQuestionsForDisplay(questions: Question[]): Question[] {
+  return questions
+    .map(normalizeQuestionForDisplay)
+    .filter((question): question is Question => question !== null);
+}
+
 function ShortcutBadge({ label }: { label: string | null }) {
   if (!label) {
     return <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0" />;
@@ -117,9 +177,13 @@ export function AskUserQuestion({
   onSubmit,
   className,
 }: AskUserQuestionProps) {
+  const questions = useMemo(
+    () => normalizeQuestionsForDisplay(data.questions),
+    [data.questions],
+  );
   const [questionStates, setQuestionStates] = useState<
     Record<string, QuestionState>
-  >(() => createInitialQuestionStates(data.questions));
+  >(() => createInitialQuestionStates(questions));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -132,8 +196,8 @@ export function AskUserQuestion({
   useEffect(() => {
     setCurrentQuestionIndex(0);
     setIsSubmitting(false);
-    setQuestionStates(createInitialQuestionStates(data.questions));
-  }, [data.questionId]);
+    setQuestionStates(createInitialQuestionStates(questions));
+  }, [data.questionId, questions]);
 
   useEffect(() => {
     setFocusedIndex(0);
@@ -168,7 +232,7 @@ export function AskUserQuestion({
     return () => window.clearTimeout(timer);
   }, [currentQuestionIndex]);
 
-  const totalQuestions = data.questions.length;
+  const totalQuestions = questions.length;
   const hasQuestions = totalQuestions > 0;
   const hasMultipleQuestions = totalQuestions > 1;
   // Clamp index to valid range to handle transitional render before useEffect resets it
@@ -176,7 +240,7 @@ export function AskUserQuestion({
     ? Math.min(currentQuestionIndex, totalQuestions - 1)
     : 0;
   const isLastQuestion = !hasQuestions || safeIndex === totalQuestions - 1;
-  const currentQuestion = data.questions[safeIndex] ?? EMPTY_QUESTION;
+  const currentQuestion = questions[safeIndex] ?? EMPTY_QUESTION;
   const currentState =
     questionStates[currentQuestion.question] ?? createEmptyQuestionState();
   const otherOptionIndex = currentQuestion.options.length;
@@ -263,7 +327,7 @@ export function AskUserQuestion({
 
     const answers: Record<string, string> = {};
 
-    for (const q of data.questions) {
+    for (const q of questions) {
       const state = questionStates[q.question] ?? createEmptyQuestionState();
 
       if (state.isOther && state.otherText.trim()) {
@@ -286,7 +350,7 @@ export function AskUserQuestion({
     }
 
     onSubmit(answers);
-  }, [data.questions, questionStates, onSubmit]);
+  }, [questions, questionStates, onSubmit]);
 
   const handleNextOrSubmit = useCallback(() => {
     if (isLastQuestion) {

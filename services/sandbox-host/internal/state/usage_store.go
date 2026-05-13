@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // SpendLimit defines a rolling time window with a USD cap.
@@ -696,6 +698,8 @@ type UsageLogEntry struct {
 	ThreadID                 string  `json:"thread_id"`
 	Model                    string  `json:"model"`
 	Provider                 string  `json:"provider"`
+	BillingSource            string  `json:"billing_source"`
+	CreditChargeable         int64   `json:"credit_chargeable"`
 	InputTokens              int64   `json:"input_tokens"`
 	OutputTokens             int64   `json:"output_tokens"`
 	CacheCreationInputTokens int64   `json:"cache_creation_input_tokens"`
@@ -720,6 +724,7 @@ func (u *UsageStore) GetUsageLog(orgID string, limit int) ([]UsageLogEntry, erro
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, workspace_id, user_id, thread_id, model, provider,
+		       billing_source, credit_chargeable,
 		       input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 		       cost_usd, duration_ms, created_at_ms
 		FROM usage_log
@@ -736,7 +741,7 @@ func (u *UsageStore) GetUsageLog(orgID string, limit int) ([]UsageLogEntry, erro
 		var e UsageLogEntry
 		if err := rows.Scan(
 			&e.ID, &e.WorkspaceID, &e.UserID, &e.ThreadID,
-			&e.Model, &e.Provider,
+			&e.Model, &e.Provider, &e.BillingSource, &e.CreditChargeable,
 			&e.InputTokens, &e.OutputTokens,
 			&e.CacheCreationInputTokens, &e.CacheReadInputTokens,
 			&e.CostUSD, &e.DurationMs, &e.CreatedAtMs,
@@ -779,6 +784,7 @@ func (u *UsageStore) GetUsageLogPaginated(orgID string, q UsageLogQuery) (UsageL
 
 	// Build query dynamically based on filters.
 	query := `SELECT id, workspace_id, user_id, thread_id, model, provider,
+	       billing_source, credit_chargeable,
 	       input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 	       cost_usd, duration_ms, created_at_ms
 		FROM usage_log WHERE 1=1`
@@ -813,7 +819,7 @@ func (u *UsageStore) GetUsageLogPaginated(orgID string, q UsageLogQuery) (UsageL
 		var e UsageLogEntry
 		if err := rows.Scan(
 			&e.ID, &e.WorkspaceID, &e.UserID, &e.ThreadID,
-			&e.Model, &e.Provider,
+			&e.Model, &e.Provider, &e.BillingSource, &e.CreditChargeable,
 			&e.InputTokens, &e.OutputTokens,
 			&e.CacheCreationInputTokens, &e.CacheReadInputTokens,
 			&e.CostUSD, &e.DurationMs, &e.CreatedAtMs,

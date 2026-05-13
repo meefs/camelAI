@@ -165,8 +165,6 @@ if [[ " ${TARGETS[*]} " == *" sandbox-host "* ]]; then
   rsync -az --delete \
     "$LOCAL_ROOT/sandbox/skills/" \
     "$VM:$REMOTE_BUILD/sandbox/skills/"
-  echo "==> Installing host Pi on $VM..."
-  ssh "$VM" "HOST_PI_EXTENSION_SOURCE='$REMOTE_BUILD/services/sandbox-host/pi/container-tools.ts' HOST_PI_SKILLS_SOURCE='$REMOTE_BUILD/sandbox/skills' bash -s" < "$LOCAL_ROOT/scripts/install-host-pi.sh"
 fi
 
 for svc in "${TARGETS[@]}"; do

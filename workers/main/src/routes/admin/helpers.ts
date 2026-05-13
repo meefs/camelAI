@@ -33,6 +33,7 @@ type OrgThreadLookup = {
 type ChatThreadLookup = {
   getLegacyClaudeSessionId(): Promise<string | null>;
   getCodexSessionId(): Promise<string | null>;
+  getPiCoreParsedMessages(threadId: string): Promise<unknown[]> | unknown[];
 };
 
 async function getOptionalChatThreadSessionId(
@@ -52,7 +53,8 @@ async function getOptionalChatThreadSessionId(
     return null;
   }
 
-  const sessionId = await Promise.resolve(method.call(chatThread)).catch(() => null);
+  const sessionMethod = method as (this: Partial<ChatThreadLookup>) => Promise<string | null> | string | null;
+  const sessionId = await Promise.resolve(sessionMethod.call(chatThread)).catch(() => null);
   return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
 }
 
@@ -141,6 +143,27 @@ export async function loadAdminThreadMessagesResponse(
   const thread = await orgStub.getThread(trimmedThreadId);
   if (!thread || thread.workspace_id !== threadContext.workspace_id) {
     return Response.json({ error: 'Thread not found' }, { status: 404 });
+  }
+
+  if ('CHAT_THREAD' in env && env.CHAT_THREAD) {
+    const chatThread = env.CHAT_THREAD.get(
+      env.CHAT_THREAD.idFromName(trimmedThreadId),
+    ) as unknown as Partial<ChatThreadLookup>;
+    if (typeof chatThread.getPiCoreParsedMessages === 'function') {
+      const piMessages = await Promise.resolve(
+        chatThread.getPiCoreParsedMessages(trimmedThreadId),
+      ).catch(() => []);
+      if (Array.isArray(piMessages) && piMessages.length > 0) {
+        return Response.json(
+          { success: true, messages: piMessages },
+          {
+            headers: {
+              'Cache-Control': 'no-cache, no-transform',
+            },
+          },
+        );
+      }
+    }
   }
 
   const container = new WorkspaceContainer(

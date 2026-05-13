@@ -1,50 +1,23 @@
 package app
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 )
 
 type Config struct {
-	Port                       int
-	ListenAddr                 string
-	ProxyPort                  int
-	ProxyListenAddr            string
-	HostPiPath                 string
-	HostPiExtensionPath        string
-	HostPiSkillsPath           string
-	HostPiContainerSkillsPath  string
-	HostPiSessionRoot          string
-	HostPiModel                string
-	DataProxyUpstreamURL       string
-	IdleTimeout                time.Duration
-	ReadHeaderTimeout          time.Duration
-	WriteTimeout               time.Duration
-	WorkerBaseURL              string
-	SandboxProxySecret         string
-	ProxyThreadActiveTTL       time.Duration
-	ProxyThreadCloseGrace      time.Duration
-	ProxyThreadCleanupInterval time.Duration
-	AIGatewayBaseURL           string
-	AIGatewayToken             string
-	ExaAPIKey                  string
-	ExaBaseURL                 string
-	FirecrawlAPIKey            string
-	FirecrawlBaseURL           string
-	ParallelAPIKey             string
-	ParallelBaseURL            string
-	WebProviderOrder           string
-	TraceSandboxHost           bool
-	HeaderWorkerBaseURL        string
-	HeaderThreadID             string
-	HeaderUserID               string
-	HeaderSandboxSecret        string
-	StateDBPath                string
+	Port                 int
+	ListenAddr           string
+	HostPiSessionRoot    string
+	UsageDBRoot          string
+	DataProxyUpstreamURL string
+	IdleTimeout          time.Duration
+	ReadHeaderTimeout    time.Duration
+	WriteTimeout         time.Duration
+	TraceSandboxHost     bool
 }
 
 type DataProxyServiceConfig struct {
@@ -58,58 +31,19 @@ type DataProxyServiceConfig struct {
 
 func LoadConfig() Config {
 	controlPort := envInt("PORT", defaultByPlatform(80, 4400))
-	proxyPort := envInt("SANDBOX_PROXY_PORT", defaultByPlatform(8081, 4401))
 	dataProxyPort := envInt("DATA_PROXY_PORT", defaultByPlatform(8090, 8090))
-	cfAccountID := strings.TrimSpace(envString("CF_ACCOUNT_ID", ""))
-	cfGatewayName := strings.TrimSpace(envString("CF_GATEWAY_NAME", ""))
-	defaultAIGatewayBaseURL := ""
-	if cfAccountID != "" && cfGatewayName != "" {
-		defaultAIGatewayBaseURL = fmt.Sprintf(
-			"https://gateway.ai.cloudflare.com/v1/%s/%s",
-			cfAccountID,
-			cfGatewayName,
-		)
-	}
 	idleSecs := maxInt(10, envInt("SANDBOX_HOST_IDLE_TIMEOUT_SECS", 120))
-	activeTTLms := maxInt(30_000, envInt("PROXY_SESSION_ACTIVE_TTL_MS", 30*60_000))
-	closeGraceMs := maxInt(5_000, envInt("PROXY_SESSION_CLOSE_GRACE_MS", 10*60_000))
-	cleanupMs := maxInt(5_000, envInt("PROXY_SESSION_CLEANUP_INTERVAL_MS", 60_000))
 
 	return Config{
-		Port:                       controlPort,
-		ListenAddr:                 ":" + strconv.Itoa(controlPort),
-		ProxyPort:                  proxyPort,
-		ProxyListenAddr:            ":" + strconv.Itoa(proxyPort),
-		HostPiPath:                 envString("HOST_PI_PATH", "/usr/local/bin/chiridion-host-pi"),
-		HostPiExtensionPath:        envString("HOST_PI_EXTENSION_PATH", "/opt/chiridion-host-pi/extensions/container-tools.ts"),
-		HostPiSkillsPath:           envString("HOST_PI_SKILLS_PATH", "/opt/chiridion-host-pi/skills"),
-		HostPiContainerSkillsPath:  envString("HOST_PI_CONTAINER_SKILLS_PATH", "/opt/chiridion-host-pi/skills"),
-		HostPiSessionRoot:          envString("HOST_PI_SESSION_ROOT", defaultHostPiSessionRoot()),
-		HostPiModel:                strings.TrimSpace(envString("HOST_PI_MODEL", "")),
-		DataProxyUpstreamURL:       envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
-		IdleTimeout:                time.Duration(idleSecs) * time.Second,
-		ReadHeaderTimeout:          15 * time.Second,
-		WriteTimeout:               0,
-		WorkerBaseURL:              envString("WORKER_BASE_URL", ""),
-		SandboxProxySecret:         envString("SANDBOX_PROXY_SECRET", ""),
-		ProxyThreadActiveTTL:       time.Duration(activeTTLms) * time.Millisecond,
-		ProxyThreadCloseGrace:      time.Duration(closeGraceMs) * time.Millisecond,
-		ProxyThreadCleanupInterval: time.Duration(cleanupMs) * time.Millisecond,
-		AIGatewayBaseURL:           strings.TrimRight(envString("AI_GATEWAY_BASE_URL", defaultAIGatewayBaseURL), "/"),
-		AIGatewayToken:             envString("CF_GATEWAY_TOKEN", ""),
-		ExaAPIKey:                  envString("EXA_API_KEY", ""),
-		ExaBaseURL:                 strings.TrimRight(envString("EXA_BASE_URL", "https://api.exa.ai"), "/"),
-		FirecrawlAPIKey:            envString("FIRECRAWL_API_KEY", ""),
-		FirecrawlBaseURL:           strings.TrimRight(envString("FIRECRAWL_BASE_URL", "https://api.firecrawl.dev"), "/"),
-		ParallelAPIKey:             envString("PARALLEL_API_KEY", ""),
-		ParallelBaseURL:            strings.TrimRight(envString("PARALLEL_BASE_URL", "https://api.parallel.ai"), "/"),
-		WebProviderOrder:           envString("WEB_PROVIDER_ORDER", envString("CHIRIDION_WEB_PROVIDER_ORDER", "firecrawl,parallel,exa")),
-		TraceSandboxHost:           envString("TRACE_SANDBOX_HOST", "") == "1",
-		HeaderWorkerBaseURL:        "x-chiridion-worker-base-url",
-		HeaderThreadID:             "x-chiridion-thread-id",
-		HeaderUserID:               "x-chiridion-user-id",
-		HeaderSandboxSecret:        "x-sandbox-secret",
-		StateDBPath:                envString("SANDBOX_HOST_STATE_DB", defaultStateDBPath()),
+		Port:                 controlPort,
+		ListenAddr:           ":" + strconv.Itoa(controlPort),
+		HostPiSessionRoot:    envString("HOST_PI_SESSION_ROOT", defaultHostPiSessionRoot()),
+		UsageDBRoot:          envString("SANDBOX_HOST_USAGE_DB_DIR", defaultUsageDBRoot()),
+		DataProxyUpstreamURL: envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
+		IdleTimeout:          time.Duration(idleSecs) * time.Second,
+		ReadHeaderTimeout:    15 * time.Second,
+		WriteTimeout:         0,
+		TraceSandboxHost:     envString("TRACE_SANDBOX_HOST", "") == "1",
 	}
 }
 
@@ -137,15 +71,15 @@ func defaultByPlatform(linuxValue, otherValue int) int {
 	return otherValue
 }
 
-func defaultStateDBPath() string {
+func defaultUsageDBRoot() string {
 	if runtime.GOOS == "linux" {
-		return "/srv/sandboxes/.sandbox-host/state.db"
+		return "/srv/sandboxes/.sandbox-host/usage"
 	}
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {
-		return ".sandbox-host/state.db"
+		return ".sandbox-host/usage"
 	}
-	return filepath.Join(wd, ".sandbox-host", "state.db")
+	return filepath.Join(wd, ".sandbox-host", "usage")
 }
 
 func defaultHostPiSessionRoot() string {

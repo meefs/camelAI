@@ -26,13 +26,16 @@ export function getToolStatus(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
   results?: ToolResultBlock[],
-  agentContinued?: boolean
+  agentContinued?: boolean,
+  isStreaming?: boolean
 ): ToolStatus {
   if (isSubAgentTool(tool?.name)) {
     const finalResult = results?.find(block => !block.isTaskUpdate) ??
       (result && !result.isTaskUpdate ? result : undefined);
     if (finalResult && (finalResult as { is_error?: boolean }).is_error) return 'error';
     if (finalResult) return 'complete';
+    if (agentContinued) return 'complete';
+    if (isStreaming === false) return 'complete';
     return 'running';
   }
 
@@ -41,5 +44,9 @@ export function getToolStatus(
   // No result object, but the agent produced content after this tool call —
   // the tool must have completed since the agent can't continue without its result.
   if (agentContinued) return 'complete';
+  // A finalized assistant message cannot still have live tool work. This also
+  // covers Pi preview tool-call rows whose final tool result used a different
+  // execution id.
+  if (isStreaming === false) return 'complete';
   return 'running';
 }

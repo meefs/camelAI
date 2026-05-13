@@ -330,6 +330,30 @@ describe('Workspace DO (full-stack with DOs)', () => {
     expect(actions).toContain('integration_created');
   });
 
+  it('marks new integrations without credentials as setup_incomplete', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Setup Owner');
+    const { org } = await createOrg(testEnv, 'Setup Org', userId);
+    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+    const workspace = workspaces[0];
+    expect(workspace).toBeDefined();
+
+    const integration = await createWorkspaceIntegration(testEnv, workspace.id, userId, {
+      integration_type: 'cloudflare',
+      name: 'Cloudflare',
+      config: {},
+    });
+
+    const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id)) as DurableObjectStub<{
+      getIntegration: (id: string) => Promise<WorkspaceIntegrationRecord | null>;
+    }>;
+    const record = await workspaceStub.getIntegration(integration.id);
+    expect(record?.credentials_encrypted).toBe('');
+    expect(record?.auth_status).toBe('setup_incomplete');
+    expect(record?.auth_error_code).toBe('AUTH_SETUP_INCOMPLETE');
+    expect(record?.reauth_required_at).toEqual(expect.any(Number));
+  });
+
   it('updates integration and logs audit entry', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');

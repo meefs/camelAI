@@ -1,8 +1,8 @@
 import type { ContentBlock, ToolResultBlock } from '@/types';
 
-/** True when the tool name represents a sub-agent invocation (Task or Agent). */
+/** True when the tool name represents a sub-agent invocation. */
 export function isSubAgentTool(name?: string): boolean {
-  return name === 'Task' || name === 'Agent';
+  return name === 'Task' || name === 'Agent' || name === 'agent' || name === 'Explore' || name === 'explore';
 }
 
 /**
@@ -25,7 +25,8 @@ function isContentBlock(value: unknown): value is ContentBlock {
     type === 'thinking' ||
     type === 'redacted_thinking' ||
     type === 'teammate_message' ||
-    type === 'task_notification'
+    type === 'task_notification' ||
+    type === 'error'
   );
 }
 
@@ -62,6 +63,7 @@ export function normalizeToolResultContent(content: unknown): string {
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
         if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
         if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
+        if (block.type === 'error') return `[Error]\n${block.error}`;
         return safeJsonStringify(block);
       })
       .filter(Boolean)

@@ -13,12 +13,11 @@ import type { EffectiveModelPickerConfig } from "./model-picker-config";
 // 2. Add the harness-routing branches in src/lib/llm-provider-config.ts:
 //    getProviderForModel, isLlmModel, isLlmModelAllowedForOrgProvider, and
 //    CLAUDE_LLM_MODEL_OPTIONS or CODEX_LLM_MODEL_OPTIONS.
-// 3. Add per-token pricing in
-//    services/sandbox-host/internal/app/usage_pricing.go.
+// 3. Add per-token pricing in src/lib/usage-pricing.ts.
 // 4. Add a MODEL_CATALOG entry below with a version-qualified label, logo type,
 //    provider order, cost bucket, intelligence, and speed.
 // 5. Update defaultOrgModelPickerConfig if it should ship in the default picker.
-// 6. Add or update the catalog tests so the TS catalog, logos, and Go pricing do
+// 6. Add or update the catalog tests so the TS catalog, logos, and pricing do
 //    not drift apart.
 
 export type ProviderLogoType =
@@ -87,8 +86,8 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
 };
 
 // Cost buckets are derived by hand from per-token pricing in
-// services/sandbox-host/internal/app/usage_pricing.go. If you change pricing
-// there, update the `cost` field below in the same PR.
+// src/lib/usage-pricing.ts. If you change pricing there, update the `cost`
+// field below in the same PR.
 //
 // Buckets (USD per million tokens):
 //   $   = input < $2 AND output < $10

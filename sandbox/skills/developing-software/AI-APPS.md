@@ -4,12 +4,9 @@ The starter template includes pre-configured AI chat scaffolding with the Vercel
 
 ## Runtime Model
 
-There are two supported AI paths in camelAI:
-
-1. **Deployed workers**: use native `env.AI` (virtualized by the platform).
-2. **Container/runtime scripts**: use the OpenAI-compatible local proxy (`OPENAI_BASE_URL` + `OPENAI_API_KEY=proxy`).
-
-Use `env.AI` in worker code whenever possible.
+Use native `env.AI` in deployed workers. The platform virtualizes this binding
+and routes model calls through camelAI-managed billing and spend tracking.
+Container/runtime scripts do not have a host-side model proxy.
 
 ## Enable AI Chat in the Starter
 
@@ -111,24 +108,6 @@ Notes:
 - The platform may override/route model hints.
 - Do not set `max_tokens` by default. Thinking/reasoning tokens consume that same budget and can truncate completions prematurely.
 - If you must use `max_tokens`, leave substantial headroom for both thinking and final output.
-
-## OpenAI-Compatible Local Proxy (Container Path)
-
-For scripts/services running inside the camelAI container, use `OPENAI_BASE_URL` + `OPENAI_API_KEY=proxy`:
-
-```typescript
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY ?? "proxy",
-  baseURL: process.env.OPENAI_BASE_URL,
-});
-
-const resp = await client.chat.completions.create({
-  model: "auto",
-  messages: [{ role: "user", content: "Hello" }],
-});
-```
 
 ## Tools and Agents
 
@@ -323,7 +302,7 @@ export async function action({ request, context }) {
 
 ### Auto Routes (Strongly Recommended)
 
-Three auto routes are available. Use them with `workersai(routeName, {})` in deployed workers, or `model: "routeName"` in the container OpenAI-compatible proxy:
+Three auto routes are available. Use them with `workersai(routeName, {})` in deployed workers:
 
 | Route | Purpose | When to Use |
 |-------|---------|-------------|
@@ -338,20 +317,13 @@ Three auto routes are available. Use them with `workersai(routeName, {})` in dep
 Any model available on [OpenRouter](https://openrouter.ai/models) can be used by passing the full model identifier (e.g., `anthropic/claude-sonnet-4.6`, `openai/gpt-5.3-chat`, `google/gemini-3.1-pro-preview`). **Only use a specific model when the user explicitly asks for it.** Never proactively choose a specific model — auto routing is always the better default.
 
 ```typescript
-// In deployed workers (env.AI)
 const result = await streamText({
   model: workersai("anthropic/claude-sonnet-4.6", {}),
   messages: await convertToModelMessages(this.messages),
 });
-
-// In container scripts (OpenAI-compatible proxy)
-const resp = await client.chat.completions.create({
-  model: "openai/gpt-5.3-chat",
-  messages: [{ role: "user", content: "Hello" }],
-});
 ```
 
-Model selection is supported in both deployed workers (via `env.AI`) and the container OpenAI-compatible proxy.
+Model selection is supported in deployed workers via `env.AI`.
 
 #### Discovering Available Models
 

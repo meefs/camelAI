@@ -75,16 +75,16 @@ export function getEnvVarSuffixesForType(integrationType: string, dynamicFields?
     case 'mysql':
       return ['URL', 'DATABASE_URL'];
     case 'mongodb':
-      return ['URL', 'URI'];
+      return ['URL', 'URI', 'DATA_API_URL', 'DATA_API_KEY'];
     case 'redis':
-      return ['URL'];
+      return ['URL', 'REST_URL', 'REST_TOKEN'];
     case 'bigquery':
       return ['ACCESS_TOKEN', 'PROJECT_ID'];
     // Database integrations
     case 'neon':
       return ['API_KEY', 'CONNECTION_STRING', 'PROJECT_ID'];
     case 'snowflake':
-      return ['ACCOUNT', 'WAREHOUSE', 'DATABASE', 'SCHEMA', 'USERNAME', 'PRIVATE_KEY', 'PRIVATE_KEY_PASSPHRASE'];
+      return ['ACCOUNT', 'WAREHOUSE', 'DATABASE', 'SCHEMA', 'USERNAME', 'PRIVATE_KEY', 'PRIVATE_KEY_PASSPHRASE', 'PRIVATE_KEY_FINGERPRINT'];
     case 'clickhouse':
       return ['HOST', 'PORT', 'DATABASE', 'USERNAME', 'PASSWORD'];
     case 'planetscale':
@@ -335,6 +335,8 @@ export function mapCredentialsToEnvVars(
           set('URI', url);
         }
       }
+      if (str(credentials.data_api_url)) set('DATA_API_URL', str(credentials.data_api_url)!);
+      if (str(credentials.data_api_key)) set('DATA_API_KEY', str(credentials.data_api_key)!);
       break;
     }
 
@@ -355,6 +357,8 @@ export function mapCredentialsToEnvVars(
           set('URL', url);
         }
       }
+      if (str(credentials.rest_url)) set('REST_URL', str(credentials.rest_url)!);
+      if (str(credentials.rest_token)) set('REST_TOKEN', str(credentials.rest_token)!);
       break;
     }
 
@@ -377,6 +381,7 @@ export function mapCredentialsToEnvVars(
       if (str(credentials.username)) set('USERNAME', str(credentials.username)!);
       if (str(credentials.private_key)) set('PRIVATE_KEY', str(credentials.private_key)!);
       if (str(credentials.private_key_passphrase)) set('PRIVATE_KEY_PASSPHRASE', str(credentials.private_key_passphrase)!);
+      if (str(credentials.private_key_fingerprint)) set('PRIVATE_KEY_FINGERPRINT', str(credentials.private_key_fingerprint)!);
       if (str(config.account)) set('ACCOUNT', str(config.account)!);
       if (str(config.warehouse)) set('WAREHOUSE', str(config.warehouse)!);
       if (str(config.database)) set('DATABASE', str(config.database)!);

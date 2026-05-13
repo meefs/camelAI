@@ -33,7 +33,9 @@ export function parseMcpToolName(name: string): McpToolParts | null {
 
 export function isAskUserQuestionToolName(name?: string): boolean {
   if (!name) return false;
-  if (name === LEGACY_ASK_USER_QUESTION_TOOL) return true;
+  if (name === LEGACY_ASK_USER_QUESTION_TOOL || name === CUSTOM_ASK_USER_QUESTION_TOOL) {
+    return true;
+  }
   const parts = parseMcpToolName(name);
   return parts?.toolName === CUSTOM_ASK_USER_QUESTION_TOOL;
 }

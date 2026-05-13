@@ -348,6 +348,14 @@ function messagesHaveSameContent(left: Message[], right: Message[]): boolean {
   return true;
 }
 
+function hasUserOrAssistantMessage(messages: Message[]): boolean {
+  return messages.some(
+    (message) =>
+      (message.role === "user" || message.role === "assistant") &&
+      !message.isMeta,
+  );
+}
+
 function isComposerVisiblyEmpty(
   text: string,
   attachments: Attachment[],
@@ -1793,6 +1801,17 @@ export default function Chat({
       serverMessages: summarizeMessagesForHistoryLog(parsedInitialMessages),
       currentMessages: summarizeMessagesForHistoryLog(messagesRef.current),
     });
+    if (
+      parsedInitialMessages.length === 0 &&
+      hasUserOrAssistantMessage(messagesRef.current)
+    ) {
+      logChatHistoryClient("route_sync_skipped", {
+        threadId,
+        reason: "empty_server_history_after_local_messages",
+        currentCount: messagesRef.current.length,
+      });
+      return;
+    }
     setPendingMessages([]);
     if (messagesHaveSameContent(messagesRef.current, parsedInitialMessages)) {
       logChatHistoryClient("route_sync_noop_same_content", {
@@ -3151,7 +3170,7 @@ export default function Chat({
         }
       };
 
-      // Runner WebSocket bypasses ChatThreadDO and bridges directly to sandbox-host/Pi.
+      // Runner WebSocket connects to ChatThreadDO, which owns the agent session.
       const wsUrl = `${protocol}//${wsHost}/ws/runner/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;

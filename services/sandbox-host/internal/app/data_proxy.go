@@ -311,6 +311,11 @@ func positionalArgs(raw any) ([]any, error) {
 	case nil:
 		return nil, nil
 	case []any:
+		for index, value := range typed {
+			if number, ok := value.(float64); ok && number == float64(int64(number)) {
+				typed[index] = int64(number)
+			}
+		}
 		return typed, nil
 	default:
 		return nil, errors.New("params must be a JSON array for postgres/mysql queries")

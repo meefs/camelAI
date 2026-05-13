@@ -1224,16 +1224,64 @@ function canonicalizeDynamicToolName(tool: unknown): string {
       return 'WebSearch';
     case 'web_fetch':
       return 'WebFetch';
+    case 'js_exec':
+      return 'JavaScript';
+    case 'list_apps':
+      return 'ListApps';
+    case 'set_app_visibility':
+      return 'SetAppVisibility';
+    case 'get_latest_logs':
+      return 'GetLatestLogs';
+    case 'list_scheduled_prompts':
+      return 'ListScheduledPrompts';
+    case 'create_scheduled_prompt':
+      return 'CreateScheduledPrompt';
+    case 'update_scheduled_prompt':
+      return 'UpdateScheduledPrompt';
+    case 'delete_scheduled_prompt':
+      return 'DeleteScheduledPrompt';
+    case 'run_scheduled_prompt_now':
+      return 'RunScheduledPrompt';
+    case 'list_integrations':
+      return 'ListConnections';
+    case 'list_integration_types':
+      return 'ListConnectionTypes';
+    case 'create_integration':
+      return 'CreateConnection';
+    case 'prompt_connection_setup':
+      return 'PromptConnectionSetup';
+    case 'capture_bug_report':
+      return 'CaptureBugReport';
+    case 'get_custom_domain':
+      return 'GetCustomDomain';
+    case 'set_custom_domain':
+      return 'SetCustomDomain';
+    case 'remove_custom_domain':
+      return 'RemoveCustomDomain';
+    case 'retry_custom_domain_hostnames':
+      return 'RetryCustomDomains';
+    case 'connections_list':
+      return 'ListConnections';
+    case 'connections_get':
+      return 'GetConnection';
+    case 'connections_tools':
+      return 'ListConnectionTools';
+    case 'connections_methods':
+      return 'ListConnectionMethods';
     case 'read':
       return 'Read';
     case 'write':
       return 'Write';
     case 'edit':
       return 'Edit';
+    case 'ls':
+      return 'LS';
     case 'bash':
       return 'Bash';
     case 'grep':
       return 'Grep';
+    case 'find':
+      return 'Find';
     case 'glob':
       return 'Glob';
     default:
@@ -1777,6 +1825,10 @@ export function extractTextContent(content: string | ContentBlock[]): string {
     }
     if (block.type === 'task_notification') {
       parts.push(block.summary);
+      continue;
+    }
+    if (block.type === 'error') {
+      parts.push(block.error);
       continue;
     }
     if (block.type === 'redacted_thinking') {

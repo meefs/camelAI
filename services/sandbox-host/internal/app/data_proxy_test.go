@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -160,6 +161,17 @@ func TestHandleDataProxyMySQLQueryRejectsNonArrayParams(t *testing.T) {
 	}
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestPositionalArgsConvertsIntegralJSONNumbers(t *testing.T) {
+	args, err := positionalArgs([]any{"camel", float64(100), float64(1.25)})
+	if err != nil {
+		t.Fatalf("positionalArgs returned error: %v", err)
+	}
+	want := []any{"camel", int64(100), float64(1.25)}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected args: got=%#v want=%#v", args, want)
 	}
 }
 

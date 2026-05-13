@@ -1,9 +1,10 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import type { OrgDO } from "./auth";
+import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 
 interface AIVirtualBindingEnv {
+  ORG: DurableObjectNamespace<OrgDO>;
   SANDBOX_HOST?: Fetcher;
-  SANDBOX_PROXY_SECRET?: string;
-  WORKER_BASE_URL?: string;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
@@ -87,22 +88,102 @@ export class AIVirtualBinding extends WorkerEntrypoint<
     const picked = pickModel(model, inputModel, envDefault);
     const resolvedModelName = resolveModel(picked);
 
-    if (!this.env.SANDBOX_HOST) {
-      throw new Error("Sandbox host binding is not configured for virtual AI.");
-    }
-
     const provider: GatewayProvider = isOpenRouterModel(resolvedModelName)
       ? "openrouter"
       : "compat";
-    return runViaSandboxHostVirtualAI(
-      this.env.SANDBOX_HOST,
-      this.env.SANDBOX_PROXY_SECRET,
-      this.env.WORKER_BASE_URL,
+    const access = await this.checkHostedModelAccess();
+    const settings = resolveGatewaySettings(this.env);
+    if (!settings) {
+      throw new Error("AI Gateway is not configured for virtual AI.");
+    }
+
+    const startedAt = Date.now();
+    const result = await runViaGatewayHTTP(
+      settings,
       this.ctx.props,
       sanitizedInput,
       resolvedModelName,
       provider,
     );
+    const record = (usage: ExtractedUsage) =>
+      this.recordUsage(usage, provider, Date.now() - startedAt, access.creditChargeable).catch((error) => {
+        console.error("[AIVirtualBinding] failed to record usage", error);
+      });
+    if (result instanceof ReadableStream) {
+      const [clientStream, usageStream] = result.tee();
+      this.ctx.waitUntil(
+        extractStreamingUsage(usageStream, resolvedModelName).then((usage) =>
+          usage ? record(usage) : undefined,
+        ),
+      );
+      return clientStream;
+    }
+    const usage = extractJsonUsage(result, resolvedModelName);
+    if (usage) {
+      this.ctx.waitUntil(record(usage));
+    }
+    return result;
+  }
+
+  private async checkHostedModelAccess(): Promise<{ creditChargeable: boolean }> {
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.ctx.props.orgId));
+    const org = await orgStub.getInfo();
+    if (!org) {
+      throw new Error("Organization not found");
+    }
+    const status = org.billing_status ?? "inactive";
+    if (status === "enterprise") return { creditChargeable: false };
+    if (status === "past_due") {
+      throw new Error(
+        "Your subscription is past due. Update payment details in Settings -> Billing or add your own API key in Settings -> AI Provider to continue.",
+      );
+    }
+    if (status === "canceled") {
+      throw new Error(
+        "Your subscription was canceled. Start a new subscription in Settings -> Billing or add your own API key in Settings -> AI Provider to continue.",
+      );
+    }
+    if (status !== "trialing" && status !== "active") {
+      throw new Error("Hosted models require billing access.");
+    }
+    await ensureLegacyHostUsageBackfilled(this.env, this.ctx.props.orgId);
+    const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
+    const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
+    const totalCreditsCents =
+      (org.billing_credit_purchase_total_cents ?? 0) +
+      (org.billing_credit_grant_total_cents ?? 0);
+    if (totalCreditsCents - spentCents <= 0) {
+      throw new Error(
+        `Hosted model credits are used up. You have used ${(spentCents / 100).toFixed(2)} of ${(totalCreditsCents / 100).toFixed(2)} credits.`,
+      );
+    }
+    return { creditChargeable: true };
+  }
+
+  private async recordUsage(
+    usage: ExtractedUsage,
+    gatewayProvider: GatewayProvider,
+    durationMs: number,
+    creditChargeable: boolean,
+  ): Promise<void> {
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.ctx.props.orgId));
+    await orgStub.recordUsage({
+      workspace_id: this.ctx.props.workspaceId,
+      user_id: this.ctx.props.userId ?? "",
+      thread_id: "virtual-ai",
+      model: usage.model,
+      provider: gatewayProvider === "openrouter" ? "openrouter" : "openai",
+      billing_source: "hosted",
+      credit_chargeable: creditChargeable,
+      input_tokens: usage.inputTokens,
+      output_tokens: usage.outputTokens,
+      cache_creation_input_tokens: usage.cacheCreationInputTokens,
+      cache_read_input_tokens: usage.cacheReadInputTokens,
+      reported_cost_usd: usage.reportedCostUsd,
+      upstream_inference_cost_usd: usage.upstreamInferenceCostUsd,
+      duration_ms: durationMs,
+      created_at_ms: Date.now(),
+    });
   }
 }
 
@@ -259,71 +340,128 @@ export async function runViaGatewayHTTP(
   return {};
 }
 
-export async function runViaSandboxHostVirtualAI(
-  sandboxHost: Fetcher,
-  sandboxProxySecret: string | undefined,
-  workerBaseURL: string | undefined,
-  props: AIVirtualBindingProps,
-  input: unknown,
-  model: string = "dynamic/auto",
-  provider: GatewayProvider = "compat",
-): Promise<unknown> {
-  const headers = new Headers();
-  headers.set("Content-Type", "application/json");
-  headers.set("x-chiridion-org-id", props.orgId);
-  headers.set("x-chiridion-workspace-id", props.workspaceId);
-  if (sandboxProxySecret?.trim()) {
-    headers.set("x-sandbox-secret", sandboxProxySecret.trim());
-  }
-  if (workerBaseURL?.trim()) {
-    headers.set("x-chiridion-worker-base-url", workerBaseURL.trim());
-  }
-  if (props.userId?.trim()) {
-    headers.set("x-chiridion-user-id", props.userId.trim());
-  }
+interface ExtractedUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  reportedCostUsd: number | null;
+  upstreamInferenceCostUsd: number | null;
+}
 
-  const payload = toGatewayPayload(
-    input,
-    provider === "openrouter" ? openRouterNitroModel(model) : model,
-  );
-  const resp = await sandboxHost.fetch(
-    "http://sandbox/v1/virtual-ai/chat/completions",
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    },
-  );
+function extractJsonUsage(payload: unknown, fallbackModel: string): ExtractedUsage | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  return extractUsageFromObject(payload as Record<string, unknown>, fallbackModel);
+}
 
-  const streamRequested = payload.stream === true;
-  if (resp.ok && shouldPassthroughStream(resp, streamRequested)) {
-    if (!resp.body) {
-      throw new Error("AI Gateway returned an empty streaming response");
+async function extractStreamingUsage(
+  stream: ReadableStream,
+  fallbackModel: string,
+): Promise<ExtractedUsage | null> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let lastUsage: ExtractedUsage | null = null;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice("data:".length).trim();
+        if (!data || data === "[DONE]") continue;
+        const parsed = safeJsonParse(data);
+        const usage = extractJsonUsage(parsed, fallbackModel);
+        if (usage) lastUsage = usage;
+      }
     }
-    return resp.body;
+    if (buffer.trim()) {
+      const trimmed = buffer.trim();
+      if (trimmed.startsWith("data:")) {
+        const parsed = safeJsonParse(trimmed.slice("data:".length).trim());
+        const usage = extractJsonUsage(parsed, fallbackModel);
+        if (usage) lastUsage = usage;
+      }
+    }
+  } finally {
+    reader.releaseLock();
   }
+  return lastUsage;
+}
 
-  const responseText = await resp.text();
-  const responsePayload = responseText
-    ? safeJsonParse(responseText)
-    : undefined;
-  if (!resp.ok) {
-    const message =
-      extractGatewayErrorMessage(responsePayload) ??
-      extractErrorMessage(responsePayload) ??
-      (responseText.trim() || undefined) ??
-      `AI Gateway request failed (${resp.status})`;
-    throw new Error(message);
+function extractUsageFromObject(
+  payload: Record<string, unknown>,
+  fallbackModel: string,
+): ExtractedUsage | null {
+  const usage = payload.usage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+  const usageObj = usage as Record<string, unknown>;
+  const costDetails = asRecord(usageObj.cost_details);
+  const inputDetails = asRecord(usageObj.input_tokens_details);
+  const promptDetails = asRecord(usageObj.prompt_tokens_details);
+  const inputTokens = usageNumber(
+    usageObj.input_tokens ?? usageObj.prompt_tokens,
+  );
+  const outputTokens = usageNumber(
+    usageObj.output_tokens ?? usageObj.completion_tokens,
+  );
+  const cacheReadInputTokens = usageNumber(
+    inputDetails?.cached_tokens ?? promptDetails?.cached_tokens,
+  );
+  const cacheCreationInputTokens = usageNumber(
+    inputDetails?.cache_write_tokens ??
+      inputDetails?.cache_creation_input_tokens ??
+      promptDetails?.cache_write_tokens,
+  );
+  const reportedCostUsd = usageCostNumber(usageObj.cost);
+  const upstreamInferenceCostUsd = usageCostNumber(
+    costDetails?.upstream_inference_cost,
+  );
+  if (
+    inputTokens <= 0 &&
+    outputTokens <= 0 &&
+    cacheReadInputTokens <= 0 &&
+    cacheCreationInputTokens <= 0 &&
+    (reportedCostUsd === null || reportedCostUsd <= 0) &&
+    (upstreamInferenceCostUsd === null || upstreamInferenceCostUsd <= 0)
+  ) {
+    return null;
   }
+  return {
+    model: typeof payload.model === "string" && payload.model.trim()
+      ? payload.model.trim()
+      : fallbackModel,
+    inputTokens,
+    outputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    reportedCostUsd,
+    upstreamInferenceCostUsd,
+  };
+}
 
-  if (responsePayload !== undefined) {
-    return responsePayload;
-  }
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
 
-  if (responseText.trim()) {
-    throw new Error("AI Gateway returned a non-JSON non-streaming response");
-  }
-  return {};
+function usageNumber(value: unknown): number {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+}
+
+function usageCostNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
 }
 
 function toGatewayPayload(
@@ -396,12 +534,4 @@ function extractGatewayErrorMessage(payload: unknown): string | undefined {
   }
 
   return undefined;
-}
-
-function extractErrorMessage(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return undefined;
-  }
-  const message = (payload as { error?: unknown }).error;
-  return typeof message === "string" && message.trim() ? message : undefined;
 }

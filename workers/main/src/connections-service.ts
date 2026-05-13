@@ -1,9 +1,12 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import {
-  callConnectionTool,
   getConnection,
+  invokeConnectionMethod,
+  listConnectionMethods,
   listConnections,
   listConnectionTools,
+  type ConnectionInvokeRequest,
+  type ConnectionMethodCatalogEntry,
   type ConnectionSummary,
   type ConnectionsRuntimeEnv,
 } from './connections-runtime.js';
@@ -40,11 +43,15 @@ export class ConnectionsService extends WorkerEntrypoint<
     return listConnectionTools(this.env, this.context, connection);
   }
 
-  async call<T = unknown>(
-    connection: string,
-    tool: string,
-    input: Record<string, unknown> = {}
-  ): Promise<T> {
-    return callConnectionTool(this.env, this.context, connection, tool, input) as Promise<T>;
+  /**
+   * Lists every workspace connection plus the method names and JSON schemas
+   * exposed on the method facade, e.g. `connections.stripeProd.listCustomers`.
+   */
+  async methods(): Promise<ConnectionMethodCatalogEntry[]> {
+    return listConnectionMethods(this.env, this.context);
+  }
+
+  async __invoke<T = unknown>(request: ConnectionInvokeRequest): Promise<T> {
+    return invokeConnectionMethod(this.env, this.context, request) as Promise<T>;
   }
 }

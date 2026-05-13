@@ -687,6 +687,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         required: false,
         description: 'Passphrase if your private key is encrypted (optional)',
       },
+      {
+        name: 'private_key_fingerprint',
+        label: 'Public Key Fingerprint',
+        type: 'text',
+        required: false,
+        placeholder: 'SHA256:...',
+        description: 'Snowflake public key fingerprint for SQL API JWT authentication. Required for MCP tools.',
+      },
     ],
   },
 
@@ -817,6 +825,21 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         placeholder: 'mongodb+srv://user:pass@cluster0.abc123.mongodb.net/mydb',
         description: 'Full MongoDB connection string',
       },
+      {
+        name: 'data_api_key',
+        label: 'Atlas Data API Key',
+        type: 'password',
+        required: false,
+        description: 'Required for MCP tools. Enable Atlas Data API and create an API key.',
+      },
+      {
+        name: 'data_api_url',
+        label: 'Atlas Data API URL',
+        type: 'text',
+        required: false,
+        placeholder: 'https://data.mongodb-api.com/app/<app-id>/endpoint/data/v1',
+        description: 'Required for MCP tools. Atlas Data API endpoint URL.',
+      },
     ],
   },
 
@@ -846,6 +869,21 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         required: true,
         placeholder: 'redis://user:pass@host:6379/0',
         description: 'Redis connection URL (redis:// or rediss:// for TLS)',
+      },
+      {
+        name: 'rest_url',
+        label: 'Redis REST URL',
+        type: 'text',
+        required: false,
+        placeholder: 'https://your-redis.upstash.io',
+        description: 'Required for MCP tools. Upstash-compatible Redis REST endpoint.',
+      },
+      {
+        name: 'rest_token',
+        label: 'Redis REST Token',
+        type: 'password',
+        required: false,
+        description: 'Required for MCP tools. Token for the Redis REST endpoint.',
       },
     ],
   },
@@ -986,10 +1024,10 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       {
         name: 'api_key',
-        label: 'Write Key',
+        label: 'Public API Token',
         type: 'password',
         required: true,
-        description: 'Source write key from Segment dashboard',
+        description: 'Segment Public API token for read-oriented MCP tools.',
       },
     ],
   },
@@ -1382,4 +1420,20 @@ export function validateCredentials(type: string, credentials: Record<string, un
     }
   }
   return errors;
+}
+
+export function shouldStoreIntegrationCredentials(
+  type: string,
+  credentials: Record<string, unknown>
+): boolean {
+  const definition = INTEGRATION_REGISTRY[type];
+  if (!definition) return true;
+  if (definition.credentialSchema.length > 0) return true;
+
+  return Object.values(credentials).some((value) => {
+    if (value === undefined || value === null || value === '') return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') return Object.keys(value).length > 0;
+    return true;
+  });
 }

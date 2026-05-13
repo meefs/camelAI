@@ -153,18 +153,10 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
     sandbox_data_device      = "/dev/disk/azure/data/by-lun/${var.sandbox_data_disk_lun}"
     cloudflared_tunnel_token = var.cloudflared_tunnel_token
     acr_login_server         = azurerm_container_registry.sandbox.login_server
-    sandbox_proxy_secret     = var.sandbox_proxy_secret
-    sandbox_proxy_port       = var.sandbox_proxy_port
     r2_access_key_id         = var.r2_access_key_id
     r2_secret_access_key     = var.r2_secret_access_key
     r2_account_id            = var.r2_account_id
     r2_bucket_name           = var.r2_bucket_name
-    cf_account_id            = var.cf_account_id
-    cf_gateway_name          = var.cf_gateway_name
-    cf_gateway_token         = var.cf_gateway_token
-    exa_api_key              = var.exa_api_key
-    parallel_api_key         = var.parallel_api_key
-    firecrawl_api_key        = var.firecrawl_api_key
   }))
 
   identity {

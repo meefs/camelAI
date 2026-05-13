@@ -91,7 +91,7 @@ describe('web Codex provider wiring', () => {
     expect(thread.model).toBe('sonnet');
   });
 
-  it('builds codex runner env with the OpenAI BYOK proxy when the org uses OpenAI', async () => {
+  it('does not pass OpenAI BYOK through runner env or runner state', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Codex User');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Codex Env Org', userId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
@@ -121,13 +121,10 @@ describe('web Codex provider wiring', () => {
 
     expect(runnerEnv.envVars.CHIRIDION_CHAT_PROVIDER).toBe('codex');
     expect(runnerEnv.envVars.OPENAI_API_KEY).toBeUndefined();
-    expect(runnerEnv.byokProxy).toEqual({
-      provider: 'openai',
-      apiKey: 'sk-test-openai-abcdef',
-    });
+    expect('byokProxy' in runnerEnv).toBe(false);
   });
 
-  it('allows OpenRouter orgs to create Claude threads and uses the OpenRouter BYOK proxy', async () => {
+  it('allows OpenRouter orgs to create Claude threads without passing BYOK through runner state', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'OpenRouter Claude User');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'OpenRouter Claude Org', userId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
@@ -166,9 +163,6 @@ describe('web Codex provider wiring', () => {
     });
 
     expect(runnerEnv.envVars.CHIRIDION_CHAT_PROVIDER).toBe('claude');
-    expect(runnerEnv.byokProxy).toEqual({
-      provider: 'openrouter',
-      apiKey: 'sk-or-test-openrouter-abcdef',
-    });
+    expect('byokProxy' in runnerEnv).toBe(false);
   });
 });

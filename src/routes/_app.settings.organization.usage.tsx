@@ -16,7 +16,6 @@ import { getEnv } from "@/lib/cloudflare.server";
 import {
   createCreditsCheckoutSession,
   fetchConfiguredCreditPacks,
-  fetchSandboxHostApi,
   getOrgBillingOverview,
   isStripeBillingConfigured,
 } from "@/lib/billing.server";
@@ -121,16 +120,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const [overview, log, creditPacks, llmProviderConfig] = await Promise.all([
     getOrgBillingOverview(env, authContext.currentOrg).catch(() => null),
-    fetchSandboxHostApi(
-      env,
-      `/v1/usage/orgs/${encodeURIComponent(orgId)}/log?limit=20`,
-    )
-      .then((response) =>
-        response.ok
-          ? (response.json() as Promise<{ entries: UsageLogEntry[] }>)
-          : null,
-      )
-      .catch(() => null),
+    (async () => {
+      try {
+        const authEnv = getAuthEnv(env);
+        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+        return (await orgStub.getUsageLog({ limit: 20 })) as {
+          entries: UsageLogEntry[];
+        };
+      } catch {
+        return null;
+      }
+    })(),
     stripeConfigured
       ? fetchConfiguredCreditPacks(env).catch(() => [])
       : Promise.resolve([]),

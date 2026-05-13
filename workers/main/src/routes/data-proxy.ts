@@ -1,8 +1,8 @@
 /**
  * Data Proxy API routes for sandbox containers.
  *
- * These endpoints are only trusted when forwarded through sandbox-host's
- * `/proxy/:threadId/*` path, which injects `x-sandbox-secret` and workspace identity.
+ * These endpoints are only trusted when called by an internal sandbox-authenticated
+ * proxy that injects workspace identity.
  */
 
 import type { RouteContext } from '../types.js';

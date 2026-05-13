@@ -1,6 +1,6 @@
 'use client';
 
-import { Copy, Check, GitFork } from 'lucide-react';
+import { AlertCircle, Copy, Check, GitFork } from 'lucide-react';
 import type { Message, ContentBlock, ToolResultBlock, Integration } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -234,6 +234,7 @@ function normalizeToolResultContent(content: unknown): string {
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
         if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
+        if (block.type === 'error') return `[Error]\n${block.error}`;
         return safeJsonStringify(block);
       })
       .filter(Boolean)
@@ -286,6 +287,7 @@ export function contentToString(content: string | ContentBlock[]): string {
       }
       if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
       if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
+      if (block.type === 'error') return `[Error]\n${block.error}`;
       return '';
     })
     .filter(Boolean)
@@ -374,6 +376,23 @@ export function ContentBlockRenderer({
         kind: 'other',
         key: `thinking-${index}`,
         node: <ThinkingBlock thinking={block.thinking} label={block.label} summaries={block.summaries} />,
+      });
+      return;
+    }
+
+    if (block.type === 'error') {
+      items.push({
+        kind: 'other',
+        key: `error-${index}`,
+        node: (
+          <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="min-w-0">
+              <div className="font-medium">{block.title || 'Error'}</div>
+              <div className="mt-1 break-words text-destructive/90">{block.error}</div>
+            </div>
+          </div>
+        ),
       });
       return;
     }

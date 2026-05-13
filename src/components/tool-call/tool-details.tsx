@@ -16,6 +16,7 @@ import { McpDetails } from './details/mcp-details';
 import { SkillDetails } from './details/skill-details';
 import { TeamCreateDetails } from './details/team-create-details';
 import { AskUserQuestionDetails } from './details/ask-user-question-details';
+import { JavaScriptDetails } from './details/javascript-details';
 import { isAskUserQuestionToolName, isMcpTool } from './mcp-utils';
 
 interface ToolCallDetailsProps {
@@ -26,8 +27,40 @@ interface ToolCallDetailsProps {
   progressCount?: number;
 }
 
+function normalizeToolDetailsName(name?: string): string | undefined {
+  switch (name) {
+    case 'bash':
+      return 'Bash';
+    case 'write':
+      return 'Write';
+    case 'read':
+      return 'Read';
+    case 'edit':
+      return 'Edit';
+    case 'ls':
+      return 'LS';
+    case 'find':
+      return 'Find';
+    case 'grep':
+      return 'Grep';
+    case 'glob':
+      return 'Glob';
+    case 'js_exec':
+      return 'JavaScript';
+    case 'web_search':
+      return 'WebSearch';
+    case 'web_fetch':
+      return 'WebFetch';
+    case 'todo_write':
+    case 'update_todo':
+      return 'TodoWrite';
+    default:
+      return name;
+  }
+}
+
 export function ToolCallDetails({ tool, result, results, skillSheet, progressCount }: ToolCallDetailsProps) {
-  const name = tool?.name;
+  const name = normalizeToolDetailsName(tool?.name);
 
   let content: ReactNode;
   if (tool && isAskUserQuestionToolName(name)) {
@@ -58,6 +91,9 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
       break;
     case 'Task':
     case 'Agent':
+    case 'agent':
+    case 'Explore':
+    case 'explore':
     case 'TaskOutput':
       content = (
         <TaskDetails
@@ -73,6 +109,9 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
       break;
     case 'WebSearch':
       content = <WebDetails tool={tool} result={result} mode="search" />;
+      break;
+    case 'JavaScript':
+      content = <JavaScriptDetails tool={tool} result={result} />;
       break;
     case 'TodoWrite':
       content = <TodoDetails tool={tool} result={result} />;

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { getToolSummary, getToolSummaryParts } from '@/components/tool-call/tool-summary';
+
+const root = process.cwd();
 
 function makeTeamCreateTool(input: Record<string, unknown> = {}): ToolUseBlock {
   return {
@@ -62,6 +66,57 @@ function makeToolResult(content: string): ToolResultBlock {
     tool_use_id: 'tool_result',
     content,
   };
+}
+
+function sampleToolInput(name: string): Record<string, unknown> {
+  switch (name) {
+    case 'bash':
+      return { command: 'pwd' };
+    case 'read':
+    case 'write':
+    case 'edit':
+      return { path: '/home/claude/src/app.tsx' };
+    case 'ls':
+    case 'find':
+    case 'grep':
+      return { path: '/home/claude/src', pattern: '*.tsx' };
+    case 'AskUserQuestion':
+    case 'ask_user_question':
+      return { questions: [{ question: 'Choose an option', header: 'Choice' }] };
+    case 'TodoWrite':
+      return { todos: [{ content: 'Test task', status: 'completed' }] };
+    case 'set_preview':
+      return { path: '/home/claude/src/app.tsx' };
+    case 'set_app_visibility':
+    case 'get_latest_logs':
+    case 'set_custom_domain':
+    case 'remove_custom_domain':
+      return { script_name: 'demo-app', app_name: 'demo-app' };
+    case 'create_scheduled_prompt':
+    case 'update_scheduled_prompt':
+    case 'delete_scheduled_prompt':
+    case 'run_scheduled_prompt_now':
+      return { prompt_id: 'prompt-1', name: 'Daily check' };
+    case 'create_integration':
+    case 'prompt_connection_setup':
+      return { integration_type: 'github', suggested_name: 'GitHub' };
+    case 'WebSearch':
+    case 'web_search':
+      return { query: 'Cloudflare Workers' };
+    case 'WebFetch':
+    case 'web_fetch':
+      return { url: 'https://example.com' };
+    case 'Agent':
+    case 'agent':
+    case 'Explore':
+    case 'explore':
+      return { description: 'check the implementation' };
+    case 'connections_get':
+    case 'connections_tools':
+      return { connection: 'github' };
+    default:
+      return {};
+  }
 }
 
 describe('getToolSummaryParts TeamCreate', () => {
@@ -153,6 +208,122 @@ describe('getToolSummaryParts tense follows status', () => {
     const summary = getToolSummaryParts(tool, undefined, false, 'running');
     expect(summary.action).toBe('Creating');
     expect(summary.filename).toBe('new-file.ts');
+  });
+});
+
+describe('getToolSummaryParts JavaScript', () => {
+  it('renders friendly code-mode copy for each status', () => {
+    const tool: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool_js_exec',
+      name: 'JavaScript',
+      input: { code: 'return 1;' },
+    };
+
+    expect(getToolSummaryParts(tool, undefined, true, 'running').action).toBe(
+      'Running JavaScript...'
+    );
+    expect(getToolSummaryParts(tool, undefined, false, 'complete').action).toBe(
+      'Ran JavaScript'
+    );
+    expect(getToolSummaryParts(tool, undefined, false, 'error').action).toBe(
+      'JavaScript failed'
+    );
+  });
+});
+
+describe('getToolSummaryParts friendly dynamic tool labels', () => {
+  it('renders lowercase file tool names with the normal friendly copy', () => {
+    const tool: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool_bash',
+      name: 'bash',
+      input: { command: 'pwd' },
+    };
+
+    expect(getToolSummaryParts(tool, undefined, true, 'running').action).toBe(
+      'Running pwd...'
+    );
+    expect(getToolSummaryParts(tool, undefined, false, 'complete').action).toBe(
+      'Ran pwd'
+    );
+  });
+
+  it('uses the question prompt UI copy for raw ask_user_question calls', () => {
+    const tool: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool_ask_user_question',
+      name: 'ask_user_question',
+      input: {
+        questions: [{ question: 'Pick a color', header: 'Color' }],
+      },
+    };
+
+    expect(getToolSummaryParts(tool, undefined, false, 'running').action).toBe(
+      'Waiting for your input'
+    );
+    expect(getToolSummaryParts(tool, undefined, false, 'complete').action).toBe('Color');
+  });
+
+  it('renders connection and domain tools without raw underscores', () => {
+    const listConnections: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool_list_integrations',
+      name: 'list_integrations',
+      input: {},
+    };
+    const customDomain: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool_get_custom_domain',
+      name: 'get_custom_domain',
+      input: {},
+    };
+
+    expect(getToolSummaryParts(listConnections, undefined, false, 'complete').action).toBe(
+      'Checked connections'
+    );
+    expect(getToolSummaryParts(customDomain, undefined, true, 'running').action).toBe(
+      'Checking custom domain...'
+    );
+  });
+
+  it('humanizes unknown tool names instead of showing raw identifiers', () => {
+    const tool: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool_unknown',
+      name: 'some_future_tool',
+      input: {},
+    };
+
+    expect(getToolSummaryParts(tool, undefined, false, 'complete').action).toBe(
+      'Used Some future tool'
+    );
+  });
+
+  it('has friendly summaries for every registered code-mode tool', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'workers/main/src/durable-objects.ts'),
+      'utf8',
+    );
+    const arrayStart = source.indexOf('const CODE_MODE_TOOL_DEFINITIONS');
+    const arrayEnd = source.indexOf('function codeModePiToolParameters', arrayStart);
+    const definitions = source.slice(arrayStart, arrayEnd);
+    const toolNames = Array.from(definitions.matchAll(/name:\s*"([^"]+)"/g), (match) => match[1]);
+
+    expect(toolNames.length).toBeGreaterThan(20);
+
+    for (const name of toolNames) {
+      const tool: ToolUseBlock = {
+        type: 'tool_use',
+        id: `tool_${name}`,
+        name,
+        input: sampleToolInput(name),
+      };
+      const summary = getToolSummaryParts(tool, undefined, false, 'complete').action;
+
+      expect(summary).not.toBe(name);
+      expect(summary).not.toContain('_');
+    }
   });
 });
 

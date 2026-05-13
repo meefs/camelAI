@@ -590,7 +590,6 @@ Features include:
 ### camelAI AI Access Patterns
 
 - **In deployed workers:** Prefer `env.AI` with `workers-ai-provider` (`createWorkersAI({ binding: env.AI })`).
-- **In container scripts/services:** Use the OpenAI-compatible local proxy via `OPENAI_BASE_URL` and `OPENAI_API_KEY=proxy`.
 - **Model routing:** The platform virtualizes the AI binding with platform-controlled model selection.
 - **Token caps:** Avoid setting `max_tokens` unless the user explicitly needs a hard output cap. Thinking/reasoning tokens count toward that budget and can cut answers off early. If required, set a generous cap and call out truncation risk.
 
@@ -713,19 +712,20 @@ On camelAI deploys, the platform rewrites this binding to the internal `Connecti
 
 ### Runtime API
 
-Use the stable runtime API for dynamic connection/tool names:
+Use `CONNECTIONS.methods()` to inspect available connection aliases, method names, and input schemas. Use `createConnections()` from the starter template for method-style calls:
 
 ```typescript
+import { createConnections } from "~/lib/connections";
+
 export async function action({ context }: Route.ActionArgs) {
-  const tools = await context.cloudflare.env.CONNECTIONS.tools("stripe");
+  const methods = await context.cloudflare.env.CONNECTIONS.methods();
+  const connections = createConnections(context.cloudflare.env);
 
-  const result = await context.cloudflare.env.CONNECTIONS.call(
-    "stripe",
-    "create_customer",
-    { email: "customer@example.com" }
-  );
+  const customer = await connections.stripeProd.createCustomer({
+    email: "customer@example.com",
+  });
 
-  return { tools, result };
+  return { methods, customer };
 }
 ```
 
@@ -736,35 +736,59 @@ Available methods:
 | `list()` | List workspace connections available to the Worker |
 | `get(connection)` | Resolve one connection by id, name, or type |
 | `tools(connection)` | List MCP-backed tools for a connection |
-| `call(connection, tool, input?)` | Call one MCP-backed tool |
+| `methods()` | List available connection aliases and method schemas |
 
 Prefer connection ids when a workspace may have multiple connections of the same type. Name/type lookup is convenient, but ambiguous matches throw and ask for an id.
 
-### Typed MCP Tool Facade
-
-For nicer Worker code and build-time checking, generate a typed facade from the live MCP schemas:
-
-```bash
-bun run connections:typegen
-```
-
-This writes `.camelai/connections.ts` in starter apps. Import `createConnections()` and call generated methods instead of raw strings:
+When the connection or method name comes from user input, validate it against `CONNECTIONS.methods()` before calling the method facade:
 
 ```typescript
-import { createConnections } from "../../.camelai/connections";
+import { createConnections } from "~/lib/connections";
 
-export async function action({ context }: Route.ActionArgs) {
+export async function action({ context, request }: Route.ActionArgs) {
+  const form = await request.formData();
+  const connection = String(form.get("connection") ?? "stripe");
+  const method = String(form.get("method") ?? "listCustomers");
+  const methods = await context.cloudflare.env.CONNECTIONS.methods();
+
+  if (!methods.some((entry) =>
+    entry.alias === connection &&
+    entry.methods.some((candidate) => candidate.name === method)
+  )) {
+    throw new Response("Unknown connection method", { status: 400 });
+  }
+
   const connections = createConnections(context.cloudflare.env);
+  const result = await connections[connection][method]({ limit: 10 });
 
-  const customer = await connections.stripeProd.createCustomer({
-    email: "customer@example.com",
-  });
-
-  return { customer };
+  return { result };
 }
 ```
 
-Run typegen again after adding/removing connections or when an MCP server changes its tools. Keep the raw `CONNECTIONS.call(...)` path for fully dynamic workflows.
+When testing connection calls in the Pi agent harness, use the `js_exec` tool. It exposes the same Worker binding object as `context.cloudflare.env.CONNECTIONS` and a method facade at `context.cloudflare.connections`:
+
+```javascript
+const methods = await env.CONNECTIONS.methods();
+const customers = await context.cloudflare.connections.stripeProd.listCustomers({ limit: 10 });
+return { methods, customers };
+```
+
+Global facade access also works:
+
+```javascript
+return await connections.stripeProd.listCustomers({ limit: 10 });
+```
+
+The `js_exec` runtime also exposes every registered harness tool on the global `tools` object. Tool names, descriptions, and parameter schemas are available in `ALL_TOOLS`. Use this when code-mode JavaScript needs web lookup, workspace file/shell operations, scheduled prompts, app/domain tools, user prompts, subagents, or any other harness tool:
+
+```javascript
+const available = ALL_TOOLS.map((tool) => ({ name: tool.name, parameters: tool.parameters }));
+const search = await tools.WebSearch({ query: "Cloudflare Workers Durable Objects", numResults: 3 });
+const page = await tools.WebFetch({ url: search.results[0].url });
+return { available, search, page };
+```
+
+Do not call `fetch()` directly for web search from `js_exec`; outbound network access is intentionally restricted. Prefer `tools.WebSearch(...)` and `tools.WebFetch(...)`.
 
 ## Virtual AI Binding
 
@@ -793,7 +817,7 @@ On camelAI deploys, the platform virtualizes this binding with platform-controll
 
 ### Model Routes
 
-Three model routes are available via `workersai(routeName, {})` in deployed workers, or `model: "routeName"` in the container OpenAI-compatible proxy:
+Three model routes are available via `workersai(routeName, {})` in deployed workers:
 
 | Route | Purpose | When to Use |
 |-------|---------|-------------|
@@ -801,7 +825,7 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
 | `auto_image` | Image generation from text prompts | App needs to create images: avatars, illustrations, thumbnails |
 
-Default to `auto` unless the use case clearly requires search or image generation. Apps can use multiple routes for different features. Model selection is supported in both deployed workers and the container proxy.
+Default to `auto` unless the use case clearly requires search or image generation. Apps can use multiple routes for different features.
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 

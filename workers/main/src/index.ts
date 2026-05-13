@@ -10,7 +10,7 @@
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
  * - /ws/:workspace → Chat side-channel WebSocket (ChatThreadDO)
- * - /ws/runner/:workspace → Chat runner WebSocket (bridged directly to sandbox-host)
+ * - /ws/runner/:workspace → Chat runner WebSocket (ChatThreadDO-owned agent session)
  * - * → React Router SSR
  */
 
@@ -58,7 +58,7 @@ import { handleWorkerAuth } from './routes/worker-auth.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
-export { ChatThreadDO } from './durable-objects.js';
+export { ChatThreadDO, CodeModeToolsBinding } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
 export { EmailHandleDO } from './email-handle-registry.js';

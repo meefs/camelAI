@@ -90,6 +90,12 @@ const BIGQUERY_INTEGRATION_TYPE = 'bigquery';
 const WORKSPACE_MODEL_PICKER_CONFIG_KEY = 'model_picker_config';
 
 export type WorkspaceAccessLevel = 'full' | 'none';
+export type WorkspaceIntegrationAuthStatus =
+  | 'connected'
+  | 'needs_reauth'
+  | 'missing_scopes'
+  | 'setup_incomplete'
+  | 'provider_error';
 
 export interface WorkspaceMember {
   user_id: string;
@@ -111,6 +117,11 @@ export interface WorkspaceIntegrationRecord {
   updated_at: number;
   deleted_at: number | null;
   token_expires_at: number | null;
+  auth_status: WorkspaceIntegrationAuthStatus | null;
+  auth_error_code: string | null;
+  auth_error_message: string | null;
+  auth_checked_at: number | null;
+  reauth_required_at: number | null;
 }
 
 export interface WorkspaceAuditLogEntry {
@@ -293,7 +304,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       );
     }
 
-    const CURRENT_SCHEMA_VERSION = 5;
+    if (version < 6) {
+      // V6: Track integration auth health so stale OAuth/API credentials can
+      // be surfaced to users and sandbox runtimes with a clear reauth path.
+      this.sql.exec("ALTER TABLE integrations ADD COLUMN auth_status TEXT DEFAULT 'connected'");
+      this.sql.exec('ALTER TABLE integrations ADD COLUMN auth_error_code TEXT');
+      this.sql.exec('ALTER TABLE integrations ADD COLUMN auth_error_message TEXT');
+      this.sql.exec('ALTER TABLE integrations ADD COLUMN auth_checked_at INTEGER');
+      this.sql.exec('ALTER TABLE integrations ADD COLUMN reauth_required_at INTEGER');
+      this.sql.exec("CREATE INDEX IF NOT EXISTS idx_integrations_auth_status ON integrations(auth_status) WHERE auth_status != 'connected' AND deleted_at IS NULL");
+    }
+
+    const CURRENT_SCHEMA_VERSION = 6;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -844,7 +866,8 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at
+                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at,
+                auth_status, auth_error_code, auth_error_message, auth_checked_at, reauth_required_at
          FROM integrations
          WHERE deleted_at IS NULL
          ORDER BY created_at DESC`
@@ -856,7 +879,8 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const rows = this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at
+                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at,
+                auth_status, auth_error_code, auth_error_message, auth_checked_at, reauth_required_at
          FROM integrations WHERE id = ? AND deleted_at IS NULL`,
         id
       )
@@ -928,10 +952,20 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
 
     const now = Date.now();
+    const initialAuthStatus: WorkspaceIntegrationAuthStatus = resolvedCredentialsEncrypted
+      ? 'connected'
+      : 'setup_incomplete';
+    const initialAuthErrorCode = initialAuthStatus === 'connected'
+      ? null
+      : 'AUTH_SETUP_INCOMPLETE';
+    const initialAuthErrorMessage = initialAuthStatus === 'connected'
+      ? null
+      : 'Connection setup is incomplete; credentials are required before tools can be used.';
     this.sql.exec(
       `INSERT INTO integrations
-       (id, integration_type, name, category, auth_method, config, credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+       (id, integration_type, name, category, auth_method, config, credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at,
+        auth_status, auth_error_code, auth_error_message, auth_checked_at, reauth_required_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
       id,
       integrationType,
       name,
@@ -942,7 +976,12 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       createdBy,
       now,
       now,
-      resolvedTokenExpiresAt
+      resolvedTokenExpiresAt,
+      initialAuthStatus,
+      initialAuthErrorCode,
+      initialAuthErrorMessage,
+      now,
+      initialAuthStatus === 'connected' ? null : now
     );
     this.log('integration_created', createdBy, id, { integration_type: integrationType, name });
 
@@ -1000,6 +1039,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (updates.credentialsEncrypted !== undefined) {
       setClauses.push('credentials_encrypted = ?');
       params.push(updates.credentialsEncrypted);
+      setClauses.push(
+        "auth_status = 'connected'",
+        'auth_error_code = NULL',
+        'auth_error_message = NULL',
+        'auth_checked_at = ?',
+        'reauth_required_at = NULL'
+      );
+      params.push(now);
     }
     if (updates.tokenExpiresAt !== undefined) {
       setClauses.push('token_expires_at = ?');
@@ -1014,6 +1061,40 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (updates.tokenExpiresAt !== undefined) {
       await this.scheduleNextTokenRefresh();
     }
+  }
+
+  async updateIntegrationAuthStatus(
+    id: string,
+    authStatus: WorkspaceIntegrationAuthStatus,
+    errorCode?: string | null,
+    errorMessage?: string | null,
+    actorId = 'system'
+  ): Promise<void> {
+    const now = Date.now();
+    const requiresReauth = authStatus === 'needs_reauth'
+      || authStatus === 'missing_scopes'
+      || authStatus === 'setup_incomplete';
+    this.sql.exec(
+      `UPDATE integrations
+       SET auth_status = ?,
+           auth_error_code = ?,
+           auth_error_message = ?,
+           auth_checked_at = ?,
+           reauth_required_at = ?,
+           updated_at = ?
+       WHERE id = ? AND deleted_at IS NULL`,
+      authStatus,
+      authStatus === 'connected' ? null : (errorCode ?? null),
+      authStatus === 'connected' ? null : (errorMessage ?? null),
+      now,
+      requiresReauth ? now : null,
+      now,
+      id
+    );
+    this.log('integration_auth_status_updated', actorId, id, {
+      auth_status: authStatus,
+      error_code: authStatus === 'connected' ? null : (errorCode ?? null),
+    });
   }
 
   async deleteIntegration(id: string, actorId: string): Promise<void> {
@@ -1098,7 +1179,8 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       // Find all integration tokens expiring within the batch window
       const expiringIntegrations = this.sql.exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at
+                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at,
+                auth_status, auth_error_code, auth_error_message, auth_checked_at, reauth_required_at
          FROM integrations
          WHERE token_expires_at IS NOT NULL
            AND token_expires_at <= ?
@@ -1120,9 +1202,21 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
             console.error(`[WorkspaceDO] Failed to refresh token for ${integration.integration_type}:`, err);
             if (err instanceof PermanentRefreshError) {
               // Permanently invalid (e.g. revoked token) — stop retrying this integration
+              const failureAt = Date.now();
               this.sql.exec(
-                `UPDATE integrations SET token_expires_at = NULL, updated_at = ? WHERE id = ?`,
-                Date.now(),
+                `UPDATE integrations
+                 SET token_expires_at = NULL,
+                     auth_status = 'needs_reauth',
+                     auth_error_code = 'AUTH_REAUTH_REQUIRED',
+                     auth_error_message = ?,
+                     auth_checked_at = ?,
+                     reauth_required_at = ?,
+                     updated_at = ?
+                 WHERE id = ?`,
+                err.message,
+                failureAt,
+                failureAt,
+                failureAt,
                 integration.id
               );
               console.warn(`[WorkspaceDO] Disabled token refresh for ${integration.integration_type} integration ${integration.id} (permanent failure). User must re-authorize.`);
@@ -1280,14 +1374,23 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     // Encrypt and save new credentials
     const encrypted = await encryptCredentials(newCredentials, this.env.INTEGRATION_SECRET_KEY);
+    const now = Date.now();
 
     this.sql.exec(
       `UPDATE integrations
-       SET credentials_encrypted = ?, token_expires_at = ?, updated_at = ?
+       SET credentials_encrypted = ?,
+           token_expires_at = ?,
+           auth_status = 'connected',
+           auth_error_code = NULL,
+           auth_error_message = NULL,
+           auth_checked_at = ?,
+           reauth_required_at = NULL,
+           updated_at = ?
        WHERE id = ?`,
       encrypted,
       newExpiresAt,
-      Date.now(),
+      now,
+      now,
       integration.id
     );
 

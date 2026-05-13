@@ -390,6 +390,11 @@ function sanitizeRedirectPath(input: string): string {
   }
 }
 
+function reauthIntegrationId(stateData: IntegrationOAuthState): string | null {
+  const value = stateData.extra_config?.reauth_integration_id;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export async function handleSlackOAuthStart({
   req,
   env,
@@ -411,6 +416,7 @@ export async function handleSlackOAuthStart({
   const redirectTo = sanitizeRedirectPath(
     url.searchParams.get("redirect") || "/connections",
   );
+  const reauthIntegrationId = url.searchParams.get("integration_id")?.trim();
   const callbackUrl = `${url.origin}/api/integrations/slack/callback`;
 
   // Check for MCP callback context (from chat connection setup prompt)
@@ -428,6 +434,7 @@ export async function handleSlackOAuthStart({
     session.user_id,
     redirectTo,
     mcpContext,
+    reauthIntegrationId ? { reauth_integration_id: reauthIntegrationId } : undefined,
   );
 
   const authUrl = new URL(slackDef.oauthConfig.authorizationUrl);
@@ -528,18 +535,33 @@ export async function handleSlackOAuthCallback({
       env.INTEGRATION_SECRET_KEY,
     );
     const name = tokenData.team?.name || "Slack";
-    const integrationId = crypto.randomUUID();
+    const requestedReauthId = reauthIntegrationId(stateData);
+    const existingIntegration = requestedReauthId
+      ? await wsStub.getIntegration(requestedReauthId)
+      : null;
+    if (requestedReauthId && existingIntegration?.integration_type !== "slack") {
+      return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
+    }
+    const integrationId = requestedReauthId ?? crypto.randomUUID();
 
-    await wsStub.createIntegration(
-      integrationId,
-      "slack",
-      name,
-      "communication",
-      "oauth2",
-      JSON.stringify({}),
-      encrypted,
-      stateData.user_id,
-    );
+    if (requestedReauthId) {
+      await wsStub.updateIntegration(
+        requestedReauthId,
+        { name, config: JSON.stringify({}), credentialsEncrypted: encrypted },
+        stateData.user_id,
+      );
+    } else {
+      await wsStub.createIntegration(
+        integrationId,
+        "slack",
+        name,
+        "communication",
+        "oauth2",
+        JSON.stringify({}),
+        encrypted,
+        stateData.user_id,
+      );
+    }
 
     if (tokenData.team?.id) {
       await upsertSlackTeamInstallation(env.APP_KV, {
@@ -941,6 +963,7 @@ export async function handleNotionOAuthStart({
   const redirectTo = sanitizeRedirectPath(
     url.searchParams.get("redirect") || "/connections",
   );
+  const reauthIntegrationId = url.searchParams.get("integration_id")?.trim();
   const callbackUrl = `${url.origin}/api/integrations/notion/callback`;
 
   // Check for MCP callback context (from chat connection setup prompt)
@@ -958,6 +981,7 @@ export async function handleNotionOAuthStart({
     session.user_id,
     redirectTo,
     mcpContext,
+    reauthIntegrationId ? { reauth_integration_id: reauthIntegrationId } : undefined,
   );
 
   const authUrl = new URL(notionDef.oauthConfig.authorizationUrl);
@@ -1083,19 +1107,39 @@ export async function handleNotionOAuthCallback({
       env.INTEGRATION_SECRET_KEY,
     );
     const name = tokenData.workspace_name || "Notion";
-    const integrationId = crypto.randomUUID();
+    const requestedReauthId = reauthIntegrationId(stateData);
+    const existingIntegration = requestedReauthId
+      ? await wsStub.getIntegration(requestedReauthId)
+      : null;
+    if (requestedReauthId && existingIntegration?.integration_type !== "notion") {
+      return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
+    }
+    const integrationId = requestedReauthId ?? crypto.randomUUID();
 
-    await wsStub.createIntegration(
-      integrationId,
-      "notion",
-      name,
-      "saas",
-      "oauth2",
-      JSON.stringify({}),
-      encrypted,
-      stateData.user_id,
-      tokenExpiresAt, // Pass expiry for alarm scheduling
-    );
+    if (requestedReauthId) {
+      await wsStub.updateIntegration(
+        requestedReauthId,
+        {
+          name,
+          config: JSON.stringify({}),
+          credentialsEncrypted: encrypted,
+          tokenExpiresAt,
+        },
+        stateData.user_id,
+      );
+    } else {
+      await wsStub.createIntegration(
+        integrationId,
+        "notion",
+        name,
+        "saas",
+        "oauth2",
+        JSON.stringify({}),
+        encrypted,
+        stateData.user_id,
+        tokenExpiresAt, // Pass expiry for alarm scheduling
+      );
+    }
 
     // Push secrets to running container
     ctx.waitUntil(
@@ -1161,6 +1205,7 @@ export async function handleSalesforceOAuthStart({
   const redirectTo = sanitizeRedirectPath(
     url.searchParams.get("redirect") || "/connections",
   );
+  const reauthIntegrationId = url.searchParams.get("integration_id")?.trim();
   const callbackUrl = `${url.origin}/api/integrations/salesforce/callback`;
 
   // Check for MCP callback context (from chat connection setup prompt)
@@ -1178,6 +1223,7 @@ export async function handleSalesforceOAuthStart({
     session.user_id,
     redirectTo,
     mcpContext,
+    reauthIntegrationId ? { reauth_integration_id: reauthIntegrationId } : undefined,
   );
 
   const authUrl = new URL(salesforceDef.oauthConfig.authorizationUrl);
@@ -1293,21 +1339,36 @@ export async function handleSalesforceOAuthCallback({
       : "";
     const orgName = instanceHost.split(".")[0] || "Salesforce";
     const name = orgName.charAt(0).toUpperCase() + orgName.slice(1);
-    const integrationId = crypto.randomUUID();
 
     // Store instance_url in config for API calls
     const config = { instance_url: tokenData.instance_url };
+    const requestedReauthId = reauthIntegrationId(stateData);
+    const existingIntegration = requestedReauthId
+      ? await wsStub.getIntegration(requestedReauthId)
+      : null;
+    if (requestedReauthId && existingIntegration?.integration_type !== "salesforce") {
+      return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
+    }
+    const integrationId = requestedReauthId ?? crypto.randomUUID();
 
-    await wsStub.createIntegration(
-      integrationId,
-      "salesforce",
-      name,
-      "saas",
-      "oauth2",
-      JSON.stringify(config),
-      encrypted,
-      stateData.user_id,
-    );
+    if (requestedReauthId) {
+      await wsStub.updateIntegration(
+        requestedReauthId,
+        { name, config: JSON.stringify(config), credentialsEncrypted: encrypted },
+        stateData.user_id,
+      );
+    } else {
+      await wsStub.createIntegration(
+        integrationId,
+        "salesforce",
+        name,
+        "saas",
+        "oauth2",
+        JSON.stringify(config),
+        encrypted,
+        stateData.user_id,
+      );
+    }
 
     // Push secrets to running container
     ctx.waitUntil(

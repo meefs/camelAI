@@ -41,6 +41,9 @@
 		"binding": "AI",
 		"remote": true
 	},
+	"worker_loaders": [
+		{ "binding": "CODE_MODE_LOADER" }
+	],
 	"analytics_engine_datasets": [
 		{
 			"binding": "ERROR_ANALYTICS",
@@ -196,6 +199,9 @@
 				"binding": "AI",
 				"remote": true
 			},
+			"worker_loaders": [
+				{ "binding": "CODE_MODE_LOADER" }
+			],
 			"r2_buckets": [
 				{
 					"binding": "R2_BUCKET",
@@ -319,6 +325,9 @@
 				"binding": "AI",
 				"remote": true
 			},
+			"worker_loaders": [
+				{ "binding": "CODE_MODE_LOADER" }
+			],
 			"r2_buckets": [
 				{
 					"binding": "R2_BUCKET",
@@ -441,6 +450,9 @@
 				"binding": "AI",
 				"remote": true
 			},
+			"worker_loaders": [
+				{ "binding": "CODE_MODE_LOADER" }
+			],
 			"analytics_engine_datasets": [
 				{
 					"binding": "ERROR_ANALYTICS",
@@ -564,6 +576,9 @@
 				"binding": "AI",
 				"remote": true
 			},
+			"worker_loaders": [
+				{ "binding": "CODE_MODE_LOADER" }
+			],
 			"r2_buckets": [
 				{
 					"binding": "R2_BUCKET",

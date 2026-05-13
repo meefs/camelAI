@@ -7,7 +7,6 @@ require (
 	github.com/docker/go-connections v0.6.0
 	github.com/docker/go-units v0.5.0
 	github.com/go-sql-driver/mysql v1.9.3
-	github.com/gorilla/websocket v1.5.3
 	github.com/lib/pq v1.11.2
 	github.com/microsoft/go-mssqldb v1.7.2
 	modernc.org/sqlite v1.45.0

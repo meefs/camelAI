@@ -14,6 +14,23 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     }
 
     const { container } = await requireWorkspaceAuth(request, context, workspaceId);
+    const thread = await chatDO.getThread(context, threadId, workspaceId);
+    if (!thread) {
+      return Response.json({ error: 'Thread not found' }, { status: 404 });
+    }
+
+    const piMessages = await chatDO.getPiCoreMessages(context, threadId);
+    if (piMessages.length > 0) {
+      return Response.json(
+        { success: true, messages: piMessages },
+        {
+          headers: {
+            'Cache-Control': 'no-cache, no-transform',
+          },
+        },
+      );
+    }
+
     const legacyClaudeSessionId = await chatDO.getLegacyClaudeSessionId(context, threadId);
     const codexSessionId = await chatDO.getCodexSessionId(context, threadId);
     const streamResult = await container.readThreadMessagesStream(threadId, {

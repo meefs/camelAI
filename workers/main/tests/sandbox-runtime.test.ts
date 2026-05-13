@@ -122,30 +122,6 @@ describe('sandbox runtime', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('classifies sandbox-host fork endpoint 404s as routing failures', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ error: 'Not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
-    const env = {
-      SANDBOX_HOST: { fetch: fetchMock },
-    } as unknown as WorkspaceContainerEnv;
-
-    const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
-    const result = await container.forkThreadSession({
-      sourceThreadId: 'thread-source',
-      targetThreadId: 'thread-target',
-      entryId: 'entry-1',
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.code).toBe('SANDBOX_FORK_ENDPOINT_NOT_FOUND');
-    expect(result.error).toContain('Restart or deploy sandbox-host');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
   it('retries transient message history fetch handshake failures', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const timeout = new Error('handshake timeout');
@@ -182,77 +158,4 @@ describe('sandbox runtime', () => {
     warnSpy.mockRestore();
   });
 
-  it('retries transient chat websocket handshake failures', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const timeout = new Error('handshake timeout');
-    timeout.name = 'HandshakeTimeoutError';
-    const socket = new WebSocketPair()[0];
-    const fetchMock = vi
-      .fn()
-      .mockRejectedValueOnce(timeout)
-      .mockResolvedValueOnce(new Response(null, { status: 101, webSocket: socket }));
-
-    const env = {
-      SANDBOX_HOST: { fetch: fetchMock },
-      WORKER_BASE_URL: 'https://camelai.dev',
-    } as unknown as WorkspaceContainerEnv;
-
-    const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
-    const result = await container.connectChatWebSocket({ threadId: 'thread-1' });
-
-    expect(result).toBe(socket);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[Sandbox] transient sandbox fetch failed; retrying',
-      expect.objectContaining({
-        operation: 'chat_websocket',
-        workspaceId: 'ws-1',
-        orgId: 'org-1',
-        attempt: 1,
-      }),
-    );
-
-    logSpy.mockRestore();
-    warnSpy.mockRestore();
-  });
-
-  it('retries fork on the control port when SANDBOX_HOST_URL points at the local proxy port', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
-      if (url.port === '4401') {
-        return new Response(JSON.stringify({ error: 'Not found' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.port === '4400') {
-        return new Response(JSON.stringify({ success: true }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response('unexpected url', { status: 500 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    try {
-      const env = {
-        SANDBOX_HOST_URL: 'http://localhost:4401',
-      } as unknown as WorkspaceContainerEnv;
-
-      const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
-      const result = await container.forkThreadSession({
-        sourceThreadId: 'thread-source',
-        targetThreadId: 'thread-target',
-        entryId: 'entry-1',
-      });
-
-      expect(result.success).toBe(true);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(String(fetchMock.mock.calls[0]?.[0])).toContain('localhost:4401');
-      expect(String(fetchMock.mock.calls[1]?.[0])).toContain('localhost:4400');
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
 });

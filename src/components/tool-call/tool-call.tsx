@@ -113,7 +113,7 @@ export function ToolCall({
   const statusRef = useRef<ToolStatus>('running');
   const callIdentityRef = useRef<string>('');
   const resolvedResults = results ?? (result ? [result] : []);
-  const rawStatus = getToolStatus(tool, result, resolvedResults, agentContinued);
+  const rawStatus = getToolStatus(tool, result, resolvedResults, agentContinued, isStreaming);
   const resolvedCallIdentity = callIdentity ?? tool?.id ?? result?.tool_use_id ?? 'tool-call';
   const status = ratchetToolStatusForIdentity(
     statusRef.current,

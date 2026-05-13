@@ -4,7 +4,11 @@ import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
 import { isOrgAdmin } from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
+import {
+  INTEGRATION_REGISTRY,
+  getIntegrationDefinition,
+  shouldStoreIntegrationCredentials,
+} from '@/lib/integration-registry';
 import { encryptCredentials } from '@/lib/integration-crypto';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
@@ -82,7 +86,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       const config = configStr ? JSON.parse(configStr) : {};
       const credentials = credentialsStr ? JSON.parse(credentialsStr) : {};
-      const credentialsEncrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
+      const credentialsEncrypted = shouldStoreIntegrationCredentials(integrationType, credentials)
+        ? await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY)
+        : '';
 
       await stub.createIntegration(
         crypto.randomUUID(),

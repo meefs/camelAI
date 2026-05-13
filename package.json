@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "react-router dev",
-		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 LOCAL_WORKER_BASE_URL=http://localhost:3001 react-router dev",
+		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 WORKER_BASE_URL=http://localhost:3001 react-router dev",
 		"build": "react-router build",
 		"build:cf": "react-router build",
 		"start": "wrangler dev",
@@ -32,6 +32,8 @@
 		"test": "vitest",
 		"test:run": "vitest run",
 		"test:all": "bun run test:run && bun run test:workers",
+		"test:connections:mcp": "node scripts/test-connections-mcp.mjs",
+		"test:connections:local-db": "tsx scripts/test-local-database-mcp.ts",
 		"test:stripe": "RUN_STRIPE_INTEGRATION_TESTS=1 vitest run tests/stripe-integration.test.ts",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",
@@ -39,7 +41,7 @@
 		"test:e2e:ui": "playwright test --ui",
 		"dev:sandbox-host": "node scripts/dev-sandbox-host.mjs",
 		"dev:sandbox-host:pi": "node scripts/dev-sandbox-host.mjs",
-		"test:sandbox-host": "cd services/sandbox-host && CGO_ENABLED=0 go test ./...",
+		"test:sandbox-host": "cd services/sandbox-host && go test ./...",
 		"build:renderer": "vite build --config vite.renderer.config.ts",
 		"deploy:go": "bash scripts/deploy-go-services.sh --env prod",
 		"deploy:go:prod": "bash scripts/deploy-go-services.sh --env prod",
@@ -53,9 +55,11 @@
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.71.2",
-		"@cloudflare/vite-plugin": "^1.25.4",
+		"@cloudflare/vite-plugin": "^1.36.4",
 		"@conform-to/react": "^1.15.1",
 		"@conform-to/zod": "^1.15.1",
+		"@mariozechner/pi-agent-core": "0.73.1",
+		"@mariozechner/pi-ai": "0.73.1",
 		"@modelcontextprotocol/sdk": "^1.25.2",
 		"@monaco-editor/react": "^4.7.0",
 		"@react-email/components": "^1.0.7",
@@ -95,7 +99,7 @@
 	},
 	"devDependencies": {
 		"@cloudflare/puppeteer": "^1.0.6",
-		"@cloudflare/vitest-pool-workers": "^0.12.16",
+		"@cloudflare/vitest-pool-workers": "^0.16.4",
 		"@eslint/eslintrc": "^3",
 		"@playwright/test": "^1.57.0",
 		"@react-router/dev": "^7.6.1",
@@ -121,10 +125,11 @@
 		"typescript": "^5",
 		"vite": "8.0.0-beta.16",
 		"vite-tsconfig-paths": "^5.1.4",
-		"vitest": "^3.2.4",
-		"wrangler": "^4.68.0"
+		"vitest": "^4.1.6",
+		"wrangler": "^4.90.1"
 	},
 	"overrides": {
-		"vite": "$vite"
+		"vite": "$vite",
+		"workerd": "1.20260511.1"
 	}
 }

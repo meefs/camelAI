@@ -80,6 +80,3 @@ After provisioning a new staging VM, create a separate Cloudflare Tunnel/VPC
 service for that VM and update `wrangler.staging.jsonc` so the `SANDBOX_HOST`
 binding points at the staging service ID. Production should keep its existing
 service ID.
-
-The `SANDBOX_PROXY_SECRET` secret must match between the staging Worker and the
-staging VM. Keep prod and staging secrets separate.

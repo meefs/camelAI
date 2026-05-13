@@ -10,28 +10,16 @@ function testEmail() {
   return `admin-api-credits-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 }
 
-function adminEnv(options: { usageCostUsd?: number } = {}): WorkerEnv {
+function adminEnv(): WorkerEnv {
   return {
     ...testEnv,
     ADMIN_API_KEY: "test-admin-api-key",
-    SANDBOX_HOST: {
-      fetch: async (request: Request | string) => {
-        const url = new URL(typeof request === "string" ? request : request.url);
-        expect(url.pathname).toMatch(/^\/v1\/usage\/orgs\/[^/]+\/log\/sum$/);
-        expect(url.searchParams.get("chargeable_only")).toBe("1");
-        return Response.json({
-          total_cost_usd: options.usageCostUsd ?? 0,
-          total_requests: 3,
-        });
-      },
-    } as unknown as Fetcher,
   } as unknown as WorkerEnv;
 }
 
 async function adminPutCredits(
   userId: string,
   body: unknown,
-  options: { usageCostUsd?: number } = {},
 ): Promise<Response> {
   const request = new Request(`http://example/api/admin/users/${userId}/credits`, {
     method: "PUT",
@@ -44,7 +32,7 @@ async function adminPutCredits(
 
   const response = await handleAdminApi({
     req: request,
-    env: adminEnv(options),
+    env: adminEnv(),
     ctx: {} as ExecutionContext,
     url: new URL(request.url),
     match: request.url.match(/^.*$/)!,
@@ -66,15 +54,17 @@ describe("admin API user credits route", () => {
       billing_credit_purchase_total_cents: 1000,
       billing_credit_grant_total_cents: 2000,
     });
+    await orgStub.recordUsage({
+      model: "test-model",
+      provider: "test",
+      credit_chargeable: true,
+      cost_usd: 12.34,
+    });
 
-    const response = await adminPutCredits(
-      userId,
-      {
-        org_id: org.id,
-        available_credits_cents: 5000,
-      },
-      { usageCostUsd: 12.34 },
-    );
+    const response = await adminPutCredits(userId, {
+      org_id: org.id,
+      available_credits_cents: 5000,
+    });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -100,17 +90,19 @@ describe("admin API user credits route", () => {
     const { userId } = await createUser(testEnv, testEmail(), "password123", "Raw Credit User");
     const { org } = await createOrg(testEnv, "Raw Credits Org", userId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await orgStub.recordUsage({
+      model: "test-model",
+      provider: "test",
+      credit_chargeable: true,
+      cost_usd: 6.25,
+    });
 
-    const response = await adminPutCredits(
-      userId,
-      {
-        org_id: org.id,
-        billing_credit_purchase_total_cents: 1200,
-        billing_credit_grant_total_cents: -200,
-        billing_credit_usage_started_at: 123456,
-      },
-      { usageCostUsd: 6.25 },
-    );
+    const response = await adminPutCredits(userId, {
+      org_id: org.id,
+      billing_credit_purchase_total_cents: 1200,
+      billing_credit_grant_total_cents: -200,
+      billing_credit_usage_started_at: 123456,
+    });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({

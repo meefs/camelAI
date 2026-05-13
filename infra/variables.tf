@@ -69,18 +69,6 @@ variable "cloudflared_tunnel_token" {
   sensitive   = true
 }
 
-variable "sandbox_proxy_secret" {
-  description = "Shared secret used by workers when proxying requests to sandbox-host"
-  type        = string
-  sensitive   = true
-}
-
-variable "sandbox_proxy_port" {
-  description = "Host port dedicated to container proxy traffic (/proxy/* only)"
-  type        = number
-  default     = 8081
-}
-
 variable "r2_access_key_id" {
   description = "R2 API access key ID used by sandbox-host s3fs mount"
   type        = string
@@ -103,41 +91,4 @@ variable "r2_bucket_name" {
   description = "R2 bucket name mounted by sandbox-host"
   type        = string
   default     = "chiridion-sandbox"
-}
-
-variable "cf_account_id" {
-  description = "Cloudflare account ID used for AI Gateway routing in sandbox-host"
-  type        = string
-}
-
-variable "cf_gateway_name" {
-  description = "Cloudflare AI Gateway name used by sandbox-host OpenAI proxy"
-  type        = string
-}
-
-variable "cf_gateway_token" {
-  description = "Cloudflare AI Gateway token used by sandbox-host OpenAI proxy"
-  type        = string
-  sensitive   = true
-}
-
-variable "exa_api_key" {
-  description = "Exa API key used by host-side Pi WebSearch and WebFetch tools"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "parallel_api_key" {
-  description = "Parallel API key used by host-side Pi WebSearch and WebFetch tools"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "firecrawl_api_key" {
-  description = "Firecrawl API key used by host-side Pi WebSearch and WebFetch tools"
-  type        = string
-  sensitive   = true
-  default     = ""
 }

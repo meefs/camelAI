@@ -182,6 +182,82 @@ describe('Codex todo state integration', () => {
       'thread-1',
       'codex',
       {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'tool-list-integrations',
+            type: 'dynamicToolCall',
+            tool: 'list_integrations',
+            arguments: {},
+            status: 'running',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'tool-js-exec',
+            type: 'dynamicToolCall',
+            tool: 'js_exec',
+            arguments: { code: 'return 1;' },
+            status: 'running',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'tool-ls',
+            type: 'dynamicToolCall',
+            tool: 'ls',
+            arguments: { path: '/home/claude/src' },
+            status: 'running',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'tool-find',
+            type: 'dynamicToolCall',
+            tool: 'find',
+            arguments: { pattern: '*.tsx', path: '/home/claude/src' },
+            status: 'running',
+          },
+        },
+      },
+      streamingIds,
+    );
+
+    messages = applyRuntimeEventToMessages(
+      messages,
+      'thread-1',
+      'codex',
+      {
         method: 'item/completed',
         params: {
           item: {
@@ -209,6 +285,23 @@ describe('Codex todo state integration', () => {
       { content: 'Check aliases', status: 'completed', activeForm: 'Checking aliases' },
     ]);
     expect(todo?.input.rawToolName).toBe('todo_write');
+
+    const ls = findToolUse(messages, 'tool-ls');
+    expect(ls?.name).toBe('LS');
+    expect(ls?.input.path).toBe('/home/claude/src');
+
+    const find = findToolUse(messages, 'tool-find');
+    expect(find?.name).toBe('Find');
+    expect(find?.input.pattern).toBe('*.tsx');
+
+    const jsExec = findToolUse(messages, 'tool-js-exec');
+    expect(jsExec?.name).toBe('JavaScript');
+    expect(jsExec?.input.code).toBe('return 1;');
+    expect(jsExec?.input.rawToolName).toBe('js_exec');
+
+    const listIntegrations = findToolUse(messages, 'tool-list-integrations');
+    expect(listIntegrations?.name).toBe('ListConnections');
+    expect(listIntegrations?.input.rawToolName).toBe('list_integrations');
   });
 
   it('preserves Pi dynamic tool input when completion omits arguments', () => {

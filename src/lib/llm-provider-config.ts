@@ -14,8 +14,7 @@ export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
 // When adding a model here, also add it to the picker catalog at
-// src/lib/model-catalog.ts and the pricing table at
-// services/sandbox-host/internal/app/usage_pricing.go.
+// src/lib/model-catalog.ts and the pricing table at src/lib/usage-pricing.ts.
 export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;

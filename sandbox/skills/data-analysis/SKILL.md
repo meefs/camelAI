@@ -238,7 +238,6 @@ predictions = model.predict(X_test)
 
 | Package | Purpose | Status |
 |---------|---------|--------|
-| `requests` | Call built-in SQL data proxy (`DATA_PROXY_URL`) from sandbox scripts | cached |
 | `sqlalchemy` | Python ORM and database toolkit | cached |
 | `psycopg` | PostgreSQL driver | cached |
 | `pymysql` | MySQL driver | `uv add pymysql` |
@@ -290,56 +289,6 @@ Supported query methods:
 - `DATA_PROXY.postgresQuery(...)` (positional params array)
 - `DATA_PROXY.mysqlQuery(...)` (positional params array)
 - All query calls require `mode: "read"` or `mode: "modify"` (no auto-detection).
-
-### Sandbox/container scripts (secondary: `DATA_PROXY_URL`)
-
-Inside sandbox/container scripts, you can call the HTTP proxy via `DATA_PROXY_URL`.
-No bearer token is required; requests are authenticated by sandbox-host identity headers.
-Keep queries bounded (`LIMIT`, selective `WHERE`) to avoid very large responses.
-
-```python
-import os
-import pandas as pd
-import requests
-
-data_proxy_url = os.environ["DATA_PROXY_URL"].rstrip("/")
-
-postgres = requests.post(
-    f"{data_proxy_url}/postgres/query",
-    json={
-        "mode": "read",
-        "host": "your-postgres-host",
-        "user": "username",
-        "password": "password",
-        "database": "analytics",
-        "query": "SELECT * FROM users WHERE id = $1 ORDER BY id LIMIT 100",
-        "params": [123],
-        "sslmode": "require",
-    },
-    timeout=60,
-).json()
-
-df = pd.DataFrame(postgres.get("recordset", []))
-print(df.head())
-
-postgres_modify = requests.post(
-    f"{data_proxy_url}/postgres/query",
-    json={
-        "mode": "modify",
-        "host": "your-postgres-host",
-        "user": "username",
-        "password": "password",
-        "database": "analytics",
-        "query": "UPDATE users SET last_seen_at = NOW() WHERE id = $1",
-        "params": [123],
-        "sslmode": "require",
-    },
-    timeout=60,
-).json()
-
-rows_affected = (postgres_modify.get("rowsAffected") or [0])[0]
-print(rows_affected)
-```
 
 ### Direct drivers (preferred local fallback in containers)
 

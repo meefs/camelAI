@@ -4,6 +4,7 @@ import { getEnv } from '@/lib/cloudflare.server';
 import {
   getCodexSessionId,
   getLegacyClaudeSessionId,
+  getPiCoreMessages,
 } from '@/lib/chat-do.server';
 import { readMessagesFromResponse } from '@/lib/thread-messages.server';
 import {
@@ -56,14 +57,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Thread not found' }, { status: 404 });
     }
 
-    const container = new WorkspaceContainer(
-      env as unknown as WorkspaceContainerEnv,
-      workspaceId,
-      orgId
-    );
-
-    const legacyClaudeSessionId = await getLegacyClaudeSessionId(context, threadId);
-
     const filename = `${sanitizeFilename(threadId)}.jsonl`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/x-ndjson; charset=utf-8',
@@ -72,6 +65,18 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       'X-Content-Type-Options': 'nosniff',
     };
 
+    const piMessages = await getPiCoreMessages(context, threadId);
+    if (piMessages.length > 0) {
+      return new Response(messagesToJsonl(piMessages), { headers });
+    }
+
+    const container = new WorkspaceContainer(
+      env as unknown as WorkspaceContainerEnv,
+      workspaceId,
+      orgId
+    );
+
+    const legacyClaudeSessionId = await getLegacyClaudeSessionId(context, threadId);
     const codexSessionId = await getCodexSessionId(context, threadId);
     const legacyClaudeCandidates = [
       threadId,

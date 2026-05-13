@@ -76,6 +76,39 @@ describe("AskUserQuestion keyboard shortcuts", () => {
     });
   });
 
+  it("renders and submits string options from raw tool payloads", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    const { container } = render(
+      <AskUserQuestion
+        data={makeData([
+          {
+            header: "Language",
+            question: "What's your favorite programming language?",
+            multiSelect: false,
+            options: ["TypeScript", "Python", "Go"],
+          } as any,
+        ])}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByText("TypeScript")).toBeInTheDocument();
+    expect(screen.getByText("Python")).toBeInTheDocument();
+    expect(screen.getByText("Go")).toBeInTheDocument();
+
+    const widget = getWidget(container);
+    await waitFor(() => {
+      expect(widget).toHaveFocus();
+    });
+
+    await user.keyboard("2{Enter}");
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      "What's your favorite programming language?": "Python",
+    });
+  });
+
   it("still handles number keys and Enter when focus has moved to a non-editable control", async () => {
     const onSubmit = vi.fn();
     const { container } = render(

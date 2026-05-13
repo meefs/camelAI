@@ -1,6 +1,6 @@
 ---
 name: generating-images
-description: Generate images using AI. Use this skill when the user asks to create, generate, or produce images, illustrations, avatars, thumbnails, or any visual content using AI models. Covers both deployed workers (env.AI) and local container scripts (OpenAI proxy).
+description: Generate images using AI. Use this skill when the user asks to create, generate, or produce images, illustrations, avatars, thumbnails, or any visual content using AI models. Covers deployed workers through env.AI.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -68,7 +68,7 @@ Minimal multimodal prompt shape:
 
 ## Response Shape
 
-Both the deployed worker path and the container proxy path return the same OpenAI-compatible response structure:
+The deployed worker path returns an OpenAI-compatible response structure:
 
 ```json
 {
@@ -101,7 +101,7 @@ Key fields:
 
 The `workers-ai-provider` package (`createWorkersAI`) does **not** surface the `images` array from the response. Calling `generateText({ model: workersai("auto_image", {}) })` will only return the text portion — images are silently dropped.
 
-**Use `env.AI.run()` directly** to access generated images in deployed workers, or the OpenAI SDK in container scripts.
+**Use `env.AI.run()` directly** to access generated images in deployed workers.
 
 ## Deployed Workers (env.AI.run Path)
 
@@ -168,110 +168,6 @@ const { bytes, mimeType } = dataUrlToBytes(imageDataUrl);
 await env.MY_BUCKET.put(`images/${crypto.randomUUID()}.png`, bytes, {
   httpMetadata: { contentType: mimeType },
 });
-```
-
-## Container Scripts (OpenAI Proxy Path)
-
-For scripts running inside the camelAI container, use the OpenAI SDK with `model: "auto_image"`.
-
-### Basic Image Generation
-
-```typescript
-import OpenAI from "openai";
-import { writeFile } from "fs/promises";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY ?? "proxy",
-  baseURL: process.env.OPENAI_BASE_URL,
-});
-
-const resp = await client.chat.completions.create({
-  model: "auto_image",
-  messages: [{ role: "user", content: "A watercolor painting of a mountain lake at sunset" }],
-});
-
-const message = resp.choices[0].message;
-console.log("Text:", message.content);
-
-// Access images from the raw response
-const images = (message as any).images as Array<{ image_url: { url: string } }> | undefined;
-
-if (images?.[0]) {
-  const dataUrl = images[0].image_url.url;
-  const base64Data = dataUrl.split(",")[1];
-  const buffer = Buffer.from(base64Data, "base64");
-  await writeFile("output.png", buffer);
-  console.log("Saved output.png");
-}
-```
-
-### Saving Multiple Images
-
-```typescript
-import OpenAI from "openai";
-import { writeFile, mkdir } from "fs/promises";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY ?? "proxy",
-  baseURL: process.env.OPENAI_BASE_URL,
-});
-
-async function generateImage(prompt: string, outputPath: string) {
-  const resp = await client.chat.completions.create({
-    model: "auto_image",
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const images = (resp.choices[0].message as any).images as
-    Array<{ image_url: { url: string } }> | undefined;
-
-  if (!images?.[0]) {
-    console.error("No image returned for:", prompt);
-    return null;
-  }
-
-  const base64Data = images[0].image_url.url.split(",")[1];
-  await writeFile(outputPath, Buffer.from(base64Data, "base64"));
-  console.log(`Saved: ${outputPath}`);
-  return outputPath;
-}
-
-// Generate a batch of images
-await mkdir("./generated", { recursive: true });
-
-await generateImage("A red fox in a snowy forest", "./generated/fox.png");
-await generateImage("A vintage map of a fantasy world", "./generated/map.png");
-await generateImage("A minimalist logo for a coffee shop called 'Brew'", "./generated/logo.png");
-```
-
-### Python (Container)
-
-```python
-import openai
-import base64
-import os
-
-client = openai.OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY", "proxy"),
-    base_url=os.environ.get("OPENAI_BASE_URL"),
-)
-
-resp = client.chat.completions.create(
-    model="auto_image",
-    messages=[{"role": "user", "content": "A cute cartoon cat wearing a top hat"}],
-)
-
-message = resp.choices[0].message
-print("Text:", message.content)
-
-# Access images from raw response
-images = getattr(message, "images", None) or resp.model_extra.get("choices", [{}])[0].get("message", {}).get("images")
-if images:
-    data_url = images[0]["image_url"]["url"]
-    base64_data = data_url.split(",")[1]
-    with open("cat.png", "wb") as f:
-        f.write(base64.b64decode(base64_data))
-    print("Saved cat.png")
 ```
 
 ## Chat Agent with Image Generation

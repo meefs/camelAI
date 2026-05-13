@@ -16,8 +16,28 @@ export interface ConnectionSummary {
 	capabilities: string[];
 	nativeMcp: {
 		serverName: string;
-		transport: "streamable_http";
-		directConnect: false;
+		transport: "streamable_http" | "sse";
+		directConnect: boolean;
+		brokered: boolean;
+		authStrategy: string;
+		preferredMode?: "direct" | "brokered";
+		direct?: {
+			serverName: string;
+			url: string;
+			transport: "streamable_http" | "sse";
+			authStrategy: string;
+			docsUrl?: string;
+			notes?: string;
+		};
+		broker?: {
+			serverName: string;
+			url: string;
+			transport: "streamable_http" | "sse";
+			authStrategy: string;
+			brokerPath: string;
+			docsUrl?: string;
+			notes?: string;
+		};
 	} | null;
 }
 
@@ -26,6 +46,31 @@ export interface McpToolSummary {
 	description?: string;
 	inputSchema?: unknown;
 	[key: string]: unknown;
+}
+
+export interface ConnectionMethodSummary {
+	name: string;
+	tool: string;
+	description?: string;
+	inputSchema?: unknown;
+	outputSchema?: unknown;
+}
+
+export interface ConnectionMethodCatalogEntry {
+	alias: string;
+	connection: ConnectionSummary;
+	methods: ConnectionMethodSummary[];
+	error?: {
+		message: string;
+		code?: unknown;
+		data?: unknown;
+	};
+}
+
+export interface ConnectionInvokeRequest {
+	connection: string;
+	method?: string;
+	input?: Record<string, unknown>;
 }
 
 function fallbackConnectionsUrl(env: LocalConnectionsEnv): string {
@@ -77,11 +122,15 @@ export class LocalConnectionsService extends WorkerEntrypoint<LocalConnectionsEn
 		return request<McpToolSummary[]>(this.env, "tools", { connection });
 	}
 
-	async call<T = unknown>(
-		connection: string,
-		tool: string,
-		input: Record<string, unknown> = {}
-	): Promise<T> {
-		return request<T>(this.env, "call", { connection, tool, input });
+	/**
+	 * Lists every workspace connection plus the method names and JSON schemas
+	 * exposed on the method facade, e.g. `connections.stripeProd.listCustomers`.
+	 */
+	async methods(): Promise<ConnectionMethodCatalogEntry[]> {
+		return request<ConnectionMethodCatalogEntry[]>(this.env, "methods");
+	}
+
+	async __invoke<T = unknown>(invoke: ConnectionInvokeRequest): Promise<T> {
+		return request<T>(this.env, "invoke", invoke as unknown as Record<string, unknown>);
 	}
 }

@@ -27,12 +27,96 @@ function truncate(value: string, max: number): string {
   return `${value.slice(0, max)}...`;
 }
 
+function humanizeToolName(name: string): string {
+  const spaced = name
+    .replace(/^mcp__/, '')
+    .replace(/__/g, ' ')
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .trim();
+  if (!spaced) return 'tool';
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
 function parseCountFromResult(result?: ToolResultBlock): number | null {
   if (!result) return null;
   const content = getResultText(result);
   const match = content.match(/Found\s+(\d+)\s+(files|matches)/i);
   if (!match) return null;
   return Number.parseInt(match[1], 10);
+}
+
+function canonicalizeToolSummaryName(name: string): string {
+  switch (name) {
+    case 'bash':
+      return 'Bash';
+    case 'write':
+      return 'Write';
+    case 'read':
+      return 'Read';
+    case 'edit':
+      return 'Edit';
+    case 'ls':
+      return 'LS';
+    case 'find':
+      return 'Find';
+    case 'grep':
+      return 'Grep';
+    case 'glob':
+      return 'Glob';
+    case 'js_exec':
+      return 'JavaScript';
+    case 'web_search':
+      return 'WebSearch';
+    case 'web_fetch':
+      return 'WebFetch';
+    case 'todo_write':
+    case 'update_todo':
+      return 'TodoWrite';
+    case 'list_apps':
+      return 'ListApps';
+    case 'set_app_visibility':
+      return 'SetAppVisibility';
+    case 'get_latest_logs':
+      return 'GetLatestLogs';
+    case 'list_scheduled_prompts':
+      return 'ListScheduledPrompts';
+    case 'create_scheduled_prompt':
+      return 'CreateScheduledPrompt';
+    case 'update_scheduled_prompt':
+      return 'UpdateScheduledPrompt';
+    case 'delete_scheduled_prompt':
+      return 'DeleteScheduledPrompt';
+    case 'run_scheduled_prompt_now':
+      return 'RunScheduledPrompt';
+    case 'list_integrations':
+    case 'connections_list':
+      return 'ListConnections';
+    case 'list_integration_types':
+      return 'ListConnectionTypes';
+    case 'create_integration':
+      return 'CreateConnection';
+    case 'prompt_connection_setup':
+      return 'PromptConnectionSetup';
+    case 'capture_bug_report':
+      return 'CaptureBugReport';
+    case 'get_custom_domain':
+      return 'GetCustomDomain';
+    case 'set_custom_domain':
+      return 'SetCustomDomain';
+    case 'remove_custom_domain':
+      return 'RemoveCustomDomain';
+    case 'retry_custom_domain_hostnames':
+      return 'RetryCustomDomains';
+    case 'connections_get':
+      return 'GetConnection';
+    case 'connections_tools':
+      return 'ListConnectionTools';
+    case 'connections_methods':
+      return 'ListConnectionMethods';
+    default:
+      return name;
+  }
 }
 
 function parseAppPreviewIsPublic(result?: ToolResultBlock): boolean | null {
@@ -118,6 +202,7 @@ export function getToolSummaryParts(
   if (!tool) return { action: result ? 'Result' : 'Tool call' };
 
   const { name, input } = tool;
+  const summaryName = canonicalizeToolSummaryName(name);
   const inputRecord = input || {};
   const isRunning = status === 'running' || (status == null && !!isStreaming && !result);
   const isError = status === 'error';
@@ -187,7 +272,7 @@ export function getToolSummaryParts(
     }
   }
 
-  switch (name) {
+  switch (summaryName) {
     case 'Read': {
       const path =
         typeof inputRecord.file_path === 'string'
@@ -325,18 +410,50 @@ export function getToolSummaryParts(
       }
       return { action: 'Searched codebase' };
     }
-    case 'Task':
-    case 'Agent': {
-      const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
+    case 'LS': {
+      const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
       if (isRunning) {
-        const summary = description || 'working...';
-        return { action: `Agent: ${summary}` };
+        if (!path) return { action: 'Listing files...' };
+        return { action: 'Listing', filename: getFilename(path), path };
       }
       if (isError) {
-        const summary = description || 'task';
-        return { action: `Agent failed: ${summary}` };
+        return path
+          ? { action: 'Failed to list', filename: getFilename(path), path }
+          : { action: 'Failed to list files' };
       }
-      return { action: `Agent: ${description || 'task'}` };
+      return path
+        ? { action: 'Listed', filename: getFilename(path), path }
+        : { action: 'Listed files' };
+    }
+    case 'Find': {
+      const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
+      const pattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
+      if (isRunning) {
+        if (pattern) return { action: `Finding "${truncate(pattern, 20)}"...` };
+        return path
+          ? { action: 'Finding files in', filename: getFilename(path), path }
+          : { action: 'Finding files...' };
+      }
+      if (isError) {
+        return { action: 'Failed to find files' };
+      }
+      return { action: 'Found files' };
+    }
+    case 'Task':
+    case 'Agent':
+    case 'agent':
+    case 'Explore':
+    case 'explore': {
+      const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
+      if (isRunning) {
+        const summary = description || 'subtask...';
+        return { action: `Working on ${summary}` };
+      }
+      if (isError) {
+        const summary = description || 'subtask';
+        return { action: `Could not finish ${summary}` };
+      }
+      return { action: `Finished ${description || 'subtask'}` };
     }
     case 'TeamCreate': {
       const teamName = typeof inputRecord.team_name === 'string' ? inputRecord.team_name : '';
@@ -353,17 +470,17 @@ export function getToolSummaryParts(
     case 'Skill': {
       const skill = typeof inputRecord.skill === 'string' ? inputRecord.skill : '';
       if (isRunning) {
-        if (!skill) return { action: 'Reading skill...' };
-        return { action: `Reading skill ${skill}...` };
+        if (!skill) return { action: 'Reading instructions...' };
+        return { action: `Reading instructions for ${skill}...` };
       }
       if (isError) {
-        if (!skill) return { action: 'Failed to read skill' };
-        return { action: `Failed to read skill ${skill}` };
+        if (!skill) return { action: 'Could not read instructions' };
+        return { action: `Could not read instructions for ${skill}` };
       }
       const path = skill ? `/home/claude/.claude/skills/${skill}/SKILL.md` : '';
       return {
-        action: 'Read skill',
-        filename: skill || 'skill',
+        action: 'Read instructions for',
+        filename: skill || 'task',
         path: path || undefined,
       };
     }
@@ -382,6 +499,90 @@ export function getToolSummaryParts(
       if (isRunning) return { action: 'Searching web...' };
       if (isError) return { action: 'Failed to search web' };
       return { action: 'Searched web' };
+    case 'JavaScript':
+      if (isRunning) return { action: 'Running JavaScript...' };
+      if (isError) return { action: 'JavaScript failed' };
+      return { action: 'Ran JavaScript' };
+    case 'ListApps':
+      if (isRunning) return { action: 'Checking apps...' };
+      if (isError) return { action: 'Could not check apps' };
+      return { action: 'Checked apps' };
+    case 'SetAppVisibility':
+      if (isRunning) return { action: 'Updating app visibility...' };
+      if (isError) return { action: 'Could not update app visibility' };
+      return { action: 'Updated app visibility' };
+    case 'GetLatestLogs':
+      if (isRunning) return { action: 'Reading app logs...' };
+      if (isError) return { action: 'Could not read app logs' };
+      return { action: 'Read app logs' };
+    case 'ListScheduledPrompts':
+      if (isRunning) return { action: 'Checking scheduled prompts...' };
+      if (isError) return { action: 'Could not check scheduled prompts' };
+      return { action: 'Checked scheduled prompts' };
+    case 'CreateScheduledPrompt':
+      if (isRunning) return { action: 'Creating scheduled prompt...' };
+      if (isError) return { action: 'Could not create scheduled prompt' };
+      return { action: 'Created scheduled prompt' };
+    case 'UpdateScheduledPrompt':
+      if (isRunning) return { action: 'Updating scheduled prompt...' };
+      if (isError) return { action: 'Could not update scheduled prompt' };
+      return { action: 'Updated scheduled prompt' };
+    case 'DeleteScheduledPrompt':
+      if (isRunning) return { action: 'Deleting scheduled prompt...' };
+      if (isError) return { action: 'Could not delete scheduled prompt' };
+      return { action: 'Deleted scheduled prompt' };
+    case 'RunScheduledPrompt':
+      if (isRunning) return { action: 'Running scheduled prompt...' };
+      if (isError) return { action: 'Could not run scheduled prompt' };
+      return { action: 'Ran scheduled prompt' };
+    case 'ListConnections':
+      if (isRunning) return { action: 'Checking connections...' };
+      if (isError) return { action: 'Could not check connections' };
+      return { action: 'Checked connections' };
+    case 'ListConnectionTypes':
+      if (isRunning) return { action: 'Checking available connection types...' };
+      if (isError) return { action: 'Could not check connection types' };
+      return { action: 'Checked available connection types' };
+    case 'GetConnection':
+      if (isRunning) return { action: 'Checking connection...' };
+      if (isError) return { action: 'Could not check connection' };
+      return { action: 'Checked connection' };
+    case 'ListConnectionTools':
+      if (isRunning) return { action: 'Checking connection tools...' };
+      if (isError) return { action: 'Could not check connection tools' };
+      return { action: 'Checked connection tools' };
+    case 'ListConnectionMethods':
+      if (isRunning) return { action: 'Checking connection actions...' };
+      if (isError) return { action: 'Could not check connection actions' };
+      return { action: 'Checked connection actions' };
+    case 'CreateConnection':
+      if (isRunning) return { action: 'Saving connection...' };
+      if (isError) return { action: 'Could not save connection' };
+      return { action: 'Saved connection' };
+    case 'PromptConnectionSetup':
+      if (isRunning) return { action: 'Asking for connection details...' };
+      if (isError) return { action: 'Could not ask for connection details' };
+      return { action: 'Asked for connection details' };
+    case 'CaptureBugReport':
+      if (isRunning) return { action: 'Capturing bug report...' };
+      if (isError) return { action: 'Could not capture bug report' };
+      return { action: 'Captured bug report' };
+    case 'GetCustomDomain':
+      if (isRunning) return { action: 'Checking custom domain...' };
+      if (isError) return { action: 'Could not check custom domain' };
+      return { action: 'Checked custom domain' };
+    case 'SetCustomDomain':
+      if (isRunning) return { action: 'Setting custom domain...' };
+      if (isError) return { action: 'Could not set custom domain' };
+      return { action: 'Set custom domain' };
+    case 'RemoveCustomDomain':
+      if (isRunning) return { action: 'Removing custom domain...' };
+      if (isError) return { action: 'Could not remove custom domain' };
+      return { action: 'Removed custom domain' };
+    case 'RetryCustomDomains':
+      if (isRunning) return { action: 'Retrying custom domain setup...' };
+      if (isError) return { action: 'Could not retry custom domain setup' };
+      return { action: 'Retried custom domain setup' };
     case 'TodoWrite':
       if (isRunning) return { action: 'Updating tasks...' };
       if (isError) return { action: 'Failed to update tasks' };
@@ -395,9 +596,9 @@ export function getToolSummaryParts(
       if (isError) return { action: 'Failed to stop background task' };
       return { action: 'Stopped background task' };
     case 'TaskOutput':
-      if (isRunning) return { action: 'Retrieving task output...' };
-      if (isError) return { action: 'Failed to retrieve task output' };
-      return { action: 'Retrieved task output' };
+      if (isRunning) return { action: 'Checking background task...' };
+      if (isError) return { action: 'Could not check background task' };
+      return { action: 'Checked background task' };
     case 'CodexFileChange': {
       const changes = Array.isArray(inputRecord.changes) ? inputRecord.changes : [];
       const firstPath = changes.find((change): change is { path: string } => (
@@ -420,13 +621,13 @@ export function getToolSummaryParts(
         : { action: 'Applied file changes' };
     }
     case 'CodexReviewMode':
-      if (isRunning) return { action: 'Updating review mode...' };
-      if (isError) return { action: 'Failed to update review mode' };
-      return { action: 'Updated review mode' };
+      if (isRunning) return { action: 'Starting code review...' };
+      if (isError) return { action: 'Could not update code review' };
+      return { action: 'Updated code review' };
     case 'CodexContextCompaction':
-      if (isRunning) return { action: 'Compacting context...' };
-      if (isError) return { action: 'Failed to compact context' };
-      return { action: 'Compacted context' };
+      if (isRunning) return { action: 'Cleaning up conversation history...' };
+      if (isError) return { action: 'Could not clean up conversation history' };
+      return { action: 'Cleaned up conversation history' };
     case 'CodexImageView': {
       const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
       if (isRunning) {
@@ -447,10 +648,12 @@ export function getToolSummaryParts(
       if (isRunning) return { action: 'Generating image...' };
       if (isError) return { action: 'Failed to generate image' };
       return { action: 'Generated image' };
-    default:
-      if (isRunning) return { action: `${name || 'Tool'}...` };
-      if (isError) return { action: `Failed ${name || 'tool'}` };
-      return { action: name || (result ? 'Result' : 'Tool call') };
+    default: {
+      const displayName = humanizeToolName(summaryName || name || '');
+      if (isRunning) return { action: `Using ${displayName}...` };
+      if (isError) return { action: `Could not use ${displayName}` };
+      return { action: `Used ${displayName}` };
+    }
   }
 }
 

@@ -41,6 +41,7 @@ import {
   normalizeBillingPlan,
   normalizeSeatCount,
 } from "../../../src/lib/billing-plans";
+import { calculateEffectiveUsageCostUsd } from "../../../src/lib/usage-pricing";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../src/types";
@@ -168,6 +169,22 @@ function sanitizeOnboardingPreferences(
   return {
     completed_at: normalizeCompletedAt(next.completed_at),
   };
+}
+
+function usageInteger(value: unknown): number {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.floor(numeric));
+}
+
+function usageCost(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function usageText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 export interface UserOrg {
@@ -381,6 +398,100 @@ export interface ProxyUsageInput {
   total_tokens: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+}
+
+export interface UsageRecordInput {
+  workspace_id?: string | null;
+  user_id?: string | null;
+  thread_id?: string | null;
+  model: string;
+  provider: string;
+  billing_source?: string | null;
+  credit_chargeable?: boolean | number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  cost_usd?: number | null;
+  reported_cost_usd?: number | null;
+  upstream_inference_cost_usd?: number | null;
+  duration_ms?: number | null;
+  created_at_ms?: number | null;
+  source?: string | null;
+  source_id?: string | null;
+}
+
+export interface UsageLogQuery {
+  limit?: number | null;
+  cursor?: string | null;
+  from?: number | null;
+  to?: number | null;
+  chargeable_only?: boolean | number | null;
+}
+
+export interface UsageLogEntry {
+  [key: string]: SqlStorageValue;
+  id: number;
+  workspace_id: string;
+  user_id: string;
+  thread_id: string;
+  model: string;
+  provider: string;
+  billing_source: string;
+  credit_chargeable: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  cost_usd: number;
+  duration_ms: number;
+  created_at_ms: number;
+  source: string;
+  source_id: string;
+}
+
+export interface UsageLogPage {
+  org_id: string;
+  entries: UsageLogEntry[];
+  count: number;
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface UsageLogSum {
+  org_id: string;
+  total_cost_usd: number;
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_creation_input_tokens: number;
+  total_cache_read_input_tokens: number;
+}
+
+export interface OrgUsageSpend {
+  org_id: string;
+  total_cost_usd: number;
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_creation_input_tokens: number;
+  total_cache_read_input_tokens: number;
+  windows: Array<{
+    label: string;
+    window_ms: number;
+    limit_usd: number;
+    spent_usd: number;
+    exceeded: boolean;
+  }>;
+}
+
+export interface OrgUsageLimits {
+  org_id: string;
+  limits: Array<{
+    window_hours: number;
+    limit_usd: number;
+    label?: string;
+  }>;
 }
 
 export interface OrgBillingStateUpdate {
@@ -1587,6 +1698,16 @@ export class UserDO extends DurableObject<DOEnv> {
 export class OrgDO extends DurableObject<DOEnv> {
   private sql: SqlStorage;
   private workerScriptsHasPreviewColumns = true;
+  private static readonly LEGACY_HOST_USAGE_BACKFILL_STATUS_KEY =
+    "legacyHostUsageBackfillStatus";
+  private static readonly LEGACY_HOST_USAGE_BACKFILL_STARTED_AT_KEY =
+    "legacyHostUsageBackfillStartedAt";
+  private static readonly LEGACY_HOST_USAGE_BACKFILL_COMPLETED_AT_KEY =
+    "legacyHostUsageBackfillCompletedAt";
+  private static readonly LEGACY_HOST_USAGE_BACKFILL_RESULT_KEY =
+    "legacyHostUsageBackfillResult";
+  private static readonly LEGACY_HOST_USAGE_BACKFILL_ERROR_KEY =
+    "legacyHostUsageBackfillError";
 
   constructor(ctx: DurableObjectState, env: DOEnv) {
     super(ctx, env);
@@ -2250,32 +2371,81 @@ export class OrgDO extends DurableObject<DOEnv> {
       `);
     }
 
-    if (version < 23) {
-      const workspaceColumns = new Set(
-        this.sql
-          .exec<{ name: string }>("PRAGMA table_info(workspaces)")
-          .toArray()
-          .map((column) => column.name),
-      );
-      const addWorkspaceColumn = (name: string, definition: string) => {
-        if (!workspaceColumns.has(name)) {
-          this.sql.exec(`ALTER TABLE workspaces ADD COLUMN ${definition}`);
-        }
-      };
-      addWorkspaceColumn("description", "description TEXT");
-      addWorkspaceColumn("created_by", "created_by TEXT");
-      addWorkspaceColumn("avatar_color", "avatar_color TEXT");
-      addWorkspaceColumn("avatar_content", "avatar_content TEXT");
-      addWorkspaceColumn("archived_at", "archived_at INTEGER");
-      addWorkspaceColumn("archived_by", "archived_by TEXT");
-      addWorkspaceColumn(
+    if (version < 25) {
+      // V25: Merge-convergence migration after main and this branch both used
+      // OrgDO V23 for different schema changes. Keep this idempotent so DOs
+      // that saw either parent history converge without reusing migration ids.
+      this.ensureColumn("workspaces", "description", "TEXT");
+      this.ensureColumn("workspaces", "created_by", "TEXT");
+      this.ensureColumn("workspaces", "avatar_color", "TEXT");
+      this.ensureColumn("workspaces", "avatar_content", "TEXT");
+      this.ensureColumn("workspaces", "archived_at", "INTEGER");
+      this.ensureColumn("workspaces", "archived_by", "TEXT");
+      this.ensureColumn(
+        "workspaces",
         "compute_tier",
-        "compute_tier TEXT NOT NULL DEFAULT 'standard'",
+        "TEXT NOT NULL DEFAULT 'standard'",
       );
-      addWorkspaceColumn("email_handle", "email_handle TEXT");
+      this.ensureColumn("workspaces", "email_handle", "TEXT");
+
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS usage_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id TEXT NOT NULL,
+          user_id TEXT NOT NULL DEFAULT '',
+          thread_id TEXT NOT NULL DEFAULT '',
+          model TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          billing_source TEXT NOT NULL DEFAULT 'hosted',
+          credit_chargeable INTEGER NOT NULL DEFAULT 0,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+          cost_usd REAL NOT NULL DEFAULT 0,
+          duration_ms INTEGER NOT NULL DEFAULT 0,
+          created_at_ms INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_usage_log_created_at ON usage_log(created_at_ms)",
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_usage_log_workspace_id ON usage_log(workspace_id)",
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_usage_log_chargeable_created_at ON usage_log(credit_chargeable, created_at_ms)",
+      );
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS usage_spend (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          total_cost_usd REAL NOT NULL DEFAULT 0,
+          total_input_tokens INTEGER NOT NULL DEFAULT 0,
+          total_output_tokens INTEGER NOT NULL DEFAULT 0,
+          total_cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+          total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          total_requests INTEGER NOT NULL DEFAULT 0,
+          limits_json TEXT,
+          updated_at_ms INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      this.sql.exec("INSERT OR IGNORE INTO usage_spend (id) VALUES (1)");
+      this.ensureColumn(
+        "usage_log",
+        "source",
+        "TEXT NOT NULL DEFAULT ''",
+      );
+      this.ensureColumn(
+        "usage_log",
+        "source_id",
+        "TEXT NOT NULL DEFAULT ''",
+      );
+      this.sql.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_log_source ON usage_log(source, source_id) WHERE source != '' AND source_id != ''",
+      );
     }
 
-    const CURRENT_SCHEMA_VERSION = 23;
+    const CURRENT_SCHEMA_VERSION = 25;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2310,6 +2480,20 @@ export class OrgDO extends DurableObject<DOEnv> {
     } catch {
       return false;
     }
+  }
+
+  private ensureColumn(
+    tableName: string,
+    columnName: string,
+    columnDef: string,
+  ): void {
+    const rows = this.sql
+      .exec<{ name: string }>(`PRAGMA table_info(${tableName})`)
+      .toArray();
+    if (rows.some((row) => row.name === columnName)) {
+      return;
+    }
+    this.sql.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef}`);
   }
 
   private ensureThreadSchemaColumns(): void {
@@ -2550,6 +2734,58 @@ export class OrgDO extends DurableObject<DOEnv> {
       await this.setInfo(info);
     }
     return info;
+  }
+
+  claimLegacyHostUsageBackfill(): "claimed" | "complete" | "running" {
+    const status = this.ctx.storage.kv.get<string>(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_STATUS_KEY,
+    );
+    if (status === "complete") return "complete";
+    const startedAt =
+      this.ctx.storage.kv.get<number>(
+        OrgDO.LEGACY_HOST_USAGE_BACKFILL_STARTED_AT_KEY,
+      ) ?? 0;
+    if (status === "running" && Date.now() - startedAt < 15 * 60 * 1000) {
+      return "running";
+    }
+    this.ctx.storage.kv.put(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_STATUS_KEY,
+      "running",
+    );
+    this.ctx.storage.kv.put(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_STARTED_AT_KEY,
+      Date.now(),
+    );
+    this.ctx.storage.kv.delete(OrgDO.LEGACY_HOST_USAGE_BACKFILL_ERROR_KEY);
+    return "claimed";
+  }
+
+  completeLegacyHostUsageBackfill(result: unknown): void {
+    const now = Date.now();
+    this.ctx.storage.kv.put(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_STATUS_KEY,
+      "complete",
+    );
+    this.ctx.storage.kv.put(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_COMPLETED_AT_KEY,
+      now,
+    );
+    this.ctx.storage.kv.put(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_RESULT_KEY,
+      result,
+    );
+    this.ctx.storage.kv.delete(OrgDO.LEGACY_HOST_USAGE_BACKFILL_ERROR_KEY);
+  }
+
+  failLegacyHostUsageBackfill(error: string): void {
+    this.ctx.storage.kv.put(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_STATUS_KEY,
+      "failed",
+    );
+    this.ctx.storage.kv.put(
+      OrgDO.LEGACY_HOST_USAGE_BACKFILL_ERROR_KEY,
+      error,
+    );
   }
 
   /**
@@ -5367,5 +5603,360 @@ export class OrgDO extends DurableObject<DOEnv> {
       tokenId ?? null,
       now,
     );
+  }
+
+  recordUsage(usage: UsageRecordInput): {
+    id: number;
+    cost_usd: number;
+    inserted?: boolean;
+  } {
+    const now = Date.now();
+    const workspaceId = usageText(usage.workspace_id);
+    const userId = usageText(usage.user_id);
+    const threadId = usageText(usage.thread_id);
+    const model = usageText(usage.model) || "unknown";
+    const provider = usageText(usage.provider) || "unknown";
+    const billingSource = usageText(usage.billing_source) || "hosted";
+    const creditChargeable =
+      usage.credit_chargeable === true || usage.credit_chargeable === 1 ? 1 : 0;
+    const inputTokens = usageInteger(usage.input_tokens);
+    const outputTokens = usageInteger(usage.output_tokens);
+    const cacheCreationTokens = usageInteger(
+      usage.cache_creation_input_tokens,
+    );
+    const cacheReadTokens = usageInteger(usage.cache_read_input_tokens);
+    const durationMs = usageInteger(usage.duration_ms);
+    const createdAtMs = usageInteger(usage.created_at_ms) || now;
+    const providedCost = usageCost(usage.cost_usd);
+    const source = usageText(usage.source);
+    const sourceId = usageText(usage.source_id);
+    const costUsd =
+      providedCost ??
+      calculateEffectiveUsageCostUsd({
+        model,
+        inputTokens,
+        outputTokens,
+        cacheCreationInputTokens: cacheCreationTokens,
+        cacheReadInputTokens: cacheReadTokens,
+        reportedCostUsd: usage.reported_cost_usd,
+        upstreamInferenceCostUsd: usage.upstream_inference_cost_usd,
+      });
+
+    const result = this.ctx.storage.transactionSync(() => {
+      if (source && sourceId) {
+        const existing = this.sql
+          .exec<{ id: number; cost_usd: number }>(
+            "SELECT id, cost_usd FROM usage_log WHERE source = ? AND source_id = ? LIMIT 1",
+            source,
+            sourceId,
+          )
+          .toArray()[0];
+        if (existing) {
+          return {
+            id: Number(existing.id ?? 0),
+            cost_usd: Number(existing.cost_usd ?? 0),
+            inserted: false,
+          };
+        }
+      }
+      this.sql.exec(
+        `
+        INSERT INTO usage_log (
+          workspace_id,
+          user_id,
+          thread_id,
+          model,
+          provider,
+          billing_source,
+          credit_chargeable,
+          input_tokens,
+          output_tokens,
+          cache_creation_input_tokens,
+          cache_read_input_tokens,
+          cost_usd,
+          duration_ms,
+          created_at_ms,
+          source,
+          source_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        workspaceId,
+        userId,
+        threadId,
+        model,
+        provider,
+        billingSource,
+        creditChargeable,
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        costUsd,
+        durationMs,
+        createdAtMs,
+        source,
+        sourceId,
+      );
+      this.sql.exec(
+        `
+        INSERT INTO usage_spend (
+          id,
+          total_cost_usd,
+          total_input_tokens,
+          total_output_tokens,
+          total_cache_creation_tokens,
+          total_cache_read_tokens,
+          total_requests,
+          updated_at_ms
+        )
+        VALUES (1, ?, ?, ?, ?, ?, 1, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+          total_input_tokens = total_input_tokens + excluded.total_input_tokens,
+          total_output_tokens = total_output_tokens + excluded.total_output_tokens,
+          total_cache_creation_tokens = total_cache_creation_tokens + excluded.total_cache_creation_tokens,
+          total_cache_read_tokens = total_cache_read_tokens + excluded.total_cache_read_tokens,
+          total_requests = total_requests + 1,
+          updated_at_ms = excluded.updated_at_ms
+        `,
+        costUsd,
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        now,
+      );
+      const row = this.sql
+        .exec<{ id: number }>("SELECT last_insert_rowid() as id")
+        .one();
+      return {
+        id: Number(row?.id ?? 0),
+        cost_usd: costUsd,
+        inserted: true,
+      };
+    });
+
+    return result;
+  }
+
+  getUsageSpend(): OrgUsageSpend {
+    this.sql.exec("INSERT OR IGNORE INTO usage_spend (id) VALUES (1)");
+    const row = this.sql
+      .exec<{
+        total_cost_usd: number;
+        total_input_tokens: number;
+        total_output_tokens: number;
+        total_cache_creation_tokens: number;
+        total_cache_read_tokens: number;
+        total_requests: number;
+      }>(
+        `
+        SELECT
+          total_cost_usd,
+          total_input_tokens,
+          total_output_tokens,
+          total_cache_creation_tokens,
+          total_cache_read_tokens,
+          total_requests
+        FROM usage_spend WHERE id = 1
+        `,
+      )
+      .one();
+    return {
+      org_id: this.getInfoSync()?.id ?? "",
+      total_cost_usd: Number(row?.total_cost_usd ?? 0),
+      total_requests: Number(row?.total_requests ?? 0),
+      total_input_tokens: Number(row?.total_input_tokens ?? 0),
+      total_output_tokens: Number(row?.total_output_tokens ?? 0),
+      total_cache_creation_input_tokens: Number(
+        row?.total_cache_creation_tokens ?? 0,
+      ),
+      total_cache_read_input_tokens: Number(row?.total_cache_read_tokens ?? 0),
+      windows: [],
+    };
+  }
+
+  getUsageLog(query: UsageLogQuery = {}): UsageLogPage {
+    const limit = Math.min(1000, Math.max(1, usageInteger(query.limit) || 50));
+    const cursor = usageInteger(query.cursor);
+    const from = usageInteger(query.from);
+    const to = usageInteger(query.to);
+    const chargeableOnly =
+      query.chargeable_only === true || query.chargeable_only === 1;
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (cursor > 0) {
+      where.push("id < ?");
+      params.push(cursor);
+    }
+    if (from > 0) {
+      where.push("created_at_ms >= ?");
+      params.push(from);
+    }
+    if (to > 0) {
+      where.push("created_at_ms < ?");
+      params.push(to);
+    }
+    if (chargeableOnly) {
+      where.push("credit_chargeable = 1");
+    }
+    const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = this.sql
+      .exec<UsageLogEntry>(
+        `
+        SELECT
+          id,
+          workspace_id,
+          user_id,
+          thread_id,
+          model,
+          provider,
+          billing_source,
+          credit_chargeable,
+          input_tokens,
+          output_tokens,
+          cache_creation_input_tokens,
+          cache_read_input_tokens,
+          cost_usd,
+          duration_ms,
+          created_at_ms,
+          source,
+          source_id
+        FROM usage_log
+        ${whereSql}
+        ORDER BY id DESC
+        LIMIT ?
+        `,
+        ...params,
+        limit + 1,
+      )
+      .toArray();
+    const entries = rows.slice(0, limit).map((row) => ({
+      ...row,
+      id: Number(row.id),
+      credit_chargeable: Number(row.credit_chargeable),
+      input_tokens: Number(row.input_tokens),
+      output_tokens: Number(row.output_tokens),
+      cache_creation_input_tokens: Number(row.cache_creation_input_tokens),
+      cache_read_input_tokens: Number(row.cache_read_input_tokens),
+      cost_usd: Number(row.cost_usd),
+      duration_ms: Number(row.duration_ms),
+      created_at_ms: Number(row.created_at_ms),
+      source: typeof row.source === "string" ? row.source : "",
+      source_id: typeof row.source_id === "string" ? row.source_id : "",
+    }));
+    const hasMore = rows.length > limit;
+    return {
+      org_id: this.getInfoSync()?.id ?? "",
+      entries,
+      count: entries.length,
+      has_more: hasMore,
+      next_cursor:
+        hasMore && entries.length > 0
+          ? String(entries[entries.length - 1].id)
+          : null,
+    };
+  }
+
+  getUsageLogSum(
+    fromMs = 0,
+    toMs = Date.now(),
+    chargeableOnly = false,
+  ): UsageLogSum {
+    const from = usageInteger(fromMs);
+    const to = usageInteger(toMs) || Date.now();
+    const where = ["created_at_ms >= ?", "created_at_ms < ?"];
+    const params: Array<string | number> = [from, to];
+    if (chargeableOnly) {
+      where.push("credit_chargeable = 1");
+    }
+    const row = this.sql
+      .exec<{
+        total_cost_usd: number;
+        total_requests: number;
+        total_input_tokens: number;
+        total_output_tokens: number;
+        total_cache_creation_input_tokens: number;
+        total_cache_read_input_tokens: number;
+      }>(
+        `
+        SELECT
+          COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+          COUNT(*) AS total_requests,
+          COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+          COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+          COALESCE(SUM(cache_creation_input_tokens), 0) AS total_cache_creation_input_tokens,
+          COALESCE(SUM(cache_read_input_tokens), 0) AS total_cache_read_input_tokens
+        FROM usage_log
+        WHERE ${where.join(" AND ")}
+        `,
+        ...params,
+      )
+      .one();
+    return {
+      org_id: this.getInfoSync()?.id ?? "",
+      total_cost_usd: Number(row?.total_cost_usd ?? 0),
+      total_requests: Number(row?.total_requests ?? 0),
+      total_input_tokens: Number(row?.total_input_tokens ?? 0),
+      total_output_tokens: Number(row?.total_output_tokens ?? 0),
+      total_cache_creation_input_tokens: Number(
+        row?.total_cache_creation_input_tokens ?? 0,
+      ),
+      total_cache_read_input_tokens: Number(
+        row?.total_cache_read_input_tokens ?? 0,
+      ),
+    };
+  }
+
+  getUsageLimits(): OrgUsageLimits {
+    const row = this.sql
+      .exec<{ limits_json: string | null }>(
+        "SELECT limits_json FROM usage_spend WHERE id = 1",
+      )
+      .one();
+    const parsed = row?.limits_json ? JSON.parse(row.limits_json) : [];
+    return {
+      org_id: this.getInfoSync()?.id ?? "",
+      limits: Array.isArray(parsed) ? parsed : [],
+    };
+  }
+
+  setUsageLimits(limits: OrgUsageLimits["limits"]): OrgUsageLimits {
+    const normalized = Array.isArray(limits)
+      ? limits.flatMap((limit) => {
+          const windowHours = Number(limit.window_hours);
+          const limitUsd = Number(limit.limit_usd);
+          if (
+            !Number.isFinite(windowHours) ||
+            windowHours <= 0 ||
+            !Number.isFinite(limitUsd) ||
+            limitUsd <= 0
+          ) {
+            return [];
+          }
+          return [
+            {
+              window_hours: windowHours,
+              limit_usd: limitUsd,
+              ...(limit.label?.trim() ? { label: limit.label.trim() } : {}),
+            },
+          ];
+        })
+      : [];
+    this.sql.exec(
+      `
+      INSERT INTO usage_spend (id, limits_json, updated_at_ms)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        limits_json = excluded.limits_json,
+        updated_at_ms = excluded.updated_at_ms
+      `,
+      JSON.stringify(normalized),
+      Date.now(),
+    );
+    return {
+      org_id: this.getInfoSync()?.id ?? "",
+      limits: normalized,
+    };
   }
 }

@@ -34,16 +34,16 @@ type EnsureContainerOptions struct {
 }
 
 type ContainerRecord struct {
-	Name              string
-	ContainerID       string
-	HostPort          int
-	ContainerIP       string
-	Status            string
-	CreatedAt         int64
-	LastAccessedAt    int64
-	InFlightProxyReqs int
-	OrgID             string
-	WorkspaceID       string
+	Name             string
+	ContainerID      string
+	HostPort         int
+	ContainerIP      string
+	Status           string
+	CreatedAt        int64
+	LastAccessedAt   int64
+	InFlightRequests int
+	OrgID            string
+	WorkspaceID      string
 }
 
 type ExecRequest struct {
@@ -82,7 +82,6 @@ type Manager struct {
 	containerCPUShares         string
 	containerRuntime           string
 	containerHTTPPort          int
-	proxyPort                  int
 	idleTimeout                time.Duration
 	r2CredentialsRoot          string
 	r2BucketName               string
@@ -91,8 +90,6 @@ type Manager struct {
 	r2SecretAccessKey          string
 	r2TempCredentialTTLSeconds int
 	healthPollInterval         time.Duration
-	cfDispatchNamespace        string
-	containerProxyBase         string
 	traceLifecycle             bool
 
 	mu                sync.Mutex
@@ -112,11 +109,8 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		log.Fatalf("[ContainerManager] failed to initialize Docker API client: %v", err)
 	}
 
-	proxyPort := envInt("SANDBOX_PROXY_PORT", defaultProxyPort())
 	workspacesRoot := envString("WORKSPACES_ROOT", defaultWorkspaceRoot())
 	containerRuntime := envString("CONTAINER_RUNTIME", defaultContainerRuntime())
-	defaultProxyBase := fmt.Sprintf("http://%s:%d/proxy", defaultContainerProxyHost(), proxyPort)
-	containerProxyBase := normalizeProxyBaseURL(envString("CONTAINER_PROXY_BASE_URL", defaultProxyBase))
 
 	m := &Manager{
 		workspaces:                 workspaces,
@@ -127,19 +121,16 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		containerCPUShares:         envString("CONTAINER_CPU_SHARES", "2048"),
 		containerRuntime:           containerRuntime,
 		containerHTTPPort:          8080,
-		proxyPort:                  proxyPort,
 		idleTimeout:                containerIdleTimeoutFromEnv(),
 		r2CredentialsRoot:          envString("R2_CREDENTIALS_ROOT", defaultR2CredentialsRoot()),
 		r2BucketName:               envString("R2_BUCKET_NAME", ""),
 		r2AccountID:                envString("R2_ACCOUNT_ID", ""),
 		r2AccessKeyID:              envString("R2_ACCESS_KEY_ID", ""),
-		r2SecretAccessKey:          envString("R2_SECRET_ACCESS_KEY", ""),
-		r2TempCredentialTTLSeconds: envInt("R2_TEMP_CREDENTIAL_TTL_SECONDS", defaultR2TempCredentialTTLSeconds()),
-		healthPollInterval:         maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
-		cfDispatchNamespace:        envString("CF_DISPATCH_NAMESPACE", ""),
-		containerProxyBase:         containerProxyBase,
-		traceLifecycle:             envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
-		containers:                 make(map[string]*ContainerRecord),
+			r2SecretAccessKey:          envString("R2_SECRET_ACCESS_KEY", ""),
+			r2TempCredentialTTLSeconds: envInt("R2_TEMP_CREDENTIAL_TTL_SECONDS", defaultR2TempCredentialTTLSeconds()),
+			healthPollInterval:         maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
+			traceLifecycle:             envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
+			containers:                 make(map[string]*ContainerRecord),
 		containerIPIndex:           make(map[string]string),
 		pendingWorkspaces:          make(map[string]int),
 		ensureInFlight:             make(map[string]*ensureWait),
@@ -163,13 +154,6 @@ func NewTestManager() *Manager {
 	}
 }
 
-func (m *Manager) ContainerProxyBaseURL() string {
-	if m == nil {
-		return ""
-	}
-	return m.containerProxyBase
-}
-
 func (m *Manager) TouchContainer(name, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -183,34 +167,34 @@ func (m *Manager) TouchContainer(name, reason string) {
 	m.trace("touch_container", map[string]any{"reason": reason, "container": rec})
 }
 
-func (m *Manager) AddProxyRequest(name, reason string) {
+func (m *Manager) AddInFlightRequest(name, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rec := m.containers[name]
 	if rec == nil {
-		m.trace("proxy_request_open_missing_container", map[string]any{"name": name, "reason": reason})
+		m.trace("inflight_request_open_missing_container", map[string]any{"name": name, "reason": reason})
 		return
 	}
-	rec.InFlightProxyReqs++
+	rec.InFlightRequests++
 	rec.LastAccessedAt = nowMillis()
 	m.resetIdleTimerLocked(name, rec)
-	m.trace("proxy_request_open", map[string]any{"reason": reason, "container": rec})
+	m.trace("inflight_request_open", map[string]any{"reason": reason, "container": rec})
 }
 
-func (m *Manager) RemoveProxyRequest(name, reason string, status int, durationMs int64) {
+func (m *Manager) RemoveInFlightRequest(name, reason string, status int, durationMs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rec := m.containers[name]
 	if rec == nil {
-		m.trace("proxy_request_close_missing_container", map[string]any{"name": name, "reason": reason, "status": status, "durationMs": durationMs})
+		m.trace("inflight_request_close_missing_container", map[string]any{"name": name, "reason": reason, "status": status, "durationMs": durationMs})
 		return
 	}
-	if rec.InFlightProxyReqs > 0 {
-		rec.InFlightProxyReqs--
+	if rec.InFlightRequests > 0 {
+		rec.InFlightRequests--
 	}
 	rec.LastAccessedAt = nowMillis()
 	m.resetIdleTimerLocked(name, rec)
-	m.trace("proxy_request_close", map[string]any{"reason": reason, "status": status, "durationMs": durationMs, "container": rec})
+	m.trace("inflight_request_close", map[string]any{"reason": reason, "status": status, "durationMs": durationMs, "container": rec})
 }
 
 func (m *Manager) resetIdleTimerLocked(name string, rec *ContainerRecord) {
@@ -254,7 +238,7 @@ func (m *Manager) expireIdleContainer(name string) {
 		return
 	}
 	pending := m.pendingWorkspaces[name]
-	inFlight := current.InFlightProxyReqs
+	inFlight := current.InFlightRequests
 	lastAccessed := current.LastAccessedAt
 	snapshot := copyRecord(current)
 
@@ -426,16 +410,16 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 					workspaceID = labelFromInspect(inspect, labelWorkspaceID)
 				}
 				rec := &ContainerRecord{
-					Name:              name,
-					ContainerID:       name,
-					HostPort:          port,
-					ContainerIP:       containerIP,
-					Status:            "running",
-					CreatedAt:         nowMillis(),
-					LastAccessedAt:    nowMillis(),
-					InFlightProxyReqs: 0,
-					OrgID:             orgID,
-					WorkspaceID:       workspaceID,
+					Name:             name,
+					ContainerID:      name,
+					HostPort:         port,
+					ContainerIP:      containerIP,
+					Status:           "running",
+					CreatedAt:        nowMillis(),
+					LastAccessedAt:   nowMillis(),
+					InFlightRequests: 0,
+					OrgID:            orgID,
+					WorkspaceID:      workspaceID,
 				}
 				m.mu.Lock()
 				m.containers[name] = rec
@@ -470,18 +454,6 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	}
 	var capAdd []string
 	var devices []dockercontainer.DeviceMapping
-
-	if opts.OrgID != "" && opts.WorkspaceID != "" {
-		env = append(env,
-			"WORKSPACE_ID="+opts.WorkspaceID,
-			"ORG_ID="+opts.OrgID,
-			"WRANGLER_SEND_METRICS=false",
-			"CI=1",
-		)
-		if m.cfDispatchNamespace != "" {
-			env = append(env, "CF_DISPATCH_NAMESPACE="+m.cfDispatchNamespace)
-		}
-	}
 
 	var r2Config *containerR2Config
 	if opts.OrgID != "" && opts.WorkspaceID != "" {
@@ -591,16 +563,16 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	}
 
 	rec := &ContainerRecord{
-		Name:              name,
-		ContainerID:       containerID,
-		HostPort:          port,
-		ContainerIP:       containerIP,
-		Status:            "running",
-		CreatedAt:         nowMillis(),
-		LastAccessedAt:    nowMillis(),
-		InFlightProxyReqs: 0,
-		OrgID:             opts.OrgID,
-		WorkspaceID:       opts.WorkspaceID,
+		Name:             name,
+		ContainerID:      containerID,
+		HostPort:         port,
+		ContainerIP:      containerIP,
+		Status:           "running",
+		CreatedAt:        nowMillis(),
+		LastAccessedAt:   nowMillis(),
+		InFlightRequests: 0,
+		OrgID:            opts.OrgID,
+		WorkspaceID:      opts.WorkspaceID,
 	}
 
 	m.mu.Lock()
@@ -654,16 +626,16 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 		containerIP := containerIPFromInspect(inspect)
 		if port > 0 {
 			rec := &ContainerRecord{
-				Name:              name,
-				ContainerID:       name,
-				HostPort:          port,
-				ContainerIP:       containerIP,
-				Status:            "running",
-				CreatedAt:         nowMillis(),
-				LastAccessedAt:    nowMillis(),
-				InFlightProxyReqs: 0,
-				OrgID:             labelFromInspect(inspect, labelOrgID),
-				WorkspaceID:       labelFromInspect(inspect, labelWorkspaceID),
+				Name:             name,
+				ContainerID:      name,
+				HostPort:         port,
+				ContainerIP:      containerIP,
+				Status:           "running",
+				CreatedAt:        nowMillis(),
+				LastAccessedAt:   nowMillis(),
+				InFlightRequests: 0,
+				OrgID:            labelFromInspect(inspect, labelOrgID),
+				WorkspaceID:      labelFromInspect(inspect, labelWorkspaceID),
 			}
 			m.mu.Lock()
 			m.containers[name] = rec
@@ -979,16 +951,16 @@ func (m *Manager) discoverRunningContainers() {
 		}
 
 		rec := &ContainerRecord{
-			Name:              name,
-			ContainerID:       name,
-			HostPort:          port,
-			ContainerIP:       containerIP,
-			Status:            "running",
-			CreatedAt:         nowMillis(),
-			LastAccessedAt:    nowMillis(),
-			InFlightProxyReqs: 0,
-			OrgID:             labelFromInspect(inspect, labelOrgID),
-			WorkspaceID:       labelFromInspect(inspect, labelWorkspaceID),
+			Name:             name,
+			ContainerID:      name,
+			HostPort:         port,
+			ContainerIP:      containerIP,
+			Status:           "running",
+			CreatedAt:        nowMillis(),
+			LastAccessedAt:   nowMillis(),
+			InFlightRequests: 0,
+			OrgID:            labelFromInspect(inspect, labelOrgID),
+			WorkspaceID:      labelFromInspect(inspect, labelWorkspaceID),
 		}
 
 		m.mu.Lock()
@@ -1136,29 +1108,4 @@ func defaultContainerRuntime() string {
 		return "runsc"
 	}
 	return "runc"
-}
-
-func defaultProxyPort() int {
-	if runtime.GOOS == "linux" {
-		return 8081
-	}
-	return 4401
-}
-
-func defaultContainerProxyHost() string {
-	if runtime.GOOS == "linux" {
-		return "172.17.0.1"
-	}
-	return "host.docker.internal"
-}
-
-func normalizeProxyBaseURL(raw string) string {
-	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
-	if trimmed == "" {
-		return trimmed
-	}
-	if strings.HasSuffix(trimmed, "/proxy") {
-		return trimmed
-	}
-	return trimmed + "/proxy"
 }

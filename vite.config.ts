@@ -3,8 +3,6 @@ import { cloudflare, type WorkerConfig } from '@cloudflare/vite-plugin';
 import { defineConfig, type DepOptimizationOptions, type Plugin } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
-const localDevSandboxProxySecret = 'local-dev-sandbox-proxy-secret';
-
 // Plugin to suppress benign "terminated" errors from undici/miniflare
 // These occur when WebSocket connections are aborted during HMR/navigation
 function suppressUndiciTerminatedErrors(): Plugin {
@@ -53,18 +51,14 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
   const localAuthUserEmail = process.env.LOCAL_AUTH_USER_EMAIL;
   const localAuthUserName = process.env.LOCAL_AUTH_USER_NAME;
   const workerBaseUrl = process.env.WORKER_BASE_URL;
-  const localWorkerBaseUrl = process.env.LOCAL_WORKER_BASE_URL;
   const sandboxHostUrl = process.env.SANDBOX_HOST_URL;
-  const sandboxProxySecret =
-    process.env.SANDBOX_PROXY_SECRET ??
-    (sandboxHostUrl ? localDevSandboxProxySecret : undefined);
+  const sandboxProxySecret = process.env.SANDBOX_PROXY_SECRET;
 
   if (
     !localAuthBypass &&
     !localAuthUserEmail &&
     !localAuthUserName &&
     !workerBaseUrl &&
-    !localWorkerBaseUrl &&
     !sandboxHostUrl &&
     !sandboxProxySecret
   ) {
@@ -80,9 +74,6 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
         : {}),
       ...(localAuthUserName ? { LOCAL_AUTH_USER_NAME: localAuthUserName } : {}),
       ...(workerBaseUrl ? { WORKER_BASE_URL: workerBaseUrl } : {}),
-      ...(localWorkerBaseUrl
-        ? { LOCAL_WORKER_BASE_URL: localWorkerBaseUrl }
-        : {}),
       ...(sandboxHostUrl ? { SANDBOX_HOST_URL: sandboxHostUrl } : {}),
       ...(sandboxProxySecret
         ? { SANDBOX_PROXY_SECRET: sandboxProxySecret }

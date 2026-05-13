@@ -41,6 +41,10 @@ describe('getToolStatus', () => {
   it('treats agent continuation as completion when result is temporarily missing', () => {
     expect(getToolStatus(makeTool(), undefined, [], true)).toBe('complete');
   });
+
+  it('treats orphaned tool calls as complete after the assistant message finalizes', () => {
+    expect(getToolStatus(makeTool(), undefined, [], false, false)).toBe('complete');
+  });
 });
 
 describe('ratchetToolStatus', () => {

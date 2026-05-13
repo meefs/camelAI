@@ -248,9 +248,8 @@ RestartSec=5
 KillMode=process
 TimeoutStopSec=1800
 Environment=PORT=80
-Environment=SANDBOX_PROXY_PORT=8081
 Environment=WORKSPACES_ROOT=${SANDBOXES_DIR}
-Environment=SANDBOX_HOST_STATE_DB=${SANDBOXES_DIR}/.sandbox-host/state.db
+Environment=SANDBOX_HOST_USAGE_DB_DIR=${SANDBOXES_DIR}/.sandbox-host/usage
 Environment=SANDBOX_IMAGE=${SANDBOX_IMAGE}
 Environment=CONTAINER_RUNTIME=runsc
 Environment=SANDBOX_ENABLE_PROJECT_QUOTA=1
@@ -274,16 +273,10 @@ install_firewall_service() {
 set -euo pipefail
 
 CONTROL_PORT="${PORT:-80}"
-PROXY_PORT="${SANDBOX_PROXY_PORT:-8081}"
 
 if ! command -v iptables >/dev/null 2>&1; then
   echo "[firewall] iptables not available; skipping rules"
   exit 0
-fi
-
-if [ "$CONTROL_PORT" = "$PROXY_PORT" ]; then
-  echo "[firewall] control and proxy ports are identical (${CONTROL_PORT}); refusing to apply rules"
-  exit 1
 fi
 
 ensure_rule() {
@@ -295,23 +288,16 @@ ensure_rule() {
 }
 
 ensure_rule \
-  "iptables -C INPUT -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT" \
-  "iptables -I INPUT 1 -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT"
-
-ensure_rule \
   "iptables -C INPUT -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP" \
   "iptables -I INPUT 1 -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP"
 
 if command -v ip6tables >/dev/null 2>&1; then
   ensure_rule \
-    "ip6tables -C INPUT -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT" \
-    "ip6tables -I INPUT 1 -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT"
-  ensure_rule \
     "ip6tables -C INPUT -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP" \
     "ip6tables -I INPUT 1 -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP"
 fi
 
-echo "[firewall] applied docker0 policy: allow :${PROXY_PORT}, drop :${CONTROL_PORT}"
+echo "[firewall] applied docker0 policy: drop :${CONTROL_PORT}"
 
 # --- China outbound block via ipset ---
 if command -v ipset >/dev/null 2>&1; then
@@ -450,7 +436,7 @@ main() {
   echo "  ${SANDBOXES_DIR}            - Durable Premium SSD v2 (XFS, prjquota enabled)"
   echo "  ${SANDBOXES_DIR}/<sandbox>  - Per-sandbox persistent root"
   echo "  Default per-sandbox quota   - ${SANDBOX_DEFAULT_BHARD} (ihard=${SANDBOX_DEFAULT_IHARD})"
-  echo "  ${SANDBOXES_DIR}/.sandbox-host/state.db - sandbox-host crash recovery state"
+  echo "  ${SANDBOXES_DIR}/.sandbox-host/usage - sandbox-host usage databases"
   echo "  ${DOCKER_DATA_ROOT}     - Docker data-root"
   echo ""
   echo "To verify:"

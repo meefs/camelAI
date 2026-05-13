@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -55,6 +56,112 @@ func readHostPiSessionMessages(sessionRoot, threadID string) ([]parsedChatMessag
 				seen[message.ID] = true
 			}
 			messages = append(messages, message)
+		}
+	}
+	return messages, nil
+}
+
+func piSessionJSONLFiles(sessionDir string) ([]string, error) {
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		files = append(files, filepath.Join(sessionDir, entry.Name()))
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func readPiSessionJSONLFile(path string) (map[string]any, []map[string]any, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+
+	var session map[string]any
+	entries := make([]map[string]any, 0)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, nil, err
+		}
+		switch firstString(entry, "type") {
+		case "session":
+			if session == nil {
+				session = entry
+			}
+		case "label":
+			continue
+		default:
+			entries = append(entries, entry)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+	return session, entries, nil
+}
+
+func readHostPiCoreMessages(sessionRoot, threadID string) ([]map[string]any, error) {
+	sessionRoot = strings.TrimSpace(sessionRoot)
+	threadID = strings.TrimSpace(threadID)
+	if sessionRoot == "" || threadID == "" {
+		return nil, nil
+	}
+	if strings.ContainsAny(threadID, `/\`) {
+		return nil, fmt.Errorf("invalid thread id")
+	}
+
+	files, err := piSessionJSONLFiles(filepath.Join(sessionRoot, threadID))
+	if err != nil {
+		return nil, err
+	}
+
+	messages := make([]map[string]any, 0)
+	seen := make(map[string]bool)
+	for _, file := range files {
+		_, entries, err := readPiSessionJSONLFile(file)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if firstString(entry, "type") != "message" {
+				continue
+			}
+			messageMap, ok := asMap(entry["message"])
+			if !ok {
+				continue
+			}
+			switch firstString(messageMap, "role") {
+			case "user", "assistant", "toolResult":
+			default:
+				continue
+			}
+			if id := firstString(entry, "id"); id != "" {
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+			}
+			if _, ok := messageMap["timestamp"]; !ok {
+				messageMap["timestamp"] = piCreatedAt(entry, messageMap)
+			}
+			messages = append(messages, messageMap)
 		}
 	}
 	return messages, nil
@@ -384,6 +491,8 @@ func piUIToolName(name string) string {
 		return "WebSearch"
 	case "web_fetch", "WebFetch":
 		return "WebFetch"
+	case "js_exec":
+		return "JavaScript Exec"
 	default:
 		return name
 	}

@@ -6,7 +6,6 @@ import {
   resolveModel,
   resolveVirtualModel,
   runViaGatewayHTTP,
-  runViaSandboxHostVirtualAI,
 } from "../src/ai-virtual-binding.js";
 
 describe("resolveGatewaySettings", () => {
@@ -403,113 +402,5 @@ describe("runViaGatewayHTTP", () => {
 
     expect(combined).toContain('data: {"id":"evt_1"}');
     expect(combined).toContain("data: [DONE]");
-  });
-});
-
-describe("runViaSandboxHostVirtualAI", () => {
-  it("delegates virtual AI calls to sandbox-host with tenant context", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "chatcmpl_virtual_1",
-          choices: [
-            {
-              index: 0,
-              message: { role: "assistant", content: "ok" },
-              finish_reason: "stop",
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-    const sandboxHost = { fetch: fetchMock } as unknown as Fetcher;
-
-    const result = await runViaSandboxHostVirtualAI(
-      sandboxHost,
-      "sandbox-secret",
-      "https://camelai.dev",
-      { orgId: "org_1", workspaceId: "ws_1", userId: "user_1" },
-      { messages: [{ role: "user", content: "hello" }] },
-      "dynamic/auto",
-    );
-
-    expect(result).toEqual({
-      id: "chatcmpl_virtual_1",
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content: "ok" },
-          finish_reason: "stop",
-        },
-      ],
-    });
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://sandbox/v1/virtual-ai/chat/completions");
-    expect(init.method).toBe("POST");
-    const headers = new Headers(init.headers);
-    expect(headers.get("x-chiridion-org-id")).toBe("org_1");
-    expect(headers.get("x-chiridion-workspace-id")).toBe("ws_1");
-    expect(headers.get("x-chiridion-user-id")).toBe("user_1");
-    expect(headers.get("x-sandbox-secret")).toBe("sandbox-secret");
-    expect(headers.get("x-chiridion-worker-base-url")).toBe(
-      "https://camelai.dev",
-    );
-    const body = JSON.parse(String(init.body)) as { model?: string };
-    expect(body.model).toBe("dynamic/auto");
-  });
-
-  it("adds the OpenRouter nitro routing suffix for sandbox-host OpenRouter calls", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: "chatcmpl_virtual_or_1" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    const sandboxHost = { fetch: fetchMock } as unknown as Fetcher;
-
-    await runViaSandboxHostVirtualAI(
-      sandboxHost,
-      undefined,
-      undefined,
-      { orgId: "org_1", workspaceId: "ws_1" },
-      { messages: [{ role: "user", content: "hello" }] },
-      "anthropic/claude-3.5-sonnet",
-      "openrouter",
-    );
-
-    const body = JSON.parse(
-      String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body),
-    ) as { model?: string };
-    expect(body.model).toBe("anthropic/claude-3.5-sonnet:nitro");
-  });
-
-  it("throws sandbox-host billing errors", async () => {
-    const sandboxHost = {
-      fetch: vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            error:
-              "Message not sent — top up credits or add an API key to continue.",
-          }),
-          {
-            status: 402,
-            headers: { "Content-Type": "application/json" },
-          },
-        ),
-      ),
-    } as unknown as Fetcher;
-
-    await expect(
-      runViaSandboxHostVirtualAI(
-        sandboxHost,
-        undefined,
-        undefined,
-        { orgId: "org_1", workspaceId: "ws_1" },
-        { messages: [{ role: "user", content: "hello" }] },
-        "dynamic/auto",
-      ),
-    ).rejects.toThrow("Message not sent");
   });
 });

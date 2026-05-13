@@ -3,17 +3,11 @@
  *
  * Architecture:
  * - Sandbox host (services/sandbox-host/): Manages Docker container lifecycle,
- *   host filesystem operations, container exec, host-side Pi agent sessions,
- *   and API traffic.
+ *   host filesystem operations, container exec, and API traffic.
  * - This module: Provides FS/exec APIs for dashboard routes, builds
- *   thread-specific env vars (integrations), and exposes
- *   connectChatWebSocket() for the chat runner bridge and external turns.
+ *   thread-specific env vars for integration-backed tools.
  *
- * Base env vars (API keys, proxy URLs) are set as Docker -e flags at container
- * creation. API traffic from containers routes through the sandbox host proxy
- * which adds identity headers + a shared secret.
- *
- * All traffic (lifecycle, FS, exec, chat runner) routes through the
+ * All sandbox traffic (lifecycle, FS, exec, data proxy) routes through the
  * sandbox host — CF Workers can't reach Docker bridge IPs directly.
  */
 import { mapCredentialsToEnvVars } from "./integration-env";
@@ -21,7 +15,6 @@ import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
   DEFAULT_LLM_MODEL,
   DEFAULT_CODEX_MODEL,
-  parseStoredLlmProviderConfig,
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
 import { createDispatcherSession } from "./worker-auth";
@@ -39,8 +32,8 @@ export interface WorkspaceContainerEnv {
 
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
-  LOCAL_WORKER_BASE_URL?: string;
   WORKER_BASE_URL?: string;
+  CF_DISPATCH_NAMESPACE?: string;
 }
 
 interface ControlPlaneExecResponse {
@@ -138,12 +131,6 @@ export interface ChatRunnerEnvOptions {
   provider: "claude" | "codex";
 }
 
-export type ByokProxyCredentials =
-  | { provider: "anthropic"; apiKey: string }
-  | { provider: "bedrock"; bearerToken: string; region: string }
-  | { provider: "openai"; apiKey: string }
-  | { provider: "openrouter"; apiKey: string };
-
 const INTEGRATION_ENV_FILE_PATH = "/home/claude/.chiridion/integration.env";
 
 function toIsoTime(ms: number): string {
@@ -238,52 +225,6 @@ export class WorkspaceContainer {
     return url.toString();
   }
 
-  private controlUrlForKnownProxyUrl(url: string): string | null {
-    if (!this.getSandboxHostUrlOverride()) return null;
-    try {
-      const parsed = new URL(url);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return null;
-      }
-      if (parsed.port === "4401") {
-        parsed.port = "4400";
-        return parsed.toString();
-      }
-      if (parsed.port === "8081") {
-        parsed.port = parsed.protocol === "http:" ? "" : "80";
-        return parsed.toString();
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  }
-
-  private async sandboxErrorText(response: Response): Promise<string> {
-    const body = await response.text();
-    let error = body;
-    try {
-      const parsed = JSON.parse(body) as { error?: unknown };
-      if (typeof parsed.error === "string" && parsed.error.trim()) {
-        error = parsed.error;
-      }
-    } catch {
-      // Keep the raw body.
-    }
-    return error.trim();
-  }
-
-  private sandboxForkEndpointError(status: number, error: string): string | null {
-    if (status !== 404 || error.trim().toLowerCase() !== "not found") {
-      return null;
-    }
-    return (
-      "Sandbox fork endpoint returned 404 Not Found. " +
-      "Restart or deploy sandbox-host with chat fork support, and for local dev make sure " +
-      "SANDBOX_HOST_URL points at the control listener (:4400), not the proxy listener (:4401)."
-    );
-  }
-
   private normalizeFsPath(path: string): string {
     if (!path) return "/";
     return path.startsWith("/") ? path : `/${path}`;
@@ -364,7 +305,7 @@ export class WorkspaceContainer {
   /**
    * Execute a command on the sandbox via the proxy POST /exec endpoint.
    */
-  private async execOnSandbox(
+  async execOnSandbox(
     args: string[],
     options: { cwd?: string; env?: Record<string, string> } = {},
   ): Promise<ControlPlaneExecResponse> {
@@ -589,14 +530,12 @@ export class WorkspaceContainer {
    * Build thread-specific env vars (integration creds + thread ID).
    * Passed to the sandbox-host chat runner.
    *
-   * BYOK credentials are returned separately as `byokProxy` so they're
-   * passed to sandbox-host via WebSocket upgrade headers — never leaked
-   * into the container env. The runner talks to providers through the
-   * sandbox-host proxy; sandbox-host decides the upstream.
+   * Model-provider credentials are intentionally not returned here. ChatThreadDO
+   * resolves org BYOK state directly before each Pi model request so key changes
+   * are not cached by a long-lived session.
    */
   async buildChatRunnerEnv(options: ChatRunnerEnvOptions): Promise<{
     envVars: Record<string, string>;
-    byokProxy?: ByokProxyCredentials;
   }> {
     if (!this.workspaceId) {
       throw new Error("WorkspaceContainer not initialized");
@@ -633,11 +572,6 @@ export class WorkspaceContainer {
 
     integrationEnv.CHIRIDION_CLAUDE_MODEL =
       threadProvider === "claude" ? threadModel : DEFAULT_LLM_MODEL;
-    // Fetch org-level BYOK provider config (if any)
-    const byokProxy = await this.fetchByokProxyCredentials(
-      options.provider,
-      llmProviderRecord,
-    );
     integrationEnv.CHIRIDION_CODEX_MODEL =
       threadProvider === "codex" ? threadModel : DEFAULT_CODEX_MODEL;
 
@@ -647,70 +581,7 @@ export class WorkspaceContainer {
         ...appSessionEnv,
         CHIRIDION_CHAT_PROVIDER: options.provider,
       },
-      byokProxy,
     };
-  }
-
-  /**
-   * Fetch org-level BYOK (bring your own key) LLM provider credentials.
-   *
-   * Both Anthropic and Bedrock BYOK are handled in the Go proxy (sandbox-host).
-   * Credentials are passed via WebSocket headers, not container env vars.
-   */
-  private async fetchByokProxyCredentials(
-    provider: "claude" | "codex",
-    existingRecord?: Awaited<ReturnType<OrgDO["getLlmProviderConfig"]>>,
-  ): Promise<ByokProxyCredentials | undefined> {
-    if (!this.orgId) return undefined;
-
-    try {
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
-      const record = existingRecord ?? (await orgStub.getLlmProviderConfig());
-      if (!record) return undefined;
-
-      const creds = await decryptCredentials<Record<string, string>>(
-        record.credentials_encrypted,
-        this.env.INTEGRATION_SECRET_KEY,
-      );
-      const config = parseStoredLlmProviderConfig(record.config);
-
-      if (record.provider === "anthropic") {
-        console.log(
-          `[Sandbox] BYOK: using Anthropic via proxy for org=${this.orgId}`,
-        );
-        return { provider: "anthropic", apiKey: creds.api_key };
-      }
-
-      if (record.provider === "bedrock") {
-        const region = config.aws_region || "us-east-1";
-        console.log(
-          `[Sandbox] BYOK: using Bedrock via proxy (${region}) for org=${this.orgId}`,
-        );
-        return { provider: "bedrock", bearerToken: creds.bearer_token, region };
-      }
-
-      if (record.provider === "openai" && provider === "codex") {
-        console.log(
-          `[Sandbox] BYOK: using OpenAI via proxy for org=${this.orgId}`,
-        );
-        return { provider: "openai", apiKey: creds.api_key };
-      }
-
-      if (
-        record.provider === "openrouter" &&
-        (provider === "codex" || provider === "claude")
-      ) {
-        console.log(
-          `[Sandbox] BYOK: using OpenRouter via ${provider} proxy for org=${this.orgId}`,
-        );
-        return { provider: "openrouter", apiKey: creds.api_key };
-      }
-
-      return undefined;
-    } catch (err) {
-      console.error("[Sandbox] fetchByokProxyCredentials: error:", err);
-      return undefined;
-    }
   }
 
   /**
@@ -733,70 +604,27 @@ export class WorkspaceContainer {
     }
   }
 
-  // ─── Chat WebSocket ──────────────────────────────────────
-
-  /**
-   * Open a WebSocket to the sandbox-host chat runner.
-   */
-  async connectChatWebSocket(options: {
-    threadId: string;
-    userId?: string;
-    byokProxy?: ByokProxyCredentials;
-  }): Promise<WebSocket> {
-    console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
-    if (!options.threadId) {
-      throw new Error("Thread ID is required for chat websocket");
-    }
-    const workerBaseUrl = (
-      this.env.LOCAL_WORKER_BASE_URL ||
-      this.env.WORKER_BASE_URL ||
-      ""
-    ).trim();
-    if (!workerBaseUrl) {
-      throw new Error("WORKER_BASE_URL is not configured");
-    }
-
-    const headers: Record<string, string> = {
-      Upgrade: "websocket",
-      "X-Chiridion-Thread-Id": options.threadId,
-      "X-Chiridion-Worker-Base-Url": workerBaseUrl,
-    };
-    if (options.userId) {
-      headers["X-Chiridion-User-Id"] = options.userId;
-    }
-    if (options.byokProxy?.provider === "anthropic") {
-      headers["X-Chiridion-Byok-Anthropic-Key"] = options.byokProxy.apiKey;
-    } else if (options.byokProxy?.provider === "bedrock") {
-      headers["X-Chiridion-Byok-Bedrock-Token"] = options.byokProxy.bearerToken;
-      headers["X-Chiridion-Byok-Bedrock-Region"] = options.byokProxy.region;
-    } else if (options.byokProxy?.provider === "openai") {
-      headers["X-Chiridion-Byok-OpenAI-Key"] = options.byokProxy.apiKey;
-    } else if (options.byokProxy?.provider === "openrouter") {
-      headers["X-Chiridion-Byok-OpenRouter-Key"] = options.byokProxy.apiKey;
-    }
-
-    const response = await this.fetchSandboxWithRetry(
-      this.sandboxUrl("/chat"),
-      { headers },
-      {},
-      { operation: "chat_websocket", attempts: 2, initialDelayMs: 250 },
-    );
-
-    if (response.status !== 101 || !response.webSocket) {
-      const body = await response.text();
-      console.error(
-        `[Sandbox] connectChatWebSocket: upgrade failed status=${response.status} body=${body.slice(0, 500)}`,
-      );
-      throw new Error(
-        `Failed to open chat websocket: ${response.status} ${body}`,
-      );
-    }
-
-    console.log(`[Sandbox] connectChatWebSocket: websocket opened`);
-    return response.webSocket;
-  }
-
   // ─── Integration Env Vars ────────────────────────────────
+
+  async buildContainerCommandEnv(): Promise<Record<string, string>> {
+    const env: Record<string, string> = {
+      WORKSPACE_ID: this.workspaceId,
+      ORG_ID: this.orgId,
+      WRANGLER_SEND_METRICS: "false",
+      CI: "1",
+    };
+    const dispatchNamespace = this.env.CF_DISPATCH_NAMESPACE?.trim();
+    if (dispatchNamespace) {
+      env.CF_DISPATCH_NAMESPACE = dispatchNamespace;
+    }
+
+    // Compatibility: keep INT_* credentials available to shell commands for now.
+    // Follow-up PR should remove this once connection method bindings are the only
+    // supported integration interface.
+    Object.assign(env, await this.fetchIntegrationEnvVars());
+    Object.assign(env, await this.createAppAccessSession());
+    return env;
+  }
 
   /**
    * Write integration env vars to a dotenv file on the sandbox.
@@ -852,10 +680,12 @@ export class WorkspaceContainer {
 
       const decryptStartedAt = Date.now();
       for (const record of records) {
-        const credentials = await decryptCredentials(
-          record.credentials_encrypted,
-          this.env.INTEGRATION_SECRET_KEY,
-        );
+        const credentials = record.credentials_encrypted
+          ? await decryptCredentials(
+              record.credentials_encrypted,
+              this.env.INTEGRATION_SECRET_KEY,
+            )
+          : {};
         const config = JSON.parse(record.config) as Record<string, unknown>;
         Object.assign(
           integrationEnvVars,
@@ -1024,57 +854,34 @@ export class WorkspaceContainer {
     return { success: true, response };
   }
 
-  async forkThreadSession(options: {
-    sourceThreadId: string;
-    targetThreadId: string;
-    entryId: string;
-  }): Promise<{ success: boolean; error?: string; code?: string; status?: number }> {
-    const sourceThreadId = options.sourceThreadId.trim();
-    const targetThreadId = options.targetThreadId.trim();
-    const entryId = options.entryId.trim();
-    if (!sourceThreadId || !targetThreadId || !entryId) {
-      return {
-        success: false,
-        error: "sourceThreadId, targetThreadId, and entryId are required",
-      };
+  async readPiCoreMessagesStream(
+    threadId: string,
+    options: { skipBanCheck?: boolean } = {},
+  ): Promise<ControlPlaneThreadMessagesStreamResponse> {
+    const trimmedThreadId = threadId.trim();
+    if (!trimmedThreadId) {
+      return { success: false, error: "Thread ID is required", code: "EINVAL" };
     }
 
-    const url = this.sandboxUrl("/chat/fork");
-    const init: RequestInit = {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
+    const response = await this.fetchSandboxWithRetry(
+      this.sandboxUrl("/chat/pi-core-messages", { threadId: trimmedThreadId }),
+      {
+        headers: { Accept: "application/json" },
       },
-      body: JSON.stringify({ sourceThreadId, targetThreadId, entryId }),
-    };
-
-    let response = await this.fetchSandbox(url, init, { skipBanCheck: true });
+      { skipBanCheck: options.skipBanCheck },
+      { operation: "chat_pi_core_messages", attempts: 3, initialDelayMs: 150 },
+    );
 
     if (!response.ok) {
-      let error = await this.sandboxErrorText(response);
-      const retryUrl = this.sandboxForkEndpointError(response.status, error)
-        ? this.controlUrlForKnownProxyUrl(url)
-        : null;
-      if (retryUrl && retryUrl !== url) {
-        response = await fetch(retryUrl, init);
-        if (response.ok) {
-          return { success: true };
-        }
-        error = await this.sandboxErrorText(response);
-      }
-      const endpointError = this.sandboxForkEndpointError(response.status, error);
+      const body = await response.text();
       return {
         success: false,
-        error: endpointError || error || `Fork thread session failed: HTTP ${response.status}`,
-        code: endpointError
-          ? "SANDBOX_FORK_ENDPOINT_NOT_FOUND"
-          : `HTTP_${response.status}`,
-        status: response.status,
+        error: body || "Read Pi core message stream failed",
+        code: `HTTP_${response.status}`,
       };
     }
 
-    return { success: true };
+    return { success: true, response };
   }
 
   async terminateWorkspace(

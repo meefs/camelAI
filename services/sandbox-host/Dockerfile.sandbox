@@ -102,14 +102,9 @@ RUN cd /opt/chiridion && npx playwright install-deps chromium && \
 COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
 COPY sandbox/skills/ /opt/chiridion-host-pi/skills/
 COPY sandbox/create-worker/ /usr/local/lib/create-worker/
-COPY sandbox/integrations-cli.mjs /usr/local/bin/camelai-integrations
 RUN chmod +x /opt/chiridion/entrypoint.sh && \
-    chmod +x /usr/local/bin/camelai-integrations && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
     chmod +x /usr/local/lib/create-worker/publish.mjs && \
-    ln -sf /usr/local/bin/camelai-integrations /usr/local/bin/integrations && \
-    ln -sf /usr/local/bin/camelai-integrations /usr/local/bin/camelai-connections && \
-    ln -sf /usr/local/bin/camelai-integrations /usr/local/bin/connections && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
     ln -sf /usr/local/lib/create-worker/publish.mjs /usr/local/bin/publish
 COPY sandbox/validate-notebook.py /usr/local/bin/validate-notebook

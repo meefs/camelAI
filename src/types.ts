@@ -140,6 +140,12 @@ export interface TaskNotificationBlock {
   summary: string;
 }
 
+export interface ErrorBlock {
+  type: "error";
+  error: string;
+  title?: string;
+}
+
 export type ContentBlock =
   | TextBlock
   | ToolUseBlock
@@ -147,7 +153,8 @@ export type ContentBlock =
   | ThinkingBlock
   | RedactedThinkingBlock
   | TeammateMessageBlock
-  | TaskNotificationBlock;
+  | TaskNotificationBlock
+  | ErrorBlock;
 
 export interface Message {
   id: string;

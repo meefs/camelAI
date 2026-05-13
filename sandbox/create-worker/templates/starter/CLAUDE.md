@@ -182,17 +182,15 @@ The template includes a `CONNECTIONS` service binding by default.
 
 - Local dev: `CONNECTIONS` resolves to `LocalConnectionsService` in `workers/connections.ts`
 - camelAI deploy: platform rewrites this binding to the internal `ConnectionsService`
-- Run `bun run connections:typegen` to generate `.camelai/connections.ts` from live MCP tool schemas
 
-Example:
+Use `CONNECTIONS.methods()` to inspect available connection aliases, method names, and input schemas. Use `createConnections()` for method-style calls:
 
 ```typescript
-import { createConnections } from "../../.camelai/connections";
+import { createConnections } from "~/lib/connections";
 
+const methods = await context.cloudflare.env.CONNECTIONS.methods();
 const connections = createConnections(context.cloudflare.env);
-const customer = await connections.stripeProd.createCustomer({
-  email: "customer@example.com",
-});
+const customers = await connections.stripeProd.listCustomers({ limit: 10 });
 ```
 
 ### Virtual AI Binding (`AI`)
