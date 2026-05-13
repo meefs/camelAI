@@ -466,6 +466,11 @@ const CODE_MODE_MAX_OUTPUT_CHARACTERS = 200_000;
 const WEB_PROVIDER_DEFAULT_ORDER: WebProvider[] = ["firecrawl", "parallel", "exa"];
 const WEB_PROVIDER_ROUND_ROBIN_KEY = "code-mode:web-provider:index";
 const WEB_PROVIDER_TIMEOUT_MS = 20_000;
+const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
+  // This tool waits for human input and can outlive js_exec's short sandbox
+  // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
+  "prompt_connection_setup",
+]);
 
 function clampCodeModeInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = typeof value === "number" ? Math.trunc(value) : Number.parseInt(String(value ?? ""), 10);
@@ -991,7 +996,7 @@ const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = [
   },
   {
     name: "prompt_connection_setup",
-    description: "Prompt the user to set up a connection in the chat UI and wait for completion. Arguments: { integration_type, suggested_name?, message?, display_name?, description?, instructions?, fields? }.",
+    description: "Prompt the user to set up a connection in the chat UI and wait for completion. Use this as a top-level tool, not from js_exec. Arguments: { integration_type, suggested_name?, message?, display_name?, description?, instructions?, fields? }.",
   },
   {
     name: "capture_bug_report",
@@ -1332,7 +1337,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   async listTools(): Promise<CodeModeToolDefinition[]> {
-    return CODE_MODE_TOOL_DEFINITIONS.map(codeModeToolDefinitionWithParameters);
+    return CODE_MODE_TOOL_DEFINITIONS
+      .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name))
+      .map(codeModeToolDefinitionWithParameters);
   }
 
   async callTool(name: string, rawArgs: unknown = {}): Promise<unknown> {
@@ -3977,8 +3984,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return pendingResponse;
   }
 
-  async receiveConnectionSetupResponse(response: ConnectionSetupResponse): Promise<void> {
-    await this.handleConnectionSetupResponse(response);
+  async receiveConnectionSetupResponse(
+    response: ConnectionSetupResponse,
+  ): Promise<{ accepted: boolean }> {
+    return await this.handleConnectionSetupResponse(response);
   }
 
   async captureBugReport(input: {
@@ -5196,7 +5205,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
-  private async handleConnectionSetupResponse(response: ConnectionSetupResponse): Promise<void> {
+  private async handleConnectionSetupResponse(
+    response: ConnectionSetupResponse,
+  ): Promise<{ accepted: boolean }> {
     const nativeWaiter = this.pendingConnectionSetupWaiters.get(response.requestId);
     if (response.requestId && nativeWaiter) {
       this.pendingConnectionSetupWaiters.delete(response.requestId);
@@ -5206,12 +5217,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         type: "connection_setup_answered",
         requestId: response.requestId,
       });
-      return;
+      return { accepted: true };
     }
 
     console.warn("[ChatThreadDO] Received connection setup response with no pending waiter", {
       requestId: response.requestId,
     });
+    return { accepted: false };
   }
 
   private async handleBugReportResponse(
@@ -7190,6 +7202,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Run JavaScript code mode with access to every registered harness tool through the global tools object. " +
           "Inspect ALL_TOOLS for names, descriptions, and parameter schemas. " +
           "Inside the code, call tools by name, for example: await tools.WebSearch({ query: \"Cloudflare Workers\" }); " +
+          "Interactive tools that wait for the user, such as prompt_connection_setup, must be called as top-level tools instead of from js_exec. " +
           "Connection methods are available at context.cloudflare.connections and connections.",
         parameters: Type.Object({
           code: Type.String(),

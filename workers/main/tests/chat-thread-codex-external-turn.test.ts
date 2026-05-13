@@ -425,7 +425,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       'list_apps',
       'list_scheduled_prompts',
       'list_integrations',
-      'prompt_connection_setup',
       'capture_bug_report',
       'get_custom_domain',
       'Agent',
@@ -439,6 +438,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
     expect((byName.get('connections_get') as any).parameters.properties.connection).toBeDefined();
+    expect(byName.has('prompt_connection_setup')).toBe(false);
   });
 
   it('serves bundled skills through the Pi core read and ls tools', async () => {

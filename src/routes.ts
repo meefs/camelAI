@@ -211,6 +211,10 @@ export default [
     "routes/api/workspaces.$id.chat.$threadId.messages.stream.ts",
   ),
   route(
+    "api/workspaces/:id/chat/:threadId/connection-setup-response",
+    "routes/api/workspaces.$id.chat.$threadId.connection-setup-response.ts",
+  ),
+  route(
     "api/workspaces/:id/chat/:threadId/fork",
     "routes/api/workspaces.$id.chat.$threadId.fork.ts",
   ),

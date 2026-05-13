@@ -46,7 +46,9 @@ import { isOrgBanned } from "../ban-list.js";
 import type { LlmModel } from "../../../../src/types.js";
 
 interface ChatThreadConnectionSetupRpc {
-  receiveConnectionSetupResponse(response: ConnectionSetupResponse): Promise<void>;
+  receiveConnectionSetupResponse(
+    response: ConnectionSetupResponse,
+  ): Promise<{ accepted: boolean }>;
 }
 
 async function resolveDefaultSlackThreadModel(
