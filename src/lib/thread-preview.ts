@@ -1,4 +1,4 @@
-import type { ContentBlock, Message } from '@/types';
+import type { ContentBlock } from '@/types';
 import { stripMentionAnnotations } from '@/lib/connection-mentions';
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
@@ -51,25 +51,4 @@ export function normalizeThreadPreviewUserMessage(content: string | ContentBlock
   }
 
   return withoutAuthor.slice(0, MAX_FIRST_USER_MESSAGE_LENGTH);
-}
-
-/**
- * Find the first non-meta user message suitable for thread preview text.
- */
-export function getFirstThreadPreviewUserMessage(messages: Message[]): string | null {
-  for (const message of messages) {
-    if (message.role !== 'user') {
-      continue;
-    }
-    if (message.isMeta || message.isCompactSummary) {
-      continue;
-    }
-
-    const normalized = normalizeThreadPreviewUserMessage(message.content);
-    if (normalized) {
-      return normalized;
-    }
-  }
-
-  return null;
 }

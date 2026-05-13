@@ -137,7 +137,6 @@ import {
 } from "@/lib/app-url";
 import { uploadWorkspaceFile } from "@/lib/workspace-upload.client";
 import { isManualCompactCommand } from "@/lib/slash-commands";
-import { getFirstThreadPreviewUserMessage } from "@/lib/thread-preview";
 import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
 import {
   getDefaultLlmModel,
@@ -2128,7 +2127,6 @@ export default function Chat({
   const queuedSendReadyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const firstUserMessageBackfillAttemptedRef = useRef<Set<string>>(new Set());
   const sessionIdRef = useRef<string | null>(null);
   const lastSideChannelEventIdRef = useRef(0);
   const lastRunnerSeqRef = useRef(0);
@@ -2620,41 +2618,6 @@ export default function Chat({
 
     saveDraft(welcomeInput, attachments);
   }, [attachments, readOnly, saveDraft, threadId, welcomeInput]);
-
-  const backfillThreadFirstUserMessage = useCallback(
-    async (id: string, loadedMessages: Message[]) => {
-      if (readOnly) return;
-      if (!resolvedWorkspaceId) return;
-      if (firstUserMessageBackfillAttemptedRef.current.has(id)) return;
-
-      const firstUserMessage = getFirstThreadPreviewUserMessage(loadedMessages);
-      if (!firstUserMessage) return;
-
-      firstUserMessageBackfillAttemptedRef.current.add(id);
-      try {
-        const response = await fetch(
-          `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/first-user-message`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ firstUserMessage }),
-          },
-        );
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-      } catch (error) {
-        console.warn("Failed to backfill first user message:", error);
-        firstUserMessageBackfillAttemptedRef.current.delete(id);
-      }
-    },
-    [readOnly, resolvedWorkspaceId],
-  );
-
-  useEffect(() => {
-    if (!threadId) return;
-    void backfillThreadFirstUserMessage(threadId, messagesRef.current);
-  }, [backfillThreadFirstUserMessage, initialMessages, threadId]);
 
   const bumpIframeKey = useCallback((tabId: string) => {
     iframeRetryCountsRef.current[tabId] = 0;
