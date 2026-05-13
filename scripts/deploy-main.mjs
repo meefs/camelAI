@@ -34,6 +34,12 @@ const redirectConfig = path.join(rootDir, '.wrangler/deploy/config.json');
 if (process.env.SKIP_BUILD === '1') {
   console.log('Skipping build because SKIP_BUILD=1');
 } else {
+  console.log('Generating Pi skills bundle...');
+  execSync('bun run generate:pi-skills', {
+    cwd: rootDir,
+    stdio: 'inherit'
+  });
+
   console.log('Building app...');
   execSync('bun run build', {
     cwd: rootDir,
