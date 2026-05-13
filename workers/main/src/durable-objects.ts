@@ -3835,7 +3835,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   getTodoState(): unknown[] {
-    return this.currentTodos;
+    if (this.currentTodos.length > 0) {
+      return cloneDurableState(this.currentTodos);
+    }
+
+    const storedTodos = this.ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
+    if (!Array.isArray(storedTodos) || storedTodos.length === 0) {
+      return [];
+    }
+
+    this.currentTodos = normalizeTodoItems(storedTodos);
+    return cloneDurableState(this.currentTodos);
   }
 
   async askUserQuestion(input: {

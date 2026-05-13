@@ -1239,6 +1239,29 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
   });
 
+  it('hydrates persisted todo state when requested', () => {
+    const get = vi.fn(() => [
+      { content: 'Stored task', status: 'running', active_form: 'Running stored task' },
+      { title: 'Stored pending task' },
+    ]);
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.currentTodos = [];
+    fake.ctx = {
+      storage: { kv: { get } },
+    };
+
+    const todos = ChatThreadDO.prototype.getTodoState.call(fake);
+
+    const expected = [
+      { content: 'Stored task', status: 'in_progress', activeForm: 'Running stored task' },
+      { content: 'Stored pending task', status: 'pending', activeForm: 'Stored pending task' },
+    ];
+    expect(get).toHaveBeenCalledWith('chatTodos');
+    expect(todos).toEqual(expected);
+    expect(fake.currentTodos).toEqual(expected);
+  });
+
   it('marks todos complete and removes persisted todo state when a turn ends', async () => {
     const deleteKey = vi.fn();
     const sent: string[] = [];
