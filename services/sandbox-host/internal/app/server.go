@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/chiridion/sandbox-host/internal/container"
@@ -40,8 +39,6 @@ type Server struct {
 	workspaces *workspace.Manager
 	fs         *fsops.Manager
 	usage      *state.UsageStore
-
-	draining atomic.Bool
 
 	httpClient *http.Client
 }
@@ -86,10 +83,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Path == "/health" {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "sandbox-host"})
-		return
-	}
-	if req.URL.Path == "/internal/admin/drain" {
-		s.handleDrainRoute(w, req, sourceIP)
 		return
 	}
 

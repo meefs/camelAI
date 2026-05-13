@@ -94,27 +94,11 @@ restart_service() {
   local unit="$2"
 
   if [[ "$svc" == "sandbox-host" ]]; then
-    echo "==> Draining $unit before restart..."
+    echo "==> Restarting $unit..."
     ssh "$VM" "set -euo pipefail
-      install_graceful_reload_unit() {
-        sudo mkdir -p /etc/systemd/system/${unit}.service.d
-        printf '%s\n' '[Service]' 'KillMode=process' 'TimeoutStopSec=1800' | sudo tee /etc/systemd/system/${unit}.service.d/graceful-reload.conf >/dev/null
-        sudo systemctl daemon-reload
-      }
-      cleanup() {
-        curl -fsS -X DELETE --max-time 5 'http://127.0.0.1/internal/admin/drain' >/dev/null 2>&1 || true
-      }
-      if curl -fsS --max-time 5 'http://127.0.0.1/internal/admin/drain' >/dev/null; then
-        install_graceful_reload_unit
-        trap cleanup ERR
-        curl -fsS -X POST --max-time 1810 'http://127.0.0.1/internal/admin/drain?wait=1&timeout=1800'
-        sudo systemctl restart $unit
-        trap - ERR
-      else
-        echo 'Drain endpoint unavailable; falling back to normal restart for this deploy.'
-        sudo systemctl restart $unit
-        install_graceful_reload_unit
-      fi
+      sudo rm -f /etc/systemd/system/${unit}.service.d/graceful-reload.conf
+      sudo systemctl daemon-reload
+      sudo systemctl restart $unit
       "
     return
   fi

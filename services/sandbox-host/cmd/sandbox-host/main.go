@@ -60,7 +60,6 @@ func main() {
 	go func() {
 		sig := <-sigCh
 		log.Printf("[SandboxHost] received %s; shutting down", sig)
-		server.BeginDrain("signal:" + sig.String())
 
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {

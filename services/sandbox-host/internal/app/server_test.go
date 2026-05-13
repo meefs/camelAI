@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,38 +30,6 @@ func TestHeaderCloningStripsMiniflareProxyHeaders(t *testing.T) {
 	}
 	if copied.Get("X-Test") != "kept" {
 		t.Fatalf("expected normal copied header to be preserved, got %q", copied.Get("X-Test"))
-	}
-}
-
-func TestDrainRouteTogglesDrainMode(t *testing.T) {
-	server := &Server{}
-	req := httptest.NewRequest(http.MethodPost, "/internal/admin/drain", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	rec := httptest.NewRecorder()
-	server.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected drain status: got=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var status map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
-		t.Fatalf("decode drain response: %v", err)
-	}
-	if draining, _ := status["draining"].(bool); !draining {
-		t.Fatalf("expected draining=true, got %#v", status)
-	}
-	if active, _ := status["activePiTurns"].(float64); active != 0 {
-		t.Fatalf("expected no active Pi turns, got %#v", status)
-	}
-
-	req = httptest.NewRequest(http.MethodDelete, "/internal/admin/drain", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	rec = httptest.NewRecorder()
-	server.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected drain resume status: got=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if server.IsDraining() {
-		t.Fatal("expected drain mode to be disabled")
 	}
 }
 
