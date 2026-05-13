@@ -10,7 +10,6 @@ const getThreadMock = vi.fn();
 const getThreadPreviewStateMock = vi.fn();
 const getTodoStateMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
-const getTodoStateMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
 const readThreadMessagesMock = vi.fn();
@@ -38,7 +37,6 @@ vi.mock('@/lib/chat-do.server', () => ({
   getThreadPreviewState: getThreadPreviewStateMock,
   getTodoState: getTodoStateMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
-  getTodoState: getTodoStateMock,
 }));
 
 vi.mock('@/lib/auth-do', () => ({

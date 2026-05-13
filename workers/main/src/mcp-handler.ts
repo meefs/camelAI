@@ -46,6 +46,7 @@ import {
   shouldRefreshAppCustomDomainState,
   shouldRetryAppCustomDomainProvisioning,
 } from '../../../src/lib/custom-domain-state';
+import { parseFilePreviewPath } from './preview-paths';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -70,23 +71,11 @@ const AUTH_HEADER_USER_ID = 'x-chiridion-user-id';
 const AUTH_HEADER_WORKSPACE_ID = 'x-chiridion-workspace-id';
 const AUTH_HEADER_THREAD_ID = 'x-chiridion-thread-id';
 
-const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
-const TEMP_PREVIEW_PREFIXES = [
-  { prefix: '/mnt/user-uploads/', source: 'upload' as const },
-  { prefix: '/mnt/user-outputs/', source: 'output' as const },
-];
-
 // Pending bug report capture request with resolver
 interface PendingBugReportCapture {
   resolve: (response: BugReportCaptureResponse) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
-}
-
-interface ParsedFilePreviewPath {
-  source: 'workspace' | 'upload' | 'output';
-  path: string;
-  filename: string;
 }
 
 /**
@@ -339,77 +328,11 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     });
   }
 
-  private sanitizePathInput(path: string): string {
-    return path.trim().replace(/\\/g, '/');
-  }
-
-  private normalizePathSegments(path: string, leadingSlash: boolean): string | null {
-    const segments = path
-      .split('/')
-      .filter((segment) => segment.length > 0 && segment !== '.');
-
-    if (segments.some((segment) => segment === '..')) {
-      return null;
-    }
-
-    const normalized = segments.join('/');
-    if (leadingSlash) {
-      return normalized ? `/${normalized}` : '/';
-    }
-    return normalized;
-  }
-
-  private basename(path: string): string {
-    return path.split('/').filter(Boolean).pop() || path;
-  }
-
   private encodePathSegments(path: string): string {
     return path
       .split('/')
       .map((segment) => encodeURIComponent(segment))
       .join('/');
-  }
-
-  private parseFilePreviewPath(rawPath: string): ParsedFilePreviewPath | null {
-    const trimmed = this.sanitizePathInput(rawPath);
-    if (!trimmed) return null;
-
-    const absoluteInput = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-
-    for (const { prefix, source } of TEMP_PREVIEW_PREFIXES) {
-      if (!absoluteInput.startsWith(prefix)) continue;
-      const relative = absoluteInput.slice(prefix.length);
-      const normalized = this.normalizePathSegments(relative, false);
-      if (!normalized) return null;
-      return {
-        source,
-        path: normalized,
-        filename: this.basename(normalized),
-      };
-    }
-
-    let workspacePath = absoluteInput;
-    for (const prefix of WORKSPACE_ROOT_PREFIXES) {
-      if (workspacePath === prefix) {
-        workspacePath = '/';
-        break;
-      }
-      if (workspacePath.startsWith(`${prefix}/`)) {
-        workspacePath = workspacePath.slice(prefix.length);
-        if (!workspacePath.startsWith('/')) {
-          workspacePath = `/${workspacePath}`;
-        }
-        break;
-      }
-    }
-
-    const normalizedWorkspacePath = this.normalizePathSegments(workspacePath, true);
-    if (!normalizedWorkspacePath || normalizedWorkspacePath === '/') return null;
-    return {
-      source: 'workspace',
-      path: normalizedWorkspacePath,
-      filename: this.basename(normalizedWorkspacePath),
-    };
   }
 
   async init() {
@@ -516,7 +439,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           });
         }
 
-        const parsedPath = this.parseFilePreviewPath(path);
+        const parsedPath = parseFilePreviewPath(path);
         if (!parsedPath) {
           return this.textResponse({
             success: false,

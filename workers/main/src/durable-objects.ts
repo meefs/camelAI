@@ -78,6 +78,7 @@ import {
   PI_CONTAINER_TOOL_DEFINITIONS,
 } from "./pi-container-tools";
 import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
+import { parseFilePreviewPath } from "./preview-paths";
 
 export type PreviewTarget =
   | {
@@ -1538,13 +1539,16 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       await this.chatThreadStub.setPreviewTarget(null);
       return { success: true, target: null };
     }
-    const normalizedPath = filePath.startsWith("/") ? filePath : `/${filePath}`;
+    const parsedPath = parseFilePreviewPath(filePath);
+    if (!parsedPath) {
+      throw new Error("Invalid preview file path");
+    }
     const target: PreviewTarget = {
       kind: "file",
-      source: "workspace",
+      source: parsedPath.source,
       workspaceId: this.ctx.props.workspaceId,
-      path: normalizedPath,
-      filename: normalizedPath.split("/").filter(Boolean).pop() ?? "file",
+      path: parsedPath.path,
+      filename: parsedPath.filename,
       contentType: typeof args.content_type === "string" ? args.content_type : undefined,
     };
     await this.chatThreadStub.setPreviewTarget(target);
