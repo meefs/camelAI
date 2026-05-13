@@ -26,6 +26,7 @@ import {
   stripMentionAnnotations,
   stripMentionAnnotationsWithMetadata,
 } from '@/lib/connection-mentions';
+import { cn } from '@/lib/utils';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -525,6 +526,12 @@ interface MessageBubbleProps {
   showStreamingIndicator?: boolean;
   /** Keep the message in "running" visual state and hide finalized actions (used during compaction). */
   suppressFinalizedState?: boolean;
+  /** Whether this message owns the visible action row for its turn. */
+  showActionRow?: boolean;
+  /** Optional copied text when the action row represents multiple message chunks. */
+  actionCopyContent?: string;
+  /** Optional hover/focus classes supplied by a parent turn group. */
+  actionHoverClassName?: string;
   skillSheets?: Map<string, string>;
   hostname?: string;
   orgSlug?: string;
@@ -539,6 +546,9 @@ export function MessageBubble({
   forkingId = null,
   showStreamingIndicator = false,
   suppressFinalizedState = false,
+  showActionRow = true,
+  actionCopyContent,
+  actionHoverClassName = "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
   skillSheets,
   hostname,
   orgSlug,
@@ -600,6 +610,10 @@ export function MessageBubble({
   const forkTargetId = message.forkEntryId || message.id;
   const isForking = forkingId === message.id || forkingId === forkTargetId;
   const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
+  const actionVisibilityClassName = cn(
+    "transition-opacity",
+    actionHoverClassName,
+  );
   const hasContent = typeof message.content === 'string'
     ? message.content.length > 0
     : message.content.length > 0;
@@ -667,35 +681,37 @@ export function MessageBubble({
             hostname={hostname}
             orgSlug={orgSlug}
           />
-          <div
-            className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-            role="group"
-            aria-label="Message actions"
-          >
-            {author && (
+          {showActionRow && (
+            <div
+              className={cn("flex items-center gap-0.5", actionVisibilityClassName)}
+              role="group"
+              aria-label="Message actions"
+            >
+              {author && (
+                <span className="text-muted-foreground text-xs mr-1">
+                  Sent by {author.displayName} at{' '}
+                </span>
+              )}
               <span className="text-muted-foreground text-xs mr-1">
-                Sent by {author.displayName} at{' '}
+                {formatMessageTime(message.created_at)}
               </span>
-            )}
-            <span className="text-muted-foreground text-xs mr-1">
-              {formatMessageTime(message.created_at)}
-            </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground"
-                  onClick={() => onCopy(message.id, bugReport.originalText)}
-                >
-                  {isCopied ? <Check /> : <Copy />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {isCopied ? 'Copied!' : 'Copy message'}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-muted-foreground"
+                    onClick={() => onCopy(message.id, bugReport.originalText)}
+                  >
+                    {isCopied ? <Check /> : <Copy />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {isCopied ? 'Copied!' : 'Copy message'}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
         </div>
       );
     }
@@ -734,35 +750,37 @@ export function MessageBubble({
           </div>
         )}
         {/* Hover action row */}
-        <div
-          className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-          role="group"
-          aria-label="Message actions"
-        >
-          {author && (
+        {showActionRow && (
+          <div
+            className={cn("flex items-center gap-0.5", actionVisibilityClassName)}
+            role="group"
+            aria-label="Message actions"
+          >
+            {author && (
+              <span className="text-muted-foreground text-xs mr-1">
+                Sent by {author.displayName} at
+              </span>
+            )}
             <span className="text-muted-foreground text-xs mr-1">
-              Sent by {author.displayName} at 
+              {formatMessageTime(message.created_at)}
             </span>
-          )}
-          <span className="text-muted-foreground text-xs mr-1">
-            {formatMessageTime(message.created_at)}
-          </span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground"
-                onClick={() => onCopy(message.id, contentToString(cleanedContent))}
-              >
-                {isCopied ? <Check /> : <Copy />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              {isCopied ? 'Copied!' : 'Copy message'}
-            </TooltipContent>
-          </Tooltip>
-        </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground"
+                  onClick={() => onCopy(message.id, actionCopyContent ?? contentToString(cleanedContent))}
+                >
+                  {isCopied ? <Check /> : <Copy />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {isCopied ? 'Copied!' : 'Copy message'}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        )}
       </div>
     );
   }
@@ -785,9 +803,9 @@ export function MessageBubble({
         </div>
       )}
       {/* Hover action row */}
-      {hasContent && !suppressFinalizedState && (
+      {hasContent && !suppressFinalizedState && showActionRow && (
         <div
-          className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+          className={cn("flex items-center gap-0.5", actionVisibilityClassName)}
           role="group"
           aria-label="Message actions"
         >
@@ -818,7 +836,7 @@ export function MessageBubble({
                 variant="ghost"
                 size="icon-sm"
                 className="text-muted-foreground"
-                onClick={() => onCopy(message.id, contentToString(message.content))}
+                onClick={() => onCopy(message.id, actionCopyContent ?? contentToString(message.content))}
               >
                 {isCopied ? <Check /> : <Copy />}
               </Button>

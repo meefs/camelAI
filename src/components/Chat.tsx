@@ -88,6 +88,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   MessageBubble,
+  contentToString,
   isInterruptMessage,
   parseSlashCommand,
   parseLocalCommandStdout,
@@ -1143,6 +1144,52 @@ const ChatMessagesView = memo(function ChatMessagesView({
   messagesEndRef,
   mentionSlugMap,
 }: ChatMessagesViewProps) {
+  const messageGroups = useMemo(() => {
+    const groups: Array<{
+      key: string;
+      messages: Message[];
+      isAssistantTurn: boolean;
+      actionMessageId: string;
+      copyContent?: string;
+    }> = [];
+
+    for (let index = 0; index < visibleMessages.length;) {
+      const firstMessage = visibleMessages[index];
+      const isAssistantTurn = firstMessage.role === "assistant";
+      let endIndex = index + 1;
+
+      if (isAssistantTurn) {
+        while (
+          endIndex < visibleMessages.length &&
+          visibleMessages[endIndex].role === "assistant"
+        ) {
+          endIndex += 1;
+        }
+      }
+
+      const messages = visibleMessages.slice(index, endIndex);
+      const actionMessage = messages[messages.length - 1];
+      const copyContent = isAssistantTurn
+        ? messages
+            .map((message) => contentToString(message.content))
+            .filter(Boolean)
+            .join("\n\n")
+        : undefined;
+
+      groups.push({
+        key: `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}-${actionMessage.id}`,
+        messages,
+        isAssistantTurn,
+        actionMessageId: actionMessage.id,
+        copyContent,
+      });
+
+      index = endIndex;
+    }
+
+    return groups;
+  }, [visibleMessages]);
+
   return (
     <>
       {/* Message loading skeletons (deferred data still resolving) */}
@@ -1168,44 +1215,64 @@ const ChatMessagesView = memo(function ChatMessagesView({
         </>
       )}
 
-      {visibleMessages.map((msg) => {
-        const isLastUserMessage = msg.id === lastUserMessageId;
-        const isLastAssistantMessage =
-          !isAwaitingAssistant &&
-          isLastMessageAssistantLike &&
-          msg.id === lastMessageId;
-        const messageRef = isLastUserMessage
-          ? lastUserMessageRef
-          : isLastAssistantMessage
-            ? assistantMeasureRef
-            : undefined;
-        return (
-          <div
-            key={msg.id}
-            ref={messageRef}
-            data-message-id={msg.id}
-            className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
-          >
-            <MessageBubble
-              message={msg}
-              onCopy={copyMessage}
-              copiedId={copiedMessageId}
-              onFork={forkMessage}
-              forkingId={forkingMessageId}
-              showStreamingIndicator={
-                assistantTurnActive && msg.id === activeAssistantMessageId
-              }
-              suppressFinalizedState={
-                isCompacting && msg.id === compactingPriorMessageId
-              }
-              skillSheets={skillSheetsByToolId}
-              hostname={hostname}
-              orgSlug={orgSlug}
-              mentionSlugMap={mentionSlugMap}
-            />
-          </div>
-        );
-      })}
+      {messageGroups.map((messageGroup) => (
+        <div
+          key={messageGroup.key}
+          className={messageGroup.isAssistantTurn ? "group/turn" : undefined}
+        >
+          {messageGroup.messages.map((msg) => {
+            const isLastUserMessage = msg.id === lastUserMessageId;
+            const isLastAssistantMessage =
+              !isAwaitingAssistant &&
+              isLastMessageAssistantLike &&
+              msg.id === lastMessageId;
+            const messageRef = isLastUserMessage
+              ? lastUserMessageRef
+              : isLastAssistantMessage
+                ? assistantMeasureRef
+                : undefined;
+            const isTurnActionMessage = msg.id === messageGroup.actionMessageId;
+
+            return (
+              <div
+                key={msg.id}
+                ref={messageRef}
+                data-message-id={msg.id}
+                className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
+              >
+                <MessageBubble
+                  message={msg}
+                  onCopy={copyMessage}
+                  copiedId={copiedMessageId}
+                  onFork={forkMessage}
+                  forkingId={forkingMessageId}
+                  showStreamingIndicator={
+                    assistantTurnActive && msg.id === activeAssistantMessageId
+                  }
+                  suppressFinalizedState={
+                    isCompacting && msg.id === compactingPriorMessageId
+                  }
+                  showActionRow={!messageGroup.isAssistantTurn || isTurnActionMessage}
+                  actionCopyContent={
+                    messageGroup.isAssistantTurn && isTurnActionMessage
+                      ? messageGroup.copyContent
+                      : undefined
+                  }
+                  actionHoverClassName={
+                    messageGroup.isAssistantTurn
+                      ? "opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+                      : undefined
+                  }
+                  skillSheets={skillSheetsByToolId}
+                  hostname={hostname}
+                  orgSlug={orgSlug}
+                  mentionSlugMap={mentionSlugMap}
+                />
+              </div>
+            );
+          })}
+        </div>
+      ))}
 
       {/* Error display */}
       {error ? (
