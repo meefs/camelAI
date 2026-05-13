@@ -3617,9 +3617,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     try {
       if (data.type === "connection_setup_response") {
-        await this.handleConnectionSetupResponse(
+        const result = await this.handleConnectionSetupResponse(
           data as unknown as ConnectionSetupResponse,
         );
+        if (!result.accepted) {
+          this.sendDirect(ws, {
+            type: "connection_setup_error",
+            requestId: typeof data.requestId === "string" ? data.requestId : "",
+            error: "Connection setup request is no longer pending. Please ask the agent to start connection setup again.",
+          });
+        }
         return;
       }
 

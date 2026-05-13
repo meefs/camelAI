@@ -2115,6 +2115,7 @@ export default function Chat({
   const wsRef = useRef<WebSocket | null>(null);
   const oobWsRef = useRef<WebSocket | null>(null);
   const questionResponseSocketRef = useRef<"runner" | "oob">("runner");
+  const connectionSetupResponseSocketRef = useRef<"runner" | "oob">("runner");
   const lastRunnerModelSelectionRef = useRef<string | null>(null);
   const iframeRefreshTimeoutsRef = useRef<
     Record<string, ReturnType<typeof setTimeout>>
@@ -2914,7 +2915,7 @@ export default function Chat({
   }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
   const handleRealtimeSideChannelEvent = useCallback(
-    (data: any) => {
+    (data: any, source: "runner" | "oob" = "runner") => {
       if (data.type === "preview_state") {
         const newVersion = typeof data.version === "number" ? data.version : 0;
         const hasVersionBump = newVersion > previewVersionRef.current;
@@ -3017,6 +3018,7 @@ export default function Chat({
         data.requestId &&
         data.integrationType
       ) {
+        connectionSetupResponseSocketRef.current = source;
         setConnectionSetupPrompt({
           requestId: data.requestId as string,
           integrationType: data.integrationType as string,
@@ -3032,6 +3034,18 @@ export default function Chat({
       if (data.type === "connection_setup_answered" && data.requestId) {
         setConnectionSetupPrompt((prev) =>
           prev?.requestId === data.requestId ? null : prev,
+        );
+        return;
+      }
+
+      if (data.type === "connection_setup_error" && data.requestId) {
+        setConnectionSetupPrompt((prev) =>
+          prev?.requestId === data.requestId ? null : prev,
+        );
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : "Connection setup failed. Please ask the agent to start connection setup again.",
         );
         return;
       }
@@ -3187,9 +3201,10 @@ export default function Chat({
           data.type === "thread_model_updated" ||
           data.type === "connection_setup_prompt" ||
           data.type === "connection_setup_answered" ||
+          data.type === "connection_setup_error" ||
           data.type === "bug_report_prompt"
         ) {
-          handleRealtimeSideChannelEvent(data);
+          handleRealtimeSideChannelEvent(data, "oob");
         }
       };
 
@@ -3932,9 +3947,10 @@ export default function Chat({
           data.type === "thread_model_updated" ||
           data.type === "connection_setup_prompt" ||
           data.type === "connection_setup_answered" ||
+          data.type === "connection_setup_error" ||
           data.type === "bug_report_prompt"
         ) {
-          handleRealtimeSideChannelEvent(data);
+          handleRealtimeSideChannelEvent(data, "runner");
         }
       };
 
@@ -5176,17 +5192,18 @@ export default function Chat({
         ...response,
       };
 
-      const socket =
-        oobWsRef.current?.readyState === WebSocket.OPEN
-          ? oobWsRef.current
-          : wsRef.current?.readyState === WebSocket.OPEN
-            ? wsRef.current
-            : null;
+      const source = connectionSetupResponseSocketRef.current;
+      const socket = source === "oob" ? oobWsRef.current : wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.error(
           "[Chat] WebSocket not available for connection setup response",
+          { source },
         );
-        throw new Error("Chat connection is not available. Please try again.");
+        throw new Error(
+          source === "oob"
+            ? "The chat side-channel disconnected before the connection details could be submitted. Please try again."
+            : "The chat runner connection disconnected before the connection details could be submitted. Please try again.",
+        );
       }
 
       socket.send(JSON.stringify(payload));
