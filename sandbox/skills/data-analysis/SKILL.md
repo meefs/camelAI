@@ -153,7 +153,14 @@ Only use `df.style` when the user explicitly requests conditional formatting, ce
 
 ## Jupyter Notebook Workflow (Preferred)
 
-For exploratory analysis, prefer delivering results as a Jupyter notebook (`.ipynb`) instead of a standalone `.py` script with separate chart/image files. Notebooks combine code, visual output, and markdown conclusions in one artifact.
+For exploratory analysis, deliver results as a Jupyter notebook (`.ipynb`).
+
+**Do not** deliver results as a:
+- standalone `.py` script with separate chart/image files 
+- html file
+unless explicitly requested by the user. 
+
+Notebooks preview reliabily with rich Altair charts and markdown rendering, and are better for report consumption. They combine code, visual output, and markdown conclusions in one artifact. 
 
 ### Build notebooks incrementally
 
