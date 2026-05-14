@@ -6,6 +6,10 @@ import { getEnv } from "@/lib/cloudflare.server";
 import { parseCookies, createSessionCookieHeader } from "@/lib/cookies.server";
 import { LegacyUserBanner } from "@/components/legacy-user-banner";
 import { LegacyMigrationDialog } from "@/components/billing/legacy-migration-dialog";
+import {
+  PaywallTakeover,
+  type PaywallTakeoverContext,
+} from "@/components/billing/paywall-takeover";
 import { AppSidebar } from "@/components/sidebar/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ChatGroupsProvider } from "@/hooks/use-chat-groups";
@@ -13,9 +17,11 @@ import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
+  hasOrgUsedSubscriptionTrial,
   isConfiguredEnterpriseOrg,
 } from "@/lib/billing.server";
 import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
+import { getByokProviderLabel } from "@/lib/byok-providers";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 
@@ -48,23 +54,32 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 
   const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
-  const llmProviderConfig = await orgStub.getLlmProviderConfig();
-  const currentOrg = isConfiguredEnterpriseOrg(env, authContext.currentOrg)
+  const [orgInfo, llmProviderConfig] = await Promise.all([
+    orgStub.getInfo().catch(() => null),
+    orgStub.getLlmProviderConfig(),
+  ]);
+  const baseOrg = orgInfo ?? authContext.currentOrg;
+  const currentOrg = isConfiguredEnterpriseOrg(env, baseOrg)
     ? {
-        ...authContext.currentOrg,
+        ...baseOrg,
         billing_status: "enterprise" as const,
         billing_plan: "enterprise" as const,
       }
-    : authContext.currentOrg;
+    : baseOrg;
   const billingAccessReady = Boolean(
     llmProviderConfig ||
     currentOrg.billing_status === "trialing" ||
     currentOrg.billing_status === "active" ||
     currentOrg.billing_status === "enterprise",
   );
-  if (!billingAccessReady) {
-    throw redirect("/onboarding");
-  }
+  const paywallContext: PaywallTakeoverContext | null = billingAccessReady
+    ? null
+    : {
+        currentOrgName: currentOrg.name,
+        multiOrg: authContext.orgs.length > 1,
+        trialAvailable: !hasOrgUsedSubscriptionTrial(currentOrg),
+        byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
+      };
 
   // Get sidebar state from cookies
   const cookies = parseCookies(request);
@@ -135,6 +150,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     showLegacyBanner,
     legacyMigration,
     chatGroups: currentChatGroups,
+    billingAccessReady,
+    paywallContext,
   };
 
   // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
@@ -158,10 +175,12 @@ export default function AppLayout() {
     defaultSidebarOpen,
     showLegacyBanner,
     legacyMigration,
+    billingAccessReady,
+    paywallContext,
   } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
-  const legacyMigrationKey = legacyMigration?.eligible
+  const legacyMigrationKey = billingAccessReady && legacyMigration?.eligible
     ? [
         authState.currentOrg?.id ?? "unknown-org",
         legacyMigration.customerId,
@@ -192,25 +211,34 @@ export default function AppLayout() {
       <ChatGroupsProvider>
         <AppSidebar />
         <SidebarInset className="h-svh overflow-hidden flex flex-col">
-          <Outlet />
+          {billingAccessReady ? (
+            <Outlet />
+          ) : paywallContext ? (
+            <PaywallTakeover
+              paywallContext={paywallContext}
+              legacyMigration={legacyMigration}
+            />
+          ) : null}
         </SidebarInset>
       </ChatGroupsProvider>
       <LegacyUserBanner
         show={showLegacyBanner}
         userId={authState.user?.id ?? "legacy-user"}
       />
-      <LegacyMigrationDialog
-        migration={legacyMigration}
-        open={legacyDialogOpen}
-        onOpenChange={setLegacyDialogOpen}
-        primaryAction={{
-          label: "See plans",
-          onClick: () => {
-            setLegacyDialogOpen(false);
-            navigate("/settings/organization/billing?view=plans");
-          },
-        }}
-      />
+      {billingAccessReady ? (
+        <LegacyMigrationDialog
+          migration={legacyMigration}
+          open={legacyDialogOpen}
+          onOpenChange={setLegacyDialogOpen}
+          primaryAction={{
+            label: "See plans",
+            onClick: () => {
+              setLegacyDialogOpen(false);
+              navigate("/settings/organization/billing?view=plans");
+            },
+          }}
+        />
+      ) : null}
     </SidebarProvider>
   );
 }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { APP_BUILD_ID } from '@/lib/app-build-id';
 
 const waitUntilMock = vi.fn();
 const requireSessionWorkspaceAccessMock = vi.fn();
@@ -53,6 +54,13 @@ vi.mock('@/lib/chat-groups.server', () => ({
 
 const { action, shouldRevalidate } = await import('@/routes/_app.chat._index');
 
+function makeCreateThreadFormData() {
+  const formData = new FormData();
+  formData.set('intent', 'createThread');
+  formData.set('clientBuildId', APP_BUILD_ID);
+  return formData;
+}
+
 describe('new chat create action', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -79,8 +87,7 @@ describe('new chat create action', () => {
   });
 
   it('does not use the first user message as the initial chat group name', async () => {
-    const formData = new FormData();
-    formData.set('intent', 'createThread');
+    const formData = makeCreateThreadFormData();
     formData.set('firstMessage', 'Build an analytics dashboard');
     formData.set('model', 'sonnet');
 
@@ -126,8 +133,7 @@ describe('new chat create action', () => {
   });
 
   it('returns the new thread and group while title generation runs in the background', async () => {
-    const formData = new FormData();
-    formData.set('intent', 'createThread');
+    const formData = makeCreateThreadFormData();
     formData.set('firstMessage', 'Persist this first message');
     formData.set('model', 'sonnet');
 
@@ -155,8 +161,7 @@ describe('new chat create action', () => {
   });
 
   it('creates the thread without sending the first message server-side', async () => {
-    const formData = new FormData();
-    formData.set('intent', 'createThread');
+    const formData = makeCreateThreadFormData();
     formData.set('firstMessage', 'Build an analytics dashboard');
     formData.set('initialMessageContent', 'Build an analytics dashboard');
     formData.set('model', 'sonnet');
@@ -181,8 +186,7 @@ describe('new chat create action', () => {
   });
 
   it('passes a real initial thread title through for the new group', async () => {
-    const formData = new FormData();
-    formData.set('intent', 'createThread');
+    const formData = makeCreateThreadFormData();
     formData.set('initialTitle', 'Review production logs');
     formData.set('model', 'sonnet');
 
@@ -207,8 +211,7 @@ describe('new chat create action', () => {
     addThreadToExistingGroupMock.mockRejectedValueOnce(
       new Error('Chat group not found'),
     );
-    const formData = new FormData();
-    formData.set('intent', 'createThread');
+    const formData = makeCreateThreadFormData();
     formData.set('groupId', 'group_stale');
     formData.set('model', 'sonnet');
 

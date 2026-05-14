@@ -28,7 +28,7 @@ describe("onboarding legacy migration loader", () => {
     });
   });
 
-  it("shows migration eligibility to already logged-in v2 users without billing access", async () => {
+  it("redirects already-onboarded users back to the app shell even without billing access", async () => {
     const orgInfo = {
       id: "org_123",
       name: "Legacy Org",
@@ -94,21 +94,17 @@ describe("onboarding legacy migration loader", () => {
       })),
     );
 
-    const result = await loader({
-      request: new Request("https://camelai.dev/onboarding"),
-      context: {},
-    } as never);
-
-    expect(result).toMatchObject({
-      userEmail: "legacy@example.com",
-      onboardingComplete: true,
-      billingAccessReady: false,
-      legacyMigration: {
-        eligible: true,
-        customerId: "cus_123",
-        activeLegacySubscriptionCount: 1,
-        defaultPlan: "pro",
-      },
+    await expect(
+      loader({
+        request: new Request("https://camelai.dev/onboarding"),
+        context: {},
+      } as never),
+    ).rejects.toSatisfy((response: unknown) => {
+      return (
+        response instanceof Response &&
+        response.status === 302 &&
+        response.headers.get("Location") === "/chat"
+      );
     });
     expect(userStub.getAuthBootstrap).toHaveBeenCalled();
     expect(orgStub.getLlmProviderConfig).toHaveBeenCalled();

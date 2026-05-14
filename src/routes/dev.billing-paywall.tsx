@@ -1,18 +1,9 @@
 import { Link, useSearchParams } from "react-router";
 import { useEffect, useState } from "react";
 import type { Route } from "./+types/dev.billing-paywall";
-import {
-  LegacyMigrationDialog,
-  type LegacyMigrationDialogData,
-} from "@/components/billing/legacy-migration-dialog";
-import {
-  LegacyMigrationConfirmDialog,
-  type LegacyMigrationConfirmation,
-} from "@/components/billing/legacy-migration-confirm-dialog";
-import {
-  PlanPicker,
-  type PlanPickerCta,
-} from "@/components/billing/plan-picker";
+import type { LegacyMigrationDialogData } from "@/components/billing/legacy-migration-dialog";
+import { PaywallTakeover } from "@/components/billing/paywall-takeover";
+import { type PlanPickerCta } from "@/components/billing/plan-picker";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,6 +34,8 @@ type PreviewState =
 interface PreviewConfig {
   description: string;
   migration: LegacyMigrationDialogData | null;
+  orgName: string;
+  multiOrg: boolean;
   trialAvailable: boolean;
   currentPlan: BillingPlan | null;
   defaultBillingMode: "individual" | "team";
@@ -86,6 +79,8 @@ function getPreviewConfig(
     description:
       "A new org must choose hosted billing or bring their own API key before continuing.",
     migration: null,
+    orgName: "Org B",
+    multiOrg: true,
     trialAvailable: true,
     currentPlan: null,
     defaultBillingMode: "individual",
@@ -125,6 +120,7 @@ function getPreviewConfig(
         ...base,
         description:
           "After the one org trial has been used, the CTA copy no longer promises another trial.",
+        multiOrg: false,
         trialAvailable: false,
       };
     case "byok-configured":
@@ -132,6 +128,7 @@ function getPreviewConfig(
         ...base,
         description:
           "An org with an existing BYOK provider sees Free as a continue path instead of another setup prompt.",
+        multiOrg: false,
         byokProviderLabel: getByokProviderLabel(byokProvider),
       };
     case "current-starter":
@@ -139,6 +136,7 @@ function getPreviewConfig(
         ...base,
         description:
           "A Starter org can upgrade to Pro/Team and sees Starter as the current plan.",
+        multiOrg: false,
         currentPlan: "starter",
       };
     case "current-pro":
@@ -146,6 +144,7 @@ function getPreviewConfig(
         ...base,
         description:
           "A Pro org sees lower plans as downgrade actions and Pro as the current plan.",
+        multiOrg: false,
         currentPlan: "pro",
       };
     case "team":
@@ -153,6 +152,7 @@ function getPreviewConfig(
         ...base,
         description:
           "Team mode starts on the team tab and uses Team as the highlighted plan.",
+        multiOrg: false,
         defaultBillingMode: "team",
       };
     case "default":
@@ -176,28 +176,6 @@ function describeCta(cta: PlanPickerCta): string {
   }
 }
 
-function makeLegacyConfirmation(
-  plan: "starter" | "pro" | "team",
-): LegacyMigrationConfirmation {
-  const monthlyPriceCents =
-    plan === "starter" ? 4000 : plan === "pro" ? 15000 : 15000;
-  const legacyCreditCents = plan === "starter" ? 3004 : 3004;
-  return {
-    billingPortalUrl: "https://billing.stripe.test/portal-preview",
-    preview: {
-      plan,
-      seatCount: plan === "team" ? 3 : 1,
-      currency: "usd",
-      monthlyPriceCents,
-      amountDueTodayCents: Math.max(0, monthlyPriceCents - legacyCreditCents),
-      legacyCreditCents,
-      newPlanProrationCents: monthlyPriceCents,
-      includedCreditCents:
-        plan === "starter" ? 1000 : plan === "pro" ? 3000 : 3000,
-    },
-  };
-}
-
 export async function loader({ request }: Route.LoaderArgs) {
   if (!isLocalPreviewRequest(request)) {
     throw new Response("Not found", { status: 404 });
@@ -216,16 +194,9 @@ export default function DevBillingPaywallPreviewRoute() {
   const byokProvider = parseByokProvider(searchParams.get("provider"));
   const config = getPreviewConfig(state, byokProvider);
   const [lastAction, setLastAction] = useState<string | null>(null);
-  const [legacyConfirmation, setLegacyConfirmation] =
-    useState<LegacyMigrationConfirmation | null>(null);
-  const [introOpen, setIntroOpen] = useState(
-    config.migration?.eligible ?? false,
-  );
 
   useEffect(() => {
-    setIntroOpen(config.migration?.eligible ?? false);
     setLastAction(null);
-    setLegacyConfirmation(null);
   }, [config.migration?.eligible, state]);
 
   return (
@@ -302,51 +273,24 @@ export default function DevBillingPaywallPreviewRoute() {
         </Alert>
       ) : null}
 
-      <section className="space-y-5 text-left">
-        {config.migration?.eligible ? (
-          <>
-            <LegacyMigrationDialog
-              migration={config.migration}
-              open={introOpen}
-              onOpenChange={setIntroOpen}
-            />
-            <LegacyMigrationConfirmDialog
-              confirmation={legacyConfirmation}
-              onOpenChange={(open) => {
-                if (!open) setLegacyConfirmation(null);
-              }}
-              onContinue={() => {
-                setLastAction("Continue to Stripe selected");
-                setLegacyConfirmation(null);
-              }}
-            />
-          </>
-        ) : null}
-
-        <PlanPicker
-          currentPlan={config.currentPlan}
-          defaultBillingMode={config.defaultBillingMode}
-          disabledReason={config.disabledReason}
-          heading={{
-            title: "Choose your plan",
-            subtitle: config.migration?.eligible
-              ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
-              : config.byokProviderLabel
-                ? `Your ${config.byokProviderLabel} API key is connected. Continue on Free, or start a paid plan for hosted credits.`
-                : config.trialAvailable
-                  ? "Start a free trial with model credits, or use your own API key."
-                  : "Choose a plan, or use your own API key.",
+      <section className="min-h-[80vh] overflow-hidden rounded-lg border">
+        <PaywallTakeover
+          currentOrgId="org_preview"
+          paywallContext={{
+            currentOrgName: config.orgName,
+            multiOrg: config.multiOrg,
+            trialAvailable: config.trialAvailable,
+            byokProviderLabel: config.byokProviderLabel,
           }}
-          highlightedPlan={state === "team" ? "team" : undefined}
-          trialAvailable={config.trialAvailable}
-          byokProviderLabel={config.byokProviderLabel}
           legacyMigration={config.migration}
-          onLegacyWhyClick={() => setIntroOpen(true)}
-          onSelectPlan={(cta) => {
+          onPreviewSelectPlan={(cta) => {
             setLastAction(describeCta(cta));
-            if (cta.kind === "migrate") {
-              setLegacyConfirmation(makeLegacyConfirmation(cta.plan));
-            }
+          }}
+          planPickerOverrides={{
+            currentPlan: config.currentPlan,
+            defaultBillingMode: config.defaultBillingMode,
+            disabledReason: config.disabledReason,
+            highlightedPlan: state === "team" ? "team" : undefined,
           }}
         />
       </section>
