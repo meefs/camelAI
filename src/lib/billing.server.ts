@@ -859,6 +859,33 @@ export function isConfiguredEnterpriseOrg(
     .some((value) => tokens.has(value));
 }
 
+export function hasHostedBillingAccess(
+  org:
+    | Pick<
+        Organization,
+        | "billing_status"
+        | "billing_credit_purchase_total_cents"
+        | "billing_credit_grant_total_cents"
+      >
+    | null
+    | undefined,
+): boolean {
+  if (!org) return false;
+  if (
+    org.billing_status === "trialing" ||
+    org.billing_status === "active" ||
+    org.billing_status === "enterprise"
+  ) {
+    return true;
+  }
+
+  return (
+    (org.billing_credit_purchase_total_cents ?? 0) +
+      (org.billing_credit_grant_total_cents ?? 0) >
+    0
+  );
+}
+
 export function getConfiguredCreditPriceIds(
   env: Pick<
     StripeBillingEnv,

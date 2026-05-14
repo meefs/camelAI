@@ -28,6 +28,7 @@ import {
   getConfiguredSubscriptionPriceId,
   getLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
+  hasHostedBillingAccess,
   hasOrgUsedSubscriptionTrial,
   getVerifiedLegacyStripeMigrationEligibility,
   isConfiguredEnterpriseOrg,
@@ -1043,6 +1044,35 @@ describe("billing helpers", () => {
           billing_status: "inactive",
         } as Organization,
       ),
+    ).toBe(true);
+  });
+
+  it("does not treat PAYG alone as hosted billing access", () => {
+    expect(
+      hasHostedBillingAccess({
+        billing_status: "inactive",
+        billing_plan: "payg",
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      } as Organization),
+    ).toBe(false);
+
+    expect(
+      hasHostedBillingAccess({
+        billing_status: "inactive",
+        billing_plan: "payg",
+        billing_credit_purchase_total_cents: 500,
+        billing_credit_grant_total_cents: 0,
+      } as Organization),
+    ).toBe(true);
+
+    expect(
+      hasHostedBillingAccess({
+        billing_status: "active",
+        billing_plan: "starter",
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      } as Organization),
     ).toBe(true);
   });
 

@@ -18,6 +18,7 @@ import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
+  hasHostedBillingAccess,
   hasOrgUsedSubscriptionTrial,
   isConfiguredEnterpriseOrg,
 } from "@/lib/billing.server";
@@ -69,10 +70,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : baseOrg;
   const billingAccessReady = Boolean(
     llmProviderConfig ||
-    currentOrg.billing_plan === "payg" ||
-    currentOrg.billing_status === "trialing" ||
-    currentOrg.billing_status === "active" ||
-    currentOrg.billing_status === "enterprise",
+    hasHostedBillingAccess(currentOrg),
   );
   const paywallContext: PaywallTakeoverContext | null = billingAccessReady
     ? null

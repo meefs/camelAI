@@ -47,15 +47,26 @@ describe('onboarding complete sales prompt flow', () => {
 
   function createOrgStub({
     billingStatus = 'active',
+    billingPlan = 'starter',
+    purchasedCreditsCents = 0,
+    grantedCreditsCents = 0,
     llmProviderConfig = null,
     threadTotal = 0,
   }: {
     billingStatus?: string;
+    billingPlan?: string;
+    purchasedCreditsCents?: number;
+    grantedCreditsCents?: number;
     llmProviderConfig?: unknown;
     threadTotal?: number;
   } = {}) {
     return {
-      getInfo: vi.fn().mockResolvedValue({ billing_status: billingStatus }),
+      getInfo: vi.fn().mockResolvedValue({
+        billing_status: billingStatus,
+        billing_plan: billingPlan,
+        billing_credit_purchase_total_cents: purchasedCreditsCents,
+        billing_credit_grant_total_cents: grantedCreditsCents,
+      }),
       getLlmProviderConfig: vi.fn().mockResolvedValue(llmProviderConfig),
       getThreadsPaginated: vi.fn().mockResolvedValue({
         items: [],
@@ -206,6 +217,50 @@ describe('onboarding complete sales prompt flow', () => {
     getEnvMock.mockReturnValue({
       BILLING_ENTERPRISE_ORG_SLUGS: 'enterprise-customer',
     });
+
+    const response = await action({
+      request: new Request('https://camelai.dev/api/onboarding/complete', {
+        method: 'POST',
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(createThreadMock).toHaveBeenCalled();
+  });
+
+  it('requires a provider choice for PAYG orgs with no credits', async () => {
+    orgStubs.set(
+      'org_123',
+      createOrgStub({
+        billingStatus: 'inactive',
+        billingPlan: 'payg',
+      }),
+    );
+
+    const response = await action({
+      request: new Request('https://camelai.dev/api/onboarding/complete', {
+        method: 'POST',
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(402);
+    expect(createThreadMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'Choose a billing option before continuing.',
+    });
+  });
+
+  it('allows PAYG orgs with purchased credits through onboarding', async () => {
+    orgStubs.set(
+      'org_123',
+      createOrgStub({
+        billingStatus: 'inactive',
+        billingPlan: 'payg',
+        purchasedCreditsCents: 500,
+      }),
+    );
 
     const response = await action({
       request: new Request('https://camelai.dev/api/onboarding/complete', {

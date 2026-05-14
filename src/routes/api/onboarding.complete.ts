@@ -3,8 +3,11 @@ import { getAuthEnv, requireAuthContext, type AuthContext } from '@/lib/auth.ser
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { waitUntil } from '@/lib/wait-until';
-import { isConfiguredEnterpriseOrg } from '@/lib/billing.server';
-import type { ChatHarness, LlmModel, Organization } from '@/types';
+import {
+  hasHostedBillingAccess,
+  isConfiguredEnterpriseOrg,
+} from '@/lib/billing.server';
+import type { ChatHarness, LlmModel } from '@/types';
 
 type OnboardingAccessChoice = 'byok' | 'existing' | null;
 
@@ -101,15 +104,6 @@ async function readAccessChoice(request: Request): Promise<OnboardingAccessChoic
     : null;
 }
 
-function hasPaidBillingAccess(org: Organization | null | undefined): boolean {
-  return (
-    org?.billing_status === 'trialing' ||
-    org?.billing_status === 'active' ||
-    org?.billing_plan === 'payg' ||
-    org?.billing_status === 'enterprise'
-  );
-}
-
 async function hasUserThreadsAcrossOrgs(
   authEnv: ReturnType<typeof getAuthEnv>,
   authContext: AuthContext,
@@ -186,7 +180,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       { BILLING_ENTERPRISE_ORG_SLUGS: env.BILLING_ENTERPRISE_ORG_SLUGS },
       orgInfo,
     ) ||
-    hasPaidBillingAccess(orgInfo) ||
+    hasHostedBillingAccess(orgInfo) ||
     Boolean(llmProviderConfig);
 
   if (!hasBillingAccess) {
