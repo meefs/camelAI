@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   backfillHostUsageToOrgDOs: vi.fn(),
@@ -23,6 +23,10 @@ function envForOrg(orgStub: Record<string, unknown>, hasSandboxHost = true) {
 }
 
 describe("ensureLegacyHostUsageBackfilled", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.backfillHostUsageToOrgDOs.mockResolvedValue({
@@ -69,16 +73,40 @@ describe("ensureLegacyHostUsageBackfilled", () => {
     expect(orgStub.failLegacyHostUsageBackfill).not.toHaveBeenCalled();
   });
 
-  it("blocks credit enforcement while another backfill is running", async () => {
+  it("waits for another backfill to complete", async () => {
+    vi.useFakeTimers();
+    const orgStub = {
+      claimLegacyHostUsageBackfill: vi
+        .fn()
+        .mockReturnValueOnce("running")
+        .mockReturnValueOnce("complete"),
+      completeLegacyHostUsageBackfill: vi.fn(),
+      failLegacyHostUsageBackfill: vi.fn(),
+    };
+
+    const wait = ensureLegacyHostUsageBackfilled(envForOrg(orgStub) as never, "org_1");
+    await vi.advanceTimersByTimeAsync(1000);
+    await wait;
+    vi.useRealTimers();
+
+    expect(orgStub.claimLegacyHostUsageBackfill).toHaveBeenCalledTimes(2);
+    expect(mocks.backfillHostUsageToOrgDOs).not.toHaveBeenCalled();
+  });
+
+  it("blocks credit enforcement when another backfill keeps running", async () => {
+    vi.useFakeTimers();
     const orgStub = {
       claimLegacyHostUsageBackfill: vi.fn(() => "running"),
       completeLegacyHostUsageBackfill: vi.fn(),
       failLegacyHostUsageBackfill: vi.fn(),
     };
 
-    await expect(
+    const wait = expect(
       ensureLegacyHostUsageBackfilled(envForOrg(orgStub) as never, "org_1"),
     ).rejects.toThrow("Hosted usage migration is already running");
+    await vi.advanceTimersByTimeAsync(120_000);
+    await wait;
+    vi.useRealTimers();
 
     expect(mocks.backfillHostUsageToOrgDOs).not.toHaveBeenCalled();
   });
