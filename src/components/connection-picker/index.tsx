@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { hasBrokeredProviderMcp } from '@/lib/provider-mcp-registry';
 import { ConnectionChip } from './connection-chip';
 import {
   useConnectionFilter,
@@ -23,6 +24,12 @@ interface ConnectionPickerProps {
   onSelect?: (integration: { type: string; displayName: string }) => void;
   excludeTypes?: string[];
   searchPlaceholder?: string;
+}
+
+function connectionAuthLabel(integration: FilterableIntegration & { authMethod?: string }): string | undefined {
+  if (integration.type === 'remote_mcp' || hasBrokeredProviderMcp(integration.type)) return 'MCP';
+  if (!integration.authMethod) return undefined;
+  return integration.authMethod === 'oauth2' ? 'OAuth' : 'API Key';
 }
 
 export function ConnectionPicker({
@@ -155,11 +162,7 @@ export function ConnectionPicker({
                 }
                 showAuthType={
                   variant === 'large'
-                    ? ('authMethod' in integration
-                        ? (integration as FilterableIntegration & { authMethod?: string }).authMethod === 'oauth2'
-                          ? 'OAuth'
-                          : 'API Key'
-                        : undefined)
+                    ? connectionAuthLabel(integration as FilterableIntegration & { authMethod?: string })
                     : undefined
                 }
                 onClick={() => handleChipClick(integration)}

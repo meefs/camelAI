@@ -10,6 +10,7 @@ import { APP_BUILD_ID } from '@/lib/app-build-id';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
+import { hasBrokeredProviderMcp } from '@/lib/provider-mcp-registry';
 import {
   buildSlugMap,
   filterMentionableConnections,
@@ -94,7 +95,7 @@ const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
   '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to.</camelai system message>';
 
 function connectionAuthLabel(type: IntegrationDefinition): string {
-  if (type.type === 'remote_mcp') return 'Remote MCP';
+  if (type.type === 'remote_mcp' || hasBrokeredProviderMcp(type.type)) return 'MCP';
   return type.authMethod === 'oauth2' ? 'OAuth' : 'API Key';
 }
 
