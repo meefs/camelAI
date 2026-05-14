@@ -5779,18 +5779,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    const shouldPreserveProvider =
-      prev?.threadId === threadId &&
-      prev.workspaceId === workspaceId &&
-      prev.orgId === orgId;
-
     this.chatContext = {
       threadId,
       workspaceId,
       orgId,
-      ...(shouldPreserveProvider && prev?.provider
-        ? { provider: prev.provider }
-        : {}),
       userId,
       userName,
       userEmail,
@@ -6841,31 +6833,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     this.runnerConnectPromise = (async () => {
-      const context = this.chatContext;
-      if (!context) {
+      const baseContext = this.chatContext;
+      if (!baseContext) {
         throw new Error("Missing chat context");
       }
 
       console.log(
-        `[ChatThreadDO] ensureRunnerConnected: connecting for thread=${context.threadId}`,
+        `[ChatThreadDO] ensureRunnerConnected: connecting for thread=${baseContext.threadId}`,
       );
       this.trace("ensure_runner_connected_start", {
-        contextThreadId: context.threadId,
-        contextWorkspaceId: context.workspaceId,
-        contextOrgId: context.orgId,
+        contextThreadId: baseContext.threadId,
+        contextWorkspaceId: baseContext.workspaceId,
+        contextOrgId: baseContext.orgId,
       });
 
-      const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
-      const thread = await orgStub.getThread(context.threadId);
+      const container = new WorkspaceContainer(
+        this.env,
+        baseContext.workspaceId,
+        baseContext.orgId,
+      );
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(baseContext.orgId));
+      const thread = await orgStub.getThread(baseContext.threadId);
       const provider: NonNullable<ChatContextState["provider"]> =
         thread?.provider === 'codex' ? 'codex' : 'claude';
-      const runnerContext =
-        context.provider === provider ? context : { ...context, provider };
-      if (this.chatContext !== runnerContext) {
-        this.chatContext = runnerContext;
-        this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, runnerContext);
-      }
+      const context: ChatContextState = { ...baseContext, provider };
+      this.chatContext = context;
+      this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, context);
       // Build thread-specific env (integration creds + thread ID).
       const { envVars } = await container.buildChatRunnerEnv({
         threadId: context.threadId,
@@ -6882,12 +6875,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         envVarCount: Object.keys(envVars).length,
       });
 
-      await this.hydratePiCoreMessagesFromLegacy(runnerContext, container, {
+      await this.hydratePiCoreMessagesFromLegacy(context, container, {
         claudeSessionId: legacyClaudeSessionId,
         codexSessionId: this.codexSessionId,
       });
 
-      await this.ensurePiSession(runnerContext, envVars);
+      await this.ensurePiSession(context, envVars);
       this.trace("ensure_runner_pi_connected");
 
       console.log(
@@ -7182,7 +7175,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     envVars: Record<string, string>,
     getModelFn: (provider: never, modelId: never) => Model<any>,
   ): Promise<PiResolvedModelConfig> {
-    const provider = context.provider === "claude" ? "claude" : "codex";
+    const provider: NonNullable<ChatContextState["provider"]> =
+      context.provider ?? "claude";
     const modelId =
       provider === "claude"
         ? envVars.CHIRIDION_CLAUDE_MODEL || "sonnet"
