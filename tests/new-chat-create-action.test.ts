@@ -9,6 +9,7 @@ const deleteThreadMock = vi.fn();
 const generateThreadTitleMock = vi.fn();
 const createGroupForNewThreadMock = vi.fn();
 const addThreadToExistingGroupMock = vi.fn();
+const CLIENT_BUILD_ID = 'development';
 
 vi.mock('@/lib/wait-until', () => ({
   waitUntil: waitUntilMock,
@@ -81,6 +82,7 @@ describe('new chat create action', () => {
   it('does not use the first user message as the initial chat group name', async () => {
     const formData = new FormData();
     formData.set('intent', 'createThread');
+    formData.set('clientBuildId', CLIENT_BUILD_ID);
     formData.set('firstMessage', 'Build an analytics dashboard');
     formData.set('model', 'sonnet');
 
@@ -116,6 +118,7 @@ describe('new chat create action', () => {
   it('does not revalidate the new-chat loader after createThread', () => {
     const formData = new FormData();
     formData.set('intent', 'createThread');
+    formData.set('clientBuildId', CLIENT_BUILD_ID);
 
     expect(
       shouldRevalidate({
@@ -128,6 +131,7 @@ describe('new chat create action', () => {
   it('returns the new thread and group while title generation runs in the background', async () => {
     const formData = new FormData();
     formData.set('intent', 'createThread');
+    formData.set('clientBuildId', CLIENT_BUILD_ID);
     formData.set('firstMessage', 'Persist this first message');
     formData.set('model', 'sonnet');
 
@@ -157,6 +161,7 @@ describe('new chat create action', () => {
   it('creates the thread without sending the first message server-side', async () => {
     const formData = new FormData();
     formData.set('intent', 'createThread');
+    formData.set('clientBuildId', CLIENT_BUILD_ID);
     formData.set('firstMessage', 'Build an analytics dashboard');
     formData.set('initialMessageContent', 'Build an analytics dashboard');
     formData.set('model', 'sonnet');
@@ -183,6 +188,7 @@ describe('new chat create action', () => {
   it('passes a real initial thread title through for the new group', async () => {
     const formData = new FormData();
     formData.set('intent', 'createThread');
+    formData.set('clientBuildId', CLIENT_BUILD_ID);
     formData.set('initialTitle', 'Review production logs');
     formData.set('model', 'sonnet');
 
@@ -209,6 +215,7 @@ describe('new chat create action', () => {
     );
     const formData = new FormData();
     formData.set('intent', 'createThread');
+    formData.set('clientBuildId', CLIENT_BUILD_ID);
     formData.set('groupId', 'group_stale');
     formData.set('model', 'sonnet');
 
