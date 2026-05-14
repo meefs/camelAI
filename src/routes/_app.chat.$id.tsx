@@ -16,12 +16,10 @@ import {
 import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getEnv } from "@/lib/cloudflare.server";
-import {
-  getOrgBillingOverview,
-  type OrgBillingOverview,
-} from "@/lib/billing.server";
+import { getOrgBillingOverview } from "@/lib/billing.server";
 import {
   applyDevBillingCreditStatusOverride,
+  buildBillingCreditStatus,
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import {
@@ -58,43 +56,6 @@ import type {
   PreviewTarget,
   WorkspaceWithAccess,
 } from "@/types";
-
-function buildBillingCreditStatus(
-  overview: OrgBillingOverview | null,
-  hasByokProvider: boolean,
-) {
-  if (!overview || overview.billing_status === "enterprise") {
-    return null;
-  }
-  if (overview.total_credit_limit_cents <= 0) {
-    return null;
-  }
-
-  const usedPercent = Math.min(
-    100,
-    Math.max(
-      0,
-      Math.round(
-        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
-          100,
-      ),
-    ),
-  );
-  const isExhausted = overview.available_credits_cents <= 0;
-  const isLow = !isExhausted && usedPercent >= 80;
-  if (!isLow && !isExhausted) {
-    return null;
-  }
-
-  return {
-    availableCreditsCents: overview.available_credits_cents,
-    totalCreditLimitCents: overview.total_credit_limit_cents,
-    usedPercent,
-    isLow,
-    isExhausted,
-    hasByokProvider,
-  };
-}
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || "Chat";
@@ -624,7 +585,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     experimentalSettings:
       pickerState?.experimentalSettings ?? experimentalSettings,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
+      buildBillingCreditStatus(
+        billingOverview,
+        llmProviderConfig?.provider,
+        thread?.provider ?? pickerState?.provider ?? fallbackThreadProvider,
+      ),
       url.searchParams,
     ),
     initialChatError: getDevChatInitialError(url.searchParams),

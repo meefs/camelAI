@@ -7,12 +7,10 @@ import {
 } from "@/lib/auth.server";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
 import { getEnv } from "@/lib/cloudflare.server";
-import {
-  getOrgBillingOverview,
-  type OrgBillingOverview,
-} from "@/lib/billing.server";
+import { getOrgBillingOverview } from "@/lib/billing.server";
 import {
   applyDevBillingCreditStatusOverride,
+  buildBillingCreditStatus,
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import { waitUntil } from "@/lib/wait-until";
@@ -48,43 +46,6 @@ import type {
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
 import { useChatGroups } from "@/hooks/use-chat-groups";
-
-function buildBillingCreditStatus(
-  overview: OrgBillingOverview | null,
-  hasByokProvider: boolean,
-) {
-  if (!overview || overview.billing_status === "enterprise") {
-    return null;
-  }
-  if (overview.total_credit_limit_cents <= 0) {
-    return null;
-  }
-
-  const usedPercent = Math.min(
-    100,
-    Math.max(
-      0,
-      Math.round(
-        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
-          100,
-      ),
-    ),
-  );
-  const isExhausted = overview.available_credits_cents <= 0;
-  const isLow = !isExhausted && usedPercent >= 80;
-  if (!isLow && !isExhausted) {
-    return null;
-  }
-
-  return {
-    availableCreditsCents: overview.available_credits_cents,
-    totalCreditLimitCents: overview.total_credit_limit_cents,
-    usedPercent,
-    isLow,
-    isExhausted,
-    hasByokProvider,
-  };
-}
 
 /**
  * Skip loader revalidation after createThread — the user is navigating away
@@ -321,7 +282,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     hasEffectivePickerDefault:
       pickerState?.hasEffectivePickerDefault ?? false,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(billingOverview, Boolean(llmProvider)),
+      buildBillingCreditStatus(billingOverview, llmProvider, threadProvider),
       url.searchParams,
     ),
     initialChatError: getDevChatInitialError(url.searchParams),
