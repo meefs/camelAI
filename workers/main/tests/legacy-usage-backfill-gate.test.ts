@@ -1,129 +1,30 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const mocks = vi.hoisted(() => ({
-  backfillHostUsageToOrgDOs: vi.fn(),
-}));
-
-vi.mock("../src/routes/admin/usage-backfill.js", () => ({
-  backfillHostUsageToOrgDOs: mocks.backfillHostUsageToOrgDOs,
-}));
+import { describe, expect, it, vi } from "vitest";
 
 const { ensureLegacyHostUsageBackfilled } = await import(
   "../src/legacy-usage-backfill-gate.js"
 );
 
-function envForOrg(orgStub: Record<string, unknown>, hasSandboxHost = true) {
-  return {
-    ORG: {
-      idFromName: (id: string) => id,
-      get: () => orgStub,
-    },
-    SANDBOX_HOST: hasSandboxHost ? ({ fetch: vi.fn() } as unknown as Fetcher) : undefined,
-  };
-}
-
 describe("ensureLegacyHostUsageBackfilled", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.backfillHostUsageToOrgDOs.mockResolvedValue({
-      dry_run: false,
-      orgs_scanned: 1,
-      legacy_entries_scanned: 0,
-      inserted: 0,
-      skipped_duplicates: 0,
-      errors: [],
-      truncated: false,
-    });
-  });
-
-  it("skips when the legacy sandbox host binding is not configured", async () => {
+  it("skips the legacy hosted usage backfill", async () => {
     const orgStub = {
       claimLegacyHostUsageBackfill: vi.fn(),
       completeLegacyHostUsageBackfill: vi.fn(),
       failLegacyHostUsageBackfill: vi.fn(),
     };
+    const env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+      SANDBOX_HOST: { fetch: vi.fn() } as unknown as Fetcher,
+    };
 
-    await ensureLegacyHostUsageBackfilled(envForOrg(orgStub, false) as never, "org_1");
+    await ensureLegacyHostUsageBackfilled(env as never, "org_1");
 
+    expect(env.ORG.idFromName).not.toHaveBeenCalled();
+    expect(env.ORG.get).not.toHaveBeenCalled();
     expect(orgStub.claimLegacyHostUsageBackfill).not.toHaveBeenCalled();
-    expect(mocks.backfillHostUsageToOrgDOs).not.toHaveBeenCalled();
-  });
-
-  it("claims, backfills, and marks the org complete", async () => {
-    const orgStub = {
-      claimLegacyHostUsageBackfill: vi.fn(() => "claimed"),
-      completeLegacyHostUsageBackfill: vi.fn(),
-      failLegacyHostUsageBackfill: vi.fn(),
-    };
-
-    await ensureLegacyHostUsageBackfilled(envForOrg(orgStub) as never, "org_1");
-
-    expect(orgStub.claimLegacyHostUsageBackfill).toHaveBeenCalledTimes(1);
-    expect(mocks.backfillHostUsageToOrgDOs).toHaveBeenCalledWith(
-      expect.objectContaining({ ORG: expect.any(Object), SANDBOX_HOST: expect.any(Object) }),
-      { orgIds: ["org_1"] },
-    );
-    expect(orgStub.completeLegacyHostUsageBackfill).toHaveBeenCalledWith(
-      expect.objectContaining({ orgs_scanned: 1 }),
-    );
-    expect(orgStub.failLegacyHostUsageBackfill).not.toHaveBeenCalled();
-  });
-
-  it("waits for another backfill to complete", async () => {
-    vi.useFakeTimers();
-    const orgStub = {
-      claimLegacyHostUsageBackfill: vi
-        .fn()
-        .mockReturnValueOnce("running")
-        .mockReturnValueOnce("complete"),
-      completeLegacyHostUsageBackfill: vi.fn(),
-      failLegacyHostUsageBackfill: vi.fn(),
-    };
-
-    const wait = ensureLegacyHostUsageBackfilled(envForOrg(orgStub) as never, "org_1");
-    await vi.advanceTimersByTimeAsync(1000);
-    await wait;
-    vi.useRealTimers();
-
-    expect(orgStub.claimLegacyHostUsageBackfill).toHaveBeenCalledTimes(2);
-    expect(mocks.backfillHostUsageToOrgDOs).not.toHaveBeenCalled();
-  });
-
-  it("blocks credit enforcement when another backfill keeps running", async () => {
-    vi.useFakeTimers();
-    const orgStub = {
-      claimLegacyHostUsageBackfill: vi.fn(() => "running"),
-      completeLegacyHostUsageBackfill: vi.fn(),
-      failLegacyHostUsageBackfill: vi.fn(),
-    };
-
-    const wait = expect(
-      ensureLegacyHostUsageBackfilled(envForOrg(orgStub) as never, "org_1"),
-    ).rejects.toThrow("Hosted usage migration is already running");
-    await vi.advanceTimersByTimeAsync(120_000);
-    await wait;
-    vi.useRealTimers();
-
-    expect(mocks.backfillHostUsageToOrgDOs).not.toHaveBeenCalled();
-  });
-
-  it("marks the org backfill as failed when migration fails", async () => {
-    const orgStub = {
-      claimLegacyHostUsageBackfill: vi.fn(() => "claimed"),
-      completeLegacyHostUsageBackfill: vi.fn(),
-      failLegacyHostUsageBackfill: vi.fn(),
-    };
-    mocks.backfillHostUsageToOrgDOs.mockRejectedValue(new Error("host down"));
-
-    await expect(
-      ensureLegacyHostUsageBackfilled(envForOrg(orgStub) as never, "org_1"),
-    ).rejects.toThrow("Hosted usage migration failed before credit enforcement: host down");
-
     expect(orgStub.completeLegacyHostUsageBackfill).not.toHaveBeenCalled();
-    expect(orgStub.failLegacyHostUsageBackfill).toHaveBeenCalledWith("host down");
+    expect(orgStub.failLegacyHostUsageBackfill).not.toHaveBeenCalled();
   });
 });
