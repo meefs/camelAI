@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ChatThreadDO, CodeModeToolsBinding } from '../src/durable-objects';
+import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/durable-objects';
 import { validateSignedToken } from '../src/signed-tokens';
 
 describe('ChatThreadDO Codex external turn completion', () => {
@@ -372,7 +372,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     };
 
     const result = await ChatThreadDO.prototype.runCodeModeJavascript.call(fake, {
-      code: 'text("hello")',
+      code: 'const methods = await env.CONNECTIONS.methods();\nmethods;',
       orgId: 'org_1',
       workspaceId: 'ws_1',
       threadId: 'thread_1',
@@ -400,12 +400,25 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(capturedWorkerCode.env.CONNECTIONS).toBe(connectionsBinding);
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('createOutputConsole');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('globalThis.console = createOutputConsole(output)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('parameters: tool.parameters');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('text("hello")');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('return methods;');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('AsyncFunction');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('new Function');
     expect(result.text).toBe(`${'x'.repeat(1000)}\n\n[Truncated: 1000 of 1200 characters]`);
+  });
+
+  it('makes code mode final expressions behave like a short-lived JavaScript REPL', () => {
+    expect(prepareCodeModeUserCode('const methods = await env.CONNECTIONS.methods();\nmethods;'))
+      .toBe('const methods = await env.CONNECTIONS.methods();\nreturn methods;');
+    expect(prepareCodeModeUserCode('JSON.stringify(catalog, null, 2);'))
+      .toBe('return JSON.stringify(catalog, null, 2);');
+    expect(prepareCodeModeUserCode('return await connections.clickhouse.query({ query: "SELECT 1" });'))
+      .toBe('return await connections.clickhouse.query({ query: "SELECT 1" });');
+    expect(prepareCodeModeUserCode('const catalog = await env.CONNECTIONS.methods();'))
+      .toBe('const catalog = await env.CONNECTIONS.methods();');
   });
 
   it('advertises restored legacy tools to js_exec through CodeModeToolsBinding', async () => {

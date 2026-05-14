@@ -2683,14 +2683,68 @@ async function resolveCnameViaDoH(hostname: string): Promise<CnameLookupResult> 
   }
 }
 
+function shouldReturnLastCodeModeLine(line: string): boolean {
+  const statement = line.trim().replace(/;$/, "").trim();
+  if (!statement) return false;
+  if (statement.endsWith("}")) return false;
+  return !/^(?:break|case|catch|class|const|continue|debugger|default|do|else|export|finally|for|function|if|import|let|return|switch|throw|try|var|while|with)\b/.test(statement);
+}
+
+export function prepareCodeModeUserCode(userCode: string): string {
+  if (!userCode.trim() || /\breturn\b/.test(userCode)) return userCode;
+
+  const trailingWhitespace = userCode.match(/\s*$/)?.[0] ?? "";
+  const body = userCode.slice(0, userCode.length - trailingWhitespace.length);
+  const lines = body.split("\n");
+  const lastCodeLineIndex = lines.findLastIndex((line) => {
+    const trimmed = line.trim();
+    return trimmed !== "" && !trimmed.startsWith("//");
+  });
+  if (lastCodeLineIndex < 0) return userCode;
+
+  const lastLine = lines[lastCodeLineIndex];
+  if (!shouldReturnLastCodeModeLine(lastLine)) return userCode;
+
+  const indent = lastLine.match(/^\s*/)?.[0] ?? "";
+  const expression = lastLine.trim().replace(/;$/, "").trim();
+  lines[lastCodeLineIndex] = `${indent}return ${expression};`;
+  return `${lines.join("\n")}${trailingWhitespace}`;
+}
+
 function codeModeWorkerModule(userCode: string): string {
+  const executableUserCode = prepareCodeModeUserCode(userCode);
   return `${String.raw`
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 const store = new Map();
 
 function stringifyOutput(value) {
-  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function stringifyConsoleArg(value) {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.stack || value.message;
+  return stringifyOutput(value);
+}
+
+function createOutputConsole(output) {
+  const originalConsole = globalThis.console || {};
+  const capture = (...args) => {
+    output.push(args.map(stringifyConsoleArg).join(" "));
+  };
+  return Object.freeze({
+    ...originalConsole,
+    log: capture,
+    info: capture,
+    warn: capture,
+    error: capture,
+  });
 }
 
 function hardenTimingSurface() {
@@ -2791,13 +2845,14 @@ function createConnectionsFacade(binding) {
 
 async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load) {
   "use strict";
-`}${userCode}${String.raw`
+`}${executableUserCode}${String.raw`
 }
 
 export class CodeModeRunner extends WorkerEntrypoint {
   async run() {
     hardenTimingSurface();
     const output = [];
+    globalThis.console = createOutputConsole(output);
     const allTools = Object.freeze((await this.env.TOOLS.listTools()).map((tool) => Object.freeze({
       name: tool.name,
       description: tool.description,
@@ -7379,6 +7434,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         label: "JavaScript",
         description:
           "Run short JavaScript in the Worker-style code mode runtime. Use this for workspace connections and for small scripts that need to orchestrate multiple harness tools. " +
+          "The final expression is returned automatically, and `console.log`/`console.warn`/`console.error` output is shown in the tool result. Use explicit `return` when a script has branches or loops. " +
           "Connection globals: `env.CONNECTIONS` is the virtual Worker binding, `connections` and `context.cloudflare.connections` are method facades, and `context.cloudflare.env.CONNECTIONS` is the same binding. " +
           "To use a connection, first inspect `const methods = await env.CONNECTIONS.methods();`, choose an alias/method from that result, then call `await connections.<alias>.<method>({ ...input })`. " +
           "For example: `const catalog = await env.CONNECTIONS.methods(); const entry = catalog.find((item) => item.connection.type === \"clickhouse\"); if (!entry) throw new Error(\"No ClickHouse connection\"); const method = entry.methods.find((item) => item.name === \"executeQuery\") ?? entry.methods[0]; if (!method) throw new Error(\"No callable methods\"); return await connections[entry.alias][method.name]({ query: \"SELECT 1 AS ok\" });`. " +
