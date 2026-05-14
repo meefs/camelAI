@@ -15,6 +15,7 @@ export class RemoteMcpOAuthError extends Error {
       | "registration_failed"
       | "token_exchange_failed"
       | "refresh_failed",
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "RemoteMcpOAuthError";
@@ -43,6 +44,20 @@ export interface RemoteMcpOAuthTokenResponse {
   scope?: string;
   error?: string;
   error_description?: string;
+}
+
+interface ProtectedResourceAttempt {
+  url: string;
+  status?: number;
+  contentType?: string;
+  bodyExcerpt?: string;
+  error?: string;
+}
+
+interface ProtectedResourceDiscoveryResult {
+  metadata: Record<string, unknown> | null;
+  candidates: string[];
+  attempts: ProtectedResourceAttempt[];
 }
 
 const MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -112,7 +127,7 @@ async function discoverProtectedResourceMetadata(
   serverUrl: URL,
   challenge: Record<string, string>,
   fetchFn: FetchLike
-): Promise<Record<string, unknown> | null> {
+): Promise<ProtectedResourceDiscoveryResult> {
   const candidates: string[] = [];
   if (challenge.resource_metadata) {
     const challenged = safeUrl(challenge.resource_metadata);
@@ -120,16 +135,43 @@ async function discoverProtectedResourceMetadata(
   }
   candidates.push(appendPath(serverUrl, "/.well-known/oauth-protected-resource"));
   candidates.push(`${serverUrl.origin}/.well-known/oauth-protected-resource`);
+  const uniqueCandidates = [...new Set(candidates)];
+  const attempts: ProtectedResourceAttempt[] = [];
 
-  for (const candidate of [...new Set(candidates)]) {
-    const response = await fetchFn(candidate, {
-      headers: { "mcp-protocol-version": MCP_PROTOCOL_VERSION },
-    }).catch(() => null);
-    if (!response) continue;
-    const metadata = await readJsonObject(response);
-    if (metadata) return metadata;
+  for (const candidate of uniqueCandidates) {
+    let response: Response;
+    try {
+      response = await fetchFn(candidate, {
+        headers: { "mcp-protocol-version": MCP_PROTOCOL_VERSION },
+      });
+    } catch (error) {
+      attempts.push({
+        url: candidate,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    const body = await response.text().catch(() => "");
+    let metadata: Record<string, unknown> | null = null;
+    if (response.ok && contentType.includes("json")) {
+      try {
+        const parsed = JSON.parse(body);
+        metadata = isRecord(parsed) ? parsed : null;
+      } catch {
+        metadata = null;
+      }
+    }
+    attempts.push({
+      url: candidate,
+      status: response.status,
+      contentType,
+      ...(!metadata && body ? { bodyExcerpt: body.slice(0, 300) } : {}),
+    });
+    if (metadata) return { metadata, candidates: uniqueCandidates, attempts };
   }
-  return null;
+  return { metadata: null, candidates: uniqueCandidates, attempts };
 }
 
 function authorizationServerMetadataUrls(issuer: string): string[] {
@@ -184,7 +226,8 @@ export async function discoverRemoteMcpOAuth(
   const normalizedServerUrl = normalizeRemoteMcpUrl(rawServerUrl);
   const serverUrl = new URL(normalizedServerUrl);
   const challenge = await discoverChallenge(serverUrl, fetchFn);
-  const resourceMetadata = await discoverProtectedResourceMetadata(serverUrl, challenge, fetchFn);
+  const resourceDiscovery = await discoverProtectedResourceMetadata(serverUrl, challenge, fetchFn);
+  const resourceMetadata = resourceDiscovery.metadata;
   const authorizationServers = resourceMetadata?.authorization_servers;
   const issuer = Array.isArray(authorizationServers)
     ? authorizationServers.find((value): value is string => typeof value === "string" && Boolean(safeUrl(value)))
@@ -193,6 +236,13 @@ export async function discoverRemoteMcpOAuth(
     throw new RemoteMcpOAuthError(
       "Remote MCP server did not advertise an OAuth authorization server",
       "discovery_failed",
+      {
+        serverUrl: normalizedServerUrl,
+        challenge,
+        candidates: resourceDiscovery.candidates,
+        attempts: resourceDiscovery.attempts,
+        resourceMetadata,
+      },
     );
   }
 

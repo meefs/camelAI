@@ -528,7 +528,7 @@ export async function handleRemoteMcpOAuthStart({
       }),
     );
   } catch (err) {
-    console.error("[remote-mcp-oauth] OAuth start failed:", err);
+    console.error("[remote-mcp-oauth] OAuth start failed:", err, err instanceof RemoteMcpOAuthError ? err.details : undefined);
     const redirectUrl = new URL("/connections", url.origin);
     redirectUrl.searchParams.set("error", "oauth_config");
     if (err instanceof RemoteMcpOAuthError) {

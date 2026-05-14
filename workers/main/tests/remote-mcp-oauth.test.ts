@@ -4,6 +4,7 @@ import {
   discoverRemoteMcpOAuth,
   exchangeRemoteMcpOAuthCode,
   registerRemoteMcpOAuthClient,
+  RemoteMcpOAuthError,
 } from '../src/remote-mcp-oauth';
 
 describe('remote MCP OAuth flow', () => {
@@ -129,6 +130,59 @@ describe('remote MCP OAuth flow', () => {
       name: 'RemoteMcpOAuthError',
       code: 'registration_failed',
       message: expect.stringContaining('invalid_redirect_uri'),
+    });
+  });
+
+  it('includes protected resource discovery attempts when no authorization server is advertised', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target === 'https://mcp.example.com/mcp') {
+        return new Response('', { status: 404, headers: { 'content-type': 'text/html' } });
+      }
+      if (target === 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp') {
+        return new Response('<html>not found</html>', { status: 404, headers: { 'content-type': 'text/html' } });
+      }
+      if (target === 'https://mcp.example.com/.well-known/oauth-protected-resource') {
+        return Response.json({ resource: 'https://mcp.example.com/api/ext' });
+      }
+      return new Response('not found', { status: 404 });
+    });
+
+    let error: unknown;
+    try {
+      await discoverRemoteMcpOAuth(
+        'https://mcp.example.com/mcp',
+        fetchMock as typeof fetch,
+      );
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(RemoteMcpOAuthError);
+    const remoteError = error as RemoteMcpOAuthError;
+    expect(remoteError.code).toBe('discovery_failed');
+    expect(remoteError.details).toMatchObject({
+      serverUrl: 'https://mcp.example.com/mcp',
+      candidates: [
+        'https://mcp.example.com/.well-known/oauth-protected-resource/mcp',
+        'https://mcp.example.com/.well-known/oauth-protected-resource',
+      ],
+      attempts: [
+        {
+          url: 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp',
+          status: 404,
+          contentType: 'text/html',
+          bodyExcerpt: '<html>not found</html>',
+        },
+        {
+          url: 'https://mcp.example.com/.well-known/oauth-protected-resource',
+          status: 200,
+          contentType: expect.stringContaining('application/json'),
+        },
+      ],
+      resourceMetadata: {
+        resource: 'https://mcp.example.com/api/ext',
+      },
     });
   });
 });
