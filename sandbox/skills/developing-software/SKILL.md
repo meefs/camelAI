@@ -774,7 +774,7 @@ Inside `js_exec`, these globals are available:
 - `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
 - `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
 
-Do not inspect `process.env`, shell environment variables, or `INT_*` variables to find connection credentials. Connection credentials are intentionally hidden behind the virtual binding. `INT_*` variables may exist for legacy compatibility, but they are not the default interface.
+Connection credentials are intentionally hidden behind the virtual binding.
 
 Prefer `find()` and normalized methods for common workflows:
 

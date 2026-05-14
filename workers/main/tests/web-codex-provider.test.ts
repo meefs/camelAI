@@ -110,9 +110,7 @@ describe('web Codex provider wiring', () => {
     const thread = await orgStub.createThread(defaultWorkspaceId, 'Codex env thread', userId);
 
     const container = new WorkspaceContainer(testEnv as never, defaultWorkspaceId, org.id);
-    (container as any).fetchIntegrationEnvVars = async () => ({});
     (container as any).createAppAccessSession = async () => ({});
-    (container as any).writeIntegrationEnvFileToSandbox = async () => true;
 
     const runnerEnv = await container.buildChatRunnerEnv({
       threadId: thread.id,
@@ -153,9 +151,7 @@ describe('web Codex provider wiring', () => {
     expect(thread.model).toBe('sonnet');
 
     const container = new WorkspaceContainer(testEnv as never, defaultWorkspaceId, org.id);
-    (container as any).fetchIntegrationEnvVars = async () => ({});
     (container as any).createAppAccessSession = async () => ({});
-    (container as any).writeIntegrationEnvFileToSandbox = async () => true;
 
     const runnerEnv = await container.buildChatRunnerEnv({
       threadId: thread.id,

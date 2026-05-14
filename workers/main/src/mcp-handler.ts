@@ -10,7 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
-import type { ChatThreadDO, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
+import type { ChatThreadDO, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
 import type { WorkspaceCronDO } from './workspace-cron';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
 import {
@@ -23,16 +23,13 @@ import {
 } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeRemoteMcpUrl, validateRemoteMcpConnection } from '../../../src/lib/remote-mcp';
-import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
 import {
   getEnvPrefix,
-  syncAllWorkspaceWorkerSecrets,
   createOrRefreshCustomHostname,
   deleteCustomHostname,
   findCustomHostnameByHostname,
   getCustomHostnameStatus,
-  type CfApiProxyEnv,
 } from './cf-api-proxy';
 import type { WorkerLogsDO } from './worker-logs-do';
 import { getPreferredAppUrl, isAppCustomDomainReady } from '../../../src/lib/app-url';
@@ -58,6 +55,7 @@ export interface McpEnv extends WorkspaceContainerEnv {
   SANDBOX_PROXY_SECRET?: string;
   CF_ZONE_ID?: string;
   CF_API_TOKEN?: string;
+  INTEGRATION_SECRET_KEY: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
   CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
   ASSETS?: Fetcher;
@@ -179,19 +177,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
     };
-  }
-
-  /**
-   * Refresh the integration env file consumed by live Claude sessions
-   * (pointed to by CLAUDE_ENV_FILE).
-   */
-  private async refreshWorkspaceIntegrationEnvFile(workspaceId: string, orgId: string): Promise<boolean> {
-    try {
-      return await new WorkspaceContainer(this.env, workspaceId, orgId).refreshIntegrationEnvVars();
-    } catch (err) {
-      console.error('[MCP] Failed to refresh workspace integration env file:', err);
-      return false;
-    }
   }
 
   /**
@@ -891,31 +876,25 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           filtered = filtered.filter((i) => i.category === category);
         }
 
-        const result = filtered.map((i) => {
-          // For "other" type with dynamic_fields, use those for env var suffixes
-          const dynamicFields = i.integration_type === 'other' && i.config.dynamic_fields
-            ? (i.config.dynamic_fields as DynamicField[])
-            : undefined;
-          const envVarPrefix = `INT_${normalizeEnvVarName(i.integration_type)}_${normalizeEnvVarName(i.name)}`;
-          const envVarSuffixes = getEnvVarSuffixesForType(i.integration_type, dynamicFields);
-          return {
-            id: i.id,
-            type: i.integration_type,
-            name: i.name,
-            category: i.category,
-            auth_method: i.auth_method,
-            has_credentials: i.has_credentials,
-            created_at: new Date(i.created_at).toISOString(),
-            updated_at: new Date(i.updated_at).toISOString(),
-            // Env var info for accessing credentials
-            env_var_prefix: envVarPrefix,
-            env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
-            // For dynamic "other" integrations, include the display name
-            display_name: i.integration_type === 'other' && i.config.display_name
-              ? (i.config.display_name as string)
-              : undefined,
-          };
-        });
+        const result = filtered.map((i) => ({
+          id: i.id,
+          type: i.integration_type,
+          name: i.name,
+          category: i.category,
+          auth_method: i.auth_method,
+          has_credentials: i.has_credentials,
+          created_at: new Date(i.created_at).toISOString(),
+          updated_at: new Date(i.updated_at).toISOString(),
+          recommended_access: {
+            tool: 'js_exec',
+            inspect_methods: 'await env.CONNECTIONS.methods()',
+            call_pattern: 'await connections.<alias>.<method>({ ...input })',
+            connection_id: i.id,
+          },
+          display_name: i.integration_type === 'other' && i.config.display_name
+            ? (i.config.display_name as string)
+            : undefined,
+        }));
 
         return this.textResponse({ count: result.length, integrations: result });
       }
@@ -1065,18 +1044,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
             userId
           );
 
-          // Kick off worker secret sync immediately so deployed workers are not
-          // blocked by sandbox env-file refresh latency.
-          this.ctx.waitUntil(
-            syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
-              .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err))
-          );
-
-          // Refresh live integration env file in the sandbox.
-          const envFileRefreshed = await this.refreshWorkspaceIntegrationEnvFile(workspaceId, orgId);
-
-          const envVarPrefix = `INT_${normalizeEnvVarName(integration_type)}_${normalizeEnvVarName(name)}`;
-          const envVarSuffixes = getEnvVarSuffixesForType(integration_type);
           return this.textResponse({
             success: true,
             integration: {
@@ -1084,11 +1051,14 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
               type: integration_type,
               name,
               category: definition.category,
-              env_var_prefix: envVarPrefix,
-              env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
-              env_file_refreshed: envFileRefreshed,
+              recommended_access: {
+                tool: 'js_exec',
+                inspect_methods: 'await env.CONNECTIONS.methods()',
+                call_pattern: 'await connections.<alias>.<method>({ ...input })',
+                connection_id: integrationId,
+              },
             },
-            message: `Integration '${name}' created successfully. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
+            message: `Integration '${name}' created successfully.`,
           });
         } catch (err) {
           return this.textResponse({

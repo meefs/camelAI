@@ -11,25 +11,17 @@ import {
   validateSignedToken,
   createSignedToken,
 } from "./signed-tokens.js";
-import { mapCredentialsToEnvVars } from "./integration-env.js";
-import { decryptCredentials } from "../../../src/lib/integration-crypto.js";
 import { validateSandboxProxy } from "./sandbox-auth.js";
 import type { OrgDO } from "./auth.js";
 import type { WorkspaceDO } from "./workspace.js";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
 
-// Secrets managed by Chiridion (will be cleaned up if removed)
-const MANAGED_SECRET_PREFIXES = ["INT_"];
 const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
 const VIRTUAL_CONNECTIONS_BINDING_NAME = "CONNECTIONS";
 const ALLOWED_VIRTUAL_SERVICE_BINDINGS = new Set([
   VIRTUAL_DATA_PROXY_BINDING_NAME,
   VIRTUAL_CONNECTIONS_BINDING_NAME,
 ]);
-
-function isManagedSecret(name: string): boolean {
-  return MANAGED_SECRET_PREFIXES.some((p) => name.startsWith(p));
-}
 
 // =============================================================================
 // Binding Security Filter
@@ -63,7 +55,7 @@ const TRANSFORMED_BINDING_TYPES = new Set([
 /** Binding types that are always allowed (safe, self-contained) */
 const ALLOWED_BINDING_TYPES = new Set([
   "plain_text", // Plain text env vars
-  "secret_text", // Secret text env vars (we manage secrets separately)
+  "secret_text", // User-provided secret text bindings.
   "json", // JSON env vars
   "wasm_module", // WASM modules (bundled with script)
   "text_blob", // Text blobs (bundled)
@@ -786,73 +778,6 @@ async function callCloudflareApi<T>(
   return data.result ?? null;
 }
 
-async function listDispatchScriptSecrets(
-  accountId: string,
-  dispatchNamespace: string,
-  scriptName: string,
-  apiToken: string,
-): Promise<Array<{ name: string }>> {
-  const url =
-    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
-    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
-    `/scripts/${encodeURIComponent(scriptName)}/secrets`;
-  const headers = { Authorization: `Bearer ${apiToken}` };
-  return (
-    (await callCloudflareApi<Array<{ name: string }>>(
-      url,
-      { method: "GET", headers },
-      "list script secrets",
-      { suppressMissingWorkerWarning: true },
-    )) ?? []
-  );
-}
-
-async function upsertDispatchScriptSecret(
-  accountId: string,
-  dispatchNamespace: string,
-  scriptName: string,
-  apiToken: string,
-  name: string,
-  text: string,
-): Promise<void> {
-  const url =
-    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
-    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
-    `/scripts/${encodeURIComponent(scriptName)}/secrets`;
-  const headers = {
-    Authorization: `Bearer ${apiToken}`,
-    "Content-Type": "application/json",
-  };
-  await callCloudflareApi(
-    url,
-    {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ name, text, type: "secret_text" }),
-    },
-    `upsert script secret ${name}`,
-  );
-}
-
-async function deleteDispatchScriptSecret(
-  accountId: string,
-  dispatchNamespace: string,
-  scriptName: string,
-  apiToken: string,
-  name: string,
-): Promise<void> {
-  const url =
-    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
-    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
-    `/scripts/${encodeURIComponent(scriptName)}/secrets/${encodeURIComponent(name)}`;
-  const headers = { Authorization: `Bearer ${apiToken}` };
-  await callCloudflareApi(
-    url,
-    { method: "DELETE", headers },
-    `delete script secret ${name}`,
-  );
-}
-
 /**
  * Configure tail_consumers for a dispatch script to enable log capture.
  * This attaches the tail worker to the user's deployed script.
@@ -1158,189 +1083,6 @@ export async function findCustomHostnameByHostname(
       (entry) => entry.hostname.trim().toLowerCase() === normalizedHostname,
     ) ?? null
   );
-}
-
-/**
- * Sync integration secrets to a single deployed worker.
- * Called after deploys and when secrets need to be updated.
- */
-async function syncDispatchScriptSecrets(
-  env: CfApiProxyEnv,
-  workspaceId: string,
-  orgId: string,
-  accountId: string,
-  dispatchNamespace: string,
-  scriptName: string,
-  apiToken: string,
-): Promise<void> {
-  const secretsToSync: Record<string, string> = {};
-
-  // Get integration env vars from WorkspaceDO
-  const workspaceStub = env.WORKSPACE.get(
-    env.WORKSPACE.idFromName(workspaceId),
-  );
-  const records = await workspaceStub.getIntegrations();
-
-  for (const record of records) {
-    const credentials = record.credentials_encrypted
-      ? await decryptCredentials(
-          record.credentials_encrypted,
-          env.INTEGRATION_SECRET_KEY,
-        )
-      : {};
-    const config = JSON.parse(record.config) as Record<string, unknown>;
-    Object.assign(
-      secretsToSync,
-      mapCredentialsToEnvVars(
-        record.name,
-        record.integration_type,
-        credentials,
-        config,
-      ),
-    );
-  }
-
-  const secretEntries = Object.entries(secretsToSync);
-
-  if (secretEntries.length === 0) {
-    // No secrets to sync - clean up any managed secrets that exist
-    const existing = await listDispatchScriptSecrets(
-      accountId,
-      dispatchNamespace,
-      scriptName,
-      apiToken,
-    );
-    const managed = existing.filter((secret) => isManagedSecret(secret.name));
-    if (managed.length) {
-      await Promise.all(
-        managed.map((secret) =>
-          deleteDispatchScriptSecret(
-            accountId,
-            dispatchNamespace,
-            scriptName,
-            apiToken,
-            secret.name,
-          ),
-        ),
-      );
-    }
-    return;
-  }
-
-  const existingSecrets = await listDispatchScriptSecrets(
-    accountId,
-    dispatchNamespace,
-    scriptName,
-    apiToken,
-  );
-  const desiredNames = new Set(secretEntries.map(([name]) => name));
-  const stale = existingSecrets.filter(
-    (secret) => isManagedSecret(secret.name) && !desiredNames.has(secret.name),
-  );
-
-  await Promise.all(
-    secretEntries.map(([name, value]) =>
-      upsertDispatchScriptSecret(
-        accountId,
-        dispatchNamespace,
-        scriptName,
-        apiToken,
-        name,
-        value,
-      ),
-    ),
-  );
-
-  if (stale.length) {
-    await Promise.all(
-      stale.map((secret) =>
-        deleteDispatchScriptSecret(
-          accountId,
-          dispatchNamespace,
-          scriptName,
-          apiToken,
-          secret.name,
-        ),
-      ),
-    );
-  }
-}
-
-/**
- * Sync integration secrets to ALL deployed workers in a workspace.
- * Called when integrations are created/updated/deleted or when OAuth tokens are refreshed.
- *
- * This ensures deployed workers always have up-to-date credentials.
- */
-export async function syncAllWorkspaceWorkerSecrets(
-  env: CfApiProxyEnv,
-  workspaceId: string,
-  orgId: string,
-): Promise<{ synced: number; failed: number }> {
-  const accountId = env.CF_ACCOUNT_ID?.trim();
-  const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
-  const apiToken = env.CF_API_TOKEN?.trim();
-
-  if (!accountId || !dispatchNamespace || !apiToken) {
-    console.warn(
-      "[cf-api-proxy] syncAllWorkspaceWorkerSecrets: missing CF config, skipping",
-    );
-    return { synced: 0, failed: 0 };
-  }
-
-  // Get org slug for dispatch script name format
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const orgSlug = await orgStub.getSlug();
-  if (!orgSlug) {
-    console.warn(
-      "[cf-api-proxy] syncAllWorkspaceWorkerSecrets: org has no slug, skipping",
-    );
-    return { synced: 0, failed: 0 };
-  }
-
-  // Get all workers deployed from this workspace
-  const workers = await orgStub.listWorkerScriptsByWorkspace(workspaceId);
-  if (workers.length === 0) {
-    return { synced: 0, failed: 0 };
-  }
-
-  console.log(
-    `[cf-api-proxy] syncing secrets to ${workers.length} workers in workspace ${workspaceId}`,
-  );
-
-  let synced = 0;
-  let failed = 0;
-
-  // Sync secrets to each worker
-  await Promise.all(
-    workers.map(async (worker) => {
-      // Dispatch script name format: {script-name}--{org-slug}
-      const dispatchScriptName = `${worker.script_name}--${orgSlug}`;
-      try {
-        await syncDispatchScriptSecrets(
-          env,
-          workspaceId,
-          orgId,
-          accountId,
-          dispatchNamespace,
-          dispatchScriptName,
-          apiToken,
-        );
-        synced++;
-        console.log(
-          `[cf-api-proxy] synced secrets to worker ${worker.script_name}`,
-        );
-      } catch (err) {
-        failed++;
-        console.error(
-          `[cf-api-proxy] failed to sync secrets to worker ${worker.script_name}:`,
-          err,
-        );
-      }
-    }),
-  );
-
-  return { synced, failed };
 }
 
 export interface ProxyCloudflareApiOptions {
@@ -1990,28 +1732,6 @@ export async function proxyCloudflareApi(
               },
             );
           }),
-      );
-
-      // Sync integration secrets to deployed worker (uses dispatchScriptName for Cloudflare API)
-      waitUntil(
-        syncDispatchScriptSecrets(
-          env,
-          workspaceId,
-          orgId,
-          account,
-          dispatchNs,
-          dispatchScriptName,
-          upstreamApiToken,
-        ).catch((err) => {
-          console.error("[cf-api-proxy] failed to sync script secrets", {
-            account,
-            dispatchNamespace: dispatchNs,
-            dispatchScriptName,
-            orgId,
-            workspaceId,
-            error: String(err),
-          });
-        }),
       );
 
       // Attach tail worker for log capture

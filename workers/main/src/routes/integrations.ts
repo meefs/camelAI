@@ -24,7 +24,6 @@ import {
   resolveDefaultModelForChat,
   resolveEffectivePickerConfig,
 } from "../../../../src/lib/model-picker-config.js";
-import { WorkspaceContainer } from "../workspace-container.js";
 import { requireSession } from "../helpers/auth.js";
 import type {
   ConnectionSetupResponse,
@@ -37,10 +36,6 @@ import {
   getWorkspaceModelPickerConfigCompat,
 } from "../model-picker-config-compat.js";
 import { redirect, text } from "../helpers/response.js";
-import {
-  syncAllWorkspaceWorkerSecrets,
-  type CfApiProxyEnv,
-} from "../cf-api-proxy.js";
 import type { SlackEventCallbackPayload } from "../slack-types.js";
 import { isOrgBanned } from "../ban-list.js";
 import type { LlmModel } from "../../../../src/types.js";
@@ -618,21 +613,6 @@ export async function handleRemoteMcpOAuthCallback({
       stateData.user_id,
     );
 
-    ctx.waitUntil(
-      new WorkspaceContainer(env, stateData.workspace_id, access.orgId)
-        .refreshIntegrationEnvVars()
-        .catch(() => {}),
-    );
-    ctx.waitUntil(
-      syncAllWorkspaceWorkerSecrets(
-        env as unknown as CfApiProxyEnv,
-        stateData.workspace_id,
-        access.orgId,
-      ).catch((err) =>
-        console.error("[remote-mcp-oauth] Failed to sync secrets to workers:", err),
-      ),
-    );
-
     const safePath = sanitizeRedirectPath(stateData.redirect_url);
     const redirectUrl = new URL(safePath, url.origin);
     redirectUrl.searchParams.set("success", "remote_mcp_connected");
@@ -815,24 +795,6 @@ export async function handleSlackOAuthCallback({
         updated_at: Date.now(),
       });
     }
-
-    // Push secrets to running container
-    ctx.waitUntil(
-      new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
-        .refreshIntegrationEnvVars()
-        .catch(() => {}),
-    );
-
-    // Sync secrets to all deployed workers in this workspace
-    ctx.waitUntil(
-      syncAllWorkspaceWorkerSecrets(
-        env as unknown as CfApiProxyEnv,
-        stateData.workspace_id,
-        wsInfo.org_id,
-      ).catch((err) =>
-        console.error("[slack-oauth] Failed to sync secrets to workers:", err),
-      ),
-    );
 
     // Complete the waiting chat connection prompt if OAuth was started there.
     if (hasConnectionSetupPromptContext(stateData)) {
@@ -1377,23 +1339,6 @@ export async function handleNotionOAuthCallback({
       );
     }
 
-    // Push secrets to running container
-    ctx.waitUntil(
-      new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
-        .refreshIntegrationEnvVars()
-        .catch(() => {}),
-    );
-
-    // Sync secrets to all deployed workers in this workspace
-    ctx.waitUntil(
-      syncAllWorkspaceWorkerSecrets(
-        env as unknown as CfApiProxyEnv,
-        stateData.workspace_id,
-        wsInfo.org_id,
-      ).catch((err) =>
-        console.error("[notion-oauth] Failed to sync secrets to workers:", err),
-      ),
-    );
 
     // Complete the waiting chat connection prompt if OAuth was started there.
     if (hasConnectionSetupPromptContext(stateData)) {
@@ -1599,27 +1544,6 @@ export async function handleSalesforceOAuthCallback({
         stateData.user_id,
       );
     }
-
-    // Push secrets to running container
-    ctx.waitUntil(
-      new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
-        .refreshIntegrationEnvVars()
-        .catch(() => {}),
-    );
-
-    // Sync secrets to all deployed workers in this workspace
-    ctx.waitUntil(
-      syncAllWorkspaceWorkerSecrets(
-        env as unknown as CfApiProxyEnv,
-        stateData.workspace_id,
-        wsInfo.org_id,
-      ).catch((err) =>
-        console.error(
-          "[salesforce-oauth] Failed to sync secrets to workers:",
-          err,
-        ),
-      ),
-    );
 
     // Complete the waiting chat connection prompt if OAuth was started there.
     if (hasConnectionSetupPromptContext(stateData)) {

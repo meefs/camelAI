@@ -1,4 +1,3 @@
-import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
@@ -15,7 +14,6 @@ import {
   validateRemoteMcpConnection,
 } from '@/lib/remote-mcp';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
-import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -123,12 +121,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         credentialsEncrypted,
         authContext.user.id
       );
-      // Push updated env vars to running container (background, kept alive via waitUntil)
-      waitUntil(
-        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
-          .refreshIntegrationEnvVars()
-          .catch(() => {})
-      );
       if (integrationType === 'remote_mcp' && config.auth_type === 'oauth') {
         const params = new URLSearchParams({
           integration_id: integrationId,
@@ -205,12 +197,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
 
       await stub.updateIntegration(integrationId, updates, authContext.user.id);
-      // Push updated env vars to running container (background, kept alive via waitUntil)
-      waitUntil(
-        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
-          .refreshIntegrationEnvVars()
-          .catch(() => {})
-      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to update integration' };
@@ -226,12 +212,6 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     try {
       await stub.deleteIntegration(integrationId, authContext.user.id);
-      // Push updated env vars to running container (background, kept alive via waitUntil)
-      waitUntil(
-        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
-          .refreshIntegrationEnvVars()
-          .catch(() => {})
-      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete integration' };
@@ -289,12 +269,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         sourceRecord.token_expires_at ?? null
       );
 
-      // Push updated env vars to target workspace container
-      waitUntil(
-        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, targetWorkspaceId, authContext.currentOrg.id)
-          .refreshIntegrationEnvVars()
-          .catch(() => {})
-      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to duplicate integration' };

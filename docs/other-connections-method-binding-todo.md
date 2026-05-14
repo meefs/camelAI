@@ -10,10 +10,7 @@ Custom `other` connections are callable through the source-compatible
 - `connections[alias].fetch(input, init)` behaves like normal `fetch`.
 - The runtime applies stored authentication from encrypted credentials/config.
 - Relative URLs resolve against the configured `base_url`.
-- Absolute `http`/`https` URLs are temporarily allowed for migration from the
-  old plaintext env-var model.
-- Compatibility `INT_OTHER_*` environment variables may still exist, but agents
-  should prefer the binding.
+- Absolute `http`/`https` URLs are temporarily allowed for migration.
 
 Example API:
 
@@ -28,4 +25,3 @@ return await response.json();
 ## Follow-Up
 
 - Restrict absolute URLs to configured trusted hosts once migration is complete.
-- Remove compatibility `INT_OTHER_*` env vars in a follow-up PR.

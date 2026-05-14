@@ -29,7 +29,6 @@ import {
   updateWorkspaceIntegration,
   deleteWorkspaceIntegration,
   getWorkspaceIntegrations,
-  getWorkspaceIntegrationEnvVars,
   getUserOrgs,
   getSessionData,
   switchSessionWorkspace,
@@ -401,27 +400,6 @@ describe('Workspace DO (full-stack with DOs)', () => {
     expect(actions).toContain('integration_deleted');
   });
 
-  it('does not expose deleted integrations in container env vars', async () => {
-    const email = testEmail();
-    const { userId } = await createUser(testEnv, email, 'password123', 'Env Vars Owner');
-    const { org } = await createOrg(testEnv, 'Env Vars Delete Org', userId);
-    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
-    const workspace = workspaces[0];
-    expect(workspace).toBeDefined();
-
-    const integration = await createWorkspaceIntegration(testEnv, workspace.id, userId, {
-      integration_type: 'airtable',
-      name: 'Airtable Env',
-      config: {},
-      credentials: { api_key: 'secret-key' },
-    });
-
-    await deleteWorkspaceIntegration(testEnv, workspace.id, integration.id, userId);
-
-    const envVars = await getWorkspaceIntegrationEnvVars(testEnv, workspace.id);
-    expect(envVars.INT_AIRTABLE_API_KEY).toBeUndefined();
-  });
-
   it('getIntegrations excludes soft-deleted entries', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');
@@ -461,26 +439,6 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const members = await listWorkspaceMembers(testEnv, workspace.id);
     const record = members.find((entry) => entry.user_id === memberId);
     expect(record?.access_level).toBe('read_only');
-  });
-
-  it('exposes integration env vars for container', async () => {
-    const email = testEmail();
-    const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');
-    const { org } = await createOrg(testEnv, 'Env Vars Org', userId);
-    const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
-    const workspace = workspaces[0];
-    expect(workspace).toBeDefined();
-
-    await createWorkspaceIntegration(testEnv, workspace.id, userId, {
-      integration_type: 'airtable',
-      name: 'Production',
-      config: {},
-      credentials: { api_key: 'secret-key' },
-    });
-
-    const envVars = await getWorkspaceIntegrationEnvVars(testEnv, workspace.id);
-    // Env var format: INT_<TYPE>_<NAME>_<SUFFIX>
-    expect(envVars.INT_AIRTABLE_PRODUCTION_API_KEY).toBe('secret-key');
   });
 
   it('logs access changes in workspace audit log', async () => {

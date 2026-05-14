@@ -34,8 +34,7 @@ describe('chat runner websocket connection mentions', () => {
     expect(content).toContain('## Available connections');
     expect(content).toContain('@sales_db — postgres "Sales DB" (connection id: conn_sales)');
     expect(content).toContain('Use the `js_exec` tool');
-    expect(content).toContain('Do not inspect `process.env`');
-    expect(content).not.toContain('INT_POSTGRES_SALES_DB');
+    expect(content).toContain('Connection credentials are intentionally hidden behind');
     expect(content).toContain(
       '[Ada (ada@example.com)]: Check @sales_db ⟦ref: postgres "Sales DB" id=conn_sales⟧ orders',
     );
