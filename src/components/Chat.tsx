@@ -1265,7 +1265,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
                   }
                   actionHoverClassName={
                     messageGroup.isAssistantTurn
-                      ? "opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+                      ? "opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100 pointer-coarse:opacity-100"
                       : undefined
                   }
                   skillSheets={skillSheetsByToolId}
