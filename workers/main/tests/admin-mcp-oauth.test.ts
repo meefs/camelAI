@@ -86,6 +86,15 @@ describe("admin MCP OAuth resource", () => {
       authorization_servers: ["https://example.com/api/admin/oauth"],
     });
 
+    const pathResourceResponse = await handleResourceMetadata(routeContext(
+      new Request("https://example.com/.well-known/oauth-protected-resource/api/admin/mcp"),
+    ));
+    expect(pathResourceResponse?.status).toBe(200);
+    await expect(pathResourceResponse?.json()).resolves.toMatchObject({
+      resource: "https://example.com/api/admin/mcp",
+      authorization_servers: ["https://example.com/api/admin/oauth"],
+    });
+
     const adminMetadataResponse = await handleOAuthMetadata(routeContext(
       new Request("https://example.com/.well-known/oauth-authorization-server/api/admin/oauth"),
     ));
