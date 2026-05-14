@@ -95,6 +95,7 @@ Important DOs and runtime classes live primarily in `workers/main/src/`:
 - `org-slug-registry.ts` - `OrgSlugDO`, atomic org slug ownership.
 - `email-handle-registry.ts` - `EmailHandleDO`, email handle ownership.
 - `mcp-handler.ts` - Internal MCP agent/tools.
+- `observability.ts` - Shared Cloudflare Analytics Engine event/error writer. New structured instrumentation should go through this helper instead of calling `writeDataPoint` directly.
 
 Durable Objects use SQLite-backed storage. Prefer:
 
@@ -115,6 +116,14 @@ waitUntil(
   task().catch((error) => console.error("Background task failed", error)),
 );
 ```
+
+## Observability
+
+- Cloudflare Workers Observability and source-map uploads are enabled in deployed Wrangler configs.
+- Structured operational events go to `OBSERVABILITY_EVENTS`; structured errors are mirrored through `ERROR_ANALYTICS`. Use `recordObservabilityEvent` / `recordErrorEvent` from `workers/main/src/observability.ts` for new instrumentation.
+- Keep observability payloads diagnostic but not transcript-like: include ids, counts, status, durations, routes, and error metadata; do not store chat message contents, secrets, request bodies, or auth headers.
+- The main app workers attach Tail Consumers to `workers/user-logs-tail/`, which forwards raw Worker trace/log/exception events into `WorkerLogsDO`.
+- Production datasets are `chiridion_observability_prod` and `chiridion_errors_prod`; staging uses the corresponding `_staging` datasets. Verify bindings in the environment-specific `wrangler*.jsonc` files before changing collection paths.
 
 ## Chat And Runtime Flow
 
