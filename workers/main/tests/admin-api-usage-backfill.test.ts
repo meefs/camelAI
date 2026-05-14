@@ -121,7 +121,7 @@ describe("admin API host usage backfill", () => {
     });
   });
 
-  it("runs legacy usage backfill before hosted Pi credit enforcement", async () => {
+  it("skips legacy usage backfill before hosted Pi credit enforcement", async () => {
     const { userId } = await createUser(
       testEnv,
       testEmail(),
@@ -173,8 +173,8 @@ describe("admin API host usage backfill", () => {
       }),
     ).resolves.toBe(true);
     await expect(orgStub.getUsageLogSum(0, Date.now(), true)).resolves.toMatchObject({
-      total_cost_usd: 1.23,
-      total_requests: 1,
+      total_cost_usd: 0,
+      total_requests: 0,
     });
 
     await expect(
@@ -182,6 +182,6 @@ describe("admin API host usage backfill", () => {
         orgId: org.id,
       }),
     ).resolves.toBe(true);
-    expect(legacyFetch).toHaveBeenCalledTimes(1);
+    expect(legacyFetch).not.toHaveBeenCalled();
   });
 });
