@@ -152,6 +152,16 @@ const routes: Route[] = [
     path: /^\/api\/admin\/mcp$/,
     handler: handleAdminMcp,
   },
+  {
+    method: 'GET',
+    path: /^\/api\/admin\/oauth$/,
+    handler: handleOAuthMetadata,
+  },
+  {
+    method: 'GET',
+    path: /^\/api\/admin\/oauth\/\.well-known\/oauth-authorization-server$/,
+    handler: handleOAuthMetadata,
+  },
 
   // Admin REST API (ADMIN_API_KEY auth; returns null to fall through to React Router for session-auth routes)
   {
