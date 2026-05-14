@@ -280,7 +280,7 @@ export function ChatTabBar({
   };
 
   return (
-    <div className="shrink-0 pt-[5px]">
+    <div className="shrink-0 [--safe-area-padding-top:5px] pt-safe">
     <div className="relative flex h-9 items-end gap-0 bg-muted/20 pl-2 pr-1 shadow-[inset_0_-1px_0_0_var(--border)]">
       <div className="mr-1 flex h-9 shrink-0 items-center pb-0.5 md:hidden">
         <SidebarTrigger />
