@@ -7,6 +7,9 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "upload_source_maps": true,
   "observability": { "enabled": true },
+  "limits": {
+    "subrequests": 10000000,
+  },
   "tail_consumers": [{ "service": "chiridion-user-logs-tail" }],
   "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
   "routes": [{ "pattern": "camelai.dev", "custom_domain": true }],
