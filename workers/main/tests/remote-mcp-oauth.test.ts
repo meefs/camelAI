@@ -172,7 +172,6 @@ describe('remote MCP OAuth flow', () => {
           url: 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp',
           status: 404,
           contentType: 'text/html',
-          bodyExcerpt: '<html>not found</html>',
         },
         {
           url: 'https://mcp.example.com/.well-known/oauth-protected-resource',

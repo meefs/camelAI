@@ -50,7 +50,6 @@ interface ProtectedResourceAttempt {
   url: string;
   status?: number;
   contentType?: string;
-  bodyExcerpt?: string;
   error?: string;
 }
 
@@ -167,7 +166,6 @@ async function discoverProtectedResourceMetadata(
       url: candidate,
       status: response.status,
       contentType,
-      ...(!metadata && body ? { bodyExcerpt: body.slice(0, 300) } : {}),
     });
     if (metadata) return { metadata, candidates: uniqueCandidates, attempts };
   }
