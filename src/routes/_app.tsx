@@ -18,22 +18,15 @@ import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
-  hasHostedBillingAccess,
   hasOrgUsedSubscriptionTrial,
   isConfiguredEnterpriseOrg,
+  isOrgBillingAccessReady,
+  resolveOrgBillingAccess,
 } from "@/lib/billing.server";
 import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 import { getByokProviderLabel } from "@/lib/byok-providers";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const BILLING_SETUP_PATHS = new Set([
-  "/settings/organization/billing",
-  "/settings/organization/usage",
-]);
-
-export function isBillingSetupPath(pathname: string): boolean {
-  return BILLING_SETUP_PATHS.has(pathname);
-}
 
 /**
  * Keep the default route revalidation behavior. The layout loader owns chat
@@ -77,12 +70,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         billing_plan: "enterprise" as const,
       }
     : baseOrg;
-  const billingAccessReady = Boolean(
-    llmProviderConfig ||
-    hasHostedBillingAccess(currentOrg),
-  );
-  const billingSetupRoute = isBillingSetupPath(url.pathname);
-  const appRouteAccessible = billingAccessReady || billingSetupRoute;
+  const billingAccess = resolveOrgBillingAccess({
+    org: currentOrg,
+    llmProviderConfig,
+    pathname: url.pathname,
+  });
+  const billingAccessReady = isOrgBillingAccessReady(billingAccess);
+  const appRouteAccessible =
+    billingAccessReady || billingAccess.setupRouteAccessible;
   const paywallContext: PaywallTakeoverContext | null = billingAccessReady
     ? null
     : {

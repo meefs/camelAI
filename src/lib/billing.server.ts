@@ -859,7 +859,28 @@ export function isConfiguredEnterpriseOrg(
     .some((value) => tokens.has(value));
 }
 
-export function hasHostedBillingAccess(
+const BILLING_SETUP_PATHS = new Set([
+  "/settings/organization/billing",
+  "/settings/organization/usage",
+]);
+
+export type OrgBillingAccessState =
+  | {
+      kind: "ready";
+      mode: "enterprise" | "subscription" | "byok" | "credits";
+      setupRouteAccessible: true;
+    }
+  | {
+      kind: "setup_required";
+      reason: "missing_llm_provider";
+      setupRouteAccessible: boolean;
+    };
+
+export function isBillingSetupPath(pathname: string): boolean {
+  return BILLING_SETUP_PATHS.has(pathname);
+}
+
+export function resolveOrgBillingAccess(args: {
   org:
     | Pick<
         Organization,
@@ -868,22 +889,46 @@ export function hasHostedBillingAccess(
         | "billing_credit_grant_total_cents"
       >
     | null
-    | undefined,
-): boolean {
-  if (!org) return false;
+    | undefined;
+  llmProviderConfig?: unknown;
+  isEnterpriseOrg?: boolean;
+  pathname?: string;
+}): OrgBillingAccessState {
+  const setupRouteAccessible = args.pathname
+    ? isBillingSetupPath(args.pathname)
+    : false;
+  const org = args.org;
+  if (args.isEnterpriseOrg || org?.billing_status === "enterprise") {
+    return { kind: "ready", mode: "enterprise", setupRouteAccessible: true };
+  }
   if (
-    org.billing_status === "trialing" ||
-    org.billing_status === "active" ||
-    org.billing_status === "enterprise"
+    org?.billing_status === "trialing" ||
+    org?.billing_status === "active"
   ) {
-    return true;
+    return { kind: "ready", mode: "subscription", setupRouteAccessible: true };
+  }
+  if (args.llmProviderConfig) {
+    return { kind: "ready", mode: "byok", setupRouteAccessible: true };
   }
 
-  return (
-    (org.billing_credit_purchase_total_cents ?? 0) +
-      (org.billing_credit_grant_total_cents ?? 0) >
-    0
-  );
+  const totalCreditsCents =
+    (org?.billing_credit_purchase_total_cents ?? 0) +
+    (org?.billing_credit_grant_total_cents ?? 0);
+  if (totalCreditsCents > 0) {
+    return { kind: "ready", mode: "credits", setupRouteAccessible: true };
+  }
+
+  return {
+    kind: "setup_required",
+    reason: "missing_llm_provider",
+    setupRouteAccessible,
+  };
+}
+
+export function isOrgBillingAccessReady(
+  access: OrgBillingAccessState,
+): access is Extract<OrgBillingAccessState, { kind: "ready" }> {
+  return access.kind === "ready";
 }
 
 export function getConfiguredCreditPriceIds(

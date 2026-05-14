@@ -117,10 +117,12 @@ function makeLoaderData({
   orgId,
   legacyMigration,
   billingAccessReady = true,
+  appRouteAccessible = billingAccessReady,
 }: {
   orgId: string;
   legacyMigration: LegacyMigration | null;
   billingAccessReady?: boolean;
+  appRouteAccessible?: boolean;
 }) {
   return {
     authState: {
@@ -139,6 +141,7 @@ function makeLoaderData({
     showLegacyBanner: false,
     legacyMigration,
     billingAccessReady,
+    appRouteAccessible,
     paywallContext: billingAccessReady
       ? null
       : {

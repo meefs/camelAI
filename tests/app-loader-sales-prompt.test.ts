@@ -13,18 +13,42 @@ vi.mock("@/lib/cloudflare.server", () => ({
 
 vi.mock("@/lib/billing.server", () => ({
   getVerifiedLegacyStripeMigrationEligibility: vi.fn(() => null),
-  hasHostedBillingAccess: vi.fn(
-    (org: {
-      billing_status?: string | null;
-      billing_credit_purchase_total_cents?: number | null;
-      billing_credit_grant_total_cents?: number | null;
-    }) =>
-      org.billing_status === "trialing" ||
-      org.billing_status === "active" ||
-      org.billing_status === "enterprise" ||
-      (org.billing_credit_purchase_total_cents ?? 0) +
-        (org.billing_credit_grant_total_cents ?? 0) >
-        0,
+  isOrgBillingAccessReady: vi.fn(
+    (access: { kind: string }) => access.kind === "ready",
+  ),
+  resolveOrgBillingAccess: vi.fn(
+    ({
+      org,
+      llmProviderConfig,
+      pathname,
+    }: {
+      org: {
+        billing_status?: string | null;
+        billing_credit_purchase_total_cents?: number | null;
+        billing_credit_grant_total_cents?: number | null;
+      };
+      llmProviderConfig?: unknown;
+      pathname?: string;
+    }) => {
+      const setupRouteAccessible =
+        pathname === "/settings/organization/billing" ||
+        pathname === "/settings/organization/usage";
+      const ready =
+        org.billing_status === "trialing" ||
+        org.billing_status === "active" ||
+        org.billing_status === "enterprise" ||
+        Boolean(llmProviderConfig) ||
+        (org.billing_credit_purchase_total_cents ?? 0) +
+          (org.billing_credit_grant_total_cents ?? 0) >
+          0;
+      return ready
+        ? { kind: "ready", mode: "subscription", setupRouteAccessible: true }
+        : {
+            kind: "setup_required",
+            reason: "missing_llm_provider",
+            setupRouteAccessible,
+          };
+    },
   ),
   hasOrgUsedSubscriptionTrial: vi.fn(
     (org: {
@@ -45,7 +69,7 @@ vi.mock("@/lib/chat-groups.server", () => ({
   listGroupsForWorkspace: vi.fn(() => Promise.resolve([])),
 }));
 
-const { isBillingSetupPath, loader } = await import("@/routes/_app");
+const { loader } = await import("@/routes/_app");
 
 describe("_app loader onboarding redirect", () => {
   beforeEach(() => {
@@ -223,10 +247,4 @@ describe("_app loader onboarding redirect", () => {
     });
   });
 
-  it("limits paywall bypasses to billing setup routes", () => {
-    expect(isBillingSetupPath("/settings/organization/billing")).toBe(true);
-    expect(isBillingSetupPath("/settings/organization/usage")).toBe(true);
-    expect(isBillingSetupPath("/settings/organization/team")).toBe(false);
-    expect(isBillingSetupPath("/chat")).toBe(false);
-  });
 });

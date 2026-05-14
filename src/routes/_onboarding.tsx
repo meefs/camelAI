@@ -6,8 +6,9 @@ import { getAuthEnv, requireSession } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
-  hasHostedBillingAccess,
+  isOrgBillingAccessReady,
   isConfiguredEnterpriseOrg,
+  resolveOrgBillingAccess,
 } from "@/lib/billing.server";
 import { hasCompletedOnboarding } from "@/lib/onboarding";
 import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
@@ -98,13 +99,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgStub.getInfo(),
     orgStub.getLlmProviderConfig(),
   ]);
-  const effectiveOrg = orgInfo && isConfiguredEnterpriseOrg(env, orgInfo)
-    ? { ...orgInfo, billing_status: "enterprise" as const }
-    : orgInfo;
-  const billingAccessReady = Boolean(
-    llmProviderConfig ||
-    hasHostedBillingAccess(effectiveOrg),
-  );
+  const billingAccess = resolveOrgBillingAccess({
+    org: orgInfo,
+    llmProviderConfig,
+    isEnterpriseOrg: isConfiguredEnterpriseOrg(env, orgInfo),
+  });
+  const billingAccessReady = isOrgBillingAccessReady(billingAccess);
 
   if (
     onboardingComplete &&

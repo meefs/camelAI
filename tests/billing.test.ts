@@ -28,14 +28,16 @@ import {
   getConfiguredSubscriptionPriceId,
   getLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
-  hasHostedBillingAccess,
   hasOrgUsedSubscriptionTrial,
   getVerifiedLegacyStripeMigrationEligibility,
+  isBillingSetupPath,
   isConfiguredEnterpriseOrg,
+  isOrgBillingAccessReady,
   isRecurringSubscriptionInvoice,
   isStripeSecretKeyAllowedForMode,
   migrateLegacyStripeSubscription,
   parseStripePriceIdList,
+  resolveOrgBillingAccess,
   StaleTrialingSubscriptionStatusError,
   syncTeamSubscriptionSeatCount,
   syncOrgSubscriptionFromStripe,
@@ -1047,33 +1049,75 @@ describe("billing helpers", () => {
     ).toBe(true);
   });
 
-  it("does not treat PAYG alone as hosted billing access", () => {
+  it("resolves org billing access from one shared rule", () => {
     expect(
-      hasHostedBillingAccess({
-        billing_status: "inactive",
-        billing_plan: "payg",
-        billing_credit_purchase_total_cents: 0,
-        billing_credit_grant_total_cents: 0,
-      } as Organization),
+      isOrgBillingAccessReady(
+        resolveOrgBillingAccess({
+          org: {
+            billing_status: "inactive",
+            billing_plan: "payg",
+            billing_credit_purchase_total_cents: 0,
+            billing_credit_grant_total_cents: 0,
+          } as Organization,
+        }),
+      ),
     ).toBe(false);
 
     expect(
-      hasHostedBillingAccess({
-        billing_status: "inactive",
-        billing_plan: "payg",
-        billing_credit_purchase_total_cents: 500,
-        billing_credit_grant_total_cents: 0,
-      } as Organization),
-    ).toBe(true);
+      resolveOrgBillingAccess({
+        org: {
+          billing_status: "inactive",
+          billing_plan: "payg",
+          billing_credit_purchase_total_cents: 500,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+      }),
+    ).toMatchObject({ kind: "ready", mode: "credits" });
 
     expect(
-      hasHostedBillingAccess({
-        billing_status: "active",
-        billing_plan: "starter",
-        billing_credit_purchase_total_cents: 0,
-        billing_credit_grant_total_cents: 0,
-      } as Organization),
-    ).toBe(true);
+      resolveOrgBillingAccess({
+        org: {
+          billing_status: "active",
+          billing_plan: "starter",
+          billing_credit_purchase_total_cents: 0,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+      }),
+    ).toMatchObject({ kind: "ready", mode: "subscription" });
+
+    expect(
+      resolveOrgBillingAccess({
+        org: {
+          billing_status: "inactive",
+          billing_plan: "free",
+          billing_credit_purchase_total_cents: 0,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+        llmProviderConfig: { provider: "openrouter" },
+      }),
+    ).toMatchObject({ kind: "ready", mode: "byok" });
+  });
+
+  it("limits setup access to billing setup paths", () => {
+    expect(isBillingSetupPath("/settings/organization/billing")).toBe(true);
+    expect(isBillingSetupPath("/settings/organization/usage")).toBe(true);
+    expect(isBillingSetupPath("/settings/organization/team")).toBe(false);
+    expect(isBillingSetupPath("/chat")).toBe(false);
+
+    expect(
+      resolveOrgBillingAccess({
+        org: {
+          billing_status: "inactive",
+          billing_plan: "payg",
+          billing_credit_purchase_total_cents: 0,
+          billing_credit_grant_total_cents: 0,
+        } as Organization,
+        pathname: "/settings/organization/usage",
+      }),
+    ).toMatchObject({
+      kind: "setup_required",
+      setupRouteAccessible: true,
+    });
   });
 
   it("uses configurable capped credit allowances", () => {

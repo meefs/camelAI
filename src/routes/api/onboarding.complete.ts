@@ -4,8 +4,9 @@ import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { waitUntil } from '@/lib/wait-until';
 import {
-  hasHostedBillingAccess,
+  isOrgBillingAccessReady,
   isConfiguredEnterpriseOrg,
+  resolveOrgBillingAccess,
 } from '@/lib/billing.server';
 import type { ChatHarness, LlmModel } from '@/types';
 
@@ -175,15 +176,16 @@ export async function action({ request, context }: Route.ActionArgs) {
     );
   }
 
-  const hasBillingAccess =
-    isConfiguredEnterpriseOrg(
+  const billingAccess = resolveOrgBillingAccess({
+    org: orgInfo,
+    llmProviderConfig,
+    isEnterpriseOrg: isConfiguredEnterpriseOrg(
       { BILLING_ENTERPRISE_ORG_SLUGS: env.BILLING_ENTERPRISE_ORG_SLUGS },
       orgInfo,
-    ) ||
-    hasHostedBillingAccess(orgInfo) ||
-    Boolean(llmProviderConfig);
+    ),
+  });
 
-  if (!hasBillingAccess) {
+  if (!isOrgBillingAccessReady(billingAccess)) {
     return Response.json(
       { error: 'Choose a billing option before continuing.' },
       { status: 402 },
