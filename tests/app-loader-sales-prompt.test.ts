@@ -11,6 +11,27 @@ vi.mock("@/lib/cloudflare.server", () => ({
   getEnv: getEnvMock,
 }));
 
+vi.mock("@/lib/billing.server", () => ({
+  getVerifiedLegacyStripeMigrationEligibility: vi.fn(() => null),
+  hasOrgUsedSubscriptionTrial: vi.fn(
+    (org: {
+      billing_trial_started_at?: number | null;
+      billing_trial_ends_at?: number | null;
+      billing_trial_credit_granted_at?: number | null;
+    }) =>
+      Boolean(
+        org.billing_trial_started_at ||
+          org.billing_trial_ends_at ||
+          org.billing_trial_credit_granted_at,
+      ),
+  ),
+  isConfiguredEnterpriseOrg: vi.fn(() => false),
+}));
+
+vi.mock("@/lib/chat-groups.server", () => ({
+  listGroupsForWorkspace: vi.fn(() => Promise.resolve([])),
+}));
+
 const { loader } = await import("@/routes/_app");
 
 describe("_app loader onboarding redirect", () => {
@@ -46,5 +67,77 @@ describe("_app loader onboarding redirect", () => {
         response.headers.get("Location") === "/onboarding"
       );
     });
+  });
+
+  it("returns paywall context for onboarded users without org billing access", async () => {
+    const org = {
+      id: "org_free",
+      name: "Org B",
+      slug: "org-b",
+      created_at: Date.now(),
+      created_by: "user_123",
+      billing_status: "inactive",
+      billing_plan: "free",
+      billing_seat_count: 1,
+      billing_customer_id: null,
+      billing_subscription_id: null,
+      billing_subscription_status: null,
+      billing_trial_started_at: null,
+      billing_trial_ends_at: null,
+      billing_credit_purchase_total_cents: 0,
+      billing_credit_grant_total_cents: 0,
+      billing_trial_credit_grant_cents: 0,
+      billing_trial_credit_granted_at: null,
+      billing_last_included_credit_invoice_id: null,
+      billing_credit_usage_started_at: null,
+      archived: false,
+      archived_at: null,
+      archived_by: null,
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue(org),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+    };
+    getEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(null),
+      },
+    });
+    requireAuthContextMock.mockResolvedValue({
+      onboarding: { completed_at: Date.now() },
+      emailVerification: { required: false, verified: true },
+      user: { id: "user_123", email: "ada@example.com" },
+      session: { user_id: "user_123", user_email: "ada@example.com" },
+      currentOrg: org,
+      currentWorkspace: { id: "ws_123" },
+      orgs: [
+        { org_id: "org_paid", org_name: "Org A", role: "owner" },
+        { org_id: "org_free", org_name: "Org B", role: "owner" },
+      ],
+      workspaces: [],
+      allWorkspaces: [],
+      orgWorkspaceCount: 1,
+      resignedSessionCookie: null,
+    });
+
+    const result = await loader({
+      request: new Request("https://camelai.dev/chat"),
+      context: {},
+    } as never);
+
+    expect(result).toMatchObject({
+      billingAccessReady: false,
+      paywallContext: {
+        currentOrgName: "Org B",
+        multiOrg: true,
+        trialAvailable: true,
+        byokProviderLabel: null,
+      },
+    });
+    expect(orgStub.getLlmProviderConfig).toHaveBeenCalled();
   });
 });

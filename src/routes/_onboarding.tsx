@@ -109,7 +109,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   if (
     onboardingComplete &&
-    billingAccessReady &&
     !teamMode &&
     !emailVerificationRequired
   ) {

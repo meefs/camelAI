@@ -65,6 +65,10 @@ describe('route config', () => {
       routes as RouteNode[],
       'api/admin/threads/:id/messages'
     );
+    const billingStartTrialRoute = findRouteByPath(
+      routes as RouteNode[],
+      'api/billing/start-trial'
+    );
 
     expect(orgInviteRoute).not.toBeNull();
     expect(invitationRoute).not.toBeNull();
@@ -73,5 +77,6 @@ describe('route config', () => {
     expect(devSentEmailByIdRoute).not.toBeNull();
     expect(adminThreadJsonlRoute).not.toBeNull();
     expect(adminThreadMessagesRoute).not.toBeNull();
+    expect(billingStartTrialRoute).not.toBeNull();
   });
 });

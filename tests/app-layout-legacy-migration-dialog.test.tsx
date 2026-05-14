@@ -40,7 +40,8 @@ vi.mock("@/lib/cookies.server", () => ({
 }));
 
 vi.mock("@/lib/billing.server", () => ({
-  getLegacyStripeMigrationEligibility: vi.fn(() => null),
+  getVerifiedLegacyStripeMigrationEligibility: vi.fn(() => null),
+  hasOrgUsedSubscriptionTrial: vi.fn(() => false),
   isConfiguredEnterpriseOrg: vi.fn(() => false),
 }));
 
@@ -96,6 +97,10 @@ vi.mock("@/components/billing/legacy-migration-dialog", () => ({
   ),
 }));
 
+vi.mock("@/components/billing/paywall-takeover", () => ({
+  PaywallTakeover: () => <div data-testid="paywall-takeover" />,
+}));
+
 const { default: AppLayout } = await import("@/routes/_app");
 
 function makeMigration(overrides: Partial<LegacyMigration> = {}): LegacyMigration {
@@ -111,9 +116,11 @@ function makeMigration(overrides: Partial<LegacyMigration> = {}): LegacyMigratio
 function makeLoaderData({
   orgId,
   legacyMigration,
+  billingAccessReady = true,
 }: {
   orgId: string;
   legacyMigration: LegacyMigration | null;
+  billingAccessReady?: boolean;
 }) {
   return {
     authState: {
@@ -131,6 +138,15 @@ function makeLoaderData({
     defaultSidebarOpen: true,
     showLegacyBanner: false,
     legacyMigration,
+    billingAccessReady,
+    paywallContext: billingAccessReady
+      ? null
+      : {
+          currentOrgName: orgId,
+          multiOrg: true,
+          trialAvailable: true,
+          byokProviderLabel: null,
+        },
   };
 }
 
@@ -236,5 +252,20 @@ describe("AppLayout legacy migration disclosure", () => {
     expect(testState.navigate).toHaveBeenCalledWith(
       "/settings/organization/billing?view=plans",
     );
+  });
+
+  it("renders the paywall takeover and suppresses the floating migration dialog without billing access", () => {
+    testState.loaderData.current = makeLoaderData({
+      orgId: "org_legacy",
+      legacyMigration: makeMigration(),
+      billingAccessReady: false,
+    });
+    render(<AppLayout />);
+
+    expect(screen.getByTestId("paywall-takeover")).toBeInTheDocument();
+    expect(screen.queryByTestId("outlet")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("legacy-migration-dialog"),
+    ).not.toBeInTheDocument();
   });
 });
