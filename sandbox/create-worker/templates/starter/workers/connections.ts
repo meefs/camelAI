@@ -52,6 +52,7 @@ export interface ConnectionMethodSummary {
 	name: string;
 	tool: string;
 	description?: string;
+	example?: string;
 	inputSchema?: unknown;
 	outputSchema?: unknown;
 }
@@ -72,6 +73,15 @@ export interface ConnectionInvokeRequest {
 	method?: string;
 	input?: unknown;
 }
+
+export type ConnectionFindQuery =
+	| string
+	| {
+			id?: string;
+			alias?: string;
+			type?: string;
+			name?: string;
+	  };
 
 function fallbackConnectionsUrl(env: LocalConnectionsEnv): string {
 	const explicit = (env.CAMELAI_CONNECTIONS_URL ?? "").trim();
@@ -128,6 +138,14 @@ export class LocalConnectionsService extends WorkerEntrypoint<LocalConnectionsEn
 	 */
 	async methods(): Promise<ConnectionMethodCatalogEntry[]> {
 		return request<ConnectionMethodCatalogEntry[]>(this.env, "methods");
+	}
+
+	async find(query: ConnectionFindQuery): Promise<ConnectionMethodCatalogEntry> {
+		return request<ConnectionMethodCatalogEntry>(this.env, "find", { query });
+	}
+
+	async test(query: ConnectionFindQuery): Promise<unknown> {
+		return request<unknown>(this.env, "test", { query });
 	}
 
 	async __invoke<T = unknown>(invoke: ConnectionInvokeRequest): Promise<T> {

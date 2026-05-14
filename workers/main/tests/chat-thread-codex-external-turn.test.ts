@@ -400,6 +400,8 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(capturedWorkerCode.env.CONNECTIONS).toBe(connectionsBinding);
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => binding.find(query)');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$test") return (query) => binding.test(query)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createOutputConsole');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('globalThis.console = createOutputConsole(output)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) })');

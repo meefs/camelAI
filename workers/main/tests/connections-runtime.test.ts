@@ -3,10 +3,12 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   callConnectionTool,
   getConnection,
+  findConnectionMethodEntry,
   invokeConnectionMethod,
   listConnectionMethods,
   listConnectionTools,
   listConnections,
+  testConnectionMethodEntry,
   type ConnectionsRuntimeEnv,
 } from '../src/connections-runtime.js';
 import { handleIntegrationsMcp } from '../src/routes/integrations-mcp.js';
@@ -238,14 +240,43 @@ describe('connections runtime', () => {
         alias: 'bigqueryAnalytics',
         connection: { id: 'bq_prod', type: 'bigquery', name: 'analytics' },
         methods: [
+          { name: 'query', tool: 'execute_sql_readonly', example: 'await connections.bigqueryAnalytics.query({ query: "SELECT 1 AS ok" })' },
           { name: 'listDatasetIds', tool: 'list_dataset_ids' },
           { name: 'getDatasetInfo', tool: 'get_dataset_info' },
           { name: 'listTableIds', tool: 'list_table_ids' },
           { name: 'getTableInfo', tool: 'get_table_info' },
           { name: 'executeSqlReadonly', tool: 'execute_sql_readonly' },
+          { name: 'executeQuery', tool: 'execute_sql_readonly' },
         ],
       },
     ]);
+  });
+
+  it('finds one method catalog entry by type and exposes copyable examples', async () => {
+    const records = [
+      integration({
+        id: 'clickhouse_events',
+        integration_type: 'clickhouse',
+        name: 'events',
+        category: 'databases',
+        config: JSON.stringify({ host: 'clickhouse.example', port: 8443, database: 'default' }),
+        credentials_encrypted: await encryptedCredentials({ username: 'default', password: 'secret' }),
+      }),
+    ];
+
+    const entry = await findConnectionMethodEntry(envWith(records), context, { type: 'clickhouse' });
+
+    expect(entry).toMatchObject({
+      alias: 'clickhouseEvents',
+      connection: { id: 'clickhouse_events', type: 'clickhouse' },
+    });
+    expect(entry.methods).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'query',
+        tool: 'execute_sql_readonly',
+        example: 'await connections.clickhouseEvents.query({ query: "SELECT 1 AS ok" })',
+      }),
+    ]));
   });
 
   it('lists a fetch method for custom API connections', async () => {
@@ -277,6 +308,7 @@ describe('connections runtime', () => {
           {
             name: 'fetch',
             tool: 'authenticated_fetch',
+            example: 'await connections.otherCustomApi.fetch("/v1/items", { method: "GET" })',
           },
         ],
       },
@@ -364,6 +396,44 @@ describe('connections runtime', () => {
     })).resolves.toMatchObject({
       status: 200,
       bodyText: 'ok',
+    });
+  });
+
+  it('runs a database smoke test through the normalized query method', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://clickhouse.example:8443/?database=default');
+      expect(String(init?.body)).toBe('SELECT 1 AS ok LIMIT 100 FORMAT JSON');
+      return new Response(JSON.stringify({
+        data: [{ ok: 1 }],
+        rows: 1,
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'clickhouse_events',
+        integration_type: 'clickhouse',
+        name: 'events',
+        category: 'databases',
+        config: JSON.stringify({ host: 'clickhouse.example', port: 8443, database: 'default' }),
+        credentials_encrypted: await encryptedCredentials({ username: 'default', password: 'secret' }),
+      }),
+    ];
+
+    await expect(testConnectionMethodEntry(envWith(records), context, 'clickhouse')).resolves.toMatchObject({
+      ok: true,
+      alias: 'clickhouseEvents',
+      method: 'query',
+      result: {
+        content: [
+          {
+            text: JSON.stringify({
+              data: [{ ok: 1 }],
+              rows: 1,
+            }, null, 2),
+          },
+        ],
+      },
     });
   });
 

@@ -8,11 +8,14 @@
 import type { RouteContext } from '../types.js';
 import { validateSandboxProxy } from '../sandbox-auth.js';
 import {
+  findConnectionMethodEntry,
   getConnection,
   invokeConnectionMethod,
   listConnectionMethods,
   listConnections,
   listConnectionTools,
+  testConnectionMethodEntry,
+  type ConnectionFindQuery,
 } from '../connections-runtime.js';
 
 type ConnectionsAction =
@@ -20,6 +23,8 @@ type ConnectionsAction =
   | { action: 'get'; connection?: unknown }
   | { action: 'tools'; connection?: unknown }
   | { action: 'methods' }
+  | { action: 'find'; query?: unknown }
+  | { action: 'test'; query?: unknown }
   | { action: 'invoke'; connection?: unknown; method?: unknown; input?: unknown };
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -61,6 +66,23 @@ function optionalObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function requireFindQuery(value: unknown): ConnectionFindQuery {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const query = value as Record<string, unknown>;
+    const normalized = {
+      id: typeof query.id === 'string' ? query.id : undefined,
+      alias: typeof query.alias === 'string' ? query.alias : undefined,
+      type: typeof query.type === 'string' ? query.type : undefined,
+      name: typeof query.name === 'string' ? query.name : undefined,
+    };
+    if (Object.values(normalized).some((item) => typeof item === 'string' && item.trim())) {
+      return normalized;
+    }
+  }
+  throw Object.assign(new Error('query is required'), { status: 400 });
+}
+
 export async function handleConnections({ req, env }: RouteContext): Promise<Response> {
   if (req.method !== 'POST') {
     return errorResponse('Method not allowed', 405);
@@ -85,6 +107,12 @@ export async function handleConnections({ req, env }: RouteContext): Promise<Res
 
       case 'methods':
         return jsonResponse(await listConnectionMethods(env, auth));
+
+      case 'find':
+        return jsonResponse(await findConnectionMethodEntry(env, auth, requireFindQuery(payload.query)));
+
+      case 'test':
+        return jsonResponse(await testConnectionMethodEntry(env, auth, requireFindQuery(payload.query)));
 
       case 'invoke':
         return jsonResponse(await invokeConnectionMethod(

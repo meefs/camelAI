@@ -156,6 +156,7 @@ export interface ConnectionMethodSummary {
   name: string;
   tool: string;
   description?: string;
+  example?: string;
   inputSchema?: unknown;
   outputSchema?: unknown;
 }
@@ -177,6 +178,23 @@ export interface ConnectionInvokeRequest {
   input?: unknown;
 }
 
+export type ConnectionFindQuery =
+  | string
+  | {
+    id?: string;
+    alias?: string;
+    type?: string;
+    name?: string;
+  };
+
+export interface ConnectionSmokeTestResult {
+  ok: true;
+  alias: string;
+  connection: ConnectionSummary;
+  method: string | null;
+  result?: unknown;
+}
+
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
 const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
 const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
@@ -184,6 +202,7 @@ const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
   tool: OTHER_CONNECTION_FETCH_TOOL,
   description:
     'Fetch from this custom API connection like fetch(input, init). Relative URLs are resolved against the connection base_url and camelAI applies the stored auth settings.',
+  example: 'await connections.<alias>.fetch("/v1/items", { method: "GET" })',
   inputSchema: {
     type: 'object',
     properties: {
@@ -231,6 +250,20 @@ const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
   },
 };
 const OTHER_CONNECTION_RESPONSE_LIMIT = 1_000_000;
+const DATABASE_QUERY_TOOL_NAMES = new Set([
+  'execute_sql_readonly',
+]);
+const DATABASE_QUERY_INTEGRATION_TYPES = new Set([
+  'bigquery',
+  'clickhouse',
+  'databricks',
+  'mysql',
+  'neon',
+  'planetscale',
+  'postgres',
+  'snowflake',
+  'turso',
+]);
 
 type ConnectionAuthErrorData = {
   code: string;
@@ -488,9 +521,65 @@ function toolToMethod(tool: unknown): ConnectionMethodSummary | null {
     name: toIdentifier(record.name, 'method'),
     tool: record.name,
     description: typeof record.description === 'string' ? record.description : undefined,
+    example: undefined,
     inputSchema: record.inputSchema ?? record.input_schema,
     outputSchema: record.outputSchema ?? record.output_schema,
   };
+}
+
+function methodExample(alias: string, method: ConnectionMethodSummary): string {
+  if (method.name === 'fetch') {
+    return `await connections.${alias}.fetch("/v1/items", { method: "GET" })`;
+  }
+  if (method.name === 'query') {
+    return `await connections.${alias}.query({ query: "SELECT 1 AS ok" })`;
+  }
+  if (method.inputSchema && typeof method.inputSchema === 'object') {
+    const required = (method.inputSchema as { required?: unknown }).required;
+    if (Array.isArray(required) && required.includes('query')) {
+      return `await connections.${alias}.${method.name}({ query: "SELECT 1 AS ok" })`;
+    }
+  }
+  return `await connections.${alias}.${method.name}({})`;
+}
+
+function attachMethodExamples(alias: string, methods: ConnectionMethodSummary[]): ConnectionMethodSummary[] {
+  return methods.map((method) => ({
+    ...method,
+    example: method.example?.replace('<alias>', alias) ?? methodExample(alias, method),
+  }));
+}
+
+function addNormalizedMethodAliases(
+  connection: ConnectionSummary,
+  methods: ConnectionMethodSummary[]
+): ConnectionMethodSummary[] {
+  const output = [...methods];
+  const names = new Set(output.map((method) => method.name));
+  const queryMethod = output.find((method) => (
+    DATABASE_QUERY_TOOL_NAMES.has(method.tool) ||
+    (DATABASE_QUERY_INTEGRATION_TYPES.has(connection.type) && method.name === 'executeSqlReadonly')
+  ));
+  if (queryMethod && !names.has('query')) {
+    output.unshift({
+      ...queryMethod,
+      name: 'query',
+      description: queryMethod.description
+        ? `${queryMethod.description} Alias for ${queryMethod.name}.`
+        : `Alias for ${queryMethod.name}.`,
+    });
+    names.add('query');
+  }
+  if (queryMethod && !names.has('executeQuery')) {
+    output.push({
+      ...queryMethod,
+      name: 'executeQuery',
+      description: queryMethod.description
+        ? `${queryMethod.description} Alias for ${queryMethod.name}.`
+        : `Alias for ${queryMethod.name}.`,
+    });
+  }
+  return output;
 }
 
 function otherConnectionMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
@@ -636,14 +725,23 @@ export async function listConnectionMethods(
       methods: [],
     };
     if (!connection.nativeMcp || connection.nativeMcp.brokered === false) {
-      entry.methods = otherConnectionMethods(connection);
+      entry.methods = attachMethodExamples(entry.alias, addNormalizedMethodAliases(
+        connection,
+        otherConnectionMethods(connection)
+      ));
       return entry;
     }
     try {
       const tools = await listConnectionTools(env, context, connection.id);
-      entry.methods = tools
-        .map(toolToMethod)
-        .filter((method): method is ConnectionMethodSummary => method !== null);
+      entry.methods = attachMethodExamples(
+        entry.alias,
+        addNormalizedMethodAliases(
+          connection,
+          tools
+            .map(toolToMethod)
+            .filter((method): method is ConnectionMethodSummary => method !== null)
+        )
+      );
     } catch (error) {
       entry.error = {
         message: error instanceof Error ? error.message : String(error),
@@ -653,6 +751,107 @@ export async function listConnectionMethods(
     }
     return entry;
   }));
+}
+
+function compactCatalogEntry(entry: ConnectionMethodCatalogEntry): Record<string, unknown> {
+  return {
+    alias: entry.alias,
+    id: entry.connection.id,
+    type: entry.connection.type,
+    name: entry.connection.name,
+  };
+}
+
+function findCatalogMatches(
+  catalog: ConnectionMethodCatalogEntry[],
+  query: ConnectionFindQuery
+): ConnectionMethodCatalogEntry[] {
+  if (typeof query === 'string') {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return [];
+    return catalog.filter((entry) => (
+      entry.alias.toLowerCase() === normalized ||
+      entry.connection.id.toLowerCase() === normalized ||
+      entry.connection.name.toLowerCase() === normalized ||
+      entry.connection.type.toLowerCase() === normalized
+    ));
+  }
+
+  const id = query.id?.trim().toLowerCase();
+  const alias = query.alias?.trim().toLowerCase();
+  const type = query.type?.trim().toLowerCase();
+  const name = query.name?.trim().toLowerCase();
+  return catalog.filter((entry) => (
+    (!id || entry.connection.id.toLowerCase() === id) &&
+    (!alias || entry.alias.toLowerCase() === alias) &&
+    (!type || entry.connection.type.toLowerCase() === type) &&
+    (!name || entry.connection.name.toLowerCase() === name)
+  ));
+}
+
+export async function findConnectionMethodEntry(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  query: ConnectionFindQuery
+): Promise<ConnectionMethodCatalogEntry> {
+  const catalog = await listConnectionMethods(env, context);
+  const matches = findCatalogMatches(catalog, query);
+  const label = typeof query === 'string' ? query : JSON.stringify(query);
+  if (matches.length === 0) {
+    throw Object.assign(new Error(`No connected integration matched ${label}`), {
+      status: 404,
+      matches: catalog.map(compactCatalogEntry),
+    });
+  }
+  if (matches.length > 1) {
+    throw Object.assign(new Error(`Multiple connected integrations matched ${label}. Retry with a connection alias or id.`), {
+      status: 409,
+      matches: matches.map(compactCatalogEntry),
+    });
+  }
+  return matches[0]!;
+}
+
+export async function testConnectionMethodEntry(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  query: ConnectionFindQuery
+): Promise<ConnectionSmokeTestResult> {
+  const entry = await findConnectionMethodEntry(env, context, query);
+  if (entry.error) {
+    const authStatus = (entry.error.data as { authStatus?: unknown } | undefined)?.authStatus;
+    throw Object.assign(new Error(entry.error.message), {
+      status: entry.error.code === 'AUTH_SETUP_INCOMPLETE'
+        ? 400
+        : authStatus === 'needs_reauth' || authStatus === 'missing_scopes'
+          ? 401
+          : 502,
+      code: entry.error.code,
+      data: entry.error.data,
+    });
+  }
+
+  const queryMethod = entry.methods.find((method) => method.name === 'query');
+  if (queryMethod) {
+    return {
+      ok: true,
+      alias: entry.alias,
+      connection: entry.connection,
+      method: queryMethod.name,
+      result: await invokeConnectionMethod(env, context, {
+        connection: entry.alias,
+        method: queryMethod.name,
+        input: { query: 'SELECT 1 AS ok' },
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    alias: entry.alias,
+    connection: entry.connection,
+    method: entry.methods[0]?.name ?? null,
+  };
 }
 
 export async function invokeConnectionMethod(
@@ -665,41 +864,7 @@ export async function invokeConnectionMethod(
     throw Object.assign(new Error('method is required'), { status: 400 });
   }
 
-  const catalog = await listConnectionMethods(env, context);
-  const normalizedConnection = request.connection.trim().toLowerCase();
-  const matches = catalog.filter((entry) => (
-    entry.alias.toLowerCase() === normalizedConnection ||
-    entry.connection.id.toLowerCase() === normalizedConnection ||
-    entry.connection.name.toLowerCase() === normalizedConnection ||
-    entry.connection.type.toLowerCase() === normalizedConnection
-  ));
-  if (matches.length === 0) {
-    throw Object.assign(new Error(`No connected integration matched "${request.connection}"`), {
-      status: 404,
-      matches: catalog.map((entry) => ({
-        alias: entry.alias,
-        id: entry.connection.id,
-        type: entry.connection.type,
-        name: entry.connection.name,
-      })),
-    });
-  }
-  if (matches.length > 1) {
-    throw Object.assign(
-      new Error(`Multiple connected integrations matched "${request.connection}". Retry with a connection alias or id.`),
-      {
-        status: 409,
-        matches: matches.map((entry) => ({
-          alias: entry.alias,
-          id: entry.connection.id,
-          type: entry.connection.type,
-          name: entry.connection.name,
-        })),
-      }
-    );
-  }
-
-  const target = matches[0]!;
+  const target = await findConnectionMethodEntry(env, context, request.connection);
   if (target.error) {
     const authStatus = (target.error.data as { authStatus?: unknown } | undefined)?.authStatus;
     throw Object.assign(new Error(target.error.message), {

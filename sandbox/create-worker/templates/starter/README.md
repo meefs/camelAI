@@ -79,26 +79,32 @@ The starter includes a `CONNECTIONS` service binding for workspace connections.
 - Local dev: binding points to `LocalConnectionsService` (`workers/connections.ts`), which forwards to `CAMELAI_CONNECTIONS_URL` when set
 - camelAI deploy: platform rewrites `CONNECTIONS` to its internal service binding
 
-Use `CONNECTIONS.methods()` to inspect available connection aliases, method names, and input schemas. Use `createConnections()` for method-style calls:
+Use `CONNECTIONS.find()` for the shortest path to a connection, or `CONNECTIONS.methods()` to inspect all available aliases, method names, input schemas, and examples. Use `createConnections()` for method-style calls:
 
 ```typescript
 import { createConnections } from "~/lib/connections";
 
 export async function action({ context }: Route.ActionArgs) {
-  const methods = await context.cloudflare.env.CONNECTIONS.methods();
   const connections = createConnections(context.cloudflare.env);
-  const customers = await connections.stripeProd.listCustomers({ limit: 10 });
-  return { methods, customers };
+  const stripe = await context.cloudflare.env.CONNECTIONS.find("stripe");
+  const customers = await connections[stripe.alias].listCustomers({ limit: 10 });
+  return { customers };
 }
+```
+
+Database-style connections expose a normalized `query` method:
+
+```typescript
+const connections = createConnections(context.cloudflare.env);
+const clickhouse = await context.cloudflare.env.CONNECTIONS.find("clickhouse");
+const result = await connections[clickhouse.alias].query({ query: "SELECT 1 AS ok" });
 ```
 
 Custom connections with type `other` expose a generic authenticated HTTP method
 named `fetch`. Use it like normal `fetch(input, init)`:
 
 ```typescript
-const methods = await context.cloudflare.env.CONNECTIONS.methods();
-const custom = methods.find((entry) => entry.connection.type === "other");
-if (!custom) throw new Error("No custom API connection");
+const custom = await context.cloudflare.env.CONNECTIONS.find({ type: "other" });
 
 const response = await connections[custom.alias].fetch("/v1/items?limit=10", {
   method: "GET",

@@ -60,10 +60,12 @@ import {
   shouldRetryAppCustomDomainProvisioning,
 } from "../../../src/lib/custom-domain-state";
 import {
+  findConnectionMethodEntry,
   getConnection,
   listConnectionMethods,
   listConnections,
   listConnectionTools,
+  testConnectionMethodEntry,
 } from "./connections-runtime";
 import {
   PI_SKILL_NAMES,
@@ -1067,6 +1069,14 @@ const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = [
     name: "connections_methods",
     description: "List workspace connections and their method aliases, tool names, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
   },
+  {
+    name: "connections_find",
+    description: "Find one workspace connection method catalog entry by alias, id, type, or name. Prefer calling this from js_exec as await env.CONNECTIONS.find(query). Arguments: { query }.",
+  },
+  {
+    name: "connections_test",
+    description: "Run a quick workspace connection smoke test. Prefer calling this from js_exec as await env.CONNECTIONS.test(query). Arguments: { query }.",
+  },
 ];
 
 function codeModePiToolParameters(name: string) {
@@ -1498,6 +1508,24 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
       case "connections_methods":
         return listConnectionMethods(this.env, this.connectionsContext);
+
+      case "connections_find":
+        return findConnectionMethodEntry(
+          this.env,
+          this.connectionsContext,
+          typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
+            ? args.query as string | Record<string, string>
+            : ""
+        );
+
+      case "connections_test":
+        return testConnectionMethodEntry(
+          this.env,
+          this.connectionsContext,
+          typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
+            ? args.query as string | Record<string, string>
+            : ""
+        );
 
       default:
         throw new Error(`Unknown code mode tool: ${name}`);
@@ -2809,6 +2837,8 @@ function createConnectionsFacade(binding) {
     get(_target, connectionName) {
       if (connectionName === "then") return undefined;
       if (connectionName === "$methods") return () => binding.methods();
+      if (connectionName === "$find") return (query) => binding.find(query);
+      if (connectionName === "$test") return (query) => binding.test(query);
       if (connectionName === "$list") return () => binding.list();
       if (connectionName === "$get") return (connection) => binding.get(connection);
       if (connectionName === "$tools") return (connection) => binding.tools(connection);
@@ -6717,7 +6747,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
       "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
-      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, inspect available connection methods with `await env.CONNECTIONS.methods()`, then call them through `connections.<alias>.<method>(input)` or `context.cloudflare.connections.<alias>.<method>(input)`. Do not look for connection credentials in `process.env`, shell environment variables, or `INT_*` variables unless the user explicitly asks for legacy env-var compatibility.",
+      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Do not look for connection credentials in `process.env`, shell environment variables, or `INT_*` variables unless the user explicitly asks for legacy env-var compatibility.",
       "",
       workspaceContext,
       "",
@@ -7436,8 +7466,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Run short JavaScript in the Worker-style code mode runtime. Use this for workspace connections and for small scripts that need to orchestrate multiple harness tools. " +
           "The final expression is returned automatically, and `console.log`/`console.warn`/`console.error` output is shown in the tool result. Use explicit `return` when a script has branches or loops. " +
           "Connection globals: `env.CONNECTIONS` is the virtual Worker binding, `connections` and `context.cloudflare.connections` are method facades, and `context.cloudflare.env.CONNECTIONS` is the same binding. " +
-          "To use a connection, first inspect `const methods = await env.CONNECTIONS.methods();`, choose an alias/method from that result, then call `await connections.<alias>.<method>({ ...input })`. " +
-          "For example: `const catalog = await env.CONNECTIONS.methods(); const entry = catalog.find((item) => item.connection.type === \"clickhouse\"); if (!entry) throw new Error(\"No ClickHouse connection\"); const method = entry.methods.find((item) => item.name === \"executeQuery\") ?? entry.methods[0]; if (!method) throw new Error(\"No callable methods\"); return await connections[entry.alias][method.name]({ query: \"SELECT 1 AS ok\" });`. " +
+          "To use a connection, prefer `const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" });`. `find` accepts an alias, id, type, name, or object such as `{ type: \"clickhouse\" }` and throws on missing/ambiguous matches. " +
+          "Use `await env.CONNECTIONS.methods()` when you need the full catalog; method entries include copyable `example` strings. Use `await env.CONNECTIONS.test(\"clickhouse\")` for a quick smoke test. " +
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Do not inspect `process.env`, shell environment variables, or `INT_*` variables for connection credentials; credentials are intentionally hidden behind the binding. " +
           "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +

@@ -10,6 +10,7 @@ type ConnectionMethodCatalogEntry = {
 		name: string;
 		tool: string;
 		description?: string;
+		example?: string;
 		inputSchema?: unknown;
 		outputSchema?: unknown;
 	}>;
@@ -20,11 +21,22 @@ type ConnectionMethodCatalogEntry = {
 	};
 };
 
+type ConnectionFindQuery =
+	| string
+	| {
+			id?: string;
+			alias?: string;
+			type?: string;
+			name?: string;
+	  };
+
 type ConnectionsBinding = {
 	list(): Promise<unknown[]>;
 	get(connection: string): Promise<unknown>;
 	tools(connection: string): Promise<unknown[]>;
 	methods(): Promise<ConnectionMethodCatalogEntry[]>;
+	find(query: ConnectionFindQuery): Promise<ConnectionMethodCatalogEntry>;
+	test(query: ConnectionFindQuery): Promise<unknown>;
 	__invoke<T = unknown>(request: {
 		connection: string;
 		method?: string;
@@ -46,6 +58,8 @@ type ConnectionsProxy = Record<string, ConnectionProxy> & {
 	 * Lists every connection plus callable method names and JSON schemas.
 	 */
 	$methods(): Promise<ConnectionMethodCatalogEntry[]>;
+	$find(query: ConnectionFindQuery): Promise<ConnectionMethodCatalogEntry>;
+	$test(query: ConnectionFindQuery): Promise<unknown>;
 	$list(): Promise<unknown[]>;
 	$get(connection: string): Promise<unknown>;
 	$tools(connection: string): Promise<unknown[]>;
@@ -99,6 +113,8 @@ export function createConnections(env: ConnectionsEnv): ConnectionsProxy {
 		get(_target, connectionName) {
 			if (connectionName === "then") return undefined;
 			if (connectionName === "$methods") return () => binding.methods();
+			if (connectionName === "$find") return (query: ConnectionFindQuery) => binding.find(query);
+			if (connectionName === "$test") return (query: ConnectionFindQuery) => binding.test(query);
 			if (connectionName === "$list") return () => binding.list();
 			if (connectionName === "$get") return (connection: string) => binding.get(connection);
 			if (connectionName === "$tools") return (connection: string) => binding.tools(connection);

@@ -712,20 +712,20 @@ On camelAI deploys, the platform rewrites this binding to the internal `Connecti
 
 ### Runtime API
 
-Use `CONNECTIONS.methods()` to inspect available connection aliases, method names, and input schemas. Use `createConnections()` from the starter template for method-style calls:
+Use `CONNECTIONS.find()` for the shortest path to one connection, or `CONNECTIONS.methods()` to inspect all available connection aliases, method names, input schemas, and copyable examples. Use `createConnections()` from the starter template for method-style calls:
 
 ```typescript
 import { createConnections } from "~/lib/connections";
 
 export async function action({ context }: Route.ActionArgs) {
-  const methods = await context.cloudflare.env.CONNECTIONS.methods();
+  const stripe = await context.cloudflare.env.CONNECTIONS.find("stripe");
   const connections = createConnections(context.cloudflare.env);
 
-  const customer = await connections.stripeProd.createCustomer({
+  const customer = await connections[stripe.alias].createCustomer({
     email: "customer@example.com",
   });
 
-  return { methods, customer };
+  return { customer };
 }
 ```
 
@@ -737,8 +737,10 @@ Available methods:
 | `get(connection)` | Resolve one connection by id, name, or type |
 | `tools(connection)` | List MCP-backed tools for a connection |
 | `methods()` | List available connection aliases and method schemas |
+| `find(query)` | Resolve one connection method catalog entry by alias, id, type, name, or `{ type }`; throws on missing or ambiguous matches |
+| `test(query)` | Run a quick smoke test; database-style connections run `SELECT 1 AS ok` |
 
-Prefer connection ids when a workspace may have multiple connections of the same type. Name/type lookup is convenient, but ambiguous matches throw and ask for an id.
+Prefer connection ids or aliases when a workspace may have multiple connections of the same type. Name/type lookup is convenient, but ambiguous matches throw and ask for an id or alias.
 
 When the connection or method name comes from user input, validate it against `CONNECTIONS.methods()` before calling the method facade:
 
@@ -774,22 +776,26 @@ Inside `js_exec`, these globals are available:
 
 Do not inspect `process.env`, shell environment variables, or `INT_*` variables to find connection credentials. Connection credentials are intentionally hidden behind the virtual binding. `INT_*` variables may exist for legacy compatibility, but they are not the default interface.
 
-First inspect the method catalog, then call a listed alias/method:
+Prefer `find()` and normalized methods for common workflows:
 
 ```javascript
-const methods = await env.CONNECTIONS.methods();
-const clickhouse = methods.find((entry) => entry.connection.type === "clickhouse");
-if (!clickhouse) throw new Error("No ClickHouse connection is configured");
-const executeQuery =
-  clickhouse.methods.find((method) => method.name === "executeQuery") ??
-  clickhouse.methods[0];
-if (!executeQuery) throw new Error("The ClickHouse connection exposes no callable methods");
-
-const result = await connections[clickhouse.alias][executeQuery.name]({
+const clickhouse = await env.CONNECTIONS.find("clickhouse");
+const result = await connections[clickhouse.alias].query({
   query: "SELECT 1 AS ok",
 });
 
-return { methodCatalog: methods, result };
+return result;
+```
+
+Use the full method catalog when you need to inspect schemas or examples:
+
+```javascript
+const catalog = await env.CONNECTIONS.methods();
+return catalog.map((entry) => ({
+  alias: entry.alias,
+  type: entry.connection.type,
+  examples: entry.methods.map((method) => method.example),
+}));
 ```
 
 Global facade access also works:
@@ -803,9 +809,7 @@ Custom connections with type `other` expose a generic authenticated HTTP method 
 in environment variables:
 
 ```javascript
-const methods = await env.CONNECTIONS.methods();
-const custom = methods.find((entry) => entry.connection.type === "other");
-if (!custom) throw new Error("No custom API connection is configured");
+const custom = await env.CONNECTIONS.find({ type: "other" });
 
 const response = await connections[custom.alias].fetch("/v1/items?limit=10", {
   method: "GET",
