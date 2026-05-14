@@ -87,7 +87,7 @@ interface TeamTableProps {
   invitations: TeamInvitation[]
   workspaces: Workspace[]
   requiresTeamUpgrade?: boolean
-  currentPlan?: "free" | "starter" | "pro" | "team" | "enterprise"
+  currentPlan?: "free" | "payg" | "starter" | "pro" | "team" | "enterprise"
   trialAvailable?: boolean
   stripeConfigured?: boolean
   legacyMigration?: LegacyMigrationDialogData | null

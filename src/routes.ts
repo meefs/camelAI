@@ -141,6 +141,7 @@ export default [
   route("api/auth/switch-workspace", "routes/api/auth.switch-workspace.ts"),
   route("api/onboarding/complete", "routes/api/onboarding.complete.ts"),
   route("api/billing/start-trial", "routes/api/billing.start-trial.ts"),
+  route("api/billing/start-payg", "routes/api/billing.start-payg.ts"),
   route(
     "api/billing/legacy-migration",
     "routes/api/billing.legacy-migration.ts",

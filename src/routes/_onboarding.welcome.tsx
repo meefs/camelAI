@@ -220,6 +220,8 @@ export default function OnboardingWelcomeRoute() {
   }>();
   const checkoutFetcher = useFetcher<{
     checkoutUrl?: string;
+    redirectTo?: string;
+    success?: boolean;
     error?: string;
   }>();
   const providerFetcher = useFetcher<{
@@ -258,6 +260,8 @@ export default function OnboardingWelcomeRoute() {
   );
   const pendingCheckoutPlan = isTrialPlan(pendingCheckoutPlanValue)
     ? pendingCheckoutPlanValue
+    : pendingCheckoutPlanValue === "payg"
+      ? "payg"
     : null;
   const providerError =
     showProviderError && providerFetcher.state === "idle"
@@ -278,13 +282,13 @@ export default function OnboardingWelcomeRoute() {
     : null;
 
   useEffect(() => {
-    if (
-      checkoutFetcher.state !== "idle" ||
-      !checkoutFetcher.data?.checkoutUrl
-    ) {
+    if (checkoutFetcher.state !== "idle") {
       return;
     }
-    window.location.assign(checkoutFetcher.data.checkoutUrl);
+    const nextUrl =
+      checkoutFetcher.data?.checkoutUrl ?? checkoutFetcher.data?.redirectTo;
+    if (!nextUrl) return;
+    window.location.assign(nextUrl);
   }, [checkoutFetcher.data, checkoutFetcher.state]);
 
   useEffect(() => {
@@ -482,10 +486,10 @@ export default function OnboardingWelcomeRoute() {
                 subtitle: context.legacyMigration?.eligible
                   ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
                   : byokProviderLabel
-                    ? `Your ${byokProviderLabel} API key is connected. Continue on Free, or start a paid plan for hosted credits.`
+                    ? `Your ${byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
                     : trialAvailable
-                      ? "Start a free trial with model credits, or use your own API key."
-                      : "Choose a plan, or use your own API key.",
+                      ? "Start a free trial, use prepaid hosted credits, or bring your own API key."
+                      : "Choose a plan, use prepaid hosted credits, or bring your own API key.",
               }}
               trialAvailable={trialAvailable}
               byokProviderLabel={byokProviderLabel}
@@ -535,6 +539,19 @@ export default function OnboardingWelcomeRoute() {
                   checkoutFetcher.submit(
                     { intent: "startTrial", plan: cta.plan },
                     { method: "post" },
+                  );
+                  return;
+                }
+                if (cta.kind === "payg") {
+                  if (isStartingCheckout) {
+                    return;
+                  }
+                  checkoutFetcher.submit(
+                    { plan: "payg" },
+                    {
+                      method: "post",
+                      action: "/api/billing/start-payg",
+                    },
                   );
                   return;
                 }

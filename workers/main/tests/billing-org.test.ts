@@ -56,28 +56,85 @@ describe("OrgDO billing grant idempotency", () => {
     };
   }
 
-  it("marks trial subscriptions canceled at period end as canceled and withholds trial credits", async () => {
+  function pausedStarterSubscription(orgId: string): StripeSubscription {
+    return {
+      id: `sub_${crypto.randomUUID()}`,
+      status: "paused",
+      customer: "cus_test",
+      cancel_at_period_end: false,
+      metadata: {
+        org_id: orgId,
+        billing_plan: "starter",
+        seat_count: "1",
+        subscription_included_credit_cents: "1000",
+      },
+      items: {
+        data: [
+          {
+            id: "si_starter_test",
+            quantity: 1,
+            price: {
+              id: "price_starter_test",
+              unit_amount: 4000,
+              currency: "usd",
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  it("moves canceled trial subscriptions to Pay as you go and preserves resumable Stripe linkage", async () => {
     const { userId: ownerId } = await createUser(
       testEnv,
       testEmail(),
       "password",
       "Owner",
     );
-    const { org } = await createOrg(testEnv, "Canceled Trial Org", ownerId);
+    const { org } = await createOrg(testEnv, "Canceled Trial Org", ownerId, {
+      billingPlan: "payg",
+    });
 
+    const subscription = trialingStarterSubscription(org.id, true);
     const synced = await syncOrgSubscriptionFromStripe(
       stripeBillingEnv(),
-      trialingStarterSubscription(org.id, true),
+      subscription,
     );
 
-    expect(synced?.billing_status).toBe("canceled");
+    expect(synced?.billing_status).toBe("inactive");
+    expect(synced?.billing_plan).toBe("payg");
+    expect(synced?.billing_subscription_id).toBe(subscription.id);
     expect(synced?.billing_subscription_status).toBe("trialing");
     expect(synced?.billing_credit_grant_total_cents).toBe(0);
     expect(synced?.billing_trial_credit_grant_cents).toBe(0);
     expect(synced?.billing_trial_credit_granted_at).toBeNull();
 
     const snapshot = await getBillingAccessSnapshot(stripeBillingEnv(), org.id);
-    expect(snapshot?.billing_status).toBe("canceled");
+    expect(snapshot?.billing_status).toBe("inactive");
+    expect(snapshot?.billing_plan).toBe("payg");
+  });
+
+  it("preserves paused Stripe subscriptions instead of converting them to Pay as you go", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Paused Subscription Org", ownerId, {
+      billingPlan: "payg",
+    });
+    const subscription = pausedStarterSubscription(org.id);
+
+    const synced = await syncOrgSubscriptionFromStripe(
+      stripeBillingEnv(),
+      subscription,
+    );
+
+    expect(synced?.billing_status).toBe("inactive");
+    expect(synced?.billing_plan).toBe("starter");
+    expect(synced?.billing_subscription_id).toBe(subscription.id);
+    expect(synced?.billing_subscription_status).toBe("paused");
   });
 
   it("continues granting first-trial credits when the Stripe trial is not canceling", async () => {
@@ -87,7 +144,9 @@ describe("OrgDO billing grant idempotency", () => {
       "password",
       "Owner",
     );
-    const { org } = await createOrg(testEnv, "Active Trial Org", ownerId);
+    const { org } = await createOrg(testEnv, "Active Trial Org", ownerId, {
+      billingPlan: "payg",
+    });
 
     const synced = await syncOrgSubscriptionFromStripe(
       stripeBillingEnv(),
@@ -110,7 +169,9 @@ describe("OrgDO billing grant idempotency", () => {
       "password",
       "Owner",
     );
-    const { org } = await createOrg(testEnv, "Trial Grant Org", ownerId);
+    const { org } = await createOrg(testEnv, "Trial Grant Org", ownerId, {
+      billingPlan: "payg",
+    });
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
     const trialStart = Date.now();
     const trialEnd = trialStart + 7 * 24 * 60 * 60 * 1000;
@@ -162,7 +223,9 @@ describe("OrgDO billing grant idempotency", () => {
       "password",
       "Owner",
     );
-    const { org } = await createOrg(testEnv, "Prior Trial Org", ownerId);
+    const { org } = await createOrg(testEnv, "Prior Trial Org", ownerId, {
+      billingPlan: "payg",
+    });
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
     const priorTrialStart = Date.now() - 14 * 24 * 60 * 60 * 1000;
     const trialStart = Date.now();

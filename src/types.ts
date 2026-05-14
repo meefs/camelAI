@@ -250,7 +250,13 @@ export type BillingStatus =
   | "enterprise"
   | "past_due"
   | "canceled";
-export type BillingPlan = "free" | "starter" | "pro" | "team" | "enterprise";
+export type BillingPlan =
+  | "free"
+  | "payg"
+  | "starter"
+  | "pro"
+  | "team"
+  | "enterprise";
 
 export interface Avatar {
   color: string;

@@ -7465,22 +7465,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const status = org.billing_status ?? "inactive";
+    const plan = org.billing_plan ?? "payg";
     if (status === "enterprise") {
       return false;
     }
+    const isPayAsYouGo = plan === "payg";
     if (status === "past_due") {
       throw new Error(
-        "Your subscription is past due. Update payment details in Settings -> Billing or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
+        "Your subscription is past due. Update payment details, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
       );
     }
     if (status === "canceled") {
       throw new Error(
-        "Your subscription was canceled. Start a new subscription in Settings -> Billing or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
+        "Your subscription was canceled. Start a new subscription, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue. Your workspace is saved.",
       );
     }
-    if (status !== "trialing" && status !== "active") {
+    if (!isPayAsYouGo && status !== "trialing" && status !== "active") {
       throw new Error(
-        "Hosted models require billing access. Start a subscription or add your own API key in Settings -> AI Provider. Your workspace is saved.",
+        "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider. Your workspace is saved.",
       );
     }
 

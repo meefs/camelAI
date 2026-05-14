@@ -69,6 +69,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : baseOrg;
   const billingAccessReady = Boolean(
     llmProviderConfig ||
+    currentOrg.billing_plan === "payg" ||
     currentOrg.billing_status === "trialing" ||
     currentOrg.billing_status === "active" ||
     currentOrg.billing_status === "enterprise",

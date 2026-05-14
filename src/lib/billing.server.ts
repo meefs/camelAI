@@ -25,6 +25,15 @@ const LEGACY_MIGRATION_META_INCLUDED_CREDIT_CENTS = "v2_mig_credits";
 const LEGACY_MIGRATION_META_SOURCE_PRICE_ID = "v2_mig_price";
 export const DEFAULT_TRIAL_CREDIT_CENTS = 1000;
 export const DEFAULT_SUBSCRIPTION_INCLUDED_CREDIT_CENTS = 1000;
+const NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
+  "canceled",
+  "incomplete_expired",
+]);
+
+type SubscriptionBillingPlan = Exclude<
+  BillingPlan,
+  "free" | "payg" | "enterprise"
+>;
 
 export interface StripeBillingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
@@ -77,11 +86,11 @@ export interface LegacyStripeMigrationEligibility {
   eligible: boolean;
   customerId: string | null;
   activeLegacySubscriptionCount: number;
-  defaultPlan: Exclude<BillingPlan, "free" | "enterprise">;
+  defaultPlan: SubscriptionBillingPlan;
 }
 
 export interface LegacyStripeMigrationPreview {
-  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  plan: SubscriptionBillingPlan;
   seatCount: number;
   currency: string;
   monthlyPriceCents: number | null;
@@ -463,6 +472,15 @@ function mapStripeSubscriptionBillingStatus(
   return status;
 }
 
+function isTerminalStripeSubscriptionStatus(
+  status: string | null | undefined,
+): boolean {
+  return (
+    status === "canceled" ||
+    NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES.has(status ?? "")
+  );
+}
+
 function stripeAuthHeaders(secretKey: string): Headers {
   return new Headers({
     Authorization: `Bearer ${secretKey}`,
@@ -737,7 +755,7 @@ function getLegacyMigrationCandidateForEmail(
 
 function getDefaultLegacyMigrationPlan(
   candidate: LegacyStripeMigrationCandidate | null,
-): Exclude<BillingPlan, "free" | "enterprise"> {
+): SubscriptionBillingPlan {
   if (
     candidate?.legacyPriceIds.some((priceId) =>
       LEGACY_TEAM_PRICE_IDS.has(priceId),
@@ -888,8 +906,12 @@ export function getConfiguredSubscriptionPlans(
     | "STRIPE_PRO_PRICE_ID"
     | "STRIPE_TEAM_PRICE_ID"
   >,
-): Array<{ plan: BillingPlan; priceId: string; limits: BillingPlanLimits }> {
-  return (["starter", "pro", "team"] as BillingPlan[])
+): Array<{
+  plan: SubscriptionBillingPlan;
+  priceId: string;
+  limits: BillingPlanLimits;
+}> {
+  return (["starter", "pro", "team"] as SubscriptionBillingPlan[])
     .map((plan) => {
       const priceId = getConfiguredSubscriptionPriceId(env, plan);
       return priceId
@@ -900,7 +922,7 @@ export function getConfiguredSubscriptionPlans(
       (
         plan,
       ): plan is {
-        plan: BillingPlan;
+        plan: SubscriptionBillingPlan;
         priceId: string;
         limits: BillingPlanLimits;
       } => Boolean(plan),
@@ -1361,7 +1383,7 @@ export async function createSubscriptionCheckoutSession(args: {
     throw new Error("Enterprise orgs are billed outside Stripe Checkout");
   }
   const plan = normalizeBillingPlan(args.plan, latestOrg.billing_status);
-  if (plan === "free" || plan === "enterprise") {
+  if (plan === "free" || plan === "payg" || plan === "enterprise") {
     throw new Error("This plan cannot be started through Stripe Checkout");
   }
   const priceId = getConfiguredSubscriptionPriceId(env, plan);
@@ -1477,7 +1499,26 @@ export async function createCreditsCheckoutSession(args: {
     throw new Error("Stripe credit pack is not allowed");
   }
 
-  const customerId = await ensureStripeCustomerForOrg(env, org, customerEmail);
+  const latestOrg = await getLatestOrgInfo(env, org);
+  const latestPlan = normalizeBillingPlan(
+    latestOrg.billing_plan,
+    latestOrg.billing_status,
+  );
+  const canBuyCredits =
+    latestPlan === "payg" ||
+    latestOrg.billing_status === "trialing" ||
+    (latestOrg.billing_status === "active" && latestPlan !== "free");
+  if (!canBuyCredits) {
+    throw new Error(
+      "Choose Pay as you go or an active subscription before buying credits.",
+    );
+  }
+
+  const customerId = await ensureStripeCustomerForOrg(
+    env,
+    latestOrg,
+    customerEmail,
+  );
   const body = new URLSearchParams();
   body.set("mode", "payment");
   body.set("customer", customerId);
@@ -1505,6 +1546,41 @@ export async function createCreditsCheckoutSession(args: {
   }
 
   return session.url;
+}
+
+export async function activatePayAsYouGoPlan(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+}): Promise<Organization> {
+  const { env, org } = args;
+  const latestOrg = await getLatestOrgInfo(env, org);
+  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+    throw new Error("Enterprise orgs are billed outside Pay as you go.");
+  }
+  const subscriptionStatus = latestOrg.billing_subscription_status?.trim();
+  const hasRecoverableSubscription =
+    latestOrg.billing_subscription_id?.trim() &&
+    (!subscriptionStatus ||
+      !NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES.has(subscriptionStatus));
+  if (hasRecoverableSubscription) {
+    throw new Error(
+      "Cancel the current subscription before switching to Pay as you go.",
+    );
+  }
+
+  const updated = await getOrgStub(env, latestOrg.id).updateBillingState({
+    billing_status: "inactive",
+    billing_plan: "payg",
+    billing_seat_count: 1,
+    billing_subscription_id: null,
+    billing_subscription_status: null,
+    billing_trial_started_at: latestOrg.billing_trial_started_at ?? null,
+    billing_trial_ends_at: latestOrg.billing_trial_ends_at ?? null,
+  });
+  if (!updated) {
+    throw new Error("Organization not found");
+  }
+  return updated;
 }
 
 export async function createBillingPortalSession(args: {
@@ -1613,7 +1689,7 @@ export async function createSubscriptionUpdatePortalSession(args: {
   org: Organization;
   customerEmail: string | null | undefined;
   returnUrl: string;
-  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  plan: SubscriptionBillingPlan;
   seatCount?: number | null;
 }): Promise<string> {
   const { env, org, returnUrl, plan } = args;
@@ -1673,7 +1749,9 @@ export async function createSubscriptionUpdatePortalSession(args: {
   } else {
     const currentPlan = getOrgBillingPlan(latestOrg);
     const currentPriceId =
-      currentPlan === "free" || currentPlan === "enterprise"
+      currentPlan === "free" ||
+      currentPlan === "payg" ||
+      currentPlan === "enterprise"
         ? null
         : getConfiguredSubscriptionPriceId(env, currentPlan);
     const item = getStripeSubscriptionItemForPlanChange(
@@ -1722,7 +1800,7 @@ export async function createSubscriptionUpdatePortalSession(args: {
 export async function updateTrialingStripeSubscriptionPlan(args: {
   env: StripeBillingEnv;
   org: Organization;
-  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  plan: SubscriptionBillingPlan;
   seatCount?: number | null;
 }): Promise<Organization> {
   const { env, org, plan } = args;
@@ -1769,7 +1847,9 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
   );
   const currentPlan = getOrgBillingPlan(latestOrg);
   const currentPriceId =
-    currentPlan === "free" || currentPlan === "enterprise"
+    currentPlan === "free" ||
+    currentPlan === "payg" ||
+    currentPlan === "enterprise"
       ? null
       : getConfiguredSubscriptionPriceId(env, currentPlan);
   const item = getStripeSubscriptionItemForPlanChange(
@@ -1930,7 +2010,7 @@ interface PreparedLegacyStripeMigration {
   latestOrg: Organization;
   candidate: LegacyStripeMigrationCandidate;
   selection: LegacySubscriptionSelection;
-  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  plan: SubscriptionBillingPlan;
   priceId: string;
   seatCount: number;
   includedCreditCents: number;
@@ -1956,7 +2036,7 @@ async function prepareLegacyStripeMigration(args: {
     );
   }
   const plan = normalizeBillingPlan(args.plan, org.billing_status);
-  if (plan === "free" || plan === "enterprise") {
+  if (plan === "free" || plan === "payg" || plan === "enterprise") {
     throw new Error("Choose Starter, Pro, or Team for migration.");
   }
 
@@ -2017,7 +2097,7 @@ async function prepareLegacyStripeMigration(args: {
 }
 
 function getPlanMonthlyPriceCents(
-  plan: Exclude<BillingPlan, "free" | "enterprise">,
+  plan: SubscriptionBillingPlan,
   seatCount: number,
 ): number | null {
   const monthlyPriceCents = BILLING_PLAN_LIMITS[plan].monthlyPriceCents;
@@ -2037,7 +2117,7 @@ async function createLegacyStripeMigrationPreview(args: {
   env: StripeBillingEnv;
   selection: LegacySubscriptionSelection;
   candidate: LegacyStripeMigrationCandidate;
-  plan: Exclude<BillingPlan, "free" | "enterprise">;
+  plan: SubscriptionBillingPlan;
   priceId: string;
   seatCount: number;
   includedCreditCents: number;
@@ -2364,7 +2444,7 @@ async function bestEffortSyncStripeSubscriptionBillingMetadata(args: {
   seatCount: number;
 }): Promise<void> {
   const { env, subscription, orgId, plan, seatCount } = args;
-  if (plan === "free" || plan === "enterprise") return;
+  if (plan === "free" || plan === "payg" || plan === "enterprise") return;
 
   const includedCreditCents = getSubscriptionIncludedCreditCentsForPlan(
     env,
@@ -2430,7 +2510,13 @@ function getPendingLegacyMigrationCustomerMetadata(
     metadata?.[LEGACY_MIGRATION_META_TARGET_PLAN] ||
       metadata?.pending_legacy_migration_target_plan,
   );
-  if (targetPlan === "free" || targetPlan === "enterprise") return null;
+  if (
+    targetPlan === "free" ||
+    targetPlan === "payg" ||
+    targetPlan === "enterprise"
+  ) {
+    return null;
+  }
   return {
     orgId,
     subscriptionId,
@@ -2522,11 +2608,22 @@ export async function syncOrgSubscriptionFromStripe(
   if (!existing) return null;
 
   const nextStatus = mapStripeSubscriptionBillingStatus(subscription);
+  const shouldClearStripeSubscription = isTerminalStripeSubscriptionStatus(
+    subscription.status,
+  );
+  const shouldUsePayAsYouGoPlan =
+    shouldClearStripeSubscription || nextStatus === "canceled";
   const nextBillingStatus =
-    existing.billing_status === "enterprise" ? "enterprise" : nextStatus;
+    existing.billing_status === "enterprise"
+      ? "enterprise"
+      : shouldUsePayAsYouGoPlan
+        ? "inactive"
+        : nextStatus;
   const nextPlan =
     existing.billing_status === "enterprise"
       ? "enterprise"
+      : shouldUsePayAsYouGoPlan
+        ? "payg"
       : (itemPlan?.plan ??
         getMetadataBillingPlan(subscription.metadata, nextStatus));
   const subscriptionSeatQuantity =
@@ -2561,8 +2658,10 @@ export async function syncOrgSubscriptionFromStripe(
       billing_plan: nextPlan,
       billing_seat_count: seatCount,
       billing_customer_id: customerId,
-      billing_subscription_id: subscription.id,
-      billing_subscription_status: subscription.status ?? null,
+      billing_subscription_id:
+        shouldClearStripeSubscription ? null : subscription.id,
+      billing_subscription_status:
+        shouldClearStripeSubscription ? null : (subscription.status ?? null),
       billing_trial_started_at: subscription.trial_start
         ? subscription.trial_start * 1000
         : null,
@@ -2662,7 +2761,7 @@ function getInvoiceLineItemSeatQuantity(
   invoice: StripeInvoice,
   plan: BillingPlan,
 ): number | null {
-  if (plan === "free" || plan === "enterprise") return null;
+  if (plan === "free" || plan === "payg" || plan === "enterprise") return null;
   const priceId = getConfiguredSubscriptionPriceId(env, plan);
   const lines = invoice.lines?.data ?? [];
   const matchingLine = priceId

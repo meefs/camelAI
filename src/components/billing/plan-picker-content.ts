@@ -1,7 +1,12 @@
 import { BILLING_PLAN_LIMITS } from "@/lib/billing-plans";
 import type { BillingPlan } from "@/types";
 
-export type PlanPickerCtaKind = "byok" | "trial" | "contact" | "downgrade";
+export type PlanPickerCtaKind =
+  | "byok"
+  | "payg"
+  | "trial"
+  | "contact"
+  | "downgrade";
 
 export interface PlanContent {
   tagline: string;
@@ -20,6 +25,18 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
       "1 workspace",
       "3 deployed apps",
       "5 GB storage",
+      "2 cron jobs (daily)",
+    ],
+  },
+  payg: {
+    tagline: "For a trial run, bring your own LLM provider",
+    ctaLabel: "Continue",
+    ctaKind: "payg",
+    features: [
+      "Buy credits before usage",
+      "No monthly subscription",
+      "1 workspace",
+      "3 deployed apps",
       "2 cron jobs (daily)",
     ],
   },
@@ -88,9 +105,16 @@ export function formatPlanPrice(plan: BillingPlan): {
   if (plan === "free") {
     return { amount, suffix: "/mo", subtitle: null };
   }
+  if (plan === "payg") {
+    return { amount, suffix: "/mo", subtitle: "prepaid credits" };
+  }
   const suffix = plan === "team" ? "/seat/mo" : "/mo";
   return { amount, suffix, subtitle: "+ usage after credits" };
 }
 
-export const INDIVIDUAL_PLANS: BillingPlan[] = ["free", "starter", "pro"];
+export const INDIVIDUAL_PLANS: BillingPlan[] = [
+  "payg",
+  "starter",
+  "pro",
+];
 export const TEAM_PLANS: BillingPlan[] = ["team", "enterprise"];

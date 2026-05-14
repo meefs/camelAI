@@ -355,7 +355,9 @@ describe('Billing status from OrgDO', () => {
   it('returns actual billing_status from org data (not hardcoded)', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
-    const { org } = await createBaseOrg(testEnv, 'Billing Test Org', ownerId);
+    const { org } = await createBaseOrg(testEnv, 'Billing Test Org', ownerId, {
+      billingPlan: 'payg',
+    });
 
     // getOrg should return the billing_status field (defaults to 'inactive')
     const orgInfo = await getOrg(testEnv, org.id);

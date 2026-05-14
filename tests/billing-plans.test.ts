@@ -4,6 +4,7 @@ import {
   BILLING_PLAN_LIMITS,
   getBillableTeamInviteSeatChange,
   getBillableTeamInviteSeatChangeForCount,
+  normalizeBillingPlan,
 } from "@/lib/billing-plans";
 
 const teamOrg = (seatCount: number) => ({
@@ -113,5 +114,16 @@ describe("getBillableTeamInviteSeatChange", () => {
         3,
       ),
     ).toBeNull();
+  });
+});
+
+describe("normalizeBillingPlan", () => {
+  it("uses Pay as you go as the default non-subscription plan", () => {
+    expect(normalizeBillingPlan(undefined, "inactive")).toBe("payg");
+    expect(normalizeBillingPlan("free", "inactive")).toBe("payg");
+  });
+
+  it("preserves explicit subscription plans for stale top-level statuses", () => {
+    expect(normalizeBillingPlan("team", "inactive")).toBe("team");
   });
 });

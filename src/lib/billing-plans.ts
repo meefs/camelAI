@@ -2,6 +2,7 @@ import type { BillingPlan, BillingStatus, Organization } from "@/types";
 
 export const BILLING_PLANS = [
   "free",
+  "payg",
   "starter",
   "pro",
   "team",
@@ -46,6 +47,23 @@ export const BILLING_PLAN_LIMITS: Record<BillingPlan, BillingPlanLimits> = {
     maxCronJobsPerUser: null,
     minCronIntervalMs: DAY_MS,
     byokOnly: true,
+    emailInbox: false,
+  },
+  payg: {
+    plan: "payg",
+    label: "Pay as you go",
+    monthlyPriceCents: 0,
+    minimumSeats: 1,
+    includedWorkspaceCount: 1,
+    storageGbPerWorkspace: 5,
+    includedCreditCentsPerSeat: 0,
+    includedCreditCentsBase: 0,
+    maxDeployedAppsPerWorkspace: 3,
+    maxCustomDomains: 0,
+    maxCronJobsPerWorkspace: 2,
+    maxCronJobsPerUser: null,
+    minCronIntervalMs: DAY_MS,
+    byokOnly: false,
     emailInbox: false,
   },
   starter: {
@@ -129,11 +147,12 @@ export function normalizeBillingPlan(
   status?: BillingStatus | null,
 ): BillingPlan {
   if (status === "enterprise" || plan === "enterprise") return "enterprise";
+  if (plan === "free") return "payg";
   if (isBillingPlan(plan)) return plan;
   if (status === "trialing" || status === "active" || status === "past_due") {
     return "starter";
   }
-  return "free";
+  return "payg";
 }
 
 export function getBillingPlanLimits(

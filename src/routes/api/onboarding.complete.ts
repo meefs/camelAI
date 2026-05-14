@@ -105,6 +105,7 @@ function hasPaidBillingAccess(org: Organization | null | undefined): boolean {
   return (
     org?.billing_status === 'trialing' ||
     org?.billing_status === 'active' ||
+    org?.billing_plan === 'payg' ||
     org?.billing_status === 'enterprise'
   );
 }

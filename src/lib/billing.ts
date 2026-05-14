@@ -36,7 +36,7 @@ export function billingStatusLabel(
       return "Canceled";
     case "inactive":
     default:
-      return "Free";
+      return "Pay as you go";
   }
 }
 
@@ -106,6 +106,6 @@ export function getBillingStatusDescription(
       return "Your subscription was canceled.";
     case "inactive":
     default:
-      return "Free access supports bring-your-own-key LLM use only.";
+      return "Pay as you go uses prepaid credits or your own API key.";
   }
 }

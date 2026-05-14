@@ -11,6 +11,7 @@ import type { Route } from "./+types/_app.settings.organization.billing";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
+  activatePayAsYouGoPlan,
   createBillingPortalSession,
   createLegacyStripeMigrationPortalSession,
   createSubscriptionUpdatePortalSession,
@@ -64,6 +65,7 @@ const EXISTING_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "past_due",
   "unpaid",
   "incomplete",
+  "paused",
 ]);
 
 const PORTAL_UPDATABLE_STRIPE_SUBSCRIPTION_STATUSES = new Set([
@@ -132,6 +134,8 @@ function planSubtitle(plan: BillingPlan): string {
   switch (plan) {
     case "free":
       return "Bring your own API key. No included credits.";
+    case "payg":
+      return "No subscription. Buy credits before hosted usage.";
     case "starter":
       return "$10/month in hosted credits.";
     case "pro":
@@ -236,6 +240,36 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
       if (rawPlan === "enterprise") {
         return { error: "Contact sales to set up Enterprise." };
+      }
+
+      if (rawPlan === "payg") {
+        if (hasRecoverableStripeSubscription(billingOrg)) {
+          return {
+            error:
+              "Cancel the current subscription before switching to Pay as you go.",
+          };
+        }
+        try {
+          await activatePayAsYouGoPlan({
+            env,
+            org: billingOrg,
+          });
+          return {
+            planChanged: true,
+            redirectTo: "/settings/organization/usage?action=topup",
+          };
+        } catch (error) {
+          console.error("[billing] failed to activate pay as you go", {
+            orgId: billingOrg.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return {
+            error:
+              error instanceof Error
+                ? error.message
+                : "We couldn't activate Pay as you go. Please try again in a moment.",
+          };
+        }
       }
 
       const legacyMigration = getLegacyStripeMigrationEligibility({
@@ -446,17 +480,17 @@ export async function action({ request, context }: Route.ActionArgs) {
           billingOrg.billing_plan,
           billingOrg.billing_status,
         );
-        if (currentPlan !== "free" || billingOrg.billing_subscription_id) {
+        if (currentPlan !== "payg" || billingOrg.billing_subscription_id) {
           await orgStub.updateBillingState({
             billing_status: "inactive",
-            billing_plan: "free",
+            billing_plan: "payg",
             billing_seat_count: 1,
             billing_subscription_id: null,
             billing_subscription_status: null,
           });
           return { planChanged: true };
         }
-        return { error: "You are already on the Free plan." };
+        return { error: "You are already on Pay as you go." };
       }
 
       try {
@@ -735,6 +769,7 @@ function ManagePlanView({
   const fetcher = useFetcher<{
     checkoutUrl?: string;
     billingPortalUrl?: string;
+    redirectTo?: string;
     legacyMigrationPreview?: LegacyMigrationConfirmation["preview"];
     planChanged?: boolean;
     success?: boolean;
@@ -769,6 +804,13 @@ function ManagePlanView({
       );
       return;
     }
+    if (cta.kind === "payg") {
+      fetcher.submit(
+        { intent: "changePlan", plan: cta.plan },
+        { method: "post" },
+      );
+      return;
+    }
     fetcher.submit(
       { intent: "changePlan", plan: cta.plan },
       { method: "post" },
@@ -777,7 +819,10 @@ function ManagePlanView({
 
   useEffect(() => {
     if (fetcher.state !== "idle") return;
-    const nextUrl = fetcher.data?.checkoutUrl ?? fetcher.data?.billingPortalUrl;
+    const nextUrl =
+      fetcher.data?.checkoutUrl ??
+      fetcher.data?.billingPortalUrl ??
+      fetcher.data?.redirectTo;
     if (
       fetcher.data?.billingPortalUrl &&
       Object.prototype.hasOwnProperty.call(
@@ -796,7 +841,9 @@ function ManagePlanView({
       return;
     }
     if (fetcher.data?.planChanged) {
-      window.location.assign("/settings/organization/billing");
+      window.location.assign(
+        fetcher.data.redirectTo ?? "/settings/organization/billing",
+      );
       return;
     }
     if (fetcher.data?.success) {

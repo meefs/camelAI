@@ -20,6 +20,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (
     !isBillingPlan(rawPlan) ||
     rawPlan === "free" ||
+    rawPlan === "payg" ||
     rawPlan === "enterprise"
   ) {
     return Response.json(

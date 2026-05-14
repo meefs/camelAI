@@ -13,6 +13,7 @@ import {
 
 export type PlanPickerCta =
   | { kind: "byok" }
+  | { kind: "payg"; plan: "payg" }
   | { kind: "trial"; plan: "starter" | "pro" | "team" }
   | { kind: "migrate"; plan: "starter" | "pro" | "team" }
   | { kind: "contact" }
@@ -42,10 +43,11 @@ const LEGACY_FOOTER_COPY =
 
 const PLAN_RANK: Record<BillingPlan, number> = {
   free: 0,
-  starter: 1,
-  pro: 2,
-  team: 3,
-  enterprise: 4,
+  payg: 1,
+  starter: 2,
+  pro: 3,
+  team: 4,
+  enterprise: 5,
 };
 
 function isMigratePlan(plan: BillingPlan): plan is "starter" | "pro" | "team" {
@@ -83,6 +85,7 @@ function ctaForPlan(
   }
   const ctaKind = PLAN_CONTENT[plan].ctaKind;
   if (ctaKind === "byok") return { kind: "byok" };
+  if (ctaKind === "payg") return { kind: "payg", plan: "payg" };
   if (ctaKind === "contact") return { kind: "contact" };
   if (ctaKind === "trial") {
     if (isMigratePlan(plan)) {
@@ -127,7 +130,9 @@ export function PlanPicker({
     <div
       className={cn(
         "grid gap-4",
-        plans.length === 3
+        plans.length === 4
+          ? "grid-cols-1 md:grid-cols-2 xl:grid-cols-4"
+          : plans.length === 3
           ? "grid-cols-1 md:grid-cols-3"
           : "mx-auto max-w-2xl grid-cols-1 md:grid-cols-2",
       )}
@@ -136,7 +141,9 @@ export function PlanPicker({
         const state = resolveCardState(plan, highlight, currentPlan);
         const cta = ctaForPlan(plan, state, legacyMode);
         const disabled =
-          (cta.kind === "trial" || cta.kind === "migrate") &&
+          (cta.kind === "trial" ||
+            cta.kind === "migrate" ||
+            cta.kind === "payg") &&
           (isDisabled || (pendingPlan !== null && pendingPlan !== plan));
         return (
           <PlanPickerCard
@@ -209,23 +216,11 @@ export function PlanPicker({
 
       {showFooter ? (
         <div className="space-y-4">
-          <div className="rounded-xl bg-muted/40 px-5 py-4">
-            <p className="text-base font-semibold text-foreground">
-              {byokProviderLabel
-                ? `${byokProviderLabel} API key connected`
-                : "Use Claude, Codex, OpenRouter, or your own API key"}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {byokProviderLabel
-                ? "Stay on Free using your own key, or start a paid plan to use hosted credits through camelAI."
-                : "Top up credits to use any model through us at cost, no markup. Or bring your own API key anytime."}
-            </p>
-          </div>
           <p className="text-center text-sm text-muted-foreground">
             {legacyMode
               ? LEGACY_FOOTER_COPY
               : trialAvailable
-                ? "All paid plans include one 7-day free trial per org."
+                ? "Subscription plans include one 7-day free trial per org."
                 : "Your free trial has already been used for this org."}
           </p>
         </div>

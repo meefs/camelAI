@@ -66,7 +66,9 @@ export function PlanPickerCard({
       : pending
         ? isPaidLegacyCta
           ? "Switching…"
-          : "Opening Stripe…"
+          : ctaKind === "payg"
+            ? "Setting up…"
+            : "Opening Stripe…"
         : isPaidLegacyCta
           ? `Switch to ${limits.label}`
           : ctaKind === "trial" && !trialAvailable
@@ -108,7 +110,7 @@ export function PlanPickerCard({
           </CardTitle>
         </CardHeader>
 
-        <CardContent className="space-y-1">
+        <CardContent className="min-h-[6.75rem] space-y-1">
           <div className="flex items-baseline justify-start gap-1">
             <span className="font-[family-name:var(--font-display)] text-4xl font-normal text-foreground">
               {price.amount}

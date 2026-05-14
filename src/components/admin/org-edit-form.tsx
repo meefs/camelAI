@@ -26,8 +26,8 @@ const BILLING_STATUS_OPTIONS: Array<{
 }> = [
   {
     value: 'inactive',
-    label: 'No plan',
-    description: 'Requires a subscription before hosted usage can start.',
+    label: 'Pay as you go',
+    description: 'Requires prepaid credits for hosted usage.',
   },
   {
     value: 'trialing',

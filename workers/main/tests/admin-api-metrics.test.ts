@@ -1368,7 +1368,7 @@ describe('admin API metrics routes', () => {
           creator_email: expect.stringMatching(/@example\.com$/),
           member_count: 1,
           workspace_count: 1,
-          billing_status: 'free',
+          billing_status: 'active',
           total_requests: 12,
           total_cost_usd: 30,
           spend_7d: 20,

@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import type { BillingPlan } from "@/types";
 
-type MigrationPlan = Exclude<BillingPlan, "free" | "enterprise">;
+type MigrationPlan = Exclude<BillingPlan, "free" | "payg" | "enterprise">;
 
 export interface LegacyMigrationPreview {
   plan: MigrationPlan;

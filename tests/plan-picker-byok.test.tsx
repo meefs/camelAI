@@ -3,21 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { PlanPicker } from "../src/components/billing/plan-picker";
 
 describe("PlanPicker BYOK state", () => {
-  it("shows the connected provider as the free-plan continue path", () => {
+  it("shows Pay as you go as the individual no-subscription continue path", () => {
     render(
       <PlanPicker byokProviderLabel="OpenRouter" onSelectPlan={vi.fn()} />,
     );
 
+    expect(screen.getByText("Pay as you go")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Continue with OpenRouter" }),
+      screen.getByText("For a trial run, bring your own LLM provider"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("OpenRouter API key connected"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Stay on Free using your own key, or start a paid plan to use hosted credits through camelAI.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
   });
 });

@@ -102,6 +102,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : orgInfo?.billing_status;
   const billingAccessReady = Boolean(
     llmProviderConfig ||
+    orgInfo?.billing_plan === "payg" ||
     billingStatus === "trialing" ||
     billingStatus === "active" ||
     billingStatus === "enterprise",

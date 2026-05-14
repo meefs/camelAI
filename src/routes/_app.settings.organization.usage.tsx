@@ -19,6 +19,7 @@ import {
   getOrgBillingOverview,
   isStripeBillingConfigured,
 } from "@/lib/billing.server";
+import { normalizeBillingPlan } from "@/lib/billing-plans";
 import {
   formatCreditBalance,
   formatCreditsFromUsd,
@@ -237,6 +238,14 @@ export default function OrganizationUsagePage() {
   }
 
   const isEnterprise = overview.billing_status === "enterprise";
+  const billingPlan = normalizeBillingPlan(
+    overview.billing_plan,
+    overview.billing_status,
+  );
+  const canTopUpCredits =
+    billingPlan === "payg" ||
+    overview.billing_status === "trialing" ||
+    (overview.billing_status === "active" && billingPlan !== "free");
 
   const totalLimitCents = overview.total_credit_limit_cents;
   const usageCents = overview.chargeable_usage_cents;
@@ -248,7 +257,8 @@ export default function OrganizationUsagePage() {
     ? renewalDateFormatter.format(new Date(overview.billing_trial_ends_at))
     : null;
 
-  const topUpUnavailable = !stripeConfigured || creditPacks.length === 0;
+  const topUpUnavailable =
+    !stripeConfigured || creditPacks.length === 0 || !canTopUpCredits;
   const topUpDisabled = topUpUnavailable || topUpSubmitting;
   const topUpPacks: TopUpDialogPack[] = creditPacks;
 
@@ -288,7 +298,9 @@ export default function OrganizationUsagePage() {
                 {formatCreditBalance(availableCents)}
               </p>
               <p className="text-sm text-muted-foreground">
-                Available this billing period
+                {billingPlan === "payg"
+                  ? "Available prepaid credits"
+                  : "Available this billing period"}
               </p>
             </div>
             <Progress value={usagePercent} className="h-2" />
@@ -326,7 +338,7 @@ export default function OrganizationUsagePage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <p className="text-sm text-muted-foreground">
                 Top up any time. Credits never expire and roll over alongside
-                your monthly included balance.
+                any monthly included balance.
               </p>
               <Button
                 type="button"
@@ -338,7 +350,9 @@ export default function OrganizationUsagePage() {
             </div>
             {topUpUnavailable ? (
               <p className="text-xs text-muted-foreground">
-                Top-up is not configured yet.
+                {!canTopUpCredits
+                  ? "Choose Pay as you go or an active subscription before buying credits."
+                  : "Top-up is not configured yet."}
               </p>
             ) : null}
             {topUpPacks.length > 0 ? (

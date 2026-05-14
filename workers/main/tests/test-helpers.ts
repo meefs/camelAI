@@ -185,7 +185,13 @@ export async function handleOrphanedUserLogin(
 
 // ============ Organization Operations ============
 
-type TestBillingPlan = 'free' | 'starter' | 'pro' | 'team' | 'enterprise';
+type TestBillingPlan =
+  | 'free'
+  | 'payg'
+  | 'starter'
+  | 'pro'
+  | 'team'
+  | 'enterprise';
 
 export async function createOrg(
   env: TestEnv,
@@ -198,8 +204,17 @@ export async function createOrg(
 
   const { org, defaultWorkspaceId } = await orgStub.createOrg(orgId, name, createdBy);
   const billingPlan = options.billingPlan ?? 'enterprise';
-  if (billingPlan !== org.billing_plan) {
-    await orgStub.updateBillingState({ billing_plan: billingPlan });
+  const billingStatus =
+    billingPlan === 'enterprise'
+      ? 'enterprise'
+      : billingPlan === 'starter' || billingPlan === 'pro' || billingPlan === 'team'
+        ? 'active'
+        : 'inactive';
+  if (billingPlan !== org.billing_plan || billingStatus !== org.billing_status) {
+    await orgStub.updateBillingState({
+      billing_plan: billingPlan,
+      billing_status: billingStatus,
+    });
   }
 
   // Add org to user's orgs

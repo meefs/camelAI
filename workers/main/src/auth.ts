@@ -348,6 +348,39 @@ function normalizeOrgBillingFields(info: Organization): boolean {
     info.billing_status = "inactive";
     changed = true;
   }
+  const subscriptionStatus = info.billing_subscription_status?.trim();
+  const hasRecoverableSubscription =
+    Boolean(info.billing_subscription_id?.trim()) &&
+    (subscriptionStatus === "active" ||
+      subscriptionStatus === "trialing" ||
+      subscriptionStatus === "past_due" ||
+      subscriptionStatus === "unpaid" ||
+      subscriptionStatus === "incomplete" ||
+      subscriptionStatus === "paused");
+  if (
+    info.billing_status === "canceled" ||
+    (info.billing_status === "inactive" && !hasRecoverableSubscription)
+  ) {
+    if (info.billing_status !== "inactive") {
+      info.billing_status = "inactive";
+      changed = true;
+    }
+    if (info.billing_plan !== "payg") {
+      info.billing_plan = "payg";
+      changed = true;
+    }
+    if (!hasRecoverableSubscription && info.billing_subscription_id !== null) {
+      info.billing_subscription_id = null;
+      changed = true;
+    }
+    if (
+      !hasRecoverableSubscription &&
+      info.billing_subscription_status !== null
+    ) {
+      info.billing_subscription_status = null;
+      changed = true;
+    }
+  }
   const normalizedPlan = normalizeBillingPlan(
     info.billing_plan,
     info.billing_status,
@@ -2917,7 +2950,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       created_at: now,
       created_by: createdBy,
       billing_status: "inactive",
-      billing_plan: "free",
+      billing_plan: "payg",
       billing_seat_count: 1,
       billing_customer_id: null,
       billing_subscription_id: null,

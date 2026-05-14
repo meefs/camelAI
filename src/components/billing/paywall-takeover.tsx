@@ -14,6 +14,15 @@ import {
 } from "@/components/billing/plan-picker";
 import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { type OnboardingByokProvider } from "@/lib/byok-providers";
 import { isBillingPlan } from "@/lib/billing-plans";
 import { useOptionalAuthData } from "@/hooks/use-auth-data";
@@ -76,6 +85,7 @@ export function PaywallTakeover({
   const [providerApiKey, setProviderApiKey] = useState("");
   const [awsRegion, setAwsRegion] = useState("us-east-1");
   const [byokDialogOpen, setByokDialogOpen] = useState(false);
+  const [paygChoiceOpen, setPaygChoiceOpen] = useState(false);
   const [showProviderError, setShowProviderError] = useState(true);
   const [legacyConfirmation, setLegacyConfirmation] =
     useState<LegacyMigrationConfirmation | null>(null);
@@ -86,6 +96,8 @@ export function PaywallTakeover({
   const legacyDialogKeyRef = useRef<string | null>(legacyMigrationKey);
   const checkoutFetcher = useFetcher<{
     checkoutUrl?: string;
+    redirectTo?: string;
+    success?: boolean;
     error?: string;
   }>();
   const providerFetcher = useFetcher<{
@@ -114,6 +126,8 @@ export function PaywallTakeover({
   );
   const pendingCheckoutPlan = isTrialPlan(pendingCheckoutPlanValue)
     ? pendingCheckoutPlanValue
+    : pendingCheckoutPlanValue === "payg"
+      ? "payg"
     : null;
   const pendingMigrationPlanValue = String(
     migrationFetcher.formData?.get("plan") || "",
@@ -129,11 +143,11 @@ export function PaywallTakeover({
     ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
     : paywallContext.multiOrg
       ? `${paywallContext.currentOrgName} is on the Free plan with no API key set up. Pick a plan, or switch to an organization with an active plan using the sidebar.`
-      : paywallContext.byokProviderLabel
-        ? `Your ${paywallContext.byokProviderLabel} API key is connected. Continue on Free, or start a paid plan for hosted credits.`
+    : paywallContext.byokProviderLabel
+        ? `Your ${paywallContext.byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
         : paywallContext.trialAvailable
-          ? "Start a free trial with model credits, or use your own API key."
-          : "Choose a plan, or use your own API key.";
+          ? "Start a free trial, use prepaid hosted credits, or bring your own API key."
+          : "Choose a plan, use prepaid hosted credits, or bring your own API key.";
 
   const disabledReason =
     planPickerOverrides?.disabledReason ??
@@ -156,13 +170,13 @@ export function PaywallTakeover({
   }, [legacyMigrationKey]);
 
   useEffect(() => {
-    if (
-      checkoutFetcher.state !== "idle" ||
-      !checkoutFetcher.data?.checkoutUrl
-    ) {
+    if (checkoutFetcher.state !== "idle") {
       return;
     }
-    window.location.assign(checkoutFetcher.data.checkoutUrl);
+    const nextUrl =
+      checkoutFetcher.data?.checkoutUrl ?? checkoutFetcher.data?.redirectTo;
+    if (!nextUrl) return;
+    window.location.assign(nextUrl);
   }, [checkoutFetcher.data, checkoutFetcher.state]);
 
   useEffect(() => {
@@ -230,16 +244,46 @@ export function PaywallTakeover({
     selectedProvider,
   ]);
 
-  const handleSelectPlan = (cta: PlanPickerCta) => {
-    setError(null);
+  const startPayAsYouGoWithCredits = useCallback(() => {
+    setPaygChoiceOpen(false);
     if (onPreviewSelectPlan) {
-      onPreviewSelectPlan(cta);
+      onPreviewSelectPlan({ kind: "payg", plan: "payg" });
       return;
     }
+    if (isStartingCheckout) {
+      return;
+    }
+    checkoutFetcher.submit(
+      { plan: "payg" },
+      {
+        method: "post",
+        action: "/api/billing/start-payg",
+      },
+    );
+  }, [checkoutFetcher, isStartingCheckout, onPreviewSelectPlan]);
+
+  const continueWithOwnApiKey = useCallback(() => {
+    setPaygChoiceOpen(false);
+    setShowProviderError(false);
+    if (onPreviewSelectPlan) {
+      onPreviewSelectPlan({ kind: "byok" });
+    }
+    setByokDialogOpen(true);
+  }, [onPreviewSelectPlan]);
+
+  const handleSelectPlan = (cta: PlanPickerCta) => {
+    setError(null);
 
     if (cta.kind === "byok") {
-      setShowProviderError(false);
-      setByokDialogOpen(true);
+      continueWithOwnApiKey();
+      return;
+    }
+    if (cta.kind === "payg") {
+      setPaygChoiceOpen(true);
+      return;
+    }
+    if (onPreviewSelectPlan) {
+      onPreviewSelectPlan(cta);
       return;
     }
     if (cta.kind === "migrate") {
@@ -372,6 +416,34 @@ export function PaywallTakeover({
             isSubmitting={isSavingProvider}
             errorMessage={error ?? providerError ?? null}
           />
+
+          <Dialog open={paygChoiceOpen} onOpenChange={setPaygChoiceOpen}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Continue with Pay as you go</DialogTitle>
+                <DialogDescription>
+                  Choose how to connect an LLM provider. Purchase credits and
+                  camelAI will provide hosted models, or bring your own API key.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={continueWithOwnApiKey}
+                >
+                  Bring your own API key
+                </Button>
+                <Button
+                  type="button"
+                  disabled={isStartingCheckout}
+                  onClick={startPayAsYouGoWithCredits}
+                >
+                  Purchase credits
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>

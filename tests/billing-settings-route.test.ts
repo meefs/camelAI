@@ -496,7 +496,7 @@ describe("billing settings plan changes", () => {
     );
   });
 
-  it("clears canceled paid-plan state when selecting Free", async () => {
+  it("clears canceled paid-plan state when selecting the legacy Free action", async () => {
     const org = {
       id: "org_123",
       name: "Canceled Org",
@@ -521,7 +521,7 @@ describe("billing settings plan changes", () => {
     expect(result).toEqual({ planChanged: true });
     expect(env.orgStub.updateBillingState).toHaveBeenCalledWith({
       billing_status: "inactive",
-      billing_plan: "free",
+      billing_plan: "payg",
       billing_seat_count: 1,
       billing_subscription_id: null,
       billing_subscription_status: null,

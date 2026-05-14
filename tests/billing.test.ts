@@ -107,7 +107,7 @@ describe("billing helpers", () => {
   });
 
   it("maps billing statuses to stable labels and variants", () => {
-    expect(billingStatusLabel("inactive")).toBe("Free");
+    expect(billingStatusLabel("inactive")).toBe("Pay as you go");
     expect(billingStatusLabel("enterprise")).toBe("Enterprise");
     expect(billingStatusLabel("past_due")).toBe("Past due");
     expect(billingStatusBadgeVariant("active")).toBe("default");
@@ -126,7 +126,7 @@ describe("billing helpers", () => {
 
   it("normalizes billing plans, seats, and included credits", () => {
     expect(normalizeBillingPlan(undefined, "active")).toBe("starter");
-    expect(normalizeBillingPlan(undefined, "inactive")).toBe("free");
+    expect(normalizeBillingPlan(undefined, "inactive")).toBe("payg");
     expect(normalizeSeatCount("team", 2)).toBe(3);
     expect(getIncludedCreditCentsForPlan("starter", 1)).toBe(1000);
     expect(getIncludedCreditCentsForPlan("pro", 1)).toBe(3000);

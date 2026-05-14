@@ -57,7 +57,7 @@ function billingPlanBadgeVariant(
   plan: BillingPlan,
 ): "default" | "secondary" | "outline" {
   if (plan === "enterprise") return "default"
-  if (plan === "free") return "secondary"
+  if (plan === "free" || plan === "payg") return "secondary"
   return "outline"
 }
 

@@ -165,6 +165,8 @@ function describeCta(cta: PlanPickerCta): string {
   switch (cta.kind) {
     case "byok":
       return "BYOK selected";
+    case "payg":
+      return "Pay as you go selected";
     case "trial":
       return `Start checkout for ${cta.plan}`;
     case "migrate":
