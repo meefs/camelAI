@@ -199,6 +199,10 @@ interface ChatProps {
   chatGroupId?: string | null;
   initialWelcomeInput?: string | null;
   connections?: Integration[];
+  onSnapshotChange?: (snapshot: {
+    messages: Message[];
+    todos: TodoItem[];
+  }) => void;
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -1503,6 +1507,7 @@ export default function Chat({
   chatGroupId = null,
   initialWelcomeInput,
   connections,
+  onSnapshotChange,
   welcomeData,
 }: ChatProps) {
   const navigate = useNavigate();
@@ -1586,6 +1591,14 @@ export default function Chat({
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
+
+  useEffect(() => {
+    if (!threadId || readOnly) return;
+    onSnapshotChange?.({
+      messages,
+      todos: currentTodos,
+    });
+  }, [currentTodos, messages, onSnapshotChange, readOnly, threadId]);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
   const [connectionSetupPrompt, setConnectionSetupPrompt] =

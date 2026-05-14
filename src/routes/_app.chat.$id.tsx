@@ -45,6 +45,7 @@ import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { useChatGroups } from "@/hooks/use-chat-groups";
+import { useChatThreadSnapshots } from "@/hooks/use-chat-thread-snapshots";
 import type { TodoItem } from "@/components/floating-todo";
 import type {
   ChatHarness,
@@ -294,6 +295,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
   const isNewThread = url.searchParams.get("newThread") === "1";
+  const useClientMessageCache = url.searchParams.get("chatCache") === "1";
   const hostname = request.headers.get("host")?.split(":")[0] || undefined;
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
@@ -354,6 +356,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       readOnly: true,
       activeChatGroup: null,
       moveChatGroups: [],
+      usedClientMessageCache: false,
     };
   }
 
@@ -426,6 +429,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       readOnly: false,
       activeChatGroup,
       moveChatGroups,
+      usedClientMessageCache: false,
     };
   }
 
@@ -452,6 +456,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isOrgAdmin: false,
       recentModelScope: null,
       readOnly: false,
+      usedClientMessageCache: false,
     };
   }
 
@@ -507,7 +512,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ? await buildChatData(context, authEnv, params.id, {
         orgId,
         workspaceId,
-        loadMessages: true,
+        loadMessages: !useClientMessageCache,
       })
     : EMPTY_CHAT_DATA;
   const [activeChatGroup, moveChatGroups] = thread && actingUserId
@@ -579,6 +584,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     readOnly: false,
     activeChatGroup,
     moveChatGroups,
+    usedClientMessageCache: useClientMessageCache,
   };
 }
 
@@ -606,11 +612,13 @@ export default function ChatPage() {
     readOnly,
     activeChatGroup,
     moveChatGroups,
+    usedClientMessageCache = false,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const location = useLocation();
   const revalidator = useRevalidator();
   const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
+  const { getSnapshot, setSnapshot } = useChatThreadSnapshots();
   const chatDebugFlags = getChatDebugFlags();
   const markViewedEnabled = chatDebugFlags.markViewed;
   const markThreadIdleRef = useRef(markThreadIdle);
@@ -666,8 +674,28 @@ export default function ChatPage() {
           },
         ).map((option) => option.value)
       : allowedThreadModels;
-  const displayChatData = chatData;
+  const cachedSnapshot = displayThreadId ? getSnapshot(displayThreadId) : null;
+  const shouldUseCachedSnapshot = Boolean(
+    usedClientMessageCache && cachedSnapshot,
+  );
+  const displayChatData = shouldUseCachedSnapshot
+    ? {
+        ...chatData,
+        messages: cachedSnapshot?.messages ?? chatData.messages,
+        todos: cachedSnapshot?.todos ?? chatData.todos,
+      }
+    : chatData;
   const displayIsNewThread = isNewThread;
+
+  useEffect(() => {
+    if (!usedClientMessageCache || !displayThreadId) return;
+    const nextSearch = new URLSearchParams(location.search);
+    nextSearch.delete("chatCache");
+    const nextUrl = `/chat/${encodeURIComponent(displayThreadId)}${
+      nextSearch.toString() ? `?${nextSearch.toString()}` : ""
+    }`;
+    navigate(nextUrl, { replace: true, preventScrollReset: true });
+  }, [displayThreadId, location.search, navigate, usedClientMessageCache]);
 
   useEffect(() => {
     markThreadIdleRef.current = markThreadIdle;
@@ -721,7 +749,18 @@ export default function ChatPage() {
     if (displayThreadId) {
       markThreadIdle(displayThreadId);
     }
-    navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
+    const params = new URLSearchParams();
+    const activeGroupId = liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null;
+    if (activeGroupId) {
+      params.set("group", activeGroupId);
+    }
+    if (getSnapshot(targetThreadId)) {
+      params.set("chatCache", "1");
+    }
+    navigate(
+      `/chat/${targetThreadId}${params.toString() ? `?${params.toString()}` : ""}`,
+      { preventScrollReset: true },
+    );
   };
 
   const closeTab = async (targetThreadId: string) => {
@@ -851,6 +890,10 @@ export default function ChatPage() {
             hostname={hostname}
             orgSlug={orgSlug}
             connections={connections}
+            onSnapshotChange={(snapshot) => {
+              if (!displayThreadId) return;
+              setSnapshot(displayThreadId, snapshot);
+            }}
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}
             isLoadingMessages={false}
