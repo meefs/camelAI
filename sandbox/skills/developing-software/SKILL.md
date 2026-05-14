@@ -712,20 +712,20 @@ On camelAI deploys, the platform rewrites this binding to the internal `Connecti
 
 ### Runtime API
 
-Use `CONNECTIONS.methods()` to inspect available connection aliases, method names, and input schemas. Use `createConnections()` from the starter template for method-style calls:
+Use `CONNECTIONS.find()` for the shortest path to one connection, or `CONNECTIONS.methods()` to inspect all available connection aliases, method names, input schemas, and copyable examples. Use `createConnections()` from the starter template for method-style calls:
 
 ```typescript
 import { createConnections } from "~/lib/connections";
 
 export async function action({ context }: Route.ActionArgs) {
-  const methods = await context.cloudflare.env.CONNECTIONS.methods();
+  const stripe = await context.cloudflare.env.CONNECTIONS.find("stripe");
   const connections = createConnections(context.cloudflare.env);
 
-  const customer = await connections.stripeProd.createCustomer({
+  const customer = await connections[stripe.alias].createCustomer({
     email: "customer@example.com",
   });
 
-  return { methods, customer };
+  return { customer };
 }
 ```
 
@@ -737,8 +737,10 @@ Available methods:
 | `get(connection)` | Resolve one connection by id, name, or type |
 | `tools(connection)` | List MCP-backed tools for a connection |
 | `methods()` | List available connection aliases and method schemas |
+| `find(query)` | Resolve one connection method catalog entry by alias, id, type, name, or `{ type }`; throws on missing or ambiguous matches |
+| `test(query)` | Run a quick smoke test; database-style connections run `SELECT 1 AS ok` |
 
-Prefer connection ids when a workspace may have multiple connections of the same type. Name/type lookup is convenient, but ambiguous matches throw and ask for an id.
+Prefer connection ids or aliases when a workspace may have multiple connections of the same type. Name/type lookup is convenient, but ambiguous matches throw and ask for an id or alias.
 
 When the connection or method name comes from user input, validate it against `CONNECTIONS.methods()` before calling the method facade:
 
@@ -765,12 +767,35 @@ export async function action({ context, request }: Route.ActionArgs) {
 }
 ```
 
-When testing connection calls in the Pi agent harness, use the `js_exec` tool. It exposes the same Worker binding object as `context.cloudflare.env.CONNECTIONS` and a method facade at `context.cloudflare.connections`:
+When testing connection calls in the Pi agent harness, use the `js_exec` tool. This is the preferred way for the agent to call workspace connections because it exposes the same Worker binding shape that deployed user code receives.
+
+Inside `js_exec`, these globals are available:
+- `env.CONNECTIONS` - the virtual Worker service binding.
+- `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
+- `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
+
+Connection credentials are intentionally hidden behind the virtual binding.
+
+Prefer `find()` and normalized methods for common workflows:
 
 ```javascript
-const methods = await env.CONNECTIONS.methods();
-const customers = await context.cloudflare.connections.stripeProd.listCustomers({ limit: 10 });
-return { methods, customers };
+const clickhouse = await env.CONNECTIONS.find("clickhouse");
+const result = await connections[clickhouse.alias].query({
+  query: "SELECT 1 AS ok",
+});
+
+return result;
+```
+
+Use the full method catalog when you need to inspect schemas or examples:
+
+```javascript
+const catalog = await env.CONNECTIONS.methods();
+return catalog.map((entry) => ({
+  alias: entry.alias,
+  type: entry.connection.type,
+  examples: entry.methods.map((method) => method.example),
+}));
 ```
 
 Global facade access also works:
@@ -778,6 +803,25 @@ Global facade access also works:
 ```javascript
 return await connections.stripeProd.listCustomers({ limit: 10 });
 ```
+
+Custom connections with type `other` expose a generic authenticated HTTP method named
+`fetch`. Use it like normal `fetch(input, init)` instead of looking for API keys
+in environment variables:
+
+```javascript
+const custom = await env.CONNECTIONS.find({ type: "other" });
+
+const response = await connections[custom.alias].fetch("/v1/items?limit=10", {
+  method: "GET",
+});
+
+return await response.json();
+```
+
+`fetch` resolves relative URLs against the connection's configured `base_url` and
+camelAI applies the stored auth settings automatically. The returned value is a
+standard `Response`, so use `response.ok`, `await response.text()`, and
+`await response.json()` as usual.
 
 The `js_exec` runtime also exposes every registered harness tool on the global `tools` object. Tool names, descriptions, and parameter schemas are available in `ALL_TOOLS`. Use this when code-mode JavaScript needs web lookup, workspace file/shell operations, scheduled prompts, app/domain tools, user prompts, subagents, or any other harness tool:
 

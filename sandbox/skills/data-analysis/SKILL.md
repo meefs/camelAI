@@ -355,7 +355,7 @@ When the user wants a **live dashboard**, **data app**, or any interactive web U
 - shadcn/ui components for charts, tables, and UI
 - Deployment via `bun deploy`
 
-Database connection credentials are available as secrets in deployed workers, so dashboards can query databases directly at runtime.
+Database connection credentials are available through the virtual connections binding. Prefer connection methods over direct credential handling.
 
 ## Additional Packages
 

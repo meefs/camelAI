@@ -20,6 +20,10 @@ function getAdminOAuthIssuer(base: string): string {
   return `${base}/api/admin/oauth`;
 }
 
+function isAdminMcpResourcePath(pathname: string): boolean {
+  return pathname.endsWith('/api/admin/mcp') || pathname.includes('/api/admin/mcp/');
+}
+
 export async function handleOAuthMetadata({ req }: RouteContext): Promise<Response | null> {
   if (req.method !== 'GET') return null;
   const base = getBaseUrl(req);
@@ -64,7 +68,10 @@ export async function handleResourceMetadata({ req }: RouteContext): Promise<Res
   const base = getBaseUrl(req);
   const url = new URL(req.url);
   const requestedResource = url.searchParams.get('resource');
-  if (requestedResource === getAdminMcpResource(base)) {
+  if (
+    requestedResource === getAdminMcpResource(base) ||
+    isAdminMcpResourcePath(url.pathname)
+  ) {
     return Response.json({
       resource: getAdminMcpResource(base),
       authorization_servers: [getAdminOAuthIssuer(base)],

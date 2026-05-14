@@ -32,7 +32,9 @@ describe('chat runner websocket connection mentions', () => {
     expect(workspaceStub.getIntegrations).toHaveBeenCalledTimes(1);
     expect(content).toContain('<camelai system message>');
     expect(content).toContain('## Available connections');
-    expect(content).toContain('@sales_db — postgres "Sales DB"');
+    expect(content).toContain('@sales_db — postgres "Sales DB" (connection id: conn_sales)');
+    expect(content).toContain('Use the `js_exec` tool');
+    expect(content).toContain('Connection credentials are intentionally hidden behind');
     expect(content).toContain(
       '[Ada (ada@example.com)]: Check @sales_db ⟦ref: postgres "Sales DB" id=conn_sales⟧ orders',
     );

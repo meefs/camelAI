@@ -54,6 +54,40 @@ const applyDefaults = (
   return next;
 };
 
+function shouldShowConfigField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'auth_header') {
+    return config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function shouldShowCredentialField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function isCredentialFieldRequired(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>,
+  schemaRequired: boolean
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return schemaRequired;
+}
+
 export function AddConnectionDialog({
   open,
   onOpenChange,
@@ -62,7 +96,7 @@ export function AddConnectionDialog({
   orgId,
   onSuccess,
 }: AddConnectionDialogProps) {
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const fetcher = useFetcher<{ success?: boolean; error?: string; oauthUrl?: string }>();
   const [name, setName] = useState('');
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [credentials, setCredentials] = useState<Record<string, unknown>>({});
@@ -73,7 +107,9 @@ export function AddConnectionDialog({
 
   useEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
-      if (fetcher.data.success) {
+      if (fetcher.data.oauthUrl) {
+        window.location.href = fetcher.data.oauthUrl;
+      } else if (fetcher.data.success) {
         setName('');
         setConfig({});
         setCredentials({});
@@ -125,6 +161,9 @@ export function AddConnectionDialog({
   }, [open, typeDef]);
 
   if (!typeDef) return null;
+  const visibleCredentialFields = typeDef.credentialSchema.filter((field) =>
+    shouldShowCredentialField(connectionType, field.name, config)
+  );
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -159,7 +198,7 @@ export function AddConnectionDialog({
             </div>
 
             {/* Config fields */}
-            {typeDef.configSchema.map((field) => (
+            {typeDef.configSchema.filter((field) => shouldShowConfigField(connectionType, field.name, config)).map((field) => (
               <div key={field.name} className="grid gap-1.5">
                 <Label htmlFor={field.name}>
                   {field.label}
@@ -205,7 +244,7 @@ export function AddConnectionDialog({
             {typeDef.requiresOutboundIpAllowlist && <SandboxIpNotice />}
 
             {/* Credential fields */}
-            {typeDef.credentialSchema.length > 0 && (
+            {visibleCredentialFields.length > 0 && (
               <>
                 <div className="mt-2 border-t pt-4">
                   <p className="mb-3 text-sm font-medium">
@@ -222,37 +261,40 @@ export function AddConnectionDialog({
                 )}
 
                 {/* Show credential fields for non-Snowflake integrations */}
-                {connectionType !== 'snowflake' && typeDef.credentialSchema.map((field) => (
-                  <div key={field.name} className="grid gap-1.5">
-                    <Label htmlFor={`cred-${field.name}`}>
-                      {field.label}
-                      {field.required && <span className="ml-1 text-red-400">*</span>}
-                    </Label>
-                    {field.type === 'textarea' ? (
-                      <Textarea
-                        id={`cred-${field.name}`}
-                        value={(credentials[field.name] as string) || ''}
-                        onChange={(e) => updateCredentials(field.name, e.target.value)}
-                        placeholder={field.placeholder}
-                        required={field.required}
-                        rows={6}
-                        className="font-mono text-xs"
-                      />
-                    ) : (
-                      <Input
-                        id={`cred-${field.name}`}
-                        type={field.type === 'password' ? 'password' : 'text'}
-                        value={(credentials[field.name] as string) || ''}
-                        onChange={(e) => updateCredentials(field.name, e.target.value)}
-                        placeholder={field.placeholder}
-                        required={field.required}
-                      />
-                    )}
-                    {field.description && (
-                      <p className="text-xs text-muted-foreground">{field.description}</p>
-                    )}
-                  </div>
-                ))}
+                {connectionType !== 'snowflake' && visibleCredentialFields.map((field) => {
+                  const required = isCredentialFieldRequired(connectionType, field.name, config, field.required);
+                  return (
+                    <div key={field.name} className="grid gap-1.5">
+                      <Label htmlFor={`cred-${field.name}`}>
+                        {field.label}
+                        {required && <span className="ml-1 text-red-400">*</span>}
+                      </Label>
+                      {field.type === 'textarea' ? (
+                        <Textarea
+                          id={`cred-${field.name}`}
+                          value={(credentials[field.name] as string) || ''}
+                          onChange={(e) => updateCredentials(field.name, e.target.value)}
+                          placeholder={field.placeholder}
+                          required={required}
+                          rows={6}
+                          className="font-mono text-xs"
+                        />
+                      ) : (
+                        <Input
+                          id={`cred-${field.name}`}
+                          type={field.type === 'password' ? 'password' : 'text'}
+                          value={(credentials[field.name] as string) || ''}
+                          onChange={(e) => updateCredentials(field.name, e.target.value)}
+                          placeholder={field.placeholder}
+                          required={required}
+                        />
+                      )}
+                      {field.description && (
+                        <p className="text-xs text-muted-foreground">{field.description}</p>
+                      )}
+                    </div>
+                  );
+                })}
               </>
             )}
 

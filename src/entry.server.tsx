@@ -3,6 +3,7 @@ import { isRouteErrorResponse, ServerRouter } from 'react-router';
 import { renderToReadableStream } from 'react-dom/server';
 import { isbot } from 'isbot';
 import type { CloudflareLoadContext } from './lib/cloudflare.server';
+import { recordErrorEvent } from '../workers/main/src/observability';
 
 // Increase stream timeout for deferred data (default is 4950ms)
 // Container boot can take 10+ seconds on cold start
@@ -10,15 +11,6 @@ export const streamTimeout = 60_000;
 
 type RouterErrorMap = Record<string, unknown>;
 const loggedErrors = new WeakSet<Error>();
-const MAX_ANALYTICS_BLOBS_BYTES = 15_500;
-const ANALYTICS_BLOB_FIELD_BYTES = {
-  source: 32,
-  routeId: 512,
-  name: 256,
-  message: 4_096,
-  url: 2_048,
-} as const;
-const textEncoder = new TextEncoder();
 
 type NormalizedError = {
   name: string;
@@ -83,56 +75,6 @@ function getErrorStatus(err: unknown): number | undefined {
   return err.status;
 }
 
-function getErrorAnalytics(context: AppLoadContext): AnalyticsEngineDataset | undefined {
-  return (context as Partial<CloudflareLoadContext>).cloudflare?.env.ERROR_ANALYTICS;
-}
-
-function getUtf8ByteLength(value: string): number {
-  return textEncoder.encode(value).byteLength;
-}
-
-function truncateUtf8(value: string | undefined, maxBytes: number): string {
-  if (!value || maxBytes <= 0) return '';
-  if (getUtf8ByteLength(value) <= maxBytes) return value;
-
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (getUtf8ByteLength(value.slice(0, mid)) <= maxBytes) {
-      low = mid;
-    } else {
-      high = mid - 1;
-    }
-  }
-
-  return value.slice(0, low);
-}
-
-function buildAnalyticsBlobs(input: {
-  source: 'handleError' | 'route' | 'stream';
-  routeId?: string;
-  details: NormalizedError;
-  request: Request;
-}): string[] {
-  const source = truncateUtf8(input.source, ANALYTICS_BLOB_FIELD_BYTES.source);
-  const routeId = truncateUtf8(input.routeId, ANALYTICS_BLOB_FIELD_BYTES.routeId);
-  const name = truncateUtf8(input.details.name, ANALYTICS_BLOB_FIELD_BYTES.name);
-  const message = truncateUtf8(input.details.message, ANALYTICS_BLOB_FIELD_BYTES.message);
-  const url = truncateUtf8(input.request.url, ANALYTICS_BLOB_FIELD_BYTES.url);
-
-  const usedBytes =
-    getUtf8ByteLength(source) +
-    getUtf8ByteLength(routeId) +
-    getUtf8ByteLength(name) +
-    getUtf8ByteLength(message) +
-    getUtf8ByteLength(url);
-  const remainingBytes = Math.max(0, MAX_ANALYTICS_BLOBS_BYTES - usedBytes);
-  const stack = truncateUtf8(input.details.stack, remainingBytes);
-
-  return [source, routeId, name, message, url, stack];
-}
-
 function captureSsrError(
   context: AppLoadContext,
   input: {
@@ -143,15 +85,21 @@ function captureSsrError(
     status?: number;
   }
 ): void {
-  try {
-    getErrorAnalytics(context)?.writeDataPoint({
-      blobs: buildAnalyticsBlobs(input),
-      doubles: [input.status ?? 0],
-      indexes: [input.source],
-    });
-  } catch (analyticsError) {
-    console.warn('[SSR error analytics failed]', analyticsError);
-  }
+  const url = new URL(input.request.url);
+  recordErrorEvent((context as Partial<CloudflareLoadContext>).cloudflare?.env, {
+    event: 'ssr_error',
+    component: 'react_router',
+    operation: input.source,
+    status: input.routeId ?? 'error',
+    route: input.routeId,
+    method: input.request.method,
+    path: url.pathname,
+    statusCode: input.status,
+    error: Object.assign(new Error(input.details.message), {
+      name: input.details.name,
+      stack: input.details.stack,
+    }),
+  });
 }
 
 export const handleError: HandleErrorFunction = (error, { request, context, params }) => {

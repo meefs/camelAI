@@ -86,11 +86,40 @@ describe("admin MCP OAuth resource", () => {
       authorization_servers: ["https://example.com/api/admin/oauth"],
     });
 
+    const pathResourceResponse = await handleResourceMetadata(routeContext(
+      new Request("https://example.com/.well-known/oauth-protected-resource/api/admin/mcp"),
+    ));
+    expect(pathResourceResponse?.status).toBe(200);
+    await expect(pathResourceResponse?.json()).resolves.toMatchObject({
+      resource: "https://example.com/api/admin/mcp",
+      authorization_servers: ["https://example.com/api/admin/oauth"],
+    });
+
     const adminMetadataResponse = await handleOAuthMetadata(routeContext(
       new Request("https://example.com/.well-known/oauth-authorization-server/api/admin/oauth"),
     ));
     expect(adminMetadataResponse?.status).toBe(200);
     await expect(adminMetadataResponse?.json()).resolves.toMatchObject({
+      issuer: "https://example.com/api/admin/oauth",
+      authorization_endpoint: "https://example.com/api/admin/oauth/authorize",
+      token_endpoint: "https://example.com/api/admin/oauth/token",
+    });
+
+    const issuerMetadataResponse = await handleOAuthMetadata(routeContext(
+      new Request("https://example.com/api/admin/oauth"),
+    ));
+    expect(issuerMetadataResponse?.status).toBe(200);
+    await expect(issuerMetadataResponse?.json()).resolves.toMatchObject({
+      issuer: "https://example.com/api/admin/oauth",
+      authorization_endpoint: "https://example.com/api/admin/oauth/authorize",
+      token_endpoint: "https://example.com/api/admin/oauth/token",
+    });
+
+    const issuerWellKnownMetadataResponse = await handleOAuthMetadata(routeContext(
+      new Request("https://example.com/api/admin/oauth/.well-known/oauth-authorization-server"),
+    ));
+    expect(issuerWellKnownMetadataResponse?.status).toBe(200);
+    await expect(issuerWellKnownMetadataResponse?.json()).resolves.toMatchObject({
       issuer: "https://example.com/api/admin/oauth",
       authorization_endpoint: "https://example.com/api/admin/oauth/authorize",
       token_endpoint: "https://example.com/api/admin/oauth/token",
@@ -202,6 +231,30 @@ describe("admin MCP OAuth resource", () => {
     await updateUserProfile(testEnv, userId, { is_superuser: true });
     const token = await issueAdminMcpToken(userId);
     await updateUserProfile(testEnv, userId, { is_superuser: false });
+
+    const response = await handleAdminMcp({
+      req: mcpRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" }, token),
+      env: testEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL("https://example.com/api/admin/mcp"),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response?.status).toBe(403);
+    await expect(response?.json()).resolves.toMatchObject({
+      details: "Admin access required",
+    });
+  });
+
+  it("rejects org owners who are not superusers", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-org-owner-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Org Owner",
+    );
+    await createOrg(testEnv, "Org Owner Org", userId);
+    const token = await issueAdminMcpToken(userId);
 
     const response = await handleAdminMcp({
       req: mcpRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" }, token),

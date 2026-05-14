@@ -1,12 +1,16 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import {
   getConnection,
+  findConnectionMethodEntry,
   invokeConnectionMethod,
   listConnectionMethods,
   listConnections,
   listConnectionTools,
+  testConnectionMethodEntry,
+  type ConnectionFindQuery,
   type ConnectionInvokeRequest,
   type ConnectionMethodCatalogEntry,
+  type ConnectionSmokeTestResult,
   type ConnectionSummary,
   type ConnectionsRuntimeEnv,
 } from './connections-runtime.js';
@@ -49,6 +53,22 @@ export class ConnectionsService extends WorkerEntrypoint<
    */
   async methods(): Promise<ConnectionMethodCatalogEntry[]> {
     return listConnectionMethods(this.env, this.context);
+  }
+
+  /**
+   * Finds one connection method catalog entry by alias, id, type, or name.
+   * Throws on missing or ambiguous matches so callers fail loudly.
+   */
+  async find(query: ConnectionFindQuery): Promise<ConnectionMethodCatalogEntry> {
+    return findConnectionMethodEntry(this.env, this.context, query);
+  }
+
+  /**
+   * Runs a safe smoke test for a connection. Database-style connections run
+   * `SELECT 1 AS ok`; other providers validate that the method catalog resolves.
+   */
+  async test(query: ConnectionFindQuery): Promise<ConnectionSmokeTestResult> {
+    return testConnectionMethodEntry(this.env, this.context, query);
   }
 
   async __invoke<T = unknown>(request: ConnectionInvokeRequest): Promise<T> {

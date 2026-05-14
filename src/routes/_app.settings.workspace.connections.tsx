@@ -1,10 +1,8 @@
 import { useState } from 'react';
 import { useLoaderData, useSearchParams, useFetcher } from 'react-router';
-import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/_app.settings.workspace.connections';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import {
@@ -88,11 +86,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       const stub = getWorkspaceStub(env, workspaceId);
       await stub.deleteIntegration(integrationId, authContext.user.id);
-      waitUntil(
-        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
-          .refreshIntegrationEnvVars()
-          .catch(() => {})
-      );
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete connection' };

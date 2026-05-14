@@ -35,6 +35,7 @@ import {
   resolveEffectivePickerConfig,
 } from "./model-picker-config";
 import { readMessagesFromResponse } from "./thread-messages.server";
+import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 
 interface ParsedThreadMessage {
   id: string;
@@ -85,7 +86,9 @@ async function getWorkspaceInfo(
   const wsStub = env.WORKSPACE.get(
     env.WORKSPACE.idFromName(workspaceId),
   ) as unknown as WorkspaceDO;
-  const info = await wsStub.getInfo();
+  const info = await retryTransientDurableObjectRead("WorkspaceDO.getInfo", () =>
+    wsStub.getInfo(),
+  );
   if (!info) return null;
   return { org_id: info.org_id };
 }
@@ -378,7 +381,9 @@ export async function getThread(
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return null;
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const thread = await orgStub.getThread(id);
+  const thread = await retryTransientDurableObjectRead("OrgDO.getThread", () =>
+    orgStub.getThread(id),
+  );
   if (!thread) return null;
   // Verify the thread belongs to this workspace
   if (thread.workspace_id !== workspaceId) return null;

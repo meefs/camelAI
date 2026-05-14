@@ -66,6 +66,35 @@ describe('chat credit status', () => {
     ).toBeNull();
   });
 
+  it('hides hosted credit status for threads covered by BYOK', () => {
+    expect(
+      buildBillingCreditStatus(
+        makeOverview({
+          chargeable_usage_cents: 1000,
+          available_credits_cents: 0,
+        }),
+        'anthropic',
+        'claude',
+      ),
+    ).toBeNull();
+  });
+
+  it('shows hosted credit status for threads not covered by BYOK', () => {
+    expect(
+      buildBillingCreditStatus(
+        makeOverview({
+          chargeable_usage_cents: 1000,
+          available_credits_cents: 0,
+        }),
+        'anthropic',
+        'codex',
+      ),
+    ).toMatchObject({
+      isExhausted: true,
+      hasByokProvider: true,
+    });
+  });
+
   it('forces dev credit states from query params', () => {
     const params = new URLSearchParams('devCreditState=exhausted-byok&devChatError=out-of-credits');
 

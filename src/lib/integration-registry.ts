@@ -1,4 +1,5 @@
 import type { IntegrationCategory, IntegrationAuthMethod } from '@/types';
+import { REMOTE_MCP_AUTH_TYPES, validateRemoteMcpUrl } from '@/lib/remote-mcp';
 
 /**
  * Dynamic field definition for custom "other" integrations.
@@ -1338,6 +1339,54 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
   // GENERIC / CUSTOM INTEGRATION
   // ============================================
 
+  remote_mcp: {
+    type: 'remote_mcp',
+    displayName: 'Remote MCP Server',
+    description: 'Connect to a remote MCP server over HTTPS. Local command and localhost MCP servers are not supported.',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'server_url',
+        label: 'Server URL',
+        type: 'string',
+        required: true,
+        placeholder: 'https://mcp.example.com/mcp',
+        description: 'Must be a remote HTTPS MCP endpoint. Localhost, private IPs, and local command servers are blocked.',
+      },
+      {
+        name: 'auth_type',
+        label: 'Authentication',
+        type: 'select',
+        required: true,
+        default: 'none',
+        options: [
+          { value: 'none', label: 'None' },
+          { value: 'bearer', label: 'Bearer Token' },
+          { value: 'custom_header', label: 'Custom Header' },
+          { value: 'oauth', label: 'OAuth (Dynamic Client Registration)' },
+        ],
+      },
+      {
+        name: 'auth_header',
+        label: 'Custom Auth Header Name',
+        type: 'string',
+        required: false,
+        placeholder: 'X-API-Key',
+        description: 'Only used when Authentication is Custom Header.',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'token',
+        label: 'Token',
+        type: 'password',
+        required: false,
+        description: 'Required for Bearer Token or Custom Header authentication.',
+      },
+    ],
+  },
+
   other: {
     type: 'other',
     displayName: 'Other',
@@ -1401,6 +1450,19 @@ export function validateConfig(type: string, config: Record<string, unknown>): s
     const value = config[field.name];
     if (field.required && (value === undefined || value === null || value === '')) {
       errors.push(`${field.label} is required`);
+    }
+  }
+  if (type === 'remote_mcp') {
+    errors.push(...validateRemoteMcpUrl(config.server_url));
+    const authType = typeof config.auth_type === 'string' ? config.auth_type : 'none';
+    if (!REMOTE_MCP_AUTH_TYPES.includes(authType as (typeof REMOTE_MCP_AUTH_TYPES)[number])) {
+      errors.push('Authentication type is invalid');
+    }
+    if (authType === 'custom_header') {
+      const header = typeof config.auth_header === 'string' ? config.auth_header.trim() : '';
+      if (!header) {
+        errors.push('Custom auth header name is required');
+      }
     }
   }
   return errors;

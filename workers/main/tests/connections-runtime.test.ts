@@ -3,10 +3,12 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   callConnectionTool,
   getConnection,
+  findConnectionMethodEntry,
   invokeConnectionMethod,
   listConnectionMethods,
   listConnectionTools,
   listConnections,
+  testConnectionMethodEntry,
   type ConnectionsRuntimeEnv,
 } from '../src/connections-runtime.js';
 import { handleIntegrationsMcp } from '../src/routes/integrations-mcp.js';
@@ -222,6 +224,180 @@ describe('connections runtime', () => {
     ]);
   });
 
+  it('connects to the no-auth Devin DeepWiki remote MCP server', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://mcp.deepwiki.com/mcp');
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBeNull();
+      expect(headers.get('mcp-protocol-version')).toBe('2025-06-18');
+
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'deepwiki' },
+          },
+        }), {
+          headers: { 'mcp-session-id': 'deepwiki-session' },
+        });
+      }
+
+      expect(headers.get('mcp-session-id')).toBe('deepwiki-session');
+      expect(body.method).toBe('tools/list');
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: {
+          tools: [
+            { name: 'read_wiki_structure' },
+            { name: 'read_wiki_contents' },
+            { name: 'ask_question' },
+          ],
+        },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const records = [
+      integration({
+        id: 'deepwiki',
+        integration_type: 'remote_mcp',
+        name: 'DeepWiki',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.deepwiki.com/mcp',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+
+    await expect(listConnections(envWith(records), context)).resolves.toMatchObject([
+      {
+        id: 'deepwiki',
+        type: 'remote_mcp',
+        name: 'DeepWiki',
+        capabilities: ['mcp_tools'],
+        nativeMcp: {
+          serverName: 'DeepWiki',
+          transport: 'streamable_http',
+          directConnect: false,
+          brokered: true,
+          authStrategy: 'remote_mcp_config',
+          preferredMode: 'brokered',
+          broker: {
+            url: 'https://mcp.deepwiki.com/mcp',
+            brokerPath: '/mcp/integrations/native/deepwiki',
+            authStrategy: 'remote_mcp_config',
+          },
+        },
+      },
+    ]);
+
+    await expect(listConnectionTools(envWith(records), context, 'deepwiki')).resolves.toEqual([
+      { name: 'read_wiki_structure' },
+      { name: 'read_wiki_contents' },
+      { name: 'ask_question' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('proxies an OAuth remote MCP connection with the stored access token', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://mcp.example.com/mcp');
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer oauth-access-token');
+
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: { tools: {} },
+          },
+        }), {
+          headers: { 'mcp-session-id': 'oauth-session' },
+        });
+      }
+
+      expect(headers.get('mcp-session-id')).toBe('oauth-session');
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: { tools: [{ name: 'search' }] },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const records = [
+      integration({
+        id: 'oauth_mcp',
+        integration_type: 'remote_mcp',
+        name: 'OAuth MCP',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.example.com/mcp',
+          auth_type: 'oauth',
+        }),
+        credentials_encrypted: await encryptedCredentials({
+          access_token: 'oauth-access-token',
+        }),
+      }),
+    ];
+
+    await expect(getConnection(envWith(records), context, 'oauth_mcp')).resolves.toMatchObject({
+      reauthUrl: null,
+    });
+    await expect(listConnectionTools(envWith(records), context, 'oauth_mcp')).resolves.toEqual([
+      { name: 'search' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns the remote MCP OAuth reauth URL when OAuth credentials are missing', async () => {
+    const statuses: Array<{ id: string; status: string; code: string | null; message: string | null }> = [];
+    const records = [
+      integration({
+        id: 'oauth_mcp',
+        integration_type: 'remote_mcp',
+        name: 'OAuth MCP',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.example.com/mcp',
+          auth_type: 'oauth',
+        }),
+        credentials_encrypted: '',
+        auth_status: 'setup_incomplete',
+      }),
+    ];
+
+    await expect(listConnectionTools(
+      envWith(records, (id, status, code, message) => statuses.push({ id, status, code, message })),
+      context,
+      'oauth_mcp'
+    )).rejects.toMatchObject({
+      status: 401,
+      data: {
+        authStatus: 'needs_reauth',
+        reauthUrl: '/api/integrations/remote_mcp/oauth?workspace_id=ws_1&integration_id=oauth_mcp&redirect=%2Fconnections',
+      },
+    });
+    expect(statuses.at(-1)).toMatchObject(
+      {
+        id: 'oauth_mcp',
+        status: 'needs_reauth',
+        code: 'AUTH_REAUTH_REQUIRED',
+      }
+    );
+  });
+
   it('lists method aliases for connection tools', async () => {
     const records = [
       integration({
@@ -238,14 +414,228 @@ describe('connections runtime', () => {
         alias: 'bigqueryAnalytics',
         connection: { id: 'bq_prod', type: 'bigquery', name: 'analytics' },
         methods: [
+          { name: 'query', tool: 'execute_sql_readonly', example: 'await connections.bigqueryAnalytics.query({ query: "SELECT 1 AS ok" })' },
           { name: 'listDatasetIds', tool: 'list_dataset_ids' },
           { name: 'getDatasetInfo', tool: 'get_dataset_info' },
           { name: 'listTableIds', tool: 'list_table_ids' },
           { name: 'getTableInfo', tool: 'get_table_info' },
           { name: 'executeSqlReadonly', tool: 'execute_sql_readonly' },
+          { name: 'executeQuery', tool: 'execute_sql_readonly' },
         ],
       },
     ]);
+  });
+
+  it('finds one method catalog entry by type and exposes copyable examples', async () => {
+    const records = [
+      integration({
+        id: 'clickhouse_events',
+        integration_type: 'clickhouse',
+        name: 'events',
+        category: 'databases',
+        config: JSON.stringify({ host: 'clickhouse.example', port: 8443, database: 'default' }),
+        credentials_encrypted: await encryptedCredentials({ username: 'default', password: 'secret' }),
+      }),
+    ];
+
+    const entry = await findConnectionMethodEntry(envWith(records), context, { type: 'clickhouse' });
+
+    expect(entry).toMatchObject({
+      alias: 'clickhouseEvents',
+      connection: { id: 'clickhouse_events', type: 'clickhouse' },
+    });
+    expect(entry.methods).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'query',
+        tool: 'execute_sql_readonly',
+        example: 'await connections.clickhouseEvents.query({ query: "SELECT 1 AS ok" })',
+      }),
+    ]));
+  });
+
+  it('lists a fetch method for custom API connections', async () => {
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com/v1',
+          auth_type: 'bearer',
+        }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(listConnectionMethods(envWith(records), context)).resolves.toMatchObject([
+      {
+        alias: 'otherCustomApi',
+        connection: {
+          id: 'custom_api',
+          type: 'other',
+          name: 'custom-api',
+          capabilities: ['authenticated_fetch'],
+        },
+        methods: [
+          {
+            name: 'fetch',
+            tool: 'authenticated_fetch',
+            example: 'await connections.otherCustomApi.fetch("/v1/items", { method: "GET" })',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('invokes custom API fetch methods with stored auth', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.example.com/v1/items?limit=2&tag=a&tag=b');
+      expect(init?.method).toBe('POST');
+      expect(Object.fromEntries(new Headers(init?.headers).entries())).toMatchObject({
+        authorization: 'Bearer secret-token',
+        'content-type': 'application/json',
+      });
+      expect(JSON.parse(String(init?.body))).toEqual({ active: true });
+      return new Response(JSON.stringify({ items: [{ id: 1 }] }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com/v1',
+          auth_type: 'bearer',
+        }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: {
+        input: 'items?limit=2&tag=a&tag=b',
+        init: {
+          method: 'POST',
+          body: { active: true },
+        },
+      },
+    })).resolves.toMatchObject({
+      status: 201,
+      bodyText: JSON.stringify({ items: [{ id: 1 }] }),
+      truncated: false,
+    });
+  });
+
+  it('allows custom API fetches to absolute http URLs for migration compatibility', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://uploads.example.net/items');
+      expect(init?.method).toBe('GET');
+      expect(Object.fromEntries(new Headers(init?.headers).entries())).toMatchObject({
+        authorization: 'Bearer secret-token',
+      });
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com',
+          auth_type: 'bearer',
+        }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: {
+        input: 'https://uploads.example.net/items',
+      },
+    })).resolves.toMatchObject({
+      status: 200,
+      bodyText: 'ok',
+    });
+  });
+
+  it('runs a database smoke test through the normalized query method', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://clickhouse.example:8443/?database=default');
+      expect(String(init?.body)).toBe('SELECT 1 AS ok LIMIT 100 FORMAT JSON');
+      return new Response(JSON.stringify({
+        data: [{ ok: 1 }],
+        rows: 1,
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'clickhouse_events',
+        integration_type: 'clickhouse',
+        name: 'events',
+        category: 'databases',
+        config: JSON.stringify({ host: 'clickhouse.example', port: 8443, database: 'default' }),
+        credentials_encrypted: await encryptedCredentials({ username: 'default', password: 'secret' }),
+      }),
+    ];
+
+    await expect(testConnectionMethodEntry(envWith(records), context, 'clickhouse')).resolves.toMatchObject({
+      ok: true,
+      alias: 'clickhouseEvents',
+      method: 'query',
+      result: {
+        content: [
+          {
+            text: JSON.stringify({
+              data: [{ ok: 1 }],
+              rows: 1,
+            }, null, 2),
+          },
+        ],
+      },
+    });
+  });
+
+  it('rejects custom API fetch URLs with embedded credentials', async () => {
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: {
+        input: 'https://user:pass@example.net/items',
+      },
+    })).rejects.toMatchObject({
+      message: 'fetch input must not include embedded credentials.',
+      status: 400,
+    });
   });
 
   it('marks Notion as first-party remote MCP brokered by camelAI', async () => {
@@ -1336,8 +1726,14 @@ describe('connections runtime', () => {
     });
   });
 
-  it('rejects non-read-only SQL database MCP queries before calling the data proxy', async () => {
-    const fetchMock = vi.fn();
+  it('forwards SQL database MCP queries without keyword filtering', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        mode: 'read',
+        query: 'delete from users LIMIT 100',
+      });
+      return new Response(JSON.stringify({ rowsAffected: [3] }));
+    });
     vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
@@ -1350,16 +1746,18 @@ describe('connections runtime', () => {
       }),
     ];
 
-    await expect(callConnectionTool({
+    const result = await callConnectionTool({
       ...envWith(records),
       SANDBOX_HOST_URL: 'https://sandbox.test',
     }, context, 'pg_main', 'execute_sql_readonly', {
       query: 'delete from users',
-    })).rejects.toMatchObject({
-      message: 'SQL database MCP only accepts read-only SELECT, WITH, SHOW, DESCRIBE, or EXPLAIN queries.',
-      status: 400,
+    }) as { content: Array<{ text: string }> };
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      rows: [],
+      rowsAffected: [3],
     });
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('queries Mixpanel top events through the platform broker', async () => {
@@ -1518,8 +1916,27 @@ describe('connections runtime', () => {
     });
   });
 
-  it('rejects non-read-only BigQuery SQL before calling the API', async () => {
-    const fetchMock = vi.fn();
+  it('forwards BigQuery SQL without keyword filtering', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      const body = JSON.parse(String(init?.body));
+      if (target.endsWith('/projects/demo-project/jobs')) {
+        expect(body.configuration.query.query).toBe('delete from warehouse.users where true');
+        return new Response(JSON.stringify({
+          statistics: { query: { totalBytesProcessed: '12', totalBytesBilled: '0' } },
+        }));
+      }
+      if (target.endsWith('/projects/demo-project/queries')) {
+        expect(body.query).toBe('delete from warehouse.users where true');
+        return new Response(JSON.stringify({
+          jobComplete: true,
+          totalRows: '0',
+          schema: { fields: [] },
+          rows: [],
+        }));
+      }
+      return new Response(JSON.stringify({ error: { message: `unexpected URL ${target}` } }), { status: 500 });
+    });
     vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
@@ -1535,13 +1952,15 @@ describe('connections runtime', () => {
       }),
     ];
 
-    await expect(callConnectionTool(envWith(records), context, 'bq_prod', 'execute_sql_readonly', {
+    const result = await callConnectionTool(envWith(records), context, 'bq_prod', 'execute_sql_readonly', {
       query: 'delete from warehouse.users where true',
-    })).rejects.toMatchObject({
-      message: 'BigQuery MCP only accepts read-only SELECT or WITH queries.',
-      status: 400,
+    }) as { content: Array<{ text: string }> };
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      projectId: 'demo-project',
+      totalRows: '0',
     });
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('serves BigQuery tools from the integrations MCP broker endpoint', async () => {

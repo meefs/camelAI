@@ -5,13 +5,11 @@
  * - Sandbox host (services/sandbox-host/): Manages Docker container lifecycle,
  *   host filesystem operations, container exec, and API traffic.
  * - This module: Provides FS/exec APIs for dashboard routes, builds
- *   thread-specific env vars for integration-backed tools.
+ *   thread-specific env vars for chat and app access.
  *
  * All sandbox traffic (lifecycle, FS, exec, data proxy) routes through the
  * sandbox host — CF Workers can't reach Docker bridge IPs directly.
  */
-import { mapCredentialsToEnvVars } from "./integration-env";
-import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
   DEFAULT_LLM_MODEL,
   DEFAULT_CODEX_MODEL,
@@ -130,8 +128,6 @@ export interface ChatRunnerEnvOptions {
   threadId: string;
   provider: "claude" | "codex";
 }
-
-const INTEGRATION_ENV_FILE_PATH = "/home/claude/.chiridion/integration.env";
 
 function toIsoTime(ms: number): string {
   return new Date(ms).toISOString();
@@ -544,15 +540,8 @@ export class WorkspaceContainer {
     console.log(
       `[Sandbox] buildChatRunnerEnv: thread=${options.threadId} provider=${options.provider}`,
     );
-    const integrationEnv = await this.fetchIntegrationEnvVars();
-
     // Create a dispatcher session so Playwright scripts can access private deployed apps
     const appSessionEnv = await this.createAppAccessSession();
-
-    await this.writeIntegrationEnvFileToSandbox({
-      ...integrationEnv,
-      ...appSessionEnv,
-    });
 
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
     const thread = await orgStub.getThread(options.threadId);
@@ -570,15 +559,13 @@ export class WorkspaceContainer {
           ? normalizeLlmModel(undefined, "codex", llmProviderRecord?.provider)
           : DEFAULT_LLM_MODEL;
 
-    integrationEnv.CHIRIDION_CLAUDE_MODEL =
-      threadProvider === "claude" ? threadModel : DEFAULT_LLM_MODEL;
-    integrationEnv.CHIRIDION_CODEX_MODEL =
-      threadProvider === "codex" ? threadModel : DEFAULT_CODEX_MODEL;
-
     return {
       envVars: {
-        ...integrationEnv,
         ...appSessionEnv,
+        CHIRIDION_CLAUDE_MODEL:
+          threadProvider === "claude" ? threadModel : DEFAULT_LLM_MODEL,
+        CHIRIDION_CODEX_MODEL:
+          threadProvider === "codex" ? threadModel : DEFAULT_CODEX_MODEL,
         CHIRIDION_CHAT_PROVIDER: options.provider,
       },
     };
@@ -604,8 +591,6 @@ export class WorkspaceContainer {
     }
   }
 
-  // ─── Integration Env Vars ────────────────────────────────
-
   async buildContainerCommandEnv(): Promise<Record<string, string>> {
     const env: Record<string, string> = {
       WORKSPACE_ID: this.workspaceId,
@@ -618,123 +603,8 @@ export class WorkspaceContainer {
       env.CF_DISPATCH_NAMESPACE = dispatchNamespace;
     }
 
-    // Compatibility: keep INT_* credentials available to shell commands for now.
-    // Follow-up PR should remove this once connection method bindings are the only
-    // supported integration interface.
-    Object.assign(env, await this.fetchIntegrationEnvVars());
     Object.assign(env, await this.createAppAccessSession());
     return env;
-  }
-
-  /**
-   * Write integration env vars to a dotenv file on the sandbox.
-   */
-  private async writeIntegrationEnvFileToSandbox(
-    envVars: Record<string, string>,
-  ): Promise<boolean> {
-    try {
-      const lines: string[] = [];
-      for (const [key, value] of Object.entries(envVars)) {
-        const escaped = value
-          .replace(/\\/g, "\\\\")
-          .replace(/"/g, '\\"')
-          .replace(/\n/g, "\\n");
-        lines.push(`export ${key}="${escaped}"`);
-      }
-      const content = lines.join("\n") + "\n";
-      const result = await this.writeFile(INTEGRATION_ENV_FILE_PATH, content);
-      if (!result.success) {
-        console.error(
-          `[Sandbox] writeIntegrationEnvFileToSandbox: write failed: ${result.error}`,
-        );
-        return false;
-      }
-      console.log(
-        `[Sandbox] writeIntegrationEnvFileToSandbox: wrote ${lines.length} vars to ${INTEGRATION_ENV_FILE_PATH}`,
-      );
-      return true;
-    } catch (err) {
-      console.error("[Sandbox] writeIntegrationEnvFileToSandbox: error:", err);
-      return false;
-    }
-  }
-
-  private async fetchIntegrationEnvVarsWithStatus(): Promise<{
-    envVars: Record<string, string>;
-    success: boolean;
-  }> {
-    const workspaceId = this.workspaceId;
-    const integrationEnvVars: Record<string, string> = {};
-    const startedAt = Date.now();
-    let integrationCount = 0;
-    let getIntegrationsMs = 0;
-    let decryptAndMapMs = 0;
-    try {
-      const workspaceStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(workspaceId),
-      );
-      const getIntegrationsStartedAt = Date.now();
-      const records = await workspaceStub.getIntegrations();
-      getIntegrationsMs = Date.now() - getIntegrationsStartedAt;
-      integrationCount = records.length;
-
-      const decryptStartedAt = Date.now();
-      for (const record of records) {
-        const credentials = record.credentials_encrypted
-          ? await decryptCredentials(
-              record.credentials_encrypted,
-              this.env.INTEGRATION_SECRET_KEY,
-            )
-          : {};
-        const config = JSON.parse(record.config) as Record<string, unknown>;
-        Object.assign(
-          integrationEnvVars,
-          mapCredentialsToEnvVars(
-            record.name,
-            record.integration_type,
-            credentials,
-            config,
-          ),
-        );
-      }
-      decryptAndMapMs = Date.now() - decryptStartedAt;
-
-      console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`,
-      );
-      return { envVars: integrationEnvVars, success: true };
-    } catch (e) {
-      console.error(
-        "[WorkspaceContainer] Failed to fetch integration env vars:",
-        e,
-      );
-      console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`,
-      );
-      return { envVars: integrationEnvVars, success: false };
-    }
-  }
-
-  async fetchIntegrationEnvVars(): Promise<Record<string, string>> {
-    const { envVars } = await this.fetchIntegrationEnvVarsWithStatus();
-    return envVars;
-  }
-
-  async pushIntegrationEnvVars(
-    envVars: Record<string, string>,
-  ): Promise<boolean> {
-    return this.writeIntegrationEnvFileToSandbox(envVars);
-  }
-
-  async refreshIntegrationEnvVars(): Promise<boolean> {
-    const { envVars, success } = await this.fetchIntegrationEnvVarsWithStatus();
-    if (!success) {
-      console.warn(
-        `[WorkspaceContainer] refreshIntegrationEnvVars: skipping env file write due to fetch failure workspace=${this.workspaceId}`,
-      );
-      return false;
-    }
-    return this.pushIntegrationEnvVars(envVars);
   }
 
   // ─── Public FS API ───────────────────────────────────────

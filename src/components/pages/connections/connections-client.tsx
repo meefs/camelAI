@@ -10,6 +10,7 @@ import { APP_BUILD_ID } from '@/lib/app-build-id';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
+import { hasBrokeredProviderMcp } from '@/lib/provider-mcp-registry';
 import {
   buildSlugMap,
   filterMentionableConnections,
@@ -85,13 +86,33 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
   unauthorized: 'Please log in to connect services.',
 };
 
+const REMOTE_MCP_OAUTH_REASON_MESSAGES: Record<string, string> = {
+  discovery_failed: 'Remote MCP OAuth discovery failed: the server did not advertise an OAuth authorization server.',
+  metadata_failed: 'Remote MCP OAuth discovery failed: authorization server metadata could not be loaded.',
+  registration_unsupported: 'Remote MCP OAuth is not available: the authorization server does not support dynamic client registration.',
+  registration_failed: 'Remote MCP OAuth client registration failed. Check worker logs for the upstream response.',
+};
+
+function oauthErrorMessage(error: string, reason: string | null): string {
+  if (error === 'oauth_config' && reason && REMOTE_MCP_OAUTH_REASON_MESSAGES[reason]) {
+    return REMOTE_MCP_OAUTH_REASON_MESSAGES[reason];
+  }
+  return OAUTH_ERROR_MESSAGES[error] || `Connection failed: ${error}`;
+}
+
 const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   slack_connected: 'Successfully connected to Slack!',
   notion_connected: 'Successfully connected to Notion!',
+  remote_mcp_connected: 'Successfully connected to the remote MCP server!',
 };
 
 const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
   '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to.</camelai system message>';
+
+function connectionAuthLabel(type: IntegrationDefinition): string {
+  if (type.type === 'remote_mcp' || hasBrokeredProviderMcp(type.type)) return 'MCP';
+  return type.authMethod === 'oauth2' ? 'OAuth' : 'API Key';
+}
 
 export default function ConnectionsClient({
   initialConnections,
@@ -192,12 +213,14 @@ export default function ConnectionsClient({
   // Handle OAuth success/error from URL params
   useEffect(() => {
     const errorParam = searchParams.get('error');
+    const reasonParam = searchParams.get('reason');
     const successParam = searchParams.get('success');
 
     if (errorParam) {
-      setError(OAUTH_ERROR_MESSAGES[errorParam] || `Connection failed: ${errorParam}`);
+      setError(oauthErrorMessage(errorParam, reasonParam));
       // Clear the param from URL
       searchParams.delete('error');
+      searchParams.delete('reason');
       setSearchParams(searchParams, { replace: true });
     }
 
@@ -703,7 +726,7 @@ export default function ConnectionsClient({
                                     {type.displayName}
                                   </div>
                                   <div className="text-xs text-muted-foreground">
-                                    {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                                    {connectionAuthLabel(type)}
                                   </div>
                                 </div>
                                 <Plus className="size-4 shrink-0 text-muted-foreground" />
@@ -743,7 +766,7 @@ export default function ConnectionsClient({
                                         {type.displayName}
                                       </div>
                                       <div className="text-xs text-muted-foreground">
-                                        {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                                        {connectionAuthLabel(type)}
                                       </div>
                                     </div>
                                     <Plus className="size-4 shrink-0 text-muted-foreground" />

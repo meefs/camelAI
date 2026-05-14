@@ -63,7 +63,7 @@ export function listDatabricksMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a read-only SELECT/WITH/SHOW/DESCRIBE query through a SQL warehouse.',
+      description: 'Execute a SQL query through a SQL warehouse.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -201,16 +201,9 @@ function warehouseIdFromArgs(client: DatabricksClient, args: Record<string, unkn
 
 function normalizeReadOnlyQuery(query: string, limit: number): string {
   const trimmed = query.trim().replace(/;\s*$/, '');
-  if (!/^(select|with|show|describe|desc)\b/i.test(trimmed) || trimmed.includes(';')) {
-    throw Object.assign(new Error('Databricks MCP only accepts a single read-only SELECT, WITH, SHOW, or DESCRIBE query.'), { status: 400 });
-  }
-  if (/\b(insert|update|delete|merge|create|drop|alter|truncate|grant|revoke|copy|optimize|vacuum|restore)\b/i.test(trimmed)) {
-    throw Object.assign(new Error('Databricks MCP rejected a non-read-only query keyword.'), { status: 400 });
-  }
   if (/^(select|with)\b/i.test(trimmed) && !/\blimit\b/i.test(trimmed)) return `${trimmed} LIMIT ${limit}`;
   return trimmed;
 }
-
 function quoteIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_ -]*$/.test(value)) {
     throw Object.assign(new Error('identifier contains invalid characters.'), { status: 400 });

@@ -559,7 +559,7 @@ export function MessageBubble({
   suppressFinalizedState = false,
   showActionRow = true,
   actionCopyContent,
-  actionHoverClassName = "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+  actionHoverClassName = "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100",
   skillSheets,
   hostname,
   orgSlug,
@@ -694,7 +694,7 @@ export function MessageBubble({
           />
           {showActionRow && (
             <div
-              className={cn("flex items-center gap-0.5", actionVisibilityClassName)}
+              className={cn("flex items-center gap-0.5 pointer-coarse:gap-1", actionVisibilityClassName)}
               role="group"
               aria-label="Message actions"
             >
@@ -711,7 +711,7 @@ export function MessageBubble({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    className="text-muted-foreground"
+                    className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
                     onClick={() => onCopy(message.id, bugReport.originalText)}
                   >
                     {isCopied ? <Check /> : <Copy />}
@@ -763,7 +763,7 @@ export function MessageBubble({
         {/* Hover action row */}
         {showActionRow && (
           <div
-            className={cn("flex items-center gap-0.5", actionVisibilityClassName)}
+            className={cn("flex items-center gap-0.5 pointer-coarse:gap-1", actionVisibilityClassName)}
             role="group"
             aria-label="Message actions"
           >
@@ -780,7 +780,7 @@ export function MessageBubble({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="text-muted-foreground"
+                  className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
                   onClick={() => onCopy(message.id, actionCopyContent ?? contentToString(cleanedContent))}
                 >
                   {isCopied ? <Check /> : <Copy />}
@@ -816,7 +816,7 @@ export function MessageBubble({
       {/* Hover action row */}
       {hasContent && !suppressFinalizedState && showActionRow && (
         <div
-          className={cn("flex items-center gap-0.5", actionVisibilityClassName)}
+          className={cn("flex items-center gap-0.5 pointer-coarse:gap-1", actionVisibilityClassName)}
           role="group"
           aria-label="Message actions"
         >
@@ -829,7 +829,7 @@ export function MessageBubble({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="text-muted-foreground"
+                  className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
                   disabled={isForking}
                   onClick={() => onFork(forkTargetId, message.id)}
                 >
@@ -846,7 +846,7 @@ export function MessageBubble({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="text-muted-foreground"
+                className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
                 onClick={() => onCopy(message.id, actionCopyContent ?? contentToString(message.content))}
               >
                 {isCopied ? <Check /> : <Copy />}

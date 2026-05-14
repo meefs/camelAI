@@ -190,9 +190,8 @@ Extend the environment-variables block in `sandbox/control-plane.mjs:331-346` so
 | `DATA_PROXY_URL`  | Thread-scoped SQL proxy base URL (SQL Server/PostgreSQL/MySQL; sandbox-authenticated) |
 | `OPENAI_PROXY_URL`| Thread-scoped OpenAI-compatible proxy base URL                                        |
 | ...                                                                                                       |
-| `INT_*`           | Integration credentials (e.g., `INT_STRIPE_SECRET_KEY`)                               |
 
-Integration credentials auto-sync to deployed workers as secrets.
+Integration credentials are accessed through the virtual connections binding.
 
 ╭──── NEW (1 line, drop in right here) ─────────────────────────────╮
 │ Outbound DB traffic from `DATA_PROXY_URL` (and any other          │
@@ -202,9 +201,6 @@ Integration credentials auto-sync to deployed workers as secrets.
 │ `20.46.233.68` on their database firewall / VPC security group.   │
 ╰───────────────────────────────────────────────────────────────────╯
 
-If environment variables (especially `INT_*` integration credentials) appear
-stale or missing during a session, manually re-source the env file:
-```
 
 Do **not** repeat this in every skill file — one mention in the always-on system append is enough and keeps the guidance authoritative.
 

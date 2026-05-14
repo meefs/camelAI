@@ -183,15 +183,38 @@ The template includes a `CONNECTIONS` service binding by default.
 - Local dev: `CONNECTIONS` resolves to `LocalConnectionsService` in `workers/connections.ts`
 - camelAI deploy: platform rewrites this binding to the internal `ConnectionsService`
 
-Use `CONNECTIONS.methods()` to inspect available connection aliases, method names, and input schemas. Use `createConnections()` for method-style calls:
+Use `CONNECTIONS.find()` for the shortest path to a connection, or `CONNECTIONS.methods()` to inspect all available aliases, method names, input schemas, and examples. Use `createConnections()` for method-style calls:
 
 ```typescript
 import { createConnections } from "~/lib/connections";
 
-const methods = await context.cloudflare.env.CONNECTIONS.methods();
 const connections = createConnections(context.cloudflare.env);
-const customers = await connections.stripeProd.listCustomers({ limit: 10 });
+const stripe = await context.cloudflare.env.CONNECTIONS.find("stripe");
+const customers = await connections[stripe.alias].listCustomers({ limit: 10 });
 ```
+
+Database-style connections expose a normalized `query` method:
+
+```typescript
+const connections = createConnections(context.cloudflare.env);
+const clickhouse = await context.cloudflare.env.CONNECTIONS.find("clickhouse");
+const result = await connections[clickhouse.alias].query({ query: "SELECT 1 AS ok" });
+```
+
+Custom connections with type `other` expose a generic authenticated HTTP method
+named `fetch`. Use it like normal `fetch(input, init)`:
+
+```typescript
+const custom = await context.cloudflare.env.CONNECTIONS.find({ type: "other" });
+
+const response = await connections[custom.alias].fetch("/v1/items?limit=10", {
+  method: "GET",
+});
+const result = await response.json();
+```
+
+Relative URLs are resolved against the connection `base_url`; camelAI applies the
+stored auth settings automatically.
 
 ### Virtual AI Binding (`AI`)
 

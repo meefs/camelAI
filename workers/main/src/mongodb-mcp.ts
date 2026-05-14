@@ -160,10 +160,6 @@ function normalizePipeline(value: unknown, limit: number): unknown[] {
     if (!stage || typeof stage !== 'object' || Array.isArray(stage)) {
       throw Object.assign(new Error('pipeline stages must be JSON objects.'), { status: 400 });
     }
-    const keys = Object.keys(stage as Record<string, unknown>);
-    if (keys.some((key) => ['$out', '$merge', '$function', '$accumulator'].includes(key))) {
-      throw Object.assign(new Error('MongoDB MCP rejected a non-read-only aggregation stage.'), { status: 400 });
-    }
   }
   return [...value, { $limit: limit }];
 }

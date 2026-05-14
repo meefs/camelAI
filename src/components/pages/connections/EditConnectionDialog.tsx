@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle, Key } from 'lucide-react';
+import { AlertCircle, ExternalLink, Key } from 'lucide-react';
 
 interface EditConnectionDialogProps {
   open: boolean;
@@ -49,6 +49,40 @@ const applyDefaults = (
   }
   return next;
 };
+
+function shouldShowConfigField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'auth_header') {
+    return config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function shouldShowCredentialField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function isCredentialFieldRequired(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>,
+  schemaRequired: boolean
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return schemaRequired;
+}
 
 export function EditConnectionDialog({
   open,
@@ -123,6 +157,10 @@ export function EditConnectionDialog({
   };
 
   if (!typeDef) return null;
+  const visibleCredentialFields = typeDef.credentialSchema.filter((field) =>
+    shouldShowCredentialField(connection.integration_type, field.name, config)
+  );
+  const isRemoteMcpOAuth = connection.integration_type === 'remote_mcp' && config.auth_type === 'oauth';
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -157,7 +195,7 @@ export function EditConnectionDialog({
             </div>
 
             {/* Config fields */}
-            {typeDef.configSchema.map((field) => (
+            {typeDef.configSchema.filter((field) => shouldShowConfigField(connection.integration_type, field.name, config)).map((field) => (
               <div key={field.name} className="grid gap-1.5">
                 <Label htmlFor={`edit-${field.name}`}>
                   {field.label}
@@ -201,7 +239,7 @@ export function EditConnectionDialog({
             ))}
 
             {/* Credentials section */}
-            {typeDef.credentialSchema.length > 0 && (
+            {visibleCredentialFields.length > 0 && (
               <>
                 <div className="mt-2 border-t pt-4">
                   <div className="mb-3 flex items-center justify-between">
@@ -227,46 +265,61 @@ export function EditConnectionDialog({
                       </AlertDescription>
                     </Alert>
                   ) : (
-                    typeDef.credentialSchema.map((field) => (
-                      <div key={field.name} className="mb-3 grid gap-1.5">
-                        <Label htmlFor={`edit-cred-${field.name}`}>
-                          {field.label}
-                          {field.required && (
-                            <span className="ml-1 text-red-400">*</span>
+                    visibleCredentialFields.map((field) => {
+                      const required = isCredentialFieldRequired(
+                        connection.integration_type,
+                        field.name,
+                        config,
+                        field.required
+                      );
+                      return (
+                        <div key={field.name} className="mb-3 grid gap-1.5">
+                          <Label htmlFor={`edit-cred-${field.name}`}>
+                            {field.label}
+                            {required && (
+                              <span className="ml-1 text-red-400">*</span>
+                            )}
+                          </Label>
+                          {field.type === 'textarea' ? (
+                            <Textarea
+                              id={`edit-cred-${field.name}`}
+                              value={(credentials[field.name] as string) || ''}
+                              onChange={(e) =>
+                                handleCredentialChange(field.name, e.target.value)
+                              }
+                              placeholder={field.placeholder}
+                              required={shouldUpdateCredentials && required}
+                              rows={6}
+                              className="font-mono text-xs"
+                            />
+                          ) : (
+                            <Input
+                              id={`edit-cred-${field.name}`}
+                              type={field.type === 'password' ? 'password' : 'text'}
+                              value={(credentials[field.name] as string) || ''}
+                              onChange={(e) =>
+                                handleCredentialChange(field.name, e.target.value)
+                              }
+                              placeholder={field.placeholder}
+                              required={shouldUpdateCredentials && required}
+                            />
                           )}
-                        </Label>
-                        {field.type === 'textarea' ? (
-                          <Textarea
-                            id={`edit-cred-${field.name}`}
-                            value={(credentials[field.name] as string) || ''}
-                            onChange={(e) =>
-                              handleCredentialChange(field.name, e.target.value)
-                            }
-                            placeholder={field.placeholder}
-                            required={shouldUpdateCredentials && field.required}
-                            rows={6}
-                            className="font-mono text-xs"
-                          />
-                        ) : (
-                          <Input
-                            id={`edit-cred-${field.name}`}
-                            type={field.type === 'password' ? 'password' : 'text'}
-                            value={(credentials[field.name] as string) || ''}
-                            onChange={(e) =>
-                              handleCredentialChange(field.name, e.target.value)
-                            }
-                            placeholder={field.placeholder}
-                            required={shouldUpdateCredentials && field.required}
-                          />
-                        )}
-                        {field.description && (
-                          <p className="text-xs text-muted-foreground">{field.description}</p>
-                        )}
-                      </div>
-                    ))
+                          {field.description && (
+                            <p className="text-xs text-muted-foreground">{field.description}</p>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </>
+            )}
+            {isRemoteMcpOAuth && (
+              <Alert>
+                <AlertDescription>
+                  OAuth credentials are managed by the remote MCP authorization flow.
+                </AlertDescription>
+              </Alert>
             )}
             </div>
           </div>
@@ -283,6 +336,20 @@ export function EditConnectionDialog({
             <Button type="submit" disabled={submitting}>
               {submitting ? 'Saving...' : 'Save Changes'}
             </Button>
+            {isRemoteMcpOAuth && (
+              <Button
+                type="button"
+                onClick={() => {
+                  window.location.href = `/api/integrations/remote_mcp/oauth?${new URLSearchParams({
+                    integration_id: connection.id,
+                    redirect: '/connections',
+                  }).toString()}`;
+                }}
+              >
+                <ExternalLink className="mr-2 size-4" />
+                Connect OAuth
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>

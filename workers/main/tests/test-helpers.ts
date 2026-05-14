@@ -16,8 +16,7 @@ import type { AdminIndexDO } from '../src/admin-index-do';
 import type { AuthEnv } from '../../../src/lib/auth-helpers';
 import { hashPassword, verifyPassword } from '../src/password';
 import { getSession, updateSession, destroySession, type SessionData } from '../src/session-kv';
-import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
-import { mapCredentialsToEnvVars } from '../src/integration-env';
+import { encryptCredentials } from '../../../src/lib/integration-crypto';
 // Production business logic - delegated to instead of reimplemented
 import {
   acceptInvitation as prodAcceptInvitation,
@@ -703,26 +702,6 @@ export async function getWorkspaceIntegrations(
   const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const integrations = await workspaceStub.getIntegrations();
   return integrations.map((i) => ({ id: i.id, name: i.name }));
-}
-
-export async function getWorkspaceIntegrationEnvVars(
-  env: TestEnv,
-  workspaceId: string
-): Promise<Record<string, string>> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const records = await workspaceStub.getIntegrations();
-  const secretKey = env.INTEGRATION_SECRET_KEY || 'test-secret-key-for-integration-tests';
-
-  const envVars: Record<string, string> = {};
-  for (const record of records) {
-    if (!record.credentials_encrypted) continue;
-
-    const credentials = await decryptCredentials(record.credentials_encrypted, secretKey);
-    const config = JSON.parse(record.config) as Record<string, unknown>;
-    Object.assign(envVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
-  }
-
-  return envVars;
 }
 
 // ============ Session Operations ============

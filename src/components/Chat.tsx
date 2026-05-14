@@ -199,6 +199,10 @@ interface ChatProps {
   chatGroupId?: string | null;
   initialWelcomeInput?: string | null;
   connections?: Integration[];
+  onSnapshotChange?: (snapshot: {
+    messages: Message[];
+    todos: TodoItem[];
+  }) => void;
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -218,6 +222,7 @@ function resolveSelectedThreadModel(args: {
   availableThreadModels: ReadonlyArray<ModelCatalogEntry>;
   effectivePickerDefaultModel: LlmModel | null;
   hasEffectivePickerDefault: boolean;
+  recentModel?: LlmModel | null;
 }): LlmModel {
   if (args.threadId && args.threadModel) {
     return args.threadModel;
@@ -227,6 +232,7 @@ function resolveSelectedThreadModel(args: {
     effectiveDefaultModel: args.hasEffectivePickerDefault
       ? args.effectivePickerDefaultModel
       : null,
+    recentModel: args.recentModel,
     fallbackModel: getDefaultLlmModel(
       args.initialThreadProvider,
       args.llmProvider,
@@ -1259,7 +1265,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
                   }
                   actionHoverClassName={
                     messageGroup.isAssistantTurn
-                      ? "opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+                      ? "opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100 pointer-coarse:opacity-100"
                       : undefined
                   }
                   skillSheets={skillSheetsByToolId}
@@ -1501,6 +1507,7 @@ export default function Chat({
   chatGroupId = null,
   initialWelcomeInput,
   connections,
+  onSnapshotChange,
   welcomeData,
 }: ChatProps) {
   const navigate = useNavigate();
@@ -1584,6 +1591,14 @@ export default function Chat({
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
+
+  useEffect(() => {
+    if (!threadId || readOnly) return;
+    onSnapshotChange?.({
+      messages,
+      todos: currentTodos,
+    });
+  }, [currentTodos, messages, onSnapshotChange, readOnly, threadId]);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
   const [connectionSetupPrompt, setConnectionSetupPrompt] =
@@ -1953,6 +1968,10 @@ export default function Chat({
     initialThreadProvider,
   );
   const appliedRecentModelScopeRef = useRef<string | null>(null);
+  const optimisticThreadModelRef = useRef<{
+    threadId: string;
+    model: LlmModel;
+  } | null>(null);
   const availableThreadModels = useMemo<ModelCatalogEntry[]>(() => {
     if (Array.isArray(allowedThreadModels)) {
       return modelCatalogEntriesForIds(allowedThreadModels);
@@ -2323,6 +2342,23 @@ export default function Chat({
   }, [currentTodos, isStreaming]);
 
   useEffect(() => {
+    const optimistic = optimisticThreadModelRef.current;
+    if (
+      threadId &&
+      optimistic?.threadId === threadId &&
+      threadModel !== optimistic.model
+    ) {
+      return;
+    }
+    if (
+      threadId &&
+      optimistic?.threadId === threadId &&
+      threadModel === optimistic.model
+    ) {
+      optimisticThreadModelRef.current = null;
+    }
+    const recentModel =
+      !threadId && modelRecentScope ? getRecentModel(modelRecentScope) : null;
     setActiveThreadProvider(initialThreadProvider);
     setSelectedThreadModel(
       resolveSelectedThreadModel({
@@ -2334,10 +2370,12 @@ export default function Chat({
         availableThreadModels,
         effectivePickerDefaultModel,
         hasEffectivePickerDefault,
+        recentModel,
       }),
     );
   }, [
     allowedThreadModels,
+    availableThreadModels,
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
     initialThreadProvider,
@@ -4822,12 +4860,13 @@ export default function Chat({
         pendingNewChatRef.current = null;
       } else if (data.error) {
         // Thread creation failed
+        if (data.reloadRequired) {
+          window.location.reload();
+          return;
+        }
         const pendingNewChat = pendingNewChatRef.current;
         setIsCreatingThread(false);
         setError(normalizeChatErrorMessage(data.error));
-        if (data.reloadRequired) {
-          toast.error(normalizeChatErrorMessage(data.error));
-        }
         if (pendingNewChat?.draftText !== undefined) {
           setWelcomeInput(pendingNewChat.draftText);
           setAttachments(pendingNewChat.draftAttachments ?? []);
@@ -4869,6 +4908,7 @@ export default function Chat({
     )
       return;
     if (updateThreadModelFetcher.data.error) {
+      optimisticThreadModelRef.current = null;
       setActiveThreadProvider(initialThreadProvider);
       setSelectedThreadModel(
         resolveSelectedThreadModel({
@@ -4889,6 +4929,7 @@ export default function Chat({
       const nextModel = updateThreadModelFetcher.data.thread.model;
       const nextProvider = updateThreadModelFetcher.data.thread.provider;
       const nextSelectionKey = `${nextProvider}/${nextModel}`;
+      optimisticThreadModelRef.current = null;
       setActiveThreadProvider(nextProvider);
       setSelectedThreadModel(nextModel);
       if (
@@ -4943,6 +4984,7 @@ export default function Chat({
       setActiveThreadProvider(
         getProviderForModel(nextModel, activeThreadProvider),
       );
+      optimisticThreadModelRef.current = { threadId, model: nextModel };
       updateThreadModelFetcher.submit(
         { intent: "updateThreadModel", model: nextModel },
         { method: "post" },

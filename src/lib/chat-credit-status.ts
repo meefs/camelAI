@@ -1,4 +1,6 @@
 import type { OrgBillingOverview } from '@/lib/billing.server';
+import type { ChatHarness } from '@/types';
+import { getChatHarnessesForLlmProvider } from './llm-provider-config';
 
 export interface BillingCreditStatus {
   availableCreditsCents: number;
@@ -13,7 +15,8 @@ export type DevChatCreditState = 'low' | 'low-byok' | 'exhausted' | 'exhausted-b
 
 export function buildBillingCreditStatus(
   overview: OrgBillingOverview | null,
-  hasByokProvider: boolean,
+  byokProvider: string | null | undefined | boolean,
+  threadProvider?: ChatHarness | null,
 ): BillingCreditStatus | null {
   if (!overview || overview.billing_status === 'enterprise') {
     return null;
@@ -29,6 +32,14 @@ export function buildBillingCreditStatus(
   const isExhausted = overview.available_credits_cents <= 0;
   const isLow = !isExhausted && usedPercent >= 80;
   if (!isLow && !isExhausted) {
+    return null;
+  }
+  const hasByokProvider = Boolean(byokProvider);
+  if (
+    typeof byokProvider === 'string' &&
+    threadProvider &&
+    getChatHarnessesForLlmProvider(byokProvider).includes(threadProvider)
+  ) {
     return null;
   }
 

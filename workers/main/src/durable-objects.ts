@@ -37,14 +37,11 @@ import {
   validateConfig,
   validateCredentials,
 } from "../../../src/lib/integration-registry";
-import { getEnvVarSuffixesForType, normalizeEnvVarName } from "./integration-env";
 import {
   createOrRefreshCustomHostname,
   deleteCustomHostname,
   findCustomHostnameByHostname,
   getCustomHostnameStatus,
-  syncAllWorkspaceWorkerSecrets,
-  type CfApiProxyEnv,
 } from "./cf-api-proxy";
 import { createSignedToken } from "./signed-tokens";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
@@ -60,10 +57,12 @@ import {
   shouldRetryAppCustomDomainProvisioning,
 } from "../../../src/lib/custom-domain-state";
 import {
+  findConnectionMethodEntry,
   getConnection,
   listConnectionMethods,
   listConnections,
   listConnectionTools,
+  testConnectionMethodEntry,
 } from "./connections-runtime";
 import {
   PI_SKILL_NAMES,
@@ -79,6 +78,10 @@ import {
 } from "./pi-container-tools";
 import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 import { parseFilePreviewPath } from "./preview-paths";
+import {
+  recordErrorEvent,
+  recordObservabilityEvent,
+} from "./observability";
 
 export type PreviewTarget =
   | {
@@ -219,6 +222,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
+  INTEGRATION_SECRET_KEY: string;
   TOKEN_SIGNING_SECRET: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
   CF_DISPATCH_NAMESPACE?: string;
@@ -227,6 +231,8 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
   CODE_MODE_LOADER?: WorkerLoader;
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
+  ERROR_ANALYTICS?: AnalyticsEngineDataset;
   CF_ZONE_ID?: string;
   CF_API_TOKEN?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
@@ -1053,19 +1059,27 @@ const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = [
   },
   {
     name: "connections_list",
-    description: "List workspace connections. Prefer CONNECTIONS.list().",
+    description: "List workspace connections. Prefer calling this from js_exec as await env.CONNECTIONS.list().",
   },
   {
     name: "connections_get",
-    description: "Get one workspace connection. Prefer CONNECTIONS.get(connection). Arguments: { connection }.",
+    description: "Get one workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.get(connection). Arguments: { connection }.",
   },
   {
     name: "connections_tools",
-    description: "List tools for a workspace connection. Prefer CONNECTIONS.tools(connection). Arguments: { connection }.",
+    description: "List MCP-backed tools for a workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.tools(connection). Arguments: { connection }.",
   },
   {
     name: "connections_methods",
-    description: "List workspace connections and their method aliases, tool names, and input schemas. Prefer CONNECTIONS.methods().",
+    description: "List workspace connections and their method aliases, tool names, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
+  },
+  {
+    name: "connections_find",
+    description: "Find one workspace connection method catalog entry by alias, id, type, or name. Prefer calling this from js_exec as await env.CONNECTIONS.find(query). Arguments: { query }.",
+  },
+  {
+    name: "connections_test",
+    description: "Run a quick workspace connection smoke test. Prefer calling this from js_exec as await env.CONNECTIONS.test(query). Arguments: { query }.",
   },
 ];
 
@@ -1499,6 +1513,24 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       case "connections_methods":
         return listConnectionMethods(this.env, this.connectionsContext);
 
+      case "connections_find":
+        return findConnectionMethodEntry(
+          this.env,
+          this.connectionsContext,
+          typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
+            ? args.query as string | Record<string, string>
+            : ""
+        );
+
+      case "connections_test":
+        return testConnectionMethodEntry(
+          this.env,
+          this.connectionsContext,
+          typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
+            ? args.query as string | Record<string, string>
+            : ""
+        );
+
       default:
         throw new Error(`Unknown code mode tool: ${name}`);
     }
@@ -1786,28 +1818,25 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       : integrations;
     return {
       count: filtered.length,
-      integrations: filtered.map((integration) => {
-        const dynamicFields = integration.integration_type === "other" && Array.isArray(integration.config.dynamic_fields)
-          ? integration.config.dynamic_fields as DynamicField[]
-          : undefined;
-        const envVarPrefix = `INT_${normalizeEnvVarName(integration.integration_type)}_${normalizeEnvVarName(integration.name)}`;
-        const envVarSuffixes = getEnvVarSuffixesForType(integration.integration_type, dynamicFields);
-        return {
-          id: integration.id,
-          type: integration.integration_type,
-          name: integration.name,
-          category: integration.category,
-          auth_method: integration.auth_method,
-          has_credentials: integration.has_credentials,
-          created_at: new Date(integration.created_at).toISOString(),
-          updated_at: new Date(integration.updated_at).toISOString(),
-          env_var_prefix: envVarPrefix,
-          env_vars: envVarSuffixes.map((suffix) => `${envVarPrefix}_${suffix}`),
-          display_name: integration.integration_type === "other" && typeof integration.config.display_name === "string"
-            ? integration.config.display_name
-            : undefined,
-        };
-      }),
+      integrations: filtered.map((integration) => ({
+        id: integration.id,
+        type: integration.integration_type,
+        name: integration.name,
+        category: integration.category,
+        auth_method: integration.auth_method,
+        has_credentials: integration.has_credentials,
+        created_at: new Date(integration.created_at).toISOString(),
+        updated_at: new Date(integration.updated_at).toISOString(),
+        recommended_access: {
+          tool: "js_exec",
+          inspect_methods: "await env.CONNECTIONS.methods()",
+          call_pattern: "await connections.<alias>.<method>({ ...input })",
+          connection_id: integration.id,
+        },
+        display_name: integration.integration_type === "other" && typeof integration.config.display_name === "string"
+          ? integration.config.display_name
+          : undefined,
+      })),
     };
   }
 
@@ -1880,16 +1909,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       credentialsEncrypted,
       this.ctx.props.userId || "system",
     );
-    await syncAllWorkspaceWorkerSecrets(
-      this.env as unknown as CfApiProxyEnv,
-      this.ctx.props.workspaceId,
-      this.ctx.props.orgId,
-    ).catch((err) => console.error("[CodeModeToolsBinding] Failed to sync integration secrets", err));
-    const dynamicFields = integrationType === "other" && Array.isArray(config.dynamic_fields)
-      ? config.dynamic_fields as DynamicField[]
-      : undefined;
-    const envVarPrefix = `INT_${normalizeEnvVarName(integrationType)}_${normalizeEnvVarName(name)}`;
-    const envVarSuffixes = getEnvVarSuffixesForType(integrationType, dynamicFields);
     return {
       success: true,
       integration: {
@@ -1897,8 +1916,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         type: integrationType,
         name,
         category: definition.category,
-        env_var_prefix: envVarPrefix,
-        env_vars: envVarSuffixes.map((suffix) => `${envVarPrefix}_${suffix}`),
+        recommended_access: {
+          tool: "js_exec",
+          inspect_methods: "await env.CONNECTIONS.methods()",
+          call_pattern: "await connections.<alias>.<method>({ ...input })",
+          connection_id: integrationId,
+        },
       },
       message: `Integration '${name}' created successfully.`,
     };
@@ -1958,8 +1981,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
     if (credentials._oauth_completed && credentials.integration_id) {
       const integrationId = String(credentials.integration_id);
-      const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
-      const envVarSuffixes = getEnvVarSuffixesForType(type);
       return {
         success: true,
         integration: {
@@ -1967,8 +1988,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           type,
           name,
           category: responseDefinition.category,
-          env_var_prefix: envVarPrefix,
-          env_vars: envVarSuffixes.map((suffix) => `${envVarPrefix}_${suffix}`),
+          recommended_access: {
+            tool: "js_exec",
+            inspect_methods: "await env.CONNECTIONS.methods()",
+            call_pattern: "await connections.<alias>.<method>({ ...input })",
+            connection_id: integrationId,
+          },
         },
         message: `Integration '${name}' connected successfully via OAuth.`,
       };
@@ -2671,14 +2696,68 @@ async function resolveCnameViaDoH(hostname: string): Promise<CnameLookupResult> 
   }
 }
 
+function shouldReturnLastCodeModeLine(line: string): boolean {
+  const statement = line.trim().replace(/;$/, "").trim();
+  if (!statement) return false;
+  if (statement.endsWith("}")) return false;
+  return !/^(?:break|case|catch|class|const|continue|debugger|default|do|else|export|finally|for|function|if|import|let|return|switch|throw|try|var|while|with)\b/.test(statement);
+}
+
+export function prepareCodeModeUserCode(userCode: string): string {
+  if (!userCode.trim() || /\breturn\b/.test(userCode)) return userCode;
+
+  const trailingWhitespace = userCode.match(/\s*$/)?.[0] ?? "";
+  const body = userCode.slice(0, userCode.length - trailingWhitespace.length);
+  const lines = body.split("\n");
+  const lastCodeLineIndex = lines.findLastIndex((line) => {
+    const trimmed = line.trim();
+    return trimmed !== "" && !trimmed.startsWith("//");
+  });
+  if (lastCodeLineIndex < 0) return userCode;
+
+  const lastLine = lines[lastCodeLineIndex];
+  if (!shouldReturnLastCodeModeLine(lastLine)) return userCode;
+
+  const indent = lastLine.match(/^\s*/)?.[0] ?? "";
+  const expression = lastLine.trim().replace(/;$/, "").trim();
+  lines[lastCodeLineIndex] = `${indent}return ${expression};`;
+  return `${lines.join("\n")}${trailingWhitespace}`;
+}
+
 function codeModeWorkerModule(userCode: string): string {
+  const executableUserCode = prepareCodeModeUserCode(userCode);
   return `${String.raw`
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 const store = new Map();
 
 function stringifyOutput(value) {
-  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function stringifyConsoleArg(value) {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.stack || value.message;
+  return stringifyOutput(value);
+}
+
+function createOutputConsole(output) {
+  const originalConsole = globalThis.console || {};
+  const capture = (...args) => {
+    output.push(args.map(stringifyConsoleArg).join(" "));
+  };
+  return Object.freeze({
+    ...originalConsole,
+    log: capture,
+    info: capture,
+    warn: capture,
+    error: capture,
+  });
 }
 
 function hardenTimingSurface() {
@@ -2703,10 +2782,48 @@ function hardenTimingSurface() {
 }
 
 function createConnectionsFacade(binding) {
+  function responseFromFetchPayload(payload) {
+    if (!payload || typeof payload !== "object" || typeof payload.status !== "number") {
+      return payload;
+    }
+    const headers = new Headers(payload.headers || {});
+    if (payload.truncated) headers.set("x-camelai-truncated", "true");
+    return new Response(payload.bodyText || "", {
+      status: payload.status,
+      statusText: payload.statusText || "",
+      headers,
+    });
+  }
+
+  async function serializeFetchInput(input) {
+    if (input instanceof Request) {
+      return {
+        input: input.url,
+        init: {
+          method: input.method,
+          headers: Object.fromEntries(input.headers.entries()),
+          body: input.method === "GET" || input.method === "HEAD" ? undefined : await input.text(),
+        },
+      };
+    }
+    return { input: String(input), init: {} };
+  }
+
+  function serializeFetchInit(init) {
+    if (!init || typeof init !== "object") return {};
+    const output = { ...init };
+    if (init.headers) {
+      output.headers = Object.fromEntries(new Headers(init.headers).entries());
+    }
+    return output;
+  }
+
   return new Proxy({}, {
     get(_target, connectionName) {
       if (connectionName === "then") return undefined;
       if (connectionName === "$methods") return () => binding.methods();
+      if (connectionName === "$find") return (query) => binding.find(query);
+      if (connectionName === "$test") return (query) => binding.test(query);
       if (connectionName === "$list") return () => binding.list();
       if (connectionName === "$get") return (connection) => binding.get(connection);
       if (connectionName === "$tools") return (connection) => binding.tools(connection);
@@ -2716,11 +2833,25 @@ function createConnectionsFacade(binding) {
         get(_connectionTarget, methodName) {
           if (methodName === "then") return undefined;
           if (typeof methodName !== "string") return undefined;
-          return (input = {}) => binding.__invoke({
-            connection: connectionName,
-            method: methodName,
-            input,
-          });
+          return async (...args) => {
+            let input = args[0] ?? {};
+            if (methodName === "fetch") {
+              const serialized = await serializeFetchInput(args[0] ?? "");
+              input = {
+                ...serialized,
+                init: {
+                  ...serialized.init,
+                  ...serializeFetchInit(args[1]),
+                },
+              };
+            }
+            const result = await binding.__invoke({
+              connection: connectionName,
+              method: methodName,
+              input,
+            });
+            return methodName === "fetch" ? responseFromFetchPayload(result) : result;
+          };
         },
       });
     },
@@ -2729,13 +2860,14 @@ function createConnectionsFacade(binding) {
 
 async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load) {
   "use strict";
-`}${userCode}${String.raw`
+`}${executableUserCode}${String.raw`
 }
 
 export class CodeModeRunner extends WorkerEntrypoint {
   async run() {
     hardenTimingSurface();
     const output = [];
+    globalThis.console = createOutputConsole(output);
     const allTools = Object.freeze((await this.env.TOOLS.listTools()).map((tool) => Object.freeze({
       name: tool.name,
       description: tool.description,
@@ -3140,6 +3272,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
   private piRecoveryInFlight: Promise<void> | null = null;
+  private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
 
   private trace(event: string, details: Record<string, unknown> = {}): void {
     if (!TRACE_CHAT_THREAD_DO) return;
@@ -3367,6 +3500,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piRecoveryInFlight = this.recoverInterruptedPiTurn(pendingPiTurn)
         .catch((error) => {
           console.error("[ChatThreadDO] failed to recover interrupted Pi turn", error);
+          this.persistPiAgentLoopErrorForDevelopers(error, {
+            source: "pi_turn_recovery",
+          });
           this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
         })
         .finally(() => {
@@ -4431,6 +4567,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         now,
       );
     });
+    this.recordChatThreadObservabilityEvent("pi_core_messages_replaced", {
+      operation: "replace",
+      status: "ok",
+      count: messages.length,
+    });
   }
 
   private appendPiCoreMessages(messages: AgentMessage[]): void {
@@ -4450,6 +4591,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         JSON.stringify(message),
         now,
       );
+    });
+    this.recordChatThreadObservabilityEvent("pi_core_messages_appended", {
+      operation: "append",
+      status: "ok",
+      count: messages.length,
+      size: startIndex,
     });
   }
 
@@ -4488,6 +4635,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return true;
     });
     this.appendPiCoreMessages(missing);
+    if (missing.length === 0) {
+      this.recordChatThreadObservabilityEvent("pi_core_messages_append_skipped", {
+        operation: "append_if_missing",
+        status: "duplicate",
+        count: 0,
+        size: messages.length,
+      });
+    }
   }
 
   private upsertPiCoreMessages(messages: AgentMessage[]): void {
@@ -4513,6 +4668,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const now = Date.now();
+    let updatedCount = 0;
+    let insertedCount = 0;
     for (const message of messages) {
       const key = this.piCoreMessageKey(message);
       const existingIndex = existingByKey.get(key);
@@ -4522,6 +4679,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           JSON.stringify(message),
           existingIndex,
         );
+        updatedCount += 1;
         continue;
       }
 
@@ -4533,7 +4691,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       existingByKey.set(key, nextIndex);
       nextIndex += 1;
+      insertedCount += 1;
     }
+    this.recordChatThreadObservabilityEvent("pi_core_messages_upserted", {
+      operation: "upsert",
+      status: "ok",
+      count: insertedCount + updatedCount,
+      size: rows.length,
+      insertedCount,
+      updatedCount,
+    });
   }
 
   private loadPiTurnRecovery(): PiTurnRecoveryRow | null {
@@ -4607,6 +4774,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
     this.upsertPiCoreMessages([userMessage]);
     this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
+    this.recordChatThreadObservabilityEvent("pi_turn_recovery_started", {
+      operation: "start_recovery",
+      status: "running",
+      count: 1,
+    });
   }
 
   private touchPiTurnRecovery(status: PiTurnRecoveryRow["status"]): void {
@@ -4666,6 +4838,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
     this.appendPiCoreMessagesIfMissing([userMessage]);
     this.markPiTurnRecovering();
+    this.recordChatThreadObservabilityEvent("pi_turn_recovery_resumed", {
+      operation: "recover_interrupted_turn",
+      status: "recovering",
+      count: pendingPiTurn.retry_count + 1,
+      size: Math.max(0, Date.now() - pendingPiTurn.started_at),
+    });
     this.setActiveTurnUserId(pendingPiTurn.active_user_id);
     this.setChatIsStreaming(true);
 
@@ -4732,6 +4910,120 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (errorMessage) return errorMessage;
     }
     return "";
+  }
+
+  private piAgentLoopErrorDetails(error: unknown): {
+    name: string;
+    message: string;
+    stack?: string;
+  } {
+    if (error instanceof Error) {
+      return {
+        name: error.name || "Error",
+        message: error.message.trim() || "Unknown Pi agent loop error",
+        stack: typeof error.stack === "string" ? error.stack : undefined,
+      };
+    }
+    if (typeof error === "string" && error.trim()) {
+      return { name: "Error", message: error.trim() };
+    }
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") {
+        return { name: "UnknownError", message: serialized };
+      }
+    } catch {
+      // Fall through to the generic message.
+    }
+    return { name: "UnknownError", message: "Unknown Pi agent loop error" };
+  }
+
+  private recordChatThreadObservabilityEvent(
+    event: string,
+    details: {
+      operation?: string;
+      status?: string;
+      severity?: "debug" | "info" | "warn" | "error";
+      count?: number;
+      size?: number;
+      durationMs?: number;
+      error?: unknown;
+      insertedCount?: number;
+      updatedCount?: number;
+    } = {},
+  ): void {
+    const context = this.chatContext;
+    const count =
+      typeof details.insertedCount === "number" || typeof details.updatedCount === "number"
+        ? (details.insertedCount ?? 0) + (details.updatedCount ?? 0)
+        : details.count;
+    if (details.error) {
+      recordErrorEvent(this.env, {
+        event,
+        component: "chat_thread_do",
+        operation: details.operation,
+        status: details.status ?? "exception",
+        threadId: context?.threadId,
+        workspaceId: context?.workspaceId,
+        orgId: context?.orgId,
+        userId: context?.userId,
+        durationMs: details.durationMs,
+        count,
+        size: details.size,
+        error: details.error,
+      });
+      return;
+    }
+    recordObservabilityEvent(this.env, {
+      event,
+      severity: details.severity ?? "info",
+      component: "chat_thread_do",
+      operation: details.operation,
+      status: details.status ?? "ok",
+      threadId: context?.threadId,
+      workspaceId: context?.workspaceId,
+      orgId: context?.orgId,
+      userId: context?.userId,
+      durationMs: details.durationMs,
+      count,
+      size: details.size,
+    });
+  }
+
+  private persistPiAgentLoopErrorForDevelopers(
+    error: unknown,
+    options: {
+      source: string;
+      eventType?: string;
+    },
+  ): string {
+    const details = this.piAgentLoopErrorDetails(error);
+    const source = options.source.trim() || "pi_agent_loop";
+    const eventType = options.eventType?.trim();
+    const fingerprint = `${source}:${eventType ?? ""}:${details.name}:${details.message}`;
+    const now = Date.now();
+    if (
+      this.piLastPersistedLoopError?.fingerprint === fingerprint &&
+      now - this.piLastPersistedLoopError.at < 5_000
+    ) {
+      return details.message;
+    }
+    this.piLastPersistedLoopError = { fingerprint, at: now };
+
+    const context = this.chatContext;
+    recordErrorEvent(this.env, {
+      event: "pi_agent_loop_error",
+      component: "chat_thread_do",
+      operation: source,
+      status: eventType ?? "error",
+      threadId: context?.threadId,
+      workspaceId: context?.workspaceId,
+      orgId: context?.orgId,
+      userId: context?.userId,
+      error,
+    });
+
+    return details.message;
   }
 
   private ensurePiAssistantTextMessage(messages: AgentMessage[], text: string): AgentMessage[] {
@@ -5008,6 +5300,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     options: { claudeSessionId?: string | null; codexSessionId?: string | null },
   ): Promise<void> {
     if (this.loadPiCoreMessages().length > 0) return;
+    const startedAt = Date.now();
 
     try {
       const piCoreResult = await container.readPiCoreMessagesStream(context.threadId, {
@@ -5022,6 +5315,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           if (this.loadPiCoreMessages().length > 0) return;
           this.replacePiCoreMessages(piCoreMessages);
           this.trace("pi_core_host_hydrated", { messageCount: piCoreMessages.length });
+          this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
+            operation: "hydrate_from_host_pi_core",
+            status: "host_hit",
+            count: piCoreMessages.length,
+            durationMs: Date.now() - startedAt,
+          });
           return;
         }
       } else {
@@ -5048,15 +5347,35 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const messages = Array.isArray(body?.messages)
         ? this.legacyParsedMessagesToPiCoreMessages(body.messages)
         : [];
-      if (messages.length === 0) return;
+      if (messages.length === 0) {
+        this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
+          operation: "hydrate_from_legacy",
+          status: "empty",
+          count: 0,
+          durationMs: Date.now() - startedAt,
+        });
+        return;
+      }
 
       if (this.loadPiCoreMessages().length > 0) return;
       this.replacePiCoreMessages(messages);
       this.trace("pi_core_legacy_hydrated", { messageCount: messages.length });
+      this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
+        operation: "hydrate_from_legacy",
+        status: "legacy_hit",
+        count: messages.length,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
       console.warn("[ChatThreadDO] failed to hydrate Pi history from legacy sessions", error);
       this.trace("pi_core_legacy_hydration_failed", {
         error: error instanceof Error ? error.message : String(error),
+      });
+      this.recordChatThreadObservabilityEvent("pi_core_hydration_failed", {
+        operation: "hydrate_from_legacy",
+        status: "exception",
+        durationMs: Date.now() - startedAt,
+        error,
       });
     }
   }
@@ -6581,7 +6900,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
 
     this.piUnsubscribe = session.subscribe((event) => {
-      this.handlePiSessionEvent(event);
+      try {
+        this.handlePiSessionEvent(event);
+      } catch (error) {
+        console.error("[ChatThreadDO] Pi event handler failed", error);
+        this.persistPiAgentLoopErrorForDevelopers(error, {
+          source: "pi_event_handler",
+          eventType: event.type,
+        });
+      }
     });
     this.pushChatEvent({ type: "session", sessionId: context.threadId });
     this.pushChatEvent({ type: "ready" });
@@ -6600,6 +6927,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
       "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
+      "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
+      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
       "",
       workspaceContext,
       "",
@@ -7167,13 +7496,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
     streamSimple: typeof import("@mariozechner/pi-ai").streamSimple,
   ): ReturnType<typeof import("@mariozechner/pi-ai").streamSimple> {
-    if (model.api === "bedrock-converse-stream" && options?.apiKey) {
-      return streamSimple(model, context, {
-        ...options,
-        bearerToken: options.apiKey,
-      } as Parameters<typeof streamSimple>[2]);
+    try {
+      if (model.api === "bedrock-converse-stream" && options?.apiKey) {
+        return streamSimple(model, context, {
+          ...options,
+          bearerToken: options.apiKey,
+        } as Parameters<typeof streamSimple>[2]);
+      }
+      return streamSimple(model, context, options);
+    } catch (error) {
+      this.persistPiAgentLoopErrorForDevelopers(error, {
+        source: "pi_stream",
+      });
+      throw error;
     }
-    return streamSimple(model, context, options);
   }
 
   private scopedCodeModeTools(context: ChatContextState): CodeModeToolsBinding {
@@ -7315,11 +7651,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         name: "js_exec",
         label: "JavaScript",
         description:
-          "Run JavaScript code mode with access to every registered harness tool through the global tools object. " +
-          "Inspect ALL_TOOLS for names, descriptions, and parameter schemas. " +
-          "Inside the code, call tools by name, for example: await tools.WebSearch({ query: \"Cloudflare Workers\" }); " +
-          "Interactive tools that wait for the user, such as prompt_connection_setup, must be called as top-level tools instead of from js_exec. " +
-          "Connection methods are available at context.cloudflare.connections and connections.",
+          "Run short JavaScript in the Worker-style code mode runtime. Use this for workspace connections and for small scripts that need to orchestrate multiple harness tools. " +
+          "The final expression is returned automatically, and `console.log`/`console.warn`/`console.error` output is shown in the tool result. Use explicit `return` when a script has branches or loops. " +
+          "Connection globals: `env.CONNECTIONS` is the virtual Worker binding, `connections` and `context.cloudflare.connections` are method facades, and `context.cloudflare.env.CONNECTIONS` is the same binding. " +
+          "To use a connection, prefer `const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" });`. `find` accepts an alias, id, type, name, or object such as `{ type: \"clickhouse\" }` and throws on missing/ambiguous matches. " +
+          "Use `await env.CONNECTIONS.methods()` when you need the full catalog; method entries include copyable `example` strings. Use `await env.CONNECTIONS.test(\"clickhouse\")` for a quick smoke test. " +
+          "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
+          "Connection credentials are intentionally hidden behind the binding. " +
+          "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +
+          "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({
           code: Type.String(),
           timeoutMs: Type.Optional(Type.Number()),
@@ -7544,50 +7884,58 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
 
     const unsubscribe = child.subscribe((event) => {
-      if (event.type === "turn_start") {
-        turnStartedAtMs = Date.now();
-        return;
-      }
-      if (event.type === "message_update") {
-        const assistantEvent = event.assistantMessageEvent as {
-          type?: string;
-          delta?: string;
-        };
-        if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
-          assistantText += assistantEvent.delta;
+      try {
+        if (event.type === "turn_start") {
+          turnStartedAtMs = Date.now();
+          return;
         }
-        return;
-      }
-      if (event.type === "message_end") {
-        latestAssistantText = this.extractPiMessageText(event.message) || assistantText;
-        return;
-      }
-      if (event.type === "tool_execution_start") {
-        toolUseCount += 1;
-        update(`Running ${event.toolName}...`, {
-          status: "running",
-          toolName: event.toolName,
-          toolUseCount,
+        if (event.type === "message_update") {
+          const assistantEvent = event.assistantMessageEvent as {
+            type?: string;
+            delta?: string;
+          };
+          if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
+            assistantText += assistantEvent.delta;
+          }
+          return;
+        }
+        if (event.type === "message_end") {
+          latestAssistantText = this.extractPiMessageText(event.message) || assistantText;
+          return;
+        }
+        if (event.type === "tool_execution_start") {
+          toolUseCount += 1;
+          update(`Running ${event.toolName}...`, {
+            status: "running",
+            toolName: event.toolName,
+            toolUseCount,
+          });
+          return;
+        }
+        if (event.type === "turn_end") {
+          const durationMs = Math.max(0, Date.now() - turnStartedAtMs);
+          this.ctx.waitUntil(
+            this.recordPiAssistantUsage(
+              event.message,
+              durationMs,
+              modelConfig.billingSource,
+              modelConfig.creditChargeable,
+              modelConfig.usageProvider,
+            ).catch((error) => {
+              console.error("[ChatThreadDO] failed to record Pi subagent usage", error);
+            }),
+          );
+          return;
+        }
+        if (event.type === "agent_end") {
+          finalMessages = event.messages;
+        }
+      } catch (error) {
+        console.error("[ChatThreadDO] Pi subagent event handler failed", error);
+        this.persistPiAgentLoopErrorForDevelopers(error, {
+          source: `${toolName}_event_handler`,
+          eventType: event.type,
         });
-        return;
-      }
-      if (event.type === "turn_end") {
-        const durationMs = Math.max(0, Date.now() - turnStartedAtMs);
-        this.ctx.waitUntil(
-          this.recordPiAssistantUsage(
-            event.message,
-            durationMs,
-            modelConfig.billingSource,
-            modelConfig.creditChargeable,
-            modelConfig.usageProvider,
-          ).catch((error) => {
-            console.error("[ChatThreadDO] failed to record Pi subagent usage", error);
-          }),
-        );
-        return;
-      }
-      if (event.type === "agent_end") {
-        finalMessages = event.messages;
       }
     });
 
@@ -7943,6 +8291,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.upsertPiCoreMessages(
         this.ensurePiAssistantTextMessage([event.message], text),
       );
+      this.recordChatThreadObservabilityEvent("pi_message_end_persisted", {
+        operation: "handle_pi_session_event",
+        status: "assistant_message_end",
+        count: 1,
+        size: text.length,
+      });
       return;
     }
 
@@ -8017,6 +8371,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.piAssistantText,
       );
       this.upsertPiCoreMessages(newMessages);
+      this.recordChatThreadObservabilityEvent("pi_agent_end_persisted", {
+        operation: "handle_pi_session_event",
+        status: "agent_end",
+        count: newMessages.length,
+      });
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
       let finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
@@ -8532,6 +8891,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               }
             })().catch((error) => {
                 console.error("[ChatThreadDO] Pi prompt failed", error);
+                this.persistPiAgentLoopErrorForDevelopers(error, {
+                  source: "pi_prompt",
+                });
                 this.clearPiTurnRecovery();
                 this.pushChatEvent({
                   type: "error",

@@ -264,13 +264,9 @@ describe('OAuth Token Refresh', () => {
         const target = instance as unknown as {
           alarm: () => Promise<void>;
           refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
-          syncIntegrationEnvVarsToContainer: () => Promise<void>;
-          syncSecretsToDeployedWorkers: () => Promise<void>;
         };
 
         vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
 
         await target.alarm();
       });
@@ -306,13 +302,9 @@ describe('OAuth Token Refresh', () => {
         const target = instance as unknown as {
           alarm: () => Promise<void>;
           refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
-          syncIntegrationEnvVarsToContainer: () => Promise<void>;
-          syncSecretsToDeployedWorkers: () => Promise<void>;
         };
 
         const refreshSpy = vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
 
         await target.alarm();
 
@@ -346,13 +338,9 @@ describe('OAuth Token Refresh', () => {
         const target = instance as unknown as {
           alarm: () => Promise<void>;
           refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
-          syncIntegrationEnvVarsToContainer: () => Promise<void>;
-          syncSecretsToDeployedWorkers: () => Promise<void>;
         };
 
         vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
 
         await target.alarm();
       });
@@ -368,10 +356,10 @@ describe('OAuth Token Refresh', () => {
       expect(alarmTime!).toBeLessThanOrEqual(now + TOKEN_REFRESH_FALLBACK_MS + 1000);
     });
 
-    it('syncs container and deployed workers after a successful token refresh pass', async () => {
+    it('refreshes expiring tokens without exporting credentials after a successful token refresh pass', async () => {
       const email = testEmail();
-      const { userId } = await createUser(testEnv, email, 'password123', 'Sync Target Owner');
-      const { org } = await createOrg(testEnv, 'Sync Target Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Refresh Target Owner');
+      const { org } = await createOrg(testEnv, 'Refresh Target Org', userId);
       const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
       const workspace = workspaces[0];
       expect(workspace).toBeDefined();
@@ -390,19 +378,13 @@ describe('OAuth Token Refresh', () => {
         const target = instance as unknown as {
           alarm: () => Promise<void>;
           refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
-          syncIntegrationEnvVarsToContainer: () => Promise<void>;
-          syncSecretsToDeployedWorkers: () => Promise<void>;
         };
 
         const refreshSpy = vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
-        const syncContainerSpy = vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
-        const syncWorkersSpy = vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
 
         await target.alarm();
 
         expect(refreshSpy).toHaveBeenCalledTimes(1);
-        expect(syncContainerSpy).toHaveBeenCalledTimes(1);
-        expect(syncWorkersSpy).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -680,13 +662,9 @@ describe('OAuth Token Refresh', () => {
         const target = instance as unknown as {
           alarm: () => Promise<void>;
           refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
-          syncIntegrationEnvVarsToContainer: () => Promise<void>;
-          syncSecretsToDeployedWorkers: () => Promise<void>;
         };
 
         vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
-        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
 
         await target.alarm();
       });

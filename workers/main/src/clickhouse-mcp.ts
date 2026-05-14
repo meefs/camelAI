@@ -65,11 +65,11 @@ export function listClickHouseMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a read-only ClickHouse SELECT/WITH query and return JSON.',
+      description: 'Execute a ClickHouse query and return JSON.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Read-only SQL query. Must start with SELECT or WITH.' },
+          query: { type: 'string', description: 'SQL query to execute.' },
           limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, description: `Default LIMIT to append when the query has no LIMIT. Defaults to ${DEFAULT_LIMIT}.` },
         },
         required: ['query'],
@@ -190,66 +190,10 @@ async function executeClickHouseJson(client: ClickHouseClient, query: string): P
 }
 
 function normalizeReadOnlyQuery(query: string, limit: number): string {
-  const stripped = stripSqlCommentsAndStrings(query).trim().replace(/;+\s*$/, '');
-  if (!/^(select|with)\b/i.test(stripped) || stripped.includes(';')) {
-    throw Object.assign(new Error('ClickHouse MCP only accepts a single read-only SELECT or WITH query.'), {
-      status: 400,
-    });
-  }
-  const blocked = /\b(insert|update|delete|merge|create|drop|alter|truncate|grant|revoke|optimize|system|attach|detach|rename|exchange|kill|set)\b/i;
-  if (blocked.test(stripped)) {
-    throw Object.assign(new Error('ClickHouse MCP rejected a non-read-only SQL keyword.'), { status: 400 });
-  }
-  if (/\blimit\b/i.test(stripped)) return stripped;
-  return `${stripped} LIMIT ${limit}`;
+  const trimmed = query.trim().replace(/;+\s*$/, '');
+  if (/limit/i.test(trimmed)) return trimmed;
+  return `${trimmed} LIMIT ${limit}`;
 }
-
-function stripSqlCommentsAndStrings(query: string): string {
-  let output = '';
-  let index = 0;
-  while (index < query.length) {
-    const char = query[index];
-    const next = query[index + 1];
-    if (char === '-' && next === '-') {
-      index += 2;
-      while (index < query.length && query[index] !== '\n') index += 1;
-      output += ' ';
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      index += 2;
-      while (index < query.length && !(query[index] === '*' && query[index + 1] === '/')) index += 1;
-      index += 2;
-      output += ' ';
-      continue;
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      const quote = char;
-      output += quote === '`' ? ' identifier ' : ' string ';
-      index += 1;
-      while (index < query.length) {
-        if (query[index] === '\\') {
-          index += 2;
-          continue;
-        }
-        if (query[index] === quote) {
-          if (quote !== '`' && query[index + 1] === quote) {
-            index += 2;
-            continue;
-          }
-          index += 1;
-          break;
-        }
-        index += 1;
-      }
-      continue;
-    }
-    output += char;
-    index += 1;
-  }
-  return output;
-}
-
 function validateClickHouseEndpoint(host: string, port: number): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw Object.assign(new Error('port must be a valid TCP port.'), { status: 400 });

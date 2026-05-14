@@ -7,6 +7,7 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"upload_source_maps": true,
 	"observability": { "enabled": true },
+	"tail_consumers": [{ "service": "chiridion-user-logs-tail-dev-miguel" }],
 	"rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
 	"routes": [
 		{ "pattern": "dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" }
@@ -46,7 +47,8 @@
 		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" }
 	],
 	"analytics_engine_datasets": [
-		{ "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_dev_miguel" }
+		{ "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_dev_miguel" },
+		{ "binding": "OBSERVABILITY_EVENTS", "dataset": "chiridion_observability_dev_miguel" }
 	],
 	"kv_namespaces": [
 		{ "binding": "EMAIL_TO_USER", "id": "06c511f882d041ea89a98cb413f4b2f3" },

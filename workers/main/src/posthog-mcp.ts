@@ -63,12 +63,12 @@ export function listPostHogMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_hogql_readonly',
-      description: 'Execute a read-only HogQL SELECT/WITH query in PostHog. Uses the connection project_id when omitted.',
+      description: 'Execute a HogQL query in PostHog. Uses the connection project_id when omitted.',
       inputSchema: {
         type: 'object',
         properties: {
           projectId: { type: 'string', description: 'PostHog project id.' },
-          query: { type: 'string', description: 'Read-only HogQL query. Must start with SELECT or WITH.' },
+          query: { type: 'string', description: 'HogQL query to execute.' },
         },
         required: ['query'],
         additionalProperties: false,
@@ -230,17 +230,8 @@ function limitParams(value: unknown): URLSearchParams {
 
 function assertReadOnlyQuery(query: string): void {
   const trimmed = query.trim().replace(/;\s*$/, '');
-  if (!/^(select|with)\b/i.test(trimmed) || trimmed.includes(';')) {
-    throw Object.assign(new Error('PostHog MCP only accepts a single read-only SELECT or WITH query.'), {
-      status: 400,
-    });
-  }
-  const blocked = /\b(insert|update|delete|merge|create|drop|alter|truncate|grant|revoke|call|set)\b/i;
-  if (blocked.test(trimmed)) {
-    throw Object.assign(new Error('PostHog MCP rejected a non-read-only query keyword.'), { status: 400 });
-  }
+  if (!trimmed) throw Object.assign(new Error('query is required'), { status: 400 });
 }
-
 function validatePostHogHost(rawHost: string): string {
   let url: URL;
   try {

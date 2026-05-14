@@ -7,6 +7,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "upload_source_maps": true,
   "observability": { "enabled": true },
+  "tail_consumers": [{ "service": "chiridion-user-logs-tail" }],
   "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
   "routes": [{ "pattern": "camelai.dev", "custom_domain": true }],
   "vpc_services": [
@@ -55,6 +56,7 @@
   ],
   "analytics_engine_datasets": [
     { "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_prod" },
+    { "binding": "OBSERVABILITY_EVENTS", "dataset": "chiridion_observability_prod" },
   ],
   "kv_namespaces": [
     { "binding": "EMAIL_TO_USER", "id": "45b452b3b19c42f6991408c140149a70" },

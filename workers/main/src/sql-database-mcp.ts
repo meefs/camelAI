@@ -81,7 +81,7 @@ export function listSqlDatabaseMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a read-only SELECT/WITH/SHOW/DESCRIBE query and return rows.',
+      description: 'Execute a SQL query and return rows.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -340,22 +340,11 @@ function tableInfoQuery(client: SqlDatabaseClient): string {
 
 function normalizeReadOnlyQuery(query: string, limit: number): string {
   const trimmed = query.trim().replace(/;+\s*$/, '');
-  const withoutLeadingComments = trimmed
-    .replace(/^(?:\s*--[^\n]*(?:\n|$))+/g, '')
-    .replace(/^(?:\s*\/\*[\s\S]*?\*\/)+/g, '')
-    .trim();
-  if (!/^(select|with|show|describe|desc|explain)\b/i.test(withoutLeadingComments)) {
-    throw Object.assign(
-      new Error('SQL database MCP only accepts read-only SELECT, WITH, SHOW, DESCRIBE, or EXPLAIN queries.'),
-      { status: 400 }
-    );
-  }
   if (/\blimit\b/i.test(trimmed)) {
     return trimmed;
   }
   return `${trimmed} LIMIT ${limit}`;
 }
-
 function schemaFromArgs(client: SqlDatabaseClient, args: Record<string, unknown>): string {
   return optionalString(args.schema) || client.schema;
 }

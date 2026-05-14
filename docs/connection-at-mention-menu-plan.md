@@ -18,7 +18,7 @@ This mirrors the @-mention UX of Slack/Linear/GitHub and gives users a low-frict
 
 - Chat input (`src/components/prompt-input.tsx`) is a plain `<InputGroupTextarea>` (a wrapped native `<textarea>`). No autocomplete, no popover, no mention parsing.
 - Connections (`Integration[]`) are already loaded into the chat via `welcomeData.connections` in `Chat.tsx` (line 128). They include `id`, `integration_type`, `name`, `category`, `auth_method`, `has_credentials`.
-- Agent already has implicit access to connections via env vars injected by `WorkspaceContainer.fetchIntegrationEnvVars()` (e.g. `POSTGRES_HOST`, `STRIPE_API_KEY`). The agent does **not** currently get a system-prompt listing of connections by user-given name.
+- Agent access to connections goes through the virtual connections binding. The agent does **not** currently get a system-prompt listing of connections by user-given name.
 - Slash commands (`/compact`, `/context`, …) are pure text — parsed server-side from message content. There is no per-message metadata channel today.
 
 ---
@@ -252,12 +252,10 @@ specific connection's env vars for the request.
     env: POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD,
          POSTGRES_DATABASE
 - @stripe_live — stripe "Stripe Live"
-    env: STRIPE_API_KEY
 - @slack       — slack "Slack"
-    env: SLACK_BOT_TOKEN
 ```
 
-The connection list is already fetched for env-var injection (`WorkspaceContainer.fetchIntegrationEnvVars()`); reuse the same data and feed `{slug, integration_type, name, envVarNames}` into the system prompt.
+Feed `{slug, integration_type, name, id}` into the system prompt.
 
 **(b) Inline expand mentions in the user message before it reaches the agent.** When `ChatThreadDO` (or, more naturally, the sandbox control-plane on receipt) processes a user message, replace each `@<slug>` token with:
 
@@ -464,7 +462,7 @@ The `<TooltipProvider>` is already mounted at the app shell level (verify in the
 
 Two edits, both small.
 
-**(1) System prompt**: where the system prompt is assembled (search for the existing prompt build site), append a `## Available connections` section built from the workspace's integrations. The integrations list is already accessible to the sandbox (used for env-var injection). Format per the design above.
+**(1) System prompt**: where the system prompt is assembled (search for the existing prompt build site), append a `## Available connections` section built from the workspace's integrations. Format per the design above.
 
 **(2) Inline expansion in `handleMessage`** (around line 2015): before yielding the user message, run:
 

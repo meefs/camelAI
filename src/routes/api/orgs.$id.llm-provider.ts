@@ -13,6 +13,7 @@ import { waitUntil } from '@/lib/wait-until';
 import type { LlmProvider, LlmProviderConfigPublic } from '@/types';
 
 const VALID_PROVIDERS: LlmProvider[] = ['anthropic', 'bedrock', 'openai', 'openrouter'];
+export const ANTHROPIC_API_KEY_VALIDATION_MODEL = 'claude-sonnet-4-6';
 const VALID_AWS_REGIONS = [
   'us-east-1',
   'us-east-2',
@@ -238,7 +239,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: ANTHROPIC_API_KEY_VALIDATION_MODEL,
             messages: [{ role: 'user', content: 'test' }],
           }),
         });

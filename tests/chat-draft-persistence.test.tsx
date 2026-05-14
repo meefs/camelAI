@@ -12,7 +12,9 @@ let mockLocationState: unknown = null;
 function createFetcher() {
   return {
     state: 'idle' as const,
-    data: undefined as { thread?: { id: string }; error?: string } | undefined,
+    data: undefined as
+      | { thread?: { id: string }; error?: string; reloadRequired?: boolean }
+      | undefined,
     formData: undefined,
     submit: vi.fn(),
   };
@@ -431,6 +433,46 @@ describe('Chat draft persistence', () => {
 
     expect(loadDraft('ws-1', 'thread-new')?.text).toBe('Hello from welcome');
     expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
+  });
+
+  it('reloads the page when new-chat creation reports a stale app build', async () => {
+    const originalLocation = window.location;
+    const reloadMock = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload: reloadMock },
+    });
+
+    try {
+      const { rerender } = render(
+        <Chat
+          workspaceId="ws-1"
+          initialMessages={[]}
+        />
+      );
+
+      mockFetcher.data = {
+        error:
+          'camelAI was updated while this page was open. Please reload and send your message again.',
+        reloadRequired: true,
+      };
+
+      rerender(
+        <Chat
+          workspaceId="ws-1"
+          initialMessages={[]}
+        />
+      );
+
+      await waitFor(() => {
+        expect(reloadMock).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it('uses the saved recent model for a new chat only when no picker default is set', async () => {

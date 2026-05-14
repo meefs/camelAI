@@ -5,8 +5,9 @@
  *   1. Inline `⟦ref: ...⟧` annotations after each known `@<slug>` token so the
  *      agent can resolve the reference unambiguously even after a connection
  *      gets renamed.
- *   2. A `<camelai system message>` block listing available connections + the
- *      env-var prefix the agent should use to access each one's credentials.
+ *   2. A `<camelai system message>` block listing available connections and
+ *      reminding the agent to use the connections binding instead of raw
+ *      credential environment variables.
  *
  * Both transforms are guarded so a workspace with no integrations falls
  * through unchanged.
@@ -19,36 +20,6 @@ import {
   type MentionableIntegration,
 } from '../../../src/lib/connection-mentions';
 import type { WorkspaceIntegrationRecord } from './workspace';
-import {
-  getEnvVarSuffixesForType,
-  normalizeEnvVarName,
-  type DynamicFieldForEnv,
-} from './integration-env';
-
-interface DynamicFieldsConfig {
-  dynamic_fields?: DynamicFieldForEnv[];
-}
-
-function envVarPrefix(integrationType: string, integrationName: string): string {
-  const typePart = normalizeEnvVarName(integrationType);
-  const namePart = normalizeEnvVarName(integrationName);
-  return `INT_${typePart}_${namePart}`;
-}
-
-function envVarsForIntegration(record: WorkspaceIntegrationRecord): string[] {
-  let dynamicFields: DynamicFieldForEnv[] | undefined;
-  if (record.integration_type === 'other') {
-    try {
-      const parsed = JSON.parse(record.config) as DynamicFieldsConfig;
-      dynamicFields = parsed?.dynamic_fields;
-    } catch {
-      dynamicFields = undefined;
-    }
-  }
-  const suffixes = getEnvVarSuffixesForType(record.integration_type, dynamicFields);
-  const prefix = envVarPrefix(record.integration_type, record.name);
-  return suffixes.map((suffix) => `${prefix}_${suffix}`);
-}
 
 function toMentionable(record: WorkspaceIntegrationRecord): MentionableIntegration {
   return {
@@ -69,12 +40,8 @@ function buildConnectionsSection(
   for (const [slugValue, mentionable] of slugMap) {
     const record = integrationsById.get(mentionable.id);
     if (!record) continue;
-    const envVars = envVarsForIntegration(record);
-    const envVarsLine = envVars.length > 0
-      ? `\n    env: ${envVars.join(', ')}`
-      : '';
     entries.push(
-      `- @${slugValue} — ${record.integration_type} "${record.name}"${envVarsLine}`,
+      `- @${slugValue} — ${record.integration_type} "${record.name}" (connection id: ${record.id})`,
     );
   }
 
@@ -85,8 +52,10 @@ function buildConnectionsSection(
     '## Available connections',
     '',
     'The user has the following connections (integrations) configured. They may',
-    'reference them by `@<slug>` in messages. When they do, prefer using that',
-    "specific connection's env vars for the request.",
+    'reference them by `@<slug>` in messages. Use the `js_exec` tool and the',
+    '`connections` facade or `env.CONNECTIONS` binding to inspect and call',
+    'connection methods. Connection credentials are intentionally hidden behind',
+    'the binding.',
     '',
     ...entries,
     '</camelai system message>',

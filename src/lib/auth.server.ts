@@ -21,6 +21,7 @@ import {
   listOrgWorkspaces,
   getWorkspace,
 } from "./auth-do";
+import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 
 const LOCAL_AUTH_USER_ID = "local-dev-user";
 const LOCAL_AUTH_ORG_ID = "local-dev-org";
@@ -101,7 +102,10 @@ export async function getSession(
   const userStub = authEnv.USER.get(
     authEnv.USER.idFromName(signedSession.user_id),
   );
-  const invalidatedAt = await userStub.getSessionInvalidatedAt();
+  const invalidatedAt = await retryTransientDurableObjectRead(
+    "UserDO.getSessionInvalidatedAt",
+    () => userStub.getSessionInvalidatedAt(),
+  );
   if (invalidatedAt && signedSession.created_at < invalidatedAt) {
     return null;
   }
@@ -361,9 +365,13 @@ export async function getUserContext(
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const profile = await authEnv.USER.get(
-    authEnv.USER.idFromName(sessionContext.session.user_id),
-  ).getProfile();
+  const profile = await retryTransientDurableObjectRead(
+    "UserDO.getProfile",
+    () =>
+      authEnv.USER.get(
+        authEnv.USER.idFromName(sessionContext.session.user_id),
+      ).getProfile(),
+  );
   if (!profile) return null;
 
   return {
@@ -432,12 +440,18 @@ async function getAuthContextUncached(
   const currentOrgStub = authEnv.ORG.get(
     authEnv.ORG.idFromName(sessionContext.session.org_id),
   );
-  const currentOrgInfoPromise = currentOrgStub.getInfo();
-  const currentOrgMemberPromise = currentOrgStub.getMember(
-    sessionContext.session.user_id,
+  const currentOrgInfoPromise = retryTransientDurableObjectRead(
+    "OrgDO.getInfo",
+    () => currentOrgStub.getInfo(),
+  );
+  const currentOrgMemberPromise = retryTransientDurableObjectRead(
+    "OrgDO.getMember",
+    () => currentOrgStub.getMember(sessionContext.session.user_id),
   );
   const [authBootstrap, orgInfo, currentOrgMember] = await Promise.all([
-    userStub.getAuthBootstrap(),
+    retryTransientDurableObjectRead("UserDO.getAuthBootstrap", () =>
+      userStub.getAuthBootstrap(),
+    ),
     currentOrgInfoPromise,
     currentOrgMemberPromise,
   ]);

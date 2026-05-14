@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { APP_BUILD_ID } from '@/lib/app-build-id';
 
 const waitUntilMock = vi.fn();
 const requireSessionWorkspaceAccessMock = vi.fn();
@@ -10,6 +9,7 @@ const deleteThreadMock = vi.fn();
 const generateThreadTitleMock = vi.fn();
 const createGroupForNewThreadMock = vi.fn();
 const addThreadToExistingGroupMock = vi.fn();
+const CLIENT_BUILD_ID = 'development';
 
 vi.mock('@/lib/wait-until', () => ({
   waitUntil: waitUntilMock,
@@ -57,7 +57,7 @@ const { action, shouldRevalidate } = await import('@/routes/_app.chat._index');
 function makeCreateThreadFormData() {
   const formData = new FormData();
   formData.set('intent', 'createThread');
-  formData.set('clientBuildId', APP_BUILD_ID);
+  formData.set('clientBuildId', CLIENT_BUILD_ID);
   return formData;
 }
 
@@ -123,6 +123,7 @@ describe('new chat create action', () => {
   it('does not revalidate the new-chat loader after createThread', () => {
     const formData = new FormData();
     formData.set('intent', 'createThread');
+    formData.set('clientBuildId', CLIENT_BUILD_ID);
 
     expect(
       shouldRevalidate({

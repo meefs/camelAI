@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   redirect,
   useLoaderData,
@@ -13,14 +13,13 @@ import {
   requireSessionWorkspaceAccess,
   getAuthEnv,
 } from "@/lib/auth.server";
+import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getEnv } from "@/lib/cloudflare.server";
-import {
-  getOrgBillingOverview,
-  type OrgBillingOverview,
-} from "@/lib/billing.server";
+import { getOrgBillingOverview } from "@/lib/billing.server";
 import {
   applyDevBillingCreditStatusOverride,
+  buildBillingCreditStatus,
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import {
@@ -31,6 +30,7 @@ import {
   isLlmModel,
 } from "@/lib/llm-provider-config";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
+import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
@@ -45,6 +45,7 @@ import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { useChatGroups } from "@/hooks/use-chat-groups";
+import { useChatThreadSnapshots } from "@/hooks/use-chat-thread-snapshots";
 import type { TodoItem } from "@/components/floating-todo";
 import type {
   ChatHarness,
@@ -53,44 +54,8 @@ import type {
   LlmModel,
   Message,
   PreviewTarget,
+  WorkspaceWithAccess,
 } from "@/types";
-
-function buildBillingCreditStatus(
-  overview: OrgBillingOverview | null,
-  hasByokProvider: boolean,
-) {
-  if (!overview || overview.billing_status === "enterprise") {
-    return null;
-  }
-  if (overview.total_credit_limit_cents <= 0) {
-    return null;
-  }
-
-  const usedPercent = Math.min(
-    100,
-    Math.max(
-      0,
-      Math.round(
-        (overview.chargeable_usage_cents / overview.total_credit_limit_cents) *
-          100,
-      ),
-    ),
-  );
-  const isExhausted = overview.available_credits_cents <= 0;
-  const isLow = !isExhausted && usedPercent >= 80;
-  if (!isLow && !isExhausted) {
-    return null;
-  }
-
-  return {
-    availableCreditsCents: overview.available_credits_cents,
-    totalCreditLimitCents: overview.total_credit_limit_cents,
-    usedPercent,
-    isLow,
-    isExhausted,
-    hasByokProvider,
-  };
-}
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || "Chat";
@@ -290,10 +255,30 @@ async function buildChatData(
   };
 }
 
+async function findAccessibleGroupWorkspace(
+  context: Route.LoaderArgs["context"],
+  userId: string,
+  groupId: string,
+  workspaces: WorkspaceWithAccess[],
+): Promise<WorkspaceWithAccess | null> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
+  const group = await userStub.getChatGroup(groupId);
+  if (!group) return null;
+  return (
+    workspaces.find(
+      (workspace) =>
+        workspace.id === group.workspace_id && workspace.org_id === group.org_id,
+    ) ?? null
+  );
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
   const isNewThread = url.searchParams.get("newThread") === "1";
+  const useClientMessageCache = url.searchParams.get("chatCache") === "1";
   const hostname = request.headers.get("host")?.split(":")[0] || undefined;
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
@@ -354,6 +339,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       readOnly: true,
       activeChatGroup: null,
       moveChatGroups: [],
+      usedClientMessageCache: false,
     };
   }
 
@@ -426,6 +412,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       readOnly: false,
       activeChatGroup,
       moveChatGroups,
+      usedClientMessageCache: false,
     };
   }
 
@@ -452,6 +439,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       isOrgAdmin: false,
       recentModelScope: null,
       readOnly: false,
+      usedClientMessageCache: false,
     };
   }
 
@@ -459,6 +447,40 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const orgId = authContext.currentOrg.id;
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
+  const requestedGroupId = url.searchParams.get("group")?.trim() || null;
+
+  if (requestedGroupId && actingUserId) {
+    const groupWorkspace = await findAccessibleGroupWorkspace(
+      context,
+      actingUserId,
+      requestedGroupId,
+      authContext.allWorkspaces,
+    ).catch((error) => {
+      console.error("Failed to resolve chat group workspace:", error);
+      return null;
+    });
+    if (groupWorkspace && groupWorkspace.id !== workspaceId) {
+      const signedToken =
+        groupWorkspace.org_id !== authContext.session.org_id
+          ? await switchSessionOrg(
+              authEnv,
+              authContext.session,
+              groupWorkspace.org_id,
+              groupWorkspace.id,
+            )
+          : await switchSessionWorkspace(
+              authEnv,
+              authContext.session,
+              groupWorkspace.id,
+            );
+      throw redirect(`${url.pathname}${url.search}`, {
+        headers: {
+          "Set-Cookie": createSessionCookieHeader(signedToken, request),
+        },
+      });
+    }
+  }
+
   const orgStub = authEnv.ORG
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
     : null;
@@ -507,7 +529,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ? await buildChatData(context, authEnv, params.id, {
         orgId,
         workspaceId,
-        loadMessages: true,
+        loadMessages: !useClientMessageCache,
       })
     : EMPTY_CHAT_DATA;
   const [activeChatGroup, moveChatGroups] = thread && actingUserId
@@ -563,7 +585,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     experimentalSettings:
       pickerState?.experimentalSettings ?? experimentalSettings,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(billingOverview, Boolean(llmProviderConfig)),
+      buildBillingCreditStatus(
+        billingOverview,
+        llmProviderConfig?.provider,
+        thread?.provider ?? pickerState?.provider ?? fallbackThreadProvider,
+      ),
       url.searchParams,
     ),
     initialChatError: getDevChatInitialError(url.searchParams),
@@ -579,6 +605,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     readOnly: false,
     activeChatGroup,
     moveChatGroups,
+    usedClientMessageCache: useClientMessageCache,
   };
 }
 
@@ -606,11 +633,14 @@ export default function ChatPage() {
     readOnly,
     activeChatGroup,
     moveChatGroups,
+    usedClientMessageCache = false,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const location = useLocation();
   const revalidator = useRevalidator();
   const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
+  const { getSnapshot, setSnapshot } = useChatThreadSnapshots();
+  const [clientActiveThreadId, setClientActiveThreadId] = useState(threadId);
   const chatDebugFlags = getChatDebugFlags();
   const markViewedEnabled = chatDebugFlags.markViewed;
   const markThreadIdleRef = useRef(markThreadIdle);
@@ -650,10 +680,29 @@ export default function ChatPage() {
     threadId,
   ]);
 
-  const displayThreadId = threadId;
-  const displayThreadTitle = threadTitle;
-  const displayThreadModel = threadModel;
-  const displayThreadProvider = threadProvider;
+  useEffect(() => {
+    setClientActiveThreadId(threadId);
+  }, [threadId]);
+
+  const displayThreadId = clientActiveThreadId;
+  const activeThreadSummary =
+    liveActiveChatGroup?.open_threads.find(
+      (thread) => thread.id === displayThreadId,
+    ) ??
+    activeChatGroup?.open_threads.find(
+      (thread) => thread.id === displayThreadId,
+    ) ??
+    null;
+  const isDisplayingLoaderThread = displayThreadId === threadId;
+  const displayThreadTitle = isDisplayingLoaderThread
+    ? threadTitle
+    : (activeThreadSummary?.title ?? threadTitle);
+  const displayThreadModel = isDisplayingLoaderThread
+    ? threadModel
+    : (activeThreadSummary?.model ?? threadModel);
+  const displayThreadProvider = isDisplayingLoaderThread
+    ? threadProvider
+    : (activeThreadSummary?.provider ?? threadProvider);
   const displayAllowedThreadModels =
     displayThreadModel && displayThreadProvider
       ? getVisibleLlmModelOptions(
@@ -666,8 +715,28 @@ export default function ChatPage() {
           },
         ).map((option) => option.value)
       : allowedThreadModels;
-  const displayChatData = chatData;
+  const cachedSnapshot = displayThreadId ? getSnapshot(displayThreadId) : null;
+  const shouldUseCachedSnapshot = Boolean(
+    cachedSnapshot && (!isDisplayingLoaderThread || usedClientMessageCache),
+  );
+  const displayChatData = shouldUseCachedSnapshot
+    ? {
+        ...chatData,
+        messages: cachedSnapshot?.messages ?? chatData.messages,
+        todos: cachedSnapshot?.todos ?? chatData.todos,
+      }
+    : chatData;
   const displayIsNewThread = isNewThread;
+
+  useEffect(() => {
+    if (!usedClientMessageCache || !displayThreadId) return;
+    const nextSearch = new URLSearchParams(location.search);
+    nextSearch.delete("chatCache");
+    const nextUrl = `/chat/${encodeURIComponent(displayThreadId)}${
+      nextSearch.toString() ? `?${nextSearch.toString()}` : ""
+    }`;
+    navigate(nextUrl, { replace: true, preventScrollReset: true });
+  }, [displayThreadId, location.search, navigate, usedClientMessageCache]);
 
   useEffect(() => {
     markThreadIdleRef.current = markThreadIdle;
@@ -718,10 +787,25 @@ export default function ChatPage() {
     })) ?? [];
 
   const selectTab = (targetThreadId: string) => {
+    const snapshot = getSnapshot(targetThreadId);
     if (displayThreadId) {
       markThreadIdle(displayThreadId);
     }
-    navigate(`/chat/${targetThreadId}`, { preventScrollReset: true });
+    if (snapshot) {
+      setClientActiveThreadId(targetThreadId);
+    }
+    const params = new URLSearchParams();
+    const activeGroupId = liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null;
+    if (activeGroupId) {
+      params.set("group", activeGroupId);
+    }
+    if (snapshot) {
+      params.set("chatCache", "1");
+    }
+    navigate(
+      `/chat/${targetThreadId}${params.toString() ? `?${params.toString()}` : ""}`,
+      { preventScrollReset: true },
+    );
   };
 
   const closeTab = async (targetThreadId: string) => {
@@ -851,6 +935,10 @@ export default function ChatPage() {
             hostname={hostname}
             orgSlug={orgSlug}
             connections={connections}
+            onSnapshotChange={(snapshot) => {
+              if (!displayThreadId) return;
+              setSnapshot(displayThreadId, snapshot);
+            }}
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}
             isLoadingMessages={false}
