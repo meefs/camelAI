@@ -4860,12 +4860,13 @@ export default function Chat({
         pendingNewChatRef.current = null;
       } else if (data.error) {
         // Thread creation failed
+        if (data.reloadRequired) {
+          window.location.reload();
+          return;
+        }
         const pendingNewChat = pendingNewChatRef.current;
         setIsCreatingThread(false);
         setError(normalizeChatErrorMessage(data.error));
-        if (data.reloadRequired) {
-          toast.error(normalizeChatErrorMessage(data.error));
-        }
         if (pendingNewChat?.draftText !== undefined) {
           setWelcomeInput(pendingNewChat.draftText);
           setAttachments(pendingNewChat.draftAttachments ?? []);
