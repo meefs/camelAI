@@ -147,13 +147,13 @@ export function listBigQueryMcpTools(): Array<Record<string, unknown>> {
     {
       name: 'execute_sql_readonly',
       description:
-        'Execute a read-only Standard SQL SELECT/WITH query against BigQuery. The broker dry-runs the query first and enforces result and bytes limits.',
+        'Execute a Standard SQL query against BigQuery. The broker dry-runs the query first and enforces result and bytes limits.',
       inputSchema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Read-only Standard SQL query. Must start with SELECT or WITH.',
+            description: 'Standard SQL query to execute.',
           },
           datasetId: {
             type: 'string',
@@ -369,7 +369,6 @@ async function executeSqlReadonly(
   args: Record<string, unknown>
 ): Promise<Record<string, JsonValue>> {
   const query = requireString(args.query, 'query');
-  assertReadOnlySql(query);
 
   const datasetId = datasetFromArgs(client.config, args, false) || null;
   const maxResults = boundedInteger(args.maxResults, DEFAULT_MAX_RESULTS, 1, MAX_MAX_RESULTS, 'maxResults');
@@ -503,77 +502,6 @@ function datasetFromArgs(
     });
   }
   return datasetId ?? '';
-}
-
-function assertReadOnlySql(query: string): void {
-  const normalized = stripSqlCommentsAndStrings(query).trim();
-  if (!normalized) {
-    throw Object.assign(new Error('query is required'), { status: 400 });
-  }
-
-  const withoutTrailingSemicolon = normalized.replace(/;\s*$/, '');
-  if (withoutTrailingSemicolon.includes(';')) {
-    throw Object.assign(new Error('BigQuery MCP only accepts a single read-only query statement.'), {
-      status: 400,
-    });
-  }
-
-  if (!/^(select|with)\b/i.test(withoutTrailingSemicolon)) {
-    throw Object.assign(new Error('BigQuery MCP only accepts read-only SELECT or WITH queries.'), {
-      status: 400,
-    });
-  }
-
-  const blocked = /\b(insert|update|delete|merge|create|drop|alter|truncate|grant|revoke|call|export|load|copy|assert|declare|set|begin|commit|rollback|execute\s+immediate)\b/i;
-  if (blocked.test(withoutTrailingSemicolon)) {
-    throw Object.assign(new Error('BigQuery MCP rejected a non-read-only SQL keyword.'), { status: 400 });
-  }
-}
-
-function stripSqlCommentsAndStrings(query: string): string {
-  let output = '';
-  let index = 0;
-  while (index < query.length) {
-    const char = query[index];
-    const next = query[index + 1];
-    if (char === '-' && next === '-') {
-      index += 2;
-      while (index < query.length && query[index] !== '\n') index += 1;
-      output += ' ';
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      index += 2;
-      while (index < query.length && !(query[index] === '*' && query[index + 1] === '/')) index += 1;
-      index += 2;
-      output += ' ';
-      continue;
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      const quote = char;
-      output += quote === '`' ? ' identifier ' : ' string ';
-      index += 1;
-      while (index < query.length) {
-        if (query[index] === '\\') {
-          index += 2;
-          continue;
-        }
-        if (query[index] === quote) {
-          if (quote !== '`' && query[index + 1] === quote) {
-            index += 2;
-            continue;
-          }
-          index += 1;
-          break;
-        }
-        index += 1;
-      }
-      continue;
-    }
-    output += char;
-    index += 1;
-  }
-  return output;
 }
 
 function requireBigQueryId(value: unknown, field: string): string {

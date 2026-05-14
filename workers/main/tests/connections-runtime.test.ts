@@ -1552,8 +1552,14 @@ describe('connections runtime', () => {
     });
   });
 
-  it('rejects non-read-only SQL database MCP queries before calling the data proxy', async () => {
-    const fetchMock = vi.fn();
+  it('forwards SQL database MCP queries without keyword filtering', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        mode: 'read',
+        query: 'delete from users LIMIT 100',
+      });
+      return new Response(JSON.stringify({ rowsAffected: [3] }));
+    });
     vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
@@ -1566,16 +1572,18 @@ describe('connections runtime', () => {
       }),
     ];
 
-    await expect(callConnectionTool({
+    const result = await callConnectionTool({
       ...envWith(records),
       SANDBOX_HOST_URL: 'https://sandbox.test',
     }, context, 'pg_main', 'execute_sql_readonly', {
       query: 'delete from users',
-    })).rejects.toMatchObject({
-      message: 'SQL database MCP only accepts read-only SELECT, WITH, SHOW, DESCRIBE, or EXPLAIN queries.',
-      status: 400,
+    }) as { content: Array<{ text: string }> };
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      rows: [],
+      rowsAffected: [3],
     });
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('queries Mixpanel top events through the platform broker', async () => {
@@ -1734,8 +1742,27 @@ describe('connections runtime', () => {
     });
   });
 
-  it('rejects non-read-only BigQuery SQL before calling the API', async () => {
-    const fetchMock = vi.fn();
+  it('forwards BigQuery SQL without keyword filtering', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      const body = JSON.parse(String(init?.body));
+      if (target.endsWith('/projects/demo-project/jobs')) {
+        expect(body.configuration.query.query).toBe('delete from warehouse.users where true');
+        return new Response(JSON.stringify({
+          statistics: { query: { totalBytesProcessed: '12', totalBytesBilled: '0' } },
+        }));
+      }
+      if (target.endsWith('/projects/demo-project/queries')) {
+        expect(body.query).toBe('delete from warehouse.users where true');
+        return new Response(JSON.stringify({
+          jobComplete: true,
+          totalRows: '0',
+          schema: { fields: [] },
+          rows: [],
+        }));
+      }
+      return new Response(JSON.stringify({ error: { message: `unexpected URL ${target}` } }), { status: 500 });
+    });
     vi.stubGlobal('fetch', fetchMock);
     const records = [
       integration({
@@ -1751,13 +1778,15 @@ describe('connections runtime', () => {
       }),
     ];
 
-    await expect(callConnectionTool(envWith(records), context, 'bq_prod', 'execute_sql_readonly', {
+    const result = await callConnectionTool(envWith(records), context, 'bq_prod', 'execute_sql_readonly', {
       query: 'delete from warehouse.users where true',
-    })).rejects.toMatchObject({
-      message: 'BigQuery MCP only accepts read-only SELECT or WITH queries.',
-      status: 400,
+    }) as { content: Array<{ text: string }> };
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      projectId: 'demo-project',
+      totalRows: '0',
     });
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('serves BigQuery tools from the integrations MCP broker endpoint', async () => {

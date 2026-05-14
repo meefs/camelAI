@@ -38,7 +38,7 @@ export function listTursoMcpTools(): Array<Record<string, unknown>> {
     },
     {
       name: 'execute_sql_readonly',
-      description: 'Execute a read-only SELECT/WITH/PRAGMA query and return rows.',
+      description: 'Execute a SQL query and return rows.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -157,18 +157,11 @@ function tursoHttpEndpoint(rawUrl: string): string {
 
 function normalizeReadOnlyQuery(query: string, limit: number): string {
   const trimmed = query.trim().replace(/;\s*$/, '');
-  if (!/^(select|with|pragma)\b/i.test(trimmed) || trimmed.includes(';')) {
-    throw Object.assign(new Error('Turso MCP only accepts a single read-only SELECT, WITH, or PRAGMA query.'), { status: 400 });
-  }
-  if (/\b(insert|update|delete|replace|create|drop|alter|truncate|attach|detach|vacuum|reindex)\b/i.test(trimmed)) {
-    throw Object.assign(new Error('Turso MCP rejected a non-read-only query keyword.'), { status: 400 });
-  }
   if (/^(select|with)\b/i.test(trimmed) && !/\blimit\b/i.test(trimmed)) {
     return `${trimmed} LIMIT ${limit}`;
   }
   return trimmed;
 }
-
 function quoteSqlIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
     throw Object.assign(new Error('table must be a simple SQL identifier.'), { status: 400 });
