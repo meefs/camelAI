@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/durable-objects';
 import { validateSignedToken } from '../src/signed-tokens';
+import { WorkspaceContainer } from '../src/workspace-container';
 
 describe('ChatThreadDO Codex external turn completion', () => {
   function createPiEventFake() {
@@ -226,6 +227,66 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(model.billingSource).toBe('byok');
     expect(model.usageProvider).toBe('anthropic');
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('uses the provider loaded from the thread record when initializing Pi', async () => {
+    const orgStub = {
+      getThread: vi.fn(async () => ({
+        id: 'thread1',
+        provider: 'claude',
+        model: 'sonnet',
+      })),
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+    };
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+    };
+    fake.runnerConnectPromise = null;
+    fake.runnerTransitionChain = Promise.resolve();
+    fake.codexSessionId = null;
+    fake.lastRunnerSeq = 0;
+    fake.trace = vi.fn();
+    fake.getLegacyClaudeSessionId = vi.fn(() => null);
+    fake.hydratePiCoreMessagesFromLegacy = vi.fn(async () => undefined);
+    fake.ensurePiSession = vi.fn(async () => undefined);
+
+    const buildEnvSpy = vi
+      .spyOn(WorkspaceContainer.prototype, 'buildChatRunnerEnv')
+      .mockResolvedValue({
+        envVars: {
+          CHIRIDION_CLAUDE_MODEL: 'sonnet',
+          CHIRIDION_CODEX_MODEL: 'gpt-5.4',
+        },
+      });
+
+    try {
+      await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
+    } finally {
+      buildEnvSpy.mockRestore();
+    }
+
+    expect(fake.chatContext.provider).toBe('claude');
+    expect(fake.hydratePiCoreMessagesFromLegacy).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'claude' }),
+      expect.any(WorkspaceContainer),
+      expect.any(Object),
+    );
+    expect(fake.ensurePiSession).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'claude' }),
+      expect.any(Object),
+    );
   });
 
   it('uses OpenAI BYOK directly for OpenAI Pi models', async () => {

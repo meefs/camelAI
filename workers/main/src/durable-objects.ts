@@ -5779,10 +5779,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
+    const shouldPreserveProvider =
+      prev?.threadId === threadId &&
+      prev.workspaceId === workspaceId &&
+      prev.orgId === orgId;
+
     this.chatContext = {
       threadId,
       workspaceId,
       orgId,
+      ...(shouldPreserveProvider && prev?.provider
+        ? { provider: prev.provider }
+        : {}),
       userId,
       userName,
       userEmail,
@@ -6850,10 +6858,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
       const thread = await orgStub.getThread(context.threadId);
-      const provider = thread?.provider === 'codex' ? 'codex' : 'claude';
-      if (context.provider !== provider) {
-        this.chatContext = { ...context, provider };
-        this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
+      const provider: NonNullable<ChatContextState["provider"]> =
+        thread?.provider === 'codex' ? 'codex' : 'claude';
+      const runnerContext =
+        context.provider === provider ? context : { ...context, provider };
+      if (this.chatContext !== runnerContext) {
+        this.chatContext = runnerContext;
+        this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, runnerContext);
       }
       // Build thread-specific env (integration creds + thread ID).
       const { envVars } = await container.buildChatRunnerEnv({
@@ -6871,12 +6882,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         envVarCount: Object.keys(envVars).length,
       });
 
-      await this.hydratePiCoreMessagesFromLegacy(context, container, {
+      await this.hydratePiCoreMessagesFromLegacy(runnerContext, container, {
         claudeSessionId: legacyClaudeSessionId,
         codexSessionId: this.codexSessionId,
       });
 
-      await this.ensurePiSession(context, envVars);
+      await this.ensurePiSession(runnerContext, envVars);
       this.trace("ensure_runner_pi_connected");
 
       console.log(
