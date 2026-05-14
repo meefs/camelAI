@@ -765,12 +765,31 @@ export async function action({ context, request }: Route.ActionArgs) {
 }
 ```
 
-When testing connection calls in the Pi agent harness, use the `js_exec` tool. It exposes the same Worker binding object as `context.cloudflare.env.CONNECTIONS` and a method facade at `context.cloudflare.connections`:
+When testing connection calls in the Pi agent harness, use the `js_exec` tool. This is the preferred way for the agent to call workspace connections because it exposes the same Worker binding shape that deployed user code receives.
+
+Inside `js_exec`, these globals are available:
+- `env.CONNECTIONS` - the virtual Worker service binding.
+- `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
+- `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
+
+Do not inspect `process.env`, shell environment variables, or `INT_*` variables to find connection credentials. Connection credentials are intentionally hidden behind the virtual binding. `INT_*` variables may exist for legacy compatibility, but they are not the default interface.
+
+First inspect the method catalog, then call a listed alias/method:
 
 ```javascript
 const methods = await env.CONNECTIONS.methods();
-const customers = await context.cloudflare.connections.stripeProd.listCustomers({ limit: 10 });
-return { methods, customers };
+const clickhouse = methods.find((entry) => entry.connection.type === "clickhouse");
+if (!clickhouse) throw new Error("No ClickHouse connection is configured");
+const executeQuery =
+  clickhouse.methods.find((method) => method.name === "executeQuery") ??
+  clickhouse.methods[0];
+if (!executeQuery) throw new Error("The ClickHouse connection exposes no callable methods");
+
+const result = await connections[clickhouse.alias][executeQuery.name]({
+  query: "SELECT 1 AS ok",
+});
+
+return { methodCatalog: methods, result };
 ```
 
 Global facade access also works:

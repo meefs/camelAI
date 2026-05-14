@@ -37,7 +37,7 @@ import {
   validateConfig,
   validateCredentials,
 } from "../../../src/lib/integration-registry";
-import { getEnvVarSuffixesForType, normalizeEnvVarName } from "./integration-env";
+import { normalizeEnvVarName } from "./integration-env";
 import {
   createOrRefreshCustomHostname,
   deleteCustomHostname,
@@ -1053,19 +1053,19 @@ const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = [
   },
   {
     name: "connections_list",
-    description: "List workspace connections. Prefer CONNECTIONS.list().",
+    description: "List workspace connections. Prefer calling this from js_exec as await env.CONNECTIONS.list().",
   },
   {
     name: "connections_get",
-    description: "Get one workspace connection. Prefer CONNECTIONS.get(connection). Arguments: { connection }.",
+    description: "Get one workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.get(connection). Arguments: { connection }.",
   },
   {
     name: "connections_tools",
-    description: "List tools for a workspace connection. Prefer CONNECTIONS.tools(connection). Arguments: { connection }.",
+    description: "List MCP-backed tools for a workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.tools(connection). Arguments: { connection }.",
   },
   {
     name: "connections_methods",
-    description: "List workspace connections and their method aliases, tool names, and input schemas. Prefer CONNECTIONS.methods().",
+    description: "List workspace connections and their method aliases, tool names, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
   },
 ];
 
@@ -1787,11 +1787,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return {
       count: filtered.length,
       integrations: filtered.map((integration) => {
-        const dynamicFields = integration.integration_type === "other" && Array.isArray(integration.config.dynamic_fields)
-          ? integration.config.dynamic_fields as DynamicField[]
-          : undefined;
         const envVarPrefix = `INT_${normalizeEnvVarName(integration.integration_type)}_${normalizeEnvVarName(integration.name)}`;
-        const envVarSuffixes = getEnvVarSuffixesForType(integration.integration_type, dynamicFields);
         return {
           id: integration.id,
           type: integration.integration_type,
@@ -1801,8 +1797,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           has_credentials: integration.has_credentials,
           created_at: new Date(integration.created_at).toISOString(),
           updated_at: new Date(integration.updated_at).toISOString(),
-          env_var_prefix: envVarPrefix,
-          env_vars: envVarSuffixes.map((suffix) => `${envVarPrefix}_${suffix}`),
+          recommended_access: {
+            tool: "js_exec",
+            inspect_methods: "await env.CONNECTIONS.methods()",
+            call_pattern: "await connections.<alias>.<method>({ ...input })",
+            connection_id: integration.id,
+          },
+          legacy_env_var_prefix: envVarPrefix,
+          legacy_env_vars_note:
+            "Compatibility only. Prefer js_exec with env.CONNECTIONS/connections for connection calls.",
           display_name: integration.integration_type === "other" && typeof integration.config.display_name === "string"
             ? integration.config.display_name
             : undefined,
@@ -1885,11 +1888,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       this.ctx.props.workspaceId,
       this.ctx.props.orgId,
     ).catch((err) => console.error("[CodeModeToolsBinding] Failed to sync integration secrets", err));
-    const dynamicFields = integrationType === "other" && Array.isArray(config.dynamic_fields)
-      ? config.dynamic_fields as DynamicField[]
-      : undefined;
     const envVarPrefix = `INT_${normalizeEnvVarName(integrationType)}_${normalizeEnvVarName(name)}`;
-    const envVarSuffixes = getEnvVarSuffixesForType(integrationType, dynamicFields);
     return {
       success: true,
       integration: {
@@ -1897,8 +1896,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         type: integrationType,
         name,
         category: definition.category,
-        env_var_prefix: envVarPrefix,
-        env_vars: envVarSuffixes.map((suffix) => `${envVarPrefix}_${suffix}`),
+        recommended_access: {
+          tool: "js_exec",
+          inspect_methods: "await env.CONNECTIONS.methods()",
+          call_pattern: "await connections.<alias>.<method>({ ...input })",
+          connection_id: integrationId,
+        },
+        legacy_env_var_prefix: envVarPrefix,
+        legacy_env_vars_note:
+          "Compatibility only. Prefer js_exec with env.CONNECTIONS/connections for connection calls.",
       },
       message: `Integration '${name}' created successfully.`,
     };
@@ -1959,7 +1965,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (credentials._oauth_completed && credentials.integration_id) {
       const integrationId = String(credentials.integration_id);
       const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
-      const envVarSuffixes = getEnvVarSuffixesForType(type);
       return {
         success: true,
         integration: {
@@ -1967,8 +1972,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           type,
           name,
           category: responseDefinition.category,
-          env_var_prefix: envVarPrefix,
-          env_vars: envVarSuffixes.map((suffix) => `${envVarPrefix}_${suffix}`),
+          recommended_access: {
+            tool: "js_exec",
+            inspect_methods: "await env.CONNECTIONS.methods()",
+            call_pattern: "await connections.<alias>.<method>({ ...input })",
+            connection_id: integrationId,
+          },
+          legacy_env_var_prefix: envVarPrefix,
+          legacy_env_vars_note:
+            "Compatibility only. Prefer js_exec with env.CONNECTIONS/connections for connection calls.",
         },
         message: `Integration '${name}' connected successfully via OAuth.`,
       };
@@ -6600,6 +6612,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
       "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
+      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, inspect available connection methods with `await env.CONNECTIONS.methods()`, then call them through `connections.<alias>.<method>(input)` or `context.cloudflare.connections.<alias>.<method>(input)`. Do not look for connection credentials in `process.env`, shell environment variables, or `INT_*` variables unless the user explicitly asks for legacy env-var compatibility.",
       "",
       workspaceContext,
       "",
@@ -7315,11 +7328,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         name: "js_exec",
         label: "JavaScript",
         description:
-          "Run JavaScript code mode with access to every registered harness tool through the global tools object. " +
-          "Inspect ALL_TOOLS for names, descriptions, and parameter schemas. " +
-          "Inside the code, call tools by name, for example: await tools.WebSearch({ query: \"Cloudflare Workers\" }); " +
-          "Interactive tools that wait for the user, such as prompt_connection_setup, must be called as top-level tools instead of from js_exec. " +
-          "Connection methods are available at context.cloudflare.connections and connections.",
+          "Run short JavaScript in the Worker-style code mode runtime. Use this for workspace connections and for small scripts that need to orchestrate multiple harness tools. " +
+          "Connection globals: `env.CONNECTIONS` is the virtual Worker binding, `connections` and `context.cloudflare.connections` are method facades, and `context.cloudflare.env.CONNECTIONS` is the same binding. " +
+          "To use a connection, first inspect `const methods = await env.CONNECTIONS.methods();`, choose an alias/method from that result, then call `await connections.<alias>.<method>({ ...input })`. " +
+          "For example: `const catalog = await env.CONNECTIONS.methods(); const entry = catalog.find((item) => item.connection.type === \"clickhouse\"); if (!entry) throw new Error(\"No ClickHouse connection\"); const method = entry.methods.find((item) => item.name === \"executeQuery\") ?? entry.methods[0]; if (!method) throw new Error(\"No callable methods\"); return await connections[entry.alias][method.name]({ query: \"SELECT 1 AS ok\" });`. " +
+          "Do not inspect `process.env`, shell environment variables, or `INT_*` variables for connection credentials; credentials are intentionally hidden behind the binding. " +
+          "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +
+          "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({
           code: Type.String(),
           timeoutMs: Type.Optional(Type.Number()),
