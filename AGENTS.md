@@ -124,6 +124,17 @@ waitUntil(
 - Keep observability payloads diagnostic but not transcript-like: include ids, counts, status, durations, routes, and error metadata; do not store chat message contents, secrets, request bodies, or auth headers.
 - The main app workers attach Tail Consumers to `workers/user-logs-tail/`, which forwards raw Worker trace/log/exception events into `WorkerLogsDO`.
 - Production datasets are `chiridion_observability_prod` and `chiridion_errors_prod`; staging uses the corresponding `_staging` datasets. Verify bindings in the environment-specific `wrangler*.jsonc` files before changing collection paths.
+- Query Analytics Engine through Cloudflare's SQL API with an account token that has Account Analytics Read. The account id is `CF_ACCOUNT_ID` in Wrangler vars. Example:
+
+```bash
+curl "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/analytics_engine/sql" \
+  --header "Authorization: Bearer $CF_API_TOKEN" \
+  --data "SELECT timestamp, blob1 AS event, blob3 AS component, blob5 AS status, blob9 AS thread_id, double2 AS duration_ms FROM chiridion_observability_staging WHERE timestamp > NOW() - INTERVAL '1' HOUR ORDER BY timestamp DESC LIMIT 100 FORMAT JSON"
+```
+
+- `OBSERVABILITY_EVENTS` schema: `blob1 event`, `blob2 severity`, `blob3 component`, `blob4 operation`, `blob5 status`, `blob6 route`, `blob7 method`, `blob8 path`, `blob9 threadId`, `blob10 workspaceId`, `blob11 orgId`, `blob12 userId`, `blob13 requestId`, `blob14 provider`, `blob15 model`, `blob16 errorName`, `blob17 errorMessage`, `blob18 errorStack`; `double1 timestamp_ms`, `double2 duration_ms`, `double3 status_code`, `double4 count`, `double5 size`; `index1 sample key`.
+- `ERROR_ANALYTICS` has the error-focused subset: `blob1 event`, `blob2 component`, `blob3 operation`, `blob4 status`, `blob5 errorName`, `blob6 errorMessage`, `blob7 threadId`, `blob8 workspaceId`, `blob9 orgId`, `blob10 userId`, `blob11 requestId`, `blob12 route`, `blob13 path`, `blob14 errorStack`; doubles match the same timestamp/duration/status/count/size order.
+- For aggregate counts/sums, account for sampling with `_sample_interval`, for example `SUM(_sample_interval)` instead of `COUNT()`.
 
 ## Chat And Runtime Flow
 
