@@ -6,6 +6,8 @@ import {
   ScrollRestoration,
   isRouteErrorResponse,
 } from 'react-router';
+import { useEffect } from 'react';
+import { useTheme } from 'next-themes';
 import type { Route } from './+types/root';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
@@ -35,6 +37,41 @@ export const links: Route.LinksFunction = () => [
   },
 ];
 
+const THEME_COLORS = {
+  light: '#ffffff',
+  dark: '#09090b',
+} as const;
+
+function ThemeColorSync() {
+  const { resolvedTheme } = useTheme();
+
+  useEffect(() => {
+    if (resolvedTheme !== 'light' && resolvedTheme !== 'dark') {
+      return;
+    }
+
+    const color = THEME_COLORS[resolvedTheme];
+    const metas = Array.from(
+      document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'),
+    );
+
+    if (metas.length === 0) {
+      const meta = document.createElement('meta');
+      meta.name = 'theme-color';
+      meta.content = color;
+      document.head.appendChild(meta);
+      return;
+    }
+
+    for (const meta of metas) {
+      meta.content = color;
+      meta.removeAttribute('media');
+    }
+  }, [resolvedTheme]);
+
+  return null;
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
@@ -58,6 +95,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           enableSystem
           disableTransitionOnChange
         >
+          <ThemeColorSync />
           <NavigationProgress />
           {children}
           <Toaster />
