@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   redirect,
   useLoaderData,
@@ -619,6 +619,7 @@ export default function ChatPage() {
   const revalidator = useRevalidator();
   const { groups: liveChatGroups, markThreadIdle } = useChatGroups();
   const { getSnapshot, setSnapshot } = useChatThreadSnapshots();
+  const [clientActiveThreadId, setClientActiveThreadId] = useState(threadId);
   const chatDebugFlags = getChatDebugFlags();
   const markViewedEnabled = chatDebugFlags.markViewed;
   const markThreadIdleRef = useRef(markThreadIdle);
@@ -658,10 +659,29 @@ export default function ChatPage() {
     threadId,
   ]);
 
-  const displayThreadId = threadId;
-  const displayThreadTitle = threadTitle;
-  const displayThreadModel = threadModel;
-  const displayThreadProvider = threadProvider;
+  useEffect(() => {
+    setClientActiveThreadId(threadId);
+  }, [threadId]);
+
+  const displayThreadId = clientActiveThreadId;
+  const activeThreadSummary =
+    liveActiveChatGroup?.open_threads.find(
+      (thread) => thread.id === displayThreadId,
+    ) ??
+    activeChatGroup?.open_threads.find(
+      (thread) => thread.id === displayThreadId,
+    ) ??
+    null;
+  const isDisplayingLoaderThread = displayThreadId === threadId;
+  const displayThreadTitle = isDisplayingLoaderThread
+    ? threadTitle
+    : (activeThreadSummary?.title ?? threadTitle);
+  const displayThreadModel = isDisplayingLoaderThread
+    ? threadModel
+    : (activeThreadSummary?.model ?? threadModel);
+  const displayThreadProvider = isDisplayingLoaderThread
+    ? threadProvider
+    : (activeThreadSummary?.provider ?? threadProvider);
   const displayAllowedThreadModels =
     displayThreadModel && displayThreadProvider
       ? getVisibleLlmModelOptions(
@@ -676,7 +696,7 @@ export default function ChatPage() {
       : allowedThreadModels;
   const cachedSnapshot = displayThreadId ? getSnapshot(displayThreadId) : null;
   const shouldUseCachedSnapshot = Boolean(
-    usedClientMessageCache && cachedSnapshot,
+    cachedSnapshot && (!isDisplayingLoaderThread || usedClientMessageCache),
   );
   const displayChatData = shouldUseCachedSnapshot
     ? {
@@ -746,15 +766,19 @@ export default function ChatPage() {
     })) ?? [];
 
   const selectTab = (targetThreadId: string) => {
+    const snapshot = getSnapshot(targetThreadId);
     if (displayThreadId) {
       markThreadIdle(displayThreadId);
+    }
+    if (snapshot) {
+      setClientActiveThreadId(targetThreadId);
     }
     const params = new URLSearchParams();
     const activeGroupId = liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null;
     if (activeGroupId) {
       params.set("group", activeGroupId);
     }
-    if (getSnapshot(targetThreadId)) {
+    if (snapshot) {
       params.set("chatCache", "1");
     }
     navigate(
