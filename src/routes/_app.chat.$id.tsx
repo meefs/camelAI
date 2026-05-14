@@ -13,6 +13,7 @@ import {
   requireSessionWorkspaceAccess,
   getAuthEnv,
 } from "@/lib/auth.server";
+import { createSessionCookieHeader } from "@/lib/cookies.server";
 import { integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getEnv } from "@/lib/cloudflare.server";
 import {
@@ -31,6 +32,7 @@ import {
   isLlmModel,
 } from "@/lib/llm-provider-config";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
+import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
@@ -54,6 +56,7 @@ import type {
   LlmModel,
   Message,
   PreviewTarget,
+  WorkspaceWithAccess,
 } from "@/types";
 
 function buildBillingCreditStatus(
@@ -291,6 +294,25 @@ async function buildChatData(
   };
 }
 
+async function findAccessibleGroupWorkspace(
+  context: Route.LoaderArgs["context"],
+  userId: string,
+  groupId: string,
+  workspaces: WorkspaceWithAccess[],
+): Promise<WorkspaceWithAccess | null> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
+  const group = await userStub.getChatGroup(groupId);
+  if (!group) return null;
+  return (
+    workspaces.find(
+      (workspace) =>
+        workspace.id === group.workspace_id && workspace.org_id === group.org_id,
+    ) ?? null
+  );
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
@@ -464,6 +486,40 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const orgId = authContext.currentOrg.id;
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
+  const requestedGroupId = url.searchParams.get("group")?.trim() || null;
+
+  if (requestedGroupId && actingUserId) {
+    const groupWorkspace = await findAccessibleGroupWorkspace(
+      context,
+      actingUserId,
+      requestedGroupId,
+      authContext.allWorkspaces,
+    ).catch((error) => {
+      console.error("Failed to resolve chat group workspace:", error);
+      return null;
+    });
+    if (groupWorkspace && groupWorkspace.id !== workspaceId) {
+      const signedToken =
+        groupWorkspace.org_id !== authContext.session.org_id
+          ? await switchSessionOrg(
+              authEnv,
+              authContext.session,
+              groupWorkspace.org_id,
+              groupWorkspace.id,
+            )
+          : await switchSessionWorkspace(
+              authEnv,
+              authContext.session,
+              groupWorkspace.id,
+            );
+      throw redirect(`${url.pathname}${url.search}`, {
+        headers: {
+          "Set-Cookie": createSessionCookieHeader(signedToken, request),
+        },
+      });
+    }
+  }
+
   const orgStub = authEnv.ORG
     ? authEnv.ORG.get(authEnv.ORG.idFromName(orgId))
     : null;
