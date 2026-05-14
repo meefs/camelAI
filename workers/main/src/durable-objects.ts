@@ -6726,6 +6726,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
       "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
+      "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
       "",
       workspaceContext,
