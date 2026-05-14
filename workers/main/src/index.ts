@@ -57,6 +57,12 @@ import {
 } from './routes/billing.js';
 import { handleResendProxy } from './routes/resend-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
+import {
+  createRequestObservabilityContext,
+  normalizePathForObservability,
+  recordErrorEvent,
+  recordObservabilityEvent,
+} from './observability.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -227,25 +233,71 @@ export default {
     const url = new URL(req.url);
     const method = req.method;
     const isWebSocket = req.headers.get('Upgrade') === 'websocket';
+    const requestContext = createRequestObservabilityContext(req);
+    const startedAt = Date.now();
+    let routeName = 'react_router';
 
-    for (const route of routes) {
-      if (isWebSocket && !route.websocket) continue;
-      if (route.websocket && !isWebSocket) continue;
-      if (route.method !== 'ALL' && route.method !== method) continue;
+    const observeResponse = (response: Response): Response => {
+      const durationMs = Date.now() - startedAt;
+      recordObservabilityEvent(env, {
+        event: 'http_request',
+        severity: response.status >= 500 ? 'error' : response.status >= 400 ? 'warn' : 'info',
+        component: 'main_worker',
+        operation: isWebSocket ? 'websocket' : 'fetch',
+        status: response.status >= 500 ? 'error' : response.status >= 400 ? 'client_error' : 'ok',
+        route: routeName,
+        method,
+        path: normalizePathForObservability(url.pathname),
+        requestId: requestContext.requestId,
+        statusCode: response.status,
+        durationMs,
+        sampleIndex: requestContext.colo,
+      });
+      try {
+        response.headers.set('x-camelai-request-id', requestContext.requestId);
+        return response;
+      } catch {
+        return response;
+      }
+    };
 
-      const match = url.pathname.match(route.path);
-      if (!match) continue;
+    try {
+      for (const route of routes) {
+        if (isWebSocket && !route.websocket) continue;
+        if (route.websocket && !isWebSocket) continue;
+        if (route.method !== 'ALL' && route.method !== method) continue;
 
-      const result = await route.handler({ req, env, ctx, url, match });
-      if (result !== null) return result;
-      // null → handler declined, continue matching
+        const match = url.pathname.match(route.path);
+        if (!match) continue;
+
+        routeName = route.path.source;
+        const result = await route.handler({ req, env, ctx, url, match });
+        if (result !== null) return observeResponse(result);
+        // null → handler declined, continue matching
+      }
+
+      if (isWebSocket) {
+        routeName = 'websocket_not_found';
+        return observeResponse(new Response('Not Found', { status: 404 }));
+      }
+
+      return observeResponse(await reactRouterHandler(req, { cloudflare: { env, ctx } }));
+    } catch (error) {
+      recordErrorEvent(env, {
+        event: 'http_request_exception',
+        component: 'main_worker',
+        operation: isWebSocket ? 'websocket' : 'fetch',
+        status: 'exception',
+        route: routeName,
+        method,
+        path: normalizePathForObservability(url.pathname),
+        requestId: requestContext.requestId,
+        durationMs: Date.now() - startedAt,
+        sampleIndex: requestContext.colo,
+        error,
+      });
+      throw error;
     }
-
-    if (isWebSocket) {
-      return new Response('Not Found', { status: 404 });
-    }
-
-    return reactRouterHandler(req, { cloudflare: { env, ctx } });
   },
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {

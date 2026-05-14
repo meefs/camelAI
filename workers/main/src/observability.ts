@@ -1,0 +1,183 @@
+export interface ObservabilityEnv {
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
+  ERROR_ANALYTICS?: AnalyticsEngineDataset;
+}
+
+export interface RequestObservabilityContext {
+  requestId: string;
+  colo: string;
+  country: string;
+}
+
+export interface ObservabilityEvent {
+  event: string;
+  severity?: "debug" | "info" | "warn" | "error";
+  component: string;
+  operation?: string;
+  status?: string;
+  route?: string;
+  method?: string;
+  path?: string;
+  threadId?: string | null;
+  workspaceId?: string | null;
+  orgId?: string | null;
+  userId?: string | null;
+  requestId?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  errorName?: string | null;
+  errorMessage?: string | null;
+  errorStack?: string | null;
+  durationMs?: number | null;
+  statusCode?: number | null;
+  count?: number | null;
+  size?: number | null;
+  timestamp?: number;
+  sampleIndex?: string | null;
+}
+
+export function createRequestObservabilityContext(req: Request): RequestObservabilityContext {
+  const cf = (req as Request & { cf?: { colo?: unknown; country?: unknown } }).cf;
+  const ray = req.headers.get("cf-ray")?.trim();
+  return {
+    requestId: ray || crypto.randomUUID(),
+    colo: typeof cf?.colo === "string" && cf.colo ? cf.colo : "unknown",
+    country: typeof cf?.country === "string" && cf.country ? cf.country : "unknown",
+  };
+}
+
+export function normalizePathForObservability(pathname: string): string {
+  return pathname
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, ":uuid")
+    .replace(/\b[0-9a-f]{24,}\b/gi, ":hex")
+    .replace(/\/\d{5,}(?=\/|$)/g, "/:number");
+}
+
+export function errorToObservabilityFields(error: unknown): {
+  errorName: string;
+  errorMessage: string;
+  errorStack: string;
+} {
+  if (error instanceof Error) {
+    return {
+      errorName: error.name || "Error",
+      errorMessage: error.message || "Unknown error",
+      errorStack: error.stack || "",
+    };
+  }
+  if (typeof error === "string") {
+    return { errorName: "Error", errorMessage: error, errorStack: "" };
+  }
+  try {
+    return { errorName: "Error", errorMessage: JSON.stringify(error), errorStack: "" };
+  } catch {
+    return { errorName: "Error", errorMessage: "Unknown error", errorStack: "" };
+  }
+}
+
+export function recordObservabilityEvent(
+  env: ObservabilityEnv | undefined,
+  event: ObservabilityEvent,
+): void {
+  const dataset = env?.OBSERVABILITY_EVENTS;
+  if (!dataset) return;
+
+  const now = event.timestamp ?? Date.now();
+  try {
+    dataset.writeDataPoint({
+      blobs: [
+        safeBlob(event.event, 128),
+        safeBlob(event.severity ?? "info", 32),
+        safeBlob(event.component, 128),
+        safeBlob(event.operation, 128),
+        safeBlob(event.status, 128),
+        safeBlob(event.route, 256),
+        safeBlob(event.method, 16),
+        safeBlob(event.path, 256),
+        safeBlob(event.threadId, 128),
+        safeBlob(event.workspaceId, 128),
+        safeBlob(event.orgId, 128),
+        safeBlob(event.userId, 128),
+        safeBlob(event.requestId, 128),
+        safeBlob(event.provider, 64),
+        safeBlob(event.model, 128),
+        safeBlob(event.errorName, 128),
+        safeBlob(event.errorMessage, 2048),
+        safeBlob(event.errorStack, 4096),
+      ],
+      doubles: [
+        now,
+        safeNumber(event.durationMs),
+        safeNumber(event.statusCode),
+        safeNumber(event.count),
+        safeNumber(event.size),
+      ],
+      indexes: [safeIndex(event.sampleIndex ?? event.threadId ?? event.workspaceId ?? event.component)],
+    });
+  } catch (analyticsError) {
+    console.warn("[observability] failed to write analytics event", analyticsError);
+  }
+}
+
+export function recordErrorEvent(
+  env: ObservabilityEnv | undefined,
+  event: Omit<ObservabilityEvent, "severity" | "errorName" | "errorMessage"> & {
+    error: unknown;
+  },
+): void {
+  const details = errorToObservabilityFields(event.error);
+  const observabilityEvent = {
+    ...event,
+    severity: "error",
+    errorName: details.errorName,
+    errorMessage: details.errorMessage,
+    errorStack: details.errorStack,
+  } satisfies ObservabilityEvent & { error: unknown };
+  recordObservabilityEvent(env, observabilityEvent);
+
+  try {
+    env?.ERROR_ANALYTICS?.writeDataPoint({
+      blobs: [
+        safeBlob(event.event, 128),
+        safeBlob(event.component, 128),
+        safeBlob(event.operation, 128),
+        safeBlob(event.status, 128),
+        safeBlob(details.errorName, 128),
+        safeBlob(details.errorMessage, 2048),
+        safeBlob(event.threadId, 128),
+        safeBlob(event.workspaceId, 128),
+        safeBlob(event.orgId, 128),
+        safeBlob(event.userId, 128),
+        safeBlob(event.requestId, 128),
+        safeBlob(event.route, 256),
+        safeBlob(event.path, 256),
+        safeBlob(details.errorStack, 4096),
+      ],
+      doubles: [
+        event.timestamp ?? Date.now(),
+        safeNumber(event.durationMs),
+        safeNumber(event.statusCode),
+        safeNumber(event.count),
+        safeNumber(event.size),
+      ],
+      indexes: [safeIndex(event.sampleIndex ?? event.threadId ?? event.component)],
+    });
+  } catch (analyticsError) {
+    console.warn("[observability] failed to write error analytics event", analyticsError);
+  }
+}
+
+function safeBlob(value: unknown, maxLength: number): string {
+  if (value === undefined || value === null) return "";
+  const stringValue = String(value);
+  return stringValue.length > maxLength ? stringValue.slice(0, maxLength) : stringValue;
+}
+
+function safeIndex(value: unknown): string {
+  const index = safeBlob(value, 96);
+  return index || "unknown";
+}
+
+function safeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}

@@ -35,6 +35,7 @@ export interface CloudflareEnv {
   IMAGES: unknown; // ImagesBinding
   AI: unknown; // AI binding
   BROWSER?: Fetcher;
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
 
   // Environment variables

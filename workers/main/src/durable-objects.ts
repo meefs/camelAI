@@ -78,6 +78,10 @@ import {
 } from "./pi-container-tools";
 import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 import { parseFilePreviewPath } from "./preview-paths";
+import {
+  recordErrorEvent,
+  recordObservabilityEvent,
+} from "./observability";
 
 export type PreviewTarget =
   | {
@@ -227,6 +231,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
   CODE_MODE_LOADER?: WorkerLoader;
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   CF_ZONE_ID?: string;
   CF_API_TOKEN?: string;
@@ -4562,6 +4567,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         now,
       );
     });
+    this.recordChatThreadObservabilityEvent("pi_core_messages_replaced", {
+      operation: "replace",
+      status: "ok",
+      count: messages.length,
+    });
   }
 
   private appendPiCoreMessages(messages: AgentMessage[]): void {
@@ -4581,6 +4591,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         JSON.stringify(message),
         now,
       );
+    });
+    this.recordChatThreadObservabilityEvent("pi_core_messages_appended", {
+      operation: "append",
+      status: "ok",
+      count: messages.length,
+      size: startIndex,
     });
   }
 
@@ -4619,6 +4635,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return true;
     });
     this.appendPiCoreMessages(missing);
+    if (missing.length === 0) {
+      this.recordChatThreadObservabilityEvent("pi_core_messages_append_skipped", {
+        operation: "append_if_missing",
+        status: "duplicate",
+        count: 0,
+        size: messages.length,
+      });
+    }
   }
 
   private upsertPiCoreMessages(messages: AgentMessage[]): void {
@@ -4644,6 +4668,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const now = Date.now();
+    let updatedCount = 0;
+    let insertedCount = 0;
     for (const message of messages) {
       const key = this.piCoreMessageKey(message);
       const existingIndex = existingByKey.get(key);
@@ -4653,6 +4679,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           JSON.stringify(message),
           existingIndex,
         );
+        updatedCount += 1;
         continue;
       }
 
@@ -4664,7 +4691,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       existingByKey.set(key, nextIndex);
       nextIndex += 1;
+      insertedCount += 1;
     }
+    this.recordChatThreadObservabilityEvent("pi_core_messages_upserted", {
+      operation: "upsert",
+      status: "ok",
+      count: insertedCount + updatedCount,
+      size: rows.length,
+      insertedCount,
+      updatedCount,
+    });
   }
 
   private loadPiTurnRecovery(): PiTurnRecoveryRow | null {
@@ -4738,6 +4774,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
     this.upsertPiCoreMessages([userMessage]);
     this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
+    this.recordChatThreadObservabilityEvent("pi_turn_recovery_started", {
+      operation: "start_recovery",
+      status: "running",
+      count: 1,
+    });
   }
 
   private touchPiTurnRecovery(status: PiTurnRecoveryRow["status"]): void {
@@ -4797,6 +4838,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
     this.appendPiCoreMessagesIfMissing([userMessage]);
     this.markPiTurnRecovering();
+    this.recordChatThreadObservabilityEvent("pi_turn_recovery_resumed", {
+      operation: "recover_interrupted_turn",
+      status: "recovering",
+      count: pendingPiTurn.retry_count + 1,
+      size: Math.max(0, Date.now() - pendingPiTurn.started_at),
+    });
     this.setActiveTurnUserId(pendingPiTurn.active_user_id);
     this.setChatIsStreaming(true);
 
@@ -4891,9 +4938,56 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return { name: "UnknownError", message: "Unknown Pi agent loop error" };
   }
 
-  private truncatePiAgentLoopErrorField(value: string | undefined, maxLength: number): string {
-    if (!value) return "";
-    return value.length > maxLength ? value.slice(0, maxLength) : value;
+  private recordChatThreadObservabilityEvent(
+    event: string,
+    details: {
+      operation?: string;
+      status?: string;
+      severity?: "debug" | "info" | "warn" | "error";
+      count?: number;
+      size?: number;
+      durationMs?: number;
+      error?: unknown;
+      insertedCount?: number;
+      updatedCount?: number;
+    } = {},
+  ): void {
+    const context = this.chatContext;
+    const count =
+      typeof details.insertedCount === "number" || typeof details.updatedCount === "number"
+        ? (details.insertedCount ?? 0) + (details.updatedCount ?? 0)
+        : details.count;
+    if (details.error) {
+      recordErrorEvent(this.env, {
+        event,
+        component: "chat_thread_do",
+        operation: details.operation,
+        status: details.status ?? "exception",
+        threadId: context?.threadId,
+        workspaceId: context?.workspaceId,
+        orgId: context?.orgId,
+        userId: context?.userId,
+        durationMs: details.durationMs,
+        count,
+        size: details.size,
+        error: details.error,
+      });
+      return;
+    }
+    recordObservabilityEvent(this.env, {
+      event,
+      severity: details.severity ?? "info",
+      component: "chat_thread_do",
+      operation: details.operation,
+      status: details.status ?? "ok",
+      threadId: context?.threadId,
+      workspaceId: context?.workspaceId,
+      orgId: context?.orgId,
+      userId: context?.userId,
+      durationMs: details.durationMs,
+      count,
+      size: details.size,
+    });
   }
 
   private persistPiAgentLoopErrorForDevelopers(
@@ -4916,26 +5010,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     this.piLastPersistedLoopError = { fingerprint, at: now };
 
-    try {
-      const context = this.chatContext;
-      this.env.ERROR_ANALYTICS?.writeDataPoint({
-        blobs: [
-          "pi_agent_loop",
-          this.truncatePiAgentLoopErrorField(source, 128),
-          this.truncatePiAgentLoopErrorField(eventType, 128),
-          this.truncatePiAgentLoopErrorField(details.name, 128),
-          this.truncatePiAgentLoopErrorField(details.message, 2048),
-          this.truncatePiAgentLoopErrorField(context?.threadId, 128),
-          this.truncatePiAgentLoopErrorField(context?.workspaceId, 128),
-          this.truncatePiAgentLoopErrorField(context?.orgId, 128),
-          this.truncatePiAgentLoopErrorField(details.stack, 4096),
-        ],
-        doubles: [now],
-        indexes: ["pi_agent_loop"],
-      });
-    } catch (analyticsError) {
-      console.warn("[ChatThreadDO] Pi agent loop error analytics failed", analyticsError);
-    }
+    const context = this.chatContext;
+    recordErrorEvent(this.env, {
+      event: "pi_agent_loop_error",
+      component: "chat_thread_do",
+      operation: source,
+      status: eventType ?? "error",
+      threadId: context?.threadId,
+      workspaceId: context?.workspaceId,
+      orgId: context?.orgId,
+      userId: context?.userId,
+      error,
+    });
 
     return details.message;
   }
@@ -5214,6 +5300,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     options: { claudeSessionId?: string | null; codexSessionId?: string | null },
   ): Promise<void> {
     if (this.loadPiCoreMessages().length > 0) return;
+    const startedAt = Date.now();
 
     try {
       const piCoreResult = await container.readPiCoreMessagesStream(context.threadId, {
@@ -5228,6 +5315,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           if (this.loadPiCoreMessages().length > 0) return;
           this.replacePiCoreMessages(piCoreMessages);
           this.trace("pi_core_host_hydrated", { messageCount: piCoreMessages.length });
+          this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
+            operation: "hydrate_from_host_pi_core",
+            status: "host_hit",
+            count: piCoreMessages.length,
+            durationMs: Date.now() - startedAt,
+          });
           return;
         }
       } else {
@@ -5254,15 +5347,35 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const messages = Array.isArray(body?.messages)
         ? this.legacyParsedMessagesToPiCoreMessages(body.messages)
         : [];
-      if (messages.length === 0) return;
+      if (messages.length === 0) {
+        this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
+          operation: "hydrate_from_legacy",
+          status: "empty",
+          count: 0,
+          durationMs: Date.now() - startedAt,
+        });
+        return;
+      }
 
       if (this.loadPiCoreMessages().length > 0) return;
       this.replacePiCoreMessages(messages);
       this.trace("pi_core_legacy_hydrated", { messageCount: messages.length });
+      this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
+        operation: "hydrate_from_legacy",
+        status: "legacy_hit",
+        count: messages.length,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
       console.warn("[ChatThreadDO] failed to hydrate Pi history from legacy sessions", error);
       this.trace("pi_core_legacy_hydration_failed", {
         error: error instanceof Error ? error.message : String(error),
+      });
+      this.recordChatThreadObservabilityEvent("pi_core_hydration_failed", {
+        operation: "hydrate_from_legacy",
+        status: "exception",
+        durationMs: Date.now() - startedAt,
+        error,
       });
     }
   }
@@ -8178,6 +8291,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.upsertPiCoreMessages(
         this.ensurePiAssistantTextMessage([event.message], text),
       );
+      this.recordChatThreadObservabilityEvent("pi_message_end_persisted", {
+        operation: "handle_pi_session_event",
+        status: "assistant_message_end",
+        count: 1,
+        size: text.length,
+      });
       return;
     }
 
@@ -8252,6 +8371,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.piAssistantText,
       );
       this.upsertPiCoreMessages(newMessages);
+      this.recordChatThreadObservabilityEvent("pi_agent_end_persisted", {
+        operation: "handle_pi_session_event",
+        status: "agent_end",
+        count: newMessages.length,
+      });
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
       let finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);

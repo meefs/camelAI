@@ -8,6 +8,7 @@
 	"observability": {
 		"enabled": true
 	},
+	"tail_consumers": [{ "service": "chiridion-user-logs-tail" }],
 	// Local dev defaults (overridden by prod/staging/dev-* envs)
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
@@ -48,6 +49,10 @@
 		{
 			"binding": "ERROR_ANALYTICS",
 			"dataset": "chiridion_errors"
+		},
+		{
+			"binding": "OBSERVABILITY_EVENTS",
+			"dataset": "chiridion_observability"
 		}
 	],
 	"r2_buckets": [
@@ -160,6 +165,7 @@
 	"env": {
 		"prod": {
 			"name": "chiridion-app",
+			"tail_consumers": [{ "service": "chiridion-user-logs-tail" }],
 			"routes": [
 				{ "pattern": "camelai.dev/*", "zone_name": "camelai.dev" },
 				{ "pattern": "www.camelai.dev/*", "zone_name": "camelai.dev" }
@@ -264,6 +270,10 @@
 				{
 					"binding": "ERROR_ANALYTICS",
 					"dataset": "chiridion_errors_prod"
+				},
+				{
+					"binding": "OBSERVABILITY_EVENTS",
+					"dataset": "chiridion_observability_prod"
 				}
 			],
 			"durable_objects": {
@@ -283,6 +293,7 @@
 		},
 		"staging": {
 			"name": "chiridion-app-staging",
+			"tail_consumers": [{ "service": "chiridion-user-logs-tail-staging" }],
 			"routes": [
 				{ "pattern": "staging.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
@@ -338,6 +349,10 @@
 				{
 					"binding": "ERROR_ANALYTICS",
 					"dataset": "chiridion_errors_staging"
+				},
+				{
+					"binding": "OBSERVABILITY_EVENTS",
+					"dataset": "chiridion_observability_staging"
 				}
 			],
 			"kv_namespaces": [
@@ -408,6 +423,7 @@
 		},
 		"dev-miguel": {
 			"name": "chiridion-app-dev-miguel",
+			"tail_consumers": [{ "service": "chiridion-user-logs-tail-dev-miguel" }],
 			"routes": [
 				{ "pattern": "dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
@@ -457,6 +473,10 @@
 				{
 					"binding": "ERROR_ANALYTICS",
 					"dataset": "chiridion_errors_dev_miguel"
+				},
+				{
+					"binding": "OBSERVABILITY_EVENTS",
+					"dataset": "chiridion_observability_dev_miguel"
 				}
 			],
 			"r2_buckets": [
@@ -534,6 +554,7 @@
 		},
 		"dev-illiana": {
 			"name": "chiridion-app-dev-illiana",
+			"tail_consumers": [{ "service": "chiridion-user-logs-tail-dev-illiana" }],
 			"routes": [
 				{ "pattern": "dev-illiana.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
@@ -589,6 +610,10 @@
 				{
 					"binding": "ERROR_ANALYTICS",
 					"dataset": "chiridion_errors_dev_illiana"
+				},
+				{
+					"binding": "OBSERVABILITY_EVENTS",
+					"dataset": "chiridion_observability_dev_illiana"
 				}
 			],
 			// Dedicated KV namespace for dev-illiana (prevents cross-env data contamination)

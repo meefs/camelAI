@@ -26,6 +26,7 @@ export interface Env
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   SESSIONS: KVNamespace;
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
   SLACK_EVENTS_QUEUE?: Queue<SlackEventQueueMessage>;
