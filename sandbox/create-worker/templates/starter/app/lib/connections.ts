@@ -28,7 +28,7 @@ type ConnectionsBinding = {
 	__invoke<T = unknown>(request: {
 		connection: string;
 		method?: string;
-		input?: Record<string, unknown>;
+		input?: unknown;
 	}): Promise<T>;
 };
 
@@ -36,7 +36,10 @@ type ConnectionsEnv = {
 	CONNECTIONS: ConnectionsBinding;
 };
 
-type ConnectionMethod = <T = unknown>(input?: Record<string, unknown>) => Promise<T>;
+type ConnectionMethod = {
+	<T = unknown>(input?: Record<string, unknown>): Promise<T>;
+	(input: string | URL | Request, init?: RequestInit): Promise<Response>;
+};
 type ConnectionProxy = Record<string, ConnectionMethod>;
 type ConnectionsProxy = Record<string, ConnectionProxy> & {
 	/**
@@ -50,6 +53,48 @@ type ConnectionsProxy = Record<string, ConnectionProxy> & {
 
 export function createConnections(env: ConnectionsEnv): ConnectionsProxy {
 	const binding = env.CONNECTIONS;
+	const responseFromFetchPayload = (payload: unknown): unknown => {
+		if (!payload || typeof payload !== "object" || typeof (payload as { status?: unknown }).status !== "number") {
+			return payload;
+		}
+		const record = payload as {
+			status: number;
+			statusText?: string;
+			headers?: Record<string, string>;
+			bodyText?: string;
+			truncated?: boolean;
+		};
+		const headers = new Headers(record.headers ?? {});
+		if (record.truncated) headers.set("x-camelai-truncated", "true");
+		return new Response(record.bodyText ?? "", {
+			status: record.status,
+			statusText: record.statusText ?? "",
+			headers,
+		});
+	};
+	const serializeFetchInput = async (input: string | URL | Request): Promise<{ input: string; init: Record<string, unknown> }> => {
+		if (input instanceof Request) {
+			return {
+				input: input.url,
+				init: {
+					method: input.method,
+					headers: Object.fromEntries(input.headers.entries()),
+					body: input.method === "GET" || input.method === "HEAD" ? undefined : await input.text(),
+				},
+			};
+		}
+		return { input: String(input), init: {} };
+	};
+	const serializeFetchInit = (init: unknown): Record<string, unknown> => {
+		if (!init || typeof init !== "object") return {};
+		const output = { ...(init as Record<string, unknown>) };
+		const headers = (init as RequestInit).headers;
+		if (headers) {
+			output.headers = Object.fromEntries(new Headers(headers).entries());
+		}
+		return output;
+	};
+
 	return new Proxy({} as ConnectionsProxy, {
 		get(_target, connectionName) {
 			if (connectionName === "then") return undefined;
@@ -63,12 +108,25 @@ export function createConnections(env: ConnectionsEnv): ConnectionsProxy {
 				get(_connectionTarget, methodName) {
 					if (methodName === "then") return undefined;
 					if (typeof methodName !== "string") return undefined;
-					return (input: Record<string, unknown> = {}) =>
-						binding.__invoke({
+					return (async (...args: unknown[]) => {
+						let input: unknown = args[0] ?? {};
+						if (methodName === "fetch") {
+							const serialized = await serializeFetchInput((args[0] ?? "") as string | URL | Request);
+							input = {
+								...serialized,
+								init: {
+									...serialized.init,
+									...serializeFetchInit(args[1]),
+								},
+							};
+						}
+						const result = await binding.__invoke({
 							connection: connectionName,
 							method: methodName,
 							input,
 						});
+						return methodName === "fetch" ? responseFromFetchPayload(result) : result;
+					}) as ConnectionMethod;
 				},
 			});
 		},

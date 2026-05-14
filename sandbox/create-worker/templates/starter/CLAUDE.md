@@ -193,6 +193,23 @@ const connections = createConnections(context.cloudflare.env);
 const customers = await connections.stripeProd.listCustomers({ limit: 10 });
 ```
 
+Custom connections with type `other` expose a generic authenticated HTTP method
+named `fetch`. Use it like normal `fetch(input, init)`:
+
+```typescript
+const methods = await context.cloudflare.env.CONNECTIONS.methods();
+const custom = methods.find((entry) => entry.connection.type === "other");
+if (!custom) throw new Error("No custom API connection");
+
+const response = await connections[custom.alias].fetch("/v1/items?limit=10", {
+  method: "GET",
+});
+const result = await response.json();
+```
+
+Relative URLs are resolved against the connection `base_url`; camelAI applies the
+stored auth settings automatically.
+
 ### Virtual AI Binding (`AI`)
 
 You can use Cloudflare-style AI calls in user workers with a native AI binding:

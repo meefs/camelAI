@@ -248,6 +248,152 @@ describe('connections runtime', () => {
     ]);
   });
 
+  it('lists a fetch method for custom API connections', async () => {
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com/v1',
+          auth_type: 'bearer',
+        }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(listConnectionMethods(envWith(records), context)).resolves.toMatchObject([
+      {
+        alias: 'otherCustomApi',
+        connection: {
+          id: 'custom_api',
+          type: 'other',
+          name: 'custom-api',
+          capabilities: ['authenticated_fetch'],
+        },
+        methods: [
+          {
+            name: 'fetch',
+            tool: 'authenticated_fetch',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('invokes custom API fetch methods with stored auth', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.example.com/v1/items?limit=2&tag=a&tag=b');
+      expect(init?.method).toBe('POST');
+      expect(Object.fromEntries(new Headers(init?.headers).entries())).toMatchObject({
+        authorization: 'Bearer secret-token',
+        'content-type': 'application/json',
+      });
+      expect(JSON.parse(String(init?.body))).toEqual({ active: true });
+      return new Response(JSON.stringify({ items: [{ id: 1 }] }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com/v1',
+          auth_type: 'bearer',
+        }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: {
+        input: 'items?limit=2&tag=a&tag=b',
+        init: {
+          method: 'POST',
+          body: { active: true },
+        },
+      },
+    })).resolves.toMatchObject({
+      status: 201,
+      bodyText: JSON.stringify({ items: [{ id: 1 }] }),
+      truncated: false,
+    });
+  });
+
+  it('allows custom API fetches to absolute http URLs for migration compatibility', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://uploads.example.net/items');
+      expect(init?.method).toBe('GET');
+      expect(Object.fromEntries(new Headers(init?.headers).entries())).toMatchObject({
+        authorization: 'Bearer secret-token',
+      });
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com',
+          auth_type: 'bearer',
+        }),
+        credentials_encrypted: await encryptedCredentials({ api_key: 'secret-token' }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: {
+        input: 'https://uploads.example.net/items',
+      },
+    })).resolves.toMatchObject({
+      status: 200,
+      bodyText: 'ok',
+    });
+  });
+
+  it('rejects custom API fetch URLs with embedded credentials', async () => {
+    const records = [
+      integration({
+        id: 'custom_api',
+        integration_type: 'other',
+        name: 'custom-api',
+        category: 'saas',
+        config: JSON.stringify({
+          display_name: 'Custom API',
+          base_url: 'https://api.example.com',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'otherCustomApi',
+      method: 'fetch',
+      input: {
+        input: 'https://user:pass@example.net/items',
+      },
+    })).rejects.toMatchObject({
+      message: 'fetch input must not include embedded credentials.',
+      status: 400,
+    });
+  });
+
   it('marks Notion as first-party remote MCP brokered by camelAI', async () => {
     const records = [
       integration({

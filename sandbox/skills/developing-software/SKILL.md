@@ -798,6 +798,27 @@ Global facade access also works:
 return await connections.stripeProd.listCustomers({ limit: 10 });
 ```
 
+Custom connections with type `other` expose a generic authenticated HTTP method named
+`fetch`. Use it like normal `fetch(input, init)` instead of looking for API keys
+in environment variables:
+
+```javascript
+const methods = await env.CONNECTIONS.methods();
+const custom = methods.find((entry) => entry.connection.type === "other");
+if (!custom) throw new Error("No custom API connection is configured");
+
+const response = await connections[custom.alias].fetch("/v1/items?limit=10", {
+  method: "GET",
+});
+
+return await response.json();
+```
+
+`fetch` resolves relative URLs against the connection's configured `base_url` and
+camelAI applies the stored auth settings automatically. The returned value is a
+standard `Response`, so use `response.ok`, `await response.text()`, and
+`await response.json()` as usual.
+
 The `js_exec` runtime also exposes every registered harness tool on the global `tools` object. Tool names, descriptions, and parameter schemas are available in `ALL_TOOLS`. Use this when code-mode JavaScript needs web lookup, workspace file/shell operations, scheduled prompts, app/domain tools, user prompts, subagents, or any other harness tool:
 
 ```javascript

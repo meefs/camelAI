@@ -174,10 +174,63 @@ export interface ConnectionMethodCatalogEntry {
 export interface ConnectionInvokeRequest {
   connection: string;
   method?: string;
-  input?: Record<string, unknown>;
+  input?: unknown;
 }
 
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
+const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
+const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
+  name: 'fetch',
+  tool: OTHER_CONNECTION_FETCH_TOOL,
+  description:
+    'Fetch from this custom API connection like fetch(input, init). Relative URLs are resolved against the connection base_url and camelAI applies the stored auth settings.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      input: {
+        type: 'string',
+        description:
+          'Fetch input: a relative URL such as "/v1/items" or an absolute http(s) URL. Relative URLs are resolved against the connection base_url.',
+      },
+      init: {
+        type: 'object',
+        description: 'Fetch init object. Supports method, headers, and body.',
+        properties: {
+          method: {
+            type: 'string',
+            enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'],
+            description: 'HTTP method. Defaults to GET.',
+          },
+          headers: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+            description: 'Optional request headers. Authentication headers are applied by camelAI.',
+          },
+          body: {
+            description:
+              'Optional request body. Strings are sent as-is; objects and arrays are JSON encoded.',
+          },
+        },
+        additionalProperties: true,
+      },
+    },
+    required: ['input'],
+    additionalProperties: false,
+  },
+  outputSchema: {
+    type: 'object',
+    properties: {
+      status: { type: 'number' },
+      statusText: { type: 'string' },
+      headers: { type: 'object', additionalProperties: { type: 'string' } },
+      bodyText: { type: 'string' },
+      truncated: { type: 'boolean' },
+    },
+    required: ['status', 'statusText', 'headers', 'bodyText', 'truncated'],
+    additionalProperties: false,
+  },
+};
+const OTHER_CONNECTION_RESPONSE_LIMIT = 1_000_000;
 
 type ConnectionAuthErrorData = {
   code: string;
@@ -440,6 +493,13 @@ function toolToMethod(tool: unknown): ConnectionMethodSummary | null {
   };
 }
 
+function otherConnectionMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
+  if (connection.type !== 'other' || !connection.capabilities.includes('authenticated_fetch')) {
+    return [];
+  }
+  return [OTHER_CONNECTION_FETCH_METHOD];
+}
+
 function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string):
   | { ok: true; record: WorkspaceIntegrationRecord }
   | { ok: false; status: number; error: string; matches?: Record<string, string>[] } {
@@ -576,6 +636,7 @@ export async function listConnectionMethods(
       methods: [],
     };
     if (!connection.nativeMcp || connection.nativeMcp.brokered === false) {
+      entry.methods = otherConnectionMethods(connection);
       return entry;
     }
     try {
@@ -599,9 +660,6 @@ export async function invokeConnectionMethod(
   context: ConnectionsContext,
   request: ConnectionInvokeRequest
 ): Promise<unknown> {
-  const input = request.input && typeof request.input === 'object' && !Array.isArray(request.input)
-    ? request.input
-    : {};
   const method = typeof request.method === 'string' ? request.method : '';
   if (!method.trim()) {
     throw Object.assign(new Error('method is required'), { status: 400 });
@@ -664,7 +722,241 @@ export async function invokeConnectionMethod(
     });
   }
 
+  if (target.connection.type === 'other' && targetMethod.tool === OTHER_CONNECTION_FETCH_TOOL) {
+    return callOtherConnectionFetch(env, context, target.connection.id, request.input);
+  }
+
+  const input = request.input && typeof request.input === 'object' && !Array.isArray(request.input)
+    ? request.input as Record<string, unknown>
+    : {};
   return callConnectionTool(env, context, target.connection.id, targetMethod.tool, input);
+}
+
+async function callOtherConnectionFetch(
+  env: ConnectionsRuntimeEnv,
+  context: ConnectionsContext,
+  connection: string,
+  input: unknown
+): Promise<unknown> {
+  const records = await getWorkspaceIntegrations(env, context.workspaceId);
+  const resolved = resolveIntegration(records, connection);
+  if (!resolved.ok) {
+    throw Object.assign(new Error(resolved.error), {
+      status: resolved.status,
+      matches: resolved.matches,
+    });
+  }
+  const record = resolved.record;
+  if (record.integration_type !== 'other') {
+    throw Object.assign(new Error(`Connection "${record.name}" is not a custom API connection.`), { status: 400 });
+  }
+
+  const config = parseJsonObject(record.config);
+  const baseUrl = requireConfiguredUrl(config.base_url, 'base_url');
+  const request = normalizeOtherFetchInput(input);
+  const requestUrl = resolveOtherFetchUrl(baseUrl, request.input);
+
+  const credentials = record.credentials_encrypted
+    ? await decryptCredentials<Record<string, unknown>>(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY)
+    : {};
+  const method = otherFetchMethod(request.init.method);
+  const headers = otherFetchHeaders(request.init.headers);
+  applyOtherAuth(headers, config, credentials);
+
+  const init: RequestInit = { method, headers };
+  if (method !== 'GET' && method !== 'HEAD' && Object.prototype.hasOwnProperty.call(request.init, 'body')) {
+    const body = request.init.body;
+    if (typeof body === 'string') {
+      init.body = body;
+    } else if (body !== undefined) {
+      if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+      init.body = JSON.stringify(body);
+    }
+  }
+
+  const response = await fetch(requestUrl, init);
+  const responseBody = await boundedResponseText(response, OTHER_CONNECTION_RESPONSE_LIMIT);
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeadersObject(response.headers),
+    bodyText: responseBody.text,
+    truncated: responseBody.truncated,
+  };
+}
+
+function requireConfiguredUrl(value: unknown, field: string): URL {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw Object.assign(new Error(`Custom API connection is missing ${field}.`), { status: 400 });
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw Object.assign(new Error(`${field} must be a valid URL.`), { status: 400 });
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw Object.assign(new Error(`${field} must use http or https.`), { status: 400 });
+  }
+  if (url.username || url.password) {
+    throw Object.assign(new Error(`${field} must not include embedded credentials.`), { status: 400 });
+  }
+  return url;
+}
+
+function normalizeOtherFetchInput(input: unknown): { input: string; init: Record<string, unknown> } {
+  if (typeof input === 'string') {
+    return { input, init: {} };
+  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw Object.assign(new Error('fetch input must be a URL string or { input, init } object.'), {
+      status: 400,
+    });
+  }
+  const record = input as Record<string, unknown>;
+  if (typeof record.input !== 'string') {
+    throw Object.assign(new Error('fetch input.input must be a URL string.'), { status: 400 });
+  }
+  const init = record.init === undefined
+    ? {}
+    : record.init && typeof record.init === 'object' && !Array.isArray(record.init)
+      ? record.init as Record<string, unknown>
+      : null;
+  if (!init) {
+    throw Object.assign(new Error('fetch input.init must be an object when provided.'), { status: 400 });
+  }
+  return { input: record.input, init };
+}
+
+function resolveOtherFetchUrl(baseUrl: URL, input: unknown): URL {
+  if (typeof input !== 'string' || !input.trim()) {
+    throw Object.assign(new Error('fetch input is required'), { status: 400 });
+  }
+  const pathValue = input.trim();
+  let requestUrl: URL;
+  try {
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(pathValue)) {
+      requestUrl = new URL(pathValue);
+    } else {
+      const relativeBase = new URL(baseUrl.toString());
+      if (!relativeBase.pathname.endsWith('/')) relativeBase.pathname += '/';
+      requestUrl = new URL(pathValue, relativeBase);
+    }
+  } catch {
+    throw Object.assign(new Error('fetch input must be a relative path or valid URL.'), { status: 400 });
+  }
+  if (requestUrl.protocol !== 'https:' && requestUrl.protocol !== 'http:') {
+    throw Object.assign(new Error('Custom API fetch input must use http or https.'), { status: 400 });
+  }
+  // TODO: Restrict custom API fetches to trusted domains from the connection
+  // configuration once existing plaintext-env usage has fully migrated.
+  if (requestUrl.username || requestUrl.password) {
+    throw Object.assign(new Error('fetch input must not include embedded credentials.'), { status: 400 });
+  }
+  return requestUrl;
+}
+
+function otherFetchMethod(value: unknown): string {
+  const method = typeof value === 'string' && value.trim() ? value.trim().toUpperCase() : 'GET';
+  if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].includes(method)) {
+    throw Object.assign(new Error(`Unsupported custom API request method: ${method}`), { status: 400 });
+  }
+  return method;
+}
+
+function otherFetchHeaders(value: unknown): Headers {
+  const headers = new Headers();
+  if (value === undefined || value === null) return headers;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw Object.assign(new Error('headers must be an object when provided.'), { status: 400 });
+  }
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const normalized = key.trim().toLowerCase();
+    if (!normalized || ['authorization', 'proxy-authorization', 'host', 'content-length'].includes(normalized)) {
+      continue;
+    }
+    if (typeof item !== 'string') {
+      throw Object.assign(new Error(`headers.${key} must be a string.`), { status: 400 });
+    }
+    headers.set(key, item);
+  }
+  return headers;
+}
+
+function credentialString(credentials: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = credentials[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+function applyOtherAuth(headers: Headers, config: Record<string, unknown>, credentials: Record<string, unknown>): void {
+  const authType = typeof config.auth_type === 'string' && config.auth_type.trim()
+    ? config.auth_type.trim().toLowerCase()
+    : 'bearer';
+  switch (authType) {
+    case 'none':
+      return;
+    case 'bearer': {
+      const token = credentialString(credentials, 'api_key', 'access_token', 'token');
+      if (!token) throw Object.assign(new Error('Custom API bearer auth requires api_key.'), { status: 400 });
+      headers.set('authorization', `Bearer ${token}`);
+      return;
+    }
+    case 'basic': {
+      const username = credentialString(credentials, 'client_id', 'username', 'api_key');
+      const password = credentialString(credentials, 'client_secret', 'password', 'api_secret');
+      if (!username || !password) {
+        throw Object.assign(new Error('Custom API basic auth requires username/client_id/api_key and password/client_secret/api_secret.'), { status: 400 });
+      }
+      headers.set('authorization', `Basic ${btoa(`${username}:${password}`)}`);
+      return;
+    }
+    case 'header': {
+      const headerName = typeof config.auth_header === 'string' && config.auth_header.trim()
+        ? config.auth_header.trim()
+        : 'X-API-Key';
+      const token = credentialString(credentials, 'api_key', 'access_token', 'token');
+      if (!token) throw Object.assign(new Error('Custom API header auth requires api_key.'), { status: 400 });
+      headers.set(headerName, token);
+      return;
+    }
+    default:
+      throw Object.assign(new Error(`Unsupported custom API auth_type: ${authType}`), { status: 400 });
+  }
+}
+
+async function boundedResponseText(response: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) return { text: '', truncated: false };
+  const decoder = new TextDecoder();
+  let text = '';
+  let truncated = false;
+  while (text.length < limit) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    if (text.length > limit) {
+      truncated = true;
+      await reader.cancel().catch(() => {});
+      break;
+    }
+  }
+  text += decoder.decode();
+  return {
+    text: text.length > limit ? text.slice(0, limit) : text,
+    truncated,
+  };
+}
+
+function responseHeadersObject(headers: Headers): Record<string, string> {
+  const output: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    if (key.toLowerCase() === 'set-cookie') return;
+    output[key] = value;
+  });
+  return output;
 }
 
 export async function callConnectionTool(

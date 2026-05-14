@@ -70,7 +70,7 @@ export interface ConnectionMethodCatalogEntry {
 export interface ConnectionInvokeRequest {
 	connection: string;
 	method?: string;
-	input?: Record<string, unknown>;
+	input?: unknown;
 }
 
 function fallbackConnectionsUrl(env: LocalConnectionsEnv): string {

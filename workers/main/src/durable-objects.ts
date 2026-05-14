@@ -2715,6 +2715,42 @@ function hardenTimingSurface() {
 }
 
 function createConnectionsFacade(binding) {
+  function responseFromFetchPayload(payload) {
+    if (!payload || typeof payload !== "object" || typeof payload.status !== "number") {
+      return payload;
+    }
+    const headers = new Headers(payload.headers || {});
+    if (payload.truncated) headers.set("x-camelai-truncated", "true");
+    return new Response(payload.bodyText || "", {
+      status: payload.status,
+      statusText: payload.statusText || "",
+      headers,
+    });
+  }
+
+  async function serializeFetchInput(input) {
+    if (input instanceof Request) {
+      return {
+        input: input.url,
+        init: {
+          method: input.method,
+          headers: Object.fromEntries(input.headers.entries()),
+          body: input.method === "GET" || input.method === "HEAD" ? undefined : await input.text(),
+        },
+      };
+    }
+    return { input: String(input), init: {} };
+  }
+
+  function serializeFetchInit(init) {
+    if (!init || typeof init !== "object") return {};
+    const output = { ...init };
+    if (init.headers) {
+      output.headers = Object.fromEntries(new Headers(init.headers).entries());
+    }
+    return output;
+  }
+
   return new Proxy({}, {
     get(_target, connectionName) {
       if (connectionName === "then") return undefined;
@@ -2728,11 +2764,25 @@ function createConnectionsFacade(binding) {
         get(_connectionTarget, methodName) {
           if (methodName === "then") return undefined;
           if (typeof methodName !== "string") return undefined;
-          return (input = {}) => binding.__invoke({
-            connection: connectionName,
-            method: methodName,
-            input,
-          });
+          return async (...args) => {
+            let input = args[0] ?? {};
+            if (methodName === "fetch") {
+              const serialized = await serializeFetchInput(args[0] ?? "");
+              input = {
+                ...serialized,
+                init: {
+                  ...serialized.init,
+                  ...serializeFetchInit(args[1]),
+                },
+              };
+            }
+            const result = await binding.__invoke({
+              connection: connectionName,
+              method: methodName,
+              input,
+            });
+            return methodName === "fetch" ? responseFromFetchPayload(result) : result;
+          };
         },
       });
     },
@@ -7332,6 +7382,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Connection globals: `env.CONNECTIONS` is the virtual Worker binding, `connections` and `context.cloudflare.connections` are method facades, and `context.cloudflare.env.CONNECTIONS` is the same binding. " +
           "To use a connection, first inspect `const methods = await env.CONNECTIONS.methods();`, choose an alias/method from that result, then call `await connections.<alias>.<method>({ ...input })`. " +
           "For example: `const catalog = await env.CONNECTIONS.methods(); const entry = catalog.find((item) => item.connection.type === \"clickhouse\"); if (!entry) throw new Error(\"No ClickHouse connection\"); const method = entry.methods.find((item) => item.name === \"executeQuery\") ?? entry.methods[0]; if (!method) throw new Error(\"No callable methods\"); return await connections[entry.alias][method.name]({ query: \"SELECT 1 AS ok\" });`. " +
+          "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Do not inspect `process.env`, shell environment variables, or `INT_*` variables for connection credentials; credentials are intentionally hidden behind the binding. " +
           "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
