@@ -58,7 +58,11 @@ import type { OrgDO } from '../../main/src/auth';
 
 interface Env {
   DISPATCHER: {
-    get(name: string): {
+    get(
+      name: string,
+      args?: Record<string, unknown>,
+      options?: { limits?: { subRequests?: number } }
+    ): {
       fetch(request: Request): Promise<Response>;
     };
   };
@@ -71,6 +75,16 @@ interface Env {
   // Policy for workers missing KV access metadata ("open" during migration, "closed" for strict enforcement)
   DISPATCHER_MISSING_REGISTRY_MODE?: string;
   MAIN_APP_URL?: string;
+}
+
+const USER_WORKER_SUBREQUEST_LIMIT = 10_000_000;
+
+function getUserWorker(env: Env, dispatchScriptName: string) {
+  return env.DISPATCHER.get(dispatchScriptName, {}, {
+    limits: {
+      subRequests: USER_WORKER_SUBREQUEST_LIMIT,
+    },
+  });
 }
 
 // Helper functions to replace RPC calls
@@ -753,7 +767,7 @@ async function dispatchToWorker(
 
   try {
     console.log(`[dispatcher] Routing to worker: ${dispatchScriptName}`);
-    const userWorker = env.DISPATCHER.get(dispatchScriptName);
+    const userWorker = getUserWorker(env, dispatchScriptName);
     let response: Response;
 
     try {
@@ -762,7 +776,7 @@ async function dispatchToWorker(
       const error = e as Error;
       if (error.message?.startsWith('Worker not found') && fallbackDispatchScriptName && fallbackDispatchScriptName !== dispatchScriptName) {
         console.log(`[dispatcher] Primary worker not found, retrying legacy worker: ${fallbackDispatchScriptName}`);
-        const legacyWorker = env.DISPATCHER.get(fallbackDispatchScriptName);
+        const legacyWorker = getUserWorker(env, fallbackDispatchScriptName);
         response = await legacyWorker.fetch(request);
       } else {
         throw e;
