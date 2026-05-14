@@ -7175,8 +7175,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     envVars: Record<string, string>,
     getModelFn: (provider: never, modelId: never) => Model<any>,
   ): Promise<PiResolvedModelConfig> {
-    const provider: NonNullable<ChatContextState["provider"]> =
-      context.provider ?? "claude";
+    const provider = context.provider;
+    if (provider !== "claude" && provider !== "codex") {
+      throw new Error(
+        `Missing Pi provider for thread context ${context.threadId}`,
+      );
+    }
     const modelId =
       provider === "claude"
         ? envVars.CHIRIDION_CLAUDE_MODEL || "sonnet"

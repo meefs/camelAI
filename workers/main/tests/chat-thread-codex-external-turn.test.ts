@@ -229,33 +229,17 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('defaults missing Pi context providers to Claude', async () => {
+  it('fails loudly when Pi context provider is missing', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.env = {};
-    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
-      provider: 'anthropic',
-      apiKey: 'sk-ant-test',
-    }));
-    fake.checkHostedPiModelAccess = vi.fn(async () => {
-      throw new Error('hosted billing should not be checked for Anthropic BYOK');
-    });
 
-    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
-      fake,
-      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
-      vi.fn(() => ({
-        id: 'claude-sonnet-4-6',
-        provider: 'anthropic',
-        api: 'anthropic-messages',
-        baseUrl: 'https://api.anthropic.com',
-      })),
-    );
-
-    expect(model.model.provider).toBe('anthropic');
-    expect(model.model.id).toBe('claude-sonnet-4-6');
-    expect(model.billingSource).toBe('byok');
-    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+    await expect(
+      ChatThreadDO.prototype['resolvePiModel'].call(
+        fake,
+        { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+        vi.fn(),
+      ),
+    ).rejects.toThrow('Missing Pi provider for thread context thread1');
   });
 
   it('uses the provider loaded from the thread record when initializing Pi', async () => {
