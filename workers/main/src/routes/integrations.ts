@@ -46,6 +46,7 @@ import {
   discoverRemoteMcpOAuth,
   exchangeRemoteMcpOAuthCode,
   registerRemoteMcpOAuthClient,
+  RemoteMcpOAuthError,
 } from "../remote-mcp-oauth.js";
 
 interface ChatThreadConnectionSetupRpc {
@@ -528,7 +529,12 @@ export async function handleRemoteMcpOAuthStart({
     );
   } catch (err) {
     console.error("[remote-mcp-oauth] OAuth start failed:", err);
-    return redirect(`${url.origin}/connections?error=oauth_config`);
+    const redirectUrl = new URL("/connections", url.origin);
+    redirectUrl.searchParams.set("error", "oauth_config");
+    if (err instanceof RemoteMcpOAuthError) {
+      redirectUrl.searchParams.set("reason", err.code);
+    }
+    return redirect(redirectUrl.toString());
   }
 }
 

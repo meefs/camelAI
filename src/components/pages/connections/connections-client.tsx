@@ -86,6 +86,20 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
   unauthorized: 'Please log in to connect services.',
 };
 
+const REMOTE_MCP_OAUTH_REASON_MESSAGES: Record<string, string> = {
+  discovery_failed: 'Remote MCP OAuth discovery failed: the server did not advertise an OAuth authorization server.',
+  metadata_failed: 'Remote MCP OAuth discovery failed: authorization server metadata could not be loaded.',
+  registration_unsupported: 'Remote MCP OAuth is not available: the authorization server does not support dynamic client registration.',
+  registration_failed: 'Remote MCP OAuth client registration failed. Check worker logs for the upstream response.',
+};
+
+function oauthErrorMessage(error: string, reason: string | null): string {
+  if (error === 'oauth_config' && reason && REMOTE_MCP_OAUTH_REASON_MESSAGES[reason]) {
+    return REMOTE_MCP_OAUTH_REASON_MESSAGES[reason];
+  }
+  return OAUTH_ERROR_MESSAGES[error] || `Connection failed: ${error}`;
+}
+
 const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   slack_connected: 'Successfully connected to Slack!',
   notion_connected: 'Successfully connected to Notion!',
@@ -199,12 +213,14 @@ export default function ConnectionsClient({
   // Handle OAuth success/error from URL params
   useEffect(() => {
     const errorParam = searchParams.get('error');
+    const reasonParam = searchParams.get('reason');
     const successParam = searchParams.get('success');
 
     if (errorParam) {
-      setError(OAUTH_ERROR_MESSAGES[errorParam] || `Connection failed: ${errorParam}`);
+      setError(oauthErrorMessage(errorParam, reasonParam));
       // Clear the param from URL
       searchParams.delete('error');
+      searchParams.delete('reason');
       setSearchParams(searchParams, { replace: true });
     }
 

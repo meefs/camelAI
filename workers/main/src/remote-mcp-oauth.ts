@@ -5,6 +5,22 @@ import {
 
 type FetchLike = typeof fetch;
 
+export class RemoteMcpOAuthError extends Error {
+  constructor(
+    message: string,
+    public readonly code:
+      | "discovery_failed"
+      | "metadata_failed"
+      | "registration_unsupported"
+      | "registration_failed"
+      | "token_exchange_failed"
+      | "refresh_failed",
+  ) {
+    super(message);
+    this.name = "RemoteMcpOAuthError";
+  }
+}
+
 export interface RemoteMcpOAuthDiscovery {
   authorizationServer: string;
   resource: string;
@@ -142,7 +158,10 @@ async function discoverAuthorizationServerMetadata(
     const metadata = await readJsonObject(response);
     if (metadata) return metadata;
   }
-  throw new Error("OAuth authorization server metadata could not be discovered");
+  throw new RemoteMcpOAuthError(
+    "OAuth authorization server metadata could not be discovered",
+    "metadata_failed",
+  );
 }
 
 function scopeFromMetadata(
@@ -171,7 +190,10 @@ export async function discoverRemoteMcpOAuth(
     ? authorizationServers.find((value): value is string => typeof value === "string" && Boolean(safeUrl(value)))
     : null;
   if (!issuer) {
-    throw new Error("Remote MCP server did not advertise an OAuth authorization server");
+    throw new RemoteMcpOAuthError(
+      "Remote MCP server did not advertise an OAuth authorization server",
+      "discovery_failed",
+    );
   }
 
   const metadata = await discoverAuthorizationServerMetadata(issuer, fetchFn);
@@ -218,7 +240,10 @@ export async function registerRemoteMcpOAuthClient(
 ): Promise<RemoteMcpRegisteredClient> {
   const registrationEndpoint = discovery.metadata.registration_endpoint;
   if (typeof registrationEndpoint !== "string" || !registrationEndpoint) {
-    throw new Error("OAuth authorization server does not support dynamic client registration");
+    throw new RemoteMcpOAuthError(
+      "OAuth authorization server does not support dynamic client registration",
+      "registration_unsupported",
+    );
   }
 
   const response = await fetchFn(registrationEndpoint, {
@@ -238,9 +263,21 @@ export async function registerRemoteMcpOAuthClient(
     }),
   });
 
-  const payload = await response.json().catch(() => null) as unknown;
+  const text = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = null;
+  }
   if (!response.ok || !isRecord(payload) || typeof payload.client_id !== "string") {
-    throw new Error("OAuth dynamic client registration failed");
+    const details = isRecord(payload)
+      ? payload.error_description ?? payload.error ?? text
+      : text;
+    throw new RemoteMcpOAuthError(
+      `OAuth dynamic client registration failed with HTTP ${response.status}${details ? `: ${String(details).slice(0, 500)}` : ""}`,
+      "registration_failed",
+    );
   }
 
   return {
@@ -315,7 +352,10 @@ export async function exchangeRemoteMcpOAuthCode(
   const response = await fetchFn(args.tokenEndpoint, { method: "POST", headers, body });
   const payload = await response.json().catch(() => ({})) as RemoteMcpOAuthTokenResponse;
   if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description || payload.error || "OAuth token exchange failed");
+    throw new RemoteMcpOAuthError(
+      payload.error_description || payload.error || "OAuth token exchange failed",
+      "token_exchange_failed",
+    );
   }
   return payload;
 }
@@ -345,7 +385,10 @@ export async function refreshRemoteMcpOAuthToken(
   const response = await fetchFn(tokenEndpoint, { method: "POST", headers, body });
   const payload = await response.json().catch(() => ({})) as RemoteMcpOAuthTokenResponse;
   if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description || payload.error || "Remote MCP OAuth token refresh failed");
+    throw new RemoteMcpOAuthError(
+      payload.error_description || payload.error || "Remote MCP OAuth token refresh failed",
+      "refresh_failed",
+    );
   }
   const expiresAt = Date.now() + (payload.expires_in ?? 3600) * 1000;
   return {

@@ -103,4 +103,32 @@ describe('remote MCP OAuth flow', () => {
       refresh_token: 'refresh-1',
     });
   });
+
+  it('preserves dynamic registration failure details for diagnostics', async () => {
+    const discovery = {
+      authorizationServer: 'https://auth.example.com',
+      resource: 'https://mcp.example.com/mcp',
+      scope: null,
+      metadata: {
+        authorization_endpoint: 'https://auth.example.com/authorize',
+        token_endpoint: 'https://auth.example.com/token',
+        registration_endpoint: 'https://auth.example.com/register',
+      },
+      resourceMetadata: null,
+    };
+    const fetchMock = vi.fn(async () => Response.json(
+      { error: 'invalid_redirect_uri' },
+      { status: 400 },
+    ));
+
+    await expect(registerRemoteMcpOAuthClient(
+      discovery,
+      'https://app.example.com/api/integrations/remote_mcp/callback',
+      fetchMock as typeof fetch,
+    )).rejects.toMatchObject({
+      name: 'RemoteMcpOAuthError',
+      code: 'registration_failed',
+      message: expect.stringContaining('invalid_redirect_uri'),
+    });
+  });
 });
