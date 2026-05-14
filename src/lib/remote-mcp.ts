@@ -1,12 +1,15 @@
 export interface RemoteMcpConfig {
   server_url: string;
-  auth_type?: 'none' | 'bearer' | 'custom_header';
+  auth_type?: 'none' | 'bearer' | 'custom_header' | 'oauth';
   auth_header?: string;
 }
 
 export interface RemoteMcpCredentials {
   token?: string;
+  access_token?: string;
 }
+
+export const REMOTE_MCP_AUTH_TYPES = ['none', 'bearer', 'custom_header', 'oauth'] as const;
 
 const LOCAL_HOSTNAMES = new Set([
   'localhost',
@@ -106,7 +109,7 @@ export function validateRemoteMcpConnection(
   const errors = validateRemoteMcpUrl(config.server_url);
   const authType = typeof config.auth_type === 'string' ? config.auth_type : 'none';
 
-  if (!['none', 'bearer', 'custom_header'].includes(authType)) {
+  if (!REMOTE_MCP_AUTH_TYPES.includes(authType as (typeof REMOTE_MCP_AUTH_TYPES)[number])) {
     errors.push('Authentication type is invalid');
   }
   if (authType === 'custom_header') {

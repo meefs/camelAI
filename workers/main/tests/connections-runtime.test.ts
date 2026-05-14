@@ -306,6 +306,98 @@ describe('connections runtime', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('proxies an OAuth remote MCP connection with the stored access token', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://mcp.example.com/mcp');
+      expect(init?.method).toBe('POST');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer oauth-access-token');
+
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: { tools: {} },
+          },
+        }), {
+          headers: { 'mcp-session-id': 'oauth-session' },
+        });
+      }
+
+      expect(headers.get('mcp-session-id')).toBe('oauth-session');
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: { tools: [{ name: 'search' }] },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const records = [
+      integration({
+        id: 'oauth_mcp',
+        integration_type: 'remote_mcp',
+        name: 'OAuth MCP',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.example.com/mcp',
+          auth_type: 'oauth',
+        }),
+        credentials_encrypted: await encryptedCredentials({
+          access_token: 'oauth-access-token',
+        }),
+      }),
+    ];
+
+    await expect(getConnection(envWith(records), context, 'oauth_mcp')).resolves.toMatchObject({
+      reauthUrl: null,
+    });
+    await expect(listConnectionTools(envWith(records), context, 'oauth_mcp')).resolves.toEqual([
+      { name: 'search' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns the remote MCP OAuth reauth URL when OAuth credentials are missing', async () => {
+    const statuses: Array<{ id: string; status: string; code: string | null; message: string | null }> = [];
+    const records = [
+      integration({
+        id: 'oauth_mcp',
+        integration_type: 'remote_mcp',
+        name: 'OAuth MCP',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.example.com/mcp',
+          auth_type: 'oauth',
+        }),
+        credentials_encrypted: '',
+        auth_status: 'setup_incomplete',
+      }),
+    ];
+
+    await expect(listConnectionTools(
+      envWith(records, (id, status, code, message) => statuses.push({ id, status, code, message })),
+      context,
+      'oauth_mcp'
+    )).rejects.toMatchObject({
+      status: 401,
+      data: {
+        authStatus: 'needs_reauth',
+        reauthUrl: '/api/integrations/remote_mcp/oauth?workspace_id=ws_1&integration_id=oauth_mcp&redirect=%2Fconnections',
+      },
+    });
+    expect(statuses.at(-1)).toMatchObject(
+      {
+        id: 'oauth_mcp',
+        status: 'needs_reauth',
+        code: 'AUTH_REAUTH_REQUIRED',
+      }
+    );
+  });
+
   it('lists method aliases for connection tools', async () => {
     const records = [
       integration({

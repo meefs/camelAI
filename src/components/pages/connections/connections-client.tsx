@@ -89,6 +89,7 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
 const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   slack_connected: 'Successfully connected to Slack!',
   notion_connected: 'Successfully connected to Notion!',
+  remote_mcp_connected: 'Successfully connected to the remote MCP server!',
 };
 
 const CUSTOM_CONNECTION_SYSTEM_MESSAGE =

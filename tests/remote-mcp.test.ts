@@ -36,5 +36,10 @@ describe('remote MCP validation', () => {
       auth_type: 'custom_header',
       auth_header: 'X-API-Key',
     }, { token: 'secret' })).toEqual([]);
+
+    expect(validateRemoteMcpConnection({
+      server_url: 'https://mcp.example.com/mcp',
+      auth_type: 'oauth',
+    })).toEqual([]);
   });
 });

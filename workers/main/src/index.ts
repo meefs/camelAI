@@ -36,6 +36,8 @@ import {
   handleNotionOAuthCallback,
   handleSalesforceOAuthStart,
   handleSalesforceOAuthCallback,
+  handleRemoteMcpOAuthStart,
+  handleRemoteMcpOAuthCallback,
 } from './routes/integrations.js';
 import {
   handleChatRunnerWebSocket,
@@ -196,6 +198,8 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/oauth$/, handler: handleSalesforceOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/callback$/, handler: handleSalesforceOAuthCallback },
+  { method: 'GET', path: /^\/api\/integrations\/remote_mcp\/oauth$/, handler: handleRemoteMcpOAuthStart },
+  { method: 'GET', path: /^\/api\/integrations\/remote_mcp\/callback$/, handler: handleRemoteMcpOAuthCallback },
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },

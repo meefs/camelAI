@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle, Key } from 'lucide-react';
+import { AlertCircle, ExternalLink, Key } from 'lucide-react';
 
 interface EditConnectionDialogProps {
   open: boolean;
@@ -57,6 +57,17 @@ function shouldShowConfigField(
 ): boolean {
   if (connectionType === 'remote_mcp' && fieldName === 'auth_header') {
     return config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function shouldShowCredentialField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
   }
   return true;
 }
@@ -146,6 +157,10 @@ export function EditConnectionDialog({
   };
 
   if (!typeDef) return null;
+  const visibleCredentialFields = typeDef.credentialSchema.filter((field) =>
+    shouldShowCredentialField(connection.integration_type, field.name, config)
+  );
+  const isRemoteMcpOAuth = connection.integration_type === 'remote_mcp' && config.auth_type === 'oauth';
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -224,7 +239,7 @@ export function EditConnectionDialog({
             ))}
 
             {/* Credentials section */}
-            {typeDef.credentialSchema.length > 0 && (
+            {visibleCredentialFields.length > 0 && (
               <>
                 <div className="mt-2 border-t pt-4">
                   <div className="mb-3 flex items-center justify-between">
@@ -250,7 +265,7 @@ export function EditConnectionDialog({
                       </AlertDescription>
                     </Alert>
                   ) : (
-                    typeDef.credentialSchema.map((field) => {
+                    visibleCredentialFields.map((field) => {
                       const required = isCredentialFieldRequired(
                         connection.integration_type,
                         field.name,
@@ -299,6 +314,13 @@ export function EditConnectionDialog({
                 </div>
               </>
             )}
+            {isRemoteMcpOAuth && (
+              <Alert>
+                <AlertDescription>
+                  OAuth credentials are managed by the remote MCP authorization flow.
+                </AlertDescription>
+              </Alert>
+            )}
             </div>
           </div>
 
@@ -314,6 +336,20 @@ export function EditConnectionDialog({
             <Button type="submit" disabled={submitting}>
               {submitting ? 'Saving...' : 'Save Changes'}
             </Button>
+            {isRemoteMcpOAuth && (
+              <Button
+                type="button"
+                onClick={() => {
+                  window.location.href = `/api/integrations/remote_mcp/oauth?${new URLSearchParams({
+                    integration_id: connection.id,
+                    redirect: '/connections',
+                  }).toString()}`;
+                }}
+              >
+                <ExternalLink className="mr-2 size-4" />
+                Connect OAuth
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>

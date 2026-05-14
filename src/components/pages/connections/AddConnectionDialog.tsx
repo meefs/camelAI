@@ -65,6 +65,17 @@ function shouldShowConfigField(
   return true;
 }
 
+function shouldShowCredentialField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
 function isCredentialFieldRequired(
   connectionType: string,
   fieldName: string,
@@ -85,7 +96,7 @@ export function AddConnectionDialog({
   orgId,
   onSuccess,
 }: AddConnectionDialogProps) {
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const fetcher = useFetcher<{ success?: boolean; error?: string; oauthUrl?: string }>();
   const [name, setName] = useState('');
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [credentials, setCredentials] = useState<Record<string, unknown>>({});
@@ -96,7 +107,9 @@ export function AddConnectionDialog({
 
   useEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
-      if (fetcher.data.success) {
+      if (fetcher.data.oauthUrl) {
+        window.location.href = fetcher.data.oauthUrl;
+      } else if (fetcher.data.success) {
         setName('');
         setConfig({});
         setCredentials({});
@@ -148,6 +161,9 @@ export function AddConnectionDialog({
   }, [open, typeDef]);
 
   if (!typeDef) return null;
+  const visibleCredentialFields = typeDef.credentialSchema.filter((field) =>
+    shouldShowCredentialField(connectionType, field.name, config)
+  );
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -228,7 +244,7 @@ export function AddConnectionDialog({
             {typeDef.requiresOutboundIpAllowlist && <SandboxIpNotice />}
 
             {/* Credential fields */}
-            {typeDef.credentialSchema.length > 0 && (
+            {visibleCredentialFields.length > 0 && (
               <>
                 <div className="mt-2 border-t pt-4">
                   <p className="mb-3 text-sm font-medium">
@@ -245,7 +261,7 @@ export function AddConnectionDialog({
                 )}
 
                 {/* Show credential fields for non-Snowflake integrations */}
-                {connectionType !== 'snowflake' && typeDef.credentialSchema.map((field) => {
+                {connectionType !== 'snowflake' && visibleCredentialFields.map((field) => {
                   const required = isCredentialFieldRequired(connectionType, field.name, config, field.required);
                   return (
                     <div key={field.name} className="grid gap-1.5">

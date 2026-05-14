@@ -314,8 +314,12 @@ function authStatus(record: WorkspaceIntegrationRecord): WorkspaceIntegrationAut
   return record.auth_status ?? (record.credentials_encrypted ? 'connected' : 'setup_incomplete');
 }
 
+function isRemoteMcpOAuth(record: WorkspaceIntegrationRecord, config = parseJsonObject(record.config)): boolean {
+  return record.integration_type === 'remote_mcp' && config.auth_type === 'oauth';
+}
+
 function reauthUrl(record: WorkspaceIntegrationRecord, context: ConnectionsContext): string | null {
-  if (record.auth_method === 'oauth2') {
+  if (record.auth_method === 'oauth2' || isRemoteMcpOAuth(record)) {
     const params = new URLSearchParams({
       workspace_id: context.workspaceId,
       integration_id: record.id,
@@ -1261,7 +1265,9 @@ async function nativeMcpRpc(
     : {};
   const authHeaders = mcpAuthHeaders(record, config, credentials);
   if (!authHeaders.ok) {
-    const status = record.auth_method === 'oauth2' ? 'needs_reauth' : 'setup_incomplete';
+    const status = record.auth_method === 'oauth2' || isRemoteMcpOAuth(record, config)
+      ? 'needs_reauth'
+      : 'setup_incomplete';
     const code = status === 'needs_reauth' ? 'AUTH_REAUTH_REQUIRED' : 'AUTH_SETUP_INCOMPLETE';
     const message = authHeaders.error;
     await markConnectionAuthStatus(env, context, record, status, code, message);
@@ -1297,11 +1303,15 @@ function mcpAuthHeaders(
     const authType = typeof config.auth_type === 'string' ? config.auth_type : 'none';
     if (authType === 'none') return { ok: true, headers: {} };
 
-    const token = typeof credentials.token === 'string' ? credentials.token.trim() : '';
+    const token = authType === 'oauth'
+      ? (typeof credentials.access_token === 'string' ? credentials.access_token.trim() : '')
+      : (typeof credentials.token === 'string' ? credentials.token.trim() : '');
     if (!token) {
       return {
         ok: false,
-        error: `Remote MCP connection "${record.name}" requires a token for ${authType} authentication.`,
+        error: authType === 'oauth'
+          ? `Remote MCP connection "${record.name}" needs OAuth authorization.`
+          : `Remote MCP connection "${record.name}" requires a token for ${authType} authentication.`,
       };
     }
     if (authType === 'custom_header') {

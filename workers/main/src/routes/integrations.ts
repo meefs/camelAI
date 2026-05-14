@@ -44,6 +44,14 @@ import {
 import type { SlackEventCallbackPayload } from "../slack-types.js";
 import { isOrgBanned } from "../ban-list.js";
 import type { LlmModel } from "../../../../src/types.js";
+import {
+  buildRemoteMcpAuthorizationUrl,
+  createPkceChallenge,
+  createPkceVerifier,
+  discoverRemoteMcpOAuth,
+  exchangeRemoteMcpOAuthCode,
+  registerRemoteMcpOAuthClient,
+} from "../remote-mcp-oauth.js";
 
 interface ChatThreadConnectionSetupRpc {
   receiveConnectionSetupResponse(
@@ -417,6 +425,222 @@ function sanitizeRedirectPath(input: string): string {
 function reauthIntegrationId(stateData: IntegrationOAuthState): string | null {
   const value = stateData.extra_config?.reauth_integration_id;
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function remoteMcpOAuthStateValue(stateData: IntegrationOAuthState, key: string): string | null {
+  const value = stateData.extra_config?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function verifyWorkspaceWritableAccess(
+  env: RouteContext["env"],
+  workspaceId: string,
+  userId: string,
+): Promise<{ ok: true; orgId: string } | { ok: false; error: string }> {
+  const wsStub = getWorkspaceStub(env, workspaceId);
+  const wsInfo = await wsStub.getInfo();
+  if (!wsInfo || wsInfo.archived) {
+    return { ok: false, error: "workspace_not_found" };
+  }
+
+  const orgStub = getOrgStub(env, wsInfo.org_id);
+  if (!(await orgStub.isMember(userId))) {
+    return { ok: false, error: "access_denied" };
+  }
+
+  const memberAccess = await wsStub.getMemberAccess(userId);
+  if ((memberAccess?.access_level ?? "full") !== "full") {
+    return { ok: false, error: "access_denied" };
+  }
+
+  return { ok: true, orgId: wsInfo.org_id };
+}
+
+// =============================================================================
+// Remote MCP OAuth
+// =============================================================================
+
+export async function handleRemoteMcpOAuthStart({
+  req,
+  env,
+  url,
+}: RouteContext): Promise<Response> {
+  const auth = await requireSession(req, env);
+  if ("error" in auth)
+    return redirect(`${url.origin}/login?error=unauthorized`);
+
+  const { session } = auth;
+  if (!session.workspace_id)
+    return redirect(`${url.origin}/connections?error=no_workspace`);
+
+  const integrationId = url.searchParams.get("integration_id")?.trim();
+  if (!integrationId) {
+    return redirect(`${url.origin}/connections?error=oauth_invalid`);
+  }
+
+  const access = await verifyWorkspaceWritableAccess(env, session.workspace_id, session.user_id);
+  if (!access.ok) {
+    return redirect(`${url.origin}/connections?error=${access.error}`);
+  }
+
+  const wsStub = getWorkspaceStub(env, session.workspace_id);
+  const integration = await wsStub.getIntegration(integrationId);
+  if (!integration || integration.integration_type !== "remote_mcp") {
+    return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
+  }
+
+  const config = JSON.parse(integration.config || "{}") as Record<string, unknown>;
+  if (config.auth_type !== "oauth" || typeof config.server_url !== "string") {
+    return redirect(`${url.origin}/connections?error=oauth_invalid`);
+  }
+
+  try {
+    const redirectTo = sanitizeRedirectPath(
+      url.searchParams.get("redirect") || "/connections",
+    );
+    const callbackUrl = `${url.origin}/api/integrations/remote_mcp/callback`;
+    const discovery = await discoverRemoteMcpOAuth(config.server_url);
+    const client = await registerRemoteMcpOAuthClient(discovery, callbackUrl);
+    const codeVerifier = createPkceVerifier();
+    const codeChallenge = await createPkceChallenge(codeVerifier);
+    const state = await createIntegrationOAuthState(
+      env.SESSIONS,
+      "remote_mcp",
+      session.workspace_id,
+      session.user_id,
+      redirectTo,
+      {
+        reauth_integration_id: integrationId,
+        code_verifier: codeVerifier,
+        oauth_client_id: client.client_id,
+        oauth_client_secret: client.client_secret,
+        oauth_token_endpoint_auth_method: client.token_endpoint_auth_method ?? "none",
+        oauth_token_endpoint: discovery.metadata.token_endpoint,
+        oauth_authorization_server: discovery.authorizationServer,
+        oauth_resource: discovery.resource,
+        oauth_scope: discovery.scope,
+      },
+    );
+
+    return redirect(
+      buildRemoteMcpAuthorizationUrl({
+        discovery,
+        client,
+        redirectUri: callbackUrl,
+        state,
+        codeChallenge,
+      }),
+    );
+  } catch (err) {
+    console.error("[remote-mcp-oauth] OAuth start failed:", err);
+    return redirect(`${url.origin}/connections?error=oauth_config`);
+  }
+}
+
+export async function handleRemoteMcpOAuthCallback({
+  env,
+  url,
+  ctx,
+}: RouteContext): Promise<Response> {
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
+
+  if (error) return redirect(`${url.origin}/connections?error=oauth_denied`);
+  if (!code || !state)
+    return redirect(`${url.origin}/connections?error=oauth_invalid`);
+
+  const stateData = await validateAndConsumeIntegrationOAuthState(
+    env.SESSIONS,
+    state,
+  );
+  if (!stateData || stateData.integration_type !== "remote_mcp") {
+    return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
+  }
+
+  const integrationId = reauthIntegrationId(stateData);
+  const codeVerifier = remoteMcpOAuthStateValue(stateData, "code_verifier");
+  const clientId = remoteMcpOAuthStateValue(stateData, "oauth_client_id");
+  const tokenEndpoint = remoteMcpOAuthStateValue(stateData, "oauth_token_endpoint");
+  const resource = remoteMcpOAuthStateValue(stateData, "oauth_resource");
+  if (!integrationId || !codeVerifier || !clientId || !tokenEndpoint || !resource) {
+    return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
+  }
+
+  try {
+    const access = await verifyWorkspaceWritableAccess(env, stateData.workspace_id, stateData.user_id);
+    if (!access.ok) {
+      return redirect(`${url.origin}/connections?error=${access.error}`);
+    }
+
+    const wsStub = getWorkspaceStub(env, stateData.workspace_id);
+    const integration = await wsStub.getIntegration(integrationId);
+    if (!integration || integration.integration_type !== "remote_mcp") {
+      return redirect(`${url.origin}/connections?error=reauth_integration_not_found`);
+    }
+
+    const callbackUrl = `${url.origin}/api/integrations/remote_mcp/callback`;
+    const tokenData = await exchangeRemoteMcpOAuthCode({
+      tokenEndpoint,
+      clientId,
+      clientSecret: remoteMcpOAuthStateValue(stateData, "oauth_client_secret") ?? undefined,
+      tokenEndpointAuthMethod: remoteMcpOAuthStateValue(stateData, "oauth_token_endpoint_auth_method") ?? "none",
+      code,
+      redirectUri: callbackUrl,
+      codeVerifier,
+      resource,
+    });
+    const tokenExpiresAt = Date.now() + (tokenData.expires_in ?? 3600) * 1000;
+    const credentials = {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      token_type: tokenData.token_type,
+      scope: tokenData.scope ?? remoteMcpOAuthStateValue(stateData, "oauth_scope") ?? undefined,
+      expires_at: tokenExpiresAt,
+      oauth_client_id: clientId,
+      oauth_client_secret: remoteMcpOAuthStateValue(stateData, "oauth_client_secret") ?? undefined,
+      oauth_token_endpoint: tokenEndpoint,
+      oauth_token_endpoint_auth_method: remoteMcpOAuthStateValue(stateData, "oauth_token_endpoint_auth_method") ?? "none",
+      oauth_authorization_server: remoteMcpOAuthStateValue(stateData, "oauth_authorization_server") ?? undefined,
+      oauth_resource: resource,
+    };
+    const encrypted = await encryptCredentials(
+      credentials,
+      env.INTEGRATION_SECRET_KEY,
+    );
+
+    await wsStub.updateIntegration(
+      integrationId,
+      {
+        credentialsEncrypted: encrypted,
+        tokenExpiresAt,
+      },
+      stateData.user_id,
+    );
+
+    ctx.waitUntil(
+      new WorkspaceContainer(env, stateData.workspace_id, access.orgId)
+        .refreshIntegrationEnvVars()
+        .catch(() => {}),
+    );
+    ctx.waitUntil(
+      syncAllWorkspaceWorkerSecrets(
+        env as unknown as CfApiProxyEnv,
+        stateData.workspace_id,
+        access.orgId,
+      ).catch((err) =>
+        console.error("[remote-mcp-oauth] Failed to sync secrets to workers:", err),
+      ),
+    );
+
+    const safePath = sanitizeRedirectPath(stateData.redirect_url);
+    const redirectUrl = new URL(safePath, url.origin);
+    redirectUrl.searchParams.set("success", "remote_mcp_connected");
+    return redirect(redirectUrl.toString());
+  } catch (err) {
+    console.error("[remote-mcp-oauth] OAuth callback failed:", err);
+    return redirect(`${url.origin}/connections?error=oauth_token_failed`);
+  }
 }
 
 export async function handleSlackOAuthStart({

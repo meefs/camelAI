@@ -17,6 +17,7 @@ import {
   defaultWorkspaceModelPickerConfig,
   parseWorkspaceModelPickerConfig,
 } from '../../../src/lib/model-picker-config';
+import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -1133,7 +1134,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
        FROM integrations
        WHERE token_expires_at IS NOT NULL
          AND deleted_at IS NULL
-         AND (auth_method = 'oauth2' OR integration_type = ?)`,
+         AND (auth_method = 'oauth2' OR integration_type = ? OR integration_type = 'remote_mcp')`,
       BIGQUERY_INTEGRATION_TYPE
     ).toArray() as { token_expires_at: number | null }[];
 
@@ -1185,7 +1186,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
          WHERE token_expires_at IS NOT NULL
            AND token_expires_at <= ?
            AND deleted_at IS NULL
-           AND (auth_method = 'oauth2' OR integration_type = ?)
+           AND (auth_method = 'oauth2' OR integration_type = ? OR integration_type = 'remote_mcp')
          ORDER BY token_expires_at ASC`,
         batchCutoff,
         BIGQUERY_INTEGRATION_TYPE
@@ -1359,6 +1360,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
           expires_at: token.expiresAt,
         };
         newExpiresAt = token.expiresAt;
+        break;
+      }
+
+      case 'remote_mcp': {
+        if ((credentials.auth_type as string | undefined) && credentials.auth_type !== 'oauth') {
+          return;
+        }
+        ({ credentials: newCredentials, expiresAt: newExpiresAt } = await refreshRemoteMcpOAuthToken(credentials));
         break;
       }
 

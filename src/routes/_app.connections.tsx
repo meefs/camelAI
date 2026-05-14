@@ -112,8 +112,9 @@ export async function action({ request, context }: Route.ActionArgs) {
         ? await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY)
         : '';
 
+      const integrationId = crypto.randomUUID();
       await stub.createIntegration(
-        crypto.randomUUID(),
+        integrationId,
         integrationType,
         name,
         definition.category,
@@ -128,6 +129,13 @@ export async function action({ request, context }: Route.ActionArgs) {
           .refreshIntegrationEnvVars()
           .catch(() => {})
       );
+      if (integrationType === 'remote_mcp' && config.auth_type === 'oauth') {
+        const params = new URLSearchParams({
+          integration_id: integrationId,
+          redirect: '/connections',
+        });
+        return { success: true, oauthUrl: `/api/integrations/remote_mcp/oauth?${params.toString()}` };
+      }
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to create integration' };

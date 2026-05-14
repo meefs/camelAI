@@ -1,5 +1,5 @@
 import type { IntegrationCategory, IntegrationAuthMethod } from '@/types';
-import { validateRemoteMcpUrl } from '@/lib/remote-mcp';
+import { REMOTE_MCP_AUTH_TYPES, validateRemoteMcpUrl } from '@/lib/remote-mcp';
 
 /**
  * Dynamic field definition for custom "other" integrations.
@@ -1364,6 +1364,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
           { value: 'none', label: 'None' },
           { value: 'bearer', label: 'Bearer Token' },
           { value: 'custom_header', label: 'Custom Header' },
+          { value: 'oauth', label: 'OAuth (Dynamic Client Registration)' },
         ],
       },
       {
@@ -1454,7 +1455,7 @@ export function validateConfig(type: string, config: Record<string, unknown>): s
   if (type === 'remote_mcp') {
     errors.push(...validateRemoteMcpUrl(config.server_url));
     const authType = typeof config.auth_type === 'string' ? config.auth_type : 'none';
-    if (!['none', 'bearer', 'custom_header'].includes(authType)) {
+    if (!REMOTE_MCP_AUTH_TYPES.includes(authType as (typeof REMOTE_MCP_AUTH_TYPES)[number])) {
       errors.push('Authentication type is invalid');
     }
     if (authType === 'custom_header') {
