@@ -227,6 +227,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
   CODE_MODE_LOADER?: WorkerLoader;
+  ERROR_ANALYTICS?: AnalyticsEngineDataset;
   CF_ZONE_ID?: string;
   CF_API_TOKEN?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
@@ -3266,6 +3267,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
   private piRecoveryInFlight: Promise<void> | null = null;
+  private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
 
   private trace(event: string, details: Record<string, unknown> = {}): void {
     if (!TRACE_CHAT_THREAD_DO) return;
@@ -3493,6 +3495,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piRecoveryInFlight = this.recoverInterruptedPiTurn(pendingPiTurn)
         .catch((error) => {
           console.error("[ChatThreadDO] failed to recover interrupted Pi turn", error);
+          this.persistPiAgentLoopErrorForDevelopers(error, {
+            source: "pi_turn_recovery",
+          });
           this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
         })
         .finally(() => {
@@ -4858,6 +4863,81 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (errorMessage) return errorMessage;
     }
     return "";
+  }
+
+  private piAgentLoopErrorDetails(error: unknown): {
+    name: string;
+    message: string;
+    stack?: string;
+  } {
+    if (error instanceof Error) {
+      return {
+        name: error.name || "Error",
+        message: error.message.trim() || "Unknown Pi agent loop error",
+        stack: typeof error.stack === "string" ? error.stack : undefined,
+      };
+    }
+    if (typeof error === "string" && error.trim()) {
+      return { name: "Error", message: error.trim() };
+    }
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") {
+        return { name: "UnknownError", message: serialized };
+      }
+    } catch {
+      // Fall through to the generic message.
+    }
+    return { name: "UnknownError", message: "Unknown Pi agent loop error" };
+  }
+
+  private truncatePiAgentLoopErrorField(value: string | undefined, maxLength: number): string {
+    if (!value) return "";
+    return value.length > maxLength ? value.slice(0, maxLength) : value;
+  }
+
+  private persistPiAgentLoopErrorForDevelopers(
+    error: unknown,
+    options: {
+      source: string;
+      eventType?: string;
+    },
+  ): string {
+    const details = this.piAgentLoopErrorDetails(error);
+    const source = options.source.trim() || "pi_agent_loop";
+    const eventType = options.eventType?.trim();
+    const fingerprint = `${source}:${eventType ?? ""}:${details.name}:${details.message}`;
+    const now = Date.now();
+    if (
+      this.piLastPersistedLoopError?.fingerprint === fingerprint &&
+      now - this.piLastPersistedLoopError.at < 5_000
+    ) {
+      return details.message;
+    }
+    this.piLastPersistedLoopError = { fingerprint, at: now };
+
+    try {
+      const context = this.chatContext;
+      this.env.ERROR_ANALYTICS?.writeDataPoint({
+        blobs: [
+          "pi_agent_loop",
+          this.truncatePiAgentLoopErrorField(source, 128),
+          this.truncatePiAgentLoopErrorField(eventType, 128),
+          this.truncatePiAgentLoopErrorField(details.name, 128),
+          this.truncatePiAgentLoopErrorField(details.message, 2048),
+          this.truncatePiAgentLoopErrorField(context?.threadId, 128),
+          this.truncatePiAgentLoopErrorField(context?.workspaceId, 128),
+          this.truncatePiAgentLoopErrorField(context?.orgId, 128),
+          this.truncatePiAgentLoopErrorField(details.stack, 4096),
+        ],
+        doubles: [now],
+        indexes: ["pi_agent_loop"],
+      });
+    } catch (analyticsError) {
+      console.warn("[ChatThreadDO] Pi agent loop error analytics failed", analyticsError);
+    }
+
+    return details.message;
   }
 
   private ensurePiAssistantTextMessage(messages: AgentMessage[], text: string): AgentMessage[] {
@@ -6707,7 +6787,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
 
     this.piUnsubscribe = session.subscribe((event) => {
-      this.handlePiSessionEvent(event);
+      try {
+        this.handlePiSessionEvent(event);
+      } catch (error) {
+        console.error("[ChatThreadDO] Pi event handler failed", error);
+        this.persistPiAgentLoopErrorForDevelopers(error, {
+          source: "pi_event_handler",
+          eventType: event.type,
+        });
+      }
     });
     this.pushChatEvent({ type: "session", sessionId: context.threadId });
     this.pushChatEvent({ type: "ready" });
@@ -7295,13 +7383,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
     streamSimple: typeof import("@mariozechner/pi-ai").streamSimple,
   ): ReturnType<typeof import("@mariozechner/pi-ai").streamSimple> {
-    if (model.api === "bedrock-converse-stream" && options?.apiKey) {
-      return streamSimple(model, context, {
-        ...options,
-        bearerToken: options.apiKey,
-      } as Parameters<typeof streamSimple>[2]);
+    try {
+      if (model.api === "bedrock-converse-stream" && options?.apiKey) {
+        return streamSimple(model, context, {
+          ...options,
+          bearerToken: options.apiKey,
+        } as Parameters<typeof streamSimple>[2]);
+      }
+      return streamSimple(model, context, options);
+    } catch (error) {
+      this.persistPiAgentLoopErrorForDevelopers(error, {
+        source: "pi_stream",
+      });
+      throw error;
     }
-    return streamSimple(model, context, options);
   }
 
   private scopedCodeModeTools(context: ChatContextState): CodeModeToolsBinding {
@@ -7676,50 +7771,58 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
 
     const unsubscribe = child.subscribe((event) => {
-      if (event.type === "turn_start") {
-        turnStartedAtMs = Date.now();
-        return;
-      }
-      if (event.type === "message_update") {
-        const assistantEvent = event.assistantMessageEvent as {
-          type?: string;
-          delta?: string;
-        };
-        if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
-          assistantText += assistantEvent.delta;
+      try {
+        if (event.type === "turn_start") {
+          turnStartedAtMs = Date.now();
+          return;
         }
-        return;
-      }
-      if (event.type === "message_end") {
-        latestAssistantText = this.extractPiMessageText(event.message) || assistantText;
-        return;
-      }
-      if (event.type === "tool_execution_start") {
-        toolUseCount += 1;
-        update(`Running ${event.toolName}...`, {
-          status: "running",
-          toolName: event.toolName,
-          toolUseCount,
+        if (event.type === "message_update") {
+          const assistantEvent = event.assistantMessageEvent as {
+            type?: string;
+            delta?: string;
+          };
+          if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
+            assistantText += assistantEvent.delta;
+          }
+          return;
+        }
+        if (event.type === "message_end") {
+          latestAssistantText = this.extractPiMessageText(event.message) || assistantText;
+          return;
+        }
+        if (event.type === "tool_execution_start") {
+          toolUseCount += 1;
+          update(`Running ${event.toolName}...`, {
+            status: "running",
+            toolName: event.toolName,
+            toolUseCount,
+          });
+          return;
+        }
+        if (event.type === "turn_end") {
+          const durationMs = Math.max(0, Date.now() - turnStartedAtMs);
+          this.ctx.waitUntil(
+            this.recordPiAssistantUsage(
+              event.message,
+              durationMs,
+              modelConfig.billingSource,
+              modelConfig.creditChargeable,
+              modelConfig.usageProvider,
+            ).catch((error) => {
+              console.error("[ChatThreadDO] failed to record Pi subagent usage", error);
+            }),
+          );
+          return;
+        }
+        if (event.type === "agent_end") {
+          finalMessages = event.messages;
+        }
+      } catch (error) {
+        console.error("[ChatThreadDO] Pi subagent event handler failed", error);
+        this.persistPiAgentLoopErrorForDevelopers(error, {
+          source: `${toolName}_event_handler`,
+          eventType: event.type,
         });
-        return;
-      }
-      if (event.type === "turn_end") {
-        const durationMs = Math.max(0, Date.now() - turnStartedAtMs);
-        this.ctx.waitUntil(
-          this.recordPiAssistantUsage(
-            event.message,
-            durationMs,
-            modelConfig.billingSource,
-            modelConfig.creditChargeable,
-            modelConfig.usageProvider,
-          ).catch((error) => {
-            console.error("[ChatThreadDO] failed to record Pi subagent usage", error);
-          }),
-        );
-        return;
-      }
-      if (event.type === "agent_end") {
-        finalMessages = event.messages;
       }
     });
 
@@ -8664,6 +8767,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               }
             })().catch((error) => {
                 console.error("[ChatThreadDO] Pi prompt failed", error);
+                this.persistPiAgentLoopErrorForDevelopers(error, {
+                  source: "pi_prompt",
+                });
                 this.clearPiTurnRecovery();
                 this.pushChatEvent({
                   type: "error",
