@@ -1,14 +1,16 @@
 {
   "name": "camelAI",
   "short_name": "camelAI",
-  "description": "AI Chat Platform",
+  "description": "Chat with a coding agent that has its own persistent computer. Build and publish apps from your phone or desktop.",
   "start_url": "/",
   "scope": "/",
   "id": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "orientation": "any",
   "theme_color": "#09090b",
   "background_color": "#09090b",
+  "categories": ["productivity", "developer", "utilities"],
   "icons": [
     {
       "src": "/android-chrome-192x192.png",
@@ -26,5 +28,20 @@
       "type": "image/png",
       "purpose": "maskable"
     }
-  ]
+  ],
+  "shortcuts": [
+    {
+      "name": "New chat",
+      "short_name": "New",
+      "description": "Start a new chat in your default workspace",
+      "url": "/",
+      "icons": [
+        {
+          "src": "/android-chrome-192x192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "screenshots": []
 }

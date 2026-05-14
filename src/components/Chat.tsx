@@ -6167,7 +6167,7 @@ type SendOptions = {
           />
           {/* Composer container */}
           <div className="bg-background">
-            <div className="pt-2 pb-4 px-4">
+            <div className="pt-2 px-4 [--safe-area-padding-bottom:1rem] pb-safe">
               <div className="max-w-3xl mx-auto w-full flex flex-col max-h-[calc(100dvh-2rem)]">
                 {(pendingQuestion || currentTodos.length > 0) && (
                   <div className="min-h-0 shrink overflow-y-auto">

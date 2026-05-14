@@ -74,7 +74,7 @@ export function AppSidebar(props: AppSidebarProps) {
 
   return (
     <Sidebar collapsible="icon" {...props}>
-      <SidebarHeader>
+      <SidebarHeader className="[--safe-area-padding-left:0.5rem] [--safe-area-padding-right:0.5rem] pl-safe pr-safe">
         <WorkspaceSwitcher />
         <div className="flex px-2 transition-[justify-content] duration-200 ease-in-out" style={{ justifyContent: state === "expanded" ? "flex-start" : "center" }}>
           <Badge
@@ -85,7 +85,7 @@ export function AppSidebar(props: AppSidebarProps) {
           </Badge>
         </div>
       </SidebarHeader>
-      <SidebarContent>
+      <SidebarContent className="pl-safe pr-safe">
         <SidebarGroup>
           <SidebarMenu>
             <SidebarMenuItem>
@@ -151,7 +151,7 @@ export function AppSidebar(props: AppSidebarProps) {
           </SidebarMenu>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter>
+      <SidebarFooter className="[--safe-area-padding-left:0.5rem] [--safe-area-padding-right:0.5rem] [--safe-area-padding-bottom:0.5rem] pl-safe pr-safe pb-safe">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
