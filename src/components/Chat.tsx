@@ -68,7 +68,6 @@ import {
   BugReportDialog,
   type BugReportStatus,
 } from "@/components/bug-report-dialog";
-import { FreeTierModal } from "@/components/free-tier-modal";
 import { OnboardingLoadingModal } from "@/components/onboarding-loading-modal";
 import type { Attachment } from "@/components/attachment-list";
 import { Button } from "@/components/ui/button";
@@ -384,62 +383,6 @@ function buildMessageContent(text: string, attachments: Attachment[]): string {
     text,
     getCompletedAttachments(attachments).map((attachment) => attachment.path),
   );
-}
-
-const FREE_TIER_MODAL_SEEN_PREFIX = "freeTierModalSeen:";
-const FREE_TIER_MSG_COUNT_PREFIX = "freeTierMsgCount:";
-
-function shouldShowFreeTierModal(
-  userId: string | undefined,
-  llmProvider: LlmProvider | null | undefined,
-): boolean {
-  if (llmProvider || !userId || typeof window === "undefined") {
-    return false;
-  }
-
-  try {
-    if (
-      window.localStorage.getItem(`${FREE_TIER_MODAL_SEEN_PREFIX}${userId}`) ===
-      "true"
-    ) {
-      return false;
-    }
-    const count = Number(
-      window.localStorage.getItem(`${FREE_TIER_MSG_COUNT_PREFIX}${userId}`) ||
-        "0",
-    );
-    return count >= 3;
-  } catch {
-    return false;
-  }
-}
-
-function incrementFreeTierCount(userId: string | undefined): number {
-  try {
-    if (!userId || typeof window === "undefined") {
-      return 0;
-    }
-    const key = `${FREE_TIER_MSG_COUNT_PREFIX}${userId}`;
-    const next = Number(window.localStorage.getItem(key) || "0") + 1;
-    window.localStorage.setItem(key, String(next));
-    return next;
-  } catch {
-    return 0;
-  }
-}
-
-function markFreeTierModalSeen(userId: string | undefined): void {
-  try {
-    if (!userId || typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(
-      `${FREE_TIER_MODAL_SEEN_PREFIX}${userId}`,
-      "true",
-    );
-  } catch {
-    // Ignore storage failures; the modal remains dismissible in-memory.
-  }
 }
 
 /**
@@ -1609,15 +1552,7 @@ export default function Chat({
   const [bootModalOpen, setBootModalOpen] = useState(() =>
     shouldShowBootModalFromStorage(isNewThread),
   );
-  const [showFreeTierModal, setShowFreeTierModal] = useState(() =>
-    shouldShowFreeTierModal(user?.id ?? undefined, llmProvider),
-  );
   const [bugReportError, setBugReportError] = useState<string | null>(null);
-
-  const handleFreeTierModalClose = useCallback(() => {
-    markFreeTierModalSeen(user?.id ?? undefined);
-    setShowFreeTierModal(false);
-  }, [user?.id]);
 
   useEffect(() => {
     if (!bootModalOpen) return;
@@ -1627,17 +1562,6 @@ export default function Chat({
       // Ignore storage failures; modal behavior should stay resilient.
     }
   }, [bootModalOpen]);
-
-  useEffect(() => {
-    if (llmProvider) {
-      setShowFreeTierModal(false);
-      return;
-    }
-    if (!shouldShowFreeTierModal(user?.id ?? undefined, llmProvider)) {
-      return;
-    }
-    setShowFreeTierModal(true);
-  }, [llmProvider, user?.id]);
 
   useEffect(() => {
     if (!initialWelcomeInput) {
@@ -5157,11 +5081,6 @@ export default function Chat({
     );
     if (hasUploadingAttachments) return;
 
-    const messageCount = incrementFreeTierCount(user?.id ?? undefined);
-    if (!llmProvider && messageCount === 3 && !showFreeTierModal) {
-      setShowFreeTierModal(true);
-    }
-
     preserveDraftBeforeOptimisticClear(
       null,
       currentWelcomeInput,
@@ -5731,13 +5650,6 @@ type SendOptions = {
     }
 
     const wasSentDuringStreaming = assistantTurnActive;
-
-    if (!opts?.contentOverride) {
-      const messageCount = incrementFreeTierCount(user?.id ?? undefined);
-      if (!llmProvider && messageCount === 3 && !showFreeTierModal) {
-        setShowFreeTierModal(true);
-      }
-    }
 
     if (!opts?.preserveDraft && !opts?.contentOverride) {
       preserveDraftBeforeOptimisticClear(
@@ -6467,11 +6379,6 @@ type SendOptions = {
         onSubmit={submitBugReport}
         status={bugReportStatus}
         error={bugReportError}
-      />
-
-      <FreeTierModal
-        open={showFreeTierModal}
-        onClose={handleFreeTierModalClose}
       />
 
       {/* Post-onboarding boot sequence modal */}
