@@ -26,6 +26,14 @@ import { listGroupsForWorkspace } from "@/lib/chat-groups.server";
 import { getByokProviderLabel } from "@/lib/byok-providers";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
+const BILLING_SETUP_PATHS = new Set([
+  "/settings/organization/billing",
+  "/settings/organization/usage",
+]);
+
+export function isBillingSetupPath(pathname: string): boolean {
+  return BILLING_SETUP_PATHS.has(pathname);
+}
 
 /**
  * Keep the default route revalidation behavior. The layout loader owns chat
@@ -44,6 +52,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
+  const url = new URL(request.url);
 
   if (!authContext.onboarding?.completed_at) {
     throw redirect("/onboarding");
@@ -72,6 +81,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     llmProviderConfig ||
     hasHostedBillingAccess(currentOrg),
   );
+  const billingSetupRoute = isBillingSetupPath(url.pathname);
+  const appRouteAccessible = billingAccessReady || billingSetupRoute;
   const paywallContext: PaywallTakeoverContext | null = billingAccessReady
     ? null
     : {
@@ -151,6 +162,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     legacyMigration,
     chatGroups: currentChatGroups,
     billingAccessReady,
+    appRouteAccessible,
     paywallContext,
   };
 
@@ -176,6 +188,7 @@ export default function AppLayout() {
     showLegacyBanner,
     legacyMigration,
     billingAccessReady,
+    appRouteAccessible,
     paywallContext,
   } =
     useLoaderData<typeof loader>();
@@ -212,7 +225,7 @@ export default function AppLayout() {
         <ChatThreadSnapshotsProvider>
           <AppSidebar />
           <SidebarInset className="h-svh overflow-hidden flex flex-col">
-            {billingAccessReady ? (
+            {appRouteAccessible ? (
               <Outlet />
             ) : paywallContext ? (
               <PaywallTakeover

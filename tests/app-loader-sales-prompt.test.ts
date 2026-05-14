@@ -45,7 +45,7 @@ vi.mock("@/lib/chat-groups.server", () => ({
   listGroupsForWorkspace: vi.fn(() => Promise.resolve([])),
 }));
 
-const { loader } = await import("@/routes/_app");
+const { isBillingSetupPath, loader } = await import("@/routes/_app");
 
 describe("_app loader onboarding redirect", () => {
   beforeEach(() => {
@@ -144,6 +144,7 @@ describe("_app loader onboarding redirect", () => {
 
     expect(result).toMatchObject({
       billingAccessReady: false,
+      appRouteAccessible: false,
       paywallContext: {
         currentOrgName: "Org B",
         multiOrg: true,
@@ -152,5 +153,80 @@ describe("_app loader onboarding redirect", () => {
       },
     });
     expect(orgStub.getLlmProviderConfig).toHaveBeenCalled();
+  });
+
+  it("allows billing setup routes for onboarded users without org billing access", async () => {
+    const org = {
+      id: "org_payg",
+      name: "Payg Org",
+      slug: "payg-org",
+      created_at: Date.now(),
+      created_by: "user_123",
+      billing_status: "inactive",
+      billing_plan: "payg",
+      billing_seat_count: 1,
+      billing_customer_id: null,
+      billing_subscription_id: null,
+      billing_subscription_status: null,
+      billing_trial_started_at: null,
+      billing_trial_ends_at: null,
+      billing_credit_purchase_total_cents: 0,
+      billing_credit_grant_total_cents: 0,
+      billing_trial_credit_grant_cents: 0,
+      billing_trial_credit_granted_at: null,
+      billing_last_included_credit_invoice_id: null,
+      billing_credit_usage_started_at: null,
+      archived: false,
+      archived_at: null,
+      archived_by: null,
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue(org),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+    };
+    getEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(null),
+      },
+    });
+    requireAuthContextMock.mockResolvedValue({
+      onboarding: { completed_at: Date.now() },
+      emailVerification: { required: false, verified: true },
+      user: { id: "user_123", email: "ada@example.com" },
+      session: { user_id: "user_123", user_email: "ada@example.com" },
+      currentOrg: org,
+      currentWorkspace: { id: "ws_123" },
+      orgs: [{ org_id: "org_payg", org_name: "Payg Org", role: "owner" }],
+      workspaces: [],
+      allWorkspaces: [],
+      orgWorkspaceCount: 1,
+      resignedSessionCookie: null,
+    });
+
+    const result = await loader({
+      request: new Request(
+        "https://camelai.dev/settings/organization/usage?action=topup",
+      ),
+      context: {},
+    } as never);
+
+    expect(result).toMatchObject({
+      billingAccessReady: false,
+      appRouteAccessible: true,
+      paywallContext: {
+        currentOrgName: "Payg Org",
+      },
+    });
+  });
+
+  it("limits paywall bypasses to billing setup routes", () => {
+    expect(isBillingSetupPath("/settings/organization/billing")).toBe(true);
+    expect(isBillingSetupPath("/settings/organization/usage")).toBe(true);
+    expect(isBillingSetupPath("/settings/organization/team")).toBe(false);
+    expect(isBillingSetupPath("/chat")).toBe(false);
   });
 });
