@@ -1151,6 +1151,89 @@ describe('ChatThreadDO Codex external turn completion', () => {
     ]);
   });
 
+  it('sanitizes unsupported persisted Pi image tool results when loading history', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ensurePiCoreTables = vi.fn();
+    fake.ctx = {
+      storage: {
+        sql: {
+          exec: vi.fn(() => ({
+            toArray: () => [
+              {
+                payload: JSON.stringify({
+                  role: 'toolResult',
+                  toolCallId: 'tool1',
+                  toolName: 'read',
+                  content: [
+                    {
+                      type: 'image',
+                      data: 'AA==',
+                      mimeType: 'image/vnd.microsoft.icon',
+                    },
+                    {
+                      type: 'image',
+                      data: 'BB==',
+                      mimeType: 'image/jpg',
+                    },
+                  ],
+                  isError: false,
+                  timestamp: 300,
+                }),
+              },
+            ],
+          })),
+        },
+      },
+    };
+
+    const messages = ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toEqual([
+      {
+        type: 'text',
+        text: '(image omitted: unsupported MIME type image/vnd.microsoft.icon)',
+      },
+      {
+        type: 'image',
+        data: 'BB==',
+        mimeType: 'image/jpeg',
+      },
+    ]);
+  });
+
+  it('sanitizes unsupported image tool outputs before Pi can persist them', () => {
+    const content = ChatThreadDO.prototype['extractToolContent'].call(
+      Object.create(ChatThreadDO.prototype),
+      {
+        content: [
+          {
+            type: 'image',
+            data: 'AA==',
+            mimeType: 'image/vnd.microsoft.icon',
+          },
+          {
+            type: 'image',
+            data: 'BB==',
+            mimeType: 'image/png',
+          },
+        ],
+      },
+    );
+
+    expect(content).toEqual([
+      {
+        type: 'text',
+        text: '(image omitted: unsupported MIME type image/vnd.microsoft.icon)',
+      },
+      {
+        type: 'image',
+        data: 'BB==',
+        mimeType: 'image/png',
+      },
+    ]);
+  });
+
   it('does not emit an extra completed agent message after streamed Pi text', () => {
     const { fake, events } = createPiEventFake();
 

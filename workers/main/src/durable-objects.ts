@@ -308,6 +308,61 @@ function cloneDurableState<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+const PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+function normalizePiImageMimeType(mimeType: string): string {
+  const normalized = mimeType.trim().toLowerCase();
+  return normalized === "image/jpg" ? "image/jpeg" : normalized;
+}
+
+function piUnsupportedImageText(mimeType: unknown): string {
+  const label =
+    typeof mimeType === "string" && mimeType.trim()
+      ? mimeType.trim()
+      : "unknown MIME type";
+  return `(image omitted: unsupported MIME type ${label})`;
+}
+
+function sanitizePiProviderContent(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  let changed = false;
+  const sanitized = content.map((part) => {
+    if (!part || typeof part !== "object") return part;
+    const item = part as Record<string, unknown>;
+    if (item.type !== "image") return part;
+
+    const mimeType = typeof item.mimeType === "string"
+      ? normalizePiImageMimeType(item.mimeType)
+      : "";
+    const data = typeof item.data === "string" ? item.data : "";
+    if (mimeType && data && PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+      if (mimeType === item.mimeType) return part;
+      changed = true;
+      return { ...item, mimeType };
+    }
+
+    changed = true;
+    return { type: "text", text: piUnsupportedImageText(item.mimeType) };
+  });
+
+  return changed ? sanitized : content;
+}
+
+function sanitizePiProviderMessage(message: AgentMessage): AgentMessage {
+  if (!message || typeof message !== "object") return message;
+  const record = message as unknown as Record<string, unknown>;
+  if (!Array.isArray(record.content)) return message;
+  const content = sanitizePiProviderContent(record.content);
+  if (content === record.content) return message;
+  return { ...record, content } as unknown as AgentMessage;
+}
+
 interface PendingQuestionInfo {
   questionId: string;
   toolUseId?: string;
@@ -4546,7 +4601,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       try {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          messages.push(parsed);
+          messages.push(sanitizePiProviderMessage(parsed));
         }
       } catch {
         // Skip corrupt rows rather than failing the whole thread.
@@ -4560,10 +4615,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.ctx.storage.sql.exec("DELETE FROM pi_core_messages");
     const now = Date.now();
     messages.forEach((message, index) => {
+      const sanitized = sanitizePiProviderMessage(message);
       this.ctx.storage.sql.exec(
         "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
         index,
-        JSON.stringify(message),
+        JSON.stringify(sanitized),
         now,
       );
     });
@@ -4585,10 +4641,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const startIndex = Math.max(0, Math.floor(Number(rows[0]?.next_idx) || 0));
     const now = Date.now();
     messages.forEach((message, offset) => {
+      const sanitized = sanitizePiProviderMessage(message);
       this.ctx.storage.sql.exec(
         "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
         startIndex + offset,
-        JSON.stringify(message),
+        JSON.stringify(sanitized),
         now,
       );
     });
@@ -4660,7 +4717,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       try {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          existingByKey.set(this.piCoreMessageKey(parsed), row.idx);
+          existingByKey.set(this.piCoreMessageKey(sanitizePiProviderMessage(parsed)), row.idx);
         }
       } catch {
         // Ignore corrupt rows here; loadPiCoreMessages skips them too.
@@ -4671,12 +4728,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     let updatedCount = 0;
     let insertedCount = 0;
     for (const message of messages) {
-      const key = this.piCoreMessageKey(message);
+      const sanitized = sanitizePiProviderMessage(message);
+      const key = this.piCoreMessageKey(sanitized);
       const existingIndex = existingByKey.get(key);
       if (existingIndex !== undefined) {
         this.ctx.storage.sql.exec(
           "UPDATE pi_core_messages SET payload = ? WHERE idx = ?",
-          JSON.stringify(message),
+          JSON.stringify(sanitized),
           existingIndex,
         );
         updatedCount += 1;
@@ -4686,7 +4744,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.ctx.storage.sql.exec(
         "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
         nextIndex,
-        JSON.stringify(message),
+        JSON.stringify(sanitized),
         now,
       );
       existingByKey.set(key, nextIndex);
@@ -6882,10 +6940,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         messages: this.loadPiCoreMessages(),
         thinkingLevel: "medium",
       },
-      transformContext: (messages, signal) =>
-        resolveCurrentModel().then((current) =>
-          this.compactPiContext(messages, current.model, current.apiKey, completeSimple, signal)
-        ),
+      transformContext: async (messages, signal) => {
+        const current = await resolveCurrentModel();
+        const compacted = await this.compactPiContext(
+          messages,
+          current.model,
+          current.apiKey,
+          completeSimple,
+          signal,
+        );
+        return compacted.map((message) => sanitizePiProviderMessage(message));
+      },
       getApiKey: async () => {
         const current = await resolveCurrentModel();
         if (this.piSession) {
@@ -7573,7 +7638,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             typeof item.data === "string" &&
             typeof item.mimeType === "string"
           ) {
-            content.push({ type: "image", data: item.data, mimeType: item.mimeType });
+            const mimeType = normalizePiImageMimeType(item.mimeType);
+            if (PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+              content.push({ type: "image", data: item.data, mimeType });
+            } else {
+              content.push({
+                type: "text",
+                text: piUnsupportedImageText(item.mimeType),
+              });
+            }
           }
         }
         if (content.length > 0) return content;
