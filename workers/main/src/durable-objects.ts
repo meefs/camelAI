@@ -314,6 +314,23 @@ export interface PiCoreMessageRow {
   created_at: number;
 }
 
+export interface PiCoreMessageHistoryRepairReport {
+  ok: true;
+  mode: "dry_run" | "repair";
+  persisted: boolean;
+  changed: boolean;
+  beforeCount: number;
+  validBeforeCount: number;
+  afterCount: number;
+  invalidRows: number;
+  repairedCount: number;
+  stats: {
+    droppedToolResults: number;
+    syntheticToolResults: number;
+    trimmedAssistantBlocks: number;
+  };
+}
+
 function cloneDurableState<T>(value: T): T {
   if (value === null || value === undefined) {
     return value;
@@ -3962,6 +3979,63 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       )
       .toArray()
       .reverse() as unknown as PiCoreMessageRow[];
+  }
+
+  repairPiCoreMessageHistory(input: {
+    mode?: "dry_run" | "repair";
+  } = {}): PiCoreMessageHistoryRepairReport {
+    const mode = input.mode ?? "dry_run";
+    if (mode !== "dry_run" && mode !== "repair") {
+      throw new Error("mode must be dry_run or repair");
+    }
+
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ payload: string }>(
+        "SELECT payload FROM pi_core_messages ORDER BY idx ASC",
+      )
+      .toArray();
+    const messages: AgentMessage[] = [];
+    let invalidRows = 0;
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload) as AgentMessage;
+        if (parsed && typeof parsed === "object" && "role" in parsed) {
+          messages.push(sanitizePiProviderMessage(parsed));
+        } else {
+          invalidRows += 1;
+        }
+      } catch {
+        invalidRows += 1;
+      }
+    }
+
+    const repaired = repairPiMessageHistoryForReplay(messages);
+    const changed = invalidRows > 0 || repaired.repairedCount > 0;
+    const afterMessages = changed ? repaired.messages : messages;
+
+    if (mode === "repair" && changed) {
+      this.replacePiCoreMessages(afterMessages);
+      this.recordChatThreadObservabilityEvent("pi_core_message_history_repaired", {
+        operation: "repair_persisted_history",
+        status: "ok",
+        count: repaired.repairedCount + invalidRows,
+        size: afterMessages.length,
+      });
+    }
+
+    return {
+      ok: true,
+      mode,
+      persisted: mode === "repair" && changed,
+      changed,
+      beforeCount: rows.length,
+      validBeforeCount: messages.length,
+      afterCount: afterMessages.length,
+      invalidRows,
+      repairedCount: repaired.repairedCount,
+      stats: repaired.stats,
+    };
   }
 
   putPiCoreMessageRow(input: {
