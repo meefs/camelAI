@@ -271,6 +271,11 @@ export const bedrockProviderModule = {
   streamSimpleBedrock,
 };
 
+export const __testing = {
+  buildBedrockInvokeBody,
+  normalizeAnthropicToolResultAdjacency,
+};
+
 function buildBedrockInvokeBody(
   model: Model<'bedrock-converse-stream'>,
   context: Context,
@@ -279,7 +284,7 @@ function buildBedrockInvokeBody(
   const betaFeatures = buildBetaFeatures(model, context, options);
   const payload: BedrockInvokeBody = {
     anthropic_version: ANTHROPIC_VERSION,
-    messages: convertMessages(context),
+    messages: normalizeAnthropicToolResultAdjacency(convertMessages(context)),
     max_tokens:
       options.maxTokens ??
       (model.maxTokens > 0 ? Math.min(model.maxTokens, 32000) : undefined),
@@ -379,6 +384,113 @@ function convertMessages(context: Context): AnthropicMessage[] {
   }
 
   return messages;
+}
+
+function normalizeAnthropicToolResultAdjacency(messages: AnthropicMessage[]): AnthropicMessage[] {
+  const normalized: AnthropicMessage[] = [];
+
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== 'assistant') {
+      normalized.push(sanitizeStandaloneUserToolResults(message));
+      continue;
+    }
+
+    normalized.push(message);
+    const toolUseIds = getAssistantToolUseIds(message);
+    if (toolUseIds.length === 0) continue;
+
+    const next = messages[index + 1];
+    const consumedResultBlocks: AnthropicToolResultBlock[] = [];
+    let leftoverUserBlocks: AnthropicContentBlock[] = [];
+
+    if (next?.role === 'user' && Array.isArray(next.content)) {
+      const availableResults = new Map<string, AnthropicToolResultBlock[]>();
+
+      for (const block of next.content) {
+        if (block.type !== 'tool_result') {
+          leftoverUserBlocks.push(block);
+          continue;
+        }
+        const normalizedId = normalizeToolCallId(block.tool_use_id);
+        const blocks = availableResults.get(normalizedId) ?? [];
+        blocks.push({ ...block, tool_use_id: normalizedId });
+        availableResults.set(normalizedId, blocks);
+      }
+
+      for (const id of toolUseIds) {
+        const matching = availableResults.get(id);
+        const block = matching?.shift();
+        consumedResultBlocks.push(block ?? createSyntheticToolResult(id));
+      }
+
+      for (const blocks of availableResults.values()) {
+        for (const block of blocks) {
+          leftoverUserBlocks.push(toolResultBlockToText(block));
+        }
+      }
+
+      index++;
+    } else if (next?.role === 'user' && typeof next.content === 'string') {
+      for (const id of toolUseIds) {
+        consumedResultBlocks.push(createSyntheticToolResult(id));
+      }
+      const text = sanitizeSurrogates(next.content);
+      if (text.trim()) {
+        leftoverUserBlocks = [{ type: 'text', text }];
+      }
+      index++;
+    } else {
+      for (const id of toolUseIds) {
+        consumedResultBlocks.push(createSyntheticToolResult(id));
+      }
+    }
+
+    normalized.push({ role: 'user', content: [...consumedResultBlocks, ...leftoverUserBlocks] });
+  }
+
+  return normalized;
+}
+
+function getAssistantToolUseIds(message: AnthropicMessage): string[] {
+  if (!Array.isArray(message.content)) return [];
+  return message.content.flatMap((block) => {
+    if (block.type !== 'tool_use') return [];
+    return [normalizeToolCallId(block.id)];
+  });
+}
+
+function sanitizeStandaloneUserToolResults(message: AnthropicMessage): AnthropicMessage {
+  if (message.role !== 'user' || !Array.isArray(message.content)) return message;
+  let changed = false;
+  const content = message.content.map((block): AnthropicContentBlock => {
+    if (block.type !== 'tool_result') return block;
+    changed = true;
+    return toolResultBlockToText(block);
+  });
+  return changed ? { ...message, content } : message;
+}
+
+function createSyntheticToolResult(toolUseId: string): AnthropicToolResultBlock {
+  return {
+    type: 'tool_result',
+    tool_use_id: toolUseId,
+    content: 'Tool call interrupted; no result was recorded.',
+    is_error: true,
+  };
+}
+
+function toolResultBlockToText(block: AnthropicToolResultBlock): AnthropicTextBlock {
+  const content = typeof block.content === 'string'
+    ? block.content
+    : block.content.map((part) => {
+        if (part.type === 'text') return part.text;
+        return '[image result omitted]';
+      }).join('\n');
+  return {
+    type: 'text',
+    text: `[Tool result: ${block.tool_use_id}]\n${content}`.trim(),
+  };
 }
 
 function convertUserContent(
