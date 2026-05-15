@@ -307,6 +307,12 @@ export interface ChatThreadPiCoreForkResult {
   code?: "NO_PI_CORE_MESSAGES" | "TARGET_NOT_FOUND";
 }
 
+export interface PiCoreMessageRow {
+  idx: number;
+  payload: string;
+  created_at: number;
+}
+
 function cloneDurableState<T>(value: T): T {
   if (value === null || value === undefined) {
     return value;
@@ -3941,6 +3947,66 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   getPreviewTarget(): PreviewTarget | null {
     return this.previewTarget;
+  }
+
+  getPiCoreMessageRows(limit = 200): PiCoreMessageRow[] {
+    const resolvedLimit = Number.isFinite(limit)
+      ? Math.max(1, Math.min(2000, Math.floor(limit)))
+      : 200;
+
+    return this.ctx.storage.sql
+      .exec(
+        "SELECT idx, payload, created_at FROM pi_core_messages ORDER BY idx DESC LIMIT ?",
+        resolvedLimit,
+      )
+      .toArray()
+      .reverse() as unknown as PiCoreMessageRow[];
+  }
+
+  putPiCoreMessageRow(input: {
+    idx: number;
+    payload: string;
+    created_at?: number;
+  }): { ok: true; inserted: boolean; idx: number } {
+    const idx = Math.floor(input.idx);
+    if (!Number.isFinite(idx) || idx < 0) {
+      throw new Error("idx must be a non-negative integer");
+    }
+
+    let parsedPayload: unknown;
+    try {
+      parsedPayload = JSON.parse(input.payload);
+    } catch {
+      throw new Error("payload must be valid JSON");
+    }
+    const normalizedPayload = JSON.stringify(
+      sanitizePiProviderMessage(parsedPayload as AgentMessage),
+    );
+    const createdAt = Number.isFinite(input.created_at)
+      ? Math.floor(input.created_at as number)
+      : Date.now();
+
+    const existing = this.ctx.storage.sql
+      .exec<{ idx: number }>("SELECT idx FROM pi_core_messages WHERE idx = ?", idx)
+      .one();
+
+    if (existing) {
+      this.ctx.storage.sql.exec(
+        "UPDATE pi_core_messages SET payload = ?, created_at = ? WHERE idx = ?",
+        normalizedPayload,
+        createdAt,
+        idx,
+      );
+      return { ok: true, inserted: false, idx };
+    }
+
+    this.ctx.storage.sql.exec(
+      "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
+      idx,
+      normalizedPayload,
+      createdAt,
+    );
+    return { ok: true, inserted: true, idx };
   }
 
   getPreviewState(): {

@@ -1069,6 +1069,57 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       }
     );
 
+    this.server.tool(
+      'manage_thread_message_rows',
+      'Inspect or repair persisted pi_core_messages rows for the current chat thread. Use read mode to inspect and write mode to insert/update a row by index.',
+      {
+        mode: z.enum(['read', 'write']).describe('Whether to read rows or write one row'),
+        limit: z.number().int().min(1).max(2000).optional().describe('For read mode: max rows to return (default 200)'),
+        idx: z.number().int().min(0).optional().describe('For write mode: row index to insert/update'),
+        payload: z.string().optional().describe('For write mode: JSON string payload for the pi_core_messages row'),
+        created_at: z.number().int().optional().describe('For write mode: optional millisecond timestamp override'),
+      },
+      async ({ mode, limit, idx, payload, created_at }) => {
+        this.requireAuth();
+        const threadId = this.threadId;
+        if (!threadId) {
+          return this.textResponse({
+            success: false,
+            error: 'No thread context available.',
+          });
+        }
+
+        const chatThreadStub = this.getChatThreadStub(threadId);
+        if (mode === 'read') {
+          const rows = await chatThreadStub.getPiCoreMessageRows(limit);
+          return this.textResponse({
+            success: true,
+            thread_id: threadId,
+            count: rows.length,
+            rows,
+          });
+        }
+
+        if (idx === undefined || payload === undefined) {
+          return this.textResponse({
+            success: false,
+            error: 'idx and payload are required for write mode.',
+          });
+        }
+
+        const result = await chatThreadStub.putPiCoreMessageRow({
+          idx,
+          payload,
+          created_at,
+        });
+        return this.textResponse({
+          success: true,
+          thread_id: threadId,
+          ...result,
+        });
+      }
+    );
+
     // Capture a bug report from the currently deployed app
     this.server.tool(
       'capture_bug_report',
