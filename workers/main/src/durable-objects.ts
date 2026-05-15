@@ -8,7 +8,7 @@ import type {
   AgentToolResult,
 } from "@mariozechner/pi-agent-core";
 import { setBedrockProviderModule } from "@mariozechner/pi-ai";
-import { bedrockProviderModule } from "@mariozechner/pi-ai/bedrock-provider";
+import { bedrockProviderModule } from "./pi-bedrock-provider";
 import type { Model } from "@mariozechner/pi-ai";
 import type { OrgDO, UserDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
@@ -85,9 +85,8 @@ import {
   recordObservabilityEvent,
 } from "./observability";
 
-// Pi lazy-loads the Bedrock provider via a dynamic import that Vite/Wrangler
-// cannot statically include in the Worker upload. Register the exported module
-// explicitly so Bedrock BYOK support is present in production builds.
+// Pi lazy-loads its Bedrock provider through the AWS SDK, which is brittle in
+// Cloudflare Workers. Register our Worker-native Bedrock adapter instead.
 setBedrockProviderModule(bedrockProviderModule);
 
 export type PreviewTarget =

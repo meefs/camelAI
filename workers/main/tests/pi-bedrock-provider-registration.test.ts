@@ -14,7 +14,7 @@ vi.mock('@mariozechner/pi-ai', async (importOriginal) => {
   };
 });
 
-vi.mock('@mariozechner/pi-ai/bedrock-provider', () => ({
+vi.mock('../src/pi-bedrock-provider', () => ({
   bedrockProviderModule,
 }));
 

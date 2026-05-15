@@ -31,18 +31,26 @@ const javaScriptFiles = collectJavaScriptFiles(serverBuildDir);
 const forbiddenSmithyBrowserConfigPatterns = [
   /\b(?:const|let|var)\s+loadConfig\s*=\s*no\b/,
   /\bloadConfig\s*=\s*no\s*;/,
+  /\bHash\.bind\b/,
 ];
 const realSmithyLoadConfigPattern =
   /\b(?:const|let|var)\s+loadConfig\s*=\s*\(\s*\{\s*environmentVariableSelector\b/;
+const awsSdkBedrockProviderPattern =
+  /\b(?:BedrockRuntimeClient|ConverseStreamCommand|fromNodeProviderChain)\b/;
 
 const matches = [];
 let hasRealSmithyLoadConfig = false;
+let hasAwsSdkBedrockProvider = false;
 
 for (const file of javaScriptFiles) {
   const source = fs.readFileSync(file, 'utf8');
 
   if (realSmithyLoadConfigPattern.test(source)) {
     hasRealSmithyLoadConfig = true;
+  }
+
+  if (awsSdkBedrockProviderPattern.test(source)) {
+    hasAwsSdkBedrockProvider = true;
   }
 
   for (const pattern of forbiddenSmithyBrowserConfigPatterns) {
@@ -66,7 +74,7 @@ if (matches.length > 0) {
   process.exit(1);
 }
 
-if (!hasRealSmithyLoadConfig) {
+if (hasAwsSdkBedrockProvider && !hasRealSmithyLoadConfig) {
   console.error(
     [
       'Pi Bedrock build check failed.',
@@ -77,4 +85,8 @@ if (!hasRealSmithyLoadConfig) {
   process.exit(1);
 }
 
-console.log('Pi Bedrock build check passed.');
+if (hasAwsSdkBedrockProvider) {
+  console.log('Pi Bedrock build check passed with Smithy node/server config.');
+} else {
+  console.log('Pi Bedrock build check passed with Worker-native Bedrock provider.');
+}
