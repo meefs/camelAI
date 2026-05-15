@@ -78,6 +78,7 @@ import {
   PiContainerTools,
   PI_CONTAINER_TOOL_DEFINITIONS,
 } from "./pi-container-tools";
+import { repairPiMessageHistoryForReplay } from "./pi-message-history";
 import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 import { parseFilePreviewPath } from "./preview-paths";
 import {
@@ -5078,6 +5079,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       size?: number;
       durationMs?: number;
       error?: unknown;
+      provider?: string | null;
+      model?: string | null;
       insertedCount?: number;
       updatedCount?: number;
     } = {},
@@ -5100,6 +5103,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         durationMs: details.durationMs,
         count,
         size: details.size,
+        provider: details.provider,
+        model: details.model,
         error: details.error,
       });
       return;
@@ -5114,6 +5119,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       workspaceId: context?.workspaceId,
       orgId: context?.orgId,
       userId: context?.userId,
+      provider: details.provider,
+      model: details.model,
       durationMs: details.durationMs,
       count,
       size: details.size,
@@ -7025,9 +7032,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           completeSimple,
           signal,
         );
-        return this.repairPiProviderMessageHistory(
+        const repaired = repairPiMessageHistoryForReplay(
           compacted.map((message) => sanitizePiProviderMessage(message)),
         );
+        if (repaired.repairedCount > 0) {
+          this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
+            operation: "repair_message_history",
+            status: "ok",
+            count: repaired.repairedCount,
+            size: repaired.messages.length,
+            provider: current.usageProvider || current.provider,
+            model: current.model.id || current.modelId,
+          });
+        }
+        return repaired.messages;
       },
       getApiKey: async () => {
         const current = await resolveCurrentModel();
@@ -7160,105 +7178,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       chars += JSON.stringify(message).length;
     }
     return Math.ceil(chars / 4);
-  }
-
-  private repairPiProviderMessageHistory(messages: AgentMessage[]): AgentMessage[] {
-    const repaired: AgentMessage[] = [];
-    let pendingToolCallIds: Map<string, number> | null = null;
-    let pendingToolCallNames: Map<string, string> | null = null;
-    let droppedToolResults = 0;
-    let syntheticToolResults = 0;
-
-    const collectToolCalls = (
-      message: AgentMessage,
-    ): { ids: Map<string, number>; names: Map<string, string> } | null => {
-      const record = message as unknown as Record<string, unknown>;
-      if (record.role !== "assistant" || !Array.isArray(record.content)) return null;
-      const ids = new Map<string, number>();
-      const names = new Map<string, string>();
-      for (const part of record.content) {
-        if (!part || typeof part !== "object") continue;
-        const item = part as Record<string, unknown>;
-        if (item.type !== "toolCall" || typeof item.id !== "string" || !item.id.trim()) {
-          continue;
-        }
-        const id = item.id.trim();
-        ids.set(id, (ids.get(id) ?? 0) + 1);
-        if (typeof item.name === "string" && !names.has(id)) {
-          names.set(id, item.name);
-        }
-      }
-      return ids.size > 0 ? { ids, names } : null;
-    };
-
-    const flushUnmatchedToolCalls = () => {
-      if (!pendingToolCallIds) return;
-      for (const [id, remaining] of pendingToolCallIds.entries()) {
-        for (let i = 0; i < remaining; i++) {
-          repaired.push({
-            role: "toolResult",
-            toolCallId: id,
-            toolName: pendingToolCallNames?.get(id) ?? "",
-            content: [
-              {
-                type: "text",
-                text: "Tool call interrupted; no result was recorded.",
-              },
-            ],
-            isError: true,
-            timestamp: Date.now(),
-          } as unknown as AgentMessage);
-          syntheticToolResults += 1;
-        }
-      }
-      pendingToolCallIds = null;
-      pendingToolCallNames = null;
-    };
-
-    for (const message of messages) {
-      const record = message as unknown as Record<string, unknown>;
-      if (record.role === "assistant") {
-        flushUnmatchedToolCalls();
-        repaired.push(message);
-        const collected = collectToolCalls(message);
-        pendingToolCallIds = collected?.ids ?? null;
-        pendingToolCallNames = collected?.names ?? null;
-        continue;
-      }
-
-      if (record.role === "toolResult") {
-        const toolCallId = typeof record.toolCallId === "string"
-          ? record.toolCallId.trim()
-          : "";
-        const remaining = toolCallId && pendingToolCallIds
-          ? pendingToolCallIds.get(toolCallId) ?? 0
-          : 0;
-        if (remaining > 0) {
-          pendingToolCallIds?.set(toolCallId, remaining - 1);
-          repaired.push(message);
-        } else {
-          droppedToolResults += 1;
-        }
-        continue;
-      }
-
-      flushUnmatchedToolCalls();
-      repaired.push(message);
-    }
-
-    flushUnmatchedToolCalls();
-
-    const totalRepaired = droppedToolResults + syntheticToolResults;
-    if (totalRepaired > 0) {
-      this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
-        operation: "repair_tool_results",
-        status: "ok",
-        count: totalRepaired,
-      });
-      return repaired;
-    }
-
-    return messages;
   }
 
   private findPiCompactionCutIndex(messages: AgentMessage[], keepRecentTokens: number): number {

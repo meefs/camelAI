@@ -1,0 +1,155 @@
+import { describe, expect, it } from 'vitest';
+import type { AgentMessage } from '@mariozechner/pi-agent-core';
+import { repairPiMessageHistoryForReplay } from '../src/pi-message-history';
+
+describe('repairPiMessageHistoryForReplay', () => {
+  it('drops duplicate Pi tool results before provider replay', () => {
+    const messages = [
+      assistantWithToolCalls([{ id: 'tool1', name: 'read' }]),
+      toolResult('tool1', 'first result'),
+      toolResult('tool1', 'duplicate result', 301),
+      { role: 'user', content: 'continue', timestamp: 400 },
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect(result.messages).toEqual([messages[0], messages[1], messages[3]]);
+    expect(result.stats).toEqual({
+      droppedToolResults: 1,
+      syntheticToolResults: 0,
+      trimmedAssistantBlocks: 0,
+    });
+    expect(result.repairedCount).toBe(1);
+  });
+
+  it('synthesizes missing Pi tool results before provider replay', () => {
+    const messages = [
+      assistantWithToolCalls([
+        { id: 'toolu_bdrk_01KrRfZTYj5KqFZAxKQexJbK', name: 'read' },
+      ]),
+      { role: 'user', content: 'continue', timestamp: 400 },
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0]).toBe(messages[0]);
+    expect(result.messages[1]).toMatchObject({
+      role: 'toolResult',
+      toolCallId: 'toolu_bdrk_01KrRfZTYj5KqFZAxKQexJbK',
+      toolName: 'read',
+      isError: true,
+      content: [
+        { type: 'text', text: 'Tool call interrupted; no result was recorded.' },
+      ],
+    });
+    expect(result.messages[2]).toBe(messages[1]);
+    expect(result.stats.syntheticToolResults).toBe(1);
+    expect(result.repairedCount).toBe(1);
+  });
+
+  it('synthesizes missing Pi tool results when assistant turn ends the history', () => {
+    const messages = [
+      assistantWithToolCalls([
+        { id: 'tool1', name: 'read' },
+        { id: 'tool2', name: 'bash' },
+      ]),
+      toolResult('tool1', 'ok'),
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0]).toBe(messages[0]);
+    expect(result.messages[1]).toBe(messages[1]);
+    expect(result.messages[2]).toMatchObject({
+      role: 'toolResult',
+      toolCallId: 'tool2',
+      toolName: 'bash',
+      isError: true,
+    });
+    expect(result.stats.syntheticToolResults).toBe(1);
+    expect(result.repairedCount).toBe(1);
+  });
+
+  it('trims assistant blocks that appear after tool calls', () => {
+    const messages = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'valid signed thinking', signature: 'sig' },
+          { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} },
+          { type: 'thinking', thinking: 'openrouter reasoning tail' },
+          { type: 'text', text: 'tail text' },
+        ],
+        responseId: 'resp_tool',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'toolUse',
+      },
+      toolResult('tool1', 'ok'),
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect((result.messages[0] as any).content).toEqual([
+      { type: 'thinking', thinking: 'valid signed thinking', signature: 'sig' },
+      { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} },
+    ]);
+    expect(result.stats.trimmedAssistantBlocks).toBe(2);
+    expect(result.repairedCount).toBe(2);
+  });
+
+  it('leaves Pi message history unchanged when tool calls and results are balanced', () => {
+    const messages = [
+      assistantWithToolCalls([{ id: 'tool1', name: 'read' }]),
+      toolResult('tool1', 'ok'),
+      { role: 'user', content: 'continue', timestamp: 400 },
+    ] as AgentMessage[];
+
+    const result = repairPiMessageHistoryForReplay(messages);
+
+    expect(result.messages).toBe(messages);
+    expect(result.stats).toEqual({
+      droppedToolResults: 0,
+      syntheticToolResults: 0,
+      trimmedAssistantBlocks: 0,
+    });
+    expect(result.repairedCount).toBe(0);
+  });
+});
+
+function assistantWithToolCalls(
+  calls: Array<{ id: string; name: string }>,
+): AgentMessage {
+  return {
+    role: 'assistant',
+    content: calls.map((call) => ({
+      type: 'toolCall',
+      id: call.id,
+      name: call.name,
+      arguments: {},
+    })),
+    responseId: 'resp_tool',
+    timestamp: 200,
+    api: 'test',
+    provider: 'test',
+    model: 'test',
+    usage: {},
+    stopReason: 'toolUse',
+  } as unknown as AgentMessage;
+}
+
+function toolResult(toolCallId: string, text: string, timestamp = 300): AgentMessage {
+  return {
+    role: 'toolResult',
+    toolCallId,
+    toolName: 'read',
+    content: [{ type: 'text', text }],
+    isError: false,
+    timestamp,
+  } as unknown as AgentMessage;
+}
