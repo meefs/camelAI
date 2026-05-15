@@ -3345,6 +3345,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runnerTransitionChain: Promise<void> = Promise.resolve();
   private piSessionPromise: Promise<PiCoreAgent> | null = null;
   private piSession: PiCoreAgent | null = null;
+  private piMainBaselineIndex = 0;
   private piModelResolver: (() => Promise<PiResolvedModelConfig>) | null = null;
   private piUnsubscribe: (() => void) | null = null;
   private piActiveItemId: string | null = null;
@@ -4443,7 +4444,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       forkEntryId: string;
     }> = [];
 
-    const storedMessages = this.loadPiCoreMessages();
+    const storedMessages = [
+      ...this.loadPiCoreMessages(),
+      ...this.loadPiInFlightMessages(),
+    ];
     storedMessages.forEach((message, index) => {
       const record = message as unknown as Record<string, unknown>;
       if (record.role === "toolResult") {
@@ -4516,6 +4520,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.disposePiSession();
     this.replacePiCoreMessages(cloneDurableState(normalizedMessages));
     this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
+    this.clearPiInFlightMessages();
     this.clearPiTurnRecovery();
   }
 
@@ -4700,6 +4705,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Best effort: the session may already be idle or torn down.
     }
     this.piSession = null;
+    this.piMainBaselineIndex = 0;
     this.piSessionPromise = null;
     this.piActiveItemId = null;
     this.piAssistantText = "";
@@ -4734,6 +4740,79 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS pi_in_flight_messages (
+        idx INTEGER PRIMARY KEY,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+  }
+
+  private loadPiInFlightMessages(): AgentMessage[] {
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ payload: string }>(
+        "SELECT payload FROM pi_in_flight_messages ORDER BY idx ASC",
+      )
+      .toArray();
+    const messages: AgentMessage[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload) as AgentMessage;
+        if (parsed && typeof parsed === "object" && "role" in parsed) {
+          messages.push(sanitizePiProviderMessage(parsed));
+        }
+      } catch {
+        // Skip corrupt rows.
+      }
+    }
+    return messages;
+  }
+
+  private appendPiInFlightMessages(messages: AgentMessage[]): void {
+    if (messages.length === 0) return;
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ next_idx: number }>(
+        "SELECT COALESCE(MAX(idx) + 1, 0) AS next_idx FROM pi_in_flight_messages",
+      )
+      .toArray();
+    const startIndex = Math.max(0, Math.floor(Number(rows[0]?.next_idx) || 0));
+    const now = Date.now();
+    messages.forEach((message, offset) => {
+      const sanitized = sanitizePiProviderMessage(message);
+      this.ctx.storage.sql.exec(
+        "INSERT INTO pi_in_flight_messages (idx, payload, created_at) VALUES (?, ?, ?)",
+        startIndex + offset,
+        JSON.stringify(sanitized),
+        now,
+      );
+    });
+  }
+
+  private clearPiInFlightMessages(): void {
+    this.ensurePiCoreTables();
+    this.ctx.storage.sql.exec("DELETE FROM pi_in_flight_messages");
+  }
+
+  private buildPiRecoveryUserMessage(messages: AgentMessage[]): AgentMessage {
+    const lines = messages
+      .map((message) => this.serializePiMessageForSummary(message))
+      .filter((line): line is string => Boolean(line && line.trim()));
+    const body = lines.length > 0
+      ? lines.join("\n\n")
+      : "(no recorded events before the interruption)";
+    const text =
+      "[The previous turn was interrupted by a restart before it could finish. " +
+      "Here is what had been recorded up to that point. Use this as context only; " +
+      "do not assume any tool side effects completed unless the user confirms.]\n\n" +
+      body;
+    return {
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+    };
   }
 
   private loadPiCoreMessages(): AgentMessage[] {
@@ -4977,7 +5056,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       now,
       now,
     );
-    this.upsertPiCoreMessages([userMessage]);
+    this.appendPiInFlightMessages([userMessage]);
     this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_started", {
       operation: "start_recovery",
@@ -5041,7 +5120,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       content: pendingPiTurn.user_content,
       timestamp: pendingPiTurn.user_timestamp || pendingPiTurn.started_at,
     };
-    this.appendPiCoreMessagesIfMissing([userMessage]);
+    // The original user message is already captured in the in-flight buffer
+    // by startPiTurnRecovery; runPi will fold it into the recovery context
+    // message on the next session boot. Re-appending here would duplicate
+    // rows on every retry and inflate the eventual recovery context.
     this.markPiTurnRecovering();
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_resumed", {
       operation: "recover_interrupted_turn",
@@ -7089,12 +7171,28 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const resolveCurrentModel = () => this.resolvePiModel(context, envVars, getModel);
     const modelConfig = await resolveCurrentModel();
     this.piModelResolver = resolveCurrentModel;
+    const persistedMessages = this.loadPiCoreMessages();
+    const initialMessages = [...persistedMessages];
+    const inFlight = this.loadPiInFlightMessages();
+    if (inFlight.length > 0) {
+      // Leave the in-flight rows in place. They are only released when the
+      // next turn_end snapshots the recovery message into main (or when an
+      // agent_end failure discards them). Clearing here would lose the
+      // recovery data if the DO is evicted again before any turn commits.
+      initialMessages.push(this.buildPiRecoveryUserMessage(inFlight));
+      this.recordChatThreadObservabilityEvent("pi_in_flight_recovered", {
+        operation: "build_recovery_message",
+        status: "ok",
+        count: inFlight.length,
+      });
+    }
+    this.piMainBaselineIndex = persistedMessages.length;
     const session = new Agent({
       initialState: {
         systemPrompt: await this.createPiSystemPrompt(context),
         model: modelConfig.model,
         tools: this.createPiToolDefinitions(context),
-        messages: this.loadPiCoreMessages(),
+        messages: initialMessages,
         thinkingLevel: "medium",
       },
       transformContext: async (messages, signal) => {
@@ -8443,6 +8541,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (event.type === "turn_end") {
+      const snapshot = this.piSession?.state.messages ?? [];
+      const newMessages = snapshot.slice(this.piMainBaselineIndex);
+      if (newMessages.length > 0) {
+        this.appendPiCoreMessagesIfMissing(newMessages);
+        this.piMainBaselineIndex = snapshot.length;
+        this.recordChatThreadObservabilityEvent("pi_turn_end_persisted", {
+          operation: "handle_pi_session_event",
+          status: "turn_end",
+          count: newMessages.length,
+        });
+      }
+      this.clearPiInFlightMessages();
       const durationMs = this.piTurnStartedAtMs
         ? Date.now() - this.piTurnStartedAtMs
         : 0;
@@ -8541,11 +8651,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (event.type === "message_end") {
-      if (!this.isPiAssistantMessage(event.message)) {
-        return;
-      }
-      const text = this.extractPiMessageText(event.message);
-      if (text) {
+      const isAssistant = this.isPiAssistantMessage(event.message);
+      const text = isAssistant ? this.extractPiMessageText(event.message) : "";
+      if (isAssistant && text) {
         const itemId = this.piActiveItemId || `pi_agent_${crypto.randomUUID()}`;
         const shouldSendCompleted = this.piActiveItemText.length === 0;
         if (shouldSendCompleted) {
@@ -8563,15 +8671,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.piActiveItemId = `pi_agent_${crypto.randomUUID()}`;
         this.piActiveItemText = "";
       }
-      this.upsertPiCoreMessages(
-        this.ensurePiAssistantTextMessage([event.message], text),
-      );
-      this.recordChatThreadObservabilityEvent("pi_message_end_persisted", {
-        operation: "handle_pi_session_event",
-        status: "assistant_message_end",
-        count: 1,
-        size: text.length,
-      });
+      const record = event.message as unknown as Record<string, unknown>;
+      if (record.role === "assistant" || record.role === "toolResult") {
+        const buffered = isAssistant
+          ? this.ensurePiAssistantTextMessage([event.message], text)
+          : [event.message];
+        this.appendPiInFlightMessages(buffered);
+      }
       return;
     }
 
@@ -8625,18 +8731,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         threadId: this.piRuntimeThreadId(),
         item,
       });
-      this.upsertPiCoreMessages([{
-        role: "toolResult",
-        toolCallId,
-        toolName,
-        content: this.piToolResultContent(event.result),
-        details:
-          event.result && typeof event.result === "object" && !Array.isArray(event.result)
-            ? (event.result as Record<string, unknown>).details
-            : undefined,
-        isError: event.isError === true,
-        timestamp: Date.now(),
-      } as unknown as AgentMessage]);
       return;
     }
 
@@ -8645,12 +8739,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         event.messages,
         this.piAssistantText,
       );
-      this.upsertPiCoreMessages(newMessages);
-      this.recordChatThreadObservabilityEvent("pi_agent_end_persisted", {
-        operation: "handle_pi_session_event",
-        status: "agent_end",
-        count: newMessages.length,
-      });
+      const droppedInFlight = this.loadPiInFlightMessages().length;
+      this.clearPiInFlightMessages();
+      if (droppedInFlight > 0) {
+        this.recordChatThreadObservabilityEvent("pi_in_flight_discarded", {
+          operation: "handle_pi_session_event",
+          status: "agent_end_without_turn_end",
+          count: droppedInFlight,
+        });
+      }
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
       let finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
@@ -9170,6 +9267,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   source: "pi_prompt",
                 });
                 this.clearPiTurnRecovery();
+                this.clearPiInFlightMessages();
                 this.pushChatEvent({
                   type: "error",
                   error: error instanceof Error ? error.message : String(error),

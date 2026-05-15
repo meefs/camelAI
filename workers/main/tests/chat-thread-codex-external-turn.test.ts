@@ -23,6 +23,9 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.setChatIsStreaming = vi.fn();
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.upsertPiCoreMessages = vi.fn();
+    fake.appendPiInFlightMessages = vi.fn();
+    fake.loadPiInFlightMessages = vi.fn(() => []);
+    fake.clearPiInFlightMessages = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.clearPiTurnRecovery = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn();
@@ -1177,6 +1180,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
   it('renders persisted Pi tool result messages with their assistant tool calls', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'run it', timestamp: 100 },
       {
@@ -1229,6 +1233,195 @@ describe('ChatThreadDO Codex external turn completion', () => {
     ]);
   });
 
+  it('builds a recovery user message from in-flight messages', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.serializePiMessageForSummary =
+      ChatThreadDO.prototype['serializePiMessageForSummary'];
+    const messages = [
+      { role: 'user', content: 'list files', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'tool1', name: 'ls', arguments: {} },
+        ],
+        responseId: 'resp_tool',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'toolUse',
+      },
+    ];
+
+    const recovery = ChatThreadDO.prototype['buildPiRecoveryUserMessage'].call(
+      fake,
+      messages,
+    );
+
+    expect(recovery.role).toBe('user');
+    expect(typeof recovery.content).toBe('string');
+    const content = recovery.content as string;
+    expect(content).toContain('[The previous turn was interrupted');
+    expect(content).toContain('list files');
+    expect(content).toContain('tool1');
+  });
+
+  it('renders an empty in-flight buffer as a context-only marker', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.serializePiMessageForSummary =
+      ChatThreadDO.prototype['serializePiMessageForSummary'];
+
+    const recovery = ChatThreadDO.prototype['buildPiRecoveryUserMessage'].call(
+      fake,
+      [],
+    );
+
+    expect(recovery.role).toBe('user');
+    expect(recovery.content).toContain('(no recorded events before the interruption)');
+  });
+
+  it('turn_end snapshots agent.state.messages past the baseline into main', () => {
+    const { fake, events: _events } = createPiEventFake();
+    void _events;
+    const allMessages = [
+      { role: 'user', content: 'previous turn', timestamp: 50 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'previous reply' }],
+        timestamp: 60,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+      { role: 'user', content: 'current turn', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'current reply' }],
+        responseId: 'resp_current',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ];
+    fake.piSession = { state: { messages: allMessages } };
+    fake.piMainBaselineIndex = 2;
+    fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'turn_end',
+      message: allMessages[3],
+      toolResults: [],
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledWith([
+      allMessages[2],
+      allMessages[3],
+    ]);
+    expect(fake.piMainBaselineIndex).toBe(4);
+    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('turn_end is a no-op when no new messages are past the baseline', () => {
+    const { fake, events: _events } = createPiEventFake();
+    void _events;
+    const allMessages = [
+      { role: 'user', content: 'old', timestamp: 50 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+        timestamp: 60,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ];
+    fake.piSession = { state: { messages: allMessages } };
+    fake.piMainBaselineIndex = 2;
+    fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'turn_end',
+      message: allMessages[1],
+      toolResults: [],
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
+    expect(fake.piMainBaselineIndex).toBe(2);
+    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes in-flight messages in the parsed chat view', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.piCoreMessageToParsedChatMessage =
+      ChatThreadDO.prototype['piCoreMessageToParsedChatMessage'];
+    fake.piUserContentToChatContent =
+      ChatThreadDO.prototype['piUserContentToChatContent'];
+    fake.piAssistantContentToChatContent =
+      ChatThreadDO.prototype['piAssistantContentToChatContent'];
+    fake.isInvisibleSystemOnlyUserContent =
+      ChatThreadDO.prototype['isInvisibleSystemOnlyUserContent'];
+    fake.attachPiToolResultToParsedMessages =
+      ChatThreadDO.prototype['attachPiToolResultToParsedMessages'];
+    fake.piToolResultContentToChatContent =
+      ChatThreadDO.prototype['piToolResultContentToChatContent'];
+
+    const committed = [
+      { role: 'user', content: 'first turn', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'first reply' }],
+        responseId: 'resp_first',
+        timestamp: 110,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ];
+    const inFlight = [
+      { role: 'user', content: 'second turn', timestamp: 200 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'tool1', name: 'ls', arguments: {} },
+        ],
+        responseId: 'resp_second',
+        timestamp: 210,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'toolUse',
+      },
+    ];
+    fake.loadPiCoreMessages = vi.fn(() => committed);
+    fake.loadPiInFlightMessages = vi.fn(() => inFlight);
+
+    const parsed = ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
+      fake,
+      'thread1',
+    );
+
+    expect(parsed).toHaveLength(4);
+    expect(parsed[0]).toMatchObject({ role: 'user', content: 'first turn' });
+    expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_first' });
+    expect(parsed[2]).toMatchObject({ role: 'user', content: 'second turn' });
+    expect(parsed[3]).toMatchObject({ role: 'assistant', id: 'resp_second' });
+    expect(fake.loadPiCoreMessages).toHaveBeenCalledTimes(1);
+    expect(fake.loadPiInFlightMessages).toHaveBeenCalledTimes(1);
+  });
   it('sanitizes unsupported persisted Pi image tool results when loading history', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ensurePiCoreTables = vi.fn();
@@ -1357,12 +1550,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       status: 'result',
       reply: 'Hello',
     });
-    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
-      expect.objectContaining({
-        role: 'assistant',
-        responseId: 'resp1',
-      }),
-    ]);
+    expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
   it('emits completed agent messages for non-streamed Pi message_end text', () => {
@@ -1407,18 +1595,13 @@ describe('ChatThreadDO Codex external turn completion', () => {
       type: 'result',
       result: 'Whole reply',
     }));
-    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
+    expect(fake.appendPiInFlightMessages).toHaveBeenCalledWith([
       expect.objectContaining({
         role: 'assistant',
         content: [{ type: 'text', text: 'Whole reply' }],
       }),
     ]);
-    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
-      expect.objectContaining({
-        role: 'assistant',
-        responseId: 'resp2',
-      }),
-    ]);
+    expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {
