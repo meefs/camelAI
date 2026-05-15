@@ -137,5 +137,7 @@
     { "tag": "v19", "deleted_classes": ["OAuthStateDO"] },
     { "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
     { "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
+    { "tag": "v22" },
+    { "tag": "v23", "deleted_classes": ["CloudflareWorkspaceSandbox"] },
   ],
 }
