@@ -99,6 +99,63 @@ describe('Pi Bedrock provider message conversion', () => {
     ]);
   });
 
+  it('trims assistant blocks that appear after tool_use before replaying to Bedrock', () => {
+    const messages = buildMessages({
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'thinking',
+              thinking: 'checking',
+              thinkingSignature: 'valid-signature',
+            },
+            { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} },
+            {
+              type: 'thinking',
+              thinking: '[Reasoning redacted]',
+              thinkingSignature: 'openrouter.reasoning:abc',
+            },
+          ],
+          responseId: 'resp_tool',
+          timestamp: 100,
+          api: 'test',
+          provider: 'test',
+          model: 'test',
+          usage: {},
+          stopReason: 'toolUse',
+        },
+        {
+          role: 'toolResult',
+          toolCallId: 'tool1',
+          toolName: 'read',
+          content: [{ type: 'text', text: 'file contents' }],
+          isError: false,
+          timestamp: 200,
+        },
+      ],
+    });
+
+    expect(messages).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'checking', signature: 'valid-signature' },
+          { type: 'tool_use', id: 'tool1', name: 'read', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'tool1',
+          content: 'file contents',
+          is_error: false,
+        }],
+      },
+    ]);
+  });
+
   it('moves leftover user content after the required tool_result message', () => {
     const messages = __testing.normalizeAnthropicToolResultAdjacency([
       {

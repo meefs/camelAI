@@ -396,9 +396,13 @@ function normalizeAnthropicToolResultAdjacency(messages: AnthropicMessage[]): An
       continue;
     }
 
-    normalized.push(message);
     const toolUseIds = getAssistantToolUseIds(message);
-    if (toolUseIds.length === 0) continue;
+    if (toolUseIds.length === 0) {
+      normalized.push(message);
+      continue;
+    }
+
+    normalized.push(trimAssistantContentAfterLastToolUse(message));
 
     const next = messages[index + 1];
     const consumedResultBlocks: AnthropicToolResultBlock[] = [];
@@ -450,6 +454,21 @@ function normalizeAnthropicToolResultAdjacency(messages: AnthropicMessage[]): An
   }
 
   return normalized;
+}
+
+function trimAssistantContentAfterLastToolUse(message: AnthropicMessage): AnthropicMessage {
+  if (!Array.isArray(message.content)) return message;
+  let lastToolUseIndex = -1;
+  for (let index = message.content.length - 1; index >= 0; index--) {
+    if (message.content[index]?.type === 'tool_use') {
+      lastToolUseIndex = index;
+      break;
+    }
+  }
+  if (lastToolUseIndex < 0 || lastToolUseIndex === message.content.length - 1) {
+    return message;
+  }
+  return { ...message, content: message.content.slice(0, lastToolUseIndex + 1) };
 }
 
 function getAssistantToolUseIds(message: AnthropicMessage): string[] {
