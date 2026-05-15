@@ -7190,21 +7190,29 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       ? `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`
       : "";
     const prompt = `${previous}<conversation>\n${serialized}\n</conversation>\n\nSummarize this coding-agent conversation for future continuation. Preserve exact file paths, commands, tool results that changed decisions, completed work, current goal, constraints, and next steps. Do not answer the conversation.`;
-    const response = await completeSimple(
-      model,
-      {
-        systemPrompt: "You produce compact continuation summaries for coding-agent conversations.",
-        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-      },
-      {
-        apiKey,
-        signal,
-        maxTokens: 4096,
-        ...(model.api === "bedrock-converse-stream"
-          ? { bearerToken: apiKey }
-          : {}),
-      } as Parameters<typeof completeSimple>[2],
-    );
+    const summaryContext = {
+      systemPrompt: "You produce compact continuation summaries for coding-agent conversations.",
+      messages: [{ role: "user" as const, content: prompt, timestamp: Date.now() }],
+    };
+    const summaryOptions = {
+      apiKey,
+      signal,
+      maxTokens: 4096,
+    } as Parameters<typeof completeSimple>[2];
+    const response =
+      model.api === "bedrock-converse-stream"
+        ? await bedrockProviderModule
+            .streamBedrock(
+              model,
+              summaryContext,
+              this.buildBedrockByokOptions(model, summaryOptions),
+            )
+            .result()
+        : await completeSimple(
+            model,
+            summaryContext,
+            summaryOptions,
+          );
     const text = response.content
       .filter((part): part is { type: "text"; text: string } => part.type === "text")
       .map((part) => part.text)
@@ -7640,13 +7648,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     context: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[1],
     options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
     streamSimple: typeof import("@mariozechner/pi-ai").streamSimple,
+    streamBedrock = bedrockProviderModule.streamBedrock,
   ): ReturnType<typeof import("@mariozechner/pi-ai").streamSimple> {
     try {
       if (model.api === "bedrock-converse-stream" && options?.apiKey) {
-        return streamSimple(model, context, {
-          ...options,
-          bearerToken: options.apiKey,
-        } as Parameters<typeof streamSimple>[2]);
+        return streamBedrock(
+          model,
+          context,
+          this.buildBedrockByokOptions(model, options),
+        ) as ReturnType<typeof import("@mariozechner/pi-ai").streamSimple>;
       }
       return streamSimple(model, context, options);
     } catch (error) {
@@ -7655,6 +7665,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
       throw error;
     }
+  }
+
+  private buildBedrockByokOptions(
+    model: Model<any>,
+    options: Parameters<typeof import("@mariozechner/pi-ai").streamSimple>[2],
+  ): Parameters<typeof bedrockProviderModule.streamBedrock>[2] {
+    return {
+      ...options,
+      bearerToken: options?.apiKey,
+      maxTokens:
+        options?.maxTokens ??
+        (typeof model.maxTokens === "number" && model.maxTokens > 0
+          ? Math.min(model.maxTokens, 32000)
+          : undefined),
+    } as Parameters<typeof bedrockProviderModule.streamBedrock>[2];
   }
 
   private scopedCodeModeTools(context: ChatContextState): CodeModeToolsBinding {

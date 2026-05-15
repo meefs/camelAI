@@ -379,7 +379,8 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
   it('passes Bedrock bearer tokens through the Pi stream function', () => {
     const streamSimple = vi.fn(() => ({ [Symbol.asyncIterator]: vi.fn() }));
-    const model = { api: 'bedrock-converse-stream' };
+    const streamBedrock = vi.fn(() => ({ [Symbol.asyncIterator]: vi.fn() }));
+    const model = { api: 'bedrock-converse-stream', maxTokens: 1000 };
 
     ChatThreadDO.prototype['streamPiModel'].call(
       Object.create(ChatThreadDO.prototype),
@@ -387,14 +388,17 @@ describe('ChatThreadDO Codex external turn completion', () => {
       { systemPrompt: '', messages: [] },
       { apiKey: 'bedrock-token' },
       streamSimple,
+      streamBedrock,
     );
 
-    expect(streamSimple).toHaveBeenCalledWith(
+    expect(streamSimple).not.toHaveBeenCalled();
+    expect(streamBedrock).toHaveBeenCalledWith(
       model,
       { systemPrompt: '', messages: [] },
       expect.objectContaining({
         apiKey: 'bedrock-token',
         bearerToken: 'bedrock-token',
+        maxTokens: 1000,
       }),
     );
   });
