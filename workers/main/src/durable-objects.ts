@@ -7,6 +7,8 @@ import type {
   AgentTool,
   AgentToolResult,
 } from "@mariozechner/pi-agent-core";
+import { setBedrockProviderModule } from "@mariozechner/pi-ai";
+import { bedrockProviderModule } from "@mariozechner/pi-ai/bedrock-provider";
 import type { Model } from "@mariozechner/pi-ai";
 import type { OrgDO, UserDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
@@ -82,6 +84,11 @@ import {
   recordErrorEvent,
   recordObservabilityEvent,
 } from "./observability";
+
+// Pi lazy-loads the Bedrock provider via a dynamic import that Vite/Wrangler
+// cannot statically include in the Worker upload. Register the exported module
+// explicitly so Bedrock BYOK support is present in production builds.
+setBedrockProviderModule(bedrockProviderModule);
 
 export type PreviewTarget =
   | {
