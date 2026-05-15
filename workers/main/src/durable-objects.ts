@@ -6953,7 +6953,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           completeSimple,
           signal,
         );
-        return compacted.map((message) => sanitizePiProviderMessage(message));
+        return this.repairPiProviderMessageHistory(
+          compacted.map((message) => sanitizePiProviderMessage(message)),
+        );
       },
       getApiKey: async () => {
         const current = await resolveCurrentModel();
@@ -7086,6 +7088,66 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       chars += JSON.stringify(message).length;
     }
     return Math.ceil(chars / 4);
+  }
+
+  private repairPiProviderMessageHistory(messages: AgentMessage[]): AgentMessage[] {
+    const repaired: AgentMessage[] = [];
+    let pendingToolCallIds: Map<string, number> | null = null;
+    let droppedToolResults = 0;
+
+    const collectToolCallIds = (message: AgentMessage): Map<string, number> | null => {
+      const record = message as unknown as Record<string, unknown>;
+      if (record.role !== "assistant" || !Array.isArray(record.content)) return null;
+      const ids = new Map<string, number>();
+      for (const part of record.content) {
+        if (!part || typeof part !== "object") continue;
+        const item = part as Record<string, unknown>;
+        if (item.type !== "toolCall" || typeof item.id !== "string" || !item.id.trim()) {
+          continue;
+        }
+        const id = item.id.trim();
+        ids.set(id, (ids.get(id) ?? 0) + 1);
+      }
+      return ids.size > 0 ? ids : null;
+    };
+
+    for (const message of messages) {
+      const record = message as unknown as Record<string, unknown>;
+      if (record.role === "assistant") {
+        repaired.push(message);
+        pendingToolCallIds = collectToolCallIds(message);
+        continue;
+      }
+
+      if (record.role === "toolResult") {
+        const toolCallId = typeof record.toolCallId === "string"
+          ? record.toolCallId.trim()
+          : "";
+        const remaining = toolCallId && pendingToolCallIds
+          ? pendingToolCallIds.get(toolCallId) ?? 0
+          : 0;
+        if (remaining > 0) {
+          pendingToolCallIds?.set(toolCallId, remaining - 1);
+          repaired.push(message);
+        } else {
+          droppedToolResults += 1;
+        }
+        continue;
+      }
+
+      repaired.push(message);
+      pendingToolCallIds = null;
+    }
+
+    if (droppedToolResults > 0) {
+      this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
+        operation: "repair_tool_results",
+        status: "ok",
+        count: droppedToolResults,
+      });
+    }
+
+    return droppedToolResults > 0 ? repaired : messages;
   }
 
   private findPiCompactionCutIndex(messages: AgentMessage[], keepRecentTokens: number): number {

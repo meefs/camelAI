@@ -1225,6 +1225,61 @@ describe('ChatThreadDO Codex external turn completion', () => {
     ]);
   });
 
+  it('drops duplicate Pi tool results before provider replay', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    const messages = [
+      {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'tool1',
+          name: 'read',
+          arguments: { path: '/tmp/a.png' },
+        }],
+        responseId: 'resp_tool',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'toolUse',
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'tool1',
+        toolName: 'read',
+        content: [{ type: 'text', text: 'first result' }],
+        isError: false,
+        timestamp: 300,
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'tool1',
+        toolName: 'read',
+        content: [{ type: 'text', text: 'duplicate result' }],
+        isError: false,
+        timestamp: 301,
+      },
+      { role: 'user', content: 'continue', timestamp: 400 },
+    ];
+
+    const repaired = ChatThreadDO.prototype['repairPiProviderMessageHistory'].call(
+      fake,
+      messages,
+    );
+
+    expect(repaired).toEqual([messages[0], messages[1], messages[3]]);
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_provider_history_repaired',
+      {
+        operation: 'repair_tool_results',
+        status: 'ok',
+        count: 1,
+      },
+    );
+  });
+
   it('sanitizes unsupported persisted Pi image tool results when loading history', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ensurePiCoreTables = vi.fn();
