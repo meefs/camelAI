@@ -1,5 +1,6 @@
 import { reactRouter } from '@react-router/dev/vite';
 import { cloudflare, type WorkerConfig } from '@cloudflare/vite-plugin';
+import path from 'node:path';
 import { defineConfig, type DepOptimizationOptions, type Plugin } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
@@ -88,6 +89,9 @@ function withLocalDevVars(config: WorkerConfig): Partial<WorkerConfig> | void {
 }
 
 export default defineConfig(({ command }) => {
+  const smithyCoreConfigNodeEntry = path.resolve(
+    'node_modules/@smithy/core/dist-es/submodules/config/index.js',
+  );
   const clientOptimizeDepsInclude = [
     'react',
     'react-dom',
@@ -156,6 +160,14 @@ export default defineConfig(({ command }) => {
     },
     ssr: {
       optimizeDeps: ssrOptimizeDeps,
+    },
+    resolve: {
+      alias: [
+        {
+          find: '@smithy/core/config',
+          replacement: smithyCoreConfigNodeEntry,
+        },
+      ],
     },
     build: {
       target: 'esnext',
