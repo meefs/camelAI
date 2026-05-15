@@ -7099,12 +7099,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private repairPiProviderMessageHistory(messages: AgentMessage[]): AgentMessage[] {
     const repaired: AgentMessage[] = [];
     let pendingToolCallIds: Map<string, number> | null = null;
+    let pendingToolCallNames: Map<string, string> | null = null;
     let droppedToolResults = 0;
+    let syntheticToolResults = 0;
 
-    const collectToolCallIds = (message: AgentMessage): Map<string, number> | null => {
+    const collectToolCalls = (
+      message: AgentMessage,
+    ): { ids: Map<string, number>; names: Map<string, string> } | null => {
       const record = message as unknown as Record<string, unknown>;
       if (record.role !== "assistant" || !Array.isArray(record.content)) return null;
       const ids = new Map<string, number>();
+      const names = new Map<string, string>();
       for (const part of record.content) {
         if (!part || typeof part !== "object") continue;
         const item = part as Record<string, unknown>;
@@ -7113,15 +7118,45 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
         const id = item.id.trim();
         ids.set(id, (ids.get(id) ?? 0) + 1);
+        if (typeof item.name === "string" && !names.has(id)) {
+          names.set(id, item.name);
+        }
       }
-      return ids.size > 0 ? ids : null;
+      return ids.size > 0 ? { ids, names } : null;
+    };
+
+    const flushUnmatchedToolCalls = () => {
+      if (!pendingToolCallIds) return;
+      for (const [id, remaining] of pendingToolCallIds.entries()) {
+        for (let i = 0; i < remaining; i++) {
+          repaired.push({
+            role: "toolResult",
+            toolCallId: id,
+            toolName: pendingToolCallNames?.get(id) ?? "",
+            content: [
+              {
+                type: "text",
+                text: "Tool call interrupted; no result was recorded.",
+              },
+            ],
+            isError: true,
+            timestamp: Date.now(),
+          } as unknown as AgentMessage);
+          syntheticToolResults += 1;
+        }
+      }
+      pendingToolCallIds = null;
+      pendingToolCallNames = null;
     };
 
     for (const message of messages) {
       const record = message as unknown as Record<string, unknown>;
       if (record.role === "assistant") {
+        flushUnmatchedToolCalls();
         repaired.push(message);
-        pendingToolCallIds = collectToolCallIds(message);
+        const collected = collectToolCalls(message);
+        pendingToolCallIds = collected?.ids ?? null;
+        pendingToolCallNames = collected?.names ?? null;
         continue;
       }
 
@@ -7141,19 +7176,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         continue;
       }
 
+      flushUnmatchedToolCalls();
       repaired.push(message);
-      pendingToolCallIds = null;
     }
 
-    if (droppedToolResults > 0) {
+    flushUnmatchedToolCalls();
+
+    const totalRepaired = droppedToolResults + syntheticToolResults;
+    if (totalRepaired > 0) {
       this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
         operation: "repair_tool_results",
         status: "ok",
-        count: droppedToolResults,
+        count: totalRepaired,
       });
+      return repaired;
     }
 
-    return droppedToolResults > 0 ? repaired : messages;
+    return messages;
   }
 
   private findPiCompactionCutIndex(messages: AgentMessage[], keepRecentTokens: number): number {
