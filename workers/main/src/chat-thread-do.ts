@@ -1404,10 +1404,8 @@ const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 const PI_TURN_RECOVERY_ROW_ID = 1;
 const PI_TURN_RECOVERY_ALARM_MS = 10_000;
 const PI_TURN_RECOVERY_STALE_MS = 30_000;
-const PI_TURN_RECOVERY_CONTINUE_PROMPT =
-  "<camelai system message>continue</camelai system message>";
-const CAMELAI_SYSTEM_MESSAGE_TAG_REGEX =
-  /<camelai system message>[\s\S]*?<\/camelai system message>/g;
+const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
+const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
@@ -1483,6 +1481,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piToolArgs: Map<string, Record<string, unknown>> = new Map();
   private piAssistantText = "";
   private piTurnStartedAtMs: number = 0;
+  private suppressNextPiRecoveryPromptEvent = false;
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
@@ -2754,7 +2753,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       role: "user",
       content: text,
       timestamp: Date.now(),
-    };
+      visibility: "hidden",
+      metadata: {
+        purpose: PI_TURN_RECOVERY_CONTEXT_PURPOSE,
+      },
+    } as unknown as AgentMessage;
   }
 
   private loadPiCoreMessages(): AgentMessage[] {
@@ -3017,11 +3020,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw new Error("Pi session was not available for turn recovery");
     }
     await this.refreshPiSessionModel();
-    await this.piSession.prompt({
-      role: "user",
-      content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
-      timestamp: Date.now(),
-    });
+    this.suppressNextPiRecoveryPromptEvent = true;
+    try {
+      await this.piSession.prompt({
+        role: "user",
+        content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
+        timestamp: Date.now(),
+      });
+    } finally {
+      this.suppressNextPiRecoveryPromptEvent = false;
+    }
   }
 
   private emptyPiUsage() {
@@ -3312,10 +3320,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       ? record.timestamp
       : Date.now();
 
+    if (this.isInternalPiClientMessage(record)) {
+      return [];
+    }
+
     if (role === "user") {
-      if (this.isInvisibleSystemOnlyUserContent(record.content)) {
-        return [];
-      }
       return [{
         id: `pi_user_${timestamp}_${index}`,
         thread_id: threadId,
@@ -3368,15 +3377,26 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return Array.from(new Set(ids));
   }
 
-  private isInvisibleSystemOnlyUserContent(content: unknown): boolean {
-    if (typeof content === "string") {
-      return (
-        content.trim().length > 0 &&
-        content.replace(CAMELAI_SYSTEM_MESSAGE_TAG_REGEX, "").trim().length === 0
-      );
-    }
-    if (!Array.isArray(content) || content.length === 0) return false;
-    const text = content
+  private isInternalPiClientMessage(message: unknown): boolean {
+    if (!message || typeof message !== "object") return false;
+    const record = message as Record<string, unknown>;
+    if (record.visibility === "hidden") return true;
+    const metadata = record.metadata;
+    if (!metadata || typeof metadata !== "object") return false;
+    const meta = metadata as Record<string, unknown>;
+    return meta.purpose === PI_TURN_RECOVERY_CONTEXT_PURPOSE;
+  }
+
+  private piSdkUserEventText(event: unknown): string | null {
+    if (!event || typeof event !== "object") return null;
+    const record = event as Record<string, unknown>;
+    if (record.type !== "user") return null;
+    const message = record.message;
+    if (!message || typeof message !== "object") return null;
+    const content = (message as Record<string, unknown>).content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return null;
+    return content
       .flatMap((part): string[] => {
         if (!part || typeof part !== "object") return [];
         const item = part as Record<string, unknown>;
@@ -3385,10 +3405,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           : [];
       })
       .join("\n");
-    return (
-      text.trim().length > 0 &&
-      text.replace(CAMELAI_SYSTEM_MESSAGE_TAG_REGEX, "").trim().length === 0
-    );
+  }
+
+  private shouldSuppressPiSdkEventForChat(event: unknown): boolean {
+    if (event && typeof event === "object") {
+      const record = event as Record<string, unknown>;
+      if (record.type === "user" && this.isInternalPiClientMessage(record.message)) {
+        return true;
+      }
+    }
+    if (!this.suppressNextPiRecoveryPromptEvent) return false;
+    if (this.piSdkUserEventText(event)?.trim() !== PI_TURN_RECOVERY_CONTINUE_PROMPT) {
+      return false;
+    }
+    this.suppressNextPiRecoveryPromptEvent = false;
+    return true;
   }
 
   private piUserContentToChatContent(content: unknown): unknown {
@@ -6559,7 +6590,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    this.pushChatEvent({ type: "sdk_event", event });
+    if (!this.shouldSuppressPiSdkEventForChat(event)) {
+      this.pushChatEvent({ type: "sdk_event", event });
+    }
   }
 
   private async recordPiAssistantUsage(
