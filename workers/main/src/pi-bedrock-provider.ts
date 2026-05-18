@@ -661,9 +661,8 @@ function buildBetaFeatures(
   if (options.interleavedThinking !== false && options.reasoning && !supportsAdaptiveThinking(model.id)) {
     betas.push(INTERLEAVED_THINKING_BETA);
   }
-  if (supportsPromptCaching(model.id)) {
-    betas.push(PROMPT_CACHING_BETA);
-  }
+  // Note: prompt caching on Bedrock's Anthropic Messages API does not require
+  // an explicit beta flag — cache_control blocks in the payload are sufficient.
   return betas;
 }
 
@@ -685,30 +684,35 @@ function supportsPromptCaching(modelId: string): boolean {
 
 /**
  * Adds a `cache_control: {type:'ephemeral'}` marker to the last content block
- * of the second-to-last user turn in the normalised messages array.
+ * of the last user message in the normalised messages array.
  *
- * Placing the cache checkpoint here means that on a retry the entire
- * conversation history up to (but not including) the new user message is
- * returned from Bedrock's prompt cache — dramatically reducing TTFB on the
- * second attempt after a 524 timeout.
+ * Mirrors the official @mariozechner/pi-ai Anthropic provider exactly:
+ * cache the last user turn so that on the very next request (or a retry after
+ * a 524 timeout) Bedrock serves the full conversation history from cache,
+ * dramatically reducing TTFB.
  *
- * If the conversation has only a single user turn the checkpoint is placed on
- * that turn instead, which still allows the system prompt and tool list to be
- * served from cache.
+ * Handles the case where the last user message has string content by
+ * converting it to an array block first, matching the official provider.
  */
 function addPromptCacheCheckpoint(messages: AnthropicMessage[]): void {
-  let userTurnsFromEnd = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role !== 'user') continue;
-    userTurnsFromEnd++;
-    // Target: second-to-last user turn (fallback: first/only user turn)
-    if (userTurnsFromEnd === 2 || (userTurnsFromEnd === 1 && i === 0)) {
-      const content = messages[i].content;
-      if (!Array.isArray(content) || content.length === 0) break;
-      const lastBlock = content[content.length - 1] as AnthropicTextBlock | AnthropicToolResultBlock;
-      lastBlock.cache_control = { type: 'ephemeral' };
-      break;
+  if (messages.length === 0) return;
+  const lastMessage = messages[messages.length - 1];
+  if (lastMessage.role !== 'user') return;
+
+  if (Array.isArray(lastMessage.content) && lastMessage.content.length > 0) {
+    const lastBlock = lastMessage.content[lastMessage.content.length - 1];
+    if (
+      lastBlock.type === 'text' ||
+      lastBlock.type === 'image' ||
+      lastBlock.type === 'tool_result'
+    ) {
+      (lastBlock as AnthropicTextBlock | AnthropicToolResultBlock).cache_control = { type: 'ephemeral' };
     }
+  } else if (typeof lastMessage.content === 'string') {
+    // Convert string content to array so we can attach cache_control.
+    lastMessage.content = [
+      { type: 'text', text: lastMessage.content, cache_control: { type: 'ephemeral' } },
+    ];
   }
 }
 

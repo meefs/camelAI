@@ -45,12 +45,13 @@ describe('Pi Bedrock provider message conversion', () => {
       },
       {
         role: 'user',
+        // Last user message — cache_control goes on the last block ('continue' text).
         content: [{
           type: 'tool_result',
           tool_use_id: 'tool1',
           content: 'Tool call interrupted; no result was recorded.',
           is_error: true,
-        }, { type: 'text', text: 'continue' }],
+        }, { type: 'text', text: 'continue', cache_control: { type: 'ephemeral' } }],
       },
     ]);
   });
@@ -88,16 +89,18 @@ describe('Pi Bedrock provider message conversion', () => {
       },
       {
         role: 'user',
-        // This is the second-to-last user turn, so it gets a cache checkpoint.
         content: [{
           type: 'tool_result',
           tool_use_id: 'tool1',
           content: 'file contents',
           is_error: false,
-          cache_control: { type: 'ephemeral' },
         }],
       },
-      { role: 'user', content: 'thanks' },
+      {
+        role: 'user',
+        // Last user message (string) is converted to an array so cache_control can be attached.
+        content: [{ type: 'text', text: 'thanks', cache_control: { type: 'ephemeral' } }],
+      },
     ]);
   });
 
@@ -148,11 +151,13 @@ describe('Pi Bedrock provider message conversion', () => {
       },
       {
         role: 'user',
+        // Last user message — cache_control goes on the tool_result.
         content: [{
           type: 'tool_result',
           tool_use_id: 'tool1',
           content: 'file contents',
           is_error: false,
+          cache_control: { type: 'ephemeral' },
         }],
       },
     ]);
