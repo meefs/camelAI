@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Copy, Check, GitFork } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock, Integration } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -15,6 +15,7 @@ import { TeammateMessage } from '@/components/tool-call/teammate-message';
 import { TaskNotification } from '@/components/tool-call/task-notification';
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactSummaryCard } from '@/components/compact-summary-card';
+import { memo } from 'react';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
@@ -28,13 +29,26 @@ import {
 } from '@/lib/connection-mentions';
 import { cn } from '@/lib/utils';
 
+const messageTimeCache = new Map<number, string>();
+
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], {
+  const cached = messageTimeCache.get(timestamp);
+  if (cached) return cached;
+
+  const formatted = new Date(timestamp).toLocaleTimeString([], {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
   });
+  messageTimeCache.set(timestamp, formatted);
+  if (messageTimeCache.size > 2000) {
+    const firstKey = messageTimeCache.keys().next().value;
+    if (typeof firstKey === 'number') {
+      messageTimeCache.delete(firstKey);
+    }
+  }
+  return formatted;
 }
 
 // ── Special message detection ──
@@ -549,7 +563,25 @@ interface MessageBubbleProps {
   mentionSlugMap?: Map<string, Integration>;
 }
 
-export function MessageBubble({
+function getMessageToolUseIds(message: Message): string[] {
+  if (!Array.isArray(message.content)) return [];
+  return message.content
+    .filter((block): block is ToolUseBlock => block.type === 'tool_use' && Boolean(block.id))
+    .map((block) => block.id);
+}
+
+function messageSkillSheetsEqual(
+  message: Message,
+  previous?: Map<string, string>,
+  next?: Map<string, string>,
+): boolean {
+  if (previous === next) return true;
+  const toolUseIds = getMessageToolUseIds(message);
+  if (toolUseIds.length === 0) return true;
+  return toolUseIds.every((id) => previous?.get(id) === next?.get(id));
+}
+
+function MessageBubbleBase({
   message,
   onCopy,
   copiedId,
@@ -862,3 +894,33 @@ export function MessageBubble({
     </div>
   );
 }
+
+export const MessageBubble = memo(MessageBubbleBase, (prev, next) => {
+  const wasCopied = prev.copiedId === prev.message.id;
+  const isCopied = next.copiedId === next.message.id;
+  const previousForkTargetId = prev.message.forkEntryId || prev.message.id;
+  const nextForkTargetId = next.message.forkEntryId || next.message.id;
+  const wasForking =
+    prev.forkingId === prev.message.id || prev.forkingId === previousForkTargetId;
+  const isForking =
+    next.forkingId === next.message.id || next.forkingId === nextForkTargetId;
+
+  return (
+    prev.message === next.message &&
+    prev.onCopy === next.onCopy &&
+    prev.onFork === next.onFork &&
+    wasCopied === isCopied &&
+    wasForking === isForking &&
+    prev.showStreamingIndicator === next.showStreamingIndicator &&
+    prev.suppressFinalizedState === next.suppressFinalizedState &&
+    prev.showActionRow === next.showActionRow &&
+    prev.actionCopyContent === next.actionCopyContent &&
+    prev.actionHoverClassName === next.actionHoverClassName &&
+    prev.hostname === next.hostname &&
+    prev.orgSlug === next.orgSlug &&
+    prev.mentionSlugMap === next.mentionSlugMap &&
+    messageSkillSheetsEqual(prev.message, prev.skillSheets, next.skillSheets)
+  );
+});
+
+MessageBubble.displayName = 'MessageBubble';

@@ -131,7 +131,13 @@ function InlineCode({ children }: { children?: React.ReactNode }) {
 }
 
 // Code block component with syntax highlighting and copy button
-function CodeBlockPre({ children }: { children?: React.ReactNode }) {
+function CodeBlockPre({
+  children,
+  isStreaming = false,
+}: {
+  children?: React.ReactNode;
+  isStreaming?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const [highlightedCode, setHighlightedCode] = useState<string | null>(null);
 
@@ -150,7 +156,7 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     let isActive = true;
 
-    if (!codeString) {
+    if (!codeString || isStreaming) {
       setHighlightedCode(null);
       return () => {
         isActive = false;
@@ -175,7 +181,7 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
     return () => {
       isActive = false;
     };
-  }, [codeString, language]);
+  }, [codeString, language, isStreaming]);
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(codeString);
@@ -354,6 +360,7 @@ function withMentionChips(
 const createComponents = (
   variant: 'default' | 'user',
   sourceContent: string,
+  isStreaming: boolean,
   workspaceId?: string,
   mentionSlugMap?: Map<string, Integration>,
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>,
@@ -414,7 +421,7 @@ const createComponents = (
   code: InlineCode as Components['code'],
 
   // Code blocks - pre wraps code, handles syntax highlighting and copy
-  pre: CodeBlockPre as Components['pre'],
+  pre: ({ children }) => <CodeBlockPre isStreaming={isStreaming}>{children}</CodeBlockPre>,
 
   // Links
   a: ({ href, children }) => {
@@ -567,13 +574,38 @@ function MarkdownRendererBase({
     return normalizedContent;
   }, [content, isStreaming]);
 
-  const components = createComponents(
-    variant,
-    processedContent,
-    workspaceId,
-    mentionSlugMap,
-    annotatedMentions,
+  const components = useMemo(
+    () => createComponents(
+      variant,
+      processedContent,
+      isStreaming,
+      workspaceId,
+      mentionSlugMap,
+      annotatedMentions,
+    ),
+    [
+      variant,
+      processedContent,
+      isStreaming,
+      workspaceId,
+      mentionSlugMap,
+      annotatedMentions,
+    ],
   );
+
+  if (isStreaming && !allowInlineHtml) {
+    return (
+      <div
+        className={cn(
+          'markdown-content whitespace-pre-wrap break-words',
+          variant === 'user' && 'markdown-content-user',
+          className
+        )}
+      >
+        {processedContent}
+      </div>
+    );
+  }
 
   return (
     <div
