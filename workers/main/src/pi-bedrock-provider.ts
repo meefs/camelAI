@@ -677,8 +677,7 @@ function supportsPromptCaching(modelId: string): boolean {
     id.includes('-4-')     || // Claude 4.x (opus-4-7, sonnet-4-6, haiku-4-5, …)
     id.includes('-4.')     || // alternate dot notation
     id.includes('-3-7-')   || // Claude 3.7 Sonnet
-    id.includes('-3.7-')   ||
-    id.includes('haiku-4-5') // Claude 3.5 Haiku
+    id.includes('-3.7-')
   );
 }
 
