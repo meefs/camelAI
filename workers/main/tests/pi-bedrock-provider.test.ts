@@ -88,11 +88,13 @@ describe('Pi Bedrock provider message conversion', () => {
       },
       {
         role: 'user',
+        // This is the second-to-last user turn, so it gets a cache checkpoint.
         content: [{
           type: 'tool_result',
           tool_use_id: 'tool1',
           content: 'file contents',
           is_error: false,
+          cache_control: { type: 'ephemeral' },
         }],
       },
       { role: 'user', content: 'thanks' },

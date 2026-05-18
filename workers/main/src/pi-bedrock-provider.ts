@@ -22,6 +22,7 @@ const DEFAULT_BEDROCK_REGION = 'us-east-1';
 const ANTHROPIC_VERSION = 'bedrock-2023-05-31';
 const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14';
 const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
+const PROMPT_CACHING_BETA = 'prompt-caching-2024-07-31';
 
 type AnthropicStopReason =
   | 'end_turn'
@@ -105,7 +106,8 @@ type AnthropicContentBlock =
   | AnthropicThinkingBlock
   | AnthropicRedactedThinkingBlock;
 
-type AnthropicTextBlock = { type: 'text'; text: string };
+type CacheControl = { type: 'ephemeral' };
+type AnthropicTextBlock = { type: 'text'; text: string; cache_control?: CacheControl };
 type AnthropicImageBlock = {
   type: 'image';
   source: {
@@ -125,6 +127,7 @@ type AnthropicToolResultBlock = {
   tool_use_id: string;
   content: string | (AnthropicTextBlock | AnthropicImageBlock)[];
   is_error?: boolean;
+  cache_control?: CacheControl;
 };
 type AnthropicThinkingBlock = {
   type: 'thinking';
@@ -144,6 +147,7 @@ type AnthropicTool = {
     required: string[];
   };
   eager_input_streaming?: boolean;
+  cache_control?: CacheControl;
 };
 
 type EventStreamBytes = Uint8Array<ArrayBufferLike>;
@@ -291,14 +295,30 @@ function buildBedrockInvokeBody(
     ...(betaFeatures.length > 0 ? { anthropic_beta: betaFeatures } : {}),
   };
 
+  const cachingEnabled = supportsPromptCaching(model.id);
+
   if (context.systemPrompt?.trim()) {
-    payload.system = [{ type: 'text', text: sanitizeSurrogates(context.systemPrompt) }];
+    const systemBlock: AnthropicTextBlock = { type: 'text', text: sanitizeSurrogates(context.systemPrompt) };
+    if (cachingEnabled) systemBlock.cache_control = { type: 'ephemeral' };
+    payload.system = [systemBlock];
   }
   if (options.temperature !== undefined && !options.reasoning) {
     payload.temperature = options.temperature;
   }
   if (context.tools?.length) {
-    payload.tools = convertTools(context.tools);
+    const tools = convertTools(context.tools);
+    // Cache the last tool definition so the tool list is not re-processed on retries.
+    if (cachingEnabled && tools.length > 0) {
+      tools[tools.length - 1].cache_control = { type: 'ephemeral' };
+    }
+    payload.tools = tools;
+  }
+
+  // Add a cache checkpoint at the second-to-last user turn so the stable
+  // conversation history is cached. On a retry (e.g. after a 524 timeout)
+  // Bedrock serves most tokens from cache, making the second attempt fast.
+  if (cachingEnabled) {
+    addPromptCacheCheckpoint(payload.messages);
   }
   if (options.toolChoice) {
     payload.tool_choice =
@@ -641,7 +661,55 @@ function buildBetaFeatures(
   if (options.interleavedThinking !== false && options.reasoning && !supportsAdaptiveThinking(model.id)) {
     betas.push(INTERLEAVED_THINKING_BETA);
   }
+  if (supportsPromptCaching(model.id)) {
+    betas.push(PROMPT_CACHING_BETA);
+  }
   return betas;
+}
+
+/**
+ * Returns true for Claude models that support Bedrock prompt caching.
+ * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models.
+ */
+function supportsPromptCaching(modelId: string): boolean {
+  const id = modelId.toLowerCase();
+  if (!id.includes('claude')) return false;
+  return (
+    id.includes('-4-')     || // Claude 4.x (opus-4-7, sonnet-4-6, haiku-4-5, …)
+    id.includes('-4.')     || // alternate dot notation
+    id.includes('-3-7-')   || // Claude 3.7 Sonnet
+    id.includes('-3.7-')   ||
+    id.includes('haiku-4-5') // Claude 3.5 Haiku
+  );
+}
+
+/**
+ * Adds a `cache_control: {type:'ephemeral'}` marker to the last content block
+ * of the second-to-last user turn in the normalised messages array.
+ *
+ * Placing the cache checkpoint here means that on a retry the entire
+ * conversation history up to (but not including) the new user message is
+ * returned from Bedrock's prompt cache — dramatically reducing TTFB on the
+ * second attempt after a 524 timeout.
+ *
+ * If the conversation has only a single user turn the checkpoint is placed on
+ * that turn instead, which still allows the system prompt and tool list to be
+ * served from cache.
+ */
+function addPromptCacheCheckpoint(messages: AnthropicMessage[]): void {
+  let userTurnsFromEnd = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'user') continue;
+    userTurnsFromEnd++;
+    // Target: second-to-last user turn (fallback: first/only user turn)
+    if (userTurnsFromEnd === 2 || (userTurnsFromEnd === 1 && i === 0)) {
+      const content = messages[i].content;
+      if (!Array.isArray(content) || content.length === 0) break;
+      const lastBlock = content[content.length - 1] as AnthropicTextBlock | AnthropicToolResultBlock;
+      lastBlock.cache_control = { type: 'ephemeral' };
+      break;
+    }
+  }
 }
 
 function applyThinkingConfig(
