@@ -288,7 +288,7 @@ function buildBedrockInvokeBody(
   const betaFeatures = buildBetaFeatures(model, context, options);
   const payload: BedrockInvokeBody = {
     anthropic_version: ANTHROPIC_VERSION,
-    messages: normalizeAnthropicToolResultAdjacency(convertMessages(context)),
+    messages: normalizeAnthropicToolResultAdjacency(convertMessages(context, model)),
     max_tokens:
       options.maxTokens ??
       (model.maxTokens > 0 ? Math.min(model.maxTokens, 32000) : undefined),
@@ -372,7 +372,7 @@ function regionFromBaseUrl(baseUrl: string | undefined): string | undefined {
   }
 }
 
-function convertMessages(context: Context): AnthropicMessage[] {
+function convertMessages(context: Context, model: Model<'bedrock-converse-stream'>): AnthropicMessage[] {
   const messages: AnthropicMessage[] = [];
   const sourceMessages = context.messages;
 
@@ -385,7 +385,7 @@ function convertMessages(context: Context): AnthropicMessage[] {
     }
 
     if (message.role === 'assistant') {
-      const blocks = message.content.flatMap(convertAssistantBlock);
+      const blocks = message.content.flatMap((block) => convertAssistantBlock(block, model, message));
       if (blocks.length > 0) {
         messages.push({ role: 'assistant', content: blocks });
       }
@@ -560,22 +560,36 @@ function convertUserContent(
   return blocks.length > 0 ? blocks : null;
 }
 
-function convertAssistantBlock(block: TextContent | ThinkingContent | ToolCall): AnthropicContentBlock[] {
+function convertAssistantBlock(
+  block: TextContent | ThinkingContent | ToolCall,
+  model: Model<'bedrock-converse-stream'>,
+  assistantMsg: Extract<Context['messages'][number], { role: 'assistant' }>,
+): AnthropicContentBlock[] {
   if (block.type === 'text') {
     const text = sanitizeSurrogates(block.text);
     return text.trim() ? [{ type: 'text', text }] : [];
   }
 
   if (block.type === 'thinking') {
+    // Mirror the official pi-ai transformMessages cross-model logic:
+    // thinking block signatures are model-specific and must be dropped when
+    // replaying history to a different model/provider to avoid 400 errors.
+    const isSameModel =
+      assistantMsg.provider === model.provider &&
+      assistantMsg.api === model.api &&
+      assistantMsg.model === model.id;
+
     if (block.redacted) {
-      return [{ type: 'redacted_thinking', data: block.thinkingSignature }];
+      // Redacted (encrypted) thinking is opaque — only valid for the exact same model.
+      return isSameModel ? [{ type: 'redacted_thinking', data: block.thinkingSignature }] : [];
     }
     const thinking = sanitizeSurrogates(block.thinking);
     if (!thinking.trim()) return [];
-    if (!block.thinkingSignature?.trim()) {
-      return [{ type: 'text', text: thinking }];
+    if (isSameModel && block.thinkingSignature?.trim()) {
+      return [{ type: 'thinking', thinking, signature: block.thinkingSignature }];
     }
-    return [{ type: 'thinking', thinking, signature: block.thinkingSignature }];
+    // Cross-model or missing signature: strip the signature and send plain text.
+    return [{ type: 'text', text: thinking }];
   }
 
   return [

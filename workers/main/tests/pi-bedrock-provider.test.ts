@@ -6,6 +6,7 @@ import { __testing } from '../src/pi-bedrock-provider';
 const model = {
   id: 'global.anthropic.claude-sonnet-4-6',
   api: 'bedrock-converse-stream',
+  provider: 'anthropic',
   maxTokens: 1024,
   contextWindow: 128_000,
 } as Model<'bedrock-converse-stream'>;
@@ -124,9 +125,10 @@ describe('Pi Bedrock provider message conversion', () => {
           ],
           responseId: 'resp_tool',
           timestamp: 100,
-          api: 'test',
-          provider: 'test',
-          model: 'test',
+          // Match the model so isSameModel=true and thinking blocks keep their signatures.
+          api: 'bedrock-converse-stream',
+          provider: 'anthropic',
+          model: 'global.anthropic.claude-sonnet-4-6',
           usage: {},
           stopReason: 'toolUse',
         },
