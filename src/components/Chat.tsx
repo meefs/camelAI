@@ -2835,38 +2835,45 @@ export default function Chat({
     clearQueuedSendReadyTimeout,
   ]);
 
-  // Reconnect on visibility change (tab becomes visible)
+  // Reconnect when returning to the tab. Suspended tabs can resume with a
+  // WebSocket that still reports OPEN locally but no longer delivers data.
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (readOnly) return;
       if (
         document.visibilityState === "visible" &&
         shouldShowChat &&
-        resolvedWorkspaceId
+        resolvedWorkspaceId &&
+        threadId
       ) {
-        // Check if main WebSocket is dead
-        const needsReconnect =
-          !wsRef.current ||
-          wsRef.current.readyState === WebSocket.CLOSED ||
-          wsRef.current.readyState === WebSocket.CLOSING;
-
-        if (needsReconnect && threadId) {
-          // Clear any stale reconnect timeout from before tab suspension
-          // (Safari suspends JS in background tabs, so pending timeouts are stale)
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-            reconnectTimeoutRef.current = null;
-          }
-          reconnectAttempts.current = 0; // Fresh start when user returns to tab
-          connectWebSocketRef.current?.(threadId, true);
+        const socketState = wsRef.current?.readyState;
+        if (socketState === WebSocket.CONNECTING) {
+          return;
         }
+
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
+        reconnectAttempts.current = 0;
+        logRunnerClient("tab_return_reconnect", {
+          socketState,
+        });
+        connectWebSocketRef.current?.(threadId, true);
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
+    return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [threadId, shouldShowChat, resolvedWorkspaceId, readOnly]);
+    };
+  }, [
+    threadId,
+    shouldShowChat,
+    resolvedWorkspaceId,
+    readOnly,
+    logRunnerClient,
+  ]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = scrollContainerRef.current;
