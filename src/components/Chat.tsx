@@ -427,6 +427,10 @@ const MESSAGE_LAYOUT_CONTAINMENT_STYLE: CSSProperties = {
   contain: "layout paint style",
 };
 
+const CHAT_SCROLL_CONTAINER_STYLE = {
+  overflowAnchor: "none",
+} as CSSProperties;
+
 const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
   notebook: null,
   status: "idle",
@@ -4500,7 +4504,7 @@ export default function Chat({
     let frameId: number | null = null;
     const observer = new ResizeObserver(() => {
       if (!stickToBottomRef.current) return;
-      if (shouldRenderSpacer && spacerHeightRef.current > 0) return;
+      if (shouldRenderSpacer) return;
       if (frameId !== null) {
         cancelAnimationFrame(frameId);
       }
@@ -4542,15 +4546,23 @@ export default function Chat({
     const { scrollTop, scrollHeight, clientHeight } = container;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
-    // Always scroll when user sends a message, or if near bottom during streaming
-    if (shouldForce || stickToBottomRef.current || distanceFromBottom < 150) {
-      scrollToBottom(shouldForce ? "smooth" : "auto");
+    if (shouldForce) {
+      scrollToBottom(shouldRenderSpacer ? "auto" : "smooth");
+      return;
+    }
+
+    if (shouldRenderSpacer) return;
+
+    // Keep bottom-follow behavior only for non-spacer transcript updates.
+    if (stickToBottomRef.current || distanceFromBottom < 150) {
+      scrollToBottom("auto");
     }
   }, [
     visibleMessageCount,
     lastVisibleMessageId,
     scrollToBottom,
     shouldShowChat,
+    shouldRenderSpacer,
     threadId,
   ]);
 
@@ -6133,6 +6145,7 @@ type SendOptions = {
         tabIndex={0}
         role="region"
         aria-label="Chat messages"
+        style={CHAT_SCROLL_CONTAINER_STYLE}
         className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden"
       >
         {/* Centered message column */}

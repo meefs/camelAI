@@ -14,6 +14,7 @@ interface ChatStressMetrics {
   spacerWrites: number;
   scrollWrites: number;
   renderWrites: number;
+  liveUserMaxShiftPx: number;
   finalScrollDistanceFromBottom: number;
 }
 
@@ -155,6 +156,7 @@ async function runChatStress(page: Page, mode: StressMode): Promise<ChatStressMe
         spacerWrites: 0,
         scrollWrites: 0,
         renderWrites: 0,
+        liveUserMaxShiftPx: 0,
       };
 
       const layoutShiftObserver =
@@ -263,6 +265,7 @@ async function runChatStress(page: Page, mode: StressMode): Promise<ChatStressMe
       measureAndWriteSpacer();
       scroll.scrollTop = scroll.scrollHeight;
       metrics.scrollWrites += 1;
+      const liveUserInitialTop = liveUser.getBoundingClientRect().top;
 
       let animationFrame = 0;
       let lastFrameAt = performance.now();
@@ -271,6 +274,10 @@ async function runChatStress(page: Page, mode: StressMode): Promise<ChatStressMe
         const now = performance.now();
         metrics.frameGaps.push(now - lastFrameAt);
         lastFrameAt = now;
+        metrics.liveUserMaxShiftPx = Math.max(
+          metrics.liveUserMaxShiftPx,
+          Math.abs(liveUser.getBoundingClientRect().top - liveUserInitialTop),
+        );
         if (running) {
           animationFrame = requestAnimationFrame(sampleFrames);
         }
@@ -284,7 +291,7 @@ async function runChatStress(page: Page, mode: StressMode): Promise<ChatStressMe
         liveAssistant.textContent += delta;
         metrics.renderWrites += 1;
         scheduleSpacer();
-        if (wasStuckToBottom) {
+        if (wasStuckToBottom && mode !== 'optimized') {
           scroll.scrollTop = scroll.scrollHeight;
           metrics.scrollWrites += 1;
         }
@@ -367,6 +374,7 @@ export function Example${index}() {
         spacerWrites: metrics.spacerWrites,
         scrollWrites: metrics.scrollWrites,
         renderWrites: metrics.renderWrites,
+        liveUserMaxShiftPx: metrics.liveUserMaxShiftPx,
         finalScrollDistanceFromBottom,
       };
     },
@@ -384,6 +392,9 @@ test.describe('chat rendering performance stress harness', () => {
     expect(legacy.renderWrites).toBeGreaterThan(optimized.renderWrites * 4);
     expect(legacy.spacerMeasurements).toBeGreaterThan(optimized.spacerMeasurements * 3);
     expect(legacy.spacerWrites).toBeGreaterThan(optimized.spacerWrites);
+    expect(legacy.liveUserMaxShiftPx).toBeGreaterThan(optimized.liveUserMaxShiftPx * 100);
+    expect(optimized.liveUserMaxShiftPx).toBeLessThanOrEqual(2);
+    expect(optimized.scrollWrites).toBeLessThanOrEqual(2);
   });
 
   test('keeps the optimized long-transcript streaming path within a local frame budget', async ({ page }) => {
@@ -397,5 +408,7 @@ test.describe('chat rendering performance stress harness', () => {
     expect(metrics.longTaskCount).toBeLessThanOrEqual(3);
     expect(metrics.layoutShiftScore).toBeLessThan(0.02);
     expect(metrics.renderWrites).toBeLessThanOrEqual(16);
+    expect(metrics.liveUserMaxShiftPx).toBeLessThanOrEqual(2);
+    expect(metrics.scrollWrites).toBeLessThanOrEqual(2);
   });
 });
