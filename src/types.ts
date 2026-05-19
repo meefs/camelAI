@@ -568,8 +568,8 @@ export type LlmModel =
   | "gpt-5.4-mini"
   | "kimi-k2.6"
   | "grok-4.3"
+  | "gemini-3.5-flash"
   | "gemini-3-flash-preview"
-  | "gemini-3.1-pro-preview"
   | "deepseek-v4-pro"
   | "deepseek-v4-flash";
 

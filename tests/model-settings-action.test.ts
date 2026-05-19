@@ -187,6 +187,29 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
   });
 
+  it('rejects adding retired Gemini 3.1 Pro Preview as a new picker model', async () => {
+    workspaceGetModelPickerConfigMock.mockResolvedValue({
+      use_org_defaults: false,
+      models: [{ id: 'gpt-5.4', added_at: 10 }],
+      default_model: 'gpt-5.4',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'addModel',
+        model: 'gemini-3.1-pro-preview',
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'A valid model is required',
+    });
+    expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
+  });
+
   it('drops hidden stored models before checking capacity when adding visible models', async () => {
     orgGetLlmProviderConfigMock.mockResolvedValue({ provider: 'openai' });
     workspaceGetModelPickerConfigMock.mockResolvedValue({
@@ -196,7 +219,7 @@ describe('organization model settings actions', () => {
         { id: 'sonnet', added_at: 99 },
         { id: 'gpt-5.5', added_at: 98 },
         { id: 'gpt-5.4-mini', added_at: 97 },
-        { id: 'gemini-3.1-pro-preview', added_at: 96 },
+        { id: 'gemini-3.5-flash', added_at: 96 },
         { id: 'gemini-3-flash-preview', added_at: 95 },
         { id: 'deepseek-v4-pro', added_at: 94 },
         { id: 'deepseek-v4-flash', added_at: 93 },

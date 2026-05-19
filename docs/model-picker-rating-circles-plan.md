@@ -113,7 +113,7 @@ Notation: scores are out of 5, in 0.5 steps. The "Visual" columns show what each
 | GPT-5.5                 | OpenAI   | `$$$` | **5.0**      | ● ● ● ● ●        | **3.0** | ● ● ● ○ ○        | Newest OpenAI flagship; mid-pack on speed.           |
 | GPT-5.4                 | OpenAI   | `$$`  | **4.5**      | ● ● ● ● ◐        | **3.5** | ● ● ● ◐ ○        | Prior flagship; a touch faster than 5.5.             |
 | GPT-5.4 Mini            | OpenAI   | `$`   | **2.5**      | ● ● ◐ ○ ○        | **5.0** | ● ● ● ● ●        | Small/fast OpenAI variant.                           |
-| Gemini 3.1 Pro Preview  | Gemini   | `$$`  | **4.5**      | ● ● ● ● ◐        | **3.5** | ● ● ● ◐ ○        | Frontier-competitive; comparable to GPT-5.4.         |
+| Gemini 3.5 Flash        | Gemini   | `$`   | **4.5**      | ● ● ● ● ◐        | **4.5** | ● ● ● ● ◐        | Fast high-intelligence Gemini.                       |
 | Gemini 3 Flash Preview  | Gemini   | `$`   | **2.5**      | ● ● ◐ ○ ○        | **5.0** | ● ● ● ● ●        | Small/fast Gemini.                                   |
 | DeepSeek V4 Pro         | DeepSeek | `$`   | **3.5**      | ● ● ● ◐ ○        | **3.5** | ● ● ● ◐ ○        | Strong mid-tier open-source.                         |
 | DeepSeek V4 Flash       | DeepSeek | `$`   | **2.0**      | ● ● ○ ○ ○        | **5.0** | ● ● ● ● ●        | Smallest DeepSeek; very fast.                        |
@@ -121,7 +121,7 @@ Notation: scores are out of 5, in 0.5 steps. The "Visual" columns show what each
 | Grok 4.3                | Grok     | `$`   | **3.5**      | ● ● ● ◐ ○        | **4.5** | ● ● ● ● ◐        | Mid-intelligence, leans fast.                        |
 
 **How the scores were anchored:**
-- Top of intelligence (`5.0`) reserved for the two newest frontier flagships (Opus 4.7, GPT-5.5). Their immediate predecessors (Opus 4.6, GPT-5.4, Gemini 3.1 Pro) sit at `4.5` so the lineage shows.
+- Top of intelligence (`5.0`) reserved for the two newest frontier flagships (Opus 4.7, GPT-5.5). Their immediate predecessors and fast high-intelligence peers (Opus 4.6, GPT-5.4, Gemini 3.5 Flash) sit at `4.5` so the lineage shows.
 - Sonnet 4.6 at `4.0` separates the "everyday Claude" from the very top tier (`4.5+`) and from the open-source mid-tier (`3.5`).
 - Mini/Flash variants (Haiku, GPT Mini, Gemini Flash) cluster at `2.5` intelligence — clearly weaker than the pros but not punishingly low. DeepSeek Flash at `2.0` is the only one a half-step below; tweak if you disagree.
 - Top of speed (`5.0`) reserved for the explicit "fast/mini/flash" variants. Sonnet 4.6 at `4.0` is the fastest non-mini. Opus 4.7 at `1.5` is the only one below `2.0` — it's noticeably slower than 4.6 in practice; bump to `2.0` if you'd rather not single it out.
@@ -405,7 +405,7 @@ expect(ALLOWED_SCORES).toContain(entry.speed);
 | id                       | intelligence | speed |
 | ------------------------ | -----------: | ----: |
 | `gemini-3-flash-preview` |          2.5 |     5 |
-| `gemini-3.1-pro-preview` |          4.5 |   3.5 |
+| `gemini-3.5-flash`       |          4.5 |   4.5 |
 | `deepseek-v4-pro`        |          3.5 |   3.5 |
 | `deepseek-v4-flash`      |            2 |     5 |
 

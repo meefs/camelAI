@@ -13,6 +13,22 @@ export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.6";
 export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
+const LEGACY_LLM_MODEL_REPLACEMENTS = {
+  "gemini-3.1-pro-preview": "gemini-3.5-flash",
+} as const satisfies Record<string, LlmModel>;
+
+type LegacyLlmModel = keyof typeof LEGACY_LLM_MODEL_REPLACEMENTS;
+
+export function replaceLegacyLlmModel(value: unknown): unknown {
+  if (
+    typeof value === "string" &&
+    Object.hasOwn(LEGACY_LLM_MODEL_REPLACEMENTS, value)
+  ) {
+    return LEGACY_LLM_MODEL_REPLACEMENTS[value as LegacyLlmModel];
+  }
+  return value;
+}
+
 // When adding a model here, also add it to the picker catalog at
 // src/lib/model-catalog.ts and the pricing table at src/lib/usage-pricing.ts.
 export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
@@ -59,9 +75,9 @@ export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "Faster and cheaper",
   },
   {
-    value: "gemini-3.1-pro-preview",
-    label: "Gemini 3.1 Pro Preview",
-    description: "OpenRouter/camelAI hosted flagship reasoning model",
+    value: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash",
+    description: "OpenRouter/camelAI hosted fast high-intelligence coding model",
   },
   {
     value: "gemini-3-flash-preview",
@@ -99,8 +115,8 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
 const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "kimi-k2.6",
   "grok-4.3",
+  "gemini-3.5-flash",
   "gemini-3-flash-preview",
-  "gemini-3.1-pro-preview",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
 ]);
@@ -309,9 +325,10 @@ export function normalizeLlmModel(
   provider: ChatHarness = "claude",
   orgProvider?: string | null,
 ): LlmModel {
-  return isLlmModel(value, provider) &&
-    isLlmModelAllowedForOrgProvider(value, orgProvider)
-    ? value
+  const normalizedValue = replaceLegacyLlmModel(value);
+  return isLlmModel(normalizedValue, provider) &&
+    isLlmModelAllowedForOrgProvider(normalizedValue, orgProvider)
+    ? normalizedValue
     : getDefaultLlmModel(provider, orgProvider);
 }
 

@@ -71,7 +71,7 @@ describe('model picker config parsing', () => {
       'sonnet',
       'gpt-5.5',
       'gpt-5.4-mini',
-      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       'gemini-3-flash-preview',
       'deepseek-v4-pro',
       'deepseek-v4-flash',
@@ -96,7 +96,7 @@ describe('model picker config parsing', () => {
       'sonnet',
       'gpt-5.5',
       'gpt-5.4-mini',
-      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       'gemini-3-flash-preview',
       'deepseek-v4-pro',
       'deepseek-v4-flash',
@@ -145,7 +145,7 @@ describe('model picker config parsing', () => {
         { id: 'gpt-5.5', added_at: 5 },
         { id: 'opus-4.7', added_at: 4 },
         { id: 'gemini-3-flash-preview', added_at: 4 },
-        { id: 'gemini-3.1-pro-preview', added_at: 3 },
+        { id: 'gemini-3.5-flash', added_at: 3 },
         { id: 'deepseek-v4-pro', added_at: 2 },
         { id: 'deepseek-v4-flash', added_at: 1 },
       ],
@@ -157,11 +157,50 @@ describe('model picker config parsing', () => {
         { id: 'gpt-5.5', added_at: 5 },
         { id: 'opus-4.7', added_at: 4 },
         { id: 'gemini-3-flash-preview', added_at: 4 },
-        { id: 'gemini-3.1-pro-preview', added_at: 3 },
+        { id: 'gemini-3.5-flash', added_at: 3 },
         { id: 'deepseek-v4-pro', added_at: 2 },
         { id: 'deepseek-v4-flash', added_at: 1 },
       ],
       default_model: 'deepseek-v4-flash',
+    });
+  });
+
+  it('remaps legacy Gemini 3.1 Pro Preview rows and defaults', () => {
+    const parsed = parseOrgModelPickerConfig({
+      models: [
+        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'gemini-3.1-pro-preview', added_at: 4 },
+      ],
+      default_model: 'gemini-3.1-pro-preview',
+    });
+
+    expect(parsed).toEqual({
+      models: [
+        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'gemini-3.5-flash', added_at: 4 },
+      ],
+      default_model: 'gemini-3.5-flash',
+    });
+  });
+
+  it('dedupes legacy and current Gemini rows after remapping', () => {
+    const parsed = parseWorkspaceModelPickerConfig({
+      use_org_defaults: false,
+      models: [
+        { id: 'gemini-3.1-pro-preview', added_at: 4 },
+        { id: 'gemini-3.5-flash', added_at: 3 },
+        { id: 'gemini-3-flash-preview', added_at: 2 },
+      ],
+      default_model: 'gemini-3.5-flash',
+    });
+
+    expect(parsed).toEqual({
+      use_org_defaults: false,
+      models: [
+        { id: 'gemini-3.5-flash', added_at: 4 },
+        { id: 'gemini-3-flash-preview', added_at: 2 },
+      ],
+      default_model: 'gemini-3.5-flash',
     });
   });
 

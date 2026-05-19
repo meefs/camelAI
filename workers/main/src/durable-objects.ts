@@ -213,6 +213,32 @@ interface PiResolvedModelConfig {
   usageProvider: string;
 }
 
+const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
+  "openrouter/google/gemini-3.5-flash": {
+    id: "google/gemini-3.5-flash",
+    name: "Google: Gemini 3.5 Flash",
+    api: "openai-completions",
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 1.5,
+      output: 9,
+      cacheRead: 0.15,
+      cacheWrite: 0.08333333333333334,
+    },
+    contextWindow: 1048576,
+    maxTokens: 65536,
+  } satisfies Model<"openai-completions">,
+};
+
+function resolvePiModelCatalogFallback(
+  resolved: PiResolvedModelReference,
+): Model<any> | null {
+  return PI_MODEL_CATALOG_FALLBACKS[`${resolved.provider}/${resolved.modelId}`] ?? null;
+}
+
 interface PiToolDefinitionOptions {
   includeSubagents?: boolean;
 }
@@ -7560,7 +7586,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         ? envVars.CHIRIDION_CLAUDE_MODEL || "sonnet"
         : envVars.CHIRIDION_CODEX_MODEL || "gpt-5.5";
     const resolved = this.resolvePiModelReference(provider, modelId);
-    const model = getModelFn(resolved.provider as never, resolved.modelId as never) as Model<any>;
+    const model =
+      (getModelFn(
+        resolved.provider as never,
+        resolved.modelId as never,
+      ) as Model<any> | null | undefined) ??
+      resolvePiModelCatalogFallback(resolved);
     if (!model) {
       throw new Error(`Unsupported Pi model ${provider}/${modelId}`);
     }
@@ -7657,10 +7688,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return openRouterReference("~moonshotai/kimi-latest");
       case "grok-4.3":
         return openRouterResponsesReference("x-ai/grok-4.3");
+      case "gemini-3.5-flash":
+        return openRouterReference("google/gemini-3.5-flash");
       case "gemini-3-flash-preview":
         return openRouterReference("google/gemini-3-flash-preview");
       case "gemini-3.1-pro-preview":
-        return openRouterReference("google/gemini-3.1-pro-preview");
+        return openRouterReference("google/gemini-3.5-flash");
       case "deepseek-v4-pro":
         return openRouterReference("deepseek/deepseek-v4-pro");
       case "deepseek-v4-flash":

@@ -5,7 +5,7 @@ import type {
   OrgModelPickerConfig,
   WorkspaceModelPickerConfig,
 } from "../types";
-import { isLlmModel } from "./llm-provider-config";
+import { isLlmModel, replaceLegacyLlmModel } from "./llm-provider-config";
 
 export const MODEL_PICKER_MAX_MODELS = 10;
 
@@ -22,7 +22,7 @@ const HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
   "sonnet",
   "gpt-5.5",
   "gpt-5.4-mini",
-  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
@@ -77,7 +77,7 @@ function normalizeModelRows(raw: unknown): ModelPickerModelConfig[] {
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
-    const id = record.id;
+    const id = replaceLegacyLlmModel(record.id);
     if (!isLlmModel(id) || seen.has(id)) continue;
     seen.add(id);
     const addedAt =
@@ -95,8 +95,9 @@ function normalizeDefaultModel(
   raw: unknown,
   models: readonly ModelPickerModelConfig[],
 ): LlmModel | null {
-  if (!isLlmModel(raw)) return null;
-  return models.some((model) => model.id === raw) ? raw : null;
+  const normalized = replaceLegacyLlmModel(raw);
+  if (!isLlmModel(normalized)) return null;
+  return models.some((model) => model.id === normalized) ? normalized : null;
 }
 
 export function defaultOrgModelPickerConfig(

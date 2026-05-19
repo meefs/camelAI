@@ -128,11 +128,14 @@ describe("resolveModel", () => {
   });
 
   it("maps Gemini and DeepSeek aliases to OpenRouter route models", () => {
+    expect(resolveModel("gemini-3.5-flash")).toBe(
+      "google/gemini-3.5-flash",
+    );
     expect(resolveModel("gemini-3-flash-preview")).toBe(
       "google/gemini-3-flash-preview",
     );
     expect(resolveModel("gemini-3.1-pro-preview")).toBe(
-      "google/gemini-3.1-pro-preview",
+      "google/gemini-3.5-flash",
     );
     expect(resolveModel("deepseek-v4-pro")).toBe(
       "deepseek/deepseek-v4-pro",

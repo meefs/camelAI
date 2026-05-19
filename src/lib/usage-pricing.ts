@@ -161,6 +161,18 @@ const modelPricingTable: Record<string, ModelPricing> = {
     cacheCreationPerToken: 0.00000008333333333333334,
     cacheReadPerToken: 0.00000005,
   },
+  "google/gemini-3.5-flash": {
+    inputPerToken: 0.0000015,
+    outputPerToken: 0.000009,
+    cacheCreationPerToken: 0.00000008333333333333334,
+    cacheReadPerToken: 0.00000015,
+  },
+  "gemini-3.5-flash": {
+    inputPerToken: 0.0000015,
+    outputPerToken: 0.000009,
+    cacheCreationPerToken: 0.00000008333333333333334,
+    cacheReadPerToken: 0.00000015,
+  },
   "google/gemini-3.1-pro-preview": {
     inputPerToken: 0.000002,
     outputPerToken: 0.000012,
@@ -256,6 +268,9 @@ export function lookupPricing(model: string): ModelPricing {
   }
   if (normalized.includes("claude-haiku-4.5")) {
     return modelPricingTable["anthropic/claude-haiku-4.5"];
+  }
+  if (normalized.includes("gemini-3.5-flash")) {
+    return modelPricingTable["google/gemini-3.5-flash"];
   }
   if (normalized.includes("gemini-3.1-pro-preview")) {
     return modelPricingTable["google/gemini-3.1-pro-preview"];
