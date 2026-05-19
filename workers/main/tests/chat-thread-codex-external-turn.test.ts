@@ -160,6 +160,58 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
+  it.each(['gemini-3.5-flash', 'gemini-3.1-pro-preview'])(
+    'uses local Pi model metadata for %s when the upstream Pi catalog is missing Gemini 3.5 Flash',
+    async (requestedModel) => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.env = {
+        CF_ACCOUNT_ID: 'acct_1',
+        CF_GATEWAY_NAME: 'gateway_1',
+        AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+      };
+      fake.chatContext = {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+      };
+      fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+      fake.checkHostedPiModelAccess = vi.fn(async () => true);
+
+      const getModel = vi.fn(() => undefined);
+      const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+        fake,
+        { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        { CHIRIDION_CODEX_MODEL: requestedModel },
+        getModel,
+      );
+
+      expect(getModel).toHaveBeenCalledWith(
+        'openrouter',
+        'google/gemini-3.5-flash',
+      );
+      expect(model.model).toMatchObject({
+        id: 'google/gemini-3.5-flash',
+        provider: 'cloudflare-ai-gateway',
+        api: 'openai-completions',
+        baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
+        cost: {
+          input: 1.5,
+          output: 9,
+          cacheRead: 0.15,
+          cacheWrite: 0.08333333333333334,
+        },
+        contextWindow: 1048576,
+        maxTokens: 65536,
+      });
+      expect(model.apiKey).toBe('cf-token');
+      expect(model.provider).toBe('openrouter');
+      expect(model.modelId).toBe('google/gemini-3.5-flash');
+      expect(model.billingSource).toBe('hosted');
+      expect(model.usageProvider).toBe('openrouter');
+      expect(fake.piCurrentUsageProvider).toBe('openrouter');
+    },
+  );
+
   it('uses OpenRouter BYOK for Pi models supported through OpenRouter', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};

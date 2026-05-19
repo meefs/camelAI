@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useFetcher, useLoaderData, useOutletContext } from "react-router";
+import {
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useOutletContext,
+} from "react-router";
 import type { Route } from "./+types/_onboarding.welcome";
 import {
   getAuthEnv,
   requireAuthContext,
+  requireOrgAdmin,
   requireSession,
 } from "@/lib/auth.server";
 import {
+  activatePayAsYouGoPlan,
+  createCreditsCheckoutSession,
   createSubscriptionCheckoutSession,
+  fetchConfiguredCreditPacks,
   getBillableTeamSeatCountForOrg,
   hasOrgUsedSubscriptionTrial,
+  isStripeBillingConfigured,
 } from "@/lib/billing.server";
 import { isBillingPlan } from "@/lib/billing-plans";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -19,10 +29,22 @@ import {
   LegacyMigrationConfirmDialog,
   type LegacyMigrationConfirmation,
 } from "@/components/billing/legacy-migration-confirm-dialog";
+import {
+  TopUpDialog,
+  type TopUpDialogPack,
+} from "@/components/billing/top-up-dialog";
 import { PlanPicker } from "@/components/billing/plan-picker";
 import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   getByokProviderLabel,
   type OnboardingByokProvider,
@@ -41,6 +63,8 @@ interface WelcomeLoaderData {
   teamContext: TeamContext;
   trialAvailable: boolean;
   byokProviderLabel: string | null;
+  stripeConfigured: boolean;
+  creditPacks: TopUpDialogPack[];
 }
 
 const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
@@ -48,6 +72,24 @@ const TRIAL_PLANS = new Set(["starter", "pro", "team"]);
 
 function isTrialPlan(plan: string): plan is "starter" | "pro" | "team" {
   return isBillingPlan(plan) && TRIAL_PLANS.has(plan);
+}
+
+function formatPriceLabel(price: {
+  unit_amount: number | null;
+  currency: string;
+}): string | null {
+  if (!price.unit_amount) return null;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: price.currency.toUpperCase(),
+  }).format(price.unit_amount / 100);
+}
+
+function formatCreditPackLabel(price: {
+  unit_amount: number | null;
+}): string | null {
+  if (!price.unit_amount) return null;
+  return `${(price.unit_amount / 100).toFixed(2)} credits`;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -59,12 +101,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const orgId = sessionContext.session.org_id;
   const workspaceId = sessionContext.session.workspace_id;
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const [orgInfo, llmProviderConfig] = await Promise.all([
+  const stripeConfigured = isStripeBillingConfigured(env);
+  const [orgInfo, llmProviderConfig, creditPacks] = await Promise.all([
     orgStub.getInfo().catch(() => null),
     orgStub.getLlmProviderConfig().catch(() => null),
+    stripeConfigured
+      ? fetchConfiguredCreditPacks(env).catch(() => [])
+      : Promise.resolve([]),
   ]);
   const trialAvailable = orgInfo ? !hasOrgUsedSubscriptionTrial(orgInfo) : true;
   const byokProviderLabel = getByokProviderLabel(llmProviderConfig?.provider);
+  const formattedCreditPacks = creditPacks.map((pack) => ({
+    id: pack.id,
+    priceLabel: formatPriceLabel(pack),
+    creditsLabel: formatCreditPackLabel(pack),
+  }));
 
   if (!teamMode) {
     return {
@@ -72,6 +123,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       orgName: "camelAI",
       trialAvailable,
       byokProviderLabel,
+      stripeConfigured,
+      creditPacks: formattedCreditPacks,
       teamContext: {
         memberCount: 0,
         appCount: 0,
@@ -101,6 +154,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgName,
     trialAvailable,
     byokProviderLabel,
+    stripeConfigured,
+    creditPacks: formattedCreditPacks,
     teamContext: {
       memberCount,
       appCount: workerScripts.length,
@@ -119,13 +174,6 @@ export async function action({ request, context }: Route.ActionArgs) {
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
 
-  if (intent !== "startTrial") {
-    return Response.json(
-      { error: "Unknown onboarding action" },
-      { status: 400 },
-    );
-  }
-
   const successUrl = new URL(
     "/onboarding?checkout=success",
     request.url,
@@ -134,6 +182,48 @@ export async function action({ request, context }: Route.ActionArgs) {
     "/onboarding?checkout=cancelled",
     request.url,
   ).toString();
+
+  if (intent === "buyCredits") {
+    await requireOrgAdmin(request, context, authContext.currentOrg.id);
+    const priceId = String(formData.get("priceId") || "").trim();
+
+    try {
+      const paygOrg = await activatePayAsYouGoPlan({
+        env,
+        org: authContext.currentOrg,
+      });
+      const checkoutUrl = await createCreditsCheckoutSession({
+        env,
+        org: paygOrg,
+        customerEmail: authContext.user.email,
+        successUrl,
+        cancelUrl,
+        priceId,
+      });
+      throw redirect(checkoutUrl);
+    } catch (nextError) {
+      if (nextError instanceof Response) {
+        throw nextError;
+      }
+      console.error("[onboarding] failed to create credit checkout", nextError);
+      return Response.json(
+        {
+          error:
+            nextError instanceof Error
+              ? nextError.message
+              : "Failed to start credit checkout",
+        },
+        { status: 503 },
+      );
+    }
+  }
+
+  if (intent !== "startTrial") {
+    return Response.json(
+      { error: "Unknown onboarding action" },
+      { status: 400 },
+    );
+  }
 
   const rawPlan = String(formData.get("plan") || "").trim();
   if (!isTrialPlan(rawPlan)) {
@@ -206,6 +296,8 @@ export default function OnboardingWelcomeRoute() {
   const [providerApiKey, setProviderApiKey] = useState("");
   const [awsRegion, setAwsRegion] = useState("us-east-1");
   const [byokDialogOpen, setByokDialogOpen] = useState(false);
+  const [paygChoiceOpen, setPaygChoiceOpen] = useState(false);
+  const [topUpOpen, setTopUpOpen] = useState(false);
   const [showProviderError, setShowProviderError] = useState(true);
   const [legacyIntroOpen, setLegacyIntroOpen] = useState(
     () => context.legacyMigration?.eligible ?? false,
@@ -234,8 +326,15 @@ export default function OnboardingWelcomeRoute() {
     success?: boolean;
     error?: string;
   }>();
-  const { orgId, orgName, teamContext, trialAvailable, byokProviderLabel } =
-    useLoaderData<typeof loader>() as WelcomeLoaderData;
+  const {
+    orgId,
+    orgName,
+    teamContext,
+    trialAvailable,
+    byokProviderLabel,
+    stripeConfigured = false,
+    creditPacks = [],
+  } = useLoaderData<typeof loader>() as WelcomeLoaderData;
 
   const isTeamWelcome = context.teamMode;
   const isBillingChoiceRequired =
@@ -270,6 +369,7 @@ export default function OnboardingWelcomeRoute() {
   const isSavingProvider = providerFetcher.state !== "idle";
   const isStartingCheckout = checkoutFetcher.state !== "idle";
   const isMigrating = migrationFetcher.state !== "idle";
+  const creditTopUpUnavailable = !stripeConfigured || creditPacks.length === 0;
   const migrationError =
     migrationFetcher.state === "idle"
       ? migrationFetcher.data?.error
@@ -326,6 +426,25 @@ export default function OnboardingWelcomeRoute() {
       );
     });
   }, [context]);
+
+  const continueWithOwnApiKey = useCallback(() => {
+    setPaygChoiceOpen(false);
+    if (byokProviderLabel) {
+      completeWithByok();
+      return;
+    }
+    setShowProviderError(false);
+    setByokDialogOpen(true);
+  }, [byokProviderLabel, completeWithByok]);
+
+  const startPayAsYouGoWithCredits = useCallback(() => {
+    if (creditTopUpUnavailable) {
+      setError("Hosted credit checkout isn't configured in this environment.");
+      return;
+    }
+    setPaygChoiceOpen(false);
+    setTopUpOpen(true);
+  }, [creditTopUpUnavailable]);
 
   useEffect(() => {
     if (providerFetcher.state !== "idle" || !providerFetcher.data?.success) {
@@ -511,12 +630,7 @@ export default function OnboardingWelcomeRoute() {
               onSelectPlan={(cta) => {
                 setError(null);
                 if (cta.kind === "byok") {
-                  if (byokProviderLabel) {
-                    completeWithByok();
-                    return;
-                  }
-                  setShowProviderError(false);
-                  setByokDialogOpen(true);
+                  continueWithOwnApiKey();
                   return;
                 }
                 if (cta.kind === "migrate") {
@@ -543,16 +657,7 @@ export default function OnboardingWelcomeRoute() {
                   return;
                 }
                 if (cta.kind === "payg") {
-                  if (isStartingCheckout) {
-                    return;
-                  }
-                  checkoutFetcher.submit(
-                    { plan: "payg" },
-                    {
-                      method: "post",
-                      action: "/api/billing/start-payg",
-                    },
-                  );
+                  setPaygChoiceOpen(true);
                   return;
                 }
                 if (cta.kind === "contact") {
@@ -592,6 +697,49 @@ export default function OnboardingWelcomeRoute() {
               isSubmitting={isSavingProvider || isCompleting}
               errorMessage={error ?? providerError ?? null}
             />
+
+            <Dialog open={paygChoiceOpen} onOpenChange={setPaygChoiceOpen}>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Continue with Pay as you go</DialogTitle>
+                  <DialogDescription>
+                    Choose how to connect an LLM provider. Purchase credits and
+                    camelAI will provide hosted models, or bring your own API
+                    key.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={continueWithOwnApiKey}
+                  >
+                    Bring your own API key
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={creditTopUpUnavailable}
+                    onClick={startPayAsYouGoWithCredits}
+                  >
+                    Purchase credits
+                  </Button>
+                </DialogFooter>
+                {creditTopUpUnavailable ? (
+                  <p className="text-sm text-muted-foreground">
+                    Hosted credit checkout isn't configured in this
+                    environment.
+                  </p>
+                ) : null}
+              </DialogContent>
+            </Dialog>
+
+            {creditPacks.length > 0 ? (
+              <TopUpDialog
+                open={topUpOpen}
+                onOpenChange={setTopUpOpen}
+                packs={creditPacks}
+              />
+            ) : null}
           </div>
         ) : (
           <div className="flex justify-center pt-2">

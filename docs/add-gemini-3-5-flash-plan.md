@@ -217,6 +217,26 @@ This legacy case should not make 3.1 Pro selectable; it only prevents old thread
 
 Keep Gemini on the current OpenRouter chat-completions path unless manual testing shows Gemini 3.5 Flash requires the Responses API. The current test suite explicitly expects Gemini aliases to route through OpenRouter chat completions rather than a Google-specific or Responses-only path.
 
+### Post-Implementation Note: Pi Registry Fallback
+
+After the initial implementation, Gemini 3.5 Flash appeared in the app catalog and routed to the right OpenRouter id, but chat initialization failed with:
+
+```text
+Internal error handling init: Unsupported Pi model codex/gemini-3.5-flash
+```
+
+The cause was not the camelAI model catalog. `workers/main/src/durable-objects.ts` correctly resolved `gemini-3.5-flash` and the legacy `gemini-3.1-pro-preview` alias to `openrouter/google/gemini-3.5-flash`, but Pi's bundled generated model registry in `@mariozechner/pi-ai` did not yet include that new OpenRouter model. `resolvePiModel(...)` called Pi's `getModel(...)`, received no model metadata, and threw before hosted AI Gateway or OpenRouter BYOK request configuration could run.
+
+The implemented fix was to add a local, narrow fallback registry in `workers/main/src/durable-objects.ts`:
+
+- Add `PI_MODEL_CATALOG_FALLBACKS` keyed by `${provider}/${modelId}`.
+- Add an entry for `openrouter/google/gemini-3.5-flash` using the same `Model<"openai-completions">` shape as Pi's generated OpenRouter Gemini models.
+- Populate the fallback with OpenRouter-validated metadata: context window `1048576`, max tokens `65536`, input cost `$1.50/M`, output cost `$9.00/M`, cache read `$0.15/M`, and cache write `$0.083333/M`.
+- Change `resolvePiModel(...)` to use `getModel(...) ?? resolvePiModelCatalogFallback(...)` before throwing `Unsupported Pi model`.
+- Add a regression test in `workers/main/tests/chat-thread-codex-external-turn.test.ts` that stubs Pi `getModel(...)` to return `undefined` and verifies both `gemini-3.5-flash` and legacy `gemini-3.1-pro-preview` still resolve to a configured hosted OpenRouter model.
+
+Use this same pattern the next time OpenRouter adds a model before the Pi package's generated registry has caught up. Keep the fallback narrow and delete it when the bundled Pi registry includes the model and tests still pass without it. Do not edit `node_modules` for this class of issue.
+
 4. Update virtual AI aliases and docs.
 
 Touch:
