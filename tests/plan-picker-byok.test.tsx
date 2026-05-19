@@ -9,8 +9,9 @@ describe("PlanPicker BYOK state", () => {
     );
 
     expect(screen.getByText("Pay as you go")).toBeInTheDocument();
+    expect(screen.getByText("Try it out")).toBeInTheDocument();
     expect(
-      screen.getByText("For a trial run, bring your own LLM provider"),
+      screen.getByText("Pay only for what you use, or bring your own API key"),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
   });
