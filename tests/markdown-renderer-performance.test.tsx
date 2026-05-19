@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe('MarkdownRenderer performance guards', () => {
-  it('keeps large streaming markdown on the plain-text path', () => {
+  it('renders large streaming markdown through the markdown path', () => {
     const content = buildLargeMixedMarkdown(30);
     const mentionSlugMap = new Map([
       ['database', integration({ id: 'database-1', integration_type: 'postgres', name: 'Database' })],
@@ -98,10 +98,21 @@ describe('MarkdownRenderer performance guards', () => {
     );
 
     expect(codeToHtmlMock).not.toHaveBeenCalled();
-    expect(container).toHaveTextContent('# Streaming and render performance fixture');
+    expect(screen.getByRole('heading', {
+      level: 1,
+      name: 'Streaming and render performance fixture',
+    })).toBeInTheDocument();
+    expect(container.querySelectorAll('h2')).toHaveLength(30);
+    expect(container.querySelectorAll('ul').length).toBeGreaterThanOrEqual(30);
+    expect(container.querySelectorAll('ol')).toHaveLength(30);
+    expect(container.querySelectorAll('table')).toHaveLength(30);
+    expect(container.querySelectorAll('blockquote')).toHaveLength(30);
+    expect(container.querySelectorAll('img')).toHaveLength(30);
+    expect(container.querySelectorAll('pre')).toHaveLength(60);
+    expect(screen.getAllByText('@database')).toHaveLength(30);
     expect(container).toHaveTextContent('export function Example29');
-    expect(container.querySelector('h1,h2,ul,ol,table,blockquote,pre,code,img')).toBeNull();
-    expect(elementCount(container)).toBe(1);
+    const initialElementCount = elementCount(container);
+    expect(initialElementCount).toBeGreaterThan(1);
 
     const root = container.firstElementChild;
     rerender(
@@ -114,7 +125,7 @@ describe('MarkdownRenderer performance guards', () => {
 
     expect(container.firstElementChild).toBe(root);
     expect(codeToHtmlMock).not.toHaveBeenCalled();
-    expect(elementCount(container)).toBe(1);
+    expect(elementCount(container)).toBe(initialElementCount);
   });
 
   it('renders completed mixed markdown with the expected rich structure', async () => {
@@ -174,14 +185,14 @@ describe('MarkdownRenderer performance guards', () => {
   });
 
   it.each([
-    ['headings', '# Title\n\n## Details\n\nBody text.'],
-    ['lists', '- One\n- Two\n  - Nested\n\n1. First\n2. Second'],
-    ['tables', '| A | B |\n| --- | ---: |\n| x | 1 |'],
-    ['quotes', '> Quoted\n>\n> - with a list'],
-    ['code fences', '```bash\necho hello\n```'],
-    ['images and links', '[Open](https://example.com)\n\n![Alt](https://example.com/a.png)'],
-    ['mentions', 'Use @database for this query.'],
-  ])('keeps streaming %s content off the markdown parser path', (_name, snippet) => {
+    ['headings', '# Title\n\n## Details\n\nBody text.', 'h1,h2'],
+    ['lists', '- One\n- Two\n  - Nested\n\n1. First\n2. Second', 'ul,ol'],
+    ['tables', '| A | B |\n| --- | ---: |\n| x | 1 |', 'table'],
+    ['quotes', '> Quoted\n>\n> - with a list', 'blockquote'],
+    ['code fences', '```bash\necho hello\n```', 'pre,code'],
+    ['images and links', '[Open](https://example.com)\n\n![Alt](https://example.com/a.png)', 'a,img'],
+    ['mentions', 'Use @database for this query.', 'span'],
+  ])('renders streaming %s content through the markdown parser path', (_name, snippet, selector) => {
     const repeatedSnippet = Array.from({ length: 25 }, () => snippet).join('\n\n');
     const { container } = render(
       createElement(MarkdownRenderer, {
@@ -193,9 +204,8 @@ describe('MarkdownRenderer performance guards', () => {
       }),
     );
 
-    expect(container).toHaveTextContent(snippet.split('\n')[0]);
-    expect(container.querySelector('h1,h2,ul,ol,table,blockquote,pre,code,img,a,[data-mention-chip]')).toBeNull();
-    expect(elementCount(container)).toBe(1);
+    expect(container.querySelector(selector)).toBeInTheDocument();
+    expect(elementCount(container)).toBeGreaterThan(1);
     expect(codeToHtmlMock).not.toHaveBeenCalled();
   });
 });
