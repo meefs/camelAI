@@ -52,6 +52,12 @@ import type {
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
 import { useChatGroups } from "@/hooks/use-chat-groups";
+import {
+  createRequestObservabilityContext,
+  normalizePathForObservability,
+  recordErrorEvent,
+  recordObservabilityEvent,
+} from "../../workers/main/src/observability";
 
 /**
  * Skip loader revalidation after createThread — the user is navigating away
@@ -81,6 +87,109 @@ export function meta() {
 function formStringValue(formData: FormData, key: string): string | null {
   const value = formData.get(key);
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+type ChatCreateThreadTraceContext = {
+  requestId: string;
+  sampleIndex: string;
+  method: string;
+  path: string;
+  route: string;
+};
+
+type ChatCreateThreadTraceIds = {
+  orgId?: string | null;
+  workspaceId?: string | null;
+  userId?: string | null;
+  threadId?: string | null;
+};
+
+type ChatCreateThreadTraceExtra = {
+  status?: string;
+  statusCode?: number;
+  count?: number;
+  size?: number;
+  provider?: string | null;
+  model?: string | null;
+};
+
+function createChatCreateThreadTraceContext(
+  request: Request,
+): ChatCreateThreadTraceContext {
+  const requestContext = createRequestObservabilityContext(request);
+  const url = new URL(request.url);
+  return {
+    requestId: requestContext.requestId,
+    sampleIndex: requestContext.colo,
+    method: request.method,
+    path: normalizePathForObservability(url.pathname),
+    route: "routes/_app.chat._index.action",
+  };
+}
+
+function recordChatCreateThreadStage(
+  env: ReturnType<typeof getEnv>,
+  trace: ChatCreateThreadTraceContext,
+  ids: ChatCreateThreadTraceIds,
+  operation: string,
+  startedAt: number,
+  extra: ChatCreateThreadTraceExtra = {},
+): void {
+  recordObservabilityEvent(env, {
+    event: "chat_create_thread_stage",
+    severity: extra.status === "error" ? "error" : "info",
+    component: "react_router_action",
+    operation,
+    status: extra.status ?? "ok",
+    route: trace.route,
+    method: trace.method,
+    path: trace.path,
+    orgId: ids.orgId,
+    workspaceId: ids.workspaceId,
+    userId: ids.userId,
+    threadId: ids.threadId,
+    requestId: trace.requestId,
+    provider: extra.provider,
+    model: extra.model,
+    durationMs: Date.now() - startedAt,
+    statusCode: extra.statusCode,
+    count: extra.count,
+    size: extra.size,
+    sampleIndex: trace.sampleIndex,
+  });
+}
+
+function recordChatCreateThreadError(
+  env: ReturnType<typeof getEnv>,
+  trace: ChatCreateThreadTraceContext,
+  ids: ChatCreateThreadTraceIds,
+  operation: string,
+  startedAt: number,
+  error: unknown,
+  extra: ChatCreateThreadTraceExtra = {},
+): void {
+  recordErrorEvent(env, {
+    event: "chat_create_thread_stage",
+    component: "react_router_action",
+    operation,
+    status: extra.status ?? "exception",
+    route: trace.route,
+    method: trace.method,
+    path: trace.path,
+    orgId: ids.orgId,
+    workspaceId: ids.workspaceId,
+    userId: ids.userId,
+    threadId: ids.threadId,
+    requestId: trace.requestId,
+    provider: extra.provider,
+    model: extra.model,
+    durationMs: Date.now() - startedAt,
+    statusCode: extra.statusCode,
+    count: extra.count,
+    size: extra.size,
+    sampleIndex: trace.sampleIndex,
+    error,
+  });
 }
 
 type InitialUserMessageRpc = {
@@ -331,8 +440,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
+  const env = getEnv(context);
+  const traceContext = createChatCreateThreadTraceContext(request);
+  const actionStartedAt = Date.now();
+  const traceIds: ChatCreateThreadTraceIds = {};
+  let selectedTraceModel: string | null = null;
+
   // Security-critical write path: validate current workspace membership/access
   // without loading full auth context.
+  const accessStartedAt = Date.now();
   const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
     request,
     context,
@@ -341,11 +457,29 @@ export async function action({ request, context }: Route.ActionArgs) {
       requireWrite: true,
     },
   );
-  const env = getEnv(context);
+  traceIds.orgId = orgId;
+  traceIds.workspaceId = workspaceId;
+  traceIds.userId = userId;
+  recordChatCreateThreadStage(
+    env,
+    traceContext,
+    traceIds,
+    "workspace_access_validated",
+    accessStartedAt,
+  );
+
   const authEnv = getAuthEnv(env);
 
+  const formStartedAt = Date.now();
   const formData = await request.formData();
   const intent = formData.get("intent");
+  recordChatCreateThreadStage(
+    env,
+    traceContext,
+    traceIds,
+    "form_parsed",
+    formStartedAt,
+  );
 
   if (intent === "createThread" || intent === "createThreadAndStart") {
     try {
@@ -356,6 +490,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       const previewAppsRaw = formStringValue(formData, "previewApps");
       const rawModel = formData.get("model");
       const model = typeof rawModel === "string" ? rawModel : null;
+      selectedTraceModel = model;
       const rawGroupId = formData.get("groupId");
       const groupId =
         typeof rawGroupId === "string" && rawGroupId.trim()
@@ -363,6 +498,19 @@ export async function action({ request, context }: Route.ActionArgs) {
           : null;
 
       if (!clientBuildId || clientBuildId !== APP_BUILD_ID) {
+        recordChatCreateThreadStage(
+          env,
+          traceContext,
+          traceIds,
+          "client_build_validated",
+          actionStartedAt,
+          {
+            status: "client_build_mismatch",
+            statusCode: 409,
+            model: selectedTraceModel,
+            size: firstMessage?.length ?? 0,
+          },
+        );
         return Response.json(
           {
             error:
@@ -372,7 +520,19 @@ export async function action({ request, context }: Route.ActionArgs) {
           { status: 409 },
         );
       }
+      recordChatCreateThreadStage(
+        env,
+        traceContext,
+        traceIds,
+        "client_build_validated",
+        actionStartedAt,
+        {
+          model: selectedTraceModel,
+          size: firstMessage?.length ?? 0,
+        },
+      );
 
+      const createThreadStartedAt = Date.now();
       const thread = await chatDO.createThread(
         context,
         workspaceId,
@@ -381,9 +541,24 @@ export async function action({ request, context }: Route.ActionArgs) {
         firstMessage || undefined,
         (model as LlmModel | null) ?? undefined,
       );
+      traceIds.threadId = thread.id;
+      selectedTraceModel = thread.model;
+      recordChatCreateThreadStage(
+        env,
+        traceContext,
+        traceIds,
+        "thread_created",
+        createThreadStartedAt,
+        {
+          provider: thread.provider,
+          model: thread.model,
+          size: firstMessage?.length ?? 0,
+        },
+      );
 
       // Set preview apps if provided (for "chat with this app" flow)
       if (previewAppsRaw) {
+        const previewStartedAt = Date.now();
         const previewApps = previewAppsRaw.split(",").filter(Boolean);
         if (previewApps.length > 0) {
           const scriptName = previewApps[0];
@@ -394,9 +569,22 @@ export async function action({ request, context }: Route.ActionArgs) {
             isPublic: script?.is_public ?? false,
           });
         }
+        recordChatCreateThreadStage(
+          env,
+          traceContext,
+          traceIds,
+          "preview_target_set",
+          previewStartedAt,
+          {
+            count: previewApps.length,
+            provider: thread.provider,
+            model: thread.model,
+          },
+        );
       }
 
       if (shouldStartAndRedirect && firstMessage) {
+        const initialMessageStartedAt = Date.now();
         const chatThread = env.CHAT_THREAD.get(
           env.CHAT_THREAD.idFromName(thread.id),
         ) as unknown as InitialUserMessageRpc;
@@ -408,6 +596,19 @@ export async function action({ request, context }: Route.ActionArgs) {
           message: firstMessage,
           clientMessageId: `initial:${thread.id}`,
         });
+        recordChatCreateThreadStage(
+          env,
+          traceContext,
+          traceIds,
+          "initial_message_started",
+          initialMessageStartedAt,
+          {
+            status: result.status,
+            provider: thread.provider,
+            model: thread.model,
+            size: firstMessage.length,
+          },
+        );
         if (result.status !== "accepted") {
           console.error(
             "Failed to start initial user message:",
@@ -438,8 +639,21 @@ export async function action({ request, context }: Route.ActionArgs) {
             userId,
           ),
         );
+        recordChatCreateThreadStage(
+          env,
+          traceContext,
+          traceIds,
+          "title_generation_scheduled",
+          actionStartedAt,
+          {
+            provider: thread.provider,
+            model: thread.model,
+            size: firstMessage.length,
+          },
+        );
       }
 
+      const groupStartedAt = Date.now();
       const group = await (async () => {
         try {
           return groupId
@@ -473,6 +687,19 @@ export async function action({ request, context }: Route.ActionArgs) {
           throw groupError;
         }
       })();
+      recordChatCreateThreadStage(
+        env,
+        traceContext,
+        traceIds,
+        "group_linked",
+        groupStartedAt,
+        {
+          status: groupId ? "existing_group" : "new_group",
+          provider: thread.provider,
+          model: thread.model,
+          count: group.member_count,
+        },
+      );
 
       if (shouldStartAndRedirect) {
         const nextUrl = new URL(
@@ -482,9 +709,35 @@ export async function action({ request, context }: Route.ActionArgs) {
         if (group.id) {
           nextUrl.searchParams.set("group", group.id);
         }
+        recordChatCreateThreadStage(
+          env,
+          traceContext,
+          traceIds,
+          "redirect_ready",
+          actionStartedAt,
+          {
+            provider: thread.provider,
+            model: thread.model,
+            size: firstMessage?.length ?? 0,
+            statusCode: 302,
+          },
+        );
         return redirect(`${nextUrl.pathname}${nextUrl.search}`);
       }
 
+      recordChatCreateThreadStage(
+        env,
+        traceContext,
+        traceIds,
+        "json_response_ready",
+        actionStartedAt,
+        {
+          provider: thread.provider,
+          model: thread.model,
+          size: firstMessage?.length ?? 0,
+          statusCode: 200,
+        },
+      );
       return Response.json({ thread, groupId: group.id, group });
     } catch (error) {
       if (error instanceof Response) return error;
@@ -495,6 +748,18 @@ export async function action({ request, context }: Route.ActionArgs) {
         message === "Invalid thread model" || message === "No models are available"
           ? 400
           : 500;
+      recordChatCreateThreadError(
+        env,
+        traceContext,
+        traceIds,
+        "create_thread_action",
+        actionStartedAt,
+        error,
+        {
+          model: selectedTraceModel,
+          statusCode: status,
+        },
+      );
       return Response.json(
         { error: message || "Failed to create thread" },
         { status },
@@ -502,6 +767,14 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
   }
 
+  recordChatCreateThreadStage(
+    env,
+    traceContext,
+    traceIds,
+    "unknown_intent",
+    actionStartedAt,
+    { status: "client_error", statusCode: 400 },
+  );
   return Response.json({ error: "Unknown intent" }, { status: 400 });
 }
 
