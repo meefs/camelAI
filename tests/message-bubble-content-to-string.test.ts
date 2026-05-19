@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 import type { ContentBlock, Integration } from '@/types';
 import { ContentBlockRenderer, contentToString } from '@/components/message-bubble';
+import { BYOK_PROVIDERS } from '@/lib/byok-providers';
 
 function integrationWithId(id: string): Integration {
   return {
@@ -168,5 +169,117 @@ describe('contentToString', () => {
         thinkingSignature: 'openrouter.reasoning:abc',
       },
     ] as ContentBlock[])).toBe('Visible answer');
+  });
+
+  it('renders persisted BYOK rate limit errors without raw provider details', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: [
+          {
+            type: 'error',
+            title: 'Assistant error',
+            error:
+              '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}',
+          },
+        ] satisfies ContentBlock[],
+        llmProvider: 'anthropic',
+        threadProvider: 'claude',
+      }),
+    );
+
+    expect(screen.getByText('Your Anthropic API key is rate limited')).toBeInTheDocument();
+    expect(screen.getByText(/controlled by Anthropic, not camelAI/)).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /Open Anthropic API settings/ });
+    expect(link).toHaveAttribute('href', BYOK_PROVIDERS.anthropic.getKeyUrl);
+    expect(screen.queryByText(/Type 2b/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Assistant error')).not.toBeInTheDocument();
+  });
+
+  it('uses persisted hosted metadata over current BYOK settings', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: [
+          {
+            type: 'error',
+            title: 'Assistant error',
+            billingSource: 'hosted',
+            provider: 'anthropic',
+            error:
+              '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}',
+          },
+        ] satisfies ContentBlock[],
+        llmProvider: 'anthropic',
+        threadProvider: 'claude',
+      }),
+    );
+
+    expect(screen.getByText('The model provider is temporarily rate limiting camelAI')).toBeInTheDocument();
+    expect(screen.getByText(/contact support/)).toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Increase your limits/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Type 2b/)).not.toBeInTheDocument();
+  });
+
+  it('uses persisted BYOK provider metadata over current settings', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: [
+          {
+            type: 'error',
+            title: 'Assistant error',
+            billingSource: 'byok',
+            provider: 'openai',
+            error:
+              '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}',
+          },
+        ] satisfies ContentBlock[],
+        llmProvider: 'anthropic',
+        threadProvider: 'claude',
+      }),
+    );
+
+    expect(screen.getByText('Your OpenAI API key is rate limited')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /Open OpenAI API settings/ });
+    expect(link).toHaveAttribute('href', BYOK_PROVIDERS.openai.getKeyUrl);
+  });
+
+  it('renders Bedrock provider links with the central label', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: [
+          {
+            type: 'error',
+            title: 'Assistant error',
+            billingSource: 'byok',
+            provider: 'bedrock',
+            error:
+              '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}',
+          },
+        ] satisfies ContentBlock[],
+      }),
+    );
+
+    expect(screen.getByText('Your Bedrock API key is rate limited')).toBeInTheDocument();
+    const link = screen.getByRole('link', {
+      name: BYOK_PROVIDERS.bedrock.settingsLinkLabel!,
+    });
+    expect(link).toHaveAttribute('href', BYOK_PROVIDERS.bedrock.getKeyUrl);
+  });
+
+  it('keeps generic persisted errors destructive', () => {
+    render(
+      createElement(ContentBlockRenderer, {
+        content: [
+          {
+            type: 'error',
+            title: 'Assistant error',
+            error: 'Sandbox is not connected',
+          },
+        ] satisfies ContentBlock[],
+      }),
+    );
+
+    expect(screen.getByText('Assistant error')).toBeInTheDocument();
+    expect(screen.getByText('Sandbox is not connected')).toBeInTheDocument();
   });
 });

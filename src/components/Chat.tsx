@@ -25,8 +25,6 @@ import {
 } from "react-router";
 import {
   ArrowDown,
-  CircleAlert,
-  X,
   ChevronDown,
   Globe,
   Lock,
@@ -69,6 +67,7 @@ import {
 } from "@/components/connection-setup-prompt";
 import { OnboardingLoadingModal } from "@/components/onboarding-loading-modal";
 import type { Attachment } from "@/components/attachment-list";
+import { ChatApiErrorNotice } from "@/components/chat-api-error-notice";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -141,6 +140,12 @@ import {
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
+import {
+  type ChatApiErrorContext,
+  type ChatApiErrorPresentation,
+  getChatApiErrorPresentation,
+} from "@/lib/chat-api-errors";
+import { parseByokProvider } from "@/lib/byok-providers";
 import {
   modelCatalogEntriesForIds,
   type ModelCatalogEntry,
@@ -369,98 +374,12 @@ function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
   return undefined;
 }
 
-const CREDIT_SEND_BLOCKED_MESSAGE =
-  "Message not sent — top up credits or add an API key to continue.";
-
 const creditFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
 function formatCredits(cents: number): string {
   return creditFormatter.format(Math.max(0, cents) / 100);
-}
-
-function isHostedCreditExhaustedMessage(lowerMessage: string): boolean {
-  return lowerMessage.includes("credits are used up");
-}
-
-function extractChatErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return extractChatErrorMessage(error.message);
-  }
-
-  if (typeof error !== "string") {
-    return "";
-  }
-
-  const trimmed = error.trim();
-  if (!trimmed) {
-    return "";
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      "error" in parsed &&
-      typeof parsed.error === "string"
-    ) {
-      return parsed.error;
-    }
-  } catch {
-    // Raw SDK/proxy errors often wrap JSON inside a larger message.
-  }
-
-  const jsonStart = trimmed.indexOf("{");
-  const jsonEnd = trimmed.lastIndexOf("}");
-  if (jsonStart !== -1 && jsonEnd > jsonStart) {
-    try {
-      const parsed = JSON.parse(
-        trimmed.slice(jsonStart, jsonEnd + 1),
-      ) as unknown;
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        "error" in parsed &&
-        typeof parsed.error === "string"
-      ) {
-        return parsed.error;
-      }
-    } catch {
-      // Fall through to the original text.
-    }
-  }
-
-  return trimmed.replace(/^Error:\s*/i, "");
-}
-
-function normalizeChatErrorMessage(error: unknown): string {
-  const message = extractChatErrorMessage(error) || "An unknown error occurred";
-  const lower = message.toLowerCase();
-  const isBillingOrCreditError =
-    lower.includes("credit") ||
-    lower.includes("billing") ||
-    lower.includes("payment required") ||
-    lower.includes("subscription") ||
-    lower.includes("spend limit") ||
-    lower.includes("spending limit") ||
-    lower.includes("usage limit") ||
-    lower.includes("hosted model");
-
-  if (isBillingOrCreditError) {
-    if (isHostedCreditExhaustedMessage(lower)) {
-      return CREDIT_SEND_BLOCKED_MESSAGE;
-    }
-
-    return message;
-  }
-
-  if (lower.includes("429") || lower.includes("rate limit")) {
-    return `${message} Wait a minute and try again. If this is from hosted model spend limits, check Settings -> Billing.`;
-  }
-
-  return message;
 }
 
 export function BillingCreditNotice({
@@ -580,26 +499,10 @@ export function ChatErrorNotice({
   error,
   onDismiss,
 }: {
-  error: string;
+  error: ChatApiErrorPresentation;
   onDismiss?: () => void;
 }) {
-  return (
-    <div className="flex items-center gap-2 px-1 py-1.5 text-sm text-muted-foreground">
-      <CircleAlert className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <p className="min-w-0 flex-1 text-sm text-muted-foreground">{error}</p>
-      {onDismiss ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={onDismiss}
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
-      ) : null}
-    </div>
-  );
+  return <ChatApiErrorNotice presentation={error} onDismiss={onDismiss} />;
 }
 
 interface ShareStatusButtonProps {
@@ -740,8 +643,10 @@ interface ChatMessagesViewProps {
   assistantTurnActive: boolean;
   activeAssistantMessageId: string | null;
   skillSheetsByToolId: Map<string, string>;
-  error: string | null;
-  setError: Dispatch<SetStateAction<string | null>>;
+  error: ChatApiErrorPresentation | null;
+  setError: Dispatch<SetStateAction<ChatApiErrorPresentation | null>>;
+  llmProvider?: LlmProvider | null;
+  threadProvider: ChatHarness;
   isCompacting: boolean;
   compactingPriorMessageId: string | null;
   isLoadingMessages: boolean;
@@ -770,6 +675,8 @@ const ChatMessagesView = memo(function ChatMessagesView({
   skillSheetsByToolId,
   error,
   setError,
+  llmProvider,
+  threadProvider,
   isCompacting,
   compactingPriorMessageId,
   isLoadingMessages,
@@ -905,6 +812,8 @@ const ChatMessagesView = memo(function ChatMessagesView({
                   }
                   skillSheets={skillSheetsByToolId}
                   mentionSlugMap={mentionSlugMap}
+                  llmProvider={llmProvider}
+                  threadProvider={threadProvider}
                 />
               </div>
             );
@@ -1321,8 +1230,13 @@ export default function Chat({
   }, [messages]);
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? "");
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(() =>
-    initialError ? normalizeChatErrorMessage(initialError) : null,
+  const [error, setError] = useState<ChatApiErrorPresentation | null>(() =>
+    initialError
+      ? getChatApiErrorPresentation(initialError, {
+          llmProvider,
+          threadProvider: initialThreadProvider,
+        })
+      : null,
   );
   const [welcomeInput, setWelcomeInput] = useState(
     () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
@@ -1406,7 +1320,7 @@ export default function Chat({
   inputRef.current = input;
   welcomeInputRef.current = welcomeInput;
   attachmentsRef.current = attachments;
-  const prevErrorRef = useRef<string | null>(null);
+  const prevErrorRef = useRef<ChatApiErrorPresentation | null>(null);
   const skipNextEmptyDraftSaveRef = useRef(false);
   const pendingDeliveryDraftRef = useRef<{
     workspaceId: string;
@@ -1425,8 +1339,15 @@ export default function Chat({
   const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
-    setError(initialError ? normalizeChatErrorMessage(initialError) : null);
-  }, [initialError]);
+    setError(
+      initialError
+        ? getChatApiErrorPresentation(initialError, {
+            llmProvider,
+            threadProvider: initialThreadProvider,
+          })
+        : null,
+    );
+  }, [initialError, initialThreadProvider, llmProvider]);
 
   useEffect(() => {
     if (
@@ -1836,6 +1757,27 @@ export default function Chat({
     setInput(savedDraft.text);
     setAttachments(savedDraft.attachments);
   }, []);
+
+  const normalizeChatError = useCallback(
+    (
+      value: unknown,
+      context: Partial<ChatApiErrorContext> = {},
+    ): ChatApiErrorPresentation =>
+      getChatApiErrorPresentation(value, {
+        llmProvider,
+        threadProvider: activeThreadProvider,
+        ...context,
+      }),
+    [activeThreadProvider, llmProvider],
+  );
+
+  const showChatError = useCallback(
+    (value: unknown, context: Partial<ChatApiErrorContext> = {}) => {
+      setError(normalizeChatError(value, context));
+    },
+    [normalizeChatError],
+  );
+
   const logRunnerClient = useCallback(
     (event: string, fields: Record<string, unknown> = {}) => {
       if (import.meta.env.MODE === "test") return;
@@ -1873,12 +1815,13 @@ export default function Chat({
       setReady(false);
       setStreamingMessageId(null);
       restorePendingDeliveryDraft();
-      setError(message);
+      showChatError(message);
     },
     [
       clearQueuedSendReadyTimeout,
       logRunnerClient,
       restorePendingDeliveryDraft,
+      showChatError,
       setMessages,
       setPendingMessages,
       setStreamingMessageId,
@@ -2342,7 +2285,7 @@ export default function Chat({
         setConnectionSetupPrompt((prev) =>
           prev?.requestId === data.requestId ? null : prev,
         );
-        setError(
+        showChatError(
           typeof data.error === "string"
             ? data.error
             : "Connection setup failed. Please ask the agent to start connection setup again.",
@@ -2358,6 +2301,7 @@ export default function Chat({
       setLocalPreviewSessionState,
       bumpIframeKey,
       bumpFilePreviewKey,
+      showChatError,
     ],
   );
 
@@ -3076,7 +3020,28 @@ export default function Chat({
         } else if (data.type === "error") {
           flushDeferredMessagesRender();
           console.error("WebSocket error:", data.error);
-          setError(normalizeChatErrorMessage(data.error));
+          const billingSource =
+            data.billingSource === "byok" || data.billingSource === "hosted"
+              ? data.billingSource
+              : null;
+          const eventProvider = parseByokProvider(data.provider);
+          const errorPayload =
+            typeof data.status === "number" ||
+            typeof data.status === "string" ||
+            typeof data.errorType === "string"
+              ? {
+                  error: data.error,
+                  status: data.status,
+                  type: data.errorType,
+              }
+              : data.error;
+          const errorContext: Partial<ChatApiErrorContext> = {
+            billingSource,
+          };
+          if (eventProvider) {
+            errorContext.llmProvider = eventProvider;
+          }
+          showChatError(errorPayload, errorContext);
           // Finish streaming on error
           splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
@@ -3186,6 +3151,7 @@ export default function Chat({
       setPendingMessages,
       setStreamingMessageId,
       handleRealtimeSideChannelEvent,
+      showChatError,
     ],
   );
 
@@ -3753,7 +3719,7 @@ export default function Chat({
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to fork chat";
-        setError(message);
+        showChatError(message);
         toast.error(message);
       } finally {
         setForkingMessageId(null);
@@ -3765,7 +3731,7 @@ export default function Chat({
       readOnly,
       resolvedWorkspaceId,
       revalidator,
-      setError,
+      showChatError,
       threadId,
     ],
   );
@@ -4164,7 +4130,7 @@ export default function Chat({
     try {
       finalContent = buildMessageContent(userMessage, currentAttachments);
     } catch (error) {
-      setError(normalizeChatErrorMessage(error));
+      showChatError(error);
       return;
     }
 
@@ -4344,7 +4310,7 @@ type SendOptions = {
         ? buildMessageContent(rawContent, currentAttachments)
         : rawContent;
     } catch (error) {
-      setError(normalizeChatErrorMessage(error));
+      showChatError(error);
       return false;
     }
 
@@ -4732,6 +4698,8 @@ type SendOptions = {
             skillSheetsByToolId={skillSheetsByToolId}
             error={error}
             setError={setError}
+            llmProvider={llmProvider}
+            threadProvider={activeThreadProvider}
             isCompacting={isCompacting}
             compactingPriorMessageId={compactingPriorMessageId}
             isLoadingMessages={isLoadingMessages}
