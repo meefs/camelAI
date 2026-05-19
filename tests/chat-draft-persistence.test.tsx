@@ -7,7 +7,14 @@ import { loadDraft } from '@/hooks/use-draft-persistence';
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
+const mockSubmit = vi.fn();
 let mockLocationState: unknown = null;
+let mockLocation = {
+  pathname: '/chat/thread-1',
+  search: '',
+  hash: '',
+  key: 'default',
+};
 
 function createFetcher() {
   return {
@@ -27,9 +34,11 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useNavigate: () => mockNavigate,
-    useLocation: () => ({ pathname: '/chat/thread-1', search: '', hash: '', state: mockLocationState, key: 'default' }),
+    useLocation: () => ({ ...mockLocation, state: mockLocationState }),
+    useNavigation: () => ({ state: 'idle', formData: undefined }),
     useRevalidator: () => ({ state: 'idle' as const, revalidate: mockRevalidate }),
     useFetcher: () => mockFetcher,
+    useSubmit: () => mockSubmit,
   };
 });
 
@@ -151,10 +160,6 @@ vi.mock('@/components/connection-setup-prompt', () => ({
   ConnectionSetupPrompt: () => null,
 }));
 
-vi.mock('@/components/bug-report-dialog', () => ({
-  BugReportDialog: () => null,
-}));
-
 vi.mock('@/components/onboarding-loading-modal', () => ({
   OnboardingLoadingModal: () => null,
 }));
@@ -259,7 +264,7 @@ class MockWebSocket {
 }
 
 function getMainSocket(): MockWebSocket {
-  const socket = MockWebSocket.instances.find((candidate) => candidate.url.includes('/ws/runner/ws-1'));
+  const socket = MockWebSocket.instances.find((candidate) => candidate.url.includes('/ws/ws-1'));
   if (!socket) {
     throw new Error('Main chat WebSocket was not created');
   }
@@ -269,7 +274,7 @@ function getMainSocket(): MockWebSocket {
 function getLatestMainSocket(): MockWebSocket {
   const socket = [...MockWebSocket.instances]
     .reverse()
-    .find((candidate) => candidate.url.includes('/ws/runner/ws-1'));
+    .find((candidate) => candidate.url.includes('/ws/ws-1'));
   if (!socket) {
     throw new Error('Main chat WebSocket was not created');
   }
@@ -320,8 +325,15 @@ describe('Chat draft persistence', () => {
   beforeEach(() => {
     mockFetcher = createFetcher();
     mockLocationState = null;
+    mockLocation = {
+      pathname: '/chat/thread-1',
+      search: '',
+      hash: '',
+      key: 'default',
+    };
     mockNavigate.mockReset();
     mockRevalidate.mockReset();
+    mockSubmit.mockReset();
     MockWebSocket.instances = [];
     localStorage.clear();
     sessionStorage.clear();
@@ -403,10 +415,10 @@ describe('Chat draft persistence', () => {
     });
   });
 
-  it('clears the welcome-screen draft after backend-owned new chat success', async () => {
+  it('clears the welcome-screen draft when the route action takes over', async () => {
     const user = userEvent.setup();
 
-    const { rerender } = render(
+    render(
       <Chat
         workspaceId="ws-1"
         initialMessages={[]}
@@ -416,63 +428,51 @@ describe('Chat draft persistence', () => {
     await user.type(screen.getByLabelText('Welcome prompt'), 'Hello from welcome');
     await user.click(screen.getByRole('button', { name: 'Start' }));
 
-    expect(loadDraft('ws-1', null)?.text).toBe('Hello from welcome');
+    expect(mockSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: 'createThreadAndStart',
+        firstMessage: 'Hello from welcome',
+      }),
+      { method: 'post', action: '/chat' },
+    );
+    expect(loadDraft('ws-1', null)).toBeNull();
+    expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
+  });
 
-    mockFetcher.data = { thread: { id: 'thread-new' } };
+  it('restores the welcome draft when create-thread action returns an error', async () => {
+    const user = userEvent.setup();
+
+    const { rerender } = render(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    await user.type(screen.getByLabelText('Welcome prompt'), 'Do not lose this');
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(screen.getByLabelText('Welcome prompt')).toHaveValue('');
+    expect(loadDraft('ws-1', null)).toBeNull();
 
     rerender(
       <Chat
         workspaceId="ws-1"
         initialMessages={[]}
-      />
+        initialError="Invalid thread model"
+        newChatActionError="Invalid thread model"
+      />,
     );
 
     await waitFor(() => {
-      expect(loadDraft('ws-1', null)).toBeNull();
-    });
-
-    expect(loadDraft('ws-1', 'thread-new')?.text).toBe('Hello from welcome');
-    expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
-  });
-
-  it('reloads the page when new-chat creation reports a stale app build', async () => {
-    const originalLocation = window.location;
-    const reloadMock = vi.fn();
-    Object.defineProperty(window, 'location', {
-      configurable: true,
-      value: { ...window.location, reload: reloadMock },
-    });
-
-    try {
-      const { rerender } = render(
-        <Chat
-          workspaceId="ws-1"
-          initialMessages={[]}
-        />
+      expect(screen.getByLabelText('Welcome prompt')).toHaveValue(
+        'Do not lose this',
       );
-
-      mockFetcher.data = {
-        error:
-          'camelAI was updated while this page was open. Please reload and send your message again.',
-        reloadRequired: true,
-      };
-
-      rerender(
-        <Chat
-          workspaceId="ws-1"
-          initialMessages={[]}
-        />
-      );
-
-      await waitFor(() => {
-        expect(reloadMock).toHaveBeenCalledTimes(1);
-      });
-    } finally {
-      Object.defineProperty(window, 'location', {
-        configurable: true,
-        value: originalLocation,
-      });
-    }
+    });
+    expect(loadDraft('ws-1', null)).toMatchObject({
+      text: 'Do not lose this',
+      attachments: [],
+    });
   });
 
   it('uses the saved recent model for a new chat only when no picker default is set', async () => {
@@ -510,9 +510,9 @@ describe('Chat draft persistence', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Start' }));
 
-    expect(mockFetcher.submit).toHaveBeenLastCalledWith(
+    expect(mockSubmit).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        intent: 'createThread',
+        intent: 'createThreadAndStart',
         model: 'opus',
       }),
       { method: 'post', action: '/chat' },
@@ -666,7 +666,7 @@ describe('Chat draft persistence', () => {
       }),
     );
 
-    const { rerender } = render(
+    render(
       <Chat
         workspaceId="ws-1"
         initialMessages={[]}
@@ -677,40 +677,22 @@ describe('Chat draft persistence', () => {
 
     await user.click(screen.getByRole('button', { name: 'Start' }));
 
-    expect(mockFetcher.submit).toHaveBeenCalledWith(
+    expect(mockSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        intent: 'createThread',
+        intent: 'createThreadAndStart',
+        firstMessage: `(user uploaded file to ${attachmentDraft.path})`,
       }),
       { method: 'post', action: '/chat' },
     );
 
-    mockFetcher.data = { thread: { id: 'thread-new' } };
-
-    rerender(
-      <Chat
-        workspaceId="ws-1"
-        initialMessages={[]}
-      />
-    );
-
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/chat/thread-new?newThread=1', {
-        state: {
-          initialMessageContent: `(user uploaded file to ${attachmentDraft.path})`,
-        },
-        preventScrollReset: true,
-      });
-    });
-    const threadDraft = loadDraft('ws-1', 'thread-new');
-    expect(threadDraft?.text).toBe('');
-    expect(threadDraft?.attachments[0]?.path).toBe(attachmentDraft.path);
+    expect(loadDraft('ws-1', null)).toBeNull();
     expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
   });
 
-  it('moves a new-chat first prompt draft to the created thread until delivery completes', async () => {
+  it('submits a new-chat first prompt through the route action without a client relay', async () => {
     const user = userEvent.setup();
 
-    const { rerender } = render(
+    render(
       <Chat
         workspaceId="ws-1"
         initialMessages={[]}
@@ -720,104 +702,15 @@ describe('Chat draft persistence', () => {
     await user.type(screen.getByLabelText('Welcome prompt'), 'first prompt');
     await user.click(screen.getByRole('button', { name: 'Start' }));
 
-    mockFetcher.data = { thread: { id: 'thread-new' } };
-
-    rerender(
-      <Chat
-        workspaceId="ws-1"
-        initialMessages={[]}
-      />
-    );
-
-    await waitFor(() => {
-      expect(loadDraft('ws-1', 'thread-new')?.text).toBe('first prompt');
-    });
-    expect(loadDraft('ws-1', null)).toBeNull();
-  });
-
-  it('sends a navigation-state initial message through the normal websocket path', async () => {
-    mockLocationState = {
-      initialMessageContent: 'write a long poem',
-    };
-
-    render(
-      <Chat
-        threadId="thread-1"
-        workspaceId="ws-1"
-        initialMessages={[]}
-      />
-    );
-
-    const socket = getMainSocket();
-    act(() => {
-      socket.emitOpen();
-      socket.emitMessage({ type: 'ready' });
-    });
-
-    await waitFor(() => {
-      expect(sentMessagePayloads(socket)).toEqual([
-        expect.objectContaining({
-          content: 'write a long poem',
-          threadId: 'thread-1',
-        }),
-      ]);
-    });
-    expect(loadDraft('ws-1', 'thread-1')?.text).toBe('write a long poem');
-
-    act(() => {
-      socket.emitMessage({ type: 'sdk_event', event: { type: 'result' } });
-    });
-
-    await waitFor(() => {
-      expect(loadDraft('ws-1', 'thread-1')).toBeNull();
-    });
-    expect(mockNavigate).not.toHaveBeenCalled();
-  });
-
-  it('keeps attachment-backed initial drafts when navigation-state delivery fails', async () => {
-    mockLocationState = {
-      initialMessageContent: `(user uploaded file to ${attachmentDraft.path})`,
-    };
-    localStorage.setItem(
-      'draft:ws-1:thread-1',
-      JSON.stringify({
-        text: '',
-        attachments: [attachmentDraft],
-        savedAt: Date.now(),
+    expect(mockSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: 'createThreadAndStart',
+        firstMessage: 'first prompt',
       }),
+      { method: 'post', action: '/chat' },
     );
-
-    render(
-      <Chat
-        threadId="thread-1"
-        workspaceId="ws-1"
-        initialMessages={[]}
-      />
-    );
-
-    expect(screen.getByTestId('thread-attachment-count')).toHaveTextContent('0');
-
-    const socket = getMainSocket();
-    act(() => {
-      socket.emitOpen();
-      socket.emitMessage({ type: 'ready' });
-    });
-
-    await waitFor(() => {
-      expect(sentMessagePayloads(socket)).toHaveLength(1);
-    });
-    expect(loadDraft('ws-1', 'thread-1')?.attachments[0]?.path).toBe(
-      attachmentDraft.path,
-    );
-
-    act(() => {
-      socket.emitMessage({ type: 'error', error: 'delivery failed' });
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('thread-attachment-count')).toHaveTextContent('1');
-    });
-    expect(screen.getByLabelText('Thread prompt')).toHaveValue('');
+    expect(loadDraft('ws-1', null)).toBeNull();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('hydrates the thread composer from localStorage without a browser pending handoff', () => {

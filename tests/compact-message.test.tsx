@@ -125,7 +125,9 @@ vi.mock('react-router', async () => {
     useNavigate: () => mockNavigate,
     useLocation: () => ({ pathname: '/', search: '', hash: '', state: null, key: 'default' }),
     useRevalidator: () => ({ state: 'idle' as const, revalidate: mockRevalidate }),
+    useNavigation: () => ({ state: 'idle', formData: undefined }),
     useFetcher: () => createFetcher(),
+    useSubmit: () => vi.fn(),
   };
 });
 
@@ -207,7 +209,6 @@ vi.mock('@/components/welcome-screen', () => ({ WelcomeScreen: () => <div data-t
 vi.mock('@/components/floating-todo', () => ({ FloatingTodoList: () => null }));
 vi.mock('@/components/ask-user-question', () => ({ AskUserQuestion: () => null }));
 vi.mock('@/components/connection-setup-prompt', () => ({ ConnectionSetupPrompt: () => null }));
-vi.mock('@/components/bug-report-dialog', () => ({ BugReportDialog: () => null }));
 vi.mock('@/components/ui/button', () => ({
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => <button {...props}>{children}</button>,
 }));
@@ -279,7 +280,7 @@ class MockWebSocket {
 }
 
 function getMainSocket(): MockWebSocket {
-  const socket = MockWebSocket.instances.find((s) => s.url.includes('/ws/runner/ws-1'));
+  const socket = MockWebSocket.instances.find((s) => s.url.includes('/ws/ws-1'));
   if (!socket) throw new Error('Main chat WebSocket was not created');
   return socket;
 }

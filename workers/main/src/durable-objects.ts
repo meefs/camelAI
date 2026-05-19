@@ -138,27 +138,6 @@ export interface ConnectionSetupResponse {
   };
 }
 
-// Bug report capture request
-export interface BugReportCaptureRequest {
-  requestId: string;
-  message?: string; // Optional message to show user explaining why capture is needed
-  createdAt: number;
-}
-
-// Bug report capture response from user
-export interface BugReportCaptureResponse {
-  requestId: string;
-  cancelled: boolean;
-  bugReport?: {
-    reportPath: string; // R2 path to the bug report JSON
-    screenshotPath?: string; // R2 path to the screenshot
-    sessionRecordingPath?: string; // R2 path to the session recording
-    appName: string;
-    appUrl: string;
-    userDescription?: string;
-  };
-}
-
 export interface Thread {
   id: string;
   title: string;
@@ -174,11 +153,6 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   created_at: number;
-}
-
-// Forward declaration for MCP DO RPC methods - used for callback from ChatThreadDO
-interface ChiridionMcpRpc {
-  receiveBugReportCaptureResponse(response: BugReportCaptureResponse): void;
 }
 
 type PiBillingSource = "hosted" | "byok";
@@ -291,13 +265,6 @@ interface PendingConnectionSetupPromptInfo {
   message?: string;
   instructions?: string;
   dynamicSchema?: DynamicIntegrationSchema;
-}
-
-// Pending bug report capture with MCP callback info
-interface PendingBugReportInfo {
-  mcpDoId: string;
-  createdAt: number;
-  message?: string;
 }
 
 export interface ChatContextState {
@@ -461,12 +428,6 @@ interface PendingConnectionSetupWaiter {
   info: PendingConnectionSetupPromptInfo;
 }
 
-interface PendingBugReportWaiter {
-  resolve: (response: BugReportCaptureResponse) => void;
-  reject: (error: Error) => void;
-  timeoutId: ReturnType<typeof setTimeout>;
-}
-
 interface ChatClientInitMessage {
   type: "init";
   threadId?: string;
@@ -512,6 +473,22 @@ export interface ExternalMessageRequest {
 export interface ExternalTurnResult {
   status: "result" | "busy" | "error";
   reply?: string;
+  error?: string;
+}
+
+export interface InitialUserMessageRequest {
+  threadId?: string;
+  workspaceId?: string;
+  orgId?: string;
+  userId?: string | null;
+  userName?: string | null;
+  userEmail?: string | null;
+  message?: string;
+  clientMessageId?: string | null;
+}
+
+export interface InitialUserMessageResult {
+  status: "accepted" | "busy" | "error";
   error?: string;
 }
 
@@ -1120,10 +1097,6 @@ const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = [
     description: "Prompt the user to set up a connection in the chat UI and wait for completion. Use this as a top-level tool, not from js_exec. Arguments: { integration_type, suggested_name?, message?, display_name?, description?, instructions?, fields? }.",
   },
   {
-    name: "capture_bug_report",
-    description: "Prompt the browser to capture a deployed-app bug report. Arguments: { message? }.",
-  },
-  {
     name: "get_custom_domain",
     description: "Get custom domain diagnostics for deployed apps.",
   },
@@ -1314,10 +1287,6 @@ function codeModePiToolParameters(name: string) {
         description: Type.Optional(Type.String()),
         instructions: Type.Optional(Type.String()),
         fields: Type.Optional(Type.Array(Type.Object({}, { additionalProperties: true }))),
-      });
-    case "capture_bug_report":
-      return Type.Object({
-        message: Type.Optional(Type.String()),
       });
     case "set_custom_domain":
       return Type.Object({
@@ -1575,11 +1544,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
       case "prompt_connection_setup":
         return this.promptConnectionSetup(args);
-
-      case "capture_bug_report":
-        return this.chatThreadStub.captureBugReport({
-          message: typeof args.message === "string" ? args.message : undefined,
-        });
 
       case "get_custom_domain":
         return this.getCustomDomain();
@@ -3333,15 +3297,11 @@ const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
  */
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
-  private static readonly BUG_REPORT_TIMEOUT_MS = 5 * 60 * 1000;
 
   private previewTarget: PreviewTarget | null = null;
   private previewTabs: PreviewTarget[] = [];
   private previewActiveTabId: string | null = null;
   private previewVersion: number = 0;
-
-  // Pending bug report captures (requestId -> MCP DO callback info)
-  private pendingBugReports: Map<string, PendingBugReportInfo> = new Map();
 
   // Chat bridge state
   private chatContext: ChatContextState | null = null;
@@ -3360,8 +3320,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
   private pendingQuestionWaiters: Map<string, PendingQuestionWaiter> = new Map();
   private pendingConnectionSetupWaiters: Map<string, PendingConnectionSetupWaiter> =
-    new Map();
-  private pendingBugReportWaiters: Map<string, PendingBugReportWaiter> =
     new Map();
   private pendingExternalTurn: PendingExternalTurn | null = null;
   private titleGenerationInFlight: boolean = false;
@@ -3487,30 +3445,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.ctx.storage.kv.put("previewTabs", this.previewTabs);
       this.ctx.storage.kv.put("previewActiveTabId", this.previewActiveTabId);
       this.ctx.storage.kv.put("previewTarget", this.previewTarget);
-
-      // Restore pending bug reports from storage (sync KV)
-      const bugReportEntries = ctx.storage.kv.list({
-        prefix: "pending_bug_report:",
-      });
-      for (const [key, value] of bugReportEntries) {
-        const info = value as Partial<PendingBugReportInfo>;
-        const requestId = key.replace("pending_bug_report:", "");
-        if (
-          typeof info?.createdAt === "number" &&
-          typeof info?.mcpDoId === "string"
-        ) {
-          if (
-            Date.now() - info.createdAt <
-            ChatThreadDO.BUG_REPORT_TIMEOUT_MS
-          ) {
-            this.pendingBugReports.set(requestId, info as PendingBugReportInfo);
-          } else {
-            ctx.storage.kv.delete(key);
-          }
-        } else {
-          ctx.storage.kv.delete(key);
-        }
-      }
 
       const storedContext =
         ctx.storage.kv.get<ChatContextState>(CHAT_CONTEXT_KEY);
@@ -3807,43 +3741,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
     }
 
-    // HTTP API for bug report capture prompts (called by MCP server)
-    if (url.pathname === "/bug-report/prompt" && request.method === "POST") {
-      const body = (await request.json()) as BugReportCaptureRequest & {
-        mcpDoId?: string;
-      };
-      const requestId = body.requestId || crypto.randomUUID();
-      const mcpDoId = body.mcpDoId;
-
-      if (!mcpDoId) {
-        return new Response(
-          JSON.stringify({ error: "Missing MCP DO ID for callback" }),
-          {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-
-      const pendingInfo: PendingBugReportInfo = {
-        mcpDoId,
-        createdAt: Date.now(),
-        message: body.message,
-      };
-      this.pendingBugReports.set(requestId, pendingInfo);
-      this.ctx.storage.kv.put(`pending_bug_report:${requestId}`, pendingInfo);
-
-      this.broadcastRealtime({
-        type: "bug_report_prompt",
-        requestId,
-        message: body.message,
-      });
-
-      return new Response(JSON.stringify({ requestId }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     return new Response("Not found", { status: 404 });
   }
 
@@ -3885,13 +3782,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return;
       }
 
-      if (data.type === "bug_report_response") {
-        await this.handleBugReportResponse(
-          data as unknown as BugReportCaptureResponse,
-        );
-        return;
-      }
-
       if (this.isRunnerClientSocket(ws)) {
         await this.handleRunnerClientMessage(ws, data);
         return;
@@ -3903,13 +3793,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return;
       }
 
-      if (data.type === "message") {
-        await this.handleChatMessage(ws);
-        return;
-      }
-
-      if (data.type === "stop") {
-        await this.handleChatStop(ws);
+      if (
+        data.type === "message" ||
+        data.type === "stop" ||
+        data.type === "set_model" ||
+        data.type === "ping"
+      ) {
+        await this.handleRunnerClientMessage(ws, data);
         return;
       }
 
@@ -4367,31 +4257,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     response: ConnectionSetupResponse,
   ): Promise<{ accepted: boolean }> {
     return await this.handleConnectionSetupResponse(response);
-  }
-
-  async captureBugReport(input: {
-    message?: string;
-  }): Promise<BugReportCaptureResponse> {
-    if (!this.hasAvailableBrowserUser()) {
-      return { requestId: "", cancelled: true };
-    }
-    const requestId = crypto.randomUUID();
-    this.broadcastRealtime({
-      type: "bug_report_prompt",
-      requestId,
-      message: input.message,
-    });
-    return new Promise<BugReportCaptureResponse>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.pendingBugReportWaiters.delete(requestId);
-        reject(new Error("Bug report capture timed out"));
-      }, ChatThreadDO.BUG_REPORT_TIMEOUT_MS);
-      this.pendingBugReportWaiters.set(requestId, {
-        resolve,
-        reject,
-        timeoutId,
-      });
-    });
   }
 
   async runCodeModeSubagent(
@@ -5983,38 +5848,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return { accepted: false };
   }
 
-  private async handleBugReportResponse(
-    response: BugReportCaptureResponse,
-  ): Promise<void> {
-    const nativeWaiter = this.pendingBugReportWaiters.get(response.requestId);
-    if (response.requestId && nativeWaiter) {
-      this.pendingBugReportWaiters.delete(response.requestId);
-      clearTimeout(nativeWaiter.timeoutId);
-      nativeWaiter.resolve(response);
-      return;
-    }
-
-    const pendingInfo = this.pendingBugReports.get(response.requestId);
-
-    if (response.requestId && pendingInfo) {
-      this.pendingBugReports.delete(response.requestId);
-      this.ctx.storage.kv.delete(`pending_bug_report:${response.requestId}`);
-
-      try {
-        const mcpDoId = this.env.MCP_OBJECT.idFromString(pendingInfo.mcpDoId);
-        const mcpStub = this.env.MCP_OBJECT.get(
-          mcpDoId,
-        ) as unknown as ChiridionMcpRpc;
-        await mcpStub.receiveBugReportCaptureResponse(response);
-      } catch (err) {
-        console.error(
-          "[ChatThreadDO] Failed to call MCP DO callback for bug report:",
-          err,
-        );
-      }
-    }
-  }
-
   private captureChatContextFromRequest(
     url: URL,
     request: Request,
@@ -6172,14 +6005,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private async handleChatMessage(ws: WebSocket): Promise<void> {
-    this.trace("handle_chat_message_rejected_side_channel");
-    this.sendDirect(ws, {
-      type: "error",
-      error: "Chat messages must use the runner WebSocket",
-    });
-  }
-
   private async applyConnectionMentionsForTurn(content: string): Promise<string> {
     if (!content) return content;
     if (!content.includes('@')) return content;
@@ -6199,14 +6024,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       return content;
     }
-  }
-
-  private async handleChatStop(ws: WebSocket): Promise<void> {
-    this.trace("handle_chat_stop_rejected_side_channel");
-    this.sendDirect(ws, {
-      type: "error",
-      error: "Stop requests must use the runner WebSocket",
-    });
   }
 
   private async handleRunnerClientMessage(
@@ -6320,35 +6137,59 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ws: WebSocket,
     data: ChatClientMessage,
   ): Promise<void> {
-    const context = this.chatContext;
-    if (!context) {
-      this.sendDirect(ws, { type: "error", error: "Missing chat context for thread" });
+    const result = await this.enqueueRunnerUserMessage(data);
+    if (result.status !== "accepted") {
+      this.sendDirect(ws, {
+        type: "error",
+        error: result.error ?? "Failed to send message to sandbox",
+      });
       return;
     }
 
-    const rawContent = typeof data.content === "string" ? data.content.trim() : "";
+    if (data.clientMessageId) {
+      this.sendDirect(ws, {
+        type: "message_accepted",
+        clientMessageId: data.clientMessageId,
+      });
+    }
+  }
+
+  private async enqueueRunnerUserMessage(
+    data: ChatClientMessage,
+  ): Promise<InitialUserMessageResult> {
+    const context = this.chatContext;
+    if (!context) {
+      return { status: "error", error: "Missing chat context for thread" };
+    }
+
+    if (this.chatIsStreaming) {
+      return { status: "busy", error: "Thread is already streaming" };
+    }
+
+    const rawContent =
+      typeof data.content === "string" ? data.content.trim() : "";
     if (!rawContent) {
-      return;
+      return { status: "error", error: "Empty message" };
     }
 
     const orgBan = await isOrgBanned(this.env.APP_KV, {
       orgId: context.orgId,
     });
     if (orgBan) {
-      this.sendDirect(ws, { type: "error", error: "Organization is blocked" });
-      return;
+      return { status: "error", error: "Organization is blocked" };
     }
 
     await this.ensureRunnerConnected();
 
     const safeContent = injectFileSafetyMessage(rawContent);
-    const mentionAugmented = await this.applyConnectionMentionsForTurn(safeContent);
+    const mentionAugmented =
+      await this.applyConnectionMentionsForTurn(safeContent);
     const attributedContent = formatAttributedUserMessage(mentionAugmented, {
       userName: context.userName,
       userEmail: context.userEmail,
     });
     if (!attributedContent) {
-      return;
+      return { status: "error", error: "Empty message" };
     }
 
     this.setActiveTurnUserId(context.userId);
@@ -6356,7 +6197,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
     this.ctx.waitUntil(
       this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
-        console.error('[ChatThreadDO] failed to update thread metadata after browser user message', err);
+        console.error(
+          '[ChatThreadDO] failed to update thread metadata after browser user message',
+          err,
+        );
       }),
     );
 
@@ -6370,16 +6214,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!sent) {
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
-      this.sendDirect(ws, { type: "error", error: "Failed to send message to sandbox" });
-      return;
+      return { status: "error", error: "Failed to send message to sandbox" };
     }
 
-    if (data.clientMessageId) {
-      this.sendDirect(ws, {
-        type: "message_accepted",
-        clientMessageId: data.clientMessageId,
-      });
-    }
+    return { status: "accepted" };
   }
 
   private async handleQuestionResponse(
@@ -6716,6 +6554,41 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
+  async startInitialUserMessage(
+    body: InitialUserMessageRequest,
+  ): Promise<InitialUserMessageResult> {
+    const contextError = this.updateExternalChatContext(body);
+    if (contextError) {
+      return { status: "error", error: contextError };
+    }
+
+    const message =
+      typeof body.message === "string" ? body.message.trim() : "";
+    if (!message) {
+      return { status: "error", error: "Missing message" };
+    }
+
+    try {
+      return await this.enqueueRunnerUserMessage({
+        type: "message",
+        content: message,
+        clientMessageId:
+          typeof body.clientMessageId === "string" &&
+          body.clientMessageId.trim()
+            ? body.clientMessageId.trim()
+            : undefined,
+      });
+    } catch (error) {
+      return {
+        status: "error",
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to start initial message",
+      };
+    }
+  }
+
   async externalMessage(
     body: ExternalMessageRequest,
   ): Promise<ExternalTurnResult> {
@@ -6825,6 +6698,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     threadId?: string;
     workspaceId?: string;
     orgId?: string;
+    userId?: string | null;
     userName?: string | null;
     userEmail?: string | null;
   }): string | null {
@@ -6846,9 +6720,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       workspaceId,
       orgId,
       provider: this.chatContext?.provider ?? 'claude',
-      userId: this.chatContext?.userId ?? null,
-      userName: this.chatContext?.userName ?? null,
-      userEmail: this.chatContext?.userEmail ?? null,
+      userId:
+        typeof payload.userId === "string" && payload.userId.trim()
+          ? payload.userId.trim()
+          : this.chatContext?.userId ?? null,
+      userName:
+        typeof payload.userName === "string" && payload.userName.trim()
+          ? payload.userName.trim()
+          : this.chatContext?.userName ?? null,
+      userEmail:
+        typeof payload.userEmail === "string" && payload.userEmail.trim()
+          ? payload.userEmail.trim()
+          : this.chatContext?.userEmail ?? null,
     };
     this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
     return null;
@@ -8221,7 +8104,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "list_integration_types",
       "create_integration",
       "prompt_connection_setup",
-      "capture_bug_report",
       "get_custom_domain",
       "set_custom_domain",
       "remove_custom_domain",
@@ -9401,6 +9283,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             content,
             timestamp: Date.now(),
           };
+          if (!this.piSession.state.isStreaming) {
+            this.startPiTurnRecovery(userMessage);
+          }
           this.ctx.waitUntil(
             (async () => {
               if (!this.piSession) return;
@@ -9408,7 +9293,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               if (this.piSession.state.isStreaming) {
                 this.piSession.steer(userMessage);
               } else {
-                this.startPiTurnRecovery(userMessage);
                 await this.piSession.prompt(userMessage);
               }
             })().catch((error) => {
@@ -9618,20 +9502,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       : 0;
   }
 
-  private pruneExpiredPendingPrompts(): void {
-    const now = Date.now();
-
-    for (const [requestId, info] of this.pendingBugReports.entries()) {
-      if (now - info.createdAt >= ChatThreadDO.BUG_REPORT_TIMEOUT_MS) {
-        this.pendingBugReports.delete(requestId);
-        this.ctx.storage.kv.delete(`pending_bug_report:${requestId}`);
-      }
-    }
-  }
-
   private sendPendingPromptsToWebSocket(ws: WebSocket): void {
-    this.pruneExpiredPendingPrompts();
-
     const nativeConnectionPrompts = Array.from(
       this.pendingConnectionSetupWaiters.entries(),
     ).sort(([, a], [, b]) => a.info.createdAt - b.info.createdAt);
@@ -9648,16 +9519,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
     }
 
-    const pendingBugReportPrompts = Array.from(
-      this.pendingBugReports.entries(),
-    ).sort(([, a], [, b]) => a.createdAt - b.createdAt);
-    for (const [requestId, info] of pendingBugReportPrompts) {
-      this.sendDirect(ws, {
-        type: "bug_report_prompt",
-        requestId,
-        message: info.message,
-      });
-    }
   }
 }
 

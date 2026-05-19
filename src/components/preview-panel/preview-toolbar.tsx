@@ -3,7 +3,6 @@ import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   AppWindowMac,
-  Bug,
   Check,
   ChevronDown,
   Download,
@@ -41,7 +40,6 @@ interface PreviewToolbarProps {
   onRefresh: () => void;
   openElsewhereKind: OpenElsewhereKind | null;
   onOpenElsewhere: () => void;
-  onBugReport?: () => void;
   appShareButton?: ReactNode;
   notebookViewMode?: 'report' | 'notebook';
   onNotebookViewModeChange?: (mode: 'report' | 'notebook') => void;
@@ -446,7 +444,6 @@ function PreviewToolbarComponent({
   onRefresh,
   openElsewhereKind,
   onOpenElsewhere,
-  onBugReport,
   appShareButton,
   notebookViewMode,
   onNotebookViewModeChange,
@@ -492,9 +489,6 @@ function PreviewToolbarComponent({
 
       <OpenElsewhereButton kind={openElsewhereKind} onClick={onOpenElsewhere} />
       {activeTarget.kind === 'app' ? appShareButton : null}
-      {activeTarget.kind === 'app' && onBugReport ? (
-        <ToolbarButton icon={Bug} tooltip="Report a bug" onClick={onBugReport} />
-      ) : null}
       {activeTarget.kind === 'file' ? (
         <DownloadButton
           activeTarget={activeTarget}

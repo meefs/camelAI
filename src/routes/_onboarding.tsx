@@ -181,7 +181,6 @@ export default function OnboardingRoute() {
           redirectTo?: string;
           threadId?: string;
           salesPrompt?: string | null;
-          initialMessageContent?: string | null;
           showBootModal?: boolean;
         };
 
@@ -199,10 +198,7 @@ export default function OnboardingRoute() {
           }
         }
 
-        const initialMessageContent = data.initialMessageContent?.trim();
-        navigate(data.redirectTo || "/chat", {
-          state: initialMessageContent ? { initialMessageContent } : null,
-        });
+        navigate(data.redirectTo || "/chat");
       })();
 
       completeOnboardingRequestRef.current = completeRequest;

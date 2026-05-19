@@ -19,7 +19,6 @@ import { memo } from 'react';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
-import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
 import { isSupportedSlashCommand } from '@/lib/slash-commands';
 import {
@@ -558,8 +557,6 @@ interface MessageBubbleProps {
   /** Optional hover/focus classes supplied by a parent turn group. */
   actionHoverClassName?: string;
   skillSheets?: Map<string, string>;
-  hostname?: string;
-  orgSlug?: string;
   mentionSlugMap?: Map<string, Integration>;
 }
 
@@ -593,8 +590,6 @@ function MessageBubbleBase({
   actionCopyContent,
   actionHoverClassName = "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100",
   skillSheets,
-  hostname,
-  orgSlug,
   mentionSlugMap,
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
@@ -676,16 +671,6 @@ function MessageBubbleBase({
       displayContent = stripped.blocks;
     }
 
-    const rawText = typeof displayContent === 'string'
-      ? displayContent
-      : displayContent
-        .map(block => (block.type === 'text' ? block.text : ''))
-        .filter(Boolean)
-        .join('\n');
-
-    const bugReportText = rawText ? stripSystemMessageTags(rawText) : '';
-    const bugReport = bugReportText ? parseBugReport(bugReportText) : null;
-
     const uploadInfo = typeof displayContent === 'string'
       ? parseUploadRefs(displayContent)
       : { refs: [] as ReturnType<typeof parseUploadRefs>['refs'], cleanContent: displayContent };
@@ -695,69 +680,6 @@ function MessageBubbleBase({
     const hasCleanContent = typeof cleanedContent === 'string'
       ? cleanedContent.length > 0
       : cleanedContent.length > 0;
-
-    if (bugReport) {
-      return (
-        <div className="flex flex-col items-end gap-2">
-          {previewRefs.length > 0 && workspaceId && (
-            <div className="flex flex-wrap gap-2">
-              {previewRefs.map(ref => (
-                <FilePreviewChip
-                  key={ref.mountPath}
-                  filename={ref.originalName}
-                  previewUrl={`/api/workspaces/${workspaceId}/uploads/${encodePathSegments(ref.filename)}`}
-                  previewTarget={{
-                    kind: 'file',
-                    source: 'upload',
-                    workspaceId,
-                    path: ref.filename,
-                    filename: ref.originalName,
-                  }}
-                />
-              ))}
-            </div>
-          )}
-          <BugReportCard
-            appName={bugReport.appName}
-            description={bugReport.description}
-            timestamp={message.created_at}
-            hostname={hostname}
-            orgSlug={orgSlug}
-          />
-          {showActionRow && (
-            <div
-              className={cn("flex items-center gap-0.5 pointer-coarse:gap-1", actionVisibilityClassName)}
-              role="group"
-              aria-label="Message actions"
-            >
-              {author && (
-                <span className="text-muted-foreground text-xs mr-1">
-                  Sent by {author.displayName} at{' '}
-                </span>
-              )}
-              <span className="text-muted-foreground text-xs mr-1">
-                {formatMessageTime(message.created_at)}
-              </span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
-                    onClick={() => onCopy(message.id, bugReport.originalText)}
-                  >
-                    {isCopied ? <Check /> : <Copy />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {isCopied ? 'Copied!' : 'Copy message'}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
-        </div>
-      );
-    }
 
     return (
       <div className="flex flex-col items-end gap-2">
@@ -916,8 +838,6 @@ export const MessageBubble = memo(MessageBubbleBase, (prev, next) => {
     prev.showActionRow === next.showActionRow &&
     prev.actionCopyContent === next.actionCopyContent &&
     prev.actionHoverClassName === next.actionHoverClassName &&
-    prev.hostname === next.hostname &&
-    prev.orgSlug === next.orgSlug &&
     prev.mentionSlugMap === next.mentionSlugMap &&
     messageSkillSheetsEqual(prev.message, prev.skillSheets, next.skillSheets)
   );

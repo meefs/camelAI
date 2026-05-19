@@ -247,12 +247,11 @@ URL chip icon (`Globe`) stays — apps don't have a per-file-type icon, and `Glo
 
 ## What was implemented correctly (no action needed)
 
-- Three-zone layout: refresh + toggle (left) → identity chip (center, flex-1) → open-elsewhere + share + bug + download (right).
+- Three-zone layout: refresh + toggle (left) → identity chip (center, flex-1) → open-elsewhere + share + download (right).
 - Open-elsewhere ordering: first child in the right zone, immediately after the center chip. Matches the agreed principle.
 - `OpenElsewhereButton` correctly returns `null` for `kind === null`, so upload-source and output-source files render no button.
 - `fileExternalOpenUrl` returns `""` for non-workspace sources; raw `/api/.../uploads/...` and `/api/.../outputs/...` URLs are no longer generated.
 - `handlePreviewOpenElsewhere` has a redundant-but-defensive `source !== "workspace"` guard. Fine to keep.
-- `onBugReportOpen` is now optional and gated on `readOnly` at the callsite — matches the original admin-only intent.
 - All four `*ToolbarActions` sub-components were deleted as planned; the unified render is in place.
 - `Tabs` / `TabsList` / `TabsTrigger` imports removed from `preview-toolbar.tsx`. Toggle owns those now.
 - Tests file ([tests/preview-toolbar-notebook-download.test.tsx](tests/preview-toolbar-notebook-download.test.tsx)) was updated alongside — verify the changes there still cover the notebook download path after these toggle/chip fixes; no new test changes expected from this round.

@@ -313,8 +313,6 @@ interface PreviewToolbarProps {
   isAdmin?: boolean;
   onRefresh: () => void;
   onOpenExternal: () => void;
-  /** App-only callbacks */
-  onBugReport?: () => void;
   appShareButton?: React.ReactNode;
   /** Notebook-only */
   notebookViewMode?: 'report' | 'notebook';
@@ -367,9 +365,6 @@ function AppToolbarActions(props: PreviewToolbarProps) {
       />
       {props.appShareButton}
 
-      <Separator orientation="vertical" className="mx-1 h-4" />
-
-      <ToolbarButton icon={Bug} tooltip="Report a bug" onClick={props.onBugReport ?? (() => {})} />
     </>
   );
 }
@@ -993,11 +988,6 @@ const previewPanelBody = previewTabs.length > 0 && previewTarget ? (
         } else {
           window.open(fileComputerOpenUrl, '_blank');
         }
-      }}
-      onBugReport={() => {
-        setBugReportOpen(true);
-        setBugReportStatus('idle');
-        setBugReportError(null);
       }}
       appShareButton={
         previewTarget.kind === 'app' ? (

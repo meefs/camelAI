@@ -6,6 +6,7 @@ import React from 'react';
 const messageBubbleRenderCounts = vi.hoisted(() => new Map<string, number>());
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
+const mockSubmit = vi.fn();
 let mockLocation = { pathname: '/', search: '', hash: '', state: null as unknown, key: 'default' };
 
 function createFetcher() {
@@ -23,8 +24,10 @@ vi.mock('react-router', async () => {
     ...actual,
     useNavigate: () => mockNavigate,
     useLocation: () => mockLocation,
+    useNavigation: () => ({ state: 'idle', formData: undefined }),
     useRevalidator: () => ({ state: 'idle' as const, revalidate: mockRevalidate }),
     useFetcher: () => createFetcher(),
+    useSubmit: () => mockSubmit,
   };
 });
 
@@ -145,10 +148,6 @@ vi.mock('@/components/connection-setup-prompt', () => ({
   ConnectionSetupPrompt: () => null,
 }));
 
-vi.mock('@/components/bug-report-dialog', () => ({
-  BugReportDialog: () => null,
-}));
-
 vi.mock('@/components/ui/button', () => ({
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => <button {...props}>{children}</button>,
 }));
@@ -220,7 +219,7 @@ class MockWebSocket {
 }
 
 function getMainSocket(): MockWebSocket {
-  const socket = MockWebSocket.instances.find((candidate) => candidate.url.includes('/ws/runner/ws-1'));
+  const socket = MockWebSocket.instances.find((candidate) => candidate.url.includes('/ws/ws-1'));
   if (!socket) throw new Error('Main chat WebSocket was not created');
   return socket;
 }
@@ -423,91 +422,6 @@ describe('Chat mid-stream follow-up ordering', () => {
 
     expect(screen.getByText(/assistant: # Streaming report/)).toBeInTheDocument();
     expect(screen.getByText(/export function Example39/)).toBeInTheDocument();
-  });
-
-  it('keeps the first navigation message visible while the assistant starts streaming', async () => {
-    mockLocation = {
-      pathname: '/chat/thread-1',
-      search: '?newThread=1',
-      hash: '',
-      state: { initialMessageContent: 'write a long poem' },
-      key: 'new-thread',
-    };
-
-    const { rerender } = render(
-      <Chat
-        threadId="thread-1"
-        workspaceId="ws-1"
-        isNewThread
-        initialMessages={[]}
-      />,
-    );
-
-    const mainSocket = getMainSocket();
-    await act(async () => {
-      mainSocket.emitOpen();
-      mainSocket.emitMessage({ type: 'ready' });
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('user: write a long poem')).toBeInTheDocument();
-      expect(mainSocket.send).toHaveBeenCalledWith(
-        expect.stringContaining('write a long poem'),
-      );
-    });
-
-    rerender(
-      <Chat
-        threadId="thread-1"
-        workspaceId="ws-1"
-        isNewThread
-        initialMessages={[]}
-      />,
-    );
-
-    await act(async () => {
-      emitStreamTextPart(mainSocket, 'assistant-1', 'Line one');
-    });
-
-    await waitFor(() => {
-      expect(getTranscriptRows()).toEqual([
-        'user: write a long poem',
-        'assistant: Line one',
-      ]);
-    });
-
-    await act(async () => {
-      mainSocket.emitMessage({ type: 'streaming_state', isStreaming: false });
-      mainSocket.emitMessage({ type: 'result' });
-    });
-
-    rerender(
-      <Chat
-        threadId="thread-1"
-        workspaceId="ws-1"
-        initialMessages={[
-          {
-            id: 'server-user-1',
-            thread_id: 'thread-1',
-            role: 'user',
-            content: 'write a long poem',
-            created_at: 1,
-          },
-          {
-            id: 'server-assistant-1',
-            thread_id: 'thread-1',
-            role: 'assistant',
-            content: 'Line one',
-            created_at: 2,
-          },
-        ]}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getAllByText('user: write a long poem')).toHaveLength(1);
-      expect(screen.getAllByText('assistant: Line one')).toHaveLength(1);
-    });
   });
 
   it('uses route history as the source of truth for new threads', async () => {

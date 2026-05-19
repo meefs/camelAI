@@ -98,8 +98,6 @@ function canonicalizeToolSummaryName(name: string): string {
       return 'CreateConnection';
     case 'prompt_connection_setup':
       return 'PromptConnectionSetup';
-    case 'capture_bug_report':
-      return 'CaptureBugReport';
     case 'get_custom_domain':
       return 'GetCustomDomain';
     case 'set_custom_domain':
@@ -563,10 +561,6 @@ export function getToolSummaryParts(
       if (isRunning) return { action: 'Asking for connection details...' };
       if (isError) return { action: 'Could not ask for connection details' };
       return { action: 'Asked for connection details' };
-    case 'CaptureBugReport':
-      if (isRunning) return { action: 'Capturing bug report...' };
-      if (isError) return { action: 'Could not capture bug report' };
-      return { action: 'Captured bug report' };
     case 'GetCustomDomain':
       if (isRunning) return { action: 'Checking custom domain...' };
       if (isError) return { action: 'Could not check custom domain' };

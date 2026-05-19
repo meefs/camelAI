@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useFetcher, useNavigate, useRevalidator, useSearchParams } from 'react-router';
+import { useFetcher, useNavigate, useNavigation, useRevalidator, useSearchParams, useSubmit } from 'react-router';
 import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { APP_BUILD_ID } from '@/lib/app-build-id';
@@ -122,13 +122,11 @@ export default function ConnectionsClient({
   otherWorkspaces = [],
 }: ConnectionsClientProps) {
   const navigate = useNavigate();
+  const submit = useSubmit();
+  const navigation = useNavigation();
   const { currentOrg, currentWorkspace, orgs } = useAuthData();
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const createThreadFetcher = useFetcher<{
-    thread?: { id: string };
-    error?: string;
-  }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [error, setError] = useState<string | null>(null);
@@ -269,22 +267,6 @@ export default function ConnectionsClient({
     }
   }, [fetcher.state, fetcher.data]);
 
-  // Handle new thread creation for custom "other" connections
-  useEffect(() => {
-    if (createThreadFetcher.state !== 'idle' || !createThreadFetcher.data) return;
-
-    if (createThreadFetcher.data.thread) {
-      navigate(`/chat/${createThreadFetcher.data.thread.id}`, {
-        state: { initialMessageContent: CUSTOM_CONNECTION_SYSTEM_MESSAGE },
-      });
-      return;
-    }
-
-    if (createThreadFetcher.data.error) {
-      toast.error(createThreadFetcher.data.error);
-    }
-  }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
-
   const handleDelete = () => {
     if (!deleteTarget) return;
 
@@ -320,13 +302,17 @@ export default function ConnectionsClient({
   };
 
   const handleContinueToCustomConnectionChat = () => {
-    if (createThreadFetcher.state !== 'idle') return;
+    if (
+      navigation.state !== 'idle' &&
+      navigation.formData?.get('intent') === 'createThreadAndStart'
+    ) return;
 
-    createThreadFetcher.submit(
+    submit(
       {
-        intent: 'createThread',
+        intent: 'createThreadAndStart',
         clientBuildId: APP_BUILD_ID,
-        firstMessage: 'Set up a custom connection',
+        initialTitle: 'Set up a custom connection',
+        firstMessage: CUSTOM_CONNECTION_SYSTEM_MESSAGE,
       },
       { method: 'post', action: '/chat' }
     );
