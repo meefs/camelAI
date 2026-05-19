@@ -6157,30 +6157,70 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private async enqueueRunnerUserMessage(
     data: ChatClientMessage,
   ): Promise<InitialUserMessageResult> {
+    const startedAt = Date.now();
     const context = this.chatContext;
     if (!context) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "validate_context",
+        status: "error",
+        severity: "warn",
+        durationMs: Date.now() - startedAt,
+      });
       return { status: "error", error: "Missing chat context for thread" };
     }
 
     if (this.chatIsStreaming) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "validate_streaming_state",
+        status: "busy",
+        severity: "warn",
+        durationMs: Date.now() - startedAt,
+      });
       return { status: "busy", error: "Thread is already streaming" };
     }
 
     const rawContent =
       typeof data.content === "string" ? data.content.trim() : "";
     if (!rawContent) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "validate_message",
+        status: "error",
+        severity: "warn",
+        durationMs: Date.now() - startedAt,
+        size: 0,
+      });
       return { status: "error", error: "Empty message" };
     }
 
+    const banCheckStartedAt = Date.now();
     const orgBan = await isOrgBanned(this.env.APP_KV, {
       orgId: context.orgId,
     });
+    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
+      operation: "org_ban_checked",
+      durationMs: Date.now() - banCheckStartedAt,
+      size: rawContent.length,
+    });
     if (orgBan) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "org_ban_checked",
+        status: "error",
+        severity: "warn",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+      });
       return { status: "error", error: "Organization is blocked" };
     }
 
+    const runnerConnectStartedAt = Date.now();
     await this.ensureRunnerConnected();
+    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
+      operation: "ensure_runner_connected",
+      durationMs: Date.now() - runnerConnectStartedAt,
+      size: rawContent.length,
+    });
 
+    const messagePrepareStartedAt = Date.now();
     const safeContent = injectFileSafetyMessage(rawContent);
     const mentionAugmented =
       await this.applyConnectionMentionsForTurn(safeContent);
@@ -6188,7 +6228,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       userName: context.userName,
       userEmail: context.userEmail,
     });
+    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
+      operation: "message_prepared",
+      durationMs: Date.now() - messagePrepareStartedAt,
+      size: rawContent.length,
+    });
     if (!attributedContent) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "message_prepared",
+        status: "error",
+        severity: "warn",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+      });
       return { status: "error", error: "Empty message" };
     }
 
@@ -6214,9 +6266,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!sent) {
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "send_runner_command",
+        status: "error",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+      });
       return { status: "error", error: "Failed to send message to sandbox" };
     }
 
+    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+      operation: "send_runner_command",
+      status: "accepted",
+      durationMs: Date.now() - startedAt,
+      size: rawContent.length,
+    });
     return { status: "accepted" };
   }
 
@@ -6557,19 +6622,34 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async startInitialUserMessage(
     body: InitialUserMessageRequest,
   ): Promise<InitialUserMessageResult> {
+    const startedAt = Date.now();
     const contextError = this.updateExternalChatContext(body);
     if (contextError) {
+      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
+        operation: "validate_context",
+        status: "error",
+        severity: "warn",
+        durationMs: Date.now() - startedAt,
+        size: typeof body.message === "string" ? body.message.length : 0,
+      });
       return { status: "error", error: contextError };
     }
 
     const message =
       typeof body.message === "string" ? body.message.trim() : "";
     if (!message) {
+      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
+        operation: "validate_message",
+        status: "error",
+        severity: "warn",
+        durationMs: Date.now() - startedAt,
+        size: 0,
+      });
       return { status: "error", error: "Missing message" };
     }
 
     try {
-      return await this.enqueueRunnerUserMessage({
+      const result = await this.enqueueRunnerUserMessage({
         type: "message",
         content: message,
         clientMessageId:
@@ -6578,7 +6658,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             ? body.clientMessageId.trim()
             : undefined,
       });
+      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
+        operation: "enqueue_runner_user_message",
+        status: result.status,
+        severity: result.status === "accepted" ? "info" : "warn",
+        durationMs: Date.now() - startedAt,
+        size: message.length,
+      });
+      return result;
     } catch (error) {
+      this.recordChatThreadObservabilityEvent("initial_user_message_start", {
+        operation: "enqueue_runner_user_message",
+        durationMs: Date.now() - startedAt,
+        size: message.length,
+        error,
+      });
       return {
         status: "error",
         error:
