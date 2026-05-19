@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Context, Model } from '@mariozechner/pi-ai';
 
 import { __testing } from '../src/pi-bedrock-provider';
+import bedrockProviderWorker from '../../bedrock-provider/src/index';
 
 const model = {
   id: 'global.anthropic.claude-sonnet-4-6',
@@ -19,6 +20,53 @@ function buildMessages(context: Context) {
 }
 
 describe('Pi Bedrock provider message conversion', () => {
+  it('ports upstream Bedrock Claude limits onto sparse custom-routed model objects', () => {
+    const sparse = {
+      id: 'global.anthropic.claude-sonnet-4-6',
+      api: 'bedrock-converse-stream',
+      provider: 'amazon-bedrock',
+      baseUrl: 'https://bedrock-runtime.us-west-2.amazonaws.com',
+      name: 'custom route',
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 4_096,
+    } as Model<'bedrock-converse-stream'>;
+
+    expect(__testing.withBedrockModelMetadata(sparse)).toMatchObject({
+      name: 'Claude Sonnet 4.6 (Global)',
+      reasoning: true,
+      input: ['text', 'image'],
+      contextWindow: 1_000_000,
+      maxTokens: 64_000,
+      cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    });
+  });
+
+  it('uses upstream Opus 4.7 limits for Bedrock aliases before compaction decisions', () => {
+    const sparse = {
+      id: 'claude-opus-4-7',
+      api: 'bedrock-converse-stream',
+      provider: 'amazon-bedrock',
+      baseUrl: 'https://bedrock-runtime.us-west-2.amazonaws.com',
+      name: 'custom route',
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 4_096,
+    } as Model<'bedrock-converse-stream'>;
+
+    expect(__testing.withBedrockModelMetadata(sparse)).toMatchObject({
+      name: 'Claude Opus 4.7 (Global)',
+      reasoning: true,
+      thinkingLevelMap: { xhigh: 'xhigh' },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
+  });
+
   it('synthesizes an immediate tool_result user message for missing Pi tool results', () => {
     const messages = buildMessages({
       messages: [
@@ -193,5 +241,34 @@ describe('Pi Bedrock provider message conversion', () => {
         ],
       },
     ]);
+  });
+});
+
+describe('Standalone Bedrock provider model metadata', () => {
+  it('exposes Pi-compatible token and compaction limits from /v1/models', async () => {
+    const response = await bedrockProviderWorker.fetch(
+      new Request('https://bedrock-provider.test/v1/models'),
+      {},
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { data: Array<Record<string, unknown>> };
+    expect(payload.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'claude-sonnet-4-6',
+          contextWindow: 1_000_000,
+          context_window: 1_000_000,
+          maxTokens: 64_000,
+          max_tokens: 64_000,
+        }),
+        expect.objectContaining({
+          id: 'claude-opus-4-7',
+          contextWindow: 1_000_000,
+          maxTokens: 128_000,
+          thinkingLevelMap: { xhigh: 'xhigh' },
+        }),
+      ]),
+    );
   });
 });

@@ -8,7 +8,10 @@ import type {
   AgentToolResult,
 } from "@mariozechner/pi-agent-core";
 import { setBedrockProviderModule } from "@mariozechner/pi-ai";
-import { bedrockProviderModule } from "./pi-bedrock-provider";
+import {
+  bedrockProviderModule,
+  withBedrockModelMetadata,
+} from "./pi-bedrock-provider";
 import type { Model } from "@mariozechner/pi-ai";
 import type { OrgDO, UserDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
@@ -7298,21 +7301,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     apiKey: string,
     completeSimple: typeof import("@mariozechner/pi-ai").completeSimple,
     signal?: AbortSignal,
+    force = false,
   ): Promise<AgentMessage[]> {
     const contextWindow = typeof model.contextWindow === "number" && model.contextWindow > 0
       ? model.contextWindow
       : 128_000;
-    const reserveTokens = 16_384;
+    const reserveTokens = this.piCompactionReserveTokens(contextWindow);
     const keepRecentTokens = 20_000;
-    const tokens = this.estimatePiContextTokens(messages);
-    if (tokens < contextWindow - reserveTokens) {
+    const tokens = this.estimatePiCompactionTokens(messages);
+    if (!force && tokens < contextWindow - reserveTokens) {
       return messages;
     }
 
     const existing = this.loadPiCoreCompaction();
     if (existing && existing.firstKeptIndex > 0 && existing.firstKeptIndex < messages.length) {
       const tail = messages.slice(existing.firstKeptIndex);
-      if (this.estimatePiContextTokens([
+      if (this.estimatePiCompactionTokens([
         this.createPiSummaryMessage(existing.summary),
         ...tail,
       ]) < contextWindow - reserveTokens) {
@@ -7341,6 +7345,104 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } catch (error) {
       console.error("[ChatThreadDO] Pi context compaction failed", error);
       return messages;
+    }
+  }
+
+  private piCompactionReserveTokens(contextWindow: number): number {
+    return Math.max(16_384, Math.ceil(contextWindow * 0.1));
+  }
+
+  private estimatePiCompactionTokens(messages: AgentMessage[]): number {
+    return Math.ceil(this.estimatePiContextTokens(messages) * 1.12);
+  }
+
+  private piAssistantContextTokens(message: AgentMessage): number | null {
+    if (message.role !== "assistant") return null;
+    const usage = (message as AgentMessage & {
+      usage?: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+        totalTokens?: number;
+      };
+    }).usage;
+    if (!usage) return null;
+    const totalTokens = Number(usage.totalTokens);
+    if (Number.isFinite(totalTokens) && totalTokens > 0) {
+      return Math.floor(totalTokens);
+    }
+    const input = Math.max(0, Math.floor(Number(usage.input ?? 0)));
+    const output = Math.max(0, Math.floor(Number(usage.output ?? 0)));
+    const cacheRead = Math.max(0, Math.floor(Number(usage.cacheRead ?? 0)));
+    const cacheWrite = Math.max(0, Math.floor(Number(usage.cacheWrite ?? 0)));
+    const total = input + output + cacheRead + cacheWrite;
+    return total > 0 ? total : null;
+  }
+
+  private shouldCompactPiAfterAssistantUsage(
+    message: AgentMessage,
+    model: Model<any> | null | undefined,
+  ): boolean {
+    const contextTokens = this.piAssistantContextTokens(message);
+    if (contextTokens === null) return false;
+    const contextWindow = typeof model?.contextWindow === "number" && model.contextWindow > 0
+      ? model.contextWindow
+      : 128_000;
+    return contextTokens >= contextWindow - this.piCompactionReserveTokens(contextWindow);
+  }
+
+  private maybeSchedulePiPostTurnCompaction(messages: AgentMessage[]): void {
+    const latestAssistant = this.latestPiAssistantMessage(messages);
+    if (!latestAssistant || !this.shouldCompactPiAfterAssistantUsage(latestAssistant, this.piSession?.state.model)) {
+      return;
+    }
+
+    this.ctx.waitUntil(
+      this.compactPiContextAfterTurn(latestAssistant).catch((error) => {
+        console.error("[ChatThreadDO] Pi post-turn compaction failed", error);
+        this.recordChatThreadObservabilityEvent("pi_post_turn_compaction_failed", {
+          operation: "post_turn_compaction",
+          status: "error",
+          error,
+        });
+      }),
+    );
+  }
+
+  private async compactPiContextAfterTurn(triggerMessage: AgentMessage): Promise<void> {
+    const resolver = this.piModelResolver;
+    const session = this.piSession;
+    if (!resolver || !session || !this.shouldCompactPiAfterAssistantUsage(triggerMessage, session.state.model)) {
+      return;
+    }
+
+    const { completeSimple } = await import("@mariozechner/pi-ai");
+    const current = await resolver();
+    if (!this.shouldCompactPiAfterAssistantUsage(triggerMessage, current.model)) {
+      return;
+    }
+
+    const before = session.state.messages;
+    const compacted = await this.compactPiContext(
+      before,
+      current.model,
+      current.apiKey,
+      completeSimple,
+      undefined,
+      true,
+    );
+    if (compacted !== before) {
+      session.state.messages = compacted;
+      this.piMainBaselineIndex = compacted.length;
+      this.recordChatThreadObservabilityEvent("pi_post_turn_compacted", {
+        operation: "post_turn_compaction",
+        status: "ok",
+        count: before.length,
+        size: compacted.length,
+        provider: current.usageProvider || current.provider,
+        model: current.model.id || current.modelId,
+      });
     }
   }
 
@@ -7479,18 +7581,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.piCurrentBillingSource = configured.billingSource;
     this.piCurrentCreditChargeable = configured.creditChargeable;
     this.piCurrentUsageProvider = usageProvider;
-    return {
-      model: {
-        ...modelBase,
-        api: resolved.api ?? modelBase.api,
-        id: configured.requestModelId ?? modelBase.id,
-        provider: configured.requestProvider ?? modelBase.provider,
-        baseUrl: configured.baseUrl || modelBase.baseUrl,
-        headers: {
-          ...(modelBase.headers ?? {}),
-          ...(configured.headers ?? {}),
-        },
+    const resolvedModel = {
+      ...modelBase,
+      api: resolved.api ?? modelBase.api,
+      id: configured.requestModelId ?? modelBase.id,
+      provider: configured.requestProvider ?? modelBase.provider,
+      baseUrl: configured.baseUrl || modelBase.baseUrl,
+      headers: {
+        ...(modelBase.headers ?? {}),
+        ...(configured.headers ?? {}),
       },
+    };
+    return {
+      model:
+        resolvedModel.api === "bedrock-converse-stream"
+          ? withBedrockModelMetadata(resolvedModel as Model<"bedrock-converse-stream">)
+          : resolvedModel,
       apiKey: configured.apiKey,
       headers: configured.headers,
       provider: resolved.provider,
@@ -8381,6 +8487,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return "";
   }
 
+  private latestPiAssistantMessage(messages: AgentMessage[]): AgentMessage | null {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if ((message as { role?: unknown }).role === "assistant") {
+        return message;
+      }
+    }
+    return null;
+  }
+
   private extractPiMessageText(message: AgentMessage): string {
     const content = (message as { content?: unknown }).content;
     if (typeof content === "string") return content.trim();
@@ -8739,6 +8855,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         event.messages,
         this.piAssistantText,
       );
+      this.maybeSchedulePiPostTurnCompaction(newMessages);
       const droppedInFlight = this.loadPiInFlightMessages().length;
       this.clearPiInFlightMessages();
       if (droppedInFlight > 0) {

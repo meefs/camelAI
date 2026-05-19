@@ -406,6 +406,120 @@ describe('ChatThreadDO Codex external turn completion', () => {
     );
   });
 
+  it('preflights Pi context compaction with enough headroom for 1M Bedrock models', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const messages = [
+      { role: 'user', content: 'old context', timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'recent context' }], timestamp: 2 },
+    ];
+    fake.estimatePiContextTokens = vi.fn(() => 920_000);
+    fake.loadPiCoreCompaction = vi.fn(() => null);
+    fake.findPiCompactionCutIndex = vi.fn(() => 1);
+    fake.summarizePiMessages = vi.fn(async () => 'compact summary');
+    fake.persistPiCoreCompaction = vi.fn();
+    fake.createPiSummaryMessage = vi.fn((summary: string) => ({
+      role: 'user',
+      content: `[summary] ${summary}`,
+      timestamp: 3,
+    }));
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      { contextWindow: 1_000_000 },
+      'bedrock-token',
+      vi.fn(),
+    );
+
+    expect(fake.summarizePiMessages).toHaveBeenCalled();
+    expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith('compact summary', 1);
+    expect(compacted).toEqual([
+      { role: 'user', content: '[summary] compact summary', timestamp: 3 },
+      messages[1],
+    ]);
+  });
+
+  it('schedules post-turn Pi compaction from assistant usage like the high-level agent', async () => {
+    const compaction = Promise.resolve();
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = { waitUntil: vi.fn() };
+    fake.piSession = {
+      state: {
+        model: { contextWindow: 1_000_000 },
+      },
+    };
+    fake.compactPiContextAfterTurn = vi.fn(() => compaction);
+
+    const assistantMessage = {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'done' }],
+      timestamp: 1,
+      usage: {
+        input: 910_000,
+        output: 1_000,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 911_000,
+      },
+    };
+
+    ChatThreadDO.prototype['maybeSchedulePiPostTurnCompaction'].call(
+      fake,
+      [{ role: 'user', content: 'hi', timestamp: 0 }, assistantMessage],
+    );
+
+    expect(fake.ctx.waitUntil).toHaveBeenCalledWith(expect.any(Promise));
+    expect(fake.compactPiContextAfterTurn).toHaveBeenCalledWith(assistantMessage);
+  });
+
+  it('persists post-turn Pi compaction into live session state and resets baseline', async () => {
+    const beforeMessages = [
+      { role: 'user', content: 'old', timestamp: 0 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'done' }],
+        timestamp: 1,
+        usage: { totalTokens: 911_000 },
+      },
+    ];
+    const compactedMessages = [
+      { role: 'user', content: '[summary] old', timestamp: 2 },
+      beforeMessages[1],
+    ];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piModelResolver = vi.fn(async () => ({
+      model: { contextWindow: 1_000_000, id: 'global.anthropic.claude-sonnet-4-6' },
+      apiKey: 'bedrock-token',
+      provider: 'bedrock',
+      usageProvider: 'bedrock',
+      modelId: 'claude-sonnet-4-6',
+    }));
+    fake.piSession = {
+      state: {
+        model: { contextWindow: 1_000_000 },
+        messages: beforeMessages,
+      },
+    };
+    fake.compactPiContext = vi.fn(async () => compactedMessages);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.piMainBaselineIndex = beforeMessages.length;
+
+    await ChatThreadDO.prototype['compactPiContextAfterTurn'].call(
+      fake,
+      beforeMessages[1],
+    );
+
+    expect(fake.piSession.state.messages).toBe(compactedMessages);
+    expect(fake.piMainBaselineIndex).toBe(compactedMessages.length);
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_post_turn_compacted',
+      expect.objectContaining({
+        count: beforeMessages.length,
+        size: compactedMessages.length,
+      }),
+    );
+  });
+
   it('routes Gemini aliases through OpenRouter chat completions rather than Google API shape', () => {
     const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
       Object.create(ChatThreadDO.prototype),

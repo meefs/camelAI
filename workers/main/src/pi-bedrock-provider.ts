@@ -152,20 +152,109 @@ type AnthropicTool = {
 
 type EventStreamBytes = Uint8Array<ArrayBufferLike>;
 
+type BedrockClaudeModelMetadata = {
+  id: string;
+  name: string;
+  reasoning: boolean;
+  thinkingLevelMap?: Model<'bedrock-converse-stream'>['thinkingLevelMap'];
+  input: Model<'bedrock-converse-stream'>['input'];
+  cost: Model<'bedrock-converse-stream'>['cost'];
+  contextWindow: number;
+  maxTokens: number;
+};
+
+const BEDROCK_CLAUDE_MODEL_METADATA: Record<string, BedrockClaudeModelMetadata> = {
+  'global.anthropic.claude-haiku-4-5-20251001-v1:0': {
+    id: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
+    name: 'Claude Haiku 4.5 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-opus-4-5-20251101-v1:0': {
+    id: 'global.anthropic.claude-opus-4-5-20251101-v1:0',
+    name: 'Claude Opus 4.5 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-opus-4-20250514-v1:0': {
+    id: 'global.anthropic.claude-opus-4-20250514-v1:0',
+    name: 'Claude Opus 4 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+    contextWindow: 200_000,
+    maxTokens: 32_000,
+  },
+  'global.anthropic.claude-opus-4-6-v1': {
+    id: 'global.anthropic.claude-opus-4-6-v1',
+    name: 'Claude Opus 4.6 (Global)',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'max' },
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  'global.anthropic.claude-opus-4-7': {
+    id: 'global.anthropic.claude-opus-4-7',
+    name: 'Claude Opus 4.7 (Global)',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'xhigh' },
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  'global.anthropic.claude-sonnet-4-20250514-v1:0': {
+    id: 'global.anthropic.claude-sonnet-4-20250514-v1:0',
+    name: 'Claude Sonnet 4 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-sonnet-4-5-20250929-v1:0': {
+    id: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    name: 'Claude Sonnet 4.5 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-sonnet-4-6': {
+    id: 'global.anthropic.claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+  },
+};
+
 export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOptions> = (
   model,
   context,
   options,
 ) => {
+  const resolvedModel = withBedrockModelMetadata(model);
   const stream = createAssistantMessageEventStream();
 
   void (async () => {
     const output: AssistantMessage = {
       role: 'assistant',
       content: [],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
+      api: resolvedModel.api,
+      provider: resolvedModel.provider,
+      model: resolvedModel.id,
       usage: {
         input: 0,
         output: 0,
@@ -188,19 +277,19 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
         throw new Error('Bedrock API key is missing');
       }
 
-      let payload = buildBedrockInvokeBody(model, context, options);
-      const nextPayload = await options?.onPayload?.(payload, model);
+      let payload = buildBedrockInvokeBody(resolvedModel, context, options);
+      const nextPayload = await options?.onPayload?.(payload, resolvedModel);
       if (nextPayload !== undefined) {
         payload = nextPayload as BedrockInvokeBody;
       }
 
-      const response = await fetch(buildBedrockInvokeUrl(model, options), {
+      const response = await fetch(buildBedrockInvokeUrl(resolvedModel, options), {
         method: 'POST',
         headers: {
           authorization: `Bearer ${bearerToken}`,
           accept: 'application/json',
           'content-type': 'application/json',
-          ...model.headers,
+          ...resolvedModel.headers,
           ...options?.headers,
         },
         body: JSON.stringify(payload),
@@ -209,7 +298,7 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
 
       await options?.onResponse?.(
         { status: response.status, headers: headersToRecord(response.headers) },
-        model,
+        resolvedModel,
       );
 
       if (!response.ok) {
@@ -222,7 +311,7 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
       stream.push({ type: 'start', partial: output });
       const blocks = output.content as StreamingBlock[];
       for await (const event of iterateBedrockAnthropicEvents(response.body, options?.signal)) {
-        handleAnthropicEvent(event, model, context, output, blocks, stream);
+        handleAnthropicEvent(event, resolvedModel, context, output, blocks, stream);
       }
 
       if (options?.signal?.aborted) {
@@ -254,12 +343,13 @@ export const streamSimpleBedrock: StreamFunction<'bedrock-converse-stream', Simp
   context,
   options,
 ) => {
+  const resolvedModel = withBedrockModelMetadata(model);
   const base: BedrockOptions = {
     ...options,
     bearerToken: options?.apiKey,
     maxTokens:
       options?.maxTokens ??
-      (model.maxTokens > 0 ? Math.min(model.maxTokens, 32000) : undefined),
+      (resolvedModel.maxTokens > 0 ? Math.min(resolvedModel.maxTokens, 32000) : undefined),
   };
 
   if (options?.reasoning) {
@@ -267,7 +357,7 @@ export const streamSimpleBedrock: StreamFunction<'bedrock-converse-stream', Simp
     base.thinkingBudgets = options.thinkingBudgets;
   }
 
-  return streamBedrock(model, context, base);
+  return streamBedrock(resolvedModel, context, base);
 };
 
 export const bedrockProviderModule = {
@@ -277,8 +367,25 @@ export const bedrockProviderModule = {
 
 export const __testing = {
   buildBedrockInvokeBody,
+  withBedrockModelMetadata,
   normalizeAnthropicToolResultAdjacency,
 };
+
+export function withBedrockModelMetadata<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+  const metadata = BEDROCK_CLAUDE_MODEL_METADATA[mapToBedrockModelId(model.id)];
+  if (!metadata) return model;
+
+  return {
+    ...model,
+    name: metadata.name,
+    reasoning: metadata.reasoning,
+    thinkingLevelMap: metadata.thinkingLevelMap ?? model.thinkingLevelMap,
+    input: metadata.input,
+    cost: metadata.cost,
+    contextWindow: metadata.contextWindow,
+    maxTokens: metadata.maxTokens,
+  };
+}
 
 function buildBedrockInvokeBody(
   model: Model<'bedrock-converse-stream'>,
@@ -357,6 +464,9 @@ function mapToBedrockModelId(modelId: string): string {
   }
   if (normalized.includes('opus-4-6') || normalized.includes('opus-4.6')) {
     return 'global.anthropic.claude-opus-4-6-v1';
+  }
+  if (normalized.includes('opus-4-7') || normalized.includes('opus-4.7')) {
+    return 'global.anthropic.claude-opus-4-7';
   }
   return `global.anthropic.${modelId}-v1:0`;
 }
