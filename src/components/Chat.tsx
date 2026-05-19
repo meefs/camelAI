@@ -414,6 +414,8 @@ function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
   return Boolean(msg && (msg.role === "assistant" || msg.isCompactSummary));
 }
 
+const STREAM_MESSAGE_RENDER_THROTTLE_MS = 50;
+
 const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
   notebook: null,
   status: "idle",
@@ -1709,6 +1711,7 @@ export default function Chat({
 
   // Refs to track current state for use in callbacks (avoids stale closures)
   const messagesRef = useRef(messages);
+  const deferredMessagesRenderTimeoutRef = useRef<number | null>(null);
   const streamingMessageIdRef = useRef(streamingMessageId);
   const runtimeStreamingMessageIdsRef = useRef<Record<string, string | null>>(
     {},
@@ -1730,16 +1733,53 @@ export default function Chat({
   };
 
   // Wrapper setters that update both state and ref
+  const clearDeferredMessagesRender = useCallback(() => {
+    if (deferredMessagesRenderTimeoutRef.current === null) return;
+    window.clearTimeout(deferredMessagesRenderTimeoutRef.current);
+    deferredMessagesRenderTimeoutRef.current = null;
+  }, []);
+
+  const flushDeferredMessagesRender = useCallback(() => {
+    if (deferredMessagesRenderTimeoutRef.current === null) return;
+    window.clearTimeout(deferredMessagesRenderTimeoutRef.current);
+    deferredMessagesRenderTimeoutRef.current = null;
+    setMessagesState(messagesRef.current);
+  }, []);
+
   const setMessages = useCallback(
     (updater: Message[] | ((prev: Message[]) => Message[])) => {
-      setMessagesState((prev) => {
-        const next = typeof updater === "function" ? updater(prev) : updater;
-        messagesRef.current = next;
-        return next;
-      });
+      clearDeferredMessagesRender();
+      const previous = messagesRef.current;
+      const next = typeof updater === "function" ? updater(previous) : updater;
+      messagesRef.current = next;
+      setMessagesState(next);
+    },
+    [clearDeferredMessagesRender],
+  );
+
+  const setMessagesDeferred = useCallback(
+    (updater: Message[] | ((prev: Message[]) => Message[])) => {
+      const previous = messagesRef.current;
+      const next = typeof updater === "function" ? updater(previous) : updater;
+      messagesRef.current = next;
+
+      if (deferredMessagesRenderTimeoutRef.current !== null) {
+        return;
+      }
+
+      deferredMessagesRenderTimeoutRef.current = window.setTimeout(() => {
+        deferredMessagesRenderTimeoutRef.current = null;
+        setMessagesState(messagesRef.current);
+      }, STREAM_MESSAGE_RENDER_THROTTLE_MS);
     },
     [],
   );
+
+  useEffect(() => {
+    return () => {
+      clearDeferredMessagesRender();
+    };
+  }, [clearDeferredMessagesRender]);
 
   const prevInitialMessagesRef = useRef(initialMessages);
   const hasSyncedInitialPreviewRef = useRef(false);
@@ -3303,7 +3343,7 @@ export default function Chat({
             return;
           }
           const runtimeEvent = data.event;
-          setMessages((prev) => {
+          setMessagesDeferred((prev) => {
             const next = applyRuntimeEventToMessages(
               prev,
               id,
@@ -3322,6 +3362,7 @@ export default function Chat({
           typeof runtimeEvent === "object" &&
           (runtimeEvent as { method?: unknown }).method === "turn/completed"
         ) {
+          flushDeferredMessagesRender();
           lastCompletedAssistantMessageIdRef.current = nextStreamingId;
           setStreamingMessageId(null);
           setLoading(false);
@@ -3542,7 +3583,7 @@ export default function Chat({
               });
             } else if (currentStreamingId) {
               // Apply streaming delta to the current message
-              setMessages((prev) =>
+              setMessagesDeferred((prev) =>
                 prev.map((msg) =>
                   msg.id === currentStreamingId
                     ? applyStreamingEventToMessage(msg, sdkEvent)
@@ -3555,7 +3596,7 @@ export default function Chat({
               const streamingMsg = currentMessages.find((m) => m.isStreaming);
               if (streamingMsg) {
                 setStreamingMessageId(streamingMsg.id);
-                setMessages((prev) =>
+                setMessagesDeferred((prev) =>
                   prev.map((msg) =>
                     msg.id === streamingMsg.id
                       ? applyStreamingEventToMessage(msg, sdkEvent)
@@ -3744,6 +3785,7 @@ export default function Chat({
               }),
             );
           } else if (sdkEvent.type === "result") {
+            flushDeferredMessagesRender();
             // Query complete - mark message as not streaming
             // Finish streaming
             splitStreamingMessageOnNextPartRef.current = false;
@@ -3833,6 +3875,7 @@ export default function Chat({
         } else if (data.type === "streaming_state") {
           const nextIsStreaming = Boolean(data.isStreaming);
           if (!nextIsStreaming) {
+            flushDeferredMessagesRender();
             splitStreamingMessageOnNextPartRef.current = false;
             const msgId = streamingMessageIdRef.current;
             if (msgId) {
@@ -3866,6 +3909,7 @@ export default function Chat({
           }
         } else if (data.type === "result") {
           if (id) {
+            flushDeferredMessagesRender();
             logChatHistoryClient("runner_result_revalidate_scheduled", {
               threadId: id,
               pendingCount: pendingMessagesRef.current.length,
@@ -3880,6 +3924,7 @@ export default function Chat({
             }
           }
         } else if (data.type === "error") {
+          flushDeferredMessagesRender();
           console.error("WebSocket error:", data.error);
           setError(normalizeChatErrorMessage(data.error));
           // Finish streaming on error
@@ -3990,7 +4035,9 @@ export default function Chat({
       revalidator,
       resolvedWorkspaceId,
       restorePendingDeliveryDraft,
+      flushDeferredMessagesRender,
       setMessages,
+      setMessagesDeferred,
       setPendingMessages,
       setStreamingMessageId,
       handleRealtimeSideChannelEvent,
