@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useFetcher, useSearchParams, useRevalidator, useNavigate } from 'react-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigation, useSearchParams, useRevalidator, useNavigate, useSubmit } from 'react-router';
 import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
@@ -44,18 +44,15 @@ export default function AppsClient({
   const { switchWorkspace } = useSwitchWorkspace();
 
   const navigate = useNavigate();
+  const submit = useSubmit();
+  const navigation = useNavigation();
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
-  const chatFetcher = useFetcher<{
-    thread?: { id: string; title?: string };
-    error?: string;
-  }>();
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [referenceTime, setReferenceTime] = useState(initialNow);
-  const pendingChatAppRef = useRef<WorkerScriptWithCreator | null>(null);
 
   // Switch workspace dialog state
   const [switchDialog, setSwitchDialog] = useState<{
@@ -78,26 +75,10 @@ export default function AppsClient({
     }
   }, [currentOrg?.id, currentWorkspace?.id]);
 
-  // Handle chat creation result
-  useEffect(() => {
-    if (chatFetcher.state !== 'idle' || !chatFetcher.data) return;
-
-    if (chatFetcher.data.thread && pendingChatAppRef.current) {
-      const app = pendingChatAppRef.current;
-      const appUrl = getPreferredAppUrl(app, { hostname, orgSlug, orgCustomDomain });
-      const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
-      const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
-      pendingChatAppRef.current = null;
-      navigate(`/chat/${chatFetcher.data.thread.id}`, {
-        state: { initialMessageContent: systemMessage },
-      });
-    } else if (chatFetcher.data.error) {
-      toast.error(chatFetcher.data.error);
-      pendingChatAppRef.current = null;
-    }
-  }, [chatFetcher.state, chatFetcher.data, navigate, hostname, orgSlug, orgCustomDomain]);
-
   const loading = revalidator.state === 'loading';
+  const chatLoading =
+    navigation.state !== 'idle' &&
+    navigation.formData?.get('intent') === 'createThreadAndStart';
   const apps = initialApps;
 
   const handleOpenSettings = (app: WorkerScriptWithCreator) => {
@@ -137,22 +118,23 @@ export default function AppsClient({
     }
 
     // Prevent double-clicks while fetcher is busy
-    if (chatFetcher.state !== 'idle') return;
-    if (pendingChatAppRef.current?.script_name === app.script_name) return;
-    pendingChatAppRef.current = app;
+    if (chatLoading) return;
     const threadTitle = buildAppThreadFallbackTitle(app.script_name);
+    const appUrl = getPreferredAppUrl(app, { hostname, orgSlug, orgCustomDomain });
+    const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
+    const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
 
-    chatFetcher.submit(
+    submit(
       {
-        intent: 'createThread',
+        intent: 'createThreadAndStart',
         clientBuildId: APP_BUILD_ID,
         initialTitle: threadTitle,
-        firstMessage: threadTitle,
+        firstMessage: systemMessage,
         previewApps: app.script_name,
       },
       { method: 'post', action: '/chat' }
     );
-  }, [currentWorkspace?.id, chatFetcher, workspaceMap]);
+  }, [chatLoading, currentWorkspace?.id, hostname, orgCustomDomain, orgSlug, submit, workspaceMap]);
 
   const handleViewSource = useCallback((app: WorkerScriptWithCreator) => {
     if (!app.config_path) {
@@ -202,13 +184,16 @@ export default function AppsClient({
       // After switch, perform the original action
       if (targetAction === 'chat') {
         // Re-trigger chat start - workspace is now correct
-        pendingChatAppRef.current = targetApp;
         const threadTitle = buildAppThreadFallbackTitle(targetApp.script_name);
-        chatFetcher.submit(
+        const appUrl = getPreferredAppUrl(targetApp, { hostname, orgSlug, orgCustomDomain });
+        const sourceInfo = targetApp.config_path ? ` The app's wrangler config is at "${targetApp.config_path}".` : '';
+        const systemMessage = `<camelai system message>I'd like to work on the app "${targetApp.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
+        submit(
           {
-            intent: 'createThread',
+            intent: 'createThreadAndStart',
             clientBuildId: APP_BUILD_ID,
             initialTitle: threadTitle,
+            firstMessage: systemMessage,
             previewApps: targetApp.script_name,
           },
           { method: 'post', action: '/chat' }
@@ -223,7 +208,7 @@ export default function AppsClient({
     } finally {
       setSwitchingWorkspace(false);
     }
-  }, [switchDialog, switchWorkspace, chatFetcher, navigate]);
+  }, [hostname, orgCustomDomain, orgSlug, switchDialog, switchWorkspace, navigate, submit]);
 
   return (
     <>

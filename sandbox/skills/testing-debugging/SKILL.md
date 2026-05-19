@@ -8,38 +8,6 @@ license: Complete terms in LICENSE.txt
 
 This skill guides debugging deployed applications and writing tests for rapid iteration. The key insight: **unit tests are the fastest way to reproduce and fix bugs**.
 
-## Bug Reports from the Preview Pane
-
-Users can report bugs directly from the app preview. In the preview pane on the right side of the screen, there's a **toolbar above the preview** with a **bug icon**. Clicking this icon opens a bug report dialog where users can:
-
-- Describe the issue they encountered
-- Capture a screenshot of the current state
-- Include console errors automatically
-
-When a user submits a bug report, use it as a starting point for investigation.
-
-## Capturing Bug Reports Programmatically
-
-You can trigger a bug report capture using the `capture_bug_report` MCP tool. This captures the current state of the deployed app **automatically** without requiring user interaction. This is useful when:
-
-- You want to see the current state of the deployed app
-- You need to debug an issue and want to capture console logs and DOM state
-- You want a screenshot of the app to verify visual changes
-
-```bash
-# Use the MCP tool to capture a bug report (happens automatically)
-capture_bug_report(message: "Capturing the current state to debug the login issue")
-```
-
-The captured bug report includes:
-- **Screenshot** - Visual capture of the current app state
-- **DOM snapshot** - Complete HTML structure
-- **Console logs** - All console.log, warn, and error messages
-- **Network requests** - API calls and their responses
-- **Session recording** - User interactions leading up to the capture
-
-The tool returns paths to the captured files which you can read to investigate the issue.
-
 ## The Unit Test Debugging Workflow
 
 **This is the most effective debugging workflow.** Instead of repeatedly deploying and manually testing in the browser, write a unit test that reproduces the bug:
@@ -55,7 +23,7 @@ A 30x speedup means you can iterate 30 times faster. This compounds: what takes 
 
 ### The Workflow
 
-1. **Understand the bug** - Read the bug report, check console errors, understand expected vs actual behavior
+1. **Understand the bug** - Read the user report, check console errors, understand expected vs actual behavior
 
 2. **Write a failing test** - Create a test that reproduces the exact failure
    ```typescript
@@ -342,7 +310,7 @@ Prefer unit tests for speed. Use Playwright when you need to verify browser beha
 
 When investigating a bug:
 
-1. [ ] Read the bug report carefully
+1. [ ] Read the user report carefully
 2. [ ] Check browser console for errors
 3. [ ] Identify the smallest reproducible case
 4. [ ] Write a failing unit test

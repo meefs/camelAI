@@ -36,8 +36,6 @@ import {
   DISPATCHER_SESSION_COOKIE,
   type DispatcherSession,
 } from '../../main/src/worker-auth';
-// @ts-expect-error - text import
-import DEBUG_BRIDGE_SCRIPT from './debug-bridge.txt';
 import {
   getWorkerAccessInfo,
   resolveMissingRegistryMode,
@@ -704,53 +702,6 @@ async function handleWorkerRequest(
 }
 
 /**
- * Inject debug bridge script into HTML responses
- */
-async function injectDebugBridge(response: Response, _hostname: string): Promise<Response> {
-  const contentType = response.headers.get('content-type') || '';
-
-  // Only inject into HTML responses
-  if (!contentType.includes('text/html')) {
-    return response;
-  }
-
-  // Only inject into successful responses
-  if (!response.ok) {
-    return response;
-  }
-
-  try {
-    const html = await response.text();
-    const scriptTag = `<script>${DEBUG_BRIDGE_SCRIPT}</script>`;
-
-    // Inject the script - prefer before </head>, fallback to before <body>
-    let injectedHtml: string;
-    if (html.includes('</head>')) {
-      injectedHtml = html.replace('</head>', `${scriptTag}</head>`);
-    } else if (html.includes('<body')) {
-      injectedHtml = html.replace('<body', `${scriptTag}<body`);
-    } else {
-      // Last resort: prepend to the document
-      injectedHtml = scriptTag + html;
-    }
-
-    // Clone headers and remove content-length since we modified the body
-    const headers = new Headers(response.headers);
-    headers.delete('content-length');
-
-    return new Response(injectedHtml, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  } catch (e) {
-    // If injection fails, return original response
-    console.error(`[dispatcher] Failed to inject debug bridge: ${e}`);
-    return response;
-  }
-}
-
-/**
  * Dispatch request to the user worker
  * @param dispatchScriptName - The script name in the dispatch namespace ({org-slug}--{script})
  * @param userFacingScriptName - The user-facing script name for error messages
@@ -763,8 +714,6 @@ async function dispatchToWorker(
   userFacingScriptName: string,
   fallbackDispatchScriptName?: string
 ): Promise<Response> {
-  const url = new URL(request.url);
-
   try {
     console.log(`[dispatcher] Routing to worker: ${dispatchScriptName}`);
     const userWorker = getUserWorker(env, dispatchScriptName);
@@ -781,12 +730,6 @@ async function dispatchToWorker(
       } else {
         throw e;
       }
-    }
-
-    // Only inject debug bridge on iframe domain (*.apps.camelai.dev)
-    // This is where the preview iframe loads from
-    if (isSameSiteRequest(url.hostname)) {
-      return injectDebugBridge(response, url.hostname);
     }
 
     return response;

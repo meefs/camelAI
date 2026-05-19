@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import { useLoaderData, useNavigate, useRevalidator } from "react-router";
+import {
+  redirect,
+  useLoaderData,
+  useNavigate,
+  useRevalidator,
+} from "react-router";
 import type { Route } from "./+types/_app.chat._index";
 import {
   requireAuthContext,
@@ -58,7 +63,10 @@ export function shouldRevalidate({
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
-  if (formData?.get("intent") === "createThread") return false;
+  const intent = formData?.get("intent");
+  if (intent === "createThread" || intent === "createThreadAndStart") {
+    return false;
+  }
   return defaultShouldRevalidate;
 }
 
@@ -73,6 +81,17 @@ function formStringValue(formData: FormData, key: string): string | null {
   const value = formData.get(key);
   return typeof value === "string" && value.trim() ? value : null;
 }
+
+type InitialUserMessageRpc = {
+  startInitialUserMessage(args: {
+    threadId: string;
+    workspaceId: string;
+    orgId: string;
+    userId?: string | null;
+    message: string;
+    clientMessageId?: string;
+  }): Promise<{ status: "accepted" | "busy" | "error"; error?: string }>;
+};
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
@@ -327,8 +346,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  if (intent === "createThread") {
+  if (intent === "createThread" || intent === "createThreadAndStart") {
     try {
+      const shouldStartAndRedirect = intent === "createThreadAndStart";
       const initialTitle = formStringValue(formData, "initialTitle");
       const firstMessage = formStringValue(formData, "firstMessage");
       const clientBuildId = formStringValue(formData, "clientBuildId");
@@ -406,18 +426,52 @@ export async function action({ request, context }: Route.ActionArgs) {
                 initialThreadTitle: initialTitle,
               });
         } catch (groupError) {
-          await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+          await chatDO
+            .deleteThread(context, thread.id, workspaceId)
+            .catch(() => {});
           const message =
             groupError instanceof Error ? groupError.message : "";
           if (
             groupId &&
-            (message === "Chat group not found" || message === "Thread not found")
+            (message === "Chat group not found" ||
+              message === "Thread not found")
           ) {
             throw Response.json({ error: message }, { status: 404 });
           }
           throw groupError;
         }
       })();
+
+      if (shouldStartAndRedirect) {
+        if (firstMessage) {
+          const chatThread = env.CHAT_THREAD.get(
+            env.CHAT_THREAD.idFromName(thread.id),
+          ) as unknown as InitialUserMessageRpc;
+          const result = await chatThread.startInitialUserMessage({
+            threadId: thread.id,
+            workspaceId,
+            orgId,
+            userId,
+            message: firstMessage,
+            clientMessageId: `initial:${thread.id}`,
+          });
+          if (result.status !== "accepted") {
+            console.error(
+              "Failed to start initial user message:",
+              result.error,
+            );
+          }
+        }
+
+        const nextUrl = new URL(
+          `/chat/${thread.id}?newThread=1`,
+          request.url,
+        );
+        if (group.id) {
+          nextUrl.searchParams.set("group", group.id);
+        }
+        return redirect(`${nextUrl.pathname}${nextUrl.search}`);
+      }
 
       return Response.json({ thread, groupId: group.id, group });
     } catch (error) {

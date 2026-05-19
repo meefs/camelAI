@@ -13,6 +13,7 @@ import React from "react";
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
+const mockSubmit = vi.fn();
 
 function createFetcher() {
   return {
@@ -40,7 +41,9 @@ vi.mock("react-router", async () => {
       state: "idle" as const,
       revalidate: mockRevalidate,
     }),
+    useNavigation: () => ({ state: "idle", formData: undefined }),
     useFetcher: () => createFetcher(),
+    useSubmit: () => mockSubmit,
   };
 });
 
@@ -120,10 +123,6 @@ vi.mock("@/components/floating-todo", () => ({
 
 vi.mock("@/components/connection-setup-prompt", () => ({
   ConnectionSetupPrompt: () => null,
-}));
-
-vi.mock("@/components/bug-report-dialog", () => ({
-  BugReportDialog: () => null,
 }));
 
 vi.mock("@/components/ui/button", () => ({

@@ -367,6 +367,50 @@ describe('chat loader workspace mismatch handling', () => {
     );
   });
 
+  it('loads in-flight Pi messages for new-thread navigations', async () => {
+    const inFlightUserMessage = {
+      id: 'pi_user_1_0',
+      thread_id: 'thread_123',
+      role: 'user' as const,
+      content: 'Build the thing',
+      created_at: 1,
+    };
+    readThreadMessagesMock.mockResolvedValueOnce([inFlightUserMessage]);
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          getThread: async () => ({
+            id: 'thread_123',
+            workspace_id: 'ws_active',
+            title: 'Workspace Thread',
+            provider: 'claude',
+            model: 'opus',
+            user_message_count: 0,
+          }),
+          getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
+        }),
+      },
+    });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.isNewThread).toBe(true);
+    expect(result.chatData.messages).toEqual([inFlightUserMessage]);
+    expect(readThreadMessagesMock).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        orgId: 'org_active',
+        workspaceId: 'ws_active',
+        threadId: 'thread_123',
+      }),
+    );
+  });
+
   it('returns minimal model state for OpenAI-only new-thread navigations', async () => {
     getAuthEnvMock.mockReturnValue({
       ORG: {

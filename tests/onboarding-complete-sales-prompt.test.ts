@@ -7,6 +7,7 @@ const getAuthEnvMock = vi.fn();
 const createThreadMock = vi.fn();
 const generateThreadTitleMock = vi.fn();
 const getThreadsPaginatedMock = vi.fn();
+const startInitialUserMessageMock = vi.fn();
 
 vi.mock('@/lib/wait-until', () => ({
   waitUntil: waitUntilMock,
@@ -115,13 +116,21 @@ describe('onboarding complete sales prompt flow', () => {
         },
       },
     });
-    getEnvMock.mockReturnValue({});
+    getEnvMock.mockReturnValue({
+      CHAT_THREAD: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          startInitialUserMessage: startInitialUserMessageMock,
+        }),
+      },
+    });
     createThreadMock.mockResolvedValue({
       id: 'thread_123',
       provider: 'claude',
     });
     generateThreadTitleMock.mockResolvedValue(undefined);
     getThreadsPaginatedMock.mockResolvedValue({ items: [] });
+    startInitialUserMessageMock.mockResolvedValue({ status: 'accepted' });
     waitUntilMock.mockImplementation(() => undefined);
   });
 
@@ -152,13 +161,20 @@ describe('onboarding complete sales prompt flow', () => {
       'Build me a CRM'
     );
     expect(waitUntilMock).toHaveBeenCalledTimes(1);
+    expect(startInitialUserMessageMock).toHaveBeenCalledWith({
+      threadId: 'thread_123',
+      workspaceId: 'ws_123',
+      orgId: 'org_123',
+      userId: 'user_123',
+      message: expect.stringContaining('Build me a CRM'),
+      clientMessageId: 'onboarding:thread_123',
+    });
 
     await expect(response.json()).resolves.toMatchObject({
       success: true,
       threadId: 'thread_123',
       salesPrompt: 'Build me a CRM',
       redirectTo: '/chat/thread_123?newThread=1',
-      initialMessageContent: expect.stringContaining('Build me a CRM'),
       showBootModal: true,
     });
   });
@@ -216,6 +232,12 @@ describe('onboarding complete sales prompt flow', () => {
     });
     getEnvMock.mockReturnValue({
       BILLING_ENTERPRISE_ORG_SLUGS: 'enterprise-customer',
+      CHAT_THREAD: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          startInitialUserMessage: startInitialUserMessageMock,
+        }),
+      },
     });
 
     const response = await action({
