@@ -8905,10 +8905,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.setActiveTurnUserId(null);
       this.clearPiTurnRecovery();
       this.completeTodoStateForTurnEnd();
-      this.resolvePendingExternalTurn({
-        status: "result",
-        reply: finalText || undefined,
-      });
+      this.resolvePendingExternalTurn(
+        !finalText && errorMessage
+          ? { status: "error", error: errorMessage }
+          : { status: "result", reply: finalText || undefined },
+      );
       this.piActiveItemId = null;
       this.piActiveItemText = "";
       this.piReasoningItemId = null;

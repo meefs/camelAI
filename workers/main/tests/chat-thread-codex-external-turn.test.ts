@@ -1772,6 +1772,36 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
+  it('resolves Pi agent_end provider errors as failed external turns', () => {
+    const { fake, events } = createPiEventFake();
+    const errorMessage =
+      '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}';
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [{
+        role: 'assistant',
+        content: [],
+        errorMessage,
+        responseId: 'resp_error',
+        timestamp: 789,
+      }],
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      error: errorMessage,
+      source: 'chat_thread_do_pi',
+      status: 429,
+      errorType: 'rate_limit_error',
+    }));
+    expect(fake.resolvePendingExternalTurn).toHaveBeenCalledWith({
+      status: 'error',
+      error: errorMessage,
+    });
+  });
+
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {
     const { fake, events } = createPiEventFake();
 
