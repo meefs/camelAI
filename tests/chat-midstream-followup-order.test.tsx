@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 
+const messageBubbleRenderCounts = vi.hoisted(() => new Map<string, number>());
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
 let mockLocation = { pathname: '/', search: '', hash: '', state: null as unknown, key: 'default' };
@@ -66,14 +67,22 @@ vi.mock('@/components/prompt-input', () => ({
   ),
 }));
 
-vi.mock('@/components/message-bubble', () => ({
-  MessageBubble: ({
+vi.mock('@/components/message-bubble', async () => {
+  const ReactActual = await vi.importActual<typeof import('react')>('react');
+  const MockMessageBubbleBase = ({
     message,
     showStreamingIndicator,
   }: {
-    message: { role: string; content: unknown };
+    message: { id?: string; role: string; content: unknown };
     showStreamingIndicator?: boolean;
   }) => {
+    if (message.id) {
+      messageBubbleRenderCounts.set(
+        message.id,
+        (messageBubbleRenderCounts.get(message.id) ?? 0) + 1,
+      );
+    }
+
     const renderedContent = typeof message.content === 'string'
       ? message.content
       : Array.isArray(message.content)
@@ -94,18 +103,27 @@ vi.mock('@/components/message-bubble', () => ({
         {showStreamingIndicator ? <div data-testid="inline-loading-dots" /> : null}
       </div>
     );
-  },
-  isInterruptMessage: () => false,
-  parseSlashCommand: () => null,
-  parseLocalCommandStdout: () => null,
-  userFacingContentToString: (content: string | Array<{ type: string; text?: string }>) => {
-    if (typeof content === 'string') return content.trim();
-    return content
-      .map((block) => (block.type === 'text' ? block.text?.trim() ?? '' : ''))
-      .filter(Boolean)
-      .join('\n\n');
-  },
-}));
+  };
+
+  return {
+    MessageBubble: ReactActual.memo(
+      MockMessageBubbleBase,
+      (prev, next) =>
+        prev.message === next.message &&
+        prev.showStreamingIndicator === next.showStreamingIndicator,
+    ),
+    isInterruptMessage: () => false,
+    parseSlashCommand: () => null,
+    parseLocalCommandStdout: () => null,
+    userFacingContentToString: (content: string | Array<{ type: string; text?: string }>) => {
+      if (typeof content === 'string') return content.trim();
+      return content
+        .map((block) => (block.type === 'text' ? block.text?.trim() ?? '' : ''))
+        .filter(Boolean)
+        .join('\n\n');
+    },
+  };
+});
 
 vi.mock('@/components/loading-dots', () => ({
   LoadingDots: () => <div data-testid="global-loading-dots" />,
@@ -271,6 +289,35 @@ function emitCodexTextDelta(socket: MockWebSocket, itemId: string, text: string)
   });
 }
 
+function buildMixedMarkdownDelta(index: number): string {
+  return [
+    '',
+    `## Section ${index}`,
+    '',
+    `Paragraph ${index} with **bold**, _italic_, inline \`code_${index}\`, and [a link](https://example.com/${index}).`,
+    '',
+    `- Bullet ${index}.1`,
+    `- Bullet ${index}.2`,
+    `  - Nested bullet ${index}.2.a`,
+    '',
+    `1. Ordered ${index}.1`,
+    `2. Ordered ${index}.2`,
+    '',
+    `> Quote ${index}`,
+    '',
+    '| Name | Value |',
+    '| --- | ---: |',
+    `| alpha-${index} | ${index} |`,
+    '',
+    '```tsx',
+    `export function Example${index}() {`,
+    `  return <button data-index="${index}">Run ${index}</button>;`,
+    '}',
+    '```',
+    '',
+  ].join('\n');
+}
+
 function getTranscriptRows(): string[] {
   const region = screen.getByRole('region', { name: 'Chat messages' });
   const rows = region.querySelectorAll('[data-message-id]');
@@ -297,6 +344,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   MockWebSocket.instances = [];
+  messageBubbleRenderCounts.clear();
   vi.clearAllMocks();
   mockLocation = { pathname: '/', search: '', hash: '', state: null, key: 'default' };
   localStorage.clear();
@@ -311,11 +359,72 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   globalThis.WebSocket = OriginalWebSocket;
   globalThis.fetch = OriginalFetch;
 });
 
 describe('Chat mid-stream follow-up ordering', () => {
+  it('keeps streaming bursts within a deterministic render budget', async () => {
+    vi.useFakeTimers();
+    const initialMessages = Array.from({ length: 80 }, (_, index) => ({
+      id: `history-${index}`,
+      thread_id: 'thread-1',
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: `history ${index}`,
+      created_at: index + 1,
+    }));
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={initialMessages}
+      />,
+    );
+
+    const mainSocket = getMainSocket();
+
+    await act(async () => {
+      mainSocket.emitOpen();
+      mainSocket.emitMessage({ type: 'ready' });
+    });
+
+    expect(screen.getByText('user: history 0')).toBeInTheDocument();
+    expect(screen.getByText('assistant: history 79')).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Chat messages' }).querySelector(
+        '[data-message-id="history-0"]',
+      ),
+    ).toHaveStyle({ contain: 'layout paint style' });
+
+    messageBubbleRenderCounts.clear();
+
+    await act(async () => {
+      emitStreamTextPart(mainSocket, 'assistant-perf', '# Streaming report\n');
+      for (let index = 0; index < 40; index += 1) {
+        emitStreamTextDelta(mainSocket, buildMixedMarkdownDelta(index));
+      }
+    });
+
+    expect(messageBubbleRenderCounts.get('assistant-perf')).toBe(1);
+    for (const message of initialMessages) {
+      expect(messageBubbleRenderCounts.get(message.id)).toBeUndefined();
+    }
+
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+
+    expect(messageBubbleRenderCounts.get('assistant-perf')).toBe(2);
+    for (const message of initialMessages) {
+      expect(messageBubbleRenderCounts.get(message.id)).toBeUndefined();
+    }
+
+    expect(screen.getByText(/assistant: # Streaming report/)).toBeInTheDocument();
+    expect(screen.getByText(/export function Example39/)).toBeInTheDocument();
+  });
+
   it('keeps the first navigation message visible while the assistant starts streaming', async () => {
     mockLocation = {
       pathname: '/chat/thread-1',

@@ -9,7 +9,13 @@ import {
   useLayoutEffect,
   memo,
 } from "react";
-import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
+import type {
+  CSSProperties,
+  Dispatch,
+  ReactNode,
+  RefObject,
+  SetStateAction,
+} from "react";
 import {
   useNavigate,
   useFetcher,
@@ -161,6 +167,7 @@ import {
   writeDraft,
   type DraftData,
 } from "@/hooks/use-draft-persistence";
+import { useBufferedState } from "@/hooks/use-buffered-state";
 import {
   appendUserUploadReferences,
   isUserUploadMountPath,
@@ -415,6 +422,10 @@ function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
 }
 
 const STREAM_MESSAGE_RENDER_THROTTLE_MS = 50;
+
+const MESSAGE_LAYOUT_CONTAINMENT_STYLE: CSSProperties = {
+  contain: "layout paint style",
+};
 
 const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
   notebook: null,
@@ -1127,7 +1138,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
         : undefined;
 
       groups.push({
-        key: `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}-${actionMessage.id}`,
+        key: `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}`,
         messages,
         isAssistantTurn,
         actionMessageId: actionMessage.id,
@@ -1168,6 +1179,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
       {messageGroups.map((messageGroup) => (
         <div
           key={messageGroup.key}
+          style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
           className={messageGroup.isAssistantTurn ? "group/turn" : undefined}
         >
           {messageGroup.messages.map((msg) => {
@@ -1188,6 +1200,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
                 key={msg.id}
                 ref={messageRef}
                 data-message-id={msg.id}
+                style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
                 className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
               >
                 <MessageBubble
@@ -1527,9 +1540,13 @@ export default function Chat({
   );
 
   // Local state for messages, streaming, and loading
-  const [messages, setMessagesState] = useState<Message[]>(
-    parsedInitialMessages,
-  );
+  const {
+    state: messages,
+    stateRef: messagesRef,
+    setImmediate: setMessages,
+    setBuffered: setMessagesDeferred,
+    flush: flushDeferredMessagesRender,
+  } = useBufferedState(parsedInitialMessages, STREAM_MESSAGE_RENDER_THROTTLE_MS);
   const [streamingMessageId, setStreamingMessageIdState] = useState<
     string | null
   >(null);
@@ -1710,8 +1727,6 @@ export default function Chat({
   );
 
   // Refs to track current state for use in callbacks (avoids stale closures)
-  const messagesRef = useRef(messages);
-  const deferredMessagesRenderTimeoutRef = useRef<number | null>(null);
   const streamingMessageIdRef = useRef(streamingMessageId);
   const runtimeStreamingMessageIdsRef = useRef<Record<string, string | null>>(
     {},
@@ -1731,55 +1746,6 @@ export default function Chat({
     isNewThread,
     readOnly,
   };
-
-  // Wrapper setters that update both state and ref
-  const clearDeferredMessagesRender = useCallback(() => {
-    if (deferredMessagesRenderTimeoutRef.current === null) return;
-    window.clearTimeout(deferredMessagesRenderTimeoutRef.current);
-    deferredMessagesRenderTimeoutRef.current = null;
-  }, []);
-
-  const flushDeferredMessagesRender = useCallback(() => {
-    if (deferredMessagesRenderTimeoutRef.current === null) return;
-    window.clearTimeout(deferredMessagesRenderTimeoutRef.current);
-    deferredMessagesRenderTimeoutRef.current = null;
-    setMessagesState(messagesRef.current);
-  }, []);
-
-  const setMessages = useCallback(
-    (updater: Message[] | ((prev: Message[]) => Message[])) => {
-      clearDeferredMessagesRender();
-      const previous = messagesRef.current;
-      const next = typeof updater === "function" ? updater(previous) : updater;
-      messagesRef.current = next;
-      setMessagesState(next);
-    },
-    [clearDeferredMessagesRender],
-  );
-
-  const setMessagesDeferred = useCallback(
-    (updater: Message[] | ((prev: Message[]) => Message[])) => {
-      const previous = messagesRef.current;
-      const next = typeof updater === "function" ? updater(previous) : updater;
-      messagesRef.current = next;
-
-      if (deferredMessagesRenderTimeoutRef.current !== null) {
-        return;
-      }
-
-      deferredMessagesRenderTimeoutRef.current = window.setTimeout(() => {
-        deferredMessagesRenderTimeoutRef.current = null;
-        setMessagesState(messagesRef.current);
-      }, STREAM_MESSAGE_RENDER_THROTTLE_MS);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    return () => {
-      clearDeferredMessagesRender();
-    };
-  }, [clearDeferredMessagesRender]);
 
   const prevInitialMessagesRef = useRef(initialMessages);
   const hasSyncedInitialPreviewRef = useRef(false);
@@ -2091,6 +2057,7 @@ export default function Chat({
   const assistantPendingMeasureRef = useRef<HTMLDivElement>(null);
   const assistantSpacerRef = useRef<HTMLDivElement>(null);
   const spacerHeightRef = useRef(0);
+  const spacerMeasureFrameRef = useRef<number | null>(null);
   const initialScrollDoneRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
@@ -4363,6 +4330,11 @@ export default function Chat({
   ]);
 
   useLayoutEffect(() => {
+    if (spacerMeasureFrameRef.current !== null) {
+      cancelAnimationFrame(spacerMeasureFrameRef.current);
+      spacerMeasureFrameRef.current = null;
+    }
+
     if (!shouldRenderSpacer) {
       spacerHeightRef.current = 0;
       return;
@@ -4468,8 +4440,16 @@ export default function Chat({
 
     if (typeof ResizeObserver === "undefined") return;
 
+    const scheduleSpacerUpdate = () => {
+      if (spacerMeasureFrameRef.current !== null) return;
+      spacerMeasureFrameRef.current = requestAnimationFrame(() => {
+        spacerMeasureFrameRef.current = null;
+        updateSpacer();
+      });
+    };
+
     const observer = new ResizeObserver(() => {
-      updateSpacer();
+      scheduleSpacerUpdate();
     });
 
     observer.observe(container);
@@ -4484,6 +4464,10 @@ export default function Chat({
     }
 
     return () => {
+      if (spacerMeasureFrameRef.current !== null) {
+        cancelAnimationFrame(spacerMeasureFrameRef.current);
+        spacerMeasureFrameRef.current = null;
+      }
       observer.disconnect();
     };
   }, [

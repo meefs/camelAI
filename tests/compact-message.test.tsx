@@ -10,6 +10,13 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 
+// MarkdownRenderer uses Shiki, which is heavy for these compact-message tests.
+vi.mock('@/components/markdown-renderer', () => ({
+  MarkdownRenderer: ({ content }: { content: string }) => (
+    <div data-testid="markdown">{content}</div>
+  ),
+}));
+
 // ---------------------------------------------------------------------------
 // Component-level tests (no Chat mocks needed)
 // ---------------------------------------------------------------------------
@@ -19,13 +26,6 @@ describe('CompactSummaryCard', () => {
   let CompactSummaryCard: typeof import('@/components/compact-summary-card').CompactSummaryCard;
 
   beforeAll(async () => {
-    // MarkdownRenderer uses shiki which is heavy; stub it
-    vi.mock('@/components/markdown-renderer', () => ({
-      MarkdownRenderer: ({ content }: { content: string }) => (
-        <div data-testid="markdown">{content}</div>
-      ),
-    }));
-
     const mod = await import('@/components/compact-summary-card');
     CompactSummaryCard = mod.CompactSummaryCard;
   });
