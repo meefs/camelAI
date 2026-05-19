@@ -29,6 +29,7 @@ import {
   type ApiTokenData,
 } from "./auth-helpers";
 import type { UserOrg } from "../../workers/main/src/auth";
+import { getAppIndexDatabase, getAppIndexReadDatabase } from "../../workers/main/src/app-index-db";
 
 interface GetUserOrgsOptions {
   preloadedOrgInfoById?: Map<
@@ -299,14 +300,12 @@ export async function isSignupIpBlocked(
   ip: string | null | undefined,
 ): Promise<boolean> {
   const normalizedIp = ip?.trim();
-  if (!normalizedIp || !env.ADMIN_INDEX) {
+  if (!normalizedIp) {
     return false;
   }
 
-  const adminIndex = env.ADMIN_INDEX.get(
-    env.ADMIN_INDEX.idFromName("admin_index"),
-  );
-  return adminIndex.isSignupIpBlocked(normalizedIp);
+  const appIndex = getAppIndexReadDatabase(env);
+  return appIndex ? appIndex.isSignupIpBlocked(normalizedIp) : false;
 }
 
 export async function blockSignupIp(
@@ -315,25 +314,21 @@ export async function blockSignupIp(
   blockedBy: string | null = null,
   reason: string | null = null,
 ): Promise<void> {
-  if (!env.ADMIN_INDEX) {
-    throw new Error("ADMIN_INDEX binding is not configured");
+  const appIndex = getAppIndexDatabase(env);
+  if (!appIndex) {
+    throw new Error("APP_DB binding is not configured");
   }
 
-  const adminIndex = env.ADMIN_INDEX.get(
-    env.ADMIN_INDEX.idFromName("admin_index"),
-  );
-  await adminIndex.blockSignupIp(ip, blockedBy, reason);
+  await appIndex.blockSignupIp(ip, blockedBy, reason);
 }
 
 export async function unblockSignupIp(env: AuthEnv, ip: string): Promise<void> {
-  if (!env.ADMIN_INDEX) {
-    throw new Error("ADMIN_INDEX binding is not configured");
+  const appIndex = getAppIndexDatabase(env);
+  if (!appIndex) {
+    throw new Error("APP_DB binding is not configured");
   }
 
-  const adminIndex = env.ADMIN_INDEX.get(
-    env.ADMIN_INDEX.idFromName("admin_index"),
-  );
-  await adminIndex.unblockSignupIp(ip);
+  await appIndex.unblockSignupIp(ip);
 }
 
 // OAuth functions

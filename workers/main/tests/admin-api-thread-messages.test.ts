@@ -4,22 +4,19 @@ import { handleAdminApi } from '../src/routes/admin/index';
 import { putOrgBan } from '../src/ban-list';
 import type { Env as WorkerEnv } from '../src/types';
 import { createOrg, createUser, type TestEnv } from './test-helpers';
+import { getAppIndexReadDatabase } from '../src/app-index-db';
 
-type AdminIndexTestEnv = TestEnv & {
-  ADMIN_INDEX: DurableObjectNamespace<any>;
-};
-
-const testEnv = env as unknown as AdminIndexTestEnv;
+const testEnv = env as unknown as TestEnv;
 
 function testEmail() {
   return `admin-api-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 }
 
 async function waitForAdminIndexThreadPresence(threadId: string, present: boolean): Promise<void> {
-  const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+  const appIndex = getAppIndexReadDatabase(testEnv)!;
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    const threadContext = await adminIndex.getThreadContextById(threadId);
+    const threadContext = await appIndex.getThreadContextById(threadId);
     const exists = threadContext !== null;
     if (exists === present) {
       return;
@@ -27,7 +24,7 @@ async function waitForAdminIndexThreadPresence(threadId: string, present: boolea
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
-  throw new Error(`Timed out waiting for thread ${threadId} presence=${present} in AdminIndexDO`);
+  throw new Error(`Timed out waiting for thread ${threadId} presence=${present} in D1 app index`);
 }
 
 describe('admin API thread messages route', () => {

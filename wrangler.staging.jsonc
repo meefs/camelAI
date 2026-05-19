@@ -81,9 +81,6 @@
       "migrations_dir": "migrations",
     },
   ],
-  "triggers": {
-    "crons": ["*/10 * * * *"],
-  },
   "queues": {
     "producers": [
       {
@@ -114,7 +111,6 @@
       { "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
       { "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
       { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-      { "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" },
     ],
   },
   "migrations": [
@@ -148,5 +144,6 @@
     { "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
     { "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
     { "tag": "v26", "deleted_classes": ["CloudflareSandbox", "WorkspaceFilesystemDO"] },
+    { "tag": "v27", "deleted_classes": ["AdminIndexDO"] },
   ],
 }

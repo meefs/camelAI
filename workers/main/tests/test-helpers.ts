@@ -12,7 +12,6 @@
 
 import type { UserDO, OrgDO, OrgRole, User } from '../src/auth';
 import type { WorkspaceDO, Workspace, WorkspaceAccessLevel as WorkspaceAccessLevelDO } from '../src/workspace';
-import type { AdminIndexDO } from '../src/admin-index-do';
 import type { AuthEnv } from '../../../src/lib/auth-helpers';
 import { hashPassword, verifyPassword } from '../src/password';
 import { getSession, updateSession, destroySession, type SessionData } from '../src/session-kv';
@@ -34,7 +33,7 @@ export interface TestEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
-  ADMIN_INDEX?: DurableObjectNamespace<AdminIndexDO>;
+  APP_DB?: D1Database;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS: KVNamespace;
   APP_KV: KVNamespace;
