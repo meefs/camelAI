@@ -4,17 +4,12 @@
  * Architecture:
  * - Sandbox host (services/sandbox-host/): Manages Docker container lifecycle,
  *   host filesystem operations, container exec, and API traffic.
- * - This module: Provides FS/exec APIs for dashboard routes, builds
- *   thread-specific env vars for chat and app access.
+ * - This module: Provides FS/exec APIs for dashboard routes and builds
+ *   container command env vars for app access.
  *
  * All sandbox traffic (lifecycle, FS, exec, data proxy) routes through the
  * sandbox host — CF Workers can't reach Docker bridge IPs directly.
  */
-import {
-  DEFAULT_LLM_MODEL,
-  DEFAULT_CODEX_MODEL,
-  normalizeLlmModel,
-} from "../../../src/lib/llm-provider-config";
 import { createDispatcherSession } from "./worker-auth";
 import type { WorkspaceDO } from "./workspace";
 import type { OrgDO } from "./auth";
@@ -122,11 +117,6 @@ interface ControlPlaneDeleteResponse {
   timestamp?: string;
   error?: string;
   code?: string;
-}
-
-export interface ChatRunnerEnvOptions {
-  threadId: string;
-  provider: "claude" | "codex";
 }
 
 function toIsoTime(ms: number): string {
@@ -523,55 +513,6 @@ export class WorkspaceContainer {
   }
 
   /**
-   * Build thread-specific env vars (integration creds + thread ID).
-   * Passed to the sandbox-host chat runner.
-   *
-   * Model-provider credentials are intentionally not returned here. ChatThreadDO
-   * resolves org BYOK state directly before each Pi model request so key changes
-   * are not cached by a long-lived session.
-   */
-  async buildChatRunnerEnv(options: ChatRunnerEnvOptions): Promise<{
-    envVars: Record<string, string>;
-  }> {
-    if (!this.workspaceId) {
-      throw new Error("WorkspaceContainer not initialized");
-    }
-
-    console.log(
-      `[Sandbox] buildChatRunnerEnv: thread=${options.threadId} provider=${options.provider}`,
-    );
-    // Create a dispatcher session so Playwright scripts can access private deployed apps
-    const appSessionEnv = await this.createAppAccessSession();
-
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
-    const thread = await orgStub.getThread(options.threadId);
-    const llmProviderRecord = await orgStub.getLlmProviderConfig();
-
-    const threadProvider = options.provider;
-    const threadModel =
-      thread && thread.workspace_id === this.workspaceId
-        ? normalizeLlmModel(
-            thread.model,
-            threadProvider,
-            llmProviderRecord?.provider,
-          )
-        : threadProvider === "codex"
-          ? normalizeLlmModel(undefined, "codex", llmProviderRecord?.provider)
-          : DEFAULT_LLM_MODEL;
-
-    return {
-      envVars: {
-        ...appSessionEnv,
-        CHIRIDION_CLAUDE_MODEL:
-          threadProvider === "claude" ? threadModel : DEFAULT_LLM_MODEL,
-        CHIRIDION_CODEX_MODEL:
-          threadProvider === "codex" ? threadModel : DEFAULT_CODEX_MODEL,
-        CHIRIDION_CHAT_PROVIDER: options.provider,
-      },
-    };
-  }
-
-  /**
    * Create a dispatcher session for sandbox Playwright scripts to access
    * private deployed apps owned by the org.
    */
@@ -724,34 +665,23 @@ export class WorkspaceContainer {
     return { success: true, response };
   }
 
-  async readPiCoreMessagesStream(
-    threadId: string,
+  async warmContainer(
     options: { skipBanCheck?: boolean } = {},
-  ): Promise<ControlPlaneThreadMessagesStreamResponse> {
-    const trimmedThreadId = threadId.trim();
-    if (!trimmedThreadId) {
-      return { success: false, error: "Thread ID is required", code: "EINVAL" };
-    }
-
-    const response = await this.fetchSandboxWithRetry(
-      this.sandboxUrl("/chat/pi-core-messages", { threadId: trimmedThreadId }),
-      {
-        headers: { Accept: "application/json" },
-      },
-      { skipBanCheck: options.skipBanCheck },
-      { operation: "chat_pi_core_messages", attempts: 3, initialDelayMs: 150 },
+  ): Promise<{ success: boolean; error?: string }> {
+    const response = await this.fetchSandbox(
+      this.sandboxUrl("/health"),
+      {},
+      options,
     );
 
     if (!response.ok) {
-      const body = await response.text();
       return {
         success: false,
-        error: body || "Read Pi core message stream failed",
-        code: `HTTP_${response.status}`,
+        error: (await response.text()) || "Container warmup failed",
       };
     }
 
-    return { success: true, response };
+    return { success: true };
   }
 
   async terminateWorkspace(

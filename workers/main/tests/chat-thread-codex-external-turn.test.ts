@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/durable-objects';
 import { validateSignedToken } from '../src/signed-tokens';
-import { WorkspaceContainer } from '../src/workspace-container';
 
 describe('ChatThreadDO Codex external turn completion', () => {
   function createPiEventFake() {
@@ -86,6 +85,64 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(model.provider).toBe('anthropic');
     expect(model.billingSource).toBe('hosted');
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
+  });
+
+  it('sends initial user messages after connecting the runner', async () => {
+    const sentCommands: any[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.chatContext = null;
+    fake.chatIsStreaming = false;
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: vi.fn() } },
+      waitUntil: vi.fn(),
+    };
+    fake.env = {
+      APP_KV: { get: vi.fn().mockResolvedValue(null) },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.setChatIsStreaming = vi.fn((value: boolean) => {
+      fake.chatIsStreaming = value;
+    });
+    fake.broadcastRunnerClients = vi.fn();
+    fake.emitChatError = vi.fn();
+    fake.ensureRunnerConnected = vi.fn(async () => undefined);
+    fake.applyConnectionMentionsForTurn = vi.fn(async (content: string) => content);
+    fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
+    fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
+    fake.sendRunnerCommand = vi.fn((command: any) => {
+      sentCommands.push(command);
+      return true;
+    });
+
+    const result = await ChatThreadDO.prototype.startInitialUserMessage.call(fake, {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      message: 'hello',
+      clientMessageId: 'initial:thread1',
+    });
+
+    expect(result).toEqual({ status: 'accepted' });
+    expect(fake.ensureRunnerConnected).toHaveBeenCalledTimes(1);
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
+    expect(fake.warmWorkspaceContainerForTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread1',
+        workspaceId: 'workspace1',
+        orgId: 'org1',
+      }),
+    );
+    expect(sentCommands).toHaveLength(1);
+    expect(sentCommands[0]).toMatchObject({
+      type: 'message',
+      threadId: 'thread1',
+      userId: 'user1',
+      clientMessageId: 'initial:thread1',
+    });
+    expect(sentCommands[0].content).toContain('hello');
   });
 
   it('keeps hosted OpenAI models on Responses while routing through OpenRouter AI Gateway', async () => {
@@ -303,7 +360,9 @@ describe('ChatThreadDO Codex external turn completion', () => {
         id: 'thread1',
         provider: 'claude',
         model: 'sonnet',
+        workspace_id: 'workspace1',
       })),
+      getLlmProviderConfig: vi.fn(async () => null),
     };
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = {
@@ -327,33 +386,17 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.lastRunnerSeq = 0;
     fake.trace = vi.fn();
     fake.getLegacyClaudeSessionId = vi.fn(() => null);
-    fake.hydratePiCoreMessagesFromLegacy = vi.fn(async () => undefined);
     fake.ensurePiSession = vi.fn(async () => undefined);
 
-    const buildEnvSpy = vi
-      .spyOn(WorkspaceContainer.prototype, 'buildChatRunnerEnv')
-      .mockResolvedValue({
-        envVars: {
-          CHIRIDION_CLAUDE_MODEL: 'sonnet',
-          CHIRIDION_CODEX_MODEL: 'gpt-5.4',
-        },
-      });
-
-    try {
-      await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
-    } finally {
-      buildEnvSpy.mockRestore();
-    }
+    await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
 
     expect(fake.chatContext.provider).toBe('claude');
-    expect(fake.hydratePiCoreMessagesFromLegacy).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'claude' }),
-      expect.any(WorkspaceContainer),
-      expect.any(Object),
-    );
     expect(fake.ensurePiSession).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'claude' }),
-      expect.any(Object),
+      expect.objectContaining({
+        CHIRIDION_CHAT_PROVIDER: 'claude',
+        CHIRIDION_CLAUDE_MODEL: 'sonnet',
+      }),
     );
   });
 

@@ -31,7 +31,12 @@ import {
 import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
 import type { IntegrationCategory, LlmModel } from '../../../src/types';
 import { decryptCredentials, encryptCredentials } from "../../../src/lib/integration-crypto";
-import { parseStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_LLM_MODEL,
+  normalizeLlmModel,
+  parseStoredLlmProviderConfig,
+} from "../../../src/lib/llm-provider-config";
 import { isOrgBanned } from "./ban-list";
 import { recordWorkspaceThreadStreaming } from "./thread-status";
 import {
@@ -529,14 +534,6 @@ interface CodeModeToolDefinition {
   name: string;
   description: string;
   parameters?: unknown;
-}
-
-interface LegacyParsedChatMessageForPi {
-  id?: unknown;
-  role?: unknown;
-  content?: unknown;
-  created_at?: unknown;
-  forkEntryId?: unknown;
 }
 
 type WebProvider = "firecrawl" | "parallel" | "exa";
@@ -5481,316 +5478,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return text || this.safeLegacyString(content);
   }
 
-  private async hydratePiCoreMessagesFromLegacy(
-    context: ChatContextState,
-    container: WorkspaceContainer,
-    options: { claudeSessionId?: string | null; codexSessionId?: string | null },
-  ): Promise<void> {
-    if (this.loadPiCoreMessages().length > 0) return;
-    const startedAt = Date.now();
-
-    try {
-      const piCoreResult = await container.readPiCoreMessagesStream(context.threadId, {
-        skipBanCheck: true,
-      });
-      if (piCoreResult.success && piCoreResult.response) {
-        const piCoreBody = await piCoreResult.response.json().catch(() => null) as { messages?: unknown } | null;
-        const piCoreMessages = Array.isArray(piCoreBody?.messages)
-          ? this.normalizeHostPiCoreMessages(piCoreBody.messages)
-          : [];
-        if (piCoreMessages.length > 0) {
-          if (this.loadPiCoreMessages().length > 0) return;
-          this.replacePiCoreMessages(piCoreMessages);
-          this.trace("pi_core_host_hydrated", { messageCount: piCoreMessages.length });
-          this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
-            operation: "hydrate_from_host_pi_core",
-            status: "host_hit",
-            count: piCoreMessages.length,
-            durationMs: Date.now() - startedAt,
-          });
-          return;
-        }
-      } else {
-        this.trace("pi_core_host_hydration_skipped", {
-          code: piCoreResult.code,
-          error: piCoreResult.error,
-        });
-      }
-
-      const result = await container.readThreadMessagesStream(context.threadId, {
-        claudeSessionId: options.claudeSessionId,
-        codexSessionId: options.codexSessionId,
-        skipBanCheck: true,
-      });
-      if (!result.success || !result.response) {
-        this.trace("pi_core_legacy_hydration_skipped", {
-          code: result.code,
-          error: result.error,
-        });
-        return;
-      }
-
-      const body = await result.response.json().catch(() => null) as { messages?: unknown } | null;
-      const messages = Array.isArray(body?.messages)
-        ? this.legacyParsedMessagesToPiCoreMessages(body.messages)
-        : [];
-      if (messages.length === 0) {
-        this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
-          operation: "hydrate_from_legacy",
-          status: "empty",
-          count: 0,
-          durationMs: Date.now() - startedAt,
-        });
-        return;
-      }
-
-      if (this.loadPiCoreMessages().length > 0) return;
-      this.replacePiCoreMessages(messages);
-      this.trace("pi_core_legacy_hydrated", { messageCount: messages.length });
-      this.recordChatThreadObservabilityEvent("pi_core_hydrated", {
-        operation: "hydrate_from_legacy",
-        status: "legacy_hit",
-        count: messages.length,
-        durationMs: Date.now() - startedAt,
-      });
-    } catch (error) {
-      console.warn("[ChatThreadDO] failed to hydrate Pi history from legacy sessions", error);
-      this.trace("pi_core_legacy_hydration_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      this.recordChatThreadObservabilityEvent("pi_core_hydration_failed", {
-        operation: "hydrate_from_legacy",
-        status: "exception",
-        durationMs: Date.now() - startedAt,
-        error,
-      });
-    }
-  }
-
-  private normalizeHostPiCoreMessages(rawMessages: unknown[]): AgentMessage[] {
-    const messages: AgentMessage[] = [];
-    for (const rawMessage of rawMessages) {
-      if (!rawMessage || typeof rawMessage !== "object") continue;
-      const record = rawMessage as Record<string, unknown>;
-      const role = record.role;
-      const timestamp = this.normalizeLegacyMessageTimestamp(record.timestamp);
-      if (role === "user") {
-        const content = typeof record.content === "string" || Array.isArray(record.content)
-          ? record.content
-          : "";
-        if (typeof content === "string" && !content.trim()) continue;
-        if (Array.isArray(content) && content.length === 0) continue;
-        messages.push({
-          ...record,
-          role: "user",
-          content,
-          timestamp,
-        } as unknown as AgentMessage);
-        continue;
-      }
-      if (role === "assistant") {
-        const content = Array.isArray(record.content) ? record.content : [];
-        if (content.length === 0 && typeof record.errorMessage !== "string") continue;
-        messages.push({
-          ...record,
-          role: "assistant",
-          content,
-          api: typeof record.api === "string" ? record.api : "legacy",
-          provider: typeof record.provider === "string" ? record.provider : "legacy",
-          model: typeof record.model === "string" ? record.model : "legacy",
-          usage: record.usage && typeof record.usage === "object" ? record.usage : this.emptyPiUsage(),
-          stopReason: typeof record.stopReason === "string" ? record.stopReason : "stop",
-          timestamp,
-        } as unknown as AgentMessage);
-        continue;
-      }
-      if (role === "toolResult") {
-        if (typeof record.toolCallId !== "string" || typeof record.toolName !== "string") continue;
-        messages.push({
-          ...record,
-          role: "toolResult",
-          content: Array.isArray(record.content) ? record.content : [],
-          isError: record.isError === true,
-          timestamp,
-        } as unknown as AgentMessage);
-      }
-    }
-    return messages;
-  }
-
-  private legacyParsedMessagesToPiCoreMessages(rawMessages: unknown[]): AgentMessage[] {
-    const messages: AgentMessage[] = [];
-    for (const rawMessage of rawMessages) {
-      const message = this.legacyParsedMessageToPiCoreMessage(rawMessage);
-      if (message) messages.push(message);
-    }
-    return messages;
-  }
-
-  private legacyParsedMessageToPiCoreMessage(rawMessage: unknown): AgentMessage | null {
-    if (!rawMessage || typeof rawMessage !== "object") return null;
-    const message = rawMessage as LegacyParsedChatMessageForPi;
-    const role = typeof message.role === "string" ? message.role : "";
-    const timestamp = this.normalizeLegacyMessageTimestamp(message.created_at);
-
-    if (role === "user") {
-      const content = this.legacyUserContentToPiContent(message.content);
-      if (Array.isArray(content) && content.length === 0) return null;
-      if (typeof content === "string" && !content.trim()) return null;
-      return {
-        role: "user",
-        content,
-        timestamp,
-      } as AgentMessage;
-    }
-
-    if (role === "assistant") {
-      const content = this.legacyAssistantContentToPiContent(message.content);
-      const errorMessage = this.legacyErrorMessage(message.content);
-      if (content.length === 0 && !errorMessage) return null;
-      const responseId = typeof message.id === "string" && message.id.trim()
-        ? message.id.trim()
-        : typeof message.forkEntryId === "string" && message.forkEntryId.trim()
-          ? message.forkEntryId.trim()
-          : undefined;
-      return {
-        role: "assistant",
-        content,
-        api: "legacy",
-        provider: "legacy",
-        model: "legacy",
-        responseId,
-        usage: this.emptyPiUsage(),
-        stopReason: errorMessage ? "error" : "stop",
-        errorMessage: errorMessage || undefined,
-        timestamp,
-      } as unknown as AgentMessage;
-    }
-
-    return null;
-  }
-
-  private normalizeLegacyMessageTimestamp(value: unknown): number {
-    const parsed = typeof value === "number" ? value : Number(value);
-    if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
-    return parsed < 10_000_000_000 ? Math.round(parsed * 1000) : Math.round(parsed);
-  }
-
-  private legacyUserContentToPiContent(content: unknown): string | Array<Record<string, unknown>> {
-    const parsed = this.parseLegacyChatContent(content);
-    if (typeof parsed === "string") return parsed;
-    const blocks = parsed.flatMap((block) => {
-      if (!block || typeof block !== "object") return [];
-      const item = block as Record<string, unknown>;
-      if (item.type === "text" && typeof item.text === "string") {
-        return [{ type: "text", text: item.text }];
-      }
-      const text = this.legacyContentBlockToText(item);
-      return text ? [{ type: "text", text }] : [];
-    });
-    return blocks.length > 0 ? blocks : "";
-  }
-
-  private legacyAssistantContentToPiContent(content: unknown): Array<Record<string, unknown>> {
-    const parsed = this.parseLegacyChatContent(content);
-    if (typeof parsed === "string") {
-      return parsed.trim() ? [{ type: "text", text: parsed }] : [];
-    }
-
-    return parsed.flatMap((block): Array<Record<string, unknown>> => {
-      if (!block || typeof block !== "object") return [];
-      const item = block as Record<string, unknown>;
-      if (item.type === "text" && typeof item.text === "string") {
-        return [{ type: "text", text: item.text }];
-      }
-      if (item.type === "thinking" && typeof item.thinking === "string") {
-        return [{
-          type: "thinking",
-          thinking: item.thinking,
-          thinkingSignature: typeof item.signature === "string" ? item.signature : undefined,
-        }];
-      }
-      if (
-        item.type === "tool_use" &&
-        typeof item.id === "string" &&
-        typeof item.name === "string"
-      ) {
-        return [{
-          type: "toolCall",
-          id: item.id,
-          name: item.name,
-          arguments: item.input && typeof item.input === "object" && !Array.isArray(item.input)
-            ? item.input
-            : {},
-        }];
-      }
-      const text = this.legacyContentBlockToText(item);
-      return text ? [{ type: "text", text }] : [];
-    });
-  }
-
-  private parseLegacyChatContent(content: unknown): string | unknown[] {
-    if (Array.isArray(content)) return content;
-    if (typeof content !== "string") return this.safeLegacyString(content);
-
-    const trimmed = content.trim();
-    if (
-      (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
-      (trimmed.startsWith("{") && trimmed.endsWith("}"))
-    ) {
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        if (Array.isArray(parsed)) return parsed;
-        if (parsed && typeof parsed === "object" && "type" in parsed) return [parsed];
-      } catch {
-        // Treat malformed JSON-looking content as plain text.
-      }
-    }
-    return content;
-  }
-
-  private legacyContentBlockToText(block: Record<string, unknown>): string {
-    const type = typeof block.type === "string" ? block.type : "content";
-    if (type === "tool_result") {
-      const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "unknown";
-      return `[Tool result: ${toolUseId}]\n${this.safeLegacyString(block.content)}`.trim();
-    }
-    if (type === "error") {
-      const title = typeof block.title === "string" && block.title.trim()
-        ? block.title.trim()
-        : "Assistant error";
-      const error = typeof block.error === "string" ? block.error : this.safeLegacyString(block.error);
-      return `[${title}]\n${error}`.trim();
-    }
-    if (type === "task_notification") {
-      return [
-        "[Task notification]",
-        typeof block.status === "string" ? `Status: ${block.status}` : "",
-        typeof block.summary === "string" ? block.summary : "",
-        typeof block.outputFile === "string" ? `Output: ${block.outputFile}` : "",
-      ].filter(Boolean).join("\n");
-    }
-    if (type === "teammate_message") {
-      const teammate = typeof block.teammateId === "string" ? block.teammateId : "teammate";
-      const text = typeof block.content === "string" ? block.content : this.safeLegacyString(block.content);
-      return `[${teammate}]\n${text}`.trim();
-    }
-    return "";
-  }
-
-  private legacyErrorMessage(content: unknown): string {
-    const parsed = this.parseLegacyChatContent(content);
-    if (typeof parsed === "string") return "";
-    for (const block of parsed) {
-      if (!block || typeof block !== "object") continue;
-      const item = block as Record<string, unknown>;
-      if (item.type === "error" && typeof item.error === "string" && item.error.trim()) {
-        return item.error.trim();
-      }
-    }
-    return "";
-  }
-
   private safeLegacyString(value: unknown): string {
     if (typeof value === "string") return value;
     if (value === null || value === undefined) return "";
@@ -6282,7 +5969,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       durationMs: Date.now() - startedAt,
       size: rawContent.length,
     });
+    this.ctx.waitUntil(
+      this.warmWorkspaceContainerForTurn(context).catch((error) => {
+        console.warn("[ChatThreadDO] container warmup failed", error);
+        this.recordChatThreadObservabilityEvent("container_warmup", {
+          operation: "warm_after_user_message",
+          status: "error",
+          severity: "warn",
+          error,
+        });
+      }),
+    );
     return { status: "accepted" };
+  }
+
+  private async warmWorkspaceContainerForTurn(
+    context: ChatContextState,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const container = new WorkspaceContainer(
+      this.env,
+      context.workspaceId,
+      context.orgId,
+    );
+    const result = await container.warmContainer({ skipBanCheck: true });
+    this.recordChatThreadObservabilityEvent("container_warmup", {
+      operation: "warm_after_user_message",
+      status: result.success ? "ok" : "error",
+      severity: result.success ? "info" : "warn",
+      durationMs: Date.now() - startedAt,
+      error: result.success ? undefined : new Error(result.error || "Container warmup failed"),
+    });
   }
 
   private async handleQuestionResponse(
@@ -7088,37 +6805,39 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         contextOrgId: baseContext.orgId,
       });
 
-      const container = new WorkspaceContainer(
-        this.env,
-        baseContext.workspaceId,
-        baseContext.orgId,
-      );
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(baseContext.orgId));
-      const thread = await orgStub.getThread(baseContext.threadId);
+      const [thread, llmProviderRecord] = await Promise.all([
+        orgStub.getThread(baseContext.threadId),
+        orgStub.getLlmProviderConfig(),
+      ]);
       const provider: NonNullable<ChatContextState["provider"]> =
         thread?.provider === 'codex' ? 'codex' : 'claude';
       const context: ChatContextState = { ...baseContext, provider };
       this.chatContext = context;
       this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, context);
-      // Build thread-specific env (integration creds + thread ID).
-      const { envVars } = await container.buildChatRunnerEnv({
-        threadId: context.threadId,
-        provider,
-      });
-      const legacyClaudeSessionId = this.getLegacyClaudeSessionId();
-      if (legacyClaudeSessionId) {
-        envVars.CHIRIDION_CLAUDE_SESSION_ID = legacyClaudeSessionId;
-      }
-      if (provider === 'codex' && this.codexSessionId) {
-        envVars.CHIRIDION_CODEX_SESSION_ID = this.codexSessionId;
-      }
+      const threadWorkspaceId =
+        thread && typeof thread === "object" && "workspace_id" in thread
+          ? (thread as { workspace_id?: unknown }).workspace_id
+          : null;
+      const threadModel =
+        thread && threadWorkspaceId === context.workspaceId
+          ? normalizeLlmModel(
+              (thread as { model?: unknown }).model,
+              provider,
+              llmProviderRecord?.provider,
+            )
+          : provider === "codex"
+            ? normalizeLlmModel(undefined, "codex", llmProviderRecord?.provider)
+            : DEFAULT_LLM_MODEL;
+      const envVars = {
+        CHIRIDION_CLAUDE_MODEL:
+          provider === "claude" ? threadModel : DEFAULT_LLM_MODEL,
+        CHIRIDION_CODEX_MODEL:
+          provider === "codex" ? threadModel : DEFAULT_CODEX_MODEL,
+        CHIRIDION_CHAT_PROVIDER: provider,
+      };
       this.trace("ensure_runner_env_built", {
         envVarCount: Object.keys(envVars).length,
-      });
-
-      await this.hydratePiCoreMessagesFromLegacy(context, container, {
-        claudeSessionId: legacyClaudeSessionId,
-        codexSessionId: this.codexSessionId,
       });
 
       await this.ensurePiSession(context, envVars);

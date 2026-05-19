@@ -117,56 +117,6 @@ func readPiSessionJSONLFile(path string) (map[string]any, []map[string]any, erro
 	return session, entries, nil
 }
 
-func readHostPiCoreMessages(sessionRoot, threadID string) ([]map[string]any, error) {
-	sessionRoot = strings.TrimSpace(sessionRoot)
-	threadID = strings.TrimSpace(threadID)
-	if sessionRoot == "" || threadID == "" {
-		return nil, nil
-	}
-	if strings.ContainsAny(threadID, `/\`) {
-		return nil, fmt.Errorf("invalid thread id")
-	}
-
-	files, err := piSessionJSONLFiles(filepath.Join(sessionRoot, threadID))
-	if err != nil {
-		return nil, err
-	}
-
-	messages := make([]map[string]any, 0)
-	seen := make(map[string]bool)
-	for _, file := range files {
-		_, entries, err := readPiSessionJSONLFile(file)
-		if err != nil {
-			return nil, err
-		}
-		for _, entry := range entries {
-			if firstString(entry, "type") != "message" {
-				continue
-			}
-			messageMap, ok := asMap(entry["message"])
-			if !ok {
-				continue
-			}
-			switch firstString(messageMap, "role") {
-			case "user", "assistant", "toolResult":
-			default:
-				continue
-			}
-			if id := firstString(entry, "id"); id != "" {
-				if seen[id] {
-					continue
-				}
-				seen[id] = true
-			}
-			if _, ok := messageMap["timestamp"]; !ok {
-				messageMap["timestamp"] = piCreatedAt(entry, messageMap)
-			}
-			messages = append(messages, messageMap)
-		}
-	}
-	return messages, nil
-}
-
 func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessage {
 	lines := strings.Split(fileContent, "\n")
 	messages := make([]parsedChatMessage, 0, len(lines))

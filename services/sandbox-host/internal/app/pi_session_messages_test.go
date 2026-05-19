@@ -3,7 +3,6 @@ package app
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -167,37 +166,5 @@ func TestReadHostPiSessionMessagesCombinesJSONLFiles(t *testing.T) {
 	}
 	if messages[0].ID != "u1" || messages[1].ID != "u2" {
 		t.Fatalf("messages not read in filename order: %#v", messages)
-	}
-}
-
-func TestReadHostPiCoreMessagesReturnsRawPiMessages(t *testing.T) {
-	root := t.TempDir()
-	threadID := "thread-1"
-	sessionDir := filepath.Join(root, threadID)
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	content := strings.Join([]string{
-		`{"type":"session","id":"ignored"}`,
-		`{"type":"message","id":"u1","timestamp":"2026-01-02T03:04:05.000Z","message":{"role":"user","content":[{"type":"text","text":"one"}]}}`,
-		`{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"two"}],"api":"openai-responses","provider":"openai","model":"gpt-test","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop"}}`,
-	}, "\n")
-	if err := os.WriteFile(filepath.Join(sessionDir, "2026-01-02T03-04-05Z_a.jsonl"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	messages, err := readHostPiCoreMessages(root, threadID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(messages))
-	}
-	if firstString(messages[0], "role") != "user" || firstString(messages[1], "role") != "assistant" {
-		t.Fatalf("unexpected roles: %#v", messages)
-	}
-	if _, ok := messages[0]["timestamp"]; !ok {
-		t.Fatalf("expected timestamp to be copied from event")
 	}
 }

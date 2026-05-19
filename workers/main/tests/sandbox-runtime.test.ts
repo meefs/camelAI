@@ -138,4 +138,26 @@ describe('sandbox runtime', () => {
     warnSpy.mockRestore();
   });
 
+  it('warms a workspace container through the health route', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, status: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const env = {
+      SANDBOX_HOST: { fetch: fetchMock },
+    } as unknown as WorkspaceContainerEnv;
+
+    const container = new WorkspaceContainer(env, 'ws-1', 'org-1');
+    const result = await container.warmContainer({ skipBanCheck: true });
+
+    expect(result).toEqual({ success: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/v1/workspaces/org-1/ws-1/health',
+    );
+  });
+
 });
