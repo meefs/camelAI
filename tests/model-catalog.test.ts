@@ -20,6 +20,17 @@ const NEW_OPENROUTER_MODELS: Array<{
   speed: number;
 }> = [
   {
+    id: 'gemini-3.5-flash',
+    label: 'Gemini 3.5 Flash',
+    providerLogo: 'gemini',
+    providerOrder: 2,
+    modelOrder: 0,
+    pricingKey: 'google/gemini-3.5-flash',
+    cost: '$',
+    intelligence: 4.5,
+    speed: 4.5,
+  },
+  {
     id: 'gemini-3-flash-preview',
     label: 'Gemini 3 Flash Preview',
     providerLogo: 'gemini',
@@ -29,17 +40,6 @@ const NEW_OPENROUTER_MODELS: Array<{
     cost: '$',
     intelligence: 2.5,
     speed: 5,
-  },
-  {
-    id: 'gemini-3.1-pro-preview',
-    label: 'Gemini 3.1 Pro Preview',
-    providerLogo: 'gemini',
-    providerOrder: 2,
-    modelOrder: 0,
-    pricingKey: 'google/gemini-3.1-pro-preview',
-    cost: '$$',
-    intelligence: 4.5,
-    speed: 3.5,
   },
   {
     id: 'deepseek-v4-pro',
@@ -127,6 +127,14 @@ describe('MODEL_CATALOG', () => {
     }
   });
 
+  it('does not expose retired Gemini 3.1 Pro Preview as a selectable model', () => {
+    expect(ALL_LLM_MODELS).not.toContain('gemini-3.1-pro-preview');
+    expect(MODEL_CATALOG).not.toHaveProperty('gemini-3.1-pro-preview');
+    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty(
+      'gemini-3.1-pro-preview',
+    );
+  });
+
   it('adds Gemini and DeepSeek metadata with OpenRouter pricing keys', () => {
     for (const expected of NEW_OPENROUTER_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
@@ -172,7 +180,7 @@ describe('MODEL_CATALOG', () => {
           { id: 'kimi-k2.6', added_at: 5 },
           { id: 'grok-4.3', added_at: 6 },
           { id: 'gemini-3-flash-preview', added_at: 7 },
-          { id: 'gemini-3.1-pro-preview', added_at: 8 },
+          { id: 'gemini-3.5-flash', added_at: 8 },
           { id: 'deepseek-v4-pro', added_at: 9 },
           { id: 'deepseek-v4-flash', added_at: 10 },
         ],
@@ -197,7 +205,7 @@ describe('MODEL_CATALOG', () => {
           { id: 'deepseek-v4-flash', added_at: 40 },
           { id: 'gemini-3-flash-preview', added_at: 30 },
           { id: 'deepseek-v4-pro', added_at: 20 },
-          { id: 'gemini-3.1-pro-preview', added_at: 10 },
+          { id: 'gemini-3.5-flash', added_at: 10 },
           { id: 'grok-4.3', added_at: 60 },
           { id: 'kimi-k2.6', added_at: 50 },
         ],
@@ -207,7 +215,7 @@ describe('MODEL_CATALOG', () => {
     });
 
     expect(visible.map((entry) => entry.id)).toEqual([
-      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       'gemini-3-flash-preview',
       'deepseek-v4-pro',
       'deepseek-v4-flash',

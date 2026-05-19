@@ -27,8 +27,9 @@ const MODEL_ALIASES: Readonly<Record<string, string>> = {
   "opus-4.7": "anthropic/claude-opus-4.7",
   "grok-4.3": "x-ai/grok-4.3",
   "grok-latest": "x-ai/grok-4.3",
+  "gemini-3.5-flash": "google/gemini-3.5-flash",
   "gemini-3-flash-preview": "google/gemini-3-flash-preview",
-  "gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview",
+  "gemini-3.1-pro-preview": "google/gemini-3.5-flash",
   "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
   "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
 };

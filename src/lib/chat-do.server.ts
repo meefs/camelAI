@@ -26,6 +26,9 @@ import {
   isLlmModelAllowedForNewThread,
   getDefaultThreadProvider,
   getProviderForModel,
+  isLlmModel,
+  normalizeLlmModel,
+  replaceLegacyLlmModel,
 } from "./llm-provider-config";
 import { resolveModelPickerCatalog } from "./model-catalog";
 import {
@@ -62,15 +65,40 @@ export interface RawThreadCreator {
   latest_updated_at: number;
 }
 
+export function normalizeStoredThreadModel(
+  rawModel: unknown,
+  rawProvider?: ChatHarness | null,
+): { model: LlmModel; provider: ChatHarness } {
+  const replacement = replaceLegacyLlmModel(rawModel);
+  const isLegacyReplacement = replacement !== rawModel;
+  if (isLegacyReplacement && isLlmModel(replacement)) {
+    return {
+      provider: getProviderForModel(replacement, rawProvider ?? "claude"),
+      model: replacement,
+    };
+  }
+  const provider =
+    rawProvider ??
+    (isLlmModel(replacement) ? getProviderForModel(replacement) : "claude");
+  return {
+    provider,
+    model: normalizeLlmModel(rawModel, provider),
+  };
+}
+
 // Helper to convert OrgThread to Thread
 function toThread(orgThread: OrgThread): Thread {
+  const { model, provider } = normalizeStoredThreadModel(
+    orgThread.model,
+    orgThread.provider,
+  );
   return {
     id: orgThread.id,
     workspace_id: orgThread.workspace_id,
     title: orgThread.title,
-    provider: orgThread.provider ?? "claude",
+    provider,
     created_by: orgThread.created_by,
-    model: orgThread.model,
+    model,
     created_at: orgThread.created_at,
     updated_at: orgThread.updated_at,
     user_message_count: orgThread.user_message_count ?? 0,

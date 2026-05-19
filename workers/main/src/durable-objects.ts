@@ -7657,10 +7657,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return openRouterReference("~moonshotai/kimi-latest");
       case "grok-4.3":
         return openRouterResponsesReference("x-ai/grok-4.3");
+      case "gemini-3.5-flash":
+        return openRouterReference("google/gemini-3.5-flash");
       case "gemini-3-flash-preview":
         return openRouterReference("google/gemini-3-flash-preview");
       case "gemini-3.1-pro-preview":
-        return openRouterReference("google/gemini-3.1-pro-preview");
+        return openRouterReference("google/gemini-3.5-flash");
       case "deepseek-v4-pro":
         return openRouterReference("deepseek/deepseek-v4-pro");
       case "deepseek-v4-flash":

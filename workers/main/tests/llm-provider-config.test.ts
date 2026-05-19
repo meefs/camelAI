@@ -25,7 +25,7 @@ const CODEX_MODELS = [
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
-  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
@@ -41,7 +41,7 @@ const CLAUDE_MODELS = [
 ] as const;
 
 const OPENROUTER_ONLY_MODELS = [
-  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
@@ -74,6 +74,10 @@ describe("llm provider config helpers", () => {
     for (const model of CODEX_MODELS) {
       expect(isLlmModel(model, "codex")).toBe(true);
     }
+    expect(isLlmModel("gemini-3.1-pro-preview", "codex")).toBe(false);
+    expect(normalizeLlmModel("gemini-3.1-pro-preview", "codex")).toBe(
+      "gemini-3.5-flash",
+    );
   });
 
   it("keeps BYOK provider-scoped and defaults proxy orgs to Claude", () => {
@@ -235,7 +239,7 @@ describe("llm provider config helpers", () => {
     expect(getProviderForModel("gemini-3-flash-preview", "claude")).toBe(
       "codex",
     );
-    expect(getProviderForModel("gemini-3.1-pro-preview", "claude")).toBe(
+    expect(getProviderForModel("gemini-3.5-flash", "claude")).toBe(
       "codex",
     );
     expect(getProviderForModel("deepseek-v4-pro", "claude")).toBe("codex");

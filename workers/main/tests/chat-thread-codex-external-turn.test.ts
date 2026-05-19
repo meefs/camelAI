@@ -520,18 +520,22 @@ describe('ChatThreadDO Codex external turn completion', () => {
     );
   });
 
-  it('routes Gemini aliases through OpenRouter chat completions rather than Google API shape', () => {
+  it.each([
+    ['gemini-3.5-flash', 'google/gemini-3.5-flash'],
+    ['gemini-3-flash-preview', 'google/gemini-3-flash-preview'],
+    ['gemini-3.1-pro-preview', 'google/gemini-3.5-flash'],
+  ])('routes %s through OpenRouter chat completions', (model, routeModel) => {
     const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
       Object.create(ChatThreadDO.prototype),
       'codex',
-      'gemini-3-flash-preview',
+      model,
     );
 
     expect(result).toEqual({
       provider: 'openrouter',
-      modelId: 'google/gemini-3-flash-preview',
+      modelId: routeModel,
       hostedGatewayProvider: 'openrouter',
-      hostedModelId: 'google/gemini-3-flash-preview',
+      hostedModelId: routeModel,
     });
   });
 

@@ -314,7 +314,7 @@ Three auto routes are available. Use them with `workersai(routeName, {})` in dep
 
 ### Specific OpenRouter Models (Only When User Explicitly Requests)
 
-Any model available on [OpenRouter](https://openrouter.ai/models) can be used by passing the full model identifier (e.g., `anthropic/claude-sonnet-4.6`, `openai/gpt-5.3-chat`, `google/gemini-3.1-pro-preview`). **Only use a specific model when the user explicitly asks for it.** Never proactively choose a specific model — auto routing is always the better default.
+Any model available on [OpenRouter](https://openrouter.ai/models) can be used by passing the full model identifier (e.g., `anthropic/claude-sonnet-4.6`, `openai/gpt-5.3-chat`, `google/gemini-3.5-flash`). **Only use a specific model when the user explicitly asks for it.** Never proactively choose a specific model — auto routing is always the better default.
 
 ```typescript
 const result = await streamText({

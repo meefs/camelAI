@@ -29,6 +29,7 @@ import { type AuthEnv, getAuthEnv } from "./auth-helpers";
 import * as authDO from "./auth-do";
 import {
   getMessages as getThreadMessages,
+  normalizeStoredThreadModel,
   getThreadPreviewTarget,
 } from "./chat-do.server";
 import { deriveCheapRecentActivityCounts } from "./admin-recent-activity";
@@ -539,9 +540,40 @@ export async function adminGetAllThreads(
 ): Promise<AdminThreadWithContext[]> {
   const env = getEnv(context);
   await ensureAdminIndexReady(env);
-  return getAdminIndex(env).getAllThreads() as Promise<
-    AdminThreadWithContext[]
-  >;
+  const threads = (await getAdminIndex(env).getAllThreads()) as
+    AdminThreadWithContext[];
+  return threads.map(normalizeAdminThreadModel);
+}
+
+function normalizeAdminThreadModel<T extends AdminThreadWithContext>(
+  thread: T,
+): T {
+  const { model, provider } = normalizeStoredThreadModel(
+    thread.model,
+    thread.provider,
+  );
+  return { ...thread, model, provider } as T;
+}
+
+function normalizeAdminThreadPage(
+  page: PaginatedResult<AdminThreadWithContext>,
+): PaginatedResult<AdminThreadWithContext> {
+  return {
+    ...page,
+    items: page.items.map(normalizeAdminThreadModel),
+  };
+}
+
+function normalizeAdminRecentActivity(result: {
+  threads: AdminThreadWithContext[];
+  apps: AdminAppSummary[];
+  threadCount: number | null;
+  appCount: number | null;
+}) {
+  return {
+    ...result,
+    threads: result.threads.map(normalizeAdminThreadModel),
+  };
 }
 
 export async function adminGetAppCount(
@@ -629,11 +661,12 @@ export async function adminGetThreadsPaginated(
   const env = getEnv(context);
   const { offset = 0, limit = 50, search } = params;
   await ensureAdminIndexReady(env);
-  return getAdminIndex(env).getThreadsPaginated(
+  const page = (await getAdminIndex(env).getThreadsPaginated(
     offset,
     limit,
     search,
-  ) as Promise<any>;
+  )) as PaginatedResult<AdminThreadWithContext>;
+  return normalizeAdminThreadPage(page);
 }
 
 export async function adminGetAppsPaginated(
@@ -691,7 +724,10 @@ export async function adminGetThreadContextById(
 ): Promise<AdminThreadWithContext | null> {
   const env = getEnv(context);
   await ensureAdminIndexReady(env);
-  return getAdminIndex(env).getThreadContextById(threadId) as Promise<any>;
+  const thread = (await getAdminIndex(env).getThreadContextById(
+    threadId,
+  )) as AdminThreadWithContext | null;
+  return thread ? normalizeAdminThreadModel(thread) : null;
 }
 
 export async function adminGetOrgRecentActivity(
@@ -722,21 +758,33 @@ export async function adminGetOrgRecentActivity(
   const includeCounts = options.includeCounts ?? "cheap";
 
   if (includeCounts === false) {
-    return getAdminIndex(env).getOrgRecentActivity(
+    const recent = (await getAdminIndex(env).getOrgRecentActivity(
       orgId,
       threadLimit,
       appLimit,
       false,
-    ) as Promise<any>;
+    )) as {
+      threads: AdminThreadWithContext[];
+      apps: AdminAppSummary[];
+      threadCount: number | null;
+      appCount: number | null;
+    };
+    return normalizeAdminRecentActivity(recent);
   }
 
   if (includeCounts === true) {
-    return getAdminIndex(env).getOrgRecentActivity(
+    const recent = (await getAdminIndex(env).getOrgRecentActivity(
       orgId,
       threadLimit,
       appLimit,
       true,
-    ) as Promise<any>;
+    )) as {
+      threads: AdminThreadWithContext[];
+      apps: AdminAppSummary[];
+      threadCount: number | null;
+      appCount: number | null;
+    };
+    return normalizeAdminRecentActivity(recent);
   }
 
   const recent = (await getAdminIndex(env).getOrgRecentActivity(
@@ -756,7 +804,7 @@ export async function adminGetOrgRecentActivity(
   });
 
   return {
-    threads: recent.threads,
+    threads: recent.threads.map(normalizeAdminThreadModel),
     apps: recent.apps,
     threadCount: cheapCounts.threadCount,
     appCount: cheapCounts.appCount,
@@ -810,6 +858,10 @@ export async function adminGetThreadWithMessages(
   if (!thread || thread.workspace_id !== threadContext.workspace_id) {
     return null;
   }
+  const { model, provider } = normalizeStoredThreadModel(
+    thread.model,
+    thread.provider,
+  );
 
   const [messages, preview_target] = await Promise.all([
     getThreadMessages(context, threadId, thread.workspace_id, {
@@ -822,8 +874,8 @@ export async function adminGetThreadWithMessages(
     thread: {
       id: thread.id,
       title: thread.title || 'Untitled',
-      provider: thread.provider ?? 'claude',
-      model: thread.model,
+      provider,
+      model,
       created_by: thread.created_by,
       created_at: thread.created_at,
       updated_at: thread.updated_at,

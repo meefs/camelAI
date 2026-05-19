@@ -10,7 +10,9 @@ vi.mock('@/lib/thread-title-generation.server', () => ({
   generateThreadTitleWithOpenAI: vi.fn(),
 }));
 
-const { getWorkspaceModelPickerState } = await import('@/lib/chat-do.server');
+const { getThread, getWorkspaceModelPickerState } = await import(
+  '@/lib/chat-do.server'
+);
 
 describe('getWorkspaceModelPickerState rollout compatibility', () => {
   beforeEach(() => {
@@ -97,5 +99,41 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     await expect(getWorkspaceModelPickerState({}, 'ws_123')).rejects.toThrow(
       storageError,
     );
+  });
+
+  it('normalizes legacy stored thread models before returning them to React', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+    };
+    const orgStub = {
+      getThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'Legacy Gemini thread',
+        provider: 'codex',
+        created_by: 'user_123',
+        model: 'gemini-3.1-pro-preview',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const thread = await getThread({}, 'thread_123', 'ws_123');
+
+    expect(thread?.model).toBe('gemini-3.5-flash');
+    expect(thread?.provider).toBe('codex');
   });
 });
