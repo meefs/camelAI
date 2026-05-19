@@ -10,16 +10,131 @@ interface AnthropicMessagesRequest {
   [key: string]: unknown;
 }
 
+interface BedrockModelMetadata {
+  id: string;
+  bedrockModelId: string;
+  name: string;
+  reasoning: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
+  input: ('text' | 'image')[];
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
+  contextWindow: number;
+  maxTokens: number;
+}
+
+const bedrockModels: BedrockModelMetadata[] = [
+  {
+    id: 'claude-haiku-4-5-20251001',
+    bedrockModelId: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
+    name: 'Claude Haiku 4.5',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  {
+    id: 'claude-opus-4-5-20251101',
+    bedrockModelId: 'global.anthropic.claude-opus-4-5-20251101-v1:0',
+    name: 'Claude Opus 4.5',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  {
+    id: 'claude-opus-4-20250514',
+    bedrockModelId: 'global.anthropic.claude-opus-4-20250514-v1:0',
+    name: 'Claude Opus 4',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+    contextWindow: 200_000,
+    maxTokens: 32_000,
+  },
+  {
+    id: 'claude-opus-4-6',
+    bedrockModelId: 'global.anthropic.claude-opus-4-6-v1',
+    name: 'Claude Opus 4.6',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'max' },
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  {
+    id: 'claude-opus-4-7',
+    bedrockModelId: 'global.anthropic.claude-opus-4-7',
+    name: 'Claude Opus 4.7',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'xhigh' },
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  {
+    id: 'claude-sonnet-4-20250514',
+    bedrockModelId: 'global.anthropic.claude-sonnet-4-20250514-v1:0',
+    name: 'Claude Sonnet 4',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  {
+    id: 'claude-sonnet-4-5-20250929',
+    bedrockModelId: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    name: 'Claude Sonnet 4.5',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    bedrockModelId: 'global.anthropic.claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+  },
+  {
+    id: 'claude-3-5-sonnet-20241022',
+    bedrockModelId: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+    name: 'Claude Sonnet 3.5 v2',
+    reasoning: false,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  },
+  {
+    id: 'claude-3-5-haiku-20241022',
+    bedrockModelId: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
+    name: 'Claude Haiku 3.5',
+    reasoning: false,
+    input: ['text', 'image'],
+    cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  },
+];
+
 const bedrockModelMap: Record<string, string> = {
-  'claude-sonnet-4-5-20250929': 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
-  'claude-haiku-4-5-20251001': 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
-  'claude-opus-4-5-20251101': 'global.anthropic.claude-opus-4-5-20251101-v1:0',
-  'claude-sonnet-4-6': 'global.anthropic.claude-sonnet-4-6',
-  'claude-opus-4-6': 'global.anthropic.claude-opus-4-6-v1',
-  'claude-sonnet-4-20250514': 'global.anthropic.claude-sonnet-4-20250514-v1:0',
-  'claude-opus-4-20250514': 'global.anthropic.claude-opus-4-20250514-v1:0',
-  'claude-3-5-sonnet-20241022': 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
-  'claude-3-5-haiku-20241022': 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  ...Object.fromEntries(bedrockModels.map((model) => [model.id, model.bedrockModelId])),
+  ...Object.fromEntries(bedrockModels.map((model) => [model.bedrockModelId, model.bedrockModelId])),
 };
 
 export default {
@@ -28,6 +143,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return Response.json({ ok: true, service: 'bedrock-provider' });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/v1/models') {
+      return Response.json({ data: bedrockModels.map(toModelListItem) });
     }
 
     if (request.method !== 'POST' || url.pathname !== '/v1/messages') {
@@ -89,6 +208,23 @@ export default {
     });
   },
 };
+
+function toModelListItem(model: BedrockModelMetadata): Record<string, unknown> {
+  return {
+    id: model.id,
+    object: 'model',
+    name: model.name,
+    reasoning: model.reasoning,
+    thinkingLevelMap: model.thinkingLevelMap,
+    input: model.input,
+    cost: model.cost,
+    contextWindow: model.contextWindow,
+    context_window: model.contextWindow,
+    maxTokens: model.maxTokens,
+    max_tokens: model.maxTokens,
+    bedrockModelId: model.bedrockModelId,
+  };
+}
 
 function toBedrockBody(body: AnthropicMessagesRequest, headers: Headers): Record<string, unknown> {
   const bedrockBody: Record<string, unknown> = {

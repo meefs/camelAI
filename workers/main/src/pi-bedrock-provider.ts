@@ -22,6 +22,7 @@ const DEFAULT_BEDROCK_REGION = 'us-east-1';
 const ANTHROPIC_VERSION = 'bedrock-2023-05-31';
 const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14';
 const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
+const PROMPT_CACHING_BETA = 'prompt-caching-2024-07-31';
 
 type AnthropicStopReason =
   | 'end_turn'
@@ -105,7 +106,8 @@ type AnthropicContentBlock =
   | AnthropicThinkingBlock
   | AnthropicRedactedThinkingBlock;
 
-type AnthropicTextBlock = { type: 'text'; text: string };
+type CacheControl = { type: 'ephemeral' };
+type AnthropicTextBlock = { type: 'text'; text: string; cache_control?: CacheControl };
 type AnthropicImageBlock = {
   type: 'image';
   source: {
@@ -125,6 +127,7 @@ type AnthropicToolResultBlock = {
   tool_use_id: string;
   content: string | (AnthropicTextBlock | AnthropicImageBlock)[];
   is_error?: boolean;
+  cache_control?: CacheControl;
 };
 type AnthropicThinkingBlock = {
   type: 'thinking';
@@ -144,24 +147,114 @@ type AnthropicTool = {
     required: string[];
   };
   eager_input_streaming?: boolean;
+  cache_control?: CacheControl;
 };
 
 type EventStreamBytes = Uint8Array<ArrayBufferLike>;
+
+type BedrockClaudeModelMetadata = {
+  id: string;
+  name: string;
+  reasoning: boolean;
+  thinkingLevelMap?: Model<'bedrock-converse-stream'>['thinkingLevelMap'];
+  input: Model<'bedrock-converse-stream'>['input'];
+  cost: Model<'bedrock-converse-stream'>['cost'];
+  contextWindow: number;
+  maxTokens: number;
+};
+
+const BEDROCK_CLAUDE_MODEL_METADATA: Record<string, BedrockClaudeModelMetadata> = {
+  'global.anthropic.claude-haiku-4-5-20251001-v1:0': {
+    id: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
+    name: 'Claude Haiku 4.5 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-opus-4-5-20251101-v1:0': {
+    id: 'global.anthropic.claude-opus-4-5-20251101-v1:0',
+    name: 'Claude Opus 4.5 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-opus-4-20250514-v1:0': {
+    id: 'global.anthropic.claude-opus-4-20250514-v1:0',
+    name: 'Claude Opus 4 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+    contextWindow: 200_000,
+    maxTokens: 32_000,
+  },
+  'global.anthropic.claude-opus-4-6-v1': {
+    id: 'global.anthropic.claude-opus-4-6-v1',
+    name: 'Claude Opus 4.6 (Global)',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'max' },
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  'global.anthropic.claude-opus-4-7': {
+    id: 'global.anthropic.claude-opus-4-7',
+    name: 'Claude Opus 4.7 (Global)',
+    reasoning: true,
+    thinkingLevelMap: { xhigh: 'xhigh' },
+    input: ['text', 'image'],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  'global.anthropic.claude-sonnet-4-20250514-v1:0': {
+    id: 'global.anthropic.claude-sonnet-4-20250514-v1:0',
+    name: 'Claude Sonnet 4 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-sonnet-4-5-20250929-v1:0': {
+    id: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    name: 'Claude Sonnet 4.5 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  'global.anthropic.claude-sonnet-4-6': {
+    id: 'global.anthropic.claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6 (Global)',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+  },
+};
 
 export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOptions> = (
   model,
   context,
   options,
 ) => {
+  const resolvedModel = withBedrockModelMetadata(model);
   const stream = createAssistantMessageEventStream();
 
   void (async () => {
     const output: AssistantMessage = {
       role: 'assistant',
       content: [],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
+      api: resolvedModel.api,
+      provider: resolvedModel.provider,
+      model: resolvedModel.id,
       usage: {
         input: 0,
         output: 0,
@@ -184,19 +277,19 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
         throw new Error('Bedrock API key is missing');
       }
 
-      let payload = buildBedrockInvokeBody(model, context, options);
-      const nextPayload = await options?.onPayload?.(payload, model);
+      let payload = buildBedrockInvokeBody(resolvedModel, context, options);
+      const nextPayload = await options?.onPayload?.(payload, resolvedModel);
       if (nextPayload !== undefined) {
         payload = nextPayload as BedrockInvokeBody;
       }
 
-      const response = await fetch(buildBedrockInvokeUrl(model, options), {
+      const response = await fetch(buildBedrockInvokeUrl(resolvedModel, options), {
         method: 'POST',
         headers: {
           authorization: `Bearer ${bearerToken}`,
           accept: 'application/json',
           'content-type': 'application/json',
-          ...model.headers,
+          ...resolvedModel.headers,
           ...options?.headers,
         },
         body: JSON.stringify(payload),
@@ -205,7 +298,7 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
 
       await options?.onResponse?.(
         { status: response.status, headers: headersToRecord(response.headers) },
-        model,
+        resolvedModel,
       );
 
       if (!response.ok) {
@@ -218,7 +311,7 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
       stream.push({ type: 'start', partial: output });
       const blocks = output.content as StreamingBlock[];
       for await (const event of iterateBedrockAnthropicEvents(response.body, options?.signal)) {
-        handleAnthropicEvent(event, model, context, output, blocks, stream);
+        handleAnthropicEvent(event, resolvedModel, context, output, blocks, stream);
       }
 
       if (options?.signal?.aborted) {
@@ -250,12 +343,13 @@ export const streamSimpleBedrock: StreamFunction<'bedrock-converse-stream', Simp
   context,
   options,
 ) => {
+  const resolvedModel = withBedrockModelMetadata(model);
   const base: BedrockOptions = {
     ...options,
     bearerToken: options?.apiKey,
     maxTokens:
       options?.maxTokens ??
-      (model.maxTokens > 0 ? Math.min(model.maxTokens, 32000) : undefined),
+      (resolvedModel.maxTokens > 0 ? Math.min(resolvedModel.maxTokens, 32000) : undefined),
   };
 
   if (options?.reasoning) {
@@ -263,7 +357,7 @@ export const streamSimpleBedrock: StreamFunction<'bedrock-converse-stream', Simp
     base.thinkingBudgets = options.thinkingBudgets;
   }
 
-  return streamBedrock(model, context, base);
+  return streamBedrock(resolvedModel, context, base);
 };
 
 export const bedrockProviderModule = {
@@ -273,8 +367,25 @@ export const bedrockProviderModule = {
 
 export const __testing = {
   buildBedrockInvokeBody,
+  withBedrockModelMetadata,
   normalizeAnthropicToolResultAdjacency,
 };
+
+export function withBedrockModelMetadata<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+  const metadata = BEDROCK_CLAUDE_MODEL_METADATA[mapToBedrockModelId(model.id)];
+  if (!metadata) return model;
+
+  return {
+    ...model,
+    name: metadata.name,
+    reasoning: metadata.reasoning,
+    thinkingLevelMap: metadata.thinkingLevelMap ?? model.thinkingLevelMap,
+    input: metadata.input,
+    cost: metadata.cost,
+    contextWindow: metadata.contextWindow,
+    maxTokens: metadata.maxTokens,
+  };
+}
 
 function buildBedrockInvokeBody(
   model: Model<'bedrock-converse-stream'>,
@@ -284,21 +395,37 @@ function buildBedrockInvokeBody(
   const betaFeatures = buildBetaFeatures(model, context, options);
   const payload: BedrockInvokeBody = {
     anthropic_version: ANTHROPIC_VERSION,
-    messages: normalizeAnthropicToolResultAdjacency(convertMessages(context)),
+    messages: normalizeAnthropicToolResultAdjacency(convertMessages(context, model)),
     max_tokens:
       options.maxTokens ??
       (model.maxTokens > 0 ? Math.min(model.maxTokens, 32000) : undefined),
     ...(betaFeatures.length > 0 ? { anthropic_beta: betaFeatures } : {}),
   };
 
+  const cachingEnabled = supportsPromptCaching(model.id);
+
   if (context.systemPrompt?.trim()) {
-    payload.system = [{ type: 'text', text: sanitizeSurrogates(context.systemPrompt) }];
+    const systemBlock: AnthropicTextBlock = { type: 'text', text: sanitizeSurrogates(context.systemPrompt) };
+    if (cachingEnabled) systemBlock.cache_control = { type: 'ephemeral' };
+    payload.system = [systemBlock];
   }
   if (options.temperature !== undefined && !options.reasoning) {
     payload.temperature = options.temperature;
   }
   if (context.tools?.length) {
-    payload.tools = convertTools(context.tools);
+    const tools = convertTools(context.tools);
+    // Cache the last tool definition so the tool list is not re-processed on retries.
+    if (cachingEnabled && tools.length > 0) {
+      tools[tools.length - 1].cache_control = { type: 'ephemeral' };
+    }
+    payload.tools = tools;
+  }
+
+  // Add a cache checkpoint at the second-to-last user turn so the stable
+  // conversation history is cached. On a retry (e.g. after a 524 timeout)
+  // Bedrock serves most tokens from cache, making the second attempt fast.
+  if (cachingEnabled) {
+    addPromptCacheCheckpoint(payload.messages);
   }
   if (options.toolChoice) {
     payload.tool_choice =
@@ -338,6 +465,9 @@ function mapToBedrockModelId(modelId: string): string {
   if (normalized.includes('opus-4-6') || normalized.includes('opus-4.6')) {
     return 'global.anthropic.claude-opus-4-6-v1';
   }
+  if (normalized.includes('opus-4-7') || normalized.includes('opus-4.7')) {
+    return 'global.anthropic.claude-opus-4-7';
+  }
   return `global.anthropic.${modelId}-v1:0`;
 }
 
@@ -352,7 +482,7 @@ function regionFromBaseUrl(baseUrl: string | undefined): string | undefined {
   }
 }
 
-function convertMessages(context: Context): AnthropicMessage[] {
+function convertMessages(context: Context, model: Model<'bedrock-converse-stream'>): AnthropicMessage[] {
   const messages: AnthropicMessage[] = [];
   const sourceMessages = context.messages;
 
@@ -365,7 +495,7 @@ function convertMessages(context: Context): AnthropicMessage[] {
     }
 
     if (message.role === 'assistant') {
-      const blocks = message.content.flatMap(convertAssistantBlock);
+      const blocks = message.content.flatMap((block) => convertAssistantBlock(block, model, message));
       if (blocks.length > 0) {
         messages.push({ role: 'assistant', content: blocks });
       }
@@ -540,22 +670,36 @@ function convertUserContent(
   return blocks.length > 0 ? blocks : null;
 }
 
-function convertAssistantBlock(block: TextContent | ThinkingContent | ToolCall): AnthropicContentBlock[] {
+function convertAssistantBlock(
+  block: TextContent | ThinkingContent | ToolCall,
+  model: Model<'bedrock-converse-stream'>,
+  assistantMsg: Extract<Context['messages'][number], { role: 'assistant' }>,
+): AnthropicContentBlock[] {
   if (block.type === 'text') {
     const text = sanitizeSurrogates(block.text);
     return text.trim() ? [{ type: 'text', text }] : [];
   }
 
   if (block.type === 'thinking') {
+    // Mirror the official pi-ai transformMessages cross-model logic:
+    // thinking block signatures are model-specific and must be dropped when
+    // replaying history to a different model/provider to avoid 400 errors.
+    const isSameModel =
+      assistantMsg.provider === model.provider &&
+      assistantMsg.api === model.api &&
+      assistantMsg.model === model.id;
+
     if (block.redacted) {
-      return [{ type: 'redacted_thinking', data: block.thinkingSignature }];
+      // Redacted (encrypted) thinking is opaque — only valid for the exact same model.
+      return isSameModel ? [{ type: 'redacted_thinking', data: block.thinkingSignature }] : [];
     }
     const thinking = sanitizeSurrogates(block.thinking);
     if (!thinking.trim()) return [];
-    if (!block.thinkingSignature?.trim()) {
-      return [{ type: 'text', text: thinking }];
+    if (isSameModel && block.thinkingSignature?.trim()) {
+      return [{ type: 'thinking', thinking, signature: block.thinkingSignature }];
     }
-    return [{ type: 'thinking', thinking, signature: block.thinkingSignature }];
+    // Cross-model or missing signature: strip the signature and send plain text.
+    return [{ type: 'text', text: thinking }];
   }
 
   return [
@@ -641,7 +785,58 @@ function buildBetaFeatures(
   if (options.interleavedThinking !== false && options.reasoning && !supportsAdaptiveThinking(model.id)) {
     betas.push(INTERLEAVED_THINKING_BETA);
   }
+  // Note: prompt caching on Bedrock's Anthropic Messages API does not require
+  // an explicit beta flag — cache_control blocks in the payload are sufficient.
   return betas;
+}
+
+/**
+ * Returns true for Claude models that support Bedrock prompt caching.
+ * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models.
+ */
+function supportsPromptCaching(modelId: string): boolean {
+  const id = modelId.toLowerCase();
+  if (!id.includes('claude')) return false;
+  return (
+    id.includes('-4-')     || // Claude 4.x (opus-4-7, sonnet-4-6, haiku-4-5, …)
+    id.includes('-4.')     || // alternate dot notation
+    id.includes('-3-7-')   || // Claude 3.7 Sonnet
+    id.includes('-3.7-')
+  );
+}
+
+/**
+ * Adds a `cache_control: {type:'ephemeral'}` marker to the last content block
+ * of the last user message in the normalised messages array.
+ *
+ * Mirrors the official @mariozechner/pi-ai Anthropic provider exactly:
+ * cache the last user turn so that on the very next request (or a retry after
+ * a 524 timeout) Bedrock serves the full conversation history from cache,
+ * dramatically reducing TTFB.
+ *
+ * Handles the case where the last user message has string content by
+ * converting it to an array block first, matching the official provider.
+ */
+function addPromptCacheCheckpoint(messages: AnthropicMessage[]): void {
+  if (messages.length === 0) return;
+  const lastMessage = messages[messages.length - 1];
+  if (lastMessage.role !== 'user') return;
+
+  if (Array.isArray(lastMessage.content) && lastMessage.content.length > 0) {
+    const lastBlock = lastMessage.content[lastMessage.content.length - 1];
+    if (
+      lastBlock.type === 'text' ||
+      lastBlock.type === 'image' ||
+      lastBlock.type === 'tool_result'
+    ) {
+      (lastBlock as AnthropicTextBlock | AnthropicToolResultBlock).cache_control = { type: 'ephemeral' };
+    }
+  } else if (typeof lastMessage.content === 'string') {
+    // Convert string content to array so we can attach cache_control.
+    lastMessage.content = [
+      { type: 'text', text: lastMessage.content, cache_control: { type: 'ephemeral' } },
+    ];
+  }
 }
 
 function applyThinkingConfig(

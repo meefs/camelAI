@@ -1069,6 +1069,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       }
     );
 
+
     // Capture a bug report from the currently deployed app
     this.server.tool(
       'capture_bug_report',

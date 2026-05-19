@@ -138,6 +138,9 @@
     { "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
     { "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
     { "tag": "v22" },
-    { "tag": "v23", "deleted_classes": ["CloudflareWorkspaceSandbox"] },
+    { "tag": "v23" },
+    { "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
+    { "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
+    { "tag": "v26", "deleted_classes": ["CloudflareSandbox", "WorkspaceFilesystemDO"] },
   ],
 }

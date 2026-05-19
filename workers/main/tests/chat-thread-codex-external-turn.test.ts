@@ -23,6 +23,9 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.setChatIsStreaming = vi.fn();
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.upsertPiCoreMessages = vi.fn();
+    fake.appendPiInFlightMessages = vi.fn();
+    fake.loadPiInFlightMessages = vi.fn(() => []);
+    fake.clearPiInFlightMessages = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.clearPiTurnRecovery = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn();
@@ -399,6 +402,120 @@ describe('ChatThreadDO Codex external turn completion', () => {
         apiKey: 'bedrock-token',
         bearerToken: 'bedrock-token',
         maxTokens: 1000,
+      }),
+    );
+  });
+
+  it('preflights Pi context compaction with enough headroom for 1M Bedrock models', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const messages = [
+      { role: 'user', content: 'old context', timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'recent context' }], timestamp: 2 },
+    ];
+    fake.estimatePiContextTokens = vi.fn(() => 920_000);
+    fake.loadPiCoreCompaction = vi.fn(() => null);
+    fake.findPiCompactionCutIndex = vi.fn(() => 1);
+    fake.summarizePiMessages = vi.fn(async () => 'compact summary');
+    fake.persistPiCoreCompaction = vi.fn();
+    fake.createPiSummaryMessage = vi.fn((summary: string) => ({
+      role: 'user',
+      content: `[summary] ${summary}`,
+      timestamp: 3,
+    }));
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      { contextWindow: 1_000_000 },
+      'bedrock-token',
+      vi.fn(),
+    );
+
+    expect(fake.summarizePiMessages).toHaveBeenCalled();
+    expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith('compact summary', 1);
+    expect(compacted).toEqual([
+      { role: 'user', content: '[summary] compact summary', timestamp: 3 },
+      messages[1],
+    ]);
+  });
+
+  it('schedules post-turn Pi compaction from assistant usage like the high-level agent', async () => {
+    const compaction = Promise.resolve();
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = { waitUntil: vi.fn() };
+    fake.piSession = {
+      state: {
+        model: { contextWindow: 1_000_000 },
+      },
+    };
+    fake.compactPiContextAfterTurn = vi.fn(() => compaction);
+
+    const assistantMessage = {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'done' }],
+      timestamp: 1,
+      usage: {
+        input: 910_000,
+        output: 1_000,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 911_000,
+      },
+    };
+
+    ChatThreadDO.prototype['maybeSchedulePiPostTurnCompaction'].call(
+      fake,
+      [{ role: 'user', content: 'hi', timestamp: 0 }, assistantMessage],
+    );
+
+    expect(fake.ctx.waitUntil).toHaveBeenCalledWith(expect.any(Promise));
+    expect(fake.compactPiContextAfterTurn).toHaveBeenCalledWith(assistantMessage);
+  });
+
+  it('persists post-turn Pi compaction into live session state and resets baseline', async () => {
+    const beforeMessages = [
+      { role: 'user', content: 'old', timestamp: 0 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'done' }],
+        timestamp: 1,
+        usage: { totalTokens: 911_000 },
+      },
+    ];
+    const compactedMessages = [
+      { role: 'user', content: '[summary] old', timestamp: 2 },
+      beforeMessages[1],
+    ];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piModelResolver = vi.fn(async () => ({
+      model: { contextWindow: 1_000_000, id: 'global.anthropic.claude-sonnet-4-6' },
+      apiKey: 'bedrock-token',
+      provider: 'bedrock',
+      usageProvider: 'bedrock',
+      modelId: 'claude-sonnet-4-6',
+    }));
+    fake.piSession = {
+      state: {
+        model: { contextWindow: 1_000_000 },
+        messages: beforeMessages,
+      },
+    };
+    fake.compactPiContext = vi.fn(async () => compactedMessages);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.piMainBaselineIndex = beforeMessages.length;
+
+    await ChatThreadDO.prototype['compactPiContextAfterTurn'].call(
+      fake,
+      beforeMessages[1],
+    );
+
+    expect(fake.piSession.state.messages).toBe(compactedMessages);
+    expect(fake.piMainBaselineIndex).toBe(compactedMessages.length);
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_post_turn_compacted',
+      expect.objectContaining({
+        count: beforeMessages.length,
+        size: compactedMessages.length,
       }),
     );
   });
@@ -1177,6 +1294,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
   it('renders persisted Pi tool result messages with their assistant tool calls', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'run it', timestamp: 100 },
       {
@@ -1229,120 +1347,16 @@ describe('ChatThreadDO Codex external turn completion', () => {
     ]);
   });
 
-  it('drops duplicate Pi tool results before provider replay', () => {
+  it('builds a recovery user message from in-flight messages', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.serializePiMessageForSummary =
+      ChatThreadDO.prototype['serializePiMessageForSummary'];
     const messages = [
-      {
-        role: 'assistant',
-        content: [{
-          type: 'toolCall',
-          id: 'tool1',
-          name: 'read',
-          arguments: { path: '/tmp/a.png' },
-        }],
-        responseId: 'resp_tool',
-        timestamp: 200,
-        api: 'test',
-        provider: 'test',
-        model: 'test',
-        usage: {},
-        stopReason: 'toolUse',
-      },
-      {
-        role: 'toolResult',
-        toolCallId: 'tool1',
-        toolName: 'read',
-        content: [{ type: 'text', text: 'first result' }],
-        isError: false,
-        timestamp: 300,
-      },
-      {
-        role: 'toolResult',
-        toolCallId: 'tool1',
-        toolName: 'read',
-        content: [{ type: 'text', text: 'duplicate result' }],
-        isError: false,
-        timestamp: 301,
-      },
-      { role: 'user', content: 'continue', timestamp: 400 },
-    ];
-
-    const repaired = ChatThreadDO.prototype['repairPiProviderMessageHistory'].call(
-      fake,
-      messages,
-    );
-
-    expect(repaired).toEqual([messages[0], messages[1], messages[3]]);
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_provider_history_repaired',
-      {
-        operation: 'repair_tool_results',
-        status: 'ok',
-        count: 1,
-      },
-    );
-  });
-
-  it('synthesizes missing Pi tool results before provider replay', () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    const messages = [
-      {
-        role: 'assistant',
-        content: [{
-          type: 'toolCall',
-          id: 'toolu_bdrk_01KrRfZTYj5KqFZAxKQexJbK',
-          name: 'read',
-          arguments: { path: '/tmp/a.png' },
-        }],
-        responseId: 'resp_tool',
-        timestamp: 200,
-        api: 'test',
-        provider: 'test',
-        model: 'test',
-        usage: {},
-        stopReason: 'toolUse',
-      },
-      { role: 'user', content: 'continue', timestamp: 400 },
-    ];
-
-    const repaired = ChatThreadDO.prototype['repairPiProviderMessageHistory'].call(
-      fake,
-      messages,
-    );
-
-    expect(repaired).toHaveLength(3);
-    expect(repaired[0]).toBe(messages[0]);
-    expect(repaired[1]).toMatchObject({
-      role: 'toolResult',
-      toolCallId: 'toolu_bdrk_01KrRfZTYj5KqFZAxKQexJbK',
-      toolName: 'read',
-      isError: true,
-      content: [
-        { type: 'text', text: 'Tool call interrupted; no result was recorded.' },
-      ],
-    });
-    expect(repaired[2]).toBe(messages[1]);
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_provider_history_repaired',
-      {
-        operation: 'repair_tool_results',
-        status: 'ok',
-        count: 1,
-      },
-    );
-  });
-
-  it('synthesizes missing Pi tool results when assistant turn ends the history', () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    const messages = [
+      { role: 'user', content: 'list files', timestamp: 100 },
       {
         role: 'assistant',
         content: [
-          { type: 'toolCall', id: 'tool1', name: 'read', arguments: {} },
-          { type: 'toolCall', id: 'tool2', name: 'bash', arguments: {} },
+          { type: 'toolCall', id: 'tool1', name: 'ls', arguments: {} },
         ],
         responseId: 'resp_tool',
         timestamp: 200,
@@ -1352,75 +1366,176 @@ describe('ChatThreadDO Codex external turn completion', () => {
         usage: {},
         stopReason: 'toolUse',
       },
-      {
-        role: 'toolResult',
-        toolCallId: 'tool1',
-        toolName: 'read',
-        content: [{ type: 'text', text: 'ok' }],
-        isError: false,
-        timestamp: 300,
-      },
     ];
 
-    const repaired = ChatThreadDO.prototype['repairPiProviderMessageHistory'].call(
+    const recovery = ChatThreadDO.prototype['buildPiRecoveryUserMessage'].call(
       fake,
       messages,
     );
 
-    expect(repaired).toHaveLength(3);
-    expect(repaired[0]).toBe(messages[0]);
-    expect(repaired[1]).toBe(messages[1]);
-    expect(repaired[2]).toMatchObject({
-      role: 'toolResult',
-      toolCallId: 'tool2',
-      toolName: 'bash',
-      isError: true,
-    });
-    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
-      'pi_provider_history_repaired',
-      {
-        operation: 'repair_tool_results',
-        status: 'ok',
-        count: 1,
-      },
-    );
+    expect(recovery.role).toBe('user');
+    expect(typeof recovery.content).toBe('string');
+    const content = recovery.content as string;
+    expect(content).toContain('[The previous turn was interrupted');
+    expect(content).toContain('list files');
+    expect(content).toContain('tool1');
   });
 
-  it('leaves Pi message history unchanged when tool calls and results are balanced', () => {
+  it('renders an empty in-flight buffer as a context-only marker', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.recordChatThreadObservabilityEvent = vi.fn();
-    const messages = [
+    fake.serializePiMessageForSummary =
+      ChatThreadDO.prototype['serializePiMessageForSummary'];
+
+    const recovery = ChatThreadDO.prototype['buildPiRecoveryUserMessage'].call(
+      fake,
+      [],
+    );
+
+    expect(recovery.role).toBe('user');
+    expect(recovery.content).toContain('(no recorded events before the interruption)');
+  });
+
+  it('turn_end snapshots agent.state.messages past the baseline into main', () => {
+    const { fake, events: _events } = createPiEventFake();
+    void _events;
+    const allMessages = [
+      { role: 'user', content: 'previous turn', timestamp: 50 },
       {
         role: 'assistant',
-        content: [{ type: 'toolCall', id: 'tool1', name: 'read', arguments: {} }],
-        responseId: 'resp_tool',
+        content: [{ type: 'text', text: 'previous reply' }],
+        timestamp: 60,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+      { role: 'user', content: 'current turn', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'current reply' }],
+        responseId: 'resp_current',
         timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ];
+    fake.piSession = { state: { messages: allMessages } };
+    fake.piMainBaselineIndex = 2;
+    fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'turn_end',
+      message: allMessages[3],
+      toolResults: [],
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledWith([
+      allMessages[2],
+      allMessages[3],
+    ]);
+    expect(fake.piMainBaselineIndex).toBe(4);
+    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('turn_end is a no-op when no new messages are past the baseline', () => {
+    const { fake, events: _events } = createPiEventFake();
+    void _events;
+    const allMessages = [
+      { role: 'user', content: 'old', timestamp: 50 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+        timestamp: 60,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ];
+    fake.piSession = { state: { messages: allMessages } };
+    fake.piMainBaselineIndex = 2;
+    fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'turn_end',
+      message: allMessages[1],
+      toolResults: [],
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
+    expect(fake.piMainBaselineIndex).toBe(2);
+    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes in-flight messages in the parsed chat view', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.piCoreMessageToParsedChatMessage =
+      ChatThreadDO.prototype['piCoreMessageToParsedChatMessage'];
+    fake.piUserContentToChatContent =
+      ChatThreadDO.prototype['piUserContentToChatContent'];
+    fake.piAssistantContentToChatContent =
+      ChatThreadDO.prototype['piAssistantContentToChatContent'];
+    fake.isInvisibleSystemOnlyUserContent =
+      ChatThreadDO.prototype['isInvisibleSystemOnlyUserContent'];
+    fake.attachPiToolResultToParsedMessages =
+      ChatThreadDO.prototype['attachPiToolResultToParsedMessages'];
+    fake.piToolResultContentToChatContent =
+      ChatThreadDO.prototype['piToolResultContentToChatContent'];
+
+    const committed = [
+      { role: 'user', content: 'first turn', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'first reply' }],
+        responseId: 'resp_first',
+        timestamp: 110,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ];
+    const inFlight = [
+      { role: 'user', content: 'second turn', timestamp: 200 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'tool1', name: 'ls', arguments: {} },
+        ],
+        responseId: 'resp_second',
+        timestamp: 210,
         api: 'test',
         provider: 'test',
         model: 'test',
         usage: {},
         stopReason: 'toolUse',
       },
-      {
-        role: 'toolResult',
-        toolCallId: 'tool1',
-        toolName: 'read',
-        content: [{ type: 'text', text: 'ok' }],
-        isError: false,
-        timestamp: 300,
-      },
-      { role: 'user', content: 'continue', timestamp: 400 },
     ];
+    fake.loadPiCoreMessages = vi.fn(() => committed);
+    fake.loadPiInFlightMessages = vi.fn(() => inFlight);
 
-    const repaired = ChatThreadDO.prototype['repairPiProviderMessageHistory'].call(
+    const parsed = ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
       fake,
-      messages,
+      'thread1',
     );
 
-    expect(repaired).toBe(messages);
-    expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalled();
+    expect(parsed).toHaveLength(4);
+    expect(parsed[0]).toMatchObject({ role: 'user', content: 'first turn' });
+    expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_first' });
+    expect(parsed[2]).toMatchObject({ role: 'user', content: 'second turn' });
+    expect(parsed[3]).toMatchObject({ role: 'assistant', id: 'resp_second' });
+    expect(fake.loadPiCoreMessages).toHaveBeenCalledTimes(1);
+    expect(fake.loadPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
-
   it('sanitizes unsupported persisted Pi image tool results when loading history', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ensurePiCoreTables = vi.fn();
@@ -1549,12 +1664,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       status: 'result',
       reply: 'Hello',
     });
-    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
-      expect.objectContaining({
-        role: 'assistant',
-        responseId: 'resp1',
-      }),
-    ]);
+    expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
   it('emits completed agent messages for non-streamed Pi message_end text', () => {
@@ -1599,18 +1709,13 @@ describe('ChatThreadDO Codex external turn completion', () => {
       type: 'result',
       result: 'Whole reply',
     }));
-    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
+    expect(fake.appendPiInFlightMessages).toHaveBeenCalledWith([
       expect.objectContaining({
         role: 'assistant',
         content: [{ type: 'text', text: 'Whole reply' }],
       }),
     ]);
-    expect(fake.upsertPiCoreMessages).toHaveBeenCalledWith([
-      expect.objectContaining({
-        role: 'assistant',
-        responseId: 'resp2',
-      }),
-    ]);
+    expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {

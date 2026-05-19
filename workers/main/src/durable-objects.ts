@@ -8,7 +8,10 @@ import type {
   AgentToolResult,
 } from "@mariozechner/pi-agent-core";
 import { setBedrockProviderModule } from "@mariozechner/pi-ai";
-import { bedrockProviderModule } from "./pi-bedrock-provider";
+import {
+  bedrockProviderModule,
+  withBedrockModelMetadata,
+} from "./pi-bedrock-provider";
 import type { Model } from "@mariozechner/pi-ai";
 import type { OrgDO, UserDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
@@ -78,6 +81,7 @@ import {
   PiContainerTools,
   PI_CONTAINER_TOOL_DEFINITIONS,
 } from "./pi-container-tools";
+import { repairPiMessageHistoryForReplay } from "./pi-message-history";
 import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 import { parseFilePreviewPath } from "./preview-paths";
 import {
@@ -305,6 +309,29 @@ export interface ChatThreadPiCoreForkResult {
   messageCount?: number;
   error?: string;
   code?: "NO_PI_CORE_MESSAGES" | "TARGET_NOT_FOUND";
+}
+
+export interface PiCoreMessageRow {
+  idx: number;
+  payload: string;
+  created_at: number;
+}
+
+export interface PiCoreMessageHistoryRepairReport {
+  ok: true;
+  mode: "dry_run" | "repair";
+  persisted: boolean;
+  changed: boolean;
+  beforeCount: number;
+  validBeforeCount: number;
+  afterCount: number;
+  invalidRows: number;
+  repairedCount: number;
+  stats: {
+    droppedToolResults: number;
+    syntheticToolResults: number;
+    trimmedAssistantBlocks: number;
+  };
 }
 
 function cloneDurableState<T>(value: T): T {
@@ -3321,6 +3348,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runnerTransitionChain: Promise<void> = Promise.resolve();
   private piSessionPromise: Promise<PiCoreAgent> | null = null;
   private piSession: PiCoreAgent | null = null;
+  private piMainBaselineIndex = 0;
   private piModelResolver: (() => Promise<PiResolvedModelConfig>) | null = null;
   private piUnsubscribe: (() => void) | null = null;
   private piActiveItemId: string | null = null;
@@ -3943,6 +3971,123 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return this.previewTarget;
   }
 
+  getPiCoreMessageRows(limit = 200): PiCoreMessageRow[] {
+    const resolvedLimit = Number.isFinite(limit)
+      ? Math.max(1, Math.min(2000, Math.floor(limit)))
+      : 200;
+
+    return this.ctx.storage.sql
+      .exec(
+        "SELECT idx, payload, created_at FROM pi_core_messages ORDER BY idx DESC LIMIT ?",
+        resolvedLimit,
+      )
+      .toArray()
+      .reverse() as unknown as PiCoreMessageRow[];
+  }
+
+  repairPiCoreMessageHistory(input: {
+    mode?: "dry_run" | "repair";
+  } = {}): PiCoreMessageHistoryRepairReport {
+    const mode = input.mode ?? "dry_run";
+    if (mode !== "dry_run" && mode !== "repair") {
+      throw new Error("mode must be dry_run or repair");
+    }
+
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ payload: string }>(
+        "SELECT payload FROM pi_core_messages ORDER BY idx ASC",
+      )
+      .toArray();
+    const messages: AgentMessage[] = [];
+    let invalidRows = 0;
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload) as AgentMessage;
+        if (parsed && typeof parsed === "object" && "role" in parsed) {
+          messages.push(sanitizePiProviderMessage(parsed));
+        } else {
+          invalidRows += 1;
+        }
+      } catch {
+        invalidRows += 1;
+      }
+    }
+
+    const repaired = repairPiMessageHistoryForReplay(messages);
+    const changed = invalidRows > 0 || repaired.repairedCount > 0;
+    const afterMessages = changed ? repaired.messages : messages;
+
+    if (mode === "repair" && changed) {
+      this.replacePiCoreMessages(afterMessages);
+      this.recordChatThreadObservabilityEvent("pi_core_message_history_repaired", {
+        operation: "repair_persisted_history",
+        status: "ok",
+        count: repaired.repairedCount + invalidRows,
+        size: afterMessages.length,
+      });
+    }
+
+    return {
+      ok: true,
+      mode,
+      persisted: mode === "repair" && changed,
+      changed,
+      beforeCount: rows.length,
+      validBeforeCount: messages.length,
+      afterCount: afterMessages.length,
+      invalidRows,
+      repairedCount: repaired.repairedCount,
+      stats: repaired.stats,
+    };
+  }
+
+  putPiCoreMessageRow(input: {
+    idx: number;
+    payload: string;
+    created_at?: number;
+  }): { ok: true; inserted: boolean; idx: number } {
+    const idx = Math.floor(input.idx);
+    if (!Number.isFinite(idx) || idx < 0) {
+      throw new Error("idx must be a non-negative integer");
+    }
+
+    let parsedPayload: unknown;
+    try {
+      parsedPayload = JSON.parse(input.payload);
+    } catch {
+      throw new Error("payload must be valid JSON");
+    }
+    const normalizedPayload = JSON.stringify(
+      sanitizePiProviderMessage(parsedPayload as AgentMessage),
+    );
+    const createdAt = Number.isFinite(input.created_at)
+      ? Math.floor(input.created_at as number)
+      : Date.now();
+
+    const existing = this.ctx.storage.sql
+      .exec<{ idx: number }>("SELECT idx FROM pi_core_messages WHERE idx = ?", idx)
+      .one();
+
+    if (existing) {
+      this.ctx.storage.sql.exec(
+        "UPDATE pi_core_messages SET payload = ?, created_at = ? WHERE idx = ?",
+        normalizedPayload,
+        createdAt,
+        idx,
+      );
+      return { ok: true, inserted: false, idx };
+    }
+
+    this.ctx.storage.sql.exec(
+      "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
+      idx,
+      normalizedPayload,
+      createdAt,
+    );
+    return { ok: true, inserted: true, idx };
+  }
+
   getPreviewState(): {
     target: PreviewTarget | null;
     tabs: PreviewTarget[];
@@ -4302,7 +4447,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       forkEntryId: string;
     }> = [];
 
-    const storedMessages = this.loadPiCoreMessages();
+    const storedMessages = [
+      ...this.loadPiCoreMessages(),
+      ...this.loadPiInFlightMessages(),
+    ];
     storedMessages.forEach((message, index) => {
       const record = message as unknown as Record<string, unknown>;
       if (record.role === "toolResult") {
@@ -4375,6 +4523,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.disposePiSession();
     this.replacePiCoreMessages(cloneDurableState(normalizedMessages));
     this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
+    this.clearPiInFlightMessages();
     this.clearPiTurnRecovery();
   }
 
@@ -4559,6 +4708,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Best effort: the session may already be idle or torn down.
     }
     this.piSession = null;
+    this.piMainBaselineIndex = 0;
     this.piSessionPromise = null;
     this.piActiveItemId = null;
     this.piAssistantText = "";
@@ -4593,6 +4743,79 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS pi_in_flight_messages (
+        idx INTEGER PRIMARY KEY,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+  }
+
+  private loadPiInFlightMessages(): AgentMessage[] {
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ payload: string }>(
+        "SELECT payload FROM pi_in_flight_messages ORDER BY idx ASC",
+      )
+      .toArray();
+    const messages: AgentMessage[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload) as AgentMessage;
+        if (parsed && typeof parsed === "object" && "role" in parsed) {
+          messages.push(sanitizePiProviderMessage(parsed));
+        }
+      } catch {
+        // Skip corrupt rows.
+      }
+    }
+    return messages;
+  }
+
+  private appendPiInFlightMessages(messages: AgentMessage[]): void {
+    if (messages.length === 0) return;
+    this.ensurePiCoreTables();
+    const rows = this.ctx.storage.sql
+      .exec<{ next_idx: number }>(
+        "SELECT COALESCE(MAX(idx) + 1, 0) AS next_idx FROM pi_in_flight_messages",
+      )
+      .toArray();
+    const startIndex = Math.max(0, Math.floor(Number(rows[0]?.next_idx) || 0));
+    const now = Date.now();
+    messages.forEach((message, offset) => {
+      const sanitized = sanitizePiProviderMessage(message);
+      this.ctx.storage.sql.exec(
+        "INSERT INTO pi_in_flight_messages (idx, payload, created_at) VALUES (?, ?, ?)",
+        startIndex + offset,
+        JSON.stringify(sanitized),
+        now,
+      );
+    });
+  }
+
+  private clearPiInFlightMessages(): void {
+    this.ensurePiCoreTables();
+    this.ctx.storage.sql.exec("DELETE FROM pi_in_flight_messages");
+  }
+
+  private buildPiRecoveryUserMessage(messages: AgentMessage[]): AgentMessage {
+    const lines = messages
+      .map((message) => this.serializePiMessageForSummary(message))
+      .filter((line): line is string => Boolean(line && line.trim()));
+    const body = lines.length > 0
+      ? lines.join("\n\n")
+      : "(no recorded events before the interruption)";
+    const text =
+      "[The previous turn was interrupted by a restart before it could finish. " +
+      "Here is what had been recorded up to that point. Use this as context only; " +
+      "do not assume any tool side effects completed unless the user confirms.]\n\n" +
+      body;
+    return {
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+    };
   }
 
   private loadPiCoreMessages(): AgentMessage[] {
@@ -4836,7 +5059,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       now,
       now,
     );
-    this.upsertPiCoreMessages([userMessage]);
+    this.appendPiInFlightMessages([userMessage]);
     this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_started", {
       operation: "start_recovery",
@@ -4900,7 +5123,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       content: pendingPiTurn.user_content,
       timestamp: pendingPiTurn.user_timestamp || pendingPiTurn.started_at,
     };
-    this.appendPiCoreMessagesIfMissing([userMessage]);
+    // The original user message is already captured in the in-flight buffer
+    // by startPiTurnRecovery; runPi will fold it into the recovery context
+    // message on the next session boot. Re-appending here would duplicate
+    // rows on every retry and inflate the eventual recovery context.
     this.markPiTurnRecovering();
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_resumed", {
       operation: "recover_interrupted_turn",
@@ -5012,6 +5238,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       size?: number;
       durationMs?: number;
       error?: unknown;
+      provider?: string | null;
+      model?: string | null;
       insertedCount?: number;
       updatedCount?: number;
     } = {},
@@ -5034,6 +5262,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         durationMs: details.durationMs,
         count,
         size: details.size,
+        provider: details.provider,
+        model: details.model,
         error: details.error,
       });
       return;
@@ -5048,6 +5278,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       workspaceId: context?.workspaceId,
       orgId: context?.orgId,
       userId: context?.userId,
+      provider: details.provider,
+      model: details.model,
       durationMs: details.durationMs,
       count,
       size: details.size,
@@ -6942,12 +7174,28 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const resolveCurrentModel = () => this.resolvePiModel(context, envVars, getModel);
     const modelConfig = await resolveCurrentModel();
     this.piModelResolver = resolveCurrentModel;
+    const persistedMessages = this.loadPiCoreMessages();
+    const initialMessages = [...persistedMessages];
+    const inFlight = this.loadPiInFlightMessages();
+    if (inFlight.length > 0) {
+      // Leave the in-flight rows in place. They are only released when the
+      // next turn_end snapshots the recovery message into main (or when an
+      // agent_end failure discards them). Clearing here would lose the
+      // recovery data if the DO is evicted again before any turn commits.
+      initialMessages.push(this.buildPiRecoveryUserMessage(inFlight));
+      this.recordChatThreadObservabilityEvent("pi_in_flight_recovered", {
+        operation: "build_recovery_message",
+        status: "ok",
+        count: inFlight.length,
+      });
+    }
+    this.piMainBaselineIndex = persistedMessages.length;
     const session = new Agent({
       initialState: {
         systemPrompt: await this.createPiSystemPrompt(context),
         model: modelConfig.model,
         tools: this.createPiToolDefinitions(context),
-        messages: this.loadPiCoreMessages(),
+        messages: initialMessages,
         thinkingLevel: "medium",
       },
       transformContext: async (messages, signal) => {
@@ -6959,9 +7207,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           completeSimple,
           signal,
         );
-        return this.repairPiProviderMessageHistory(
+        const repaired = repairPiMessageHistoryForReplay(
           compacted.map((message) => sanitizePiProviderMessage(message)),
         );
+        if (repaired.repairedCount > 0) {
+          this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
+            operation: "repair_message_history",
+            status: "ok",
+            count: repaired.repairedCount,
+            size: repaired.messages.length,
+            provider: current.usageProvider || current.provider,
+            model: current.model.id || current.modelId,
+          });
+        }
+        return repaired.messages;
       },
       getApiKey: async () => {
         const current = await resolveCurrentModel();
@@ -7042,21 +7301,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     apiKey: string,
     completeSimple: typeof import("@mariozechner/pi-ai").completeSimple,
     signal?: AbortSignal,
+    force = false,
   ): Promise<AgentMessage[]> {
     const contextWindow = typeof model.contextWindow === "number" && model.contextWindow > 0
       ? model.contextWindow
       : 128_000;
-    const reserveTokens = 16_384;
+    const reserveTokens = this.piCompactionReserveTokens(contextWindow);
     const keepRecentTokens = 20_000;
-    const tokens = this.estimatePiContextTokens(messages);
-    if (tokens < contextWindow - reserveTokens) {
+    const tokens = this.estimatePiCompactionTokens(messages);
+    if (!force && tokens < contextWindow - reserveTokens) {
       return messages;
     }
 
     const existing = this.loadPiCoreCompaction();
     if (existing && existing.firstKeptIndex > 0 && existing.firstKeptIndex < messages.length) {
       const tail = messages.slice(existing.firstKeptIndex);
-      if (this.estimatePiContextTokens([
+      if (this.estimatePiCompactionTokens([
         this.createPiSummaryMessage(existing.summary),
         ...tail,
       ]) < contextWindow - reserveTokens) {
@@ -7088,111 +7348,110 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
+  private piCompactionReserveTokens(contextWindow: number): number {
+    return Math.max(16_384, Math.ceil(contextWindow * 0.1));
+  }
+
+  private estimatePiCompactionTokens(messages: AgentMessage[]): number {
+    return Math.ceil(this.estimatePiContextTokens(messages) * 1.12);
+  }
+
+  private piAssistantContextTokens(message: AgentMessage): number | null {
+    if (message.role !== "assistant") return null;
+    const usage = (message as AgentMessage & {
+      usage?: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+        totalTokens?: number;
+      };
+    }).usage;
+    if (!usage) return null;
+    const totalTokens = Number(usage.totalTokens);
+    if (Number.isFinite(totalTokens) && totalTokens > 0) {
+      return Math.floor(totalTokens);
+    }
+    const input = Math.max(0, Math.floor(Number(usage.input ?? 0)));
+    const output = Math.max(0, Math.floor(Number(usage.output ?? 0)));
+    const cacheRead = Math.max(0, Math.floor(Number(usage.cacheRead ?? 0)));
+    const cacheWrite = Math.max(0, Math.floor(Number(usage.cacheWrite ?? 0)));
+    const total = input + output + cacheRead + cacheWrite;
+    return total > 0 ? total : null;
+  }
+
+  private shouldCompactPiAfterAssistantUsage(
+    message: AgentMessage,
+    model: Model<any> | null | undefined,
+  ): boolean {
+    const contextTokens = this.piAssistantContextTokens(message);
+    if (contextTokens === null) return false;
+    const contextWindow = typeof model?.contextWindow === "number" && model.contextWindow > 0
+      ? model.contextWindow
+      : 128_000;
+    return contextTokens >= contextWindow - this.piCompactionReserveTokens(contextWindow);
+  }
+
+  private maybeSchedulePiPostTurnCompaction(messages: AgentMessage[]): void {
+    const latestAssistant = this.latestPiAssistantMessage(messages);
+    if (!latestAssistant || !this.shouldCompactPiAfterAssistantUsage(latestAssistant, this.piSession?.state.model)) {
+      return;
+    }
+
+    this.ctx.waitUntil(
+      this.compactPiContextAfterTurn(latestAssistant).catch((error) => {
+        console.error("[ChatThreadDO] Pi post-turn compaction failed", error);
+        this.recordChatThreadObservabilityEvent("pi_post_turn_compaction_failed", {
+          operation: "post_turn_compaction",
+          status: "error",
+          error,
+        });
+      }),
+    );
+  }
+
+  private async compactPiContextAfterTurn(triggerMessage: AgentMessage): Promise<void> {
+    const resolver = this.piModelResolver;
+    const session = this.piSession;
+    if (!resolver || !session || !this.shouldCompactPiAfterAssistantUsage(triggerMessage, session.state.model)) {
+      return;
+    }
+
+    const { completeSimple } = await import("@mariozechner/pi-ai");
+    const current = await resolver();
+    if (!this.shouldCompactPiAfterAssistantUsage(triggerMessage, current.model)) {
+      return;
+    }
+
+    const before = session.state.messages;
+    const compacted = await this.compactPiContext(
+      before,
+      current.model,
+      current.apiKey,
+      completeSimple,
+      undefined,
+      true,
+    );
+    if (compacted !== before) {
+      session.state.messages = compacted;
+      this.piMainBaselineIndex = compacted.length;
+      this.recordChatThreadObservabilityEvent("pi_post_turn_compacted", {
+        operation: "post_turn_compaction",
+        status: "ok",
+        count: before.length,
+        size: compacted.length,
+        provider: current.usageProvider || current.provider,
+        model: current.model.id || current.modelId,
+      });
+    }
+  }
+
   private estimatePiContextTokens(messages: AgentMessage[]): number {
     let chars = 0;
     for (const message of messages) {
       chars += JSON.stringify(message).length;
     }
     return Math.ceil(chars / 4);
-  }
-
-  private repairPiProviderMessageHistory(messages: AgentMessage[]): AgentMessage[] {
-    const repaired: AgentMessage[] = [];
-    let pendingToolCallIds: Map<string, number> | null = null;
-    let pendingToolCallNames: Map<string, string> | null = null;
-    let droppedToolResults = 0;
-    let syntheticToolResults = 0;
-
-    const collectToolCalls = (
-      message: AgentMessage,
-    ): { ids: Map<string, number>; names: Map<string, string> } | null => {
-      const record = message as unknown as Record<string, unknown>;
-      if (record.role !== "assistant" || !Array.isArray(record.content)) return null;
-      const ids = new Map<string, number>();
-      const names = new Map<string, string>();
-      for (const part of record.content) {
-        if (!part || typeof part !== "object") continue;
-        const item = part as Record<string, unknown>;
-        if (item.type !== "toolCall" || typeof item.id !== "string" || !item.id.trim()) {
-          continue;
-        }
-        const id = item.id.trim();
-        ids.set(id, (ids.get(id) ?? 0) + 1);
-        if (typeof item.name === "string" && !names.has(id)) {
-          names.set(id, item.name);
-        }
-      }
-      return ids.size > 0 ? { ids, names } : null;
-    };
-
-    const flushUnmatchedToolCalls = () => {
-      if (!pendingToolCallIds) return;
-      for (const [id, remaining] of pendingToolCallIds.entries()) {
-        for (let i = 0; i < remaining; i++) {
-          repaired.push({
-            role: "toolResult",
-            toolCallId: id,
-            toolName: pendingToolCallNames?.get(id) ?? "",
-            content: [
-              {
-                type: "text",
-                text: "Tool call interrupted; no result was recorded.",
-              },
-            ],
-            isError: true,
-            timestamp: Date.now(),
-          } as unknown as AgentMessage);
-          syntheticToolResults += 1;
-        }
-      }
-      pendingToolCallIds = null;
-      pendingToolCallNames = null;
-    };
-
-    for (const message of messages) {
-      const record = message as unknown as Record<string, unknown>;
-      if (record.role === "assistant") {
-        flushUnmatchedToolCalls();
-        repaired.push(message);
-        const collected = collectToolCalls(message);
-        pendingToolCallIds = collected?.ids ?? null;
-        pendingToolCallNames = collected?.names ?? null;
-        continue;
-      }
-
-      if (record.role === "toolResult") {
-        const toolCallId = typeof record.toolCallId === "string"
-          ? record.toolCallId.trim()
-          : "";
-        const remaining = toolCallId && pendingToolCallIds
-          ? pendingToolCallIds.get(toolCallId) ?? 0
-          : 0;
-        if (remaining > 0) {
-          pendingToolCallIds?.set(toolCallId, remaining - 1);
-          repaired.push(message);
-        } else {
-          droppedToolResults += 1;
-        }
-        continue;
-      }
-
-      flushUnmatchedToolCalls();
-      repaired.push(message);
-    }
-
-    flushUnmatchedToolCalls();
-
-    const totalRepaired = droppedToolResults + syntheticToolResults;
-    if (totalRepaired > 0) {
-      this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
-        operation: "repair_tool_results",
-        status: "ok",
-        count: totalRepaired,
-      });
-      return repaired;
-    }
-
-    return messages;
   }
 
   private findPiCompactionCutIndex(messages: AgentMessage[], keepRecentTokens: number): number {
@@ -7322,18 +7581,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.piCurrentBillingSource = configured.billingSource;
     this.piCurrentCreditChargeable = configured.creditChargeable;
     this.piCurrentUsageProvider = usageProvider;
-    return {
-      model: {
-        ...modelBase,
-        api: resolved.api ?? modelBase.api,
-        id: configured.requestModelId ?? modelBase.id,
-        provider: configured.requestProvider ?? modelBase.provider,
-        baseUrl: configured.baseUrl || modelBase.baseUrl,
-        headers: {
-          ...(modelBase.headers ?? {}),
-          ...(configured.headers ?? {}),
-        },
+    const resolvedModel = {
+      ...modelBase,
+      api: resolved.api ?? modelBase.api,
+      id: configured.requestModelId ?? modelBase.id,
+      provider: configured.requestProvider ?? modelBase.provider,
+      baseUrl: configured.baseUrl || modelBase.baseUrl,
+      headers: {
+        ...(modelBase.headers ?? {}),
+        ...(configured.headers ?? {}),
       },
+    };
+    return {
+      model:
+        resolvedModel.api === "bedrock-converse-stream"
+          ? withBedrockModelMetadata(resolvedModel as Model<"bedrock-converse-stream">)
+          : resolvedModel,
       apiKey: configured.apiKey,
       headers: configured.headers,
       provider: resolved.provider,
@@ -8224,6 +8487,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return "";
   }
 
+  private latestPiAssistantMessage(messages: AgentMessage[]): AgentMessage | null {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if ((message as { role?: unknown }).role === "assistant") {
+        return message;
+      }
+    }
+    return null;
+  }
+
   private extractPiMessageText(message: AgentMessage): string {
     const content = (message as { content?: unknown }).content;
     if (typeof content === "string") return content.trim();
@@ -8384,6 +8657,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (event.type === "turn_end") {
+      const snapshot = this.piSession?.state.messages ?? [];
+      const newMessages = snapshot.slice(this.piMainBaselineIndex);
+      if (newMessages.length > 0) {
+        this.appendPiCoreMessagesIfMissing(newMessages);
+        this.piMainBaselineIndex = snapshot.length;
+        this.recordChatThreadObservabilityEvent("pi_turn_end_persisted", {
+          operation: "handle_pi_session_event",
+          status: "turn_end",
+          count: newMessages.length,
+        });
+      }
+      this.clearPiInFlightMessages();
       const durationMs = this.piTurnStartedAtMs
         ? Date.now() - this.piTurnStartedAtMs
         : 0;
@@ -8482,11 +8767,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (event.type === "message_end") {
-      if (!this.isPiAssistantMessage(event.message)) {
-        return;
-      }
-      const text = this.extractPiMessageText(event.message);
-      if (text) {
+      const isAssistant = this.isPiAssistantMessage(event.message);
+      const text = isAssistant ? this.extractPiMessageText(event.message) : "";
+      if (isAssistant && text) {
         const itemId = this.piActiveItemId || `pi_agent_${crypto.randomUUID()}`;
         const shouldSendCompleted = this.piActiveItemText.length === 0;
         if (shouldSendCompleted) {
@@ -8504,15 +8787,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.piActiveItemId = `pi_agent_${crypto.randomUUID()}`;
         this.piActiveItemText = "";
       }
-      this.upsertPiCoreMessages(
-        this.ensurePiAssistantTextMessage([event.message], text),
-      );
-      this.recordChatThreadObservabilityEvent("pi_message_end_persisted", {
-        operation: "handle_pi_session_event",
-        status: "assistant_message_end",
-        count: 1,
-        size: text.length,
-      });
+      const record = event.message as unknown as Record<string, unknown>;
+      if (record.role === "assistant" || record.role === "toolResult") {
+        const buffered = isAssistant
+          ? this.ensurePiAssistantTextMessage([event.message], text)
+          : [event.message];
+        this.appendPiInFlightMessages(buffered);
+      }
       return;
     }
 
@@ -8566,18 +8847,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         threadId: this.piRuntimeThreadId(),
         item,
       });
-      this.upsertPiCoreMessages([{
-        role: "toolResult",
-        toolCallId,
-        toolName,
-        content: this.piToolResultContent(event.result),
-        details:
-          event.result && typeof event.result === "object" && !Array.isArray(event.result)
-            ? (event.result as Record<string, unknown>).details
-            : undefined,
-        isError: event.isError === true,
-        timestamp: Date.now(),
-      } as unknown as AgentMessage]);
       return;
     }
 
@@ -8586,12 +8855,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         event.messages,
         this.piAssistantText,
       );
-      this.upsertPiCoreMessages(newMessages);
-      this.recordChatThreadObservabilityEvent("pi_agent_end_persisted", {
-        operation: "handle_pi_session_event",
-        status: "agent_end",
-        count: newMessages.length,
-      });
+      this.maybeSchedulePiPostTurnCompaction(newMessages);
+      const droppedInFlight = this.loadPiInFlightMessages().length;
+      this.clearPiInFlightMessages();
+      if (droppedInFlight > 0) {
+        this.recordChatThreadObservabilityEvent("pi_in_flight_discarded", {
+          operation: "handle_pi_session_event",
+          status: "agent_end_without_turn_end",
+          count: droppedInFlight,
+        });
+      }
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
       let finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
@@ -9111,6 +9384,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   source: "pi_prompt",
                 });
                 this.clearPiTurnRecovery();
+                this.clearPiInFlightMessages();
                 this.pushChatEvent({
                   type: "error",
                   error: error instanceof Error ? error.message : String(error),
