@@ -264,7 +264,7 @@ class MockWebSocket {
 }
 
 function getMainSocket(): MockWebSocket {
-  const socket = MockWebSocket.instances.find((candidate) => candidate.url.includes('/ws/runner/ws-1'));
+  const socket = MockWebSocket.instances.find((candidate) => candidate.url.includes('/ws/ws-1'));
   if (!socket) {
     throw new Error('Main chat WebSocket was not created');
   }
@@ -274,7 +274,7 @@ function getMainSocket(): MockWebSocket {
 function getLatestMainSocket(): MockWebSocket {
   const socket = [...MockWebSocket.instances]
     .reverse()
-    .find((candidate) => candidate.url.includes('/ws/runner/ws-1'));
+    .find((candidate) => candidate.url.includes('/ws/ws-1'));
   if (!socket) {
     throw new Error('Main chat WebSocket was not created');
   }
@@ -437,6 +437,42 @@ describe('Chat draft persistence', () => {
     );
     expect(loadDraft('ws-1', null)).toBeNull();
     expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
+  });
+
+  it('restores the welcome draft when create-thread action returns an error', async () => {
+    const user = userEvent.setup();
+
+    const { rerender } = render(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    await user.type(screen.getByLabelText('Welcome prompt'), 'Do not lose this');
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(screen.getByLabelText('Welcome prompt')).toHaveValue('');
+    expect(loadDraft('ws-1', null)).toBeNull();
+
+    rerender(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+        initialError="Invalid thread model"
+        newChatActionError="Invalid thread model"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Welcome prompt')).toHaveValue(
+        'Do not lose this',
+      );
+    });
+    expect(loadDraft('ws-1', null)).toMatchObject({
+      text: 'Do not lose this',
+      attachments: [],
+    });
   });
 
   it('uses the saved recent model for a new chat only when no picker default is set', async () => {

@@ -151,7 +151,6 @@ describe('chat loader admin readonly mode', () => {
       todos: [],
       previewTabs: [],
       activeTabId: null,
-      previewTarget: null,
     });
   });
 });
@@ -248,7 +247,6 @@ describe('chat loader workspace mismatch handling', () => {
       todos: [],
       previewTabs: [],
       activeTabId: null,
-      previewTarget: null,
     });
   });
 
@@ -456,7 +454,6 @@ describe('chat loader workspace mismatch handling', () => {
       todos: [],
       previewTabs: [],
       activeTabId: null,
-      previewTarget: null,
     });
   });
 });

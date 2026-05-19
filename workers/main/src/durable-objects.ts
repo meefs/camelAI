@@ -3767,13 +3767,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return;
       }
 
-      if (data.type === "message") {
-        await this.handleChatMessage(ws);
-        return;
-      }
-
-      if (data.type === "stop") {
-        await this.handleChatStop(ws);
+      if (
+        data.type === "message" ||
+        data.type === "stop" ||
+        data.type === "set_model" ||
+        data.type === "ping"
+      ) {
+        await this.handleRunnerClientMessage(ws, data);
         return;
       }
 
@@ -5979,14 +5979,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private async handleChatMessage(ws: WebSocket): Promise<void> {
-    this.trace("handle_chat_message_rejected_side_channel");
-    this.sendDirect(ws, {
-      type: "error",
-      error: "Chat messages must use the runner WebSocket",
-    });
-  }
-
   private async applyConnectionMentionsForTurn(content: string): Promise<string> {
     if (!content) return content;
     if (!content.includes('@')) return content;
@@ -6006,14 +5998,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       return content;
     }
-  }
-
-  private async handleChatStop(ws: WebSocket): Promise<void> {
-    this.trace("handle_chat_stop_rejected_side_channel");
-    this.sendDirect(ws, {
-      type: "error",
-      error: "Stop requests must use the runner WebSocket",
-    });
   }
 
   private async handleRunnerClientMessage(

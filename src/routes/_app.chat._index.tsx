@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
   redirect,
+  useActionData,
   useLoaderData,
   useNavigate,
   useRevalidator,
@@ -395,6 +396,37 @@ export async function action({ request, context }: Route.ActionArgs) {
         }
       }
 
+      if (shouldStartAndRedirect && firstMessage) {
+        const chatThread = env.CHAT_THREAD.get(
+          env.CHAT_THREAD.idFromName(thread.id),
+        ) as unknown as InitialUserMessageRpc;
+        const result = await chatThread.startInitialUserMessage({
+          threadId: thread.id,
+          workspaceId,
+          orgId,
+          userId,
+          message: firstMessage,
+          clientMessageId: `initial:${thread.id}`,
+        });
+        if (result.status !== "accepted") {
+          console.error(
+            "Failed to start initial user message:",
+            result.error,
+          );
+          await chatDO
+            .deleteThread(context, thread.id, workspaceId)
+            .catch(() => {});
+          return Response.json(
+            {
+              error:
+                result.error ||
+                "Failed to start the first message. Please try again.",
+            },
+            { status: result.status === "busy" ? 409 : 500 },
+          );
+        }
+      }
+
       // Generate title in background if we have a first message
       if (firstMessage) {
         waitUntil(
@@ -443,26 +475,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       })();
 
       if (shouldStartAndRedirect) {
-        if (firstMessage) {
-          const chatThread = env.CHAT_THREAD.get(
-            env.CHAT_THREAD.idFromName(thread.id),
-          ) as unknown as InitialUserMessageRpc;
-          const result = await chatThread.startInitialUserMessage({
-            threadId: thread.id,
-            workspaceId,
-            orgId,
-            userId,
-            message: firstMessage,
-            clientMessageId: `initial:${thread.id}`,
-          });
-          if (result.status !== "accepted") {
-            console.error(
-              "Failed to start initial user message:",
-              result.error,
-            );
-          }
-        }
-
         const nextUrl = new URL(
           `/chat/${thread.id}?newThread=1`,
           request.url,
@@ -494,6 +506,9 @@ export async function action({ request, context }: Route.ActionArgs) {
 }
 
 export default function NewChatPage() {
+  const actionData = useActionData() as
+    | { error?: string; reloadRequired?: boolean }
+    | undefined;
   const {
     workspaceId,
     threadProvider,
@@ -523,6 +538,10 @@ export default function NewChatPage() {
   const revalidator = useRevalidator();
   const { groups: liveChatGroups } = useChatGroups();
   const prevWorkspaceRef = useRef(currentWorkspace?.id);
+  const actionError =
+    actionData && "error" in actionData && typeof actionData.error === "string"
+      ? actionData.error
+      : null;
 
   useEffect(() => {
     const nextWorkspaceId = currentWorkspace?.id;
@@ -665,7 +684,8 @@ export default function NewChatPage() {
           isOrgAdmin={isOrgAdmin}
           recentModelScope={recentModelScope}
           billingCreditStatus={billingCreditStatus}
-          initialError={initialChatError}
+          initialError={actionError ?? initialChatError}
+          newChatActionError={actionError}
           initialWelcomeInput={salesPrompt}
         />
       </div>

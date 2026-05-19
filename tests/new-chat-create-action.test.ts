@@ -178,6 +178,34 @@ describe('new chat create action', () => {
     });
   });
 
+  it('returns an error instead of redirecting when the initial turn cannot start', async () => {
+    startInitialUserMessageMock.mockResolvedValueOnce({
+      status: 'busy',
+      error: 'Thread is busy',
+    });
+
+    const formData = makeCreateThreadFormData();
+    formData.set('intent', 'createThreadAndStart');
+    formData.set('firstMessage', 'Build an analytics dashboard');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get('Location')).toBeNull();
+    await expect(response.json()).resolves.toEqual({
+      error: 'Thread is busy',
+    });
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
+    expect(createGroupForNewThreadMock).not.toHaveBeenCalled();
+  });
+
   it('returns the new thread and group while title generation runs in the background', async () => {
     const formData = makeCreateThreadFormData();
     formData.set('firstMessage', 'Persist this first message');

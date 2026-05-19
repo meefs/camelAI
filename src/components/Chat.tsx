@@ -101,7 +101,6 @@ import {
   DEFAULT_NOTEBOOK_PREVIEW_STATE,
   MobileViewSwitcher,
   PreviewPanelShell,
-  coercePreviewTarget,
   normalizePreviewSessionState,
   type TabRenderState,
 } from "@/components/chat-preview/chat-preview-shell";
@@ -110,7 +109,6 @@ import type { OpenElsewhereKind } from "@/components/preview-panel/preview-toolb
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSetAppPublicPayload } from "@/lib/app-visibility";
-import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { buildSlugMap } from "@/lib/connection-mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
@@ -181,8 +179,8 @@ interface ChatProps {
   recentModelScope?: RecentModelScope | null;
   billingCreditStatus?: BillingCreditStatus | null;
   initialError?: string | null;
+  newChatActionError?: string | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
-  initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
   initialActiveTabId?: string | null;
   isNewThread?: boolean;
@@ -266,40 +264,6 @@ function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
   } catch {
     return false;
   }
-}
-
-function summarizeMessagesForHistoryLog(messages: Message[]) {
-  return messages.map((message) => {
-    return {
-      id: message.id,
-      clientMessageId: message.clientMessageId,
-      role: message.role,
-      created_at: message.created_at,
-      isStreaming: message.isStreaming === true,
-      isMeta: message.isMeta === true,
-      isCompactSummary: message.isCompactSummary === true,
-      contentShape: Array.isArray(message.content)
-        ? message.content.map((block) =>
-            block && typeof block === "object" && "type" in block
-              ? String(block.type)
-              : "unknown",
-          )
-        : typeof message.content,
-    };
-  });
-}
-
-function logChatHistoryClient(
-  event: string,
-  fields: Record<string, unknown> = {},
-): void {
-  if (import.meta.env.MODE === "test") return;
-  if (!getChatDebugFlags().historyLogs) return;
-  console.info("[chat history client]", {
-    event,
-    at: new Date().toISOString(),
-    ...fields,
-  });
 }
 
 function messagesHaveSameContent(left: Message[], right: Message[]): boolean {
@@ -634,94 +598,6 @@ export function ChatErrorNotice({
           <X className="h-3.5 w-3.5" />
         </Button>
       ) : null}
-    </div>
-  );
-}
-
-function DevChatCreditControls({
-  search,
-  onNavigate,
-}: {
-  search: string;
-  onNavigate: (nextSearch: string) => void;
-}) {
-  if (!import.meta.env.DEV) return null;
-
-  const params = new URLSearchParams(search);
-  const isEnabled =
-    params.get("devCreditTest") === "1" ||
-    params.has("devCreditState") ||
-    params.has("devChatError");
-  if (!isEnabled) return null;
-
-  const current = params.get("devCreditState") ?? "normal";
-  const currentError = params.get("devChatError");
-  const setState = (nextState: string | null, nextError?: string | null) => {
-    const nextParams = new URLSearchParams(search);
-    nextParams.set("devCreditTest", "1");
-    if (nextState) {
-      nextParams.set("devCreditState", nextState);
-    } else {
-      nextParams.delete("devCreditState");
-    }
-    if (nextError) {
-      nextParams.set("devChatError", nextError);
-    } else {
-      nextParams.delete("devChatError");
-    }
-    const nextSearch = nextParams.toString();
-    onNavigate(nextSearch ? `?${nextSearch}` : "");
-  };
-  const buttonVariant = (state: string, error?: string) =>
-    current === state && (error ? currentError === error : !currentError)
-      ? "default"
-      : "outline";
-
-  return (
-    <div className="mx-auto w-full max-w-3xl px-4 pt-3 md:px-6">
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">Credit test</span>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("normal")}
-          onClick={() => setState(null)}
-        >
-          Normal
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("low")}
-          onClick={() => setState("low")}
-        >
-          Low credits
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("low-byok")}
-          onClick={() => setState("low-byok")}
-        >
-          Low + BYOK
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("exhausted")}
-          onClick={() => setState("exhausted")}
-        >
-          No credits
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("exhausted", "out-of-credits")}
-          onClick={() => setState("exhausted", "out-of-credits")}
-        >
-          Send failure
-        </Button>
-      </div>
     </div>
   );
 }
@@ -1085,8 +961,8 @@ export default function Chat({
   recentModelScope,
   billingCreditStatus,
   initialError,
+  newChatActionError,
   experimentalSettings,
-  initialPreviewTarget,
   initialPreviewTabs,
   initialActiveTabId,
   isNewThread = false,
@@ -1155,9 +1031,9 @@ export default function Chat({
       normalizePreviewSessionState(
         initialPreviewTabs,
         initialActiveTabId,
-        initialPreviewTarget,
+        null,
       ),
-    [initialPreviewTabs, initialActiveTabId, initialPreviewTarget],
+    [initialPreviewTabs, initialActiveTabId],
   );
 
   // Local state for messages, streaming, and loading
@@ -1368,22 +1244,8 @@ export default function Chat({
         typeof updater === "function"
           ? updater(pendingMessagesRef.current)
           : updater;
-      const previous = pendingMessagesRef.current;
       pendingMessagesRef.current = next;
       setPendingMessagesState(next);
-
-      const context = pendingThreadContextRef.current;
-      if (!context.readOnly && context.threadId) {
-        logChatHistoryClient("pending_overlay_updated", {
-          workspaceId: context.workspaceId,
-          threadId: context.threadId,
-          isNewThread: context.isNewThread,
-          previousCount: previous.length,
-          nextCount: next.length,
-          sentIds: Array.from(sentPendingMessageIdsRef.current),
-          pendingMessages: summarizeMessagesForHistoryLog(next),
-        });
-      }
     },
     [],
   );
@@ -1396,56 +1258,20 @@ export default function Chat({
       streamingMessageIdRef.current ||
       pendingMessagesRef.current.length > 0
     ) {
-      logChatHistoryClient("route_sync_skipped", {
-        threadId,
-        reason: !initialMessagesChanged
-          ? "initial_messages_unchanged"
-          : streamingMessageIdRef.current
-            ? "streaming_active"
-            : "pending_local_send",
-        initialCount: parsedInitialMessages.length,
-        currentCount: messagesRef.current.length,
-        pendingCount: pendingMessagesRef.current.length,
-        streamingMessageId: streamingMessageIdRef.current,
-      });
       return;
     }
     prevInitialMessagesRef.current = initialMessages;
 
-    logChatHistoryClient("route_sync_considered", {
-      threadId,
-      readOnly,
-      serverCount: parsedInitialMessages.length,
-      currentCount: messagesRef.current.length,
-      pendingCount: pendingMessagesRef.current.length,
-      serverMessages: summarizeMessagesForHistoryLog(parsedInitialMessages),
-      currentMessages: summarizeMessagesForHistoryLog(messagesRef.current),
-    });
     if (
       parsedInitialMessages.length === 0 &&
       hasUserOrAssistantMessage(messagesRef.current)
     ) {
-      logChatHistoryClient("route_sync_skipped", {
-        threadId,
-        reason: "empty_server_history_after_local_messages",
-        currentCount: messagesRef.current.length,
-      });
       return;
     }
     setPendingMessages([]);
     if (messagesHaveSameContent(messagesRef.current, parsedInitialMessages)) {
-      logChatHistoryClient("route_sync_noop_same_content", {
-        threadId,
-        serverCount: parsedInitialMessages.length,
-      });
       return;
     }
-    logChatHistoryClient("route_sync_applied", {
-      threadId,
-      previousCount: messagesRef.current.length,
-      nextCount: parsedInitialMessages.length,
-      nextMessages: summarizeMessagesForHistoryLog(parsedInitialMessages),
-    });
     setMessages(parsedInitialMessages);
   }, [
     initialMessages,
@@ -1586,6 +1412,11 @@ export default function Chat({
     workspaceId: string;
     threadId: string | null;
   } | null>(null);
+  const pendingNewThreadSubmissionRef = useRef<{
+    text: string;
+    attachments: Attachment[];
+  } | null>(null);
+  const handledNewChatActionErrorRef = useRef<string | null>(null);
   const pendingDraftCountRef = useRef(0);
   const { saveDraft, flushDraft } = useDraftPersistence(
     resolvedWorkspaceId,
@@ -1596,6 +1427,35 @@ export default function Chat({
   useEffect(() => {
     setError(initialError ? normalizeChatErrorMessage(initialError) : null);
   }, [initialError]);
+
+  useEffect(() => {
+    if (
+      !newChatActionError ||
+      handledNewChatActionErrorRef.current === newChatActionError
+    ) {
+      return;
+    }
+    handledNewChatActionErrorRef.current = newChatActionError;
+
+    const pendingSubmission = pendingNewThreadSubmissionRef.current;
+    pendingNewThreadSubmissionRef.current = null;
+    if (!pendingSubmission || threadId || readOnly) {
+      return;
+    }
+
+    if (
+      isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
+    ) {
+      setWelcomeInput(pendingSubmission.text);
+      setAttachments(pendingSubmission.attachments);
+    }
+    writeDraft(
+      resolvedWorkspaceId,
+      null,
+      pendingSubmission.text,
+      pendingSubmission.attachments,
+    );
+  }, [newChatActionError, readOnly, resolvedWorkspaceId, threadId]);
 
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(
     () => initialPreviewSession.tabs,
@@ -1647,7 +1507,6 @@ export default function Chat({
     : false;
   const [mobileView, setMobileView] = useState<"chat" | "preview">("chat");
   const previewVersionRef = useRef<number>(0);
-  const supportsPreviewTabsStateRef = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageColumnRef = useRef<HTMLDivElement>(null);
@@ -1662,17 +1521,12 @@ export default function Chat({
   const forceScrollOnNextUpdate = useRef(false);
   const splitStreamingMessageOnNextPartRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const oobWsRef = useRef<WebSocket | null>(null);
-  const questionResponseSocketRef = useRef<"runner" | "oob">("runner");
-  const connectionSetupResponseSocketRef = useRef<"runner" | "oob">("runner");
   const {
     connectionSetupPrompt,
     handleConnectionSetupCancel,
     handleConnectionSetupResponse,
     setConnectionSetupPrompt,
   } = useConnectionSetupResponse({
-    connectionSetupResponseSocketRef,
-    oobWsRef,
     wsRef,
   });
   const lastRunnerModelSelectionRef = useRef<string | null>(null);
@@ -1689,8 +1543,7 @@ export default function Chat({
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const sessionIdRef = useRef<string | null>(null);
-  const lastSideChannelEventIdRef = useRef(0);
-  const lastRunnerSeqRef = useRef(0);
+  const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const fallbackRenderedAtRef = useRef<number>(Date.now());
 
@@ -1735,7 +1588,6 @@ export default function Chat({
     setTabNotebookPdfExporting({});
     setTabAppLoading({});
     previewVersionRef.current = 0;
-    supportsPreviewTabsStateRef.current = false;
     clearAllIframeRefreshTimeouts();
     setMobileView("chat");
   }, [
@@ -2048,22 +1900,20 @@ export default function Chat({
             typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
           sessionIdRef.current =
             typeof parsed.sessionId === "string" ? parsed.sessionId : null;
-          lastSideChannelEventIdRef.current =
+          lastEventIdRef.current = Math.max(
+            legacyLastEventId,
             typeof parsed.lastSideChannelEventId === "number"
               ? parsed.lastSideChannelEventId
-              : legacyLastEventId;
-          lastRunnerSeqRef.current =
-            typeof parsed.lastRunnerSeq === "number"
-              ? parsed.lastRunnerSeq
-              : legacyLastEventId;
+              : 0,
+            typeof parsed.lastRunnerSeq === "number" ? parsed.lastRunnerSeq : 0,
+          );
           return;
         }
       } catch (e) {
         console.warn("Failed to load session state:", e);
       }
       sessionIdRef.current = null;
-      lastSideChannelEventIdRef.current = 0;
-      lastRunnerSeqRef.current = 0;
+      lastEventIdRef.current = 0;
     },
     [sessionStorageKey],
   );
@@ -2073,8 +1923,7 @@ export default function Chat({
       try {
         const payload = {
           sessionId: sessionIdRef.current,
-          lastSideChannelEventId: lastSideChannelEventIdRef.current,
-          lastRunnerSeq: lastRunnerSeqRef.current,
+          lastEventId: lastEventIdRef.current,
         };
         sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
       } catch (e) {
@@ -2087,8 +1936,7 @@ export default function Chat({
   useEffect(() => {
     if (!threadId) {
       sessionIdRef.current = null;
-      lastSideChannelEventIdRef.current = 0;
-      lastRunnerSeqRef.current = 0;
+      lastEventIdRef.current = 0;
       return;
     }
     loadSessionState(threadId);
@@ -2178,46 +2026,22 @@ export default function Chat({
     [activeTabId],
   );
 
-  const syncPreviewTargetBestEffort = useCallback(
-    (target: PreviewTarget | null) => {
+  const syncPreviewTabsStateBestEffort = useCallback(
+    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
       if (!threadId) return;
-      const socket = oobWsRef.current;
+      const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
       socket.send(
         JSON.stringify({
-          type: "set_preview_target",
-          target,
+          type: "set_preview_tabs_state",
+          tabs: nextTabs.map((tab) => tab.target),
+          activeTabId: nextActiveTabId,
           threadId,
         }),
       );
     },
     [threadId],
-  );
-
-  const syncPreviewTabsStateBestEffort = useCallback(
-    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
-      if (!threadId) return;
-      const socket = oobWsRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
-
-      const nextActiveTarget = nextActiveTabId
-        ? (nextTabs.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
-        : null;
-
-      if (supportsPreviewTabsStateRef.current) {
-        socket.send(
-          JSON.stringify({
-            type: "set_preview_tabs_state",
-            tabs: nextTabs.map((tab) => tab.target),
-            activeTabId: nextActiveTabId,
-            threadId,
-          }),
-        );
-      } else {
-        syncPreviewTargetBestEffort(nextActiveTarget);
-      }
-    },
-    [threadId, syncPreviewTargetBestEffort],
   );
 
   const setLocalPreviewSessionState = useCallback(
@@ -2429,7 +2253,7 @@ export default function Chat({
   }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
   const handleRealtimeSideChannelEvent = useCallback(
-    (data: any, source: "runner" | "oob" = "runner") => {
+    (data: any) => {
       if (data.type === "preview_state") {
         const newVersion = typeof data.version === "number" ? data.version : 0;
         const hasVersionBump = newVersion > previewVersionRef.current;
@@ -2438,75 +2262,38 @@ export default function Chat({
         const refreshTabId =
           typeof data.refreshTabId === "string" ? data.refreshTabId : null;
 
-        const hasTabsPayload =
-          Array.isArray(data.tabs) || data.activeTabId !== undefined;
-        supportsPreviewTabsStateRef.current = hasTabsPayload;
-        if (hasTabsPayload) {
-          const nextSession = normalizePreviewSessionState(
-            data.tabs,
-            data.activeTabId,
-            data.target,
-          );
-          setLocalPreviewSessionState(
-            nextSession.tabs,
-            nextSession.activeTabId,
-          );
+        const nextSession = normalizePreviewSessionState(
+          data.tabs,
+          data.activeTabId,
+          null,
+        );
+        setLocalPreviewSessionState(nextSession.tabs, nextSession.activeTabId);
 
-          if (!nextSession.target || !nextSession.activeTabId) {
-            return;
-          }
-
-          const nextActiveId = nextSession.activeTabId;
-          const shouldRefreshActiveTab = refreshTabId
-            ? refreshTabId === nextActiveId
-            : !hasRefreshHint && hasVersionBump;
-
-          if (nextSession.target.kind === "app" && shouldRefreshActiveTab) {
-            const existingTimeout =
-              iframeRefreshTimeoutsRef.current[nextActiveId];
-            if (existingTimeout) {
-              clearTimeout(existingTimeout);
-            }
-            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
-            iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
-              setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
-              bumpIframeKey(nextActiveId);
-              delete iframeRefreshTimeoutsRef.current[nextActiveId];
-            }, 1500);
-          } else if (
-            nextSession.target.kind === "file" &&
-            shouldRefreshActiveTab
-          ) {
-            bumpFilePreviewKey(nextActiveId);
-          }
+        if (!nextSession.target || !nextSession.activeTabId) {
           return;
         }
 
-        const nextTarget = coercePreviewTarget(data.target);
-        if (!nextTarget) {
-          // Keep client tab state even if the server has no active target.
-          return;
-        }
-
-        openTabForTarget(nextTarget);
-        const nextTabId = getPreviewTabId(nextTarget);
-        const shouldRefreshTab = refreshTabId
-          ? refreshTabId === nextTabId
+        const nextActiveId = nextSession.activeTabId;
+        const shouldRefreshActiveTab = refreshTabId
+          ? refreshTabId === nextActiveId
           : !hasRefreshHint && hasVersionBump;
 
-        if (nextTarget.kind === "app" && shouldRefreshTab) {
-          const existingTimeout = iframeRefreshTimeoutsRef.current[nextTabId];
+        if (nextSession.target.kind === "app" && shouldRefreshActiveTab) {
+          const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
           if (existingTimeout) {
             clearTimeout(existingTimeout);
           }
-          setTabAppLoading((prev) => ({ ...prev, [nextTabId]: true }));
-          iframeRefreshTimeoutsRef.current[nextTabId] = setTimeout(() => {
-            setTabAppLoading((prev) => ({ ...prev, [nextTabId]: false }));
-            bumpIframeKey(nextTabId);
-            delete iframeRefreshTimeoutsRef.current[nextTabId];
+          setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
+          iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
+            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
+            bumpIframeKey(nextActiveId);
+            delete iframeRefreshTimeoutsRef.current[nextActiveId];
           }, 1500);
-        } else if (nextTarget.kind === "file" && shouldRefreshTab) {
-          bumpFilePreviewKey(nextTabId);
+        } else if (
+          nextSession.target.kind === "file" &&
+          shouldRefreshActiveTab
+        ) {
+          bumpFilePreviewKey(nextActiveId);
         }
 
         return;
@@ -2532,7 +2319,6 @@ export default function Chat({
         data.requestId &&
         data.integrationType
       ) {
-        connectionSetupResponseSocketRef.current = source;
         setConnectionSetupPrompt({
           requestId: data.requestId as string,
           integrationType: data.integrationType as string,
@@ -2567,7 +2353,6 @@ export default function Chat({
       return;
     },
     [
-      openTabForTarget,
       activeThreadProvider,
       revalidator,
       setLocalPreviewSessionState,
@@ -2599,10 +2384,6 @@ export default function Chat({
         wsRef.current.close();
         wsRef.current = null;
       }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
-      }
 
       // Clear any existing ping interval
       if (pingIntervalRef.current) {
@@ -2624,106 +2405,12 @@ export default function Chat({
         reconnectAttempts.current = 0;
       }
 
-      // Side-channel WebSocket stays on ChatThreadDO for preview, prompts, replay,
-      // and other out-of-band events.
       const wsHost = window.location.host;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const workspaceIdForConnection = resolvedWorkspaceId;
-      const oobWsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
-      const oobWs = new WebSocket(oobWsUrl);
-      oobWsRef.current = oobWs;
-
-      oobWs.onopen = () => {
-        if (connectionIdRef.current !== thisConnectionId) {
-          return;
-        }
-        oobWs.send(
-          JSON.stringify({
-            type: "init",
-            threadId: id,
-            sessionId: sessionIdRef.current,
-            lastEventId: lastSideChannelEventIdRef.current,
-          }),
-        );
-      };
-
-      oobWs.onmessage = (event) => {
-        if (oobWsRef.current !== oobWs) {
-          return;
-        }
-
-        const data = JSON.parse(event.data);
-
-        if (typeof data?.eventId === "number") {
-          lastSideChannelEventIdRef.current = Math.max(
-            lastSideChannelEventIdRef.current,
-            data.eventId,
-          );
-          if (id) {
-            persistSessionState(id);
-          }
-        }
-
-        if (data.type === "session" && typeof data.sessionId === "string") {
-          const newSessionId = data.sessionId;
-          if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-            lastSideChannelEventIdRef.current = 0;
-          }
-          sessionIdRef.current = newSessionId;
-          if (id) {
-            persistSessionState(id);
-          }
-        } else if (data.type === "todo_state") {
-          if (Array.isArray(data.todos)) {
-            setCurrentTodos(data.todos);
-          }
-        } else if (data.type === "context_usage_state") {
-          if (data.usedPercent === null) {
-            setContextUsedPercent(null);
-          } else if (
-            typeof data.usedPercent === "number" &&
-            Number.isFinite(data.usedPercent)
-          ) {
-            setContextUsedPercent(
-              Math.max(0, Math.min(100, Math.round(data.usedPercent))),
-            );
-          }
-        } else if (data.type === "ask_user_question") {
-          if (data.questionId && Array.isArray(data.questions)) {
-            questionResponseSocketRef.current = "oob";
-            setPendingQuestion({
-              questionId: data.questionId,
-              toolUseId: data.toolUseId,
-              questions: data.questions,
-            });
-          }
-        } else if (data.type === "question_answered") {
-        setPendingQuestion((prev) => {
-            if (prev?.questionId === data.questionId) {
-              return null;
-            }
-            return prev;
-          });
-        } else if (
-          data.type === "preview_state" ||
-          data.type === "title_updated" ||
-          data.type === "thread_model_updated" ||
-          data.type === "connection_setup_prompt" ||
-          data.type === "connection_setup_answered" ||
-          data.type === "connection_setup_error"
-        ) {
-          handleRealtimeSideChannelEvent(data, "oob");
-        }
-      };
-
-      oobWs.onclose = () => {
-        if (oobWsRef.current === oobWs) {
-          oobWsRef.current = null;
-        }
-      };
-
-      // Runner WebSocket connects to ChatThreadDO, which owns the agent session.
-      const wsUrl = `${protocol}//${wsHost}/ws/runner/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
+      // One browser WebSocket connects to ChatThreadDO for agent streaming,
+      // replay, preview state, prompts, and other realtime chat state.
+      const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -2754,8 +2441,7 @@ export default function Chat({
             type: "init",
             threadId: id,
             sessionId: sessionIdRef.current,
-            lastEventId: lastRunnerSeqRef.current,
-            lastSeq: lastRunnerSeqRef.current,
+            lastEventId: lastEventIdRef.current,
           }),
         );
       };
@@ -2769,10 +2455,7 @@ export default function Chat({
         const data = JSON.parse(event.data);
 
         if (typeof data?.eventId === "number") {
-          lastRunnerSeqRef.current = Math.max(
-            lastRunnerSeqRef.current,
-            data.eventId,
-          );
+          lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
           if (id) {
             persistSessionState(id);
           }
@@ -2815,11 +2498,6 @@ export default function Chat({
                 contentLength: content.length,
               });
               sentPendingMessageIdsRef.current.add(msg.clientMessageId ?? msg.id);
-              logChatHistoryClient("queued_user_sent", {
-                threadId: id,
-                message: summarizeMessagesForHistoryLog([msg])[0],
-                sentIds: Array.from(sentPendingMessageIdsRef.current),
-              });
               ws.send(
                 JSON.stringify({
                   type: "message",
@@ -2838,7 +2516,7 @@ export default function Chat({
         ) {
           const newSessionId = data.sessionId;
           if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-            lastRunnerSeqRef.current = 0;
+            lastEventIdRef.current = 0;
           }
           sessionIdRef.current = newSessionId;
           if (id) {
@@ -3074,12 +2752,6 @@ export default function Chat({
                 created_at: Date.now(),
                 isStreaming: true,
               };
-              logChatHistoryClient("assistant_stream_started", {
-                threadId: id,
-                streamingMessageId: msgId,
-                currentCount: messagesRef.current.length,
-                pendingCount: pendingMessagesRef.current.length,
-              });
               // Use functional update to avoid race conditions with rapid events
               setMessages((prev) => {
                 if (prev.some((m) => m.id === msgId)) {
@@ -3297,14 +2969,6 @@ export default function Chat({
             splitStreamingMessageOnNextPartRef.current = false;
             const msgId = streamingMessageIdRef.current;
             lastCompletedAssistantMessageIdRef.current = msgId;
-            logChatHistoryClient("assistant_result_received", {
-              threadId: id,
-              streamingMessageId: msgId,
-              messageCountBeforeFinalize: messagesRef.current.length,
-              messagesBeforeFinalize: summarizeMessagesForHistoryLog(
-                messagesRef.current,
-              ),
-            });
             if (msgId) {
               const parsedResultTimestamp =
                 typeof sdkEvent.timestamp === "string"
@@ -3329,11 +2993,6 @@ export default function Chat({
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
-            logChatHistoryClient("assistant_result_revalidate", {
-              threadId: id,
-              messageCountAfterFinalize: messagesRef.current.length,
-              pendingCount: pendingMessagesRef.current.length,
-            });
             revalidator.revalidate();
             isAutoCompactingRef.current = false;
             syncCompactionIndicator();
@@ -3363,7 +3022,6 @@ export default function Chat({
         } else if (data.type === "ask_user_question") {
           // Claude is asking the user a question
           if (data.questionId && Array.isArray(data.questions)) {
-            questionResponseSocketRef.current = "runner";
             setPendingQuestion({
               questionId: data.questionId,
               toolUseId: data.toolUseId,
@@ -3402,25 +3060,11 @@ export default function Chat({
             typeof data.clientMessageId === "string" ? data.clientMessageId : "";
           if (clientMessageId) {
             sentPendingMessageIdsRef.current.add(clientMessageId);
-            logChatHistoryClient("message_accepted", {
-              threadId: id,
-              clientMessageId,
-              pendingCount: pendingMessagesRef.current.length,
-              sentIds: Array.from(sentPendingMessageIdsRef.current),
-              pendingMessages: summarizeMessagesForHistoryLog(
-                pendingMessagesRef.current,
-              ),
-            });
             clearQueuedSendReadyTimeout();
           }
         } else if (data.type === "result") {
           if (id) {
             flushDeferredMessagesRender();
-            logChatHistoryClient("runner_result_revalidate_scheduled", {
-              threadId: id,
-              pendingCount: pendingMessagesRef.current.length,
-              currentCount: messagesRef.current.length,
-            });
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             for (const delay of [1000, 3000]) {
@@ -3462,7 +3106,7 @@ export default function Chat({
           data.type === "connection_setup_answered" ||
           data.type === "connection_setup_error"
         ) {
-          handleRealtimeSideChannelEvent(data, "runner");
+          handleRealtimeSideChannelEvent(data);
         }
       };
 
@@ -3487,10 +3131,6 @@ export default function Chat({
           reason: event.reason || "closed",
           reconnectAttempts: reconnectAttempts.current,
         });
-        if (oobWsRef.current) {
-          oobWsRef.current.close();
-          oobWsRef.current = null;
-        }
 
         // Auto-reconnect with exponential backoff
         const maxAttempts = 5;
@@ -3604,10 +3244,6 @@ export default function Chat({
         wsRef.current.close();
         wsRef.current = null;
       }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
-      }
 
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -3634,8 +3270,9 @@ export default function Chat({
     showAssistantTail && Boolean(lastMessage) && !isLastMessageAssistantLike;
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
-      if (isUserTurnAnchorMessage(visibleMessages[i]))
+      if (isUserTurnAnchorMessage(visibleMessages[i])) {
         return visibleMessages[i];
+      }
     }
     return null;
   }, [visibleMessages]);
@@ -3654,10 +3291,6 @@ export default function Chat({
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
-      }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -3681,10 +3314,6 @@ export default function Chat({
         if (wsRef.current) {
           wsRef.current.close();
           wsRef.current = null;
-        }
-        if (oobWsRef.current) {
-          oobWsRef.current.close();
-          oobWsRef.current = null;
         }
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -3720,10 +3349,6 @@ export default function Chat({
           wsRef.current.close();
           wsRef.current = null;
         }
-        if (oobWsRef.current) {
-          oobWsRef.current.close();
-          oobWsRef.current = null;
-        }
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
           reconnectTimeoutRef.current = null;
@@ -3748,10 +3373,6 @@ export default function Chat({
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
-      }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -3785,10 +3406,7 @@ export default function Chat({
         const needsReconnect =
           !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
-          wsRef.current.readyState === WebSocket.CLOSING ||
-          !oobWsRef.current ||
-          oobWsRef.current.readyState === WebSocket.CLOSED ||
-          oobWsRef.current.readyState === WebSocket.CLOSING;
+          wsRef.current.readyState === WebSocket.CLOSING;
 
         if (needsReconnect && threadId) {
           // Clear any stale reconnect timeout from before tab suspension
@@ -3893,7 +3511,6 @@ export default function Chat({
       const measureAssistant = assistantMeasureRef.current;
       const measurePendingAssistant = assistantPendingMeasureRef.current;
 
-      // Need at least a user message to calculate spacer
       if (!measureUser) {
         spacer.style.height = "0px";
         return;
@@ -3910,7 +3527,6 @@ export default function Chat({
       let exchangeHeight: number;
 
       if (measureAssistant) {
-        // Assistant message exists - calculate exchange height including both messages
         const assistantRect = measureAssistant.getBoundingClientRect();
         const assistantStyle = getComputedStyle(measureAssistant);
         const assistantMarginBottomValue = parseFloat(
@@ -3923,8 +3539,6 @@ export default function Chat({
         const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
       } else if (measurePendingAssistant) {
-        // No assistant message yet; include pending assistant placeholder
-        // (e.g. loading dots / compacting indicator) in the measured exchange.
         const pendingRect = measurePendingAssistant.getBoundingClientRect();
         const pendingStyle = getComputedStyle(measurePendingAssistant);
         const pendingMarginBottomValue = parseFloat(
@@ -3937,7 +3551,6 @@ export default function Chat({
         const exchangeBottom = pendingRect.bottom + pendingMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
       } else {
-        // No assistant message yet (awaiting response) - just use user message height
         const userMarginBottomValue = parseFloat(userStyle.marginBottom || "0");
         const userMarginBottom = Number.isNaN(userMarginBottomValue)
           ? 0
@@ -4087,7 +3700,6 @@ export default function Chat({
 
     if (shouldRenderSpacer) return;
 
-    // Keep bottom-follow behavior only for non-spacer transcript updates.
     if (stickToBottomRef.current || distanceFromBottom < 150) {
       scrollToBottom("auto");
     }
@@ -4548,8 +4160,6 @@ export default function Chat({
     if (hasUploadingAttachments) return;
 
     const userMessage = currentWelcomeInput.trim();
-    setWelcomeInput("");
-
     let finalContent: string;
     try {
       finalContent = buildMessageContent(userMessage, currentAttachments);
@@ -4557,15 +4167,19 @@ export default function Chat({
       setError(normalizeChatErrorMessage(error));
       return;
     }
-    removeDraft(resolvedWorkspaceId, null);
 
-    // Clear attachments (revoke any blob URLs to avoid memory leaks)
-    setAttachments((prev) => {
-      for (const a of prev) {
-        revokeAttachmentPreviewUrl(a.previewUrl);
-      }
-      return [];
-    });
+    pendingNewThreadSubmissionRef.current = {
+      text: currentWelcomeInput,
+      attachments: currentAttachments,
+    };
+    handledNewChatActionErrorRef.current = null;
+    setWelcomeInput("");
+    removeDraft(resolvedWorkspaceId, null);
+    skipNextEmptyDraftSaveRef.current = true;
+
+    // Keep blob URLs alive until redirect/unmount so an action error can restore
+    // image previews without rebuilding local object URLs.
+    setAttachments([]);
 
     // Submit as a navigational route action. The action creates the thread,
     // starts the first turn in the ChatThreadDO, then redirects to the thread.
@@ -4595,10 +4209,7 @@ export default function Chat({
 
   const handleQuestionResponse = useCallback(
     (answers: Record<string, string>) => {
-      const socket =
-        questionResponseSocketRef.current === "oob"
-          ? oobWsRef.current
-          : wsRef.current;
+      const socket = wsRef.current;
       if (!pendingQuestion || !socket || socket.readyState !== WebSocket.OPEN) {
         return;
       }
@@ -4643,7 +4254,7 @@ export default function Chat({
         return;
       }
 
-      const socket = oobWsRef.current;
+      const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         if (target === null) {
           resetPreviewTabsState();
@@ -4820,12 +4431,6 @@ type SendOptions = {
         contentLength: finalContent.length,
       });
       sentPendingMessageIdsRef.current.add(clientMessageId);
-      logChatHistoryClient("user_sent_immediate", {
-        threadId,
-        clientMessageId,
-        message: summarizeMessagesForHistoryLog([userMsg])[0],
-        sentIds: Array.from(sentPendingMessageIdsRef.current),
-      });
       wsRef.current.send(
         JSON.stringify({
           type: "message",
@@ -5088,14 +4693,6 @@ type SendOptions = {
           onOpenUsage={() => navigate("/settings/organization/usage")}
           onTopUp={() => navigate("/settings/organization/usage?action=topup")}
           canTopUp={Boolean(isAdmin)}
-        />
-      ) : null}
-      {!readOnly ? (
-        <DevChatCreditControls
-          search={location.search}
-          onNavigate={(nextSearch) =>
-            navigate(`${location.pathname}${nextSearch}`)
-          }
         />
       ) : null}
       {readOnly && (

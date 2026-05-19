@@ -5,12 +5,8 @@ import type {
 } from "@/components/connection-setup-prompt";
 
 export function useConnectionSetupResponse({
-  connectionSetupResponseSocketRef,
-  oobWsRef,
   wsRef,
 }: {
-  connectionSetupResponseSocketRef: RefObject<"runner" | "oob">;
-  oobWsRef: RefObject<WebSocket | null>;
   wsRef: RefObject<WebSocket | null>;
 }) {
   const [connectionSetupPrompt, setConnectionSetupPrompt] =
@@ -18,17 +14,13 @@ export function useConnectionSetupResponse({
 
   const handleConnectionSetupResponse = useCallback(
     async (response: ConnectionSetupResponse) => {
-      const source = connectionSetupResponseSocketRef.current;
-      const socket = source === "oob" ? oobWsRef.current : wsRef.current;
+      const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.error(
           "[Chat] WebSocket not available for connection setup response",
-          { source },
         );
         throw new Error(
-          source === "oob"
-            ? "The chat side-channel disconnected before the connection details could be submitted. Please try again."
-            : "The chat runner connection disconnected before the connection details could be submitted. Please try again.",
+          "The chat connection disconnected before the connection details could be submitted. Please try again.",
         );
       }
 
@@ -39,7 +31,7 @@ export function useConnectionSetupResponse({
         }),
       );
     },
-    [connectionSetupResponseSocketRef, oobWsRef, wsRef],
+    [wsRef],
   );
 
   const handleConnectionSetupCancel = useCallback(() => {
