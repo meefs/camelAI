@@ -29,7 +29,10 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { useAuthData } from "@/hooks/use-auth-data"
-import { useSwitchOrg } from "@/hooks/use-auth-actions"
+import {
+  isOrgSwitchSupersededError,
+  useSwitchOrg,
+} from "@/hooks/use-auth-actions"
 import { CreateOrgDialog } from "@/components/settings/create-org-dialog"
 import { BILLING_PLAN_LIMITS } from "@/lib/billing-plans"
 import type { BillingPlan, OrgRole } from "@/types"
@@ -87,9 +90,15 @@ export function OrgMembershipsList({
     }
   }, [fetcher.state, fetcher.data])
 
-  const handleSwitchOrg = (orgId: string) => {
-    switchOrg(orgId)
-    toast.success("Switched organization")
+  const handleSwitchOrg = async (orgId: string) => {
+    try {
+      await switchOrg(orgId)
+      toast.success("Switched organization")
+    } catch (error) {
+      if (isOrgSwitchSupersededError(error)) return
+      console.error("Failed to switch organization:", error)
+      toast.error("Failed to switch organization")
+    }
   }
 
   const handleLeaveOrg = (orgId: string) => {

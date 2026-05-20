@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import {
   redirect,
   useActionData,
@@ -50,7 +49,6 @@ import type {
   Thread,
   WorkerScriptWithCreator,
 } from "@/types";
-import { useAuthData } from "@/hooks/use-auth-data";
 import { useChatGroups } from "@/hooks/use-chat-groups";
 import {
   createRequestObservabilityContext,
@@ -798,23 +796,13 @@ export default function NewChatPage() {
     isOrgAdmin,
     recentModelScope,
   } = useLoaderData<typeof loader>();
-  const { currentWorkspace } = useAuthData();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const { groups: liveChatGroups } = useChatGroups();
-  const prevWorkspaceRef = useRef(currentWorkspace?.id);
   const actionError =
     actionData && "error" in actionData && typeof actionData.error === "string"
       ? actionData.error
       : null;
-
-  useEffect(() => {
-    const nextWorkspaceId = currentWorkspace?.id;
-    if (nextWorkspaceId && nextWorkspaceId !== prevWorkspaceRef.current) {
-      prevWorkspaceRef.current = nextWorkspaceId;
-      revalidator.revalidate();
-    }
-  }, [currentWorkspace?.id, revalidator]);
 
   if (!workspaceId) {
     return <NoWorkspacesError />;

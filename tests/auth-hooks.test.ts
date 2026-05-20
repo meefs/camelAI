@@ -6,19 +6,13 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import type { ReactNode } from 'react';
 
-// Mock react-router's useFetcher and useNavigate
-const mockSubmit = vi.fn();
+// Mock react-router navigation/revalidation hooks.
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
+const mockFetch = vi.fn();
 
 vi.mock('react-router', () => ({
-  useFetcher: vi.fn(() => ({
-    submit: mockSubmit,
-    state: 'idle',
-    data: null,
-  })),
   useNavigate: vi.fn(() => mockNavigate),
   useRevalidator: vi.fn(() => ({
     revalidate: mockRevalidate,
@@ -34,53 +28,67 @@ vi.mock('@/hooks/use-workspace-warmup', () => ({
 describe('useLogout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
   });
 
-  it('should submit logout request to correct endpoint', async () => {
-    const { useFetcher } = await import('react-router');
+  it('should post logout request to correct endpoint and navigate on success', async () => {
     const { useLogout } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
     const { result } = renderHook(() => useLogout());
 
-    act(() => {
-      result.current.logout();
+    await act(async () => {
+      await result.current.logout();
     });
 
-    expect(mockSubmit).toHaveBeenCalledWith(null, {
-      method: 'post',
-      action: '/api/auth/logout',
+    expect(mockFetch).toHaveBeenCalledWith('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+      },
+      body: undefined,
+      credentials: 'same-origin',
+      signal: undefined,
     });
+    expect(mockNavigate).toHaveBeenCalledWith('/login');
   });
 
-  it('should report isLoggingOut based on fetcher state', async () => {
-    const { useFetcher } = await import('react-router');
+  it('should report isLoggingOut while the request is pending', async () => {
     const { useLogout } = await import('@/hooks/use-auth-actions');
+    let resolveLogout!: (value: unknown) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLogout = resolve;
+      }),
+    );
 
-    // Test idle state
-    vi.mocked(useFetcher).mockReturnValue({
-      submit: mockSubmit,
-      state: 'idle',
-      data: null,
-    } as any);
+    const { result } = renderHook(() => useLogout());
+    expect(result.current.isLoggingOut).toBe(false);
 
-    const { result: idleResult } = renderHook(() => useLogout());
-    expect(idleResult.current.isLoggingOut).toBe(false);
+    let logoutPromise!: Promise<void>;
+    act(() => {
+      logoutPromise = result.current.logout();
+    });
+    expect(result.current.isLoggingOut).toBe(true);
 
-    // Test submitting state
-    vi.mocked(useFetcher).mockReturnValue({
-      submit: mockSubmit,
-      state: 'submitting',
-      data: null,
-    } as any);
+    await act(async () => {
+      resolveLogout({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ success: true }),
+      });
+      await logoutPromise;
+    });
 
-    const { result: submittingResult } = renderHook(() => useLogout());
-    expect(submittingResult.current.isLoggingOut).toBe(true);
+    expect(result.current.isLoggingOut).toBe(false);
   });
 });
 
 describe('useSwitchWorkspace', () => {
-  const mockFetch = vi.fn();
-
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', mockFetch);
@@ -265,117 +273,137 @@ describe('useSwitchWorkspace', () => {
 describe('useSwitchOrg', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
   });
 
-  it('should submit switch request with JSON body', async () => {
-    const { useFetcher } = await import('react-router');
+  it('should post switch request with JSON body and revalidate on success', async () => {
     const { useSwitchOrg } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
     const { result } = renderHook(() => useSwitchOrg());
 
-    act(() => {
-      result.current.switchOrg('org-456');
+    await act(async () => {
+      await result.current.switchOrg('org-456');
     });
 
-    expect(mockSubmit).toHaveBeenCalledWith(
-      JSON.stringify({ orgId: 'org-456' }),
-      {
-        method: 'post',
-        action: '/api/auth/switch-org',
-        encType: 'application/json',
-      }
-    );
+    expect(mockFetch).toHaveBeenCalledWith('/api/auth/switch-org', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ orgId: 'org-456' }),
+      credentials: 'same-origin',
+      signal: expect.any(AbortSignal),
+    });
+    expect(mockRevalidate).toHaveBeenCalledTimes(1);
   });
 
   it('should return a Promise that resolves on success', async () => {
-    vi.resetModules();
-    const { useFetcher } = await import('react-router');
     const { useSwitchOrg } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
-    // Start with submitting state
-    let mockState = 'submitting';
-    let mockData: { success?: boolean; error?: string } | null = null;
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
-
-    const { result, rerender } = renderHook(() => useSwitchOrg());
+    const { result } = renderHook(() => useSwitchOrg());
 
     let resolved = false;
     let rejected = false;
-    act(() => {
-      result.current.switchOrg('org-456').then(
+    await act(async () => {
+      await result.current.switchOrg('org-456').then(
         () => { resolved = true; },
         () => { rejected = true; }
       );
     });
-
-    expect(resolved).toBe(false);
-    expect(rejected).toBe(false);
-
-    // Simulate fetcher completing successfully
-    mockState = 'idle';
-    mockData = { success: true };
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
-    rerender();
-
-    // Wait for microtask to resolve promise
-    await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(resolved).toBe(true);
     expect(rejected).toBe(false);
   });
 
   it('should return a Promise that rejects on error', async () => {
-    vi.resetModules();
-    const { useFetcher } = await import('react-router');
     const { useSwitchOrg } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: false,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'Org not found' }),
+    });
 
-    // Start with submitting state
-    let mockState = 'submitting';
-    let mockData: { success?: boolean; error?: string } | null = null;
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
-
-    const { result, rerender } = renderHook(() => useSwitchOrg());
+    const { result } = renderHook(() => useSwitchOrg());
 
     let resolved = false;
     let rejectedError: unknown = null;
-    act(() => {
-      result.current.switchOrg('org-456').then(
+    await act(async () => {
+      await result.current.switchOrg('org-456').then(
         () => { resolved = true; },
         (err) => { rejectedError = err; }
       );
     });
 
     expect(resolved).toBe(false);
-    expect(rejectedError).toBe(null);
-
-    // Simulate fetcher completing with error
-    mockState = 'idle';
-    mockData = { error: 'Org not found' };
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
-    rerender();
-
-    // Wait for microtask to resolve promise
-    await new Promise(resolve => setTimeout(resolve, 0));
-
-    expect(resolved).toBe(false);
     expect(rejectedError).toBeInstanceOf(Error);
     expect((rejectedError as Error).message).toBe('Org not found');
+    expect(result.current.error).toBe('Org not found');
+  });
+
+  it('should reject a previous in-flight org switch as superseded', async () => {
+    const {
+      isOrgSwitchSupersededError,
+      useSwitchOrg,
+    } = await import('@/hooks/use-auth-actions');
+    const pendingResponses: Array<{
+      signal: AbortSignal;
+      resolve: (value: unknown) => void;
+      reject: (reason?: unknown) => void;
+    }> = [];
+
+    mockFetch.mockImplementation((_url, init) => {
+      const signal = init?.signal as AbortSignal;
+      return new Promise((resolve, reject) => {
+        pendingResponses.push({ signal, resolve, reject });
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    });
+
+    const { result } = renderHook(() => useSwitchOrg());
+    let firstResolved = false;
+    let firstRejectedError: unknown = null;
+
+    act(() => {
+      void result.current.switchOrg('org-1').then(
+        () => { firstResolved = true; },
+        (error) => { firstRejectedError = error; },
+      );
+    });
+
+    expect(pendingResponses[0].signal.aborted).toBe(false);
+
+    let secondPromise: Promise<void>;
+    act(() => {
+      secondPromise = result.current.switchOrg('org-2');
+    });
+
+    expect(pendingResponses[0].signal.aborted).toBe(true);
+
+    await act(async () => {
+      pendingResponses[1].resolve({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ success: true }),
+      });
+      await secondPromise!;
+    });
+
+    expect(firstResolved).toBe(false);
+    expect(isOrgSwitchSupersededError(firstRejectedError)).toBe(true);
+    expect(mockRevalidate).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -413,87 +441,132 @@ describe('useRefreshAuth', () => {
 describe('useLogin', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
+    window.history.replaceState(null, '', '/login');
   });
 
-  it('should submit login request with credentials', async () => {
-    const { useFetcher } = await import('react-router');
+  it('should post login request with credentials and navigate on success', async () => {
     const { useLogin } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
     const { result } = renderHook(() => useLogin());
 
-    act(() => {
-      result.current.login('test@example.com', 'password123');
+    await act(async () => {
+      await result.current.login('test@example.com', 'password123');
     });
 
-    expect(mockSubmit).toHaveBeenCalledWith(
-      JSON.stringify({ email: 'test@example.com', password: 'password123' }),
-      {
-        method: 'post',
-        action: '/api/auth/login',
-        encType: 'application/json',
-      }
-    );
+    expect(mockFetch).toHaveBeenCalledWith('/api/auth/login', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: 'test@example.com',
+        password: 'password123',
+      }),
+      credentials: 'same-origin',
+      signal: undefined,
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/');
+  });
+
+  it('should surface login errors without navigating', async () => {
+    const { useLogin } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: false,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'Invalid credentials' }),
+    });
+
+    const { result } = renderHook(() => useLogin());
+
+    await act(async () => {
+      await result.current.login('test@example.com', 'wrong-password');
+    });
+
+    expect(result.current.error).toBe('Invalid credentials');
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });
 
 describe('useSignup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
   });
 
-  it('should submit signup request with credentials and optional name', async () => {
-    const { useFetcher } = await import('react-router');
+  it('should post signup request with credentials and optional name', async () => {
     const { useSignup } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
     const { result } = renderHook(() => useSignup());
 
-    act(() => {
-      result.current.signup('test@example.com', 'password123', {
+    await act(async () => {
+      await result.current.signup('test@example.com', 'password123', {
         name: 'Test User',
         redirectTo: '/chat',
         turnstileToken: 'turnstile-token',
       });
     });
 
-    expect(mockSubmit).toHaveBeenCalledWith(
-      JSON.stringify({
+    expect(mockFetch).toHaveBeenCalledWith('/api/auth/signup', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         email: 'test@example.com',
         password: 'password123',
         name: 'Test User',
         redirectTo: '/chat',
         turnstileToken: 'turnstile-token',
       }),
-      {
-        method: 'post',
-        action: '/api/auth/signup',
-        encType: 'application/json',
-      }
-    );
+      credentials: 'same-origin',
+      signal: undefined,
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/chat');
   });
 
   it('should handle signup without name', async () => {
-    const { useFetcher } = await import('react-router');
     const { useSignup } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
     const { result } = renderHook(() => useSignup());
 
-    act(() => {
-      result.current.signup('test@example.com', 'password123');
+    await act(async () => {
+      await result.current.signup('test@example.com', 'password123');
     });
 
-    expect(mockSubmit).toHaveBeenCalledWith(
-      JSON.stringify({
+    expect(mockFetch).toHaveBeenCalledWith('/api/auth/signup', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         email: 'test@example.com',
         password: 'password123',
         name: undefined,
         redirectTo: undefined,
         turnstileToken: undefined,
       }),
-      {
-        method: 'post',
-        action: '/api/auth/signup',
-        encType: 'application/json',
-      }
-    );
+      credentials: 'same-origin',
+      signal: undefined,
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/');
   });
 });

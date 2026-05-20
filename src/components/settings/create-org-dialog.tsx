@@ -26,7 +26,10 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { useSwitchOrg } from "@/hooks/use-auth-actions"
+import {
+  isOrgSwitchSupersededError,
+  useSwitchOrg,
+} from "@/hooks/use-auth-actions"
 import { createOrgFormSchema } from "@/lib/schemas"
 
 interface CreateOrgDialogProps {
@@ -77,11 +80,13 @@ export function CreateOrgDialog({
 
         toast.success("Organization created")
         onOpenChange(false)
-        // Switch to new org if requested - React Router will auto-revalidate
         if (switchToNewOrg) {
-          switchOrg(fetcher.data.orgId)
+          void switchOrg(fetcher.data.orgId).catch((error) => {
+            if (isOrgSwitchSupersededError(error)) return
+            console.error("Failed to switch organization:", error)
+            toast.error("Failed to switch organization")
+          })
         }
-        // React Router will auto-revalidate after the fetcher action
       } else if (fetcher.data.error) {
         toast.error(fetcher.data.error)
       }

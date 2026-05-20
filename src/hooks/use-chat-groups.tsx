@@ -59,6 +59,12 @@ export type ThreadSummaryPatch = Partial<
   updatedAt: number;
 };
 
+function useLatestRef<T>(value: T) {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
+}
+
 function getActiveGroupIdFromMatches(matches: ReturnType<typeof useMatches>) {
   for (const match of matches) {
     const data = match.data as ChatRouteData | undefined;
@@ -521,13 +527,13 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const statusSocketEnabled = chatDebugFlags.statusSocket;
   const statusRevalidateEnabled = chatDebugFlags.statusRevalidate;
   const markViewedEnabled = chatDebugFlags.markViewed;
-  const revalidateRef = useRef(revalidator.revalidate);
+  const revalidateRef = useLatestRef(revalidator.revalidate);
   const data = useRouteLoaderData("routes/_app") as
     | AppChatGroupsLoaderData
     | undefined;
   const matches = useMatches();
   const activeThreadId = getActiveThreadIdFromMatches(matches);
-  const activeThreadIdRef = useRef(activeThreadId);
+  const activeThreadIdRef = useLatestRef(activeThreadId);
   const [liveThreadStatuses, setLiveThreadStatuses] = useState<
     Map<string, LiveThreadMetadata>
   >(
@@ -539,9 +545,11 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const [localThreadSummaryPatches, setLocalThreadSummaryPatches] = useState<
     Map<string, ThreadSummaryPatch>
   >(() => new Map());
-  const liveThreadStatusesRef = useRef(liveThreadStatuses);
-  const localThreadStatusesRef = useRef(localThreadStatuses);
-  const hasPendingCompletionSummariesRef = useRef(false);
+  const liveThreadStatusesRef = useLatestRef(liveThreadStatuses);
+  const localThreadStatusesRef = useLatestRef(localThreadStatuses);
+  const hasPendingCompletionSummariesRef = useLatestRef(
+    hasPendingCompletionSummaries(data?.chatGroups),
+  );
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
   const resolvedThreadStatuses = useMemo(
     () => mergeLiveAndLocalThreadStatuses(liveThreadStatuses, localThreadStatuses),
@@ -556,28 +564,6 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       ),
     [resolvedThreadStatuses],
   );
-
-  useEffect(() => {
-    revalidateRef.current = revalidator.revalidate;
-  }, [revalidator.revalidate]);
-
-  useEffect(() => {
-    activeThreadIdRef.current = activeThreadId;
-  }, [activeThreadId]);
-
-  useEffect(() => {
-    liveThreadStatusesRef.current = liveThreadStatuses;
-  }, [liveThreadStatuses]);
-
-  useEffect(() => {
-    localThreadStatusesRef.current = localThreadStatuses;
-  }, [localThreadStatuses]);
-
-  useEffect(() => {
-    hasPendingCompletionSummariesRef.current = hasPendingCompletionSummaries(
-      data?.chatGroups,
-    );
-  }, [data?.chatGroups]);
 
   useEffect(() => {
     if (!activeThreadId) return;
