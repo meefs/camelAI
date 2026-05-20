@@ -7,14 +7,8 @@ import {
   useCallback,
   useMemo,
   useLayoutEffect,
-  memo,
 } from "react";
-import type {
-  CSSProperties,
-  Dispatch,
-  RefObject,
-  SetStateAction,
-} from "react";
+import type { CSSProperties } from "react";
 import {
   useNavigate,
   useFetcher,
@@ -25,9 +19,6 @@ import {
 } from "react-router";
 import {
   ArrowDown,
-  ChevronDown,
-  Globe,
-  Lock,
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
@@ -47,10 +38,7 @@ import { useAuthData } from "@/hooks/use-auth-data";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
 import {
-  Tooltip,
-  TooltipContent,
   TooltipProvider,
-  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PromptInput } from "@/components/prompt-input";
 import {
@@ -67,33 +55,20 @@ import {
 } from "@/components/connection-setup-prompt";
 import { OnboardingLoadingModal } from "@/components/onboarding-loading-modal";
 import type { Attachment } from "@/components/attachment-list";
-import { ChatApiErrorNotice } from "@/components/chat-api-error-notice";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  MessageBubble,
-  userFacingContentToString,
   isInterruptMessage,
-  parseSlashCommand,
   parseLocalCommandStdout,
 } from "@/components/message-bubble";
-import { LoadingDots } from "@/components/loading-dots";
-import { Skeleton } from "@/components/ui/skeleton";
-import { CompactingIndicator } from "@/components/compacting-indicator";
 import { WelcomeScreen } from "@/components/welcome-screen";
+import { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
+import { ChatMessagesView } from "@/components/chat-messages-view";
+import { ShareStatusButton } from "@/components/chat-share-status-button";
 import { isImageFile, type NotebookPreviewLoadState } from "@/components/chat-file-preview";
 import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
 import {
@@ -101,13 +76,11 @@ import {
   MobileViewSwitcher,
   PreviewPanelShell,
   normalizePreviewSessionState,
-  type TabRenderState,
 } from "@/components/chat-preview/chat-preview-shell";
 import { useConnectionSetupResponse } from "@/components/chat-preview/use-connection-setup-response";
-import type { OpenElsewhereKind } from "@/components/preview-panel/preview-toolbar";
+import { useChatPreviewRenderState } from "@/components/chat-preview/use-chat-preview-render-state";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
-import { buildSetAppPublicPayload } from "@/lib/app-visibility";
 import { buildSlugMap } from "@/lib/connection-mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
@@ -127,7 +100,6 @@ import {
 import { parseMessageContent } from "@/lib/chat-message-content";
 import {
   getAppUrl,
-  getVanityDomain,
   getIframeDomain,
   buildAppLabel,
 } from "@/lib/app-url";
@@ -168,6 +140,9 @@ import {
   appendUserUploadReferences,
   isUserUploadMountPath,
 } from "@/lib/chat-attachment-refs";
+
+export { ChatErrorNotice } from "@/components/chat-error-notice";
+export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
 interface ChatProps {
   threadId?: string;
@@ -319,20 +294,6 @@ function buildMessageContent(text: string, attachments: Attachment[]): string {
 }
 
 /**
- * True when the message was directly authored by the user — not a
- * system-generated message that happens to carry `role: 'user'`
- * (e.g. compact summaries, meta/skill-sheet messages, interrupts,
- * slash commands, local-command-stdout).
- */
-function isDirectUserMessage(msg: Message): boolean {
-  if (msg.role !== "user" || msg.isCompactSummary) return false;
-  if (isInterruptMessage(msg.content)) return false;
-  if (parseSlashCommand(msg.content)) return false;
-  if (parseLocalCommandStdout(msg.content)) return false;
-  return true;
-}
-
-/**
  * User-authored messages that should anchor the page-style spacer animation.
  * Slash commands count; compact summaries and synthetic stdout/interrupt rows do not.
  */
@@ -348,10 +309,6 @@ function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
 }
 
 const STREAM_MESSAGE_RENDER_THROTTLE_MS = 50;
-
-const MESSAGE_LAYOUT_CONTAINMENT_STYLE: CSSProperties = {
-  contain: "layout paint style",
-};
 
 const CHAT_SCROLL_CONTAINER_STYLE = {
   overflowAnchor: "none",
@@ -373,487 +330,6 @@ function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
   }
   return undefined;
 }
-
-const creditFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 2,
-});
-
-function formatCredits(cents: number): string {
-  return creditFormatter.format(Math.max(0, cents) / 100);
-}
-
-export function BillingCreditNotice({
-  status,
-  onOpenUsage,
-  onTopUp,
-  canTopUp = true,
-  className,
-}: {
-  status: BillingCreditStatus;
-  onOpenUsage: () => void;
-  onTopUp: () => void;
-  canTopUp?: boolean;
-  className?: string;
-}) {
-  const usedCreditsCents = Math.max(
-    0,
-    status.totalCreditLimitCents - status.availableCreditsCents,
-  );
-  const usedPercent = Math.min(100, Math.max(0, status.usedPercent));
-
-  if (status.isExhausted) {
-    const description = status.hasByokProvider
-      ? canTopUp
-        ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
-        : "This thread uses a hosted model that isn't covered by your API key. Ask an organization admin to top up credits, or switch to a model your key supports."
-      : canTopUp
-        ? "Top up to keep going, or use your own API key."
-        : "Ask an organization admin to top up credits, or use your own API key.";
-
-    return (
-      <div
-        className={cn(
-          "mx-auto w-full max-w-3xl px-4 pt-3 md:px-6",
-          className,
-        )}
-      >
-        <div className="rounded-lg bg-foreground px-4 py-3 text-background">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <p className="text-sm font-semibold">
-                You&apos;re out of hosted credits this month
-              </p>
-              <p className="mt-0.5 text-xs text-background/80">
-                {description}
-              </p>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="border-background/40 bg-transparent text-background hover:bg-background/10 hover:text-background"
-                onClick={onOpenUsage}
-              >
-                View usage
-              </Button>
-              {canTopUp ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  className="bg-background text-foreground hover:bg-background/90"
-                  onClick={onTopUp}
-                >
-                  Top up
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={cn("mx-auto w-full max-w-3xl px-4 pt-3 md:px-6", className)}
-    >
-      <div className="rounded-lg border bg-card px-4 py-3 text-card-foreground">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <p className="text-sm font-medium">
-              {formatCredits(usedCreditsCents)} of{" "}
-              {formatCredits(status.totalCreditLimitCents)} credits used this
-              month
-            </p>
-            {status.hasByokProvider ? (
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                This thread uses a hosted model that isn&apos;t covered by your
-                API key, so it&apos;s drawing from hosted credits.
-              </p>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onOpenUsage}
-            >
-              View usage
-            </Button>
-            {canTopUp ? (
-              <Button type="button" size="sm" onClick={onTopUp}>
-                Top up
-              </Button>
-            ) : null}
-          </div>
-        </div>
-        <Progress value={usedPercent} className="mt-2 h-2" />
-      </div>
-    </div>
-  );
-}
-
-export function ChatErrorNotice({
-  error,
-  onDismiss,
-}: {
-  error: ChatApiErrorPresentation;
-  onDismiss?: () => void;
-}) {
-  return <ChatApiErrorNotice presentation={error} onDismiss={onDismiss} />;
-}
-
-interface ShareStatusButtonProps {
-  threadId?: string;
-  scriptName: string;
-  isPublic: boolean;
-  isAdmin: boolean;
-  disabled?: boolean;
-  onStatusChange?: (isPublic: boolean) => void;
-}
-
-function ShareStatusButton({
-  threadId,
-  scriptName,
-  isPublic,
-  isAdmin,
-  disabled,
-  onStatusChange,
-}: ShareStatusButtonProps) {
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const pendingValueRef = useRef<boolean | null>(null);
-  const isPending = fetcher.state !== "idle";
-  const optimisticIsPublic =
-    isPending && fetcher.formData
-      ? fetcher.formData.get("isPublic") === "true"
-      : fetcher.data?.success && pendingValueRef.current !== null
-        ? pendingValueRef.current
-        : isPublic;
-
-  useEffect(() => {
-    if (fetcher.state !== "idle" || !fetcher.data) return;
-
-    if (fetcher.data.success && pendingValueRef.current !== null) {
-      onStatusChange?.(pendingValueRef.current);
-    } else if (fetcher.data.error) {
-      toast.error(fetcher.data.error);
-    }
-
-    pendingValueRef.current = null;
-  }, [fetcher.state, fetcher.data, onStatusChange]);
-
-  useEffect(() => {
-    pendingValueRef.current = null;
-  }, [scriptName, threadId]);
-
-  const handleChange = (value: string) => {
-    if (!isAdmin || disabled || isPending) return;
-    if (!scriptName) return;
-
-    const nextIsPublic = value === "true";
-    if (nextIsPublic === isPublic) return;
-
-    pendingValueRef.current = nextIsPublic;
-    fetcher.submit(
-      buildSetAppPublicPayload({
-        scriptName,
-        isPublic: nextIsPublic,
-        threadId,
-      }),
-      { method: "POST", action: "/apps" },
-    );
-  };
-
-  return (
-    <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={disabled || isPending}
-              className={cn(
-                "h-6 gap-1.5 rounded-md border px-2 text-xs font-medium",
-                optimisticIsPublic
-                  ? "border-primary/20 bg-primary/5 text-primary hover:bg-primary/10 dark:border-primary/30 dark:bg-primary/10 dark:text-primary dark:hover:bg-primary/20"
-                  : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-              )}
-            >
-              {optimisticIsPublic ? (
-                <Globe className="h-3.5 w-3.5" />
-              ) : (
-                <Lock className="h-3.5 w-3.5" />
-              )}
-              {optimisticIsPublic ? "Public" : "Private"}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent>Update visibility</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>Visibility</DropdownMenuLabel>
-        <DropdownMenuRadioGroup
-          value={optimisticIsPublic ? "true" : "false"}
-          onValueChange={handleChange}
-        >
-          <DropdownMenuRadioItem
-            value="false"
-            disabled={!isAdmin || disabled || isPending}
-            className="items-start"
-          >
-            <div className="flex flex-col gap-0.5">
-              <span className="font-medium">Private</span>
-              <span className="text-muted-foreground text-[10px]">
-                Only workspace members can view
-              </span>
-            </div>
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem
-            value="true"
-            disabled={!isAdmin || disabled || isPending}
-            className="items-start"
-          >
-            <div className="flex flex-col gap-0.5">
-              <span className="font-medium">Public</span>
-              <span className="text-muted-foreground text-[10px]">
-                Anyone with the link can view
-              </span>
-            </div>
-          </DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-interface ChatMessagesViewProps {
-  visibleMessages: Message[];
-  lastUserMessageId: string | null;
-  lastMessageId: string | null;
-  isAwaitingAssistant: boolean;
-  isLastMessageAssistantLike: boolean;
-  copyMessage: (messageId: string, content: string) => void;
-  copiedMessageId: string | null;
-  forkMessage?: (messageId: string, renderedMessageId?: string) => void;
-  forkingMessageId?: string | null;
-  assistantTurnActive: boolean;
-  activeAssistantMessageId: string | null;
-  skillSheetsByToolId: Map<string, string>;
-  error: ChatApiErrorPresentation | null;
-  setError: Dispatch<SetStateAction<ChatApiErrorPresentation | null>>;
-  llmProvider?: LlmProvider | null;
-  threadProvider: ChatHarness;
-  isCompacting: boolean;
-  compactingPriorMessageId: string | null;
-  isLoadingMessages: boolean;
-  showGlobalAssistantIndicator: boolean;
-  shouldRenderSpacer: boolean;
-  lastUserMessageRef: RefObject<HTMLDivElement | null>;
-  assistantMeasureRef: RefObject<HTMLDivElement | null>;
-  assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
-  assistantSpacerRef: RefObject<HTMLDivElement | null>;
-  messagesEndRef: RefObject<HTMLDivElement | null>;
-  mentionSlugMap?: Map<string, Integration>;
-}
-
-const ChatMessagesView = memo(function ChatMessagesView({
-  visibleMessages,
-  lastUserMessageId,
-  lastMessageId,
-  isAwaitingAssistant,
-  isLastMessageAssistantLike,
-  copyMessage,
-  copiedMessageId,
-  forkMessage,
-  forkingMessageId,
-  assistantTurnActive,
-  activeAssistantMessageId,
-  skillSheetsByToolId,
-  error,
-  setError,
-  llmProvider,
-  threadProvider,
-  isCompacting,
-  compactingPriorMessageId,
-  isLoadingMessages,
-  showGlobalAssistantIndicator,
-  shouldRenderSpacer,
-  lastUserMessageRef,
-  assistantMeasureRef,
-  assistantPendingMeasureRef,
-  assistantSpacerRef,
-  messagesEndRef,
-  mentionSlugMap,
-}: ChatMessagesViewProps) {
-  const messageGroups = useMemo(() => {
-    const groups: Array<{
-      key: string;
-      messages: Message[];
-      isAssistantTurn: boolean;
-      actionMessageId: string;
-      copyContent?: string;
-    }> = [];
-
-    for (let index = 0; index < visibleMessages.length;) {
-      const firstMessage = visibleMessages[index];
-      const isAssistantTurn = firstMessage.role === "assistant";
-      let endIndex = index + 1;
-
-      if (isAssistantTurn) {
-        while (
-          endIndex < visibleMessages.length &&
-          visibleMessages[endIndex].role === "assistant"
-        ) {
-          endIndex += 1;
-        }
-      }
-
-      const messages = visibleMessages.slice(index, endIndex);
-      const actionMessage = messages[messages.length - 1];
-      const copyContent = isAssistantTurn
-        ? [...messages]
-            .reverse()
-            .map((message) => userFacingContentToString(message.content))
-            .find(Boolean) ?? ""
-        : undefined;
-
-      groups.push({
-        key: `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}`,
-        messages,
-        isAssistantTurn,
-        actionMessageId: actionMessage.id,
-        copyContent,
-      });
-
-      index = endIndex;
-    }
-
-    return groups;
-  }, [visibleMessages]);
-
-  return (
-    <>
-      {/* Message loading skeletons (deferred data still resolving) */}
-      {isLoadingMessages && visibleMessages.length === 0 && (
-        <>
-          <div className="flex flex-col items-end gap-1 mt-6">
-            <Skeleton className="h-16 w-3/4 rounded-3xl" />
-          </div>
-          <div className="flex flex-col gap-2 mt-4">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-5/6" />
-            <Skeleton className="h-4 w-4/5" />
-            <Skeleton className="h-4 w-2/3" />
-          </div>
-          <div className="flex flex-col items-end gap-1 mt-6">
-            <Skeleton className="h-12 w-1/2 rounded-3xl" />
-          </div>
-          <div className="flex flex-col gap-2 mt-4">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-11/12" />
-            <Skeleton className="h-4 w-3/4" />
-          </div>
-        </>
-      )}
-
-      {messageGroups.map((messageGroup) => (
-        <div
-          key={messageGroup.key}
-          style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
-          className={messageGroup.isAssistantTurn ? "group/turn" : undefined}
-        >
-          {messageGroup.messages.map((msg) => {
-            const isLastUserMessage = msg.id === lastUserMessageId;
-            const isLastAssistantMessage =
-              !isAwaitingAssistant &&
-              isLastMessageAssistantLike &&
-              msg.id === lastMessageId;
-            const messageRef = isLastUserMessage
-              ? lastUserMessageRef
-              : isLastAssistantMessage
-                ? assistantMeasureRef
-                : undefined;
-            const isTurnActionMessage = msg.id === messageGroup.actionMessageId;
-
-            return (
-              <div
-                key={msg.id}
-                ref={messageRef}
-                data-message-id={msg.id}
-                style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
-                className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
-              >
-                <MessageBubble
-                  message={msg}
-                  onCopy={copyMessage}
-                  copiedId={copiedMessageId}
-                  onFork={forkMessage}
-                  forkingId={forkingMessageId}
-                  showStreamingIndicator={
-                    assistantTurnActive && msg.id === activeAssistantMessageId
-                  }
-                  suppressFinalizedState={
-                    isCompacting && msg.id === compactingPriorMessageId
-                  }
-                  showActionRow={!messageGroup.isAssistantTurn || isTurnActionMessage}
-                  actionCopyContent={
-                    messageGroup.isAssistantTurn && isTurnActionMessage
-                      ? messageGroup.copyContent
-                      : undefined
-                  }
-                  actionHoverClassName={
-                    messageGroup.isAssistantTurn
-                      ? "opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100 pointer-coarse:opacity-100"
-                      : undefined
-                  }
-                  skillSheets={skillSheetsByToolId}
-                  mentionSlugMap={mentionSlugMap}
-                  llmProvider={llmProvider}
-                  threadProvider={threadProvider}
-                />
-              </div>
-            );
-          })}
-        </div>
-      ))}
-
-      {/* Error display */}
-      {error ? (
-        <ChatErrorNotice error={error} onDismiss={() => setError(null)} />
-      ) : null}
-
-      {/* Compaction in-progress indicator */}
-      {isCompacting && (
-        <div ref={assistantPendingMeasureRef}>
-          <CompactingIndicator />
-        </div>
-      )}
-
-      {/* Loading indicator when assistant is running but no message shows its own streaming dots */}
-      {showGlobalAssistantIndicator && !isCompacting && (
-        <div ref={assistantPendingMeasureRef}>
-          <LoadingDots />
-        </div>
-      )}
-      {shouldRenderSpacer ? (
-        <div className="flex flex-col">
-          <div
-            ref={assistantSpacerRef}
-            aria-hidden="true"
-            className="pointer-events-none w-full shrink-0"
-          />
-          <div ref={messagesEndRef} />
-        </div>
-      ) : (
-        <div ref={messagesEndRef} />
-      )}
-    </>
-  );
-});
 
 export default function Chat({
   threadId,
@@ -4457,74 +3933,16 @@ type SendOptions = {
     });
   }, [loading, isStreaming, isCompacting, readOnly]);
 
-  const encodePathSegments = useCallback((path: string) => {
-    return path
-      .split("/")
-      .map((segment) => encodeURIComponent(segment))
-      .join("/");
-  }, []);
-
-  // Per-tab render state for all open tabs. Kept in the DOM simultaneously so
-  // switching between tabs never reloads iframes or file previews.
-  const tabRenderStates = useMemo((): TabRenderState[] => {
-    return previewTabs.map((tab) => {
-      const target = tab.target;
-      const tabId = tab.id;
-
-      if (target.kind === "app") {
-        const scriptName = target.scriptName;
-        const iframeHost = orgSlug
-          ? `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`
-          : `${scriptName}.${getIframeDomain(hostname)}`;
-        const vHost = orgSlug
-          ? `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`
-          : `${scriptName}.${getVanityDomain(hostname)}`;
-        return {
-          tabId,
-          target,
-          appPreviewUrl: `https://${iframeHost}`,
-          vanityHost: vHost,
-          iframeKey: tabIframeKeys[tabId] ?? 0,
-          isLoading: tabAppLoading[tabId] ?? false,
-          filePreviewUrl: "",
-          filePreviewOpenUrl: "",
-          previewFileName: "",
-          notebookViewMode: "report",
-          fileViewMode: "preview",
-          isNotebookPreview: false,
-        };
-      }
-
-      // File tab
-      const normalizedPath = target.path.replace(/^\/+/, "");
-      const encodedPath = encodePathSegments(normalizedPath);
-      const route =
-        target.source === "workspace"
-          ? `fs/content/${encodedPath}`
-          : `${target.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
-      const fileKey = tabFilePreviewKeys[tabId] ?? 0;
-      const filename =
-        target.filename ||
-        target.path.split("/").filter(Boolean).pop() ||
-        "file";
-      const isNotebook = filename.toLowerCase().endsWith(".ipynb");
-      return {
-        tabId,
-        target,
-        appPreviewUrl: "",
-        vanityHost: "",
-        iframeKey: 0,
-        isLoading: false,
-        filePreviewUrl: `/api/workspaces/${target.workspaceId}/${route}?v=${fileKey}`,
-        filePreviewOpenUrl: `/api/workspaces/${target.workspaceId}/${route}`,
-        previewFileName: filename,
-        notebookViewMode: tabNotebookViewModes[tabId] ?? "report",
-        fileViewMode: tabFileViewModes[tabId] ?? "preview",
-        isNotebookPreview: isNotebook,
-      };
-    });
-  }, [
+  const {
+    tabRenderStates,
+    previewDomains,
+    appPreviewVanityUrl,
+    filePreviewOpenUrl,
+    fileExternalOpenUrl,
+    openElsewhereKind,
+  } = useChatPreviewRenderState({
     previewTabs,
+    previewTarget,
     tabIframeKeys,
     tabAppLoading,
     tabFilePreviewKeys,
@@ -4532,51 +3950,8 @@ type SendOptions = {
     tabFileViewModes,
     hostname,
     orgSlug,
-    encodePathSegments,
-  ]);
-
-  const previewDomains = useMemo(() => {
-    if (previewTarget?.kind !== "app") {
-      return { iframeHost: "", vanityHost: "" };
-    }
-    const scriptName = previewTarget.scriptName;
-    if (orgSlug) {
-      return {
-        iframeHost: `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`,
-        vanityHost: `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`,
-      };
-    }
-    // Legacy format without org slug
-    return {
-      iframeHost: `${scriptName}.${getIframeDomain(hostname)}`,
-      vanityHost: `${scriptName}.${getVanityDomain(hostname)}`,
-    };
-  }, [previewTarget, hostname, orgSlug]);
-  const appPreviewVanityUrl = previewDomains.vanityHost
-    ? `https://${previewDomains.vanityHost}`
-    : "";
-
-  const filePreviewOpenUrl = useMemo(() => {
-    if (previewTarget?.kind !== "file") return "";
-    const normalizedPath = previewTarget.path.replace(/^\/+/, "");
-    const encodedPath = encodePathSegments(normalizedPath);
-    const route =
-      previewTarget.source === "workspace"
-        ? `fs/content/${encodedPath}`
-        : `${previewTarget.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
-    return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
-  }, [previewTarget, encodePathSegments]);
-
-  const fileExternalOpenUrl = useMemo(() => {
-    if (previewTarget?.kind !== "file") return "";
-    if (previewTarget.source !== "workspace") return "";
-    const query = new URLSearchParams();
-    query.set("file", previewTarget.path);
-    if (readOnly) {
-      query.set("adminReadonly", "1");
-    }
-    return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
-  }, [previewTarget, readOnly]);
+    readOnly,
+  });
 
   const handlePreviewRefresh = useCallback(() => {
     if (!previewTarget) return;
@@ -4605,12 +3980,6 @@ type SendOptions = {
   );
   const isAdmin =
     currentMembership?.role === "owner" || currentMembership?.role === "admin";
-  const openElsewhereKind: OpenElsewhereKind | null =
-    previewTarget?.kind === "app"
-      ? "app"
-      : previewTarget?.kind === "file" && previewTarget.source === "workspace"
-        ? "computer"
-        : null;
   const previewShareButton = useMemo(() => {
     if (readOnly) return undefined;
     if (previewTarget?.kind !== "app") return undefined;

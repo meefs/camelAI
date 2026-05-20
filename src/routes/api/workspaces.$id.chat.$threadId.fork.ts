@@ -4,7 +4,7 @@ import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import * as chatDO from '@/lib/chat-do.server';
 import { addThreadToExistingGroup } from '@/lib/chat-groups.server';
-import type { ChatThreadPiCoreForkResult } from '../../../workers/main/src/durable-objects';
+import type { ChatThreadPiCoreForkResult } from '../../../workers/main/src/chat-thread-do';
 
 function forkThreadTitle(title: string | null | undefined): string {
   const trimmed = title?.trim();

@@ -1,7 +1,7 @@
 import { EmailMessage } from "cloudflare:email";
 import PostalMime from "postal-mime";
 import type { Env } from "./types.js";
-import type { ExternalTurnResult } from "./durable-objects.js";
+import type { ExternalTurnResult } from "./chat-thread-do.js";
 import { runExternalMessageTurn } from "./helpers/external-turn.js";
 import { getOrgStub, getUserStub, getWorkspaceStub } from "./helpers/stubs.js";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths.js";

@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import type {
   Agent as PiCoreAgent,
   AgentEvent,
@@ -29,8 +29,8 @@ import {
   isPlaceholderThreadTitle,
 } from '../../../src/lib/thread-title';
 import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
-import type { IntegrationCategory, LlmModel } from '../../../src/types';
-import { decryptCredentials, encryptCredentials } from "../../../src/lib/integration-crypto";
+import type { LlmModel } from '../../../src/types';
+import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_LLM_MODEL,
@@ -39,33 +39,8 @@ import {
 } from "../../../src/lib/llm-provider-config";
 import { isOrgBanned } from "./ban-list";
 import { recordWorkspaceThreadStreaming } from "./thread-status";
-import {
-  getAllIntegrations,
-  getIntegrationsByCategory,
-  getIntegrationDefinition,
-  shouldStoreIntegrationCredentials,
-  validateConfig,
-  validateCredentials,
-} from "../../../src/lib/integration-registry";
-import {
-  createOrRefreshCustomHostname,
-  deleteCustomHostname,
-  findCustomHostnameByHostname,
-  getCustomHostnameStatus,
-} from "./cf-api-proxy";
 import { createSignedToken } from "./signed-tokens";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
-import {
-  buildCustomDomainDnsCheck,
-  getCustomHostnameDnsTarget,
-  type CnameLookupResult,
-  type CustomDomainDnsCheck,
-} from "../../../src/lib/custom-domain-dns";
-import {
-  getAppCustomDomainDiagnosticState,
-  shouldRefreshAppCustomDomainState,
-  shouldRetryAppCustomDomainProvisioning,
-} from "../../../src/lib/custom-domain-state";
 import {
   findConnectionMethodEntry,
   getConnection,
@@ -93,6 +68,38 @@ import {
   recordErrorEvent,
   recordObservabilityEvent,
 } from "./observability";
+import {
+  BrowserPromptCoordinator,
+  type ConnectionSetupResponse,
+} from "./chat-thread-browser-prompts";
+import {
+  applyContextUsageSdkEvent,
+  resolveContextUsageForInit,
+  type LastMessageStartUsage,
+} from "./chat-context-usage";
+import { CodeModeWebSearch } from "./code-mode-web-search";
+import { codeModeWorkerModule } from "./code-mode-runner";
+import { CodeModeCustomDomains } from "./code-mode-custom-domains";
+import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
+import { CodeModeIntegrations } from "./code-mode-integrations";
+import type {
+  DynamicIntegrationSchema,
+} from "../../../src/lib/integration-registry";
+
+export type { ConnectionSetupResponse } from "./chat-thread-browser-prompts";
+export {
+  applyContextUsageSdkEvent,
+  extractContextWindowByModel,
+  resolveContextUsageForInit,
+  shallowEqualNumberMaps,
+} from "./chat-context-usage";
+export type {
+  ContextUsageSdkEvent,
+  ContextUsageTrackingState,
+  ContextUsageTrackingUpdate,
+  LastMessageStartUsage,
+} from "./chat-context-usage";
+export { prepareCodeModeUserCode } from "./code-mode-runner";
 
 // Pi lazy-loads its Bedrock provider through the AWS SDK, which is brittle in
 // Cloudflare Workers. Register our Worker-native Bedrock adapter instead.
@@ -112,53 +119,6 @@ export type PreviewTarget =
       filename?: string;
       contentType?: string;
     };
-
-// Dynamic field for custom integrations (matches src/lib/integration-registry.ts)
-export interface DynamicField {
-  name: string;
-  label: string;
-  type: "password" | "text" | "url" | "number";
-  required: boolean;
-  placeholder?: string;
-  description?: string;
-}
-
-// Dynamic schema for custom "other" integrations
-export interface DynamicIntegrationSchema {
-  displayName: string;
-  description?: string;
-  instructions?: string;
-  fields: DynamicField[];
-}
-
-// Connection setup response from user
-export interface ConnectionSetupResponse {
-  requestId: string;
-  cancelled: boolean;
-  integration?: {
-    type: string;
-    name: string;
-    config: Record<string, unknown>;
-    credentials: Record<string, unknown>;
-  };
-}
-
-export interface Thread {
-  id: string;
-  title: string;
-  model: LlmModel;
-  created_by: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface Message {
-  id: string;
-  thread_id: string;
-  role: "user" | "assistant";
-  content: string;
-  created_at: number;
-}
 
 type PiBillingSource = "hosted" | "byok";
 
@@ -261,15 +221,6 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   EXA_BASE_URL?: string;
   WEB_PROVIDER_ORDER?: string;
   CHIRIDION_WEB_PROVIDER_ORDER?: string;
-}
-
-interface PendingConnectionSetupPromptInfo {
-  createdAt: number;
-  integrationType: string;
-  suggestedName?: string;
-  message?: string;
-  instructions?: string;
-  dynamicSchema?: DynamicIntegrationSchema;
 }
 
 export interface ChatContextState {
@@ -394,43 +345,12 @@ function sanitizePiProviderMessage(message: AgentMessage): AgentMessage {
   return { ...record, content } as unknown as AgentMessage;
 }
 
-interface PendingQuestionInfo {
-  questionId: string;
-  toolUseId?: string;
-  questions: unknown[];
-}
-
-interface NormalizedAskQuestionOption {
-  label: string;
-  description: string;
-}
-
-interface NormalizedAskQuestion {
-  question: string;
-  header: string;
-  options: NormalizedAskQuestionOption[];
-  multiSelect: boolean;
-}
-
 type NormalizedTodoStatus = "pending" | "in_progress" | "completed";
 
 interface NormalizedTodoItem {
   content: string;
   status: NormalizedTodoStatus;
   activeForm: string;
-}
-
-interface PendingQuestionWaiter {
-  resolve: (answers: Record<string, unknown>) => void;
-  reject: (error: Error) => void;
-  timeoutId: ReturnType<typeof setTimeout>;
-}
-
-interface PendingConnectionSetupWaiter {
-  resolve: (response: ConnectionSetupResponse) => void;
-  reject: (error: Error) => void;
-  timeoutId: ReturnType<typeof setTimeout>;
-  info: PendingConnectionSetupPromptInfo;
 }
 
 interface ChatClientInitMessage {
@@ -533,24 +453,25 @@ interface ConnectionsServiceProps {
 interface CodeModeToolDefinition {
   name: string;
   description: string;
-  parameters?: unknown;
+  parameters: TSchema;
 }
 
-type WebProvider = "firecrawl" | "parallel" | "exa";
-
-interface WebResult {
-  title?: string;
-  url?: string;
-  publishedDate?: string;
-  author?: string;
-  snippet?: string;
-  text?: string;
+interface CodeModeToolRegistration extends CodeModeToolDefinition {
+  piPassthrough: boolean;
 }
 
-interface WebProviderResult {
-  provider: WebProvider;
-  results: WebResult[];
-  costUSD: number;
+type CodeModeToolCallHandler = (
+  binding: CodeModeToolsBinding,
+  args: Record<string, unknown>,
+  name: string,
+) => Promise<unknown> | unknown;
+
+interface LegacyParsedChatMessageForPi {
+  id?: unknown;
+  role?: unknown;
+  content?: unknown;
+  created_at?: unknown;
+  forkEntryId?: unknown;
 }
 
 const CODE_MODE_COMPATIBILITY_DATE = "2026-05-11";
@@ -558,9 +479,6 @@ const CODE_MODE_DEFAULT_TIMEOUT_MS = 60_000;
 const CODE_MODE_MAX_TIMEOUT_MS = 120_000;
 const CODE_MODE_DEFAULT_MAX_OUTPUT_CHARACTERS = 60_000;
 const CODE_MODE_MAX_OUTPUT_CHARACTERS = 200_000;
-const WEB_PROVIDER_DEFAULT_ORDER: WebProvider[] = ["firecrawl", "parallel", "exa"];
-const WEB_PROVIDER_ROUND_ROBIN_KEY = "code-mode:web-provider:index";
-const WEB_PROVIDER_TIMEOUT_MS = 20_000;
 const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   // This tool waits for human input and can outlive js_exec's short sandbox
   // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
@@ -577,67 +495,6 @@ function truncateCodeModeText(value: unknown, maxCharacters: number): string {
   const text = String(value ?? "");
   if (text.length <= maxCharacters) return text;
   return `${text.slice(0, maxCharacters)}\n\n[Truncated: ${maxCharacters} of ${text.length} characters]`;
-}
-
-function normalizeCodeModeArgs(args: unknown): Record<string, unknown> {
-  if (args == null) return {};
-  if (typeof args !== "object" || Array.isArray(args)) {
-    throw new Error("tool arguments must be an object");
-  }
-  return args as Record<string, unknown>;
-}
-
-function normalizeAskQuestionOption(value: unknown): NormalizedAskQuestionOption | null {
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const label = String(value).trim();
-    return label ? { label, description: "" } : null;
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const rawLabel = record.label ?? record.value ?? record.text ?? record.name;
-  const label = typeof rawLabel === "string" || typeof rawLabel === "number" || typeof rawLabel === "boolean"
-    ? String(rawLabel).trim()
-    : "";
-  if (!label) return null;
-  const description = typeof record.description === "string" ? record.description.trim() : "";
-  return { label, description };
-}
-
-function normalizeAskQuestion(value: unknown): NormalizedAskQuestion | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const question = typeof record.question === "string" && record.question.trim()
-    ? record.question.trim()
-    : typeof record.prompt === "string" && record.prompt.trim()
-      ? record.prompt.trim()
-      : "";
-  if (!question) return null;
-  const header = typeof record.header === "string" && record.header.trim()
-    ? record.header.trim()
-    : typeof record.label === "string" && record.label.trim()
-      ? record.label.trim()
-      : "";
-  const options = Array.isArray(record.options)
-    ? record.options
-        .map(normalizeAskQuestionOption)
-        .filter((option): option is NormalizedAskQuestionOption => option !== null)
-    : [];
-  return {
-    question,
-    header,
-    options,
-    multiSelect: record.multiSelect === true || record.multi_select === true,
-  };
-}
-
-function normalizeAskQuestions(values: unknown[]): NormalizedAskQuestion[] {
-  return values
-    .map(normalizeAskQuestion)
-    .filter((question): question is NormalizedAskQuestion => question !== null);
 }
 
 function normalizeTodoStatus(value: unknown): NormalizedTodoStatus {
@@ -718,605 +575,377 @@ function normalizeTodoItems(values: unknown[]): NormalizedTodoItem[] {
     .filter((todo): todo is NormalizedTodoItem => todo !== null);
 }
 
-function stringParam(params: Record<string, unknown>, key: string): string {
-  const value = params[key];
-  return typeof value === "string" ? value.trim() : "";
-}
+const EMPTY_PARAMETERS = Type.Object({});
+const CONNECTION_QUERY_PARAMETERS = Type.Object({
+  query: Type.Union([
+    Type.String(),
+    Type.Object({}, { additionalProperties: true }),
+  ]),
+});
 
-function boolParam(params: Record<string, unknown>, key: string): boolean {
-  return params[key] === true;
-}
-
-function defaultString(value: string, fallback: string): string {
-  return value.trim() ? value : fallback;
-}
-
-function contentString(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    return value.map(contentString).map((text) => text.trim()).filter(Boolean).join("\n\n");
-  }
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function webFirstString(values: Record<string, unknown> | undefined, ...keys: string[]): string {
-  if (!values) return "";
-  for (const key of keys) {
-    const text = contentString(values[key]).trim();
-    if (text) return text;
-  }
-  return "";
-}
-
-function firstContent(values: Record<string, unknown>, ...keys: string[]): string {
-  return webFirstString(values, ...keys);
-}
-
-function webNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number.parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function webPayloadMessage(payload: Record<string, unknown>): string {
-  const error = payload.error;
-  if (typeof error === "string" && error.trim()) return error.trim();
-  if (error && typeof error === "object" && !Array.isArray(error)) {
-    const message = (error as Record<string, unknown>).message;
-    if (typeof message === "string" && message.trim()) return message.trim();
-  }
-  const message = payload.message;
-  if (typeof message === "string" && message.trim()) return message.trim();
-  return "unknown error";
-}
-
-function normalizeWebDomains(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  for (const entry of value) {
-    let domain = String(entry ?? "").trim();
-    if (!domain) continue;
-    if (!domain.includes("://")) domain = `https://${domain}`;
-    try {
-      const parsed = new URL(domain);
-      if (parsed.hostname) domain = parsed.hostname;
-    } catch {
-      // Keep the caller-provided value and normalize below.
-    }
-    domain = domain.toLowerCase().replace(/^\.+|\.+$/g, "");
-    if (domain) out.push(domain);
-    if (out.length >= 20) break;
-  }
-  return out;
-}
-
-function anyDomainMatches(hostname: string, domains: string[]): boolean {
-  return domains.some((domain) => {
-    const normalized = domain.toLowerCase().replace(/^\.+|\.+$/g, "");
-    return hostname === normalized || hostname.endsWith(`.${normalized}`);
-  });
-}
-
-function filterWebDomains(results: WebResult[], includeDomains: string[], excludeDomains: string[]): WebResult[] {
-  return results.filter((result) => {
-    if (!result.url) return false;
-    let hostname = "";
-    try {
-      hostname = new URL(result.url).hostname.toLowerCase();
-    } catch {
-      return false;
-    }
-    if (includeDomains.length > 0 && !anyDomainMatches(hostname, includeDomains)) return false;
-    if (anyDomainMatches(hostname, excludeDomains)) return false;
-    return true;
-  });
-}
-
-function dateOnly(value: unknown): string {
-  const match = String(value ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return match ? match[0] : "";
-}
-
-function firecrawlDate(date: string): string {
-  const parts = date.split("-");
-  return parts.length === 3 ? `${parts[1]}/${parts[2]}/${parts[0]}` : date;
-}
-
-function firecrawlTimeFilter(startValue: unknown, endValue: unknown): string {
-  const start = dateOnly(startValue);
-  const end = dateOnly(endValue);
-  if (!start && !end) return "";
-  const parts = ["cdr:1"];
-  if (start) parts.push(`cd_min:${firecrawlDate(start)}`);
-  if (end) parts.push(`cd_max:${firecrawlDate(end)}`);
-  return parts.join(",");
-}
-
-function firecrawlCategories(category: unknown): string[] | undefined {
-  switch (String(category ?? "").trim()) {
-    case "github":
-      return ["github"];
-    case "pdf":
-      return ["pdf"];
-    case "research paper":
-      return ["research"];
-    default:
-      return undefined;
-  }
-}
-
-function firecrawlSources(category: unknown): string[] {
-  return String(category ?? "").trim() === "news" ? ["web", "news"] : ["web"];
-}
-
-function firecrawlQuery(query: string, includeDomains: string[], excludeDomains: string[], category: unknown): string {
-  const parts = [query];
-  if (String(category ?? "").trim() === "pdf") parts.push("filetype:pdf");
-  if (includeDomains.length === 1) parts.push(`site:${includeDomains[0]}`);
-  for (const domain of excludeDomains) parts.push(`-site:${domain}`);
-  return parts.join(" ");
-}
-
-function parallelMode(value: unknown): string {
-  return String(value ?? "").trim() === "fast" ? "basic" : "advanced";
-}
-
-function parallelUsageCostUSD(payload: Record<string, unknown>): number {
-  if (!Array.isArray(payload.usage)) return 0;
-  let total = 0;
-  for (const entry of payload.usage) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const item = entry as Record<string, unknown>;
-    const count = webNumber(item.count) ?? 1;
-    switch (String(item.name ?? "").trim()) {
-      case "sku_search":
-        total += count * 0.005;
-        break;
-      case "sku_extract_excerpts":
-      case "sku_extract_full_content":
-        total += count * 0.001;
-        break;
-    }
-  }
-  return total;
-}
-
-function exaCostUSD(payload: Record<string, unknown>): number {
-  const cost = payload.costDollars;
-  if (!cost || typeof cost !== "object" || Array.isArray(cost)) return 0;
-  return webNumber((cost as Record<string, unknown>).total) ?? 0;
-}
-
-function normalizeFirecrawlResult(entry: unknown, includeContent: boolean): WebResult | null {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-  const item = entry as Record<string, unknown>;
-  const metadata = item.metadata && typeof item.metadata === "object" && !Array.isArray(item.metadata)
-    ? item.metadata as Record<string, unknown>
-    : undefined;
-  const targetURL = webFirstString(item, "url", "sourceURL") || webFirstString(metadata, "sourceURL", "url");
-  if (!targetURL) return null;
-  const result: WebResult = {
-    title: defaultString(webFirstString(item, "title"), webFirstString(metadata, "title", "ogTitle")),
-    url: targetURL,
-    publishedDate: defaultString(
-      webFirstString(item, "publishedDate", "published_date", "date"),
-      webFirstString(metadata, "publishedDate", "publishedTime", "date"),
-    ),
-    author: defaultString(webFirstString(item, "author"), webFirstString(metadata, "author")),
-    snippet: firstContent(item, "description", "snippet"),
+function codeModeTool(
+  name: string,
+  description: string,
+  parameters: TSchema = EMPTY_PARAMETERS,
+  options: { piPassthrough?: boolean } = {},
+): CodeModeToolRegistration {
+  return {
+    name,
+    description,
+    parameters,
+    piPassthrough: options.piPassthrough ?? false,
   };
-  if (includeContent) {
-    result.text = firstContent(item, "markdown", "text", "summary", "content") || result.snippet;
-  }
-  return result;
 }
 
-function firecrawlEntries(payload: Record<string, unknown>): unknown[] {
-  if (Array.isArray(payload.data)) return payload.data;
-  if (!payload.data || typeof payload.data !== "object" || Array.isArray(payload.data)) return [];
-  const data = payload.data as Record<string, unknown>;
-  return ["web", "news", "images"].flatMap((key) => Array.isArray(data[key]) ? data[key] as unknown[] : []);
+function codeModePassthroughTool(
+  name: string,
+  description: string,
+  parameters: TSchema = EMPTY_PARAMETERS,
+): CodeModeToolRegistration {
+  return codeModeTool(name, description, parameters, { piPassthrough: true });
 }
 
-function normalizeParallelResults(value: unknown, includeContent: boolean): WebResult[] {
-  if (!Array.isArray(value)) return [];
-  const results: WebResult[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const item = entry as Record<string, unknown>;
-    const targetURL = webFirstString(item, "url");
-    if (!targetURL) continue;
-    results.push({
-      title: webFirstString(item, "title"),
-      url: targetURL,
-      publishedDate: webFirstString(item, "publish_date", "publishedDate", "published_date"),
-      snippet: firstContent(item, "description", "snippet", "excerpts"),
-      text: includeContent ? defaultString(contentString(item.full_content), contentString(item.excerpts)) : "",
-    });
-  }
-  return results;
+function codeModeAlias(
+  alias: string,
+  target: CodeModeToolRegistration,
+  description: string,
+): CodeModeToolRegistration {
+  return {
+    name: alias,
+    description,
+    parameters: target.parameters,
+    piPassthrough: target.piPassthrough,
+  };
 }
 
-function normalizeExaResults(value: unknown, includeContent: boolean): WebResult[] {
-  if (!Array.isArray(value)) return [];
-  const results: WebResult[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const item = entry as Record<string, unknown>;
-    const targetURL = webFirstString(item, "url");
-    if (!targetURL) continue;
-    results.push({
-      title: webFirstString(item, "title"),
-      url: targetURL,
-      publishedDate: webFirstString(item, "publishedDate"),
-      author: webFirstString(item, "author"),
-      snippet: firstContent(item, "snippet", "description", "highlights"),
-      text: includeContent ? firstContent(item, "text", "summary", "highlights") : "",
-    });
-  }
-  return results;
-}
-
-function truncateWebResultText(text: unknown, maxCharacters: number): string {
-  return truncateCodeModeText(String(text ?? "").trim(), maxCharacters).trim();
-}
-
-function truncateWebResults(results: WebResult[], limit: number, maxCharacters: number): WebResult[] {
-  return results.slice(0, Math.max(0, limit)).map((result) => ({
-    ...result,
-    snippet: truncateWebResultText(result.snippet, maxCharacters),
-    text: truncateWebResultText(result.text, maxCharacters),
-  }));
-}
-
-function formatWebResults(results: WebResult[], maxCharacters: number, empty: string): string {
-  if (results.length === 0) return empty;
-  return results.map((result, index) => {
-    const lines = [`${index + 1}. ${result.title?.trim() || "Untitled"}`];
-    if (result.url) lines.push(`URL: ${result.url}`);
-    if (result.publishedDate) lines.push(`Published: ${result.publishedDate}`);
-    if (result.author) lines.push(`Author: ${result.author}`);
-    const snippet = truncateWebResultText(result.snippet, maxCharacters);
-    if (snippet) lines.push(`Snippet: ${snippet}`);
-    const text = truncateWebResultText(result.text, maxCharacters);
-    if (text) lines.push("", text);
-    return lines.join("\n");
-  }).join("\n\n");
-}
-
-function isIntegrationCategory(value: string): value is IntegrationCategory {
-  return value === "databases" ||
-    value === "saas" ||
-    value === "ai_services" ||
-    value === "cloud_providers" ||
-    value === "communication";
-}
-
-const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = [
-  {
-    name: "bash",
-    description: "Run a shell command inside the sandbox container. Arguments: { command, cwd?, timeout? }.",
-  },
-  {
-    name: "read",
-    description: "Read a UTF-8 file from the sandbox workspace. Arguments: { path }.",
-  },
-  {
-    name: "write",
-    description: "Write a UTF-8 file into the sandbox workspace. Arguments: { path, content }.",
-  },
-  {
-    name: "ls",
-    description: "List files in the sandbox workspace. Arguments: { path?, recursive?, includeHidden? }.",
-  },
-  {
-    name: "edit",
-    description: PI_CONTAINER_TOOL_DEFINITIONS.edit.description,
-  },
-  {
-    name: "grep",
-    description: PI_CONTAINER_TOOL_DEFINITIONS.grep.description,
-  },
-  {
-    name: "find",
-    description: PI_CONTAINER_TOOL_DEFINITIONS.find.description,
-  },
-  {
-    name: "AskUserQuestion",
-    description: "Ask the user one or more multiple-choice questions in the chat UI and wait for answers. Arguments: { questions }.",
-  },
-  {
-    name: "ask_user_question",
-    description: "Alias for AskUserQuestion. Arguments: { questions }.",
-  },
-  {
-    name: "TodoWrite",
-    description: "Update the visible task list in the chat UI. Arguments: { todos: [{ content, status, activeForm? }] }. Status is pending, in_progress, or completed.",
-  },
-  {
-    name: "set_preview",
-    description: "Set the active preview to an app or file. Arguments: { script_name?, app_name?, is_public?, path?, content_type? }.",
-  },
-  {
-    name: "list_apps",
-    description: "List deployed apps for the current workspace.",
-  },
-  {
-    name: "set_app_visibility",
-    description: "Change a deployed app visibility. Arguments: { script_name, is_public }.",
-  },
-  {
-    name: "get_latest_logs",
-    description: "Get recent logs for a deployed app. Arguments: { script_name, limit?, since_ms? }.",
-  },
-  {
-    name: "list_scheduled_prompts",
-    description: "List scheduled prompts for the current workspace.",
-  },
-  {
-    name: "create_scheduled_prompt",
-    description: "Create a scheduled prompt. Arguments: { name, prompt, cron_expression, enabled? }.",
-  },
-  {
-    name: "update_scheduled_prompt",
-    description: "Update a scheduled prompt. Arguments: { prompt_id, name?, prompt?, cron_expression?, enabled? }.",
-  },
-  {
-    name: "delete_scheduled_prompt",
-    description: "Delete a scheduled prompt. Arguments: { prompt_id }.",
-  },
-  {
-    name: "run_scheduled_prompt_now",
-    description: "Trigger a scheduled prompt immediately. Arguments: { prompt_id }.",
-  },
-  {
-    name: "list_integrations",
-    description: "List configured integrations for the current workspace. Arguments: { category? }.",
-  },
-  {
-    name: "list_integration_types",
-    description: "List available integration types. Arguments: { category? }.",
-  },
-  {
-    name: "create_integration",
-    description: "Create an integration. Arguments: { integration_type, name, config?, credentials? }.",
-  },
-  {
-    name: "prompt_connection_setup",
-    description: "Prompt the user to set up a connection in the chat UI and wait for completion. Use this as a top-level tool, not from js_exec. Arguments: { integration_type, suggested_name?, message?, display_name?, description?, instructions?, fields? }.",
-  },
-  {
-    name: "get_custom_domain",
-    description: "Get custom domain diagnostics for deployed apps.",
-  },
-  {
-    name: "set_custom_domain",
-    description: "Set an exact custom hostname for an app. Arguments: { app_name, hostname }.",
-  },
-  {
-    name: "remove_custom_domain",
-    description: "Remove a custom hostname from an app. Arguments: { app_name }.",
-  },
-  {
-    name: "retry_custom_domain_hostnames",
-    description: "Retry hostname provisioning for configured app custom domains.",
-  },
-  {
-    name: "WebSearch",
-    description: "Search the web. Arguments: { query, numResults?, maxCharacters? }.",
-  },
-  {
-    name: "web_search",
-    description: "Alias for WebSearch. Arguments: { query, numResults?, maxCharacters? }.",
-  },
-  {
-    name: "WebFetch",
-    description: "Fetch text from a URL. Arguments: { url, maxCharacters? }.",
-  },
-  {
-    name: "web_fetch",
-    description: "Alias for WebFetch. Arguments: { url, maxCharacters? }.",
-  },
-  {
-    name: "Agent",
-    description: "Run a focused subagent in the same workspace. Arguments: { prompt, description?, agent?, model? }.",
-  },
-  {
-    name: "agent",
-    description: "Alias for Agent. Arguments: { prompt, description?, agent?, model? }.",
-  },
-  {
-    name: "Explore",
-    description: "Run a focused read-oriented exploration subagent in the same workspace. Arguments: { prompt? or query?, description?, agent?, model? }.",
-  },
-  {
-    name: "explore",
-    description: "Alias for Explore. Arguments: { prompt? or query?, description?, agent?, model? }.",
-  },
-  {
-    name: "connections_list",
-    description: "List workspace connections. Prefer calling this from js_exec as await env.CONNECTIONS.list().",
-  },
-  {
-    name: "connections_get",
-    description: "Get one workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.get(connection). Arguments: { connection }.",
-  },
-  {
-    name: "connections_tools",
-    description: "List MCP-backed tools for a workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.tools(connection). Arguments: { connection }.",
-  },
-  {
-    name: "connections_methods",
-    description: "List workspace connections and their method aliases, tool names, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
-  },
-  {
-    name: "connections_find",
-    description: "Find one workspace connection method catalog entry by alias, id, type, or name. Prefer calling this from js_exec as await env.CONNECTIONS.find(query). Arguments: { query }.",
-  },
-  {
-    name: "connections_test",
-    description: "Run a quick workspace connection smoke test. Prefer calling this from js_exec as await env.CONNECTIONS.test(query). Arguments: { query }.",
-  },
-];
-
-function codeModePiToolParameters(name: string) {
-  switch (name) {
-    case "bash":
-      return PI_CONTAINER_TOOL_DEFINITIONS.bash.parameters;
-    case "read":
-      return PI_CONTAINER_TOOL_DEFINITIONS.read.parameters;
-    case "write":
-      return PI_CONTAINER_TOOL_DEFINITIONS.write.parameters;
-    case "ls":
-      return PI_CONTAINER_TOOL_DEFINITIONS.ls.parameters;
-    case "edit":
-      return PI_CONTAINER_TOOL_DEFINITIONS.edit.parameters;
-    case "grep":
-      return PI_CONTAINER_TOOL_DEFINITIONS.grep.parameters;
-    case "find":
-      return PI_CONTAINER_TOOL_DEFINITIONS.find.parameters;
-    case "WebSearch":
-    case "web_search":
-      return Type.Object({
-        query: Type.String(),
-        numResults: Type.Optional(Type.Number()),
-        maxCharacters: Type.Optional(Type.Number()),
-        includeDomains: Type.Optional(Type.Array(Type.String())),
-        excludeDomains: Type.Optional(Type.Array(Type.String())),
-        startPublishedDate: Type.Optional(Type.String()),
-        endPublishedDate: Type.Optional(Type.String()),
-        searchType: Type.Optional(Type.String()),
-        category: Type.Optional(Type.String()),
-      });
-    case "WebFetch":
-    case "web_fetch":
-      return Type.Object({
-        url: Type.String(),
-        maxCharacters: Type.Optional(Type.Number()),
-        query: Type.Optional(Type.String()),
-        fresh: Type.Optional(Type.Boolean()),
-        content: Type.Optional(Type.String()),
-      });
-    case "AskUserQuestion":
-    case "ask_user_question":
-      return Type.Object({
-        questions: Type.Array(Type.Object({}, { additionalProperties: true })),
-      });
-    case "TodoWrite":
-      return Type.Object({
-        todos: Type.Array(
-          Type.Object({
-            content: Type.Optional(Type.String()),
-            step: Type.Optional(Type.String()),
-            title: Type.Optional(Type.String()),
-            task: Type.Optional(Type.String()),
-            status: Type.Optional(Type.String()),
-            activeForm: Type.Optional(Type.String()),
-            active_form: Type.Optional(Type.String()),
-          }, { additionalProperties: true }),
-        ),
-      });
-    case "set_preview":
-      return Type.Object({
-        script_name: Type.Optional(Type.String()),
-        app_name: Type.Optional(Type.String()),
-        is_public: Type.Optional(Type.Boolean()),
-        path: Type.Optional(Type.String()),
-        content_type: Type.Optional(Type.String()),
-      });
-    case "get_latest_logs":
-      return Type.Object({
-        script_name: Type.String(),
-        limit: Type.Optional(Type.Number()),
-        since_ms: Type.Optional(Type.Number()),
-      });
-    case "set_app_visibility":
-      return Type.Object({
-        script_name: Type.String(),
-        is_public: Type.Boolean(),
-      });
-    case "create_scheduled_prompt":
-      return Type.Object({
-        name: Type.String(),
-        prompt: Type.String(),
-        cron_expression: Type.String(),
-        enabled: Type.Optional(Type.Boolean()),
-      });
-    case "update_scheduled_prompt":
-      return Type.Object({
-        prompt_id: Type.String(),
-        name: Type.Optional(Type.String()),
-        prompt: Type.Optional(Type.String()),
-        cron_expression: Type.Optional(Type.String()),
-        enabled: Type.Optional(Type.Boolean()),
-      });
-    case "delete_scheduled_prompt":
-    case "run_scheduled_prompt_now":
-      return Type.Object({
-        prompt_id: Type.String(),
-      });
-    case "list_integrations":
-    case "list_integration_types":
-      return Type.Object({
-        category: Type.Optional(Type.String()),
-      });
-    case "create_integration":
-      return Type.Object({
-        integration_type: Type.String(),
-        name: Type.String(),
-        config: Type.Optional(Type.Object({}, { additionalProperties: true })),
-        credentials: Type.Optional(Type.Object({}, { additionalProperties: true })),
-      });
-    case "prompt_connection_setup":
-      return Type.Object({
-        integration_type: Type.String(),
-        suggested_name: Type.Optional(Type.String()),
-        message: Type.Optional(Type.String()),
-        display_name: Type.Optional(Type.String()),
-        description: Type.Optional(Type.String()),
-        instructions: Type.Optional(Type.String()),
-        fields: Type.Optional(Type.Array(Type.Object({}, { additionalProperties: true }))),
-      });
-    case "set_custom_domain":
-      return Type.Object({
-        app_name: Type.String(),
-        hostname: Type.String(),
-      });
-    case "remove_custom_domain":
-      return Type.Object({
-        app_name: Type.String(),
-      });
-    case "connections_get":
-    case "connections_tools":
-      return Type.Object({
-        connection: Type.String(),
-      });
-    case "connections_list":
-    case "connections_methods":
-      return Type.Object({});
-    default:
-      return Type.Object({}, { additionalProperties: true });
-  }
-}
-
-function codeModeToolDefinitionWithParameters(
-  definition: CodeModeToolDefinition,
+function codeModeDefinition(
+  registration: CodeModeToolRegistration,
 ): CodeModeToolDefinition {
   return {
-    ...definition,
-    parameters: codeModePiToolParameters(definition.name),
+    name: registration.name,
+    description: registration.description,
+    parameters: registration.parameters,
   };
 }
 
+const CODE_MODE_CONTAINER_TOOL_NAMES = [
+  "bash",
+  "read",
+  "write",
+  "ls",
+  "edit",
+  "grep",
+  "find",
+] as const;
+
+const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
+  (name) => {
+    const definition = PI_CONTAINER_TOOL_DEFINITIONS[name];
+    return codeModeTool(definition.name, definition.description, definition.parameters);
+  },
+);
+
+const ASK_USER_QUESTION_TOOL = codeModePassthroughTool(
+  "AskUserQuestion",
+  "Ask the user one or more multiple-choice questions in the chat UI and wait for answers. Arguments: { questions }.",
+  Type.Object({
+    questions: Type.Array(Type.Object({}, { additionalProperties: true })),
+  }),
+);
+const WEB_SEARCH_TOOL = codeModePassthroughTool(
+  "WebSearch",
+  "Search the web. Arguments: { query, numResults?, maxCharacters? }.",
+  Type.Object({
+    query: Type.String(),
+    numResults: Type.Optional(Type.Number()),
+    maxCharacters: Type.Optional(Type.Number()),
+    includeDomains: Type.Optional(Type.Array(Type.String())),
+    excludeDomains: Type.Optional(Type.Array(Type.String())),
+    startPublishedDate: Type.Optional(Type.String()),
+    endPublishedDate: Type.Optional(Type.String()),
+    searchType: Type.Optional(Type.String()),
+    category: Type.Optional(Type.String()),
+  }),
+);
+const WEB_FETCH_TOOL = codeModePassthroughTool(
+  "WebFetch",
+  "Fetch text from a URL. Arguments: { url, maxCharacters? }.",
+  Type.Object({
+    url: Type.String(),
+    maxCharacters: Type.Optional(Type.Number()),
+    query: Type.Optional(Type.String()),
+    fresh: Type.Optional(Type.Boolean()),
+    content: Type.Optional(Type.String()),
+  }),
+);
+const AGENT_TOOL = codeModeTool(
+  "Agent",
+  "Run a focused subagent in the same workspace. Arguments: { prompt, description?, agent?, model? }.",
+  Type.Object({
+    prompt: Type.String(),
+    description: Type.Optional(Type.String()),
+    agent: Type.Optional(Type.String()),
+    model: Type.Optional(Type.String()),
+  }),
+);
+const EXPLORE_TOOL = codeModeTool(
+  "Explore",
+  "Run a focused read-oriented exploration subagent in the same workspace. Arguments: { prompt? or query?, description?, agent?, model? }.",
+  Type.Object({
+    prompt: Type.Optional(Type.String()),
+    query: Type.Optional(Type.String()),
+    description: Type.Optional(Type.String()),
+    agent: Type.Optional(Type.String()),
+    model: Type.Optional(Type.String()),
+  }),
+);
+
+const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
+  ...CODE_MODE_CONTAINER_TOOL_DEFINITIONS,
+  ASK_USER_QUESTION_TOOL,
+  codeModeAlias(
+    "ask_user_question",
+    ASK_USER_QUESTION_TOOL,
+    "Alias for AskUserQuestion. Arguments: { questions }.",
+  ),
+  codeModePassthroughTool(
+    "TodoWrite",
+    "Update the visible task list in the chat UI. Arguments: { todos: [{ content, status, activeForm? }] }. Status is pending, in_progress, or completed.",
+    Type.Object({
+      todos: Type.Array(
+        Type.Object({
+          content: Type.Optional(Type.String()),
+          step: Type.Optional(Type.String()),
+          title: Type.Optional(Type.String()),
+          task: Type.Optional(Type.String()),
+          status: Type.Optional(Type.String()),
+          activeForm: Type.Optional(Type.String()),
+          active_form: Type.Optional(Type.String()),
+        }, { additionalProperties: true }),
+      ),
+    }),
+  ),
+  codeModePassthroughTool(
+    "set_preview",
+    "Set the active preview to an app or file. Arguments: { script_name?, app_name?, is_public?, path?, content_type? }.",
+    Type.Object({
+      script_name: Type.Optional(Type.String()),
+      app_name: Type.Optional(Type.String()),
+      is_public: Type.Optional(Type.Boolean()),
+      path: Type.Optional(Type.String()),
+      content_type: Type.Optional(Type.String()),
+    }),
+  ),
+  codeModePassthroughTool("list_apps", "List deployed apps for the current workspace."),
+  codeModePassthroughTool(
+    "set_app_visibility",
+    "Change a deployed app visibility. Arguments: { script_name, is_public }.",
+    Type.Object({
+      script_name: Type.String(),
+      is_public: Type.Boolean(),
+    }),
+  ),
+  codeModePassthroughTool(
+    "get_latest_logs",
+    "Get recent logs for a deployed app. Arguments: { script_name, limit?, since_ms? }.",
+    Type.Object({
+      script_name: Type.String(),
+      limit: Type.Optional(Type.Number()),
+      since_ms: Type.Optional(Type.Number()),
+    }),
+  ),
+  codeModePassthroughTool("list_scheduled_prompts", "List scheduled prompts for the current workspace."),
+  codeModePassthroughTool(
+    "create_scheduled_prompt",
+    "Create a scheduled prompt. Arguments: { name, prompt, cron_expression, enabled? }.",
+    Type.Object({
+      name: Type.String(),
+      prompt: Type.String(),
+      cron_expression: Type.String(),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+  ),
+  codeModePassthroughTool(
+    "update_scheduled_prompt",
+    "Update a scheduled prompt. Arguments: { prompt_id, name?, prompt?, cron_expression?, enabled? }.",
+    Type.Object({
+      prompt_id: Type.String(),
+      name: Type.Optional(Type.String()),
+      prompt: Type.Optional(Type.String()),
+      cron_expression: Type.Optional(Type.String()),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+  ),
+  codeModePassthroughTool(
+    "delete_scheduled_prompt",
+    "Delete a scheduled prompt. Arguments: { prompt_id }.",
+    Type.Object({ prompt_id: Type.String() }),
+  ),
+  codeModePassthroughTool(
+    "run_scheduled_prompt_now",
+    "Trigger a scheduled prompt immediately. Arguments: { prompt_id }.",
+    Type.Object({ prompt_id: Type.String() }),
+  ),
+  codeModePassthroughTool(
+    "list_integrations",
+    "List configured integrations for the current workspace. Arguments: { category? }.",
+    Type.Object({ category: Type.Optional(Type.String()) }),
+  ),
+  codeModePassthroughTool(
+    "list_integration_types",
+    "List available integration types. Arguments: { category? }.",
+    Type.Object({ category: Type.Optional(Type.String()) }),
+  ),
+  codeModePassthroughTool(
+    "create_integration",
+    "Create an integration. Arguments: { integration_type, name, config?, credentials? }.",
+    Type.Object({
+      integration_type: Type.String(),
+      name: Type.String(),
+      config: Type.Optional(Type.Object({}, { additionalProperties: true })),
+      credentials: Type.Optional(Type.Object({}, { additionalProperties: true })),
+    }),
+  ),
+  codeModePassthroughTool(
+    "prompt_connection_setup",
+    "Prompt the user to set up a connection in the chat UI and wait for completion. Use this as a top-level tool, not from js_exec. Arguments: { integration_type, suggested_name?, message?, display_name?, description?, instructions?, fields? }.",
+    Type.Object({
+      integration_type: Type.String(),
+      suggested_name: Type.Optional(Type.String()),
+      message: Type.Optional(Type.String()),
+      display_name: Type.Optional(Type.String()),
+      description: Type.Optional(Type.String()),
+      instructions: Type.Optional(Type.String()),
+      fields: Type.Optional(Type.Array(Type.Object({}, { additionalProperties: true }))),
+    }),
+  ),
+  codeModePassthroughTool("get_custom_domain", "Get custom domain diagnostics for deployed apps."),
+  codeModePassthroughTool(
+    "set_custom_domain",
+    "Set an exact custom hostname for an app. Arguments: { app_name, hostname }.",
+    Type.Object({
+      app_name: Type.String(),
+      hostname: Type.String(),
+    }),
+  ),
+  codeModePassthroughTool(
+    "remove_custom_domain",
+    "Remove a custom hostname from an app. Arguments: { app_name }.",
+    Type.Object({ app_name: Type.String() }),
+  ),
+  codeModePassthroughTool(
+    "retry_custom_domain_hostnames",
+    "Retry hostname provisioning for configured app custom domains.",
+  ),
+  WEB_SEARCH_TOOL,
+  codeModeAlias(
+    "web_search",
+    WEB_SEARCH_TOOL,
+    "Alias for WebSearch. Arguments: { query, numResults?, maxCharacters? }.",
+  ),
+  WEB_FETCH_TOOL,
+  codeModeAlias(
+    "web_fetch",
+    WEB_FETCH_TOOL,
+    "Alias for WebFetch. Arguments: { url, maxCharacters? }.",
+  ),
+  AGENT_TOOL,
+  codeModeAlias(
+    "agent",
+    AGENT_TOOL,
+    "Alias for Agent. Arguments: { prompt, description?, agent?, model? }.",
+  ),
+  EXPLORE_TOOL,
+  codeModeAlias(
+    "explore",
+    EXPLORE_TOOL,
+    "Alias for Explore. Arguments: { prompt? or query?, description?, agent?, model? }.",
+  ),
+  codeModeTool(
+    "connections_list",
+    "List workspace connections. Prefer calling this from js_exec as await env.CONNECTIONS.list().",
+  ),
+  codeModeTool(
+    "connections_get",
+    "Get one workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.get(connection). Arguments: { connection }.",
+    Type.Object({ connection: Type.String() }),
+  ),
+  codeModeTool(
+    "connections_tools",
+    "List MCP-backed tools for a workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.tools(connection). Arguments: { connection }.",
+    Type.Object({ connection: Type.String() }),
+  ),
+  codeModeTool(
+    "connections_methods",
+    "List workspace connections and their method aliases, tool names, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
+  ),
+  codeModeTool(
+    "connections_find",
+    "Find one workspace connection method catalog entry by alias, id, type, or name. Prefer calling this from js_exec as await env.CONNECTIONS.find(query). Arguments: { query }.",
+    CONNECTION_QUERY_PARAMETERS,
+  ),
+  codeModeTool(
+    "connections_test",
+    "Run a quick workspace connection smoke test. Prefer calling this from js_exec as await env.CONNECTIONS.test(query). Arguments: { query }.",
+    CONNECTION_QUERY_PARAMETERS,
+  ),
+];
+
+const CODE_MODE_TOOL_DEFINITIONS: CodeModeToolDefinition[] = CODE_MODE_TOOL_REGISTRY
+  .map(codeModeDefinition);
+const CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS: CodeModeToolDefinition[] =
+  CODE_MODE_TOOL_REGISTRY
+    .filter((registration) => registration.piPassthrough)
+    .map(codeModeDefinition);
+
 export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeToolsProps> {
+  private static readonly TOOL_CALL_HANDLERS: Record<string, CodeModeToolCallHandler> = {
+    AskUserQuestion: (binding, args) => binding.askUserQuestion(args),
+    ask_user_question: (binding, args) => binding.askUserQuestion(args),
+    TodoWrite: (binding, args) => binding.updateTodos(args),
+    set_preview: (binding, args) => binding.setPreview(args),
+    list_apps: (binding) => binding.listApps(),
+    set_app_visibility: (binding, args) => binding.setAppVisibility(args),
+    get_latest_logs: (binding, args) => binding.getLatestLogs(args),
+    list_scheduled_prompts: (binding) => binding.listScheduledPrompts(),
+    create_scheduled_prompt: (binding, args) => binding.createScheduledPrompt(args),
+    update_scheduled_prompt: (binding, args) => binding.updateScheduledPrompt(args),
+    delete_scheduled_prompt: (binding, args) => binding.deleteScheduledPrompt(args),
+    run_scheduled_prompt_now: (binding, args) => binding.runScheduledPromptNow(args),
+    list_integrations: (binding, args) => binding.listIntegrations(args),
+    list_integration_types: (binding, args) => binding.listIntegrationTypes(args),
+    create_integration: (binding, args) => binding.createIntegration(args),
+    prompt_connection_setup: (binding, args) => binding.promptConnectionSetup(args),
+    get_custom_domain: (binding) => binding.getCustomDomain(),
+    set_custom_domain: (binding, args) => binding.setCustomDomain(args),
+    remove_custom_domain: (binding, args) => binding.removeCustomDomain(args),
+    retry_custom_domain_hostnames: (binding) => binding.retryCustomDomainHostnames(),
+    WebSearch: (binding, args) => binding.webSearch(args),
+    web_search: (binding, args) => binding.webSearch(args),
+    WebFetch: (binding, args) => binding.webFetch(args),
+    web_fetch: (binding, args) => binding.webFetch(args),
+    Agent: (binding, args, name) => binding.runSubagentTool(name, args),
+    agent: (binding, args, name) => binding.runSubagentTool(name, args),
+    Explore: (binding, args, name) => binding.runSubagentTool(name, args),
+    explore: (binding, args, name) => binding.runSubagentTool(name, args),
+    connections_list: (binding) => listConnections(binding.env, binding.connectionsContext),
+    connections_get: (binding, args) => {
+      const connection = typeof args.connection === "string" ? args.connection : "";
+      if (!connection) throw new Error("connection is required");
+      return getConnection(binding.env, binding.connectionsContext, connection);
+    },
+    connections_tools: (binding, args) => {
+      const connection = typeof args.connection === "string" ? args.connection : "";
+      if (!connection) throw new Error("connection is required");
+      return listConnectionTools(binding.env, binding.connectionsContext, connection);
+    },
+    connections_methods: (binding) => listConnectionMethods(binding.env, binding.connectionsContext),
+    connections_find: (binding, args) =>
+      findConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
+    connections_test: (binding, args) =>
+      testConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
+  };
+
   private get workspace(): WorkspaceContainer {
     const { workspaceId, orgId } = this.ctx.props;
     if (!workspaceId || !orgId) {
@@ -1335,7 +964,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private get piContainerTools(): PiContainerTools {
     return new PiContainerTools(this.workspace, {
-      commandEnv: () => this.createContainerCommandEnv(),
+      commandEnv: async () => ({
+        ...(await this.workspace.buildContainerCommandEnv()),
+        ...(await this.createWranglerDeployEnv()),
+      }),
     });
   }
 
@@ -1373,13 +1005,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private async getOrgSlug(): Promise<string | null> {
     const info = await this.orgStub.getInfo();
     return typeof info?.slug === "string" && info.slug.trim() ? info.slug.trim() : null;
-  }
-
-  private async createContainerCommandEnv(): Promise<Record<string, string>> {
-    return {
-      ...(await this.workspace.buildContainerCommandEnv()),
-      ...(await this.createWranglerDeployEnv()),
-    };
   }
 
   private async createWranglerDeployEnv(): Promise<Record<string, string>> {
@@ -1433,12 +1058,19 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   async listTools(): Promise<CodeModeToolDefinition[]> {
     return CODE_MODE_TOOL_DEFINITIONS
-      .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name))
-      .map(codeModeToolDefinitionWithParameters);
+      .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name));
   }
 
   async callTool(name: string, rawArgs: unknown = {}): Promise<unknown> {
-    const args = normalizeCodeModeArgs(rawArgs);
+    if (rawArgs != null && (typeof rawArgs !== "object" || Array.isArray(rawArgs))) {
+      throw new Error("tool arguments must be an object");
+    }
+    const args = rawArgs == null ? {} : rawArgs as Record<string, unknown>;
+    const handler = CodeModeToolsBinding.TOOL_CALL_HANDLERS[name];
+    if (handler) {
+      return handler(this, args, name);
+    }
+
     switch (name) {
       case "bash":
         return this.piContainerTools.callTool("bash", args);
@@ -1493,122 +1125,28 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       case "find":
         return this.piContainerTools.callTool("find", args);
 
-      case "AskUserQuestion":
-      case "ask_user_question":
-        return this.chatThreadStub.askUserQuestion({
-          questions: Array.isArray(args.questions) ? args.questions : [args],
-          toolUseId: typeof args.toolUseId === "string" ? args.toolUseId : undefined,
-        });
-
-      case "TodoWrite":
-        return this.updateTodos(args);
-
-      case "set_preview":
-        return this.setPreview(args);
-
-      case "list_apps":
-        return this.listApps();
-
-      case "set_app_visibility":
-        return this.setAppVisibility(args);
-
-      case "get_latest_logs":
-        return this.getLatestLogs(args);
-
-      case "list_scheduled_prompts":
-        return this.listScheduledPrompts();
-
-      case "create_scheduled_prompt":
-        return this.createScheduledPrompt(args);
-
-      case "update_scheduled_prompt":
-        return this.updateScheduledPrompt(args);
-
-      case "delete_scheduled_prompt":
-        return this.deleteScheduledPrompt(args);
-
-      case "run_scheduled_prompt_now":
-        return this.runScheduledPromptNow(args);
-
-      case "list_integrations":
-        return this.listIntegrations(args);
-
-      case "list_integration_types":
-        return this.listIntegrationTypes(args);
-
-      case "create_integration":
-        return this.createIntegration(args);
-
-      case "prompt_connection_setup":
-        return this.promptConnectionSetup(args);
-
-      case "get_custom_domain":
-        return this.getCustomDomain();
-
-      case "set_custom_domain":
-        return this.setCustomDomain(args);
-
-      case "remove_custom_domain":
-        return this.removeCustomDomain(args);
-
-      case "retry_custom_domain_hostnames":
-        return this.retryCustomDomainHostnames();
-
-      case "WebSearch":
-      case "web_search":
-        return this.webSearch(args);
-
-      case "WebFetch":
-      case "web_fetch":
-        return this.webFetch(args);
-
-      case "Agent":
-      case "agent":
-      case "Explore":
-      case "explore":
-        return (this.chatThreadStub as unknown as {
-          runCodeModeSubagent(toolName: "Agent" | "agent" | "Explore" | "explore", params: unknown): Promise<AgentToolResult<unknown>>;
-        }).runCodeModeSubagent(name, args);
-
-      case "connections_list":
-        return listConnections(this.env, this.connectionsContext);
-
-      case "connections_get": {
-        const connection = typeof args.connection === "string" ? args.connection : "";
-        if (!connection) throw new Error("connection is required");
-        return getConnection(this.env, this.connectionsContext, connection);
-      }
-
-      case "connections_tools": {
-        const connection = typeof args.connection === "string" ? args.connection : "";
-        if (!connection) throw new Error("connection is required");
-        return listConnectionTools(this.env, this.connectionsContext, connection);
-      }
-
-      case "connections_methods":
-        return listConnectionMethods(this.env, this.connectionsContext);
-
-      case "connections_find":
-        return findConnectionMethodEntry(
-          this.env,
-          this.connectionsContext,
-          typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
-            ? args.query as string | Record<string, string>
-            : ""
-        );
-
-      case "connections_test":
-        return testConnectionMethodEntry(
-          this.env,
-          this.connectionsContext,
-          typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
-            ? args.query as string | Record<string, string>
-            : ""
-        );
-
       default:
         throw new Error(`Unknown code mode tool: ${name}`);
     }
+  }
+
+  private askUserQuestion(args: Record<string, unknown>): Promise<unknown> {
+    return this.chatThreadStub.askUserQuestion({
+      questions: Array.isArray(args.questions) ? args.questions : [args],
+      toolUseId: typeof args.toolUseId === "string" ? args.toolUseId : undefined,
+    });
+  }
+
+  private runSubagentTool(name: string, args: Record<string, unknown>): Promise<AgentToolResult<unknown>> {
+    return (this.chatThreadStub as unknown as {
+      runCodeModeSubagent(toolName: "Agent" | "agent" | "Explore" | "explore", params: unknown): Promise<AgentToolResult<unknown>>;
+    }).runCodeModeSubagent(name as "Agent" | "agent" | "Explore" | "explore", args);
+  }
+
+  private connectionQuery(args: Record<string, unknown>): string | Record<string, string> {
+    return typeof args.query === "string" || (args.query && typeof args.query === "object" && !Array.isArray(args.query))
+      ? args.query as string | Record<string, string>
+      : "";
   }
 
   private async updateTodos(args: Record<string, unknown>): Promise<unknown> {
@@ -1660,42 +1198,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
     await this.chatThreadStub.setPreviewTarget(target);
     return { success: true, target };
-  }
-
-  private formatScheduledPrompt(prompt: {
-    id: string;
-    name: string;
-    prompt: string;
-    cron_expression: string;
-    thread_id: string;
-    scheduled_by_thread_id: string | null;
-    enabled: boolean;
-    created_by: string;
-    created_at: number;
-    updated_at: number;
-    next_run_at: number | null;
-    last_run_at: number | null;
-    last_run_status: string | null;
-    last_run_error: string | null;
-    run_count: number;
-  }): Record<string, unknown> {
-    return {
-      id: prompt.id,
-      name: prompt.name,
-      prompt: prompt.prompt,
-      cron_expression: prompt.cron_expression,
-      thread_id: prompt.thread_id,
-      scheduled_by_thread_id: prompt.scheduled_by_thread_id,
-      enabled: prompt.enabled,
-      created_by: prompt.created_by,
-      created_at: new Date(prompt.created_at).toISOString(),
-      updated_at: new Date(prompt.updated_at).toISOString(),
-      next_run_at: prompt.next_run_at ? new Date(prompt.next_run_at).toISOString() : null,
-      last_run_at: prompt.last_run_at ? new Date(prompt.last_run_at).toISOString() : null,
-      last_run_status: prompt.last_run_status,
-      last_run_error: prompt.last_run_error,
-      run_count: prompt.run_count,
-    };
   }
 
   private async listApps(): Promise<unknown> {
@@ -1785,1193 +1287,108 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
+  private get scheduledPrompts(): CodeModeScheduledPrompts {
+    return new CodeModeScheduledPrompts({
+      cronStub: this.cronStub,
+      workspaceId: this.ctx.props.workspaceId,
+      threadId: this.ctx.props.threadId,
+      userId: this.ctx.props.userId,
+    });
+  }
+
   private async listScheduledPrompts(): Promise<unknown> {
-    const prompts = await this.cronStub.listScheduledPrompts(this.ctx.props.workspaceId);
-    return {
-      success: true,
-      count: prompts.length,
-      timezone: "UTC",
-      prompts: prompts.map((prompt) => this.formatScheduledPrompt(prompt)),
-    };
+    return this.scheduledPrompts.list();
   }
 
   private async createScheduledPrompt(args: Record<string, unknown>): Promise<unknown> {
-    const name = typeof args.name === "string" ? args.name : "";
-    const prompt = typeof args.prompt === "string" ? args.prompt : "";
-    const cronExpression =
-      typeof args.cron_expression === "string" ? args.cron_expression : "";
-    if (!name.trim()) throw new Error("name is required");
-    if (!prompt.trim()) throw new Error("prompt is required");
-    if (!cronExpression.trim()) throw new Error("cron_expression is required");
-    const created = await this.cronStub.createScheduledPrompt({
-      workspaceId: this.ctx.props.workspaceId,
-      name,
-      prompt,
-      cronExpression,
-      createdBy: this.ctx.props.userId || "system",
-      scheduledByThreadId: this.ctx.props.threadId,
-      enabled: typeof args.enabled === "boolean" ? args.enabled : undefined,
-    });
-    return {
-      success: true,
-      timezone: "UTC",
-      scheduled_prompt: this.formatScheduledPrompt(created),
-      message: `Created scheduled prompt "${created.name}"`,
-    };
+    return this.scheduledPrompts.create(args);
   }
 
   private async updateScheduledPrompt(args: Record<string, unknown>): Promise<unknown> {
-    const promptId = typeof args.prompt_id === "string" ? args.prompt_id.trim() : "";
-    if (!promptId) throw new Error("prompt_id is required");
-    const updated = await this.cronStub.updateScheduledPrompt({
-      workspaceId: this.ctx.props.workspaceId,
-      id: promptId,
-      name: typeof args.name === "string" ? args.name : undefined,
-      prompt: typeof args.prompt === "string" ? args.prompt : undefined,
-      cronExpression: typeof args.cron_expression === "string" ? args.cron_expression : undefined,
-      enabled: typeof args.enabled === "boolean" ? args.enabled : undefined,
-    });
-    if (!updated) return { success: false, error: `Scheduled prompt "${promptId}" not found` };
-    return {
-      success: true,
-      timezone: "UTC",
-      scheduled_prompt: this.formatScheduledPrompt(updated),
-      message: `Updated scheduled prompt "${updated.name}"`,
-    };
+    return this.scheduledPrompts.update(args);
   }
 
   private async deleteScheduledPrompt(args: Record<string, unknown>): Promise<unknown> {
-    const promptId = typeof args.prompt_id === "string" ? args.prompt_id.trim() : "";
-    if (!promptId) throw new Error("prompt_id is required");
-    const deleted = await this.cronStub.deleteScheduledPrompt(this.ctx.props.workspaceId, promptId);
-    if (!deleted) return { success: false, error: `Scheduled prompt "${promptId}" not found` };
-    return { success: true, message: `Deleted scheduled prompt "${promptId}"` };
+    return this.scheduledPrompts.delete(args);
   }
 
   private async runScheduledPromptNow(args: Record<string, unknown>): Promise<unknown> {
-    const promptId = typeof args.prompt_id === "string" ? args.prompt_id.trim() : "";
-    if (!promptId) throw new Error("prompt_id is required");
-    const result = await this.cronStub.runScheduledPromptNow(this.ctx.props.workspaceId, promptId);
-    if (!result) return { success: false, error: `Scheduled prompt "${promptId}" not found` };
-    return {
-      success: true,
-      timezone: "UTC",
-      scheduled_prompt: this.formatScheduledPrompt(result.prompt),
-      run: {
-        status: result.dispatch.status,
-        thread_id: result.dispatch.thread_id,
-        error: result.dispatch.error,
-        reply: result.dispatch.reply,
-      },
-    };
+    return this.scheduledPrompts.runNow(args);
+  }
+
+  private get integrations(): CodeModeIntegrations {
+    return new CodeModeIntegrations({
+      env: this.env,
+      workspaceStub: this.workspaceStub,
+      userId: this.ctx.props.userId,
+      promptConnectionSetup: (input) =>
+        (this.chatThreadStub as unknown as {
+          promptConnectionSetup(input: {
+            integrationType: string;
+            suggestedName?: string;
+            message?: string;
+            instructions?: string;
+            dynamicSchema?: DynamicIntegrationSchema;
+          }): Promise<ConnectionSetupResponse>;
+        }).promptConnectionSetup(input),
+    });
   }
 
   private async listIntegrations(args: Record<string, unknown>): Promise<unknown> {
-    const category = typeof args.category === "string" ? args.category : "";
-    const rawIntegrations = await this.workspaceStub.getIntegrations();
-    const integrations = rawIntegrations.map((record) => {
-      let parsedConfig: Record<string, unknown> = {};
-      try {
-        parsedConfig = record.config ? JSON.parse(record.config) : {};
-      } catch {
-        parsedConfig = {};
-      }
-      return {
-        id: record.id,
-        integration_type: record.integration_type,
-        name: record.name,
-        category: record.category,
-        auth_method: record.auth_method,
-        has_credentials: Boolean(record.credentials_encrypted),
-        created_at: record.created_at,
-        updated_at: record.updated_at,
-        config: parsedConfig,
-      };
-    });
-    const filtered = category
-      ? integrations.filter((integration) => integration.category === category)
-      : integrations;
-    return {
-      count: filtered.length,
-      integrations: filtered.map((integration) => ({
-        id: integration.id,
-        type: integration.integration_type,
-        name: integration.name,
-        category: integration.category,
-        auth_method: integration.auth_method,
-        has_credentials: integration.has_credentials,
-        created_at: new Date(integration.created_at).toISOString(),
-        updated_at: new Date(integration.updated_at).toISOString(),
-        recommended_access: {
-          tool: "js_exec",
-          inspect_methods: "await env.CONNECTIONS.methods()",
-          call_pattern: "await connections.<alias>.<method>({ ...input })",
-          connection_id: integration.id,
-        },
-        display_name: integration.integration_type === "other" && typeof integration.config.display_name === "string"
-          ? integration.config.display_name
-          : undefined,
-      })),
-    };
+    return this.integrations.list(args);
   }
 
   private listIntegrationTypes(args: Record<string, unknown>): unknown {
-    const category = typeof args.category === "string" ? args.category : "";
-    const validCategory = isIntegrationCategory(category) ? category : "";
-    const definitions = validCategory ? getIntegrationsByCategory(validCategory) : getAllIntegrations();
-    const types = definitions.map((definition) => ({
-      type: definition.type,
-      display_name: definition.displayName,
-      description: definition.description,
-      category: definition.category,
-      auth_method: definition.authMethod,
-      config_fields: definition.configSchema.map((field) => ({
-        name: field.name,
-        label: field.label,
-        type: field.type,
-        required: field.required,
-        description: field.description,
-      })),
-      credential_fields: definition.credentialSchema.map((field) => ({
-        name: field.name,
-        label: field.label,
-        required: field.required,
-        description: field.description,
-      })),
-      supports_proxy: false,
-    }));
-    const byCategory: Record<string, typeof types> = {};
-    for (const type of types) {
-      if (!byCategory[type.category]) byCategory[type.category] = [];
-      byCategory[type.category].push(type);
-    }
-    return { total_count: types.length, by_category: byCategory };
+    return this.integrations.listTypes(args);
   }
 
   private async createIntegration(args: Record<string, unknown>): Promise<unknown> {
-    const integrationType = typeof args.integration_type === "string" ? args.integration_type.trim() : "";
-    const name = typeof args.name === "string" ? args.name.trim() : "";
-    const config = args.config && typeof args.config === "object" ? args.config as Record<string, unknown> : {};
-    const credentials = args.credentials && typeof args.credentials === "object" ? args.credentials as Record<string, unknown> : {};
-    if (!integrationType) throw new Error("integration_type is required");
-    if (!name) throw new Error("name is required");
-    const definition = getIntegrationDefinition(integrationType);
-    if (!definition) {
-      return {
-        success: false,
-        error: `Unknown integration type: ${integrationType}. Use list_integration_types to see available types.`,
-      };
-    }
-    const configErrors = validateConfig(integrationType, config);
-    if (configErrors.length > 0) {
-      return { success: false, error: "Invalid configuration", validation_errors: configErrors };
-    }
-    const credentialErrors = validateCredentials(integrationType, credentials);
-    if (credentialErrors.length > 0) {
-      return { success: false, error: "Invalid credentials", validation_errors: credentialErrors };
-    }
-    const credentialsEncrypted = shouldStoreIntegrationCredentials(integrationType, credentials)
-      ? await encryptCredentials(credentials, this.env.INTEGRATION_SECRET_KEY)
-      : "";
-    const integrationId = crypto.randomUUID();
-    await this.workspaceStub.createIntegration(
-      integrationId,
-      integrationType,
-      name,
-      definition.category,
-      definition.authMethod,
-      JSON.stringify(config),
-      credentialsEncrypted,
-      this.ctx.props.userId || "system",
-    );
-    return {
-      success: true,
-      integration: {
-        id: integrationId,
-        type: integrationType,
-        name,
-        category: definition.category,
-        recommended_access: {
-          tool: "js_exec",
-          inspect_methods: "await env.CONNECTIONS.methods()",
-          call_pattern: "await connections.<alias>.<method>({ ...input })",
-          connection_id: integrationId,
-        },
-      },
-      message: `Integration '${name}' created successfully.`,
-    };
+    return this.integrations.create(args);
   }
 
   private async promptConnectionSetup(args: Record<string, unknown>): Promise<unknown> {
-    const integrationType = typeof args.integration_type === "string" ? args.integration_type.trim() : "";
-    if (!integrationType) throw new Error("integration_type is required");
-    const definition = getIntegrationDefinition(integrationType);
-    if (!definition) {
-      return {
-        success: false,
-        error: `Unknown integration type: ${integrationType}. Use list_integration_types to see available types.`,
-      };
-    }
-    const dynamicSchema = integrationType === "other" && Array.isArray(args.fields)
-      ? {
-          displayName:
-            typeof args.display_name === "string" && args.display_name.trim()
-              ? args.display_name.trim()
-              : typeof args.suggested_name === "string" && args.suggested_name.trim()
-                ? args.suggested_name.trim()
-                : "Custom Integration",
-          description: typeof args.description === "string" ? args.description : undefined,
-          instructions: typeof args.instructions === "string" ? args.instructions : undefined,
-          fields: args.fields as DynamicField[],
-        }
-      : undefined;
-    const response = await (this.chatThreadStub as unknown as {
-      promptConnectionSetup(input: {
-        integrationType: string;
-        suggestedName?: string;
-        message?: string;
-        instructions?: string;
-        dynamicSchema?: DynamicIntegrationSchema;
-      }): Promise<ConnectionSetupResponse>;
-    }).promptConnectionSetup({
-      integrationType,
-      suggestedName:
-        typeof args.suggested_name === "string" && args.suggested_name.trim()
-          ? args.suggested_name.trim()
-          : dynamicSchema?.displayName ?? definition.displayName,
-      message: typeof args.message === "string" ? args.message : undefined,
-      instructions: typeof args.instructions === "string" ? args.instructions : undefined,
-      dynamicSchema,
-    });
-    if (response.cancelled) {
-      return { success: false, cancelled: true, message: "User cancelled the connection setup" };
-    }
-    if (!response.integration) {
-      return { success: false, error: "Invalid response from user - missing integration data" };
-    }
-    const { type, name, config, credentials } = response.integration;
-    const responseDefinition = getIntegrationDefinition(type);
-    if (!responseDefinition) {
-      return { success: false, error: `Unknown integration type from user response: ${type}` };
-    }
-    if (credentials._oauth_completed && credentials.integration_id) {
-      const integrationId = String(credentials.integration_id);
-      return {
-        success: true,
-        integration: {
-          id: integrationId,
-          type,
-          name,
-          category: responseDefinition.category,
-          recommended_access: {
-            tool: "js_exec",
-            inspect_methods: "await env.CONNECTIONS.methods()",
-            call_pattern: "await connections.<alias>.<method>({ ...input })",
-            connection_id: integrationId,
-          },
-        },
-        message: `Integration '${name}' connected successfully via OAuth.`,
-      };
-    }
-    const finalConfig =
-      type === "other" && dynamicSchema?.fields.length
-        ? {
-            ...config,
-            display_name: dynamicSchema.displayName,
-            dynamic_fields: dynamicSchema.fields,
-          }
-        : config;
-    return this.createIntegration({
-      integration_type: type,
-      name,
-      config: finalConfig,
-      credentials,
+    return this.integrations.promptConnectionSetup(args);
+  }
+
+  private get customDomains(): CodeModeCustomDomains {
+    return new CodeModeCustomDomains({
+      env: this.env,
+      orgStub: this.orgStub,
+      workspaceId: this.ctx.props.workspaceId,
+      userId: this.ctx.props.userId,
     });
   }
 
   private async getCustomDomain(): Promise<unknown> {
-    const zoneId = this.env.CF_ZONE_ID?.trim();
-    const apiToken = this.env.CF_API_TOKEN?.trim();
-    const dnsTarget = getCustomHostnameDnsTarget({
-      cnameTarget: this.env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
-      fallbackOrigin: this.env.CF_CUSTOM_HOSTNAME_FALLBACK,
-    });
-    const scripts = await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId);
-    const now = Date.now();
-    const apps = [];
-    for (const script of scripts) {
-      let currentScript = script;
-      if (
-        zoneId &&
-        apiToken &&
-        shouldRefreshAppCustomDomainState(script, null, now) &&
-        script.custom_domain_hostname
-      ) {
-        try {
-          let record = null;
-          if (script.custom_domain_cf_hostname_id) {
-            record = await getCustomHostnameStatus(zoneId, apiToken, script.custom_domain_cf_hostname_id);
-          }
-          if (!record) {
-            record = await findCustomHostnameByHostname(zoneId, apiToken, script.custom_domain_hostname);
-          }
-          if (record) {
-            currentScript =
-              (await this.orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-                hostname: script.custom_domain_hostname,
-                cf_hostname_id: record.id,
-                status: record.status,
-                ssl_status: record.ssl.status,
-                error: null,
-              })) ?? currentScript;
-          }
-        } catch {
-          // Keep cached state if Cloudflare diagnostics are unavailable.
-        }
-      }
-      const appState = getAppCustomDomainDiagnosticState(currentScript, null);
-      const dnsChecks = { routing_cname: null as CustomDomainDnsCheck | null };
-      if (appState.hostname) {
-        dnsChecks.routing_cname = buildCustomDomainDnsCheck({
-          queried: appState.hostname,
-          expectedTarget: dnsTarget,
-          lookup: await resolveCnameViaDoH(appState.hostname),
-        });
-      }
-      apps.push({
-        name: script.script_name,
-        hostname: appState.hostname,
-        cf_hostname_id: appState.cf_hostname_id,
-        status: appState.status,
-        ssl_status: appState.ssl_status,
-        error: appState.error,
-        updated_at: appState.updated_at,
-        dns_checks: dnsChecks,
-      });
-    }
-    const configuredApps = apps.filter((app) => app.hostname);
-    const activeCount = configuredApps.filter(
-      (app) => app.status === "active" && app.ssl_status === "active",
-    ).length;
-    return {
-      configured: configuredApps.length > 0,
-      dns_target: dnsTarget,
-      apps,
-      message:
-        configuredApps.length === 0
-          ? "No exact custom domains configured."
-          : `${activeCount}/${configuredApps.length} configured custom domains have active SSL.`,
-    };
+    return this.customDomains.get();
   }
 
   private async setCustomDomain(args: Record<string, unknown>): Promise<unknown> {
-    const appName = typeof args.app_name === "string" ? args.app_name.trim() : "";
-    const hostname = typeof args.hostname === "string"
-      ? args.hostname.trim().toLowerCase().replace(/\.$/, "")
-      : "";
-    if (!appName) throw new Error("app_name is required");
-    if (!hostname) throw new Error("hostname is required");
-    const member = this.ctx.props.userId
-      ? await this.orgStub.getMember(this.ctx.props.userId)
-      : null;
-    if (!member || (member.role !== "owner" && member.role !== "admin")) {
-      return { success: false, error: "Only org admins can manage custom domains" };
-    }
-    const script = await this.orgStub.getWorkerScript(appName);
-    if (!script) return { success: false, error: "App not found" };
-    if (script.workspace_id !== this.ctx.props.workspaceId) {
-      return { success: false, error: `App '${appName}' belongs to a different workspace` };
-    }
-    const scripts = await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId);
-    const conflictingScript = scripts.find(
-      (candidate) =>
-        candidate.script_name !== appName &&
-        candidate.custom_domain_hostname === hostname,
-    );
-    if (conflictingScript) {
-      return {
-        success: false,
-        error: `That hostname is already assigned to ${conflictingScript.script_name}`,
-      };
-    }
-    if (
-      hostname.includes("*") ||
-      !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(hostname)
-    ) {
-      return { success: false, error: "Invalid exact hostname. Wildcards are not supported." };
-    }
-    if (hostname.endsWith(".camelai.app") || hostname.endsWith(".camelai.dev")) {
-      return { success: false, error: "Cannot use camelAI domains as custom domains" };
-    }
-    const zoneId = this.env.CF_ZONE_ID?.trim();
-    const apiToken = this.env.CF_API_TOKEN?.trim();
-    if (!zoneId || !apiToken) {
-      return { success: false, error: "Cloudflare API not configured" };
-    }
-    const dnsTarget = getCustomHostnameDnsTarget({
-      cnameTarget: this.env.CF_CUSTOM_HOSTNAME_CNAME_TARGET,
-      fallbackOrigin: this.env.CF_CUSTOM_HOSTNAME_FALLBACK,
-    });
-    try {
-      const record = await createOrRefreshCustomHostname(zoneId, apiToken, hostname);
-      if (!record) {
-        await this.orgStub.updateWorkerScriptCustomDomain(appName, {
-          hostname,
-          error: "Failed to create or locate Cloudflare custom hostname",
-        });
-        return { success: false, error: "Failed to create or locate Cloudflare custom hostname" };
-      }
-      if (script.custom_domain_cf_hostname_id && script.custom_domain_cf_hostname_id !== record.id) {
-        await deleteCustomHostname(zoneId, apiToken, script.custom_domain_cf_hostname_id).catch(() => {});
-      }
-      await this.orgStub.updateWorkerScriptCustomDomain(appName, {
-        hostname,
-        cf_hostname_id: record.id,
-        status: record.status,
-        ssl_status: record.ssl.status,
-        error: null,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await this.orgStub.updateWorkerScriptCustomDomain(appName, { hostname, error: message });
-      return { success: false, error: message };
-    }
-    return {
-      success: true,
-      app: appName,
-      hostname,
-      dns_target: dnsTarget,
-      routing_record: `${hostname} CNAME ${dnsTarget}`,
-      message: `Custom hostname set for ${appName}. Add ${hostname} CNAME ${dnsTarget}.`,
-    };
+    return this.customDomains.set(args);
   }
 
   private async removeCustomDomain(args: Record<string, unknown>): Promise<unknown> {
-    const appName = typeof args.app_name === "string" ? args.app_name.trim() : "";
-    if (!appName) throw new Error("app_name is required");
-    const member = this.ctx.props.userId
-      ? await this.orgStub.getMember(this.ctx.props.userId)
-      : null;
-    if (!member || (member.role !== "owner" && member.role !== "admin")) {
-      return { success: false, error: "Only org admins can manage custom domains" };
-    }
-    const script = await this.orgStub.getWorkerScript(appName);
-    if (!script?.custom_domain_hostname) {
-      return { success: false, error: "No custom domain configured for this app" };
-    }
-    if (script.workspace_id !== this.ctx.props.workspaceId) {
-      return { success: false, error: `App '${appName}' belongs to a different workspace` };
-    }
-    const removedDomain = script.custom_domain_hostname;
-    const zoneId = this.env.CF_ZONE_ID?.trim();
-    const apiToken = this.env.CF_API_TOKEN?.trim();
-    if (zoneId && apiToken && script.custom_domain_cf_hostname_id) {
-      await deleteCustomHostname(zoneId, apiToken, script.custom_domain_cf_hostname_id).catch(() => {});
-    }
-    await this.orgStub.clearWorkerScriptCustomDomain(appName);
-    return {
-      success: true,
-      app: appName,
-      removed_domain: removedDomain,
-      message: `Custom domain ${removedDomain} removed from ${appName}.`,
-    };
+    return this.customDomains.remove(args);
   }
 
   private async retryCustomDomainHostnames(): Promise<unknown> {
-    const member = this.ctx.props.userId
-      ? await this.orgStub.getMember(this.ctx.props.userId)
-      : null;
-    if (!member || (member.role !== "owner" && member.role !== "admin")) {
-      return { success: false, error: "Only org admins can retry hostname provisioning" };
-    }
-    const zoneId = this.env.CF_ZONE_ID?.trim();
-    const apiToken = this.env.CF_API_TOKEN?.trim();
-    if (!zoneId || !apiToken) {
-      return { success: false, error: "Cloudflare API not configured" };
-    }
-    const scripts = await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId);
-    const scriptsToSync = scripts.filter((script) =>
-      shouldRetryAppCustomDomainProvisioning(script, null),
+    return this.customDomains.retryHostnames();
+  }
+
+  private get webSearchClient(): CodeModeWebSearch {
+    return new CodeModeWebSearch(
+      this.env,
+      this.ctx.props.threadId || this.ctx.props.workspaceId,
     );
-    let succeeded = 0;
-    const errors: Array<{ app: string; error: string }> = [];
-    for (const script of scriptsToSync) {
-      if (!script.custom_domain_hostname) continue;
-      try {
-        const result = await createOrRefreshCustomHostname(zoneId, apiToken, script.custom_domain_hostname);
-        if (result) {
-          await this.orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-            hostname: script.custom_domain_hostname,
-            cf_hostname_id: result.id,
-            status: result.status,
-            ssl_status: result.ssl.status,
-            error: null,
-          });
-          succeeded++;
-        } else {
-          const error = "Failed to create or locate Cloudflare hostname";
-          await this.orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-            hostname: script.custom_domain_hostname,
-            cf_hostname_id: null,
-            status: null,
-            ssl_status: null,
-            error,
-          });
-          errors.push({ app: script.script_name, error });
-        }
-      } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        await this.orgStub.updateWorkerScriptCustomDomain(script.script_name, {
-          hostname: script.custom_domain_hostname,
-          error,
-        });
-        errors.push({ app: script.script_name, error });
-      }
-    }
-    return {
-      success: true,
-      retried: scriptsToSync.length,
-      succeeded,
-      errors: errors.length ? errors : undefined,
-      message:
-        scriptsToSync.length === 0
-          ? "No apps need hostname retry; all are either active or still provisioning normally."
-          : `Retried ${scriptsToSync.length} app(s): ${succeeded} succeeded${errors.length ? `, ${errors.length} failed` : ""}.`,
-    };
-  }
-
-  private webProviderBaseURL(provider: WebProvider): string {
-    switch (provider) {
-      case "firecrawl":
-        return (this.env.FIRECRAWL_BASE_URL || "https://api.firecrawl.dev").replace(/\/+$/, "");
-      case "parallel":
-        return (this.env.PARALLEL_BASE_URL || "https://api.parallel.ai").replace(/\/+$/, "");
-      case "exa":
-        return (this.env.EXA_BASE_URL || "https://api.exa.ai").replace(/\/+$/, "");
-    }
-  }
-
-  private webProviderAPIKey(provider: WebProvider): string {
-    switch (provider) {
-      case "firecrawl":
-        return (this.env.FIRECRAWL_API_KEY || "").trim();
-      case "parallel":
-        return (this.env.PARALLEL_API_KEY || "").trim();
-      case "exa":
-        return (this.env.EXA_API_KEY || "").trim();
-    }
-  }
-
-  private webProviderConfigured(provider: WebProvider): boolean {
-    return this.webProviderAPIKey(provider) !== "";
-  }
-
-  private configuredWebProviders(): WebProvider[] {
-    const configuredOrder = (this.env.WEB_PROVIDER_ORDER || this.env.CHIRIDION_WEB_PROVIDER_ORDER || "firecrawl,parallel,exa")
-      .split(",")
-      .map((value) => value.trim().toLowerCase())
-      .filter((value): value is WebProvider => value === "firecrawl" || value === "parallel" || value === "exa");
-    const preferred = [...configuredOrder];
-    for (const provider of WEB_PROVIDER_DEFAULT_ORDER) {
-      if (!preferred.includes(provider)) preferred.push(provider);
-    }
-    const out: WebProvider[] = [];
-    for (const provider of preferred) {
-      if (!out.includes(provider) && this.webProviderConfigured(provider)) out.push(provider);
-    }
-    return out;
-  }
-
-  private async rotatedWebProviders(): Promise<WebProvider[]> {
-    const providers = this.configuredWebProviders();
-    if (providers.length <= 1) return providers;
-    let start = 0;
-    try {
-      const raw = await this.env.APP_KV.get(WEB_PROVIDER_ROUND_ROBIN_KEY);
-      const parsed = Number.parseInt(raw || "0", 10);
-      start = Number.isFinite(parsed) ? parsed % providers.length : 0;
-      await this.env.APP_KV.put(WEB_PROVIDER_ROUND_ROBIN_KEY, String(start + 1));
-    } catch (error) {
-      console.warn("Failed to update web provider round robin index", error);
-    }
-    return [...providers.slice(start), ...providers.slice(0, start)];
-  }
-
-  private async withWebProviderFallback(
-    operation: "search" | "fetch",
-    call: (provider: WebProvider) => Promise<WebProviderResult>,
-  ): Promise<WebProviderResult> {
-    const providers = await this.rotatedWebProviders();
-    if (providers.length === 0) {
-      throw new Error("no web provider API keys are configured");
-    }
-    const failures: string[] = [];
-    for (const provider of providers) {
-      try {
-        return await call(provider);
-      } catch (error) {
-        failures.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    throw new Error(`${operation} failed for all web providers: ${failures.join("; ")}`);
-  }
-
-  private async webJSON(
-    provider: WebProvider,
-    target: string,
-    headers: Record<string, string>,
-    body: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), WEB_PROVIDER_TIMEOUT_MS);
-    try {
-      const response = await fetch(target, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...headers,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const raw = await response.text();
-      let payload: Record<string, unknown> = {};
-      if (raw.trim()) {
-        try {
-          payload = JSON.parse(raw) as Record<string, unknown>;
-        } catch {
-          payload = { message: raw.slice(0, 4096) };
-        }
-      }
-      if (!response.ok) {
-        throw new Error(`${provider} request failed with HTTP ${response.status}: ${webPayloadMessage(payload)}`);
-      }
-      if (payload.success === false) {
-        throw new Error(`${provider} request failed: ${webPayloadMessage(payload)}`);
-      }
-      return payload;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  private async webSearchWithProvider(
-    provider: WebProvider,
-    args: Record<string, unknown>,
-    query: string,
-    numResults: number,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    switch (provider) {
-      case "firecrawl":
-        return this.firecrawlSearch(args, query, numResults, maxCharacters);
-      case "parallel":
-        return this.parallelSearch(args, query, numResults, maxCharacters);
-      case "exa":
-        return this.exaSearch(args, query, numResults, maxCharacters);
-    }
-  }
-
-  private async webFetchWithProvider(
-    provider: WebProvider,
-    args: Record<string, unknown>,
-    targetURL: string,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    switch (provider) {
-      case "firecrawl":
-        return this.firecrawlFetch(args, targetURL, maxCharacters);
-      case "parallel":
-        return this.parallelFetch(args, targetURL, maxCharacters);
-      case "exa":
-        return this.exaFetch(args, targetURL, maxCharacters);
-    }
-  }
-
-  private async firecrawlSearch(
-    args: Record<string, unknown>,
-    query: string,
-    numResults: number,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    const includeDomains = normalizeWebDomains(args.includeDomains);
-    const excludeDomains = normalizeWebDomains(args.excludeDomains);
-    const body: Record<string, unknown> = {
-      query: firecrawlQuery(query, includeDomains, excludeDomains, args.category),
-      limit: numResults,
-      sources: firecrawlSources(args.category),
-      ignoreInvalidURLs: true,
-      timeout: 30000,
-    };
-    const categories = firecrawlCategories(args.category);
-    if (categories?.length) body.categories = categories;
-    const tbs = firecrawlTimeFilter(args.startPublishedDate, args.endPublishedDate);
-    if (tbs) body.tbs = tbs;
-    const payload = await this.webJSON("firecrawl", `${this.webProviderBaseURL("firecrawl")}/v2/search`, {
-      authorization: `Bearer ${this.webProviderAPIKey("firecrawl")}`,
-    }, body);
-    const results = firecrawlEntries(payload)
-      .map((entry) => normalizeFirecrawlResult(entry, false))
-      .filter((result): result is WebResult => result !== null);
-    return {
-      provider: "firecrawl",
-      results: truncateWebResults(filterWebDomains(results, includeDomains, excludeDomains), numResults, maxCharacters),
-      costUSD: 0.005,
-    };
-  }
-
-  private async firecrawlFetch(
-    args: Record<string, unknown>,
-    targetURL: string,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    const payload = await this.webJSON("firecrawl", `${this.webProviderBaseURL("firecrawl")}/v2/scrape`, {
-      authorization: `Bearer ${this.webProviderAPIKey("firecrawl")}`,
-    }, {
-      url: targetURL,
-      formats: ["markdown"],
-      onlyMainContent: true,
-      timeout: 30000,
-      maxAge: boolParam(args, "fresh") ? 0 : 172800000,
-    });
-    const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
-      ? { ...(payload.data as Record<string, unknown>), url: targetURL }
-      : { ...payload, url: targetURL };
-    const result = normalizeFirecrawlResult(data, true);
-    return {
-      provider: "firecrawl",
-      results: result ? truncateWebResults([result], 1, maxCharacters) : [],
-      costUSD: 0.001,
-    };
-  }
-
-  private async parallelSearch(
-    args: Record<string, unknown>,
-    query: string,
-    numResults: number,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    const includeDomains = normalizeWebDomains(args.includeDomains);
-    const excludeDomains = normalizeWebDomains(args.excludeDomains);
-    const sourcePolicy: Record<string, unknown> = {};
-    if (includeDomains.length) sourcePolicy.include_domains = includeDomains;
-    if (excludeDomains.length) sourcePolicy.exclude_domains = excludeDomains;
-    const afterDate = dateOnly(args.startPublishedDate);
-    if (afterDate) sourcePolicy.after_date = afterDate;
-    const advanced: Record<string, unknown> = { max_results: numResults };
-    if (Object.keys(sourcePolicy).length) advanced.source_policy = sourcePolicy;
-    const payload = await this.webJSON("parallel", `${this.webProviderBaseURL("parallel")}/v1/search`, {
-      "x-api-key": this.webProviderAPIKey("parallel"),
-    }, {
-      objective: query,
-      search_queries: [query],
-      mode: parallelMode(args.searchType),
-      max_chars_total: Math.max(1000, numResults * maxCharacters),
-      session_id: this.ctx.props.threadId || this.ctx.props.workspaceId,
-      advanced_settings: advanced,
-    });
-    const costUSD = parallelUsageCostUSD(payload) || 0.005;
-    return {
-      provider: "parallel",
-      results: truncateWebResults(
-        filterWebDomains(normalizeParallelResults(payload.results, false), includeDomains, excludeDomains),
-        numResults,
-        maxCharacters,
-      ),
-      costUSD,
-    };
-  }
-
-  private async parallelFetch(
-    args: Record<string, unknown>,
-    targetURL: string,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    const objective = stringParam(args, "query") || `Extract the main content from ${targetURL}.`;
-    const payload = await this.webJSON("parallel", `${this.webProviderBaseURL("parallel")}/v1/extract`, {
-      "x-api-key": this.webProviderAPIKey("parallel"),
-    }, {
-      urls: [targetURL],
-      objective,
-      max_chars_total: maxCharacters,
-      session_id: this.ctx.props.threadId || this.ctx.props.workspaceId,
-      advanced_settings: {
-        fetch_policy: {
-          max_age_seconds: boolParam(args, "fresh") ? 600 : 172800,
-          timeout_seconds: 30,
-          disable_cache_fallback: false,
-        },
-        excerpt_settings: { max_chars_per_result: Math.max(1000, Math.min(maxCharacters, 30000)) },
-        full_content: { max_chars_per_result: maxCharacters },
-      },
-    });
-    const results = normalizeParallelResults(payload.results, true);
-    if (results.length === 0 && Array.isArray(payload.errors) && payload.errors.length > 0) {
-      throw new Error("parallel extract returned errors");
-    }
-    return {
-      provider: "parallel",
-      results: truncateWebResults(results, 1, maxCharacters),
-      costUSD: parallelUsageCostUSD(payload) || 0.001,
-    };
-  }
-
-  private async exaSearch(
-    args: Record<string, unknown>,
-    query: string,
-    numResults: number,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    const body: Record<string, unknown> = {
-      query,
-      type: stringParam(args, "searchType") || "auto",
-      numResults,
-    };
-    for (const key of ["category", "startPublishedDate", "endPublishedDate"] as const) {
-      const value = stringParam(args, key);
-      if (value) body[key] = value;
-    }
-    const includeDomains = normalizeWebDomains(args.includeDomains);
-    const excludeDomains = normalizeWebDomains(args.excludeDomains);
-    if (includeDomains.length) body.includeDomains = includeDomains;
-    if (excludeDomains.length) body.excludeDomains = excludeDomains;
-    const payload = await this.webJSON("exa", `${this.webProviderBaseURL("exa")}/search`, {
-      "x-api-key": this.webProviderAPIKey("exa"),
-    }, body);
-    return {
-      provider: "exa",
-      results: truncateWebResults(normalizeExaResults(payload.results, false), numResults, maxCharacters),
-      costUSD: exaCostUSD(payload) || 0.007,
-    };
-  }
-
-  private async exaFetch(
-    args: Record<string, unknown>,
-    targetURL: string,
-    maxCharacters: number,
-  ): Promise<WebProviderResult> {
-    const body: Record<string, unknown> = {
-      urls: [targetURL],
-      livecrawl: boolParam(args, "fresh") ? "always" : "fallback",
-      livecrawlTimeout: 15000,
-    };
-    switch (stringParam(args, "content")) {
-      case "highlights": {
-        const highlights: Record<string, unknown> = { numSentences: 4, highlightsPerUrl: 5 };
-        const query = stringParam(args, "query");
-        if (query) highlights.query = query;
-        body.highlights = highlights;
-        break;
-      }
-      case "summary": {
-        const query = stringParam(args, "query");
-        body.summary = query ? { query } : {};
-        break;
-      }
-      default:
-        body.text = { maxCharacters };
-    }
-    const payload = await this.webJSON("exa", `${this.webProviderBaseURL("exa")}/contents`, {
-      "x-api-key": this.webProviderAPIKey("exa"),
-    }, body);
-    return {
-      provider: "exa",
-      results: truncateWebResults(normalizeExaResults(payload.results, true), 1, maxCharacters),
-      costUSD: exaCostUSD(payload) || 0.001,
-    };
   }
 
   private async webFetch(args: Record<string, unknown>): Promise<unknown> {
-    const rawUrl = typeof args.url === "string" ? args.url.trim() : "";
-    if (!rawUrl) throw new Error("url is required");
-    const url = new URL(rawUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new Error("Only http and https URLs are supported");
-    }
-    const maxCharacters = clampCodeModeInteger(args.maxCharacters, 12_000, 500, 30_000);
-    const providerResult = await this.withWebProviderFallback("fetch", (provider) =>
-      this.webFetchWithProvider(provider, args, url.toString(), maxCharacters)
-    );
-    const text = formatWebResults(
-      providerResult.results,
-      maxCharacters,
-      `No content returned for ${url.toString()}.`,
-    );
-    return {
-      content: [{ type: "text", text }],
-      costUSD: providerResult.costUSD,
-      provider: providerResult.provider,
-      results: providerResult.results,
-      success: true,
-      url: url.toString(),
-      text,
-    };
+    return this.webSearchClient.fetch(args);
   }
 
   private async webSearch(args: Record<string, unknown>): Promise<unknown> {
-    const query = typeof args.query === "string" ? args.query.trim() : "";
-    if (!query) throw new Error("query is required");
-    const numResults = clampCodeModeInteger(args.numResults, 5, 1, 10);
-    const maxCharacters = clampCodeModeInteger(args.maxCharacters, 1200, 200, 8000);
-    const providerResult = await this.withWebProviderFallback("search", (provider) =>
-      this.webSearchWithProvider(provider, args, query, numResults, maxCharacters)
-    );
-    const text = formatWebResults(
-      providerResult.results,
-      maxCharacters,
-      `No results found for ${query}.`,
-    );
-    return {
-      content: [{ type: "text", text }],
-      costUSD: providerResult.costUSD,
-      provider: providerResult.provider,
-      results: providerResult.results,
-      success: true,
-      query,
-      text,
-    };
+    return this.webSearchClient.search(args);
   }
-}
-
-async function resolveCnameViaDoH(hostname: string): Promise<CnameLookupResult> {
-  const url = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=CNAME`;
-  try {
-    const resp = await fetch(url, {
-      headers: { Accept: "application/dns-json" },
-    });
-    if (!resp.ok) {
-      return {
-        status: "unavailable",
-        error: `DoH query failed with HTTP ${resp.status}`,
-        http_status: resp.status,
-      };
-    }
-    const data = await resp.json() as {
-      Status?: number;
-      Answer?: Array<{ type: number; data: string }>;
-    };
-    const dnsStatus = data.Status ?? 0;
-    const cname = data.Answer?.find((answer) => answer.type === 5);
-    if (!cname) {
-      if (dnsStatus !== 0 && dnsStatus !== 3) {
-        return {
-          status: "unavailable",
-          error: `DNS resolver returned status ${dnsStatus}`,
-          http_status: null,
-        };
-      }
-      return { status: "missing" };
-    }
-    return { status: "resolved", target: cname.data.replace(/\.$/, "") };
-  } catch (error) {
-    return {
-      status: "unavailable",
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function shouldReturnLastCodeModeLine(line: string): boolean {
-  const statement = line.trim().replace(/;$/, "").trim();
-  if (!statement) return false;
-  if (statement.endsWith("}")) return false;
-  return !/^(?:break|case|catch|class|const|continue|debugger|default|do|else|export|finally|for|function|if|import|let|return|switch|throw|try|var|while|with)\b/.test(statement);
-}
-
-export function prepareCodeModeUserCode(userCode: string): string {
-  if (!userCode.trim() || /\breturn\b/.test(userCode)) return userCode;
-
-  const trailingWhitespace = userCode.match(/\s*$/)?.[0] ?? "";
-  const body = userCode.slice(0, userCode.length - trailingWhitespace.length);
-  const lines = body.split("\n");
-  const lastCodeLineIndex = lines.findLastIndex((line) => {
-    const trimmed = line.trim();
-    return trimmed !== "" && !trimmed.startsWith("//");
-  });
-  if (lastCodeLineIndex < 0) return userCode;
-
-  const lastLine = lines[lastCodeLineIndex];
-  if (!shouldReturnLastCodeModeLine(lastLine)) return userCode;
-
-  const indent = lastLine.match(/^\s*/)?.[0] ?? "";
-  const expression = lastLine.trim().replace(/;$/, "").trim();
-  lines[lastCodeLineIndex] = `${indent}return ${expression};`;
-  return `${lines.join("\n")}${trailingWhitespace}`;
-}
-
-function codeModeWorkerModule(userCode: string): string {
-  const executableUserCode = prepareCodeModeUserCode(userCode);
-  return `${String.raw`
-import { WorkerEntrypoint } from "cloudflare:workers";
-
-const store = new Map();
-
-function stringifyOutput(value) {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2) ?? String(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function stringifyConsoleArg(value) {
-  if (typeof value === "string") return value;
-  if (value instanceof Error) return value.stack || value.message;
-  return stringifyOutput(value);
-}
-
-function createOutputConsole(output) {
-  const originalConsole = globalThis.console || {};
-  const capture = (...args) => {
-    output.push(args.map(stringifyConsoleArg).join(" "));
-  };
-  return Object.freeze({
-    ...originalConsole,
-    log: capture,
-    info: capture,
-    warn: capture,
-    error: capture,
-  });
-}
-
-function hardenTimingSurface() {
-  globalThis.performance = undefined;
-  globalThis.SharedArrayBuffer = undefined;
-  globalThis.Atomics = undefined;
-
-  const NativeDate = Date;
-  const coarseNow = () => Math.floor(NativeDate.now() / 1000) * 1000;
-  function CoarseDate(...args) {
-    if (new.target) {
-      return args.length === 0 ? new NativeDate(coarseNow()) : new NativeDate(...args);
-    }
-    return new NativeDate(coarseNow()).toString();
-  }
-  Object.setPrototypeOf(CoarseDate, NativeDate);
-  CoarseDate.prototype = NativeDate.prototype;
-  Object.defineProperty(CoarseDate, "now", { value: coarseNow });
-  Object.defineProperty(CoarseDate, "parse", { value: NativeDate.parse });
-  Object.defineProperty(CoarseDate, "UTC", { value: NativeDate.UTC });
-  globalThis.Date = CoarseDate;
-}
-
-function createConnectionsFacade(binding) {
-  function responseFromFetchPayload(payload) {
-    if (!payload || typeof payload !== "object" || typeof payload.status !== "number") {
-      return payload;
-    }
-    const headers = new Headers(payload.headers || {});
-    if (payload.truncated) headers.set("x-camelai-truncated", "true");
-    return new Response(payload.bodyText || "", {
-      status: payload.status,
-      statusText: payload.statusText || "",
-      headers,
-    });
-  }
-
-  async function serializeFetchInput(input) {
-    if (input instanceof Request) {
-      return {
-        input: input.url,
-        init: {
-          method: input.method,
-          headers: Object.fromEntries(input.headers.entries()),
-          body: input.method === "GET" || input.method === "HEAD" ? undefined : await input.text(),
-        },
-      };
-    }
-    return { input: String(input), init: {} };
-  }
-
-  function serializeFetchInit(init) {
-    if (!init || typeof init !== "object") return {};
-    const output = { ...init };
-    if (init.headers) {
-      output.headers = Object.fromEntries(new Headers(init.headers).entries());
-    }
-    return output;
-  }
-
-  return new Proxy({}, {
-    get(_target, connectionName) {
-      if (connectionName === "then") return undefined;
-      if (connectionName === "$methods") return () => binding.methods();
-      if (connectionName === "$find") return (query) => binding.find(query);
-      if (connectionName === "$test") return (query) => binding.test(query);
-      if (connectionName === "$list") return () => binding.list();
-      if (connectionName === "$get") return (connection) => binding.get(connection);
-      if (connectionName === "$tools") return (connection) => binding.tools(connection);
-      if (typeof connectionName !== "string") return undefined;
-
-      return new Proxy({}, {
-        get(_connectionTarget, methodName) {
-          if (methodName === "then") return undefined;
-          if (typeof methodName !== "string") return undefined;
-          return async (...args) => {
-            let input = args[0] ?? {};
-            if (methodName === "fetch") {
-              const serialized = await serializeFetchInput(args[0] ?? "");
-              input = {
-                ...serialized,
-                init: {
-                  ...serialized.init,
-                  ...serializeFetchInit(args[1]),
-                },
-              };
-            }
-            const result = await binding.__invoke({
-              connection: connectionName,
-              method: methodName,
-              input,
-            });
-            return methodName === "fetch" ? responseFromFetchPayload(result) : result;
-          };
-        },
-      });
-    },
-  });
-}
-
-async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load) {
-  "use strict";
-`}${executableUserCode}${String.raw`
-}
-
-export class CodeModeRunner extends WorkerEntrypoint {
-  async run() {
-    hardenTimingSurface();
-    const output = [];
-    globalThis.console = createOutputConsole(output);
-    const allTools = Object.freeze((await this.env.TOOLS.listTools()).map((tool) => Object.freeze({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    })));
-    const callTool = (name, args = {}) => this.env.TOOLS.callTool(name, args);
-    const tools = Object.freeze(Object.fromEntries(allTools.map((tool) => [tool.name, (args = {}) => callTool(tool.name, args)])));
-    const CONNECTIONS = this.env.CONNECTIONS;
-    const connections = createConnectionsFacade(CONNECTIONS);
-    const env = Object.freeze({ CONNECTIONS });
-    const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) });
-    const text = (value) => {
-      output.push(stringifyOutput(value));
-    };
-    const load = (key) => {
-      if (typeof key !== "string" || !key) throw new Error("load key must be a non-empty string");
-      return store.get(key);
-    };
-    const save = (key, value) => {
-      if (typeof key !== "string" || !key) throw new Error("store key must be a non-empty string");
-      store.set(key, value);
-    };
-
-    const result = await runUserCode(tools, CONNECTIONS, connections, env, context, allTools, text, save, load);
-    if (result !== undefined) output.push(stringifyOutput(result));
-    return { text: output.join("\n") };
-  }
-}
-`}`;
 }
 
 const CHAT_SOCKET_TAG = "chat";
@@ -2993,8 +1410,6 @@ const CAMELAI_SYSTEM_MESSAGE_TAG_REGEX =
   /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
-const RUNNER_PING_INTERVAL_MS = 10_000;
-const RUNNER_CLOSE_CODE_BYOK_CHANGED = 4001;
 const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
 
 interface PiTurnRecoveryRow {
@@ -3006,278 +1421,6 @@ interface PiTurnRecoveryRow {
   retry_count: number;
   started_at: number;
   updated_at: number;
-}
-
-/**
- * Last per-API-call prompt usage captured from stream_event.message_start.
- */
-export interface LastMessageStartUsage {
-  inputTokens: number;
-  cacheReadInputTokens: number;
-  cacheCreationInputTokens: number;
-  model: string | null;
-}
-
-function toFiniteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-/**
- * Extract contextWindow for the captured message_start model.
- * Falls back to the maximum contextWindow across modelUsage entries.
- */
-function extractContextWindowForModel(
-  sdkEvent: { modelUsage?: unknown },
-  model: string | null,
-): number {
-  if (!sdkEvent.modelUsage || typeof sdkEvent.modelUsage !== "object") return 0;
-
-  const entries = sdkEvent.modelUsage as Record<string, unknown>;
-
-  if (model && entries[model] && typeof entries[model] === "object") {
-    const contextWindow = toFiniteNumber(
-      (entries[model] as Record<string, unknown>).contextWindow,
-    );
-    if (contextWindow !== null && contextWindow > 0) {
-      return contextWindow;
-    }
-  }
-
-  let maxContextWindow = 0;
-  for (const usage of Object.values(entries)) {
-    if (!usage || typeof usage !== "object") continue;
-    const contextWindow = toFiniteNumber(
-      (usage as Record<string, unknown>).contextWindow,
-    );
-    if (contextWindow !== null && contextWindow > maxContextWindow) {
-      maxContextWindow = contextWindow;
-    }
-  }
-  return maxContextWindow;
-}
-
-export function extractContextWindowByModel(sdkEvent: {
-  modelUsage?: unknown;
-}): Record<string, number> {
-  const byModel: Record<string, number> = {};
-  if (!sdkEvent.modelUsage || typeof sdkEvent.modelUsage !== "object") {
-    return byModel;
-  }
-
-  for (const [model, usage] of Object.entries(
-    sdkEvent.modelUsage as Record<string, unknown>,
-  )) {
-    if (!usage || typeof usage !== "object") continue;
-    const contextWindow = toFiniteNumber(
-      (usage as Record<string, unknown>).contextWindow,
-    );
-    if (contextWindow !== null && contextWindow > 0) {
-      byModel[model] = contextWindow;
-    }
-  }
-
-  return byModel;
-}
-
-export function shallowEqualNumberMaps(
-  a: Record<string, number>,
-  b: Record<string, number>,
-): boolean {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-
-  for (const key of aKeys) {
-    if (a[key] !== b[key]) return false;
-  }
-
-  return true;
-}
-
-function calculateContextUsedPercent(
-  usage: LastMessageStartUsage,
-  contextWindow: number,
-): number {
-  const totalInput =
-    usage.inputTokens +
-    usage.cacheReadInputTokens +
-    usage.cacheCreationInputTokens;
-  return Math.max(
-    0,
-    Math.min(100, Math.round((totalInput / contextWindow) * 100)),
-  );
-}
-
-export interface ContextUsageTrackingState {
-  contextUsedPercent: number | null;
-  transientContextUsedPercent: number | null;
-  lastMessageStartUsage: LastMessageStartUsage | null;
-  usageIsPostCompaction: boolean;
-  cachedContextWindowByModel: Record<string, number>;
-}
-
-export interface ContextUsageSdkEvent {
-  type?: string;
-  subtype?: string;
-  modelUsage?: unknown;
-  event?: {
-    type?: string;
-    message?: {
-      usage?: unknown;
-      model?: unknown;
-    };
-  };
-}
-
-export interface ContextUsageTrackingUpdate {
-  nextState: ContextUsageTrackingState;
-  // `undefined` means "no realtime update to broadcast"; `null` means "clear indicator".
-  liveUsedPercent: number | null | undefined;
-  finalUsedPercent: number | null;
-  contextWindowCacheChanged: boolean;
-}
-
-export function applyContextUsageSdkEvent(
-  currentState: ContextUsageTrackingState,
-  sdkEvent: ContextUsageSdkEvent | undefined,
-): ContextUsageTrackingUpdate {
-  const nextState: ContextUsageTrackingState = {
-    contextUsedPercent: currentState.contextUsedPercent,
-    transientContextUsedPercent: currentState.transientContextUsedPercent,
-    lastMessageStartUsage: currentState.lastMessageStartUsage,
-    usageIsPostCompaction: currentState.usageIsPostCompaction,
-    cachedContextWindowByModel: currentState.cachedContextWindowByModel,
-  };
-
-  let liveUsedPercent: number | null | undefined = undefined;
-  let finalUsedPercent: number | null = null;
-  let contextWindowCacheChanged = false;
-
-  if (sdkEvent?.type === "stream_event") {
-    const streamEvent = sdkEvent.event;
-    if (streamEvent?.type === "message_start" && streamEvent.message?.usage) {
-      const usage = streamEvent.message.usage as Record<string, unknown>;
-      nextState.lastMessageStartUsage = {
-        inputTokens:
-          toFiniteNumber(usage.input_tokens) ??
-          toFiniteNumber(usage.inputTokens) ??
-          0,
-        cacheReadInputTokens:
-          toFiniteNumber(usage.cache_read_input_tokens) ??
-          toFiniteNumber(usage.cacheReadInputTokens) ??
-          0,
-        cacheCreationInputTokens:
-          toFiniteNumber(usage.cache_creation_input_tokens) ??
-          toFiniteNumber(usage.cacheCreationInputTokens) ??
-          0,
-        model:
-          typeof streamEvent.message.model === "string"
-            ? streamEvent.message.model
-            : null,
-      };
-      nextState.usageIsPostCompaction = true;
-
-      const model = nextState.lastMessageStartUsage.model;
-      const contextWindow = model
-        ? nextState.cachedContextWindowByModel[model]
-        : undefined;
-      if (
-        contextWindow &&
-        contextWindow > 0 &&
-        nextState.usageIsPostCompaction
-      ) {
-        const livePct = calculateContextUsedPercent(
-          nextState.lastMessageStartUsage,
-          contextWindow,
-        );
-        nextState.transientContextUsedPercent = livePct;
-        liveUsedPercent = livePct;
-      } else if (nextState.transientContextUsedPercent !== null) {
-        // New call usage arrived for an uncached model; clear stale in-turn value.
-        nextState.transientContextUsedPercent = null;
-        liveUsedPercent = nextState.contextUsedPercent;
-      }
-    }
-  }
-
-  if (sdkEvent?.type === "system" && sdkEvent.subtype === "compact_boundary") {
-    nextState.usageIsPostCompaction = false;
-    const hadTransientUsage = nextState.transientContextUsedPercent !== null;
-    nextState.transientContextUsedPercent = null;
-    if (hadTransientUsage) {
-      // Compact boundary invalidates in-turn usage; revert realtime state to canonical (or clear).
-      liveUsedPercent = nextState.contextUsedPercent;
-    }
-  }
-
-  if (sdkEvent?.type === "result") {
-    const contextWindowByModel = extractContextWindowByModel(sdkEvent);
-    if (Object.keys(contextWindowByModel).length > 0) {
-      const mergedContextWindowByModel = {
-        ...nextState.cachedContextWindowByModel,
-        ...contextWindowByModel,
-      };
-      if (
-        !shallowEqualNumberMaps(
-          mergedContextWindowByModel,
-          nextState.cachedContextWindowByModel,
-        )
-      ) {
-        nextState.cachedContextWindowByModel = mergedContextWindowByModel;
-        contextWindowCacheChanged = true;
-      }
-    }
-
-    if (nextState.lastMessageStartUsage && nextState.usageIsPostCompaction) {
-      let contextWindow = extractContextWindowForModel(
-        sdkEvent,
-        nextState.lastMessageStartUsage.model,
-      );
-      if (contextWindow <= 0 && nextState.lastMessageStartUsage.model) {
-        const cachedContextWindow =
-          nextState.cachedContextWindowByModel[
-            nextState.lastMessageStartUsage.model
-          ];
-        if (
-          typeof cachedContextWindow === "number" &&
-          cachedContextWindow > 0
-        ) {
-          contextWindow = cachedContextWindow;
-        }
-      }
-
-      if (contextWindow > 0) {
-        const contextUsedPercent = calculateContextUsedPercent(
-          nextState.lastMessageStartUsage,
-          contextWindow,
-        );
-        nextState.contextUsedPercent = contextUsedPercent;
-        finalUsedPercent = contextUsedPercent;
-      }
-    }
-
-    nextState.transientContextUsedPercent = null;
-    nextState.lastMessageStartUsage = null;
-    nextState.usageIsPostCompaction = true;
-  }
-
-  return {
-    nextState,
-    liveUsedPercent,
-    finalUsedPercent,
-    contextWindowCacheChanged,
-  };
-}
-
-export function resolveContextUsageForInit(
-  transientContextUsedPercent: number | null,
-  contextUsedPercent: number | null,
-  chatIsStreaming: boolean,
-): number | null {
-  if (!chatIsStreaming) {
-    return contextUsedPercent;
-  }
-  return transientContextUsedPercent ?? contextUsedPercent;
 }
 
 const HEADER_USER_NAME = "X-Chiridion-User-Name";
@@ -3309,22 +1452,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private contextUsedPercent: number | null = null;
   // Ephemeral in-turn value (never persisted).
   private transientContextUsedPercent: number | null = null;
-  private lastMessageStartUsage: LastMessageStartUsage | null = null;
   private usageIsPostCompaction: boolean = true;
   private cachedContextWindowByModel: Record<string, number> = {};
   private chatIsStreaming: boolean = false;
   private assistantCompletionRecordedAt: number | null = null;
-  private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
-  private pendingQuestionWaiters: Map<string, PendingQuestionWaiter> = new Map();
-  private pendingConnectionSetupWaiters: Map<string, PendingConnectionSetupWaiter> =
-    new Map();
+  private readonly browserPrompts = new BrowserPromptCoordinator({
+    hasAvailableBrowserUser: () => this.hasAvailableBrowserUser(),
+    broadcast: (message) => this.broadcastChat(message),
+    sendDirect: (ws, message) => this.sendDirect(ws, message),
+    askUserQuestionUnavailableMessage:
+      DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
+    questionTimeoutMs: 30 * 60 * 1000,
+    connectionSetupTimeoutMs: ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS,
+  });
   private pendingExternalTurn: PendingExternalTurn | null = null;
   private titleGenerationInFlight: boolean = false;
   private codexSessionId: string | null = null;
   private activeTurnUserId: string | null = null;
-  private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
-  private runnerPingTimer: number | null = null;
   private lastRunnerSeq: number = 0;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
   private piSessionPromise: Promise<PiCoreAgent> | null = null;
@@ -3353,7 +1498,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       workspaceId: context?.workspaceId || "",
       orgId: context?.orgId || "",
       chatSockets: this.getChatSockets().length,
-      hasRunnerSocket: Boolean(this.runnerSocket),
       hasRunnerConnectPromise: Boolean(this.runnerConnectPromise),
       ...details,
     };
@@ -3855,7 +1999,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       remainingChatSockets: this.getChatSockets().length,
     });
     if (this.getChatSockets().length === 0) {
-      if (this.pendingQuestions.size > 0) {
+      if (this.browserPrompts.pendingQuestionCount > 0) {
         this.markRunnerActivity("chat_socket_closed_question_unavailable");
         this.ctx.waitUntil(
           this.autoAnswerAllPendingQuestionsAsUnavailable(
@@ -4125,11 +2269,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   // Set thread title and broadcast to connected chat clients
   async setTitle(title: string): Promise<void> {
-    this.broadcastRealtime({ type: "title_updated", title });
+    this.broadcastChat({ type: "title_updated", title });
   }
 
   async setModel(model: LlmModel, provider?: 'claude' | 'codex'): Promise<void> {
-    this.broadcastRealtime({ type: 'thread_model_updated', model, provider });
+    this.broadcastChat({ type: 'thread_model_updated', model, provider });
   }
 
   async setTodoState(todos: unknown[]): Promise<void> {
@@ -4139,7 +2283,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } else {
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
     }
-    this.broadcastRealtime({ type: 'todo_state', todos: this.currentTodos });
+    this.broadcastChat({ type: 'todo_state', todos: this.currentTodos });
   }
 
   getTodoState(): unknown[] {
@@ -4160,43 +2304,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     questions?: unknown[];
     toolUseId?: string;
   }): Promise<Record<string, unknown>> {
-    const questions = normalizeAskQuestions(Array.isArray(input.questions) ? input.questions : []);
-    if (questions.length === 0) {
-      throw new Error("questions is required");
-    }
-    if (!this.hasAvailableBrowserUser()) {
-      return {
-        unavailable_reason: DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
-      };
-    }
-    const questionId = crypto.randomUUID();
-    this.pendingQuestions.set(questionId, {
-      questionId,
-      toolUseId: input.toolUseId,
-      questions,
-    });
-    this.broadcastRealtime({
-      type: "ask_user_question",
-      questionId,
-      toolUseId: input.toolUseId,
-      questions,
-    });
-    return new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.pendingQuestionWaiters.delete(questionId);
-        this.pendingQuestions.delete(questionId);
-        this.broadcastRealtime({
-          type: "question_answered",
-          questionId,
-        });
-        reject(new Error("ask_user_question timed out"));
-      }, 30 * 60 * 1000);
-      this.pendingQuestionWaiters.set(questionId, {
-        resolve,
-        reject,
-        timeoutId,
-      });
-    });
+    return this.browserPrompts.askUserQuestion(input);
   }
 
   async promptConnectionSetup(input: {
@@ -4206,54 +2314,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     instructions?: string;
     dynamicSchema?: DynamicIntegrationSchema;
   }): Promise<ConnectionSetupResponse> {
-    const integrationType = input.integrationType?.trim();
-    if (!integrationType) {
-      throw new Error("integrationType is required");
-    }
-    if (!this.hasAvailableBrowserUser()) {
-      return { requestId: "", cancelled: true };
-    }
-    const requestId = crypto.randomUUID();
-    const info: PendingConnectionSetupPromptInfo = {
-      createdAt: Date.now(),
-      integrationType,
-      suggestedName: input.suggestedName,
-      message: input.message,
-      instructions: input.instructions,
-      dynamicSchema: input.dynamicSchema,
-    };
-    const pendingResponse = new Promise<ConnectionSetupResponse>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.pendingConnectionSetupWaiters.delete(requestId);
-        this.broadcastRealtime({
-          type: "connection_setup_answered",
-          requestId,
-        });
-        reject(new Error("Connection setup timed out"));
-      }, ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS);
-      this.pendingConnectionSetupWaiters.set(requestId, {
-        resolve,
-        reject,
-        timeoutId,
-        info,
-      });
-    });
-    this.broadcastRealtime({
-      type: "connection_setup_prompt",
-      requestId,
-      integrationType,
-      suggestedName: input.suggestedName,
-      message: input.message,
-      instructions: input.instructions,
-      dynamicSchema: input.dynamicSchema,
-    });
-    return pendingResponse;
+    return this.browserPrompts.promptConnectionSetup(input);
   }
 
   async receiveConnectionSetupResponse(
     response: ConnectionSetupResponse,
   ): Promise<{ accepted: boolean }> {
-    return await this.handleConnectionSetupResponse(response);
+    return this.handleConnectionSetupResponse(response);
   }
 
   async runCodeModeSubagent(
@@ -4294,7 +2361,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     this.currentTodos = [];
     this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
-    this.broadcastRealtime({ type: "todo_state", todos: completedTodos });
+    this.broadcastChat({ type: "todo_state", todos: completedTodos });
   }
 
   getLegacyClaudeSessionId(): string | null {
@@ -4519,7 +2586,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
 
     this.chatIsStreaming = false;
-    this.pendingQuestions.clear();
+    this.browserPrompts.clearQuestions();
     this.pendingExternalTurn = null;
     this.titleGenerationInFlight = false;
     this.activeTurnUserId = null;
@@ -4561,28 +2628,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async refreshRunnerConfig(): Promise<void> {
     await this.withRunnerTransitionLock('refresh_runner_config', async () => {
       this.disposePiSession();
-      if (!this.runnerSocket) {
-        return;
-      }
-      try {
-        this.runnerSocket.close(1000, 'runner_config_changed');
-      } catch {
-        this.trace('refresh_runner_config_close_failed');
-      }
     });
   }
 
   async byokChanged(): Promise<void> {
     await this.withRunnerTransitionLock('byok_changed', async () => {
       this.disposePiSession();
-      if (!this.runnerSocket) {
-        return;
-      }
-      try {
-        this.runnerSocket.close(RUNNER_CLOSE_CODE_BYOK_CHANGED, 'byok_credentials_changed');
-      } catch {
-        this.trace('byok_changed_close_failed');
-      }
     });
   }
 
@@ -4819,65 +2870,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private upsertPiCoreMessages(messages: AgentMessage[]): void {
-    if (messages.length === 0) return;
-    this.ensurePiCoreTables();
-    const rows = this.ctx.storage.sql
-      .exec<{ idx: number; payload: string }>(
-        "SELECT idx, payload FROM pi_core_messages ORDER BY idx ASC",
-      )
-      .toArray();
-    const existingByKey = new Map<string, number>();
-    let nextIndex = 0;
-    for (const row of rows) {
-      nextIndex = Math.max(nextIndex, Math.floor(Number(row.idx) || 0) + 1);
-      try {
-        const parsed = JSON.parse(row.payload) as AgentMessage;
-        if (parsed && typeof parsed === "object" && "role" in parsed) {
-          existingByKey.set(this.piCoreMessageKey(sanitizePiProviderMessage(parsed)), row.idx);
-        }
-      } catch {
-        // Ignore corrupt rows here; loadPiCoreMessages skips them too.
-      }
-    }
-
-    const now = Date.now();
-    let updatedCount = 0;
-    let insertedCount = 0;
-    for (const message of messages) {
-      const sanitized = sanitizePiProviderMessage(message);
-      const key = this.piCoreMessageKey(sanitized);
-      const existingIndex = existingByKey.get(key);
-      if (existingIndex !== undefined) {
-        this.ctx.storage.sql.exec(
-          "UPDATE pi_core_messages SET payload = ? WHERE idx = ?",
-          JSON.stringify(sanitized),
-          existingIndex,
-        );
-        updatedCount += 1;
-        continue;
-      }
-
-      this.ctx.storage.sql.exec(
-        "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
-        nextIndex,
-        JSON.stringify(sanitized),
-        now,
-      );
-      existingByKey.set(key, nextIndex);
-      nextIndex += 1;
-      insertedCount += 1;
-    }
-    this.recordChatThreadObservabilityEvent("pi_core_messages_upserted", {
-      operation: "upsert",
-      status: "ok",
-      count: insertedCount + updatedCount,
-      size: rows.length,
-      insertedCount,
-      updatedCount,
-    });
-  }
-
   private loadPiTurnRecovery(): PiTurnRecoveryRow | null {
     this.ensurePiCoreTables();
     const row = this.ctx.storage.sql
@@ -5006,11 +2998,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    const userMessage: AgentMessage = {
-      role: "user",
-      content: pendingPiTurn.user_content,
-      timestamp: pendingPiTurn.user_timestamp || pendingPiTurn.started_at,
-    };
     // The original user message is already captured in the in-flight buffer
     // by startPiTurnRecovery; runPi will fold it into the recovery context
     // message on the next session boot. Re-appending here would duplicate
@@ -5046,31 +3033,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     };
-  }
-
-  private mergePiCoreMessages(
-    existing: AgentMessage[] | undefined,
-    incoming: AgentMessage[] | undefined,
-  ): AgentMessage[] {
-    const merged: AgentMessage[] = [];
-    const seen = new Set<string>();
-    const push = (message: AgentMessage) => {
-      const record = message as unknown as Record<string, unknown>;
-      const key = [
-        record.role,
-        typeof record.timestamp === "number" ? record.timestamp : "",
-        typeof record.responseId === "string" ? record.responseId : "",
-        typeof record.toolCallId === "string" ? record.toolCallId : "",
-        JSON.stringify(record.content ?? null),
-      ].join(":");
-      if (seen.has(key)) return;
-      seen.add(key);
-      merged.push(message);
-    };
-
-    for (const message of existing ?? []) push(message);
-    for (const message of incoming ?? []) push(message);
-    return merged;
   }
 
   private piProviderErrorMetadata(message: string): {
@@ -5611,22 +3573,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private async handleConnectionSetupResponse(
     response: ConnectionSetupResponse,
   ): Promise<{ accepted: boolean }> {
-    const nativeWaiter = this.pendingConnectionSetupWaiters.get(response.requestId);
-    if (response.requestId && nativeWaiter) {
-      this.pendingConnectionSetupWaiters.delete(response.requestId);
-      clearTimeout(nativeWaiter.timeoutId);
-      nativeWaiter.resolve(response);
-      this.broadcastRealtime({
-        type: "connection_setup_answered",
+    const result = this.browserPrompts.answerConnectionSetup(response);
+    if (!result.accepted) {
+      console.warn("[ChatThreadDO] Received connection setup response with no pending waiter", {
         requestId: response.requestId,
       });
-      return { accepted: true };
     }
-
-    console.warn("[ChatThreadDO] Received connection setup response with no pending waiter", {
-      requestId: response.requestId,
-    });
-    return { accepted: false };
+    return result;
   }
 
   private captureChatContextFromRequest(
@@ -5744,9 +3697,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       version: this.previewVersion,
       refreshTabId: null,
     });
-    this.sendPendingPromptsToWebSocket(ws);
+    this.browserPrompts.sendPendingPromptsToWebSocket(ws);
 
-    for (const pending of this.pendingQuestions.values()) {
+    for (const pending of this.browserPrompts.pendingQuestionPrompts()) {
       this.sendDirect(ws, {
         type: "ask_user_question",
         questionId: pending.questionId,
@@ -5780,7 +3733,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       incomingThreadId,
       replayFromEventId: lastEventId,
       bufferedEvents: this.chatEventBuffer.length,
-      pendingQuestions: this.pendingQuestions.size,
+      pendingQuestions: this.browserPrompts.pendingQuestionCount,
       currentTodos: this.currentTodos.length,
       chatIsStreaming: this.chatIsStreaming,
     });
@@ -5818,9 +3771,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     if (data.type === "ping") {
       this.sendDirect(ws, { type: "pong", ts: data.ts });
-      if (this.runnerSocket) {
-        this.sendRunnerCommand({ type: "ping", ts: data.ts });
-      }
       return;
     }
 
@@ -6109,16 +4059,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    const nativeWaiter = this.pendingQuestionWaiters.get(data.questionId);
-    if (nativeWaiter) {
-      this.pendingQuestionWaiters.delete(data.questionId);
-      this.pendingQuestions.delete(data.questionId);
-      clearTimeout(nativeWaiter.timeoutId);
-      this.broadcastRealtime({
-        type: "question_answered",
-        questionId: data.questionId,
-      });
-      nativeWaiter.resolve(data.answers);
+    if (this.browserPrompts.answerQuestion(data)) {
       return;
     }
 
@@ -6309,7 +4250,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       typeof options?.refreshTabId === "string" && options.refreshTabId
         ? options.refreshTabId
         : null;
-    this.broadcastRealtime({
+    this.broadcastChat({
       type: "preview_state",
       target: this.previewTarget,
       tabs: this.previewTabs,
@@ -6340,15 +4281,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (value && this.currentTodos.length > 0) {
       this.currentTodos = [];
       this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
-      this.broadcastRealtime({ type: "todo_state", todos: [] });
+      this.broadcastChat({ type: "todo_state", todos: [] });
     }
     if (statusChanged) {
-      this.broadcastRealtime({ type: "streaming_state", isStreaming: value });
+      this.broadcastChat({ type: "streaming_state", isStreaming: value });
     }
     const context = this.chatContext;
     if (context?.workspaceId && context.threadId) {
       if (shouldRecordCompletion) {
-        const completedAt = normalizeCompletionTimestamp(options.completedAt);
+        const completedAt =
+          typeof options.completedAt === "number" &&
+          Number.isFinite(options.completedAt)
+            ? options.completedAt
+            : Date.now();
         this.assistantCompletionRecordedAt = completedAt;
         this.ctx.waitUntil(
           this.recordThreadAssistantCompletion(context, completedAt).catch((error) => {
@@ -6512,7 +4457,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return { status: "busy" };
     }
 
-    const existingPendingQuestion = this.getOldestPendingQuestion();
+    const existingPendingQuestion = this.browserPrompts.getOldestPendingQuestion();
     if (existingPendingQuestion) {
       if (this.hasAvailableBrowserUser()) {
         return { status: "busy" };
@@ -6594,11 +4539,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return this.getChatSockets().length > 0;
   }
 
-  private getOldestPendingQuestion(): PendingQuestionInfo | null {
-    const iterator = this.pendingQuestions.values().next();
-    return iterator.done ? null : iterator.value;
-  }
-
   private updateExternalChatContext(payload: {
     threadId?: string;
     workspaceId?: string;
@@ -6673,7 +4613,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       },
     });
     if (sent) {
-      this.pendingQuestions.delete(questionId);
+      this.browserPrompts.deletePendingQuestion(questionId);
     }
     return sent;
   }
@@ -6681,7 +4621,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private async autoAnswerAllPendingQuestionsAsUnavailable(
     unavailableMessage: string,
   ): Promise<void> {
-    const questionIds = [...this.pendingQuestions.keys()];
+    const questionIds = this.browserPrompts.pendingQuestionIds();
     for (const questionId of questionIds) {
       try {
         await this.autoAnswerPendingQuestionAsUnavailable(
@@ -6697,23 +4637,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           },
         );
       }
-    }
-  }
-
-  private clearPendingQuestions(reason: string): void {
-    if (this.pendingQuestions.size === 0) return;
-
-    const questionIds = [...this.pendingQuestions.keys()];
-    this.pendingQuestions.clear();
-    this.trace("pending_questions_cleared", {
-      reason,
-      count: questionIds.length,
-    });
-    for (const questionId of questionIds) {
-      this.broadcastRealtime({
-        type: "question_answered",
-        questionId,
-      });
     }
   }
 
@@ -6772,26 +4695,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     return result;
-  }
-
-  private extractAssistantTextFromContent(content: unknown): string {
-    if (typeof content === "string") {
-      return content.trim();
-    }
-    if (!Array.isArray(content)) {
-      return "";
-    }
-
-    const textBlocks: string[] = [];
-    for (const block of content) {
-      if (!block || typeof block !== "object") continue;
-      const typed = block as { type?: unknown; text?: unknown };
-      if (typed.type === "text" && typeof typed.text === "string") {
-        textBlocks.push(typed.text);
-      }
-    }
-
-    return textBlocks.join("\n").trim();
   }
 
   private async updateThreadMetadataForUserMessage(messageContent: string): Promise<void> {
@@ -6868,11 +4771,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private async ensureRunnerConnectedUnlocked(): Promise<void> {
     if (this.piSession) {
       this.trace("ensure_runner_connected_pi_already_connected");
-      return;
-    }
-    if (this.runnerSocket) {
-      console.log(`[ChatThreadDO] ensureRunnerConnected: already connected`);
-      this.trace("ensure_runner_connected_already_connected");
       return;
     }
     if (this.runnerConnectPromise) {
@@ -7972,43 +5870,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       },
     ];
 
-    const passthroughToolNames = [
-      "AskUserQuestion",
-      "ask_user_question",
-      "TodoWrite",
-      "set_preview",
-      "list_apps",
-      "set_app_visibility",
-      "get_latest_logs",
-      "list_scheduled_prompts",
-      "create_scheduled_prompt",
-      "update_scheduled_prompt",
-      "delete_scheduled_prompt",
-      "run_scheduled_prompt_now",
-      "list_integrations",
-      "list_integration_types",
-      "create_integration",
-      "prompt_connection_setup",
-      "get_custom_domain",
-      "set_custom_domain",
-      "remove_custom_domain",
-      "retry_custom_domain_hostnames",
-      "WebSearch",
-      "web_search",
-      "WebFetch",
-      "web_fetch",
-    ];
-    const passthroughByName = new Map(
-      CODE_MODE_TOOL_DEFINITIONS.map((definition) => [definition.name, definition]),
-    );
-    for (const name of passthroughToolNames) {
-      const definition = passthroughByName.get(name);
-      if (!definition) continue;
+    for (const definition of CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS) {
+      const { name } = definition;
       definitions.push({
         name,
         label: name,
         description: definition.description,
-        parameters: codeModePiToolParameters(name),
+        parameters: definition.parameters,
         execute: async (toolUseId, params) => {
           const raw = params && typeof params === "object"
             ? params as Record<string, unknown>
@@ -8395,24 +6263,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return "";
   }
 
-  private piToolResultContent(result: unknown): Array<Record<string, unknown>> {
-    if (result && typeof result === "object" && !Array.isArray(result)) {
-      const content = (result as Record<string, unknown>).content;
-      if (Array.isArray(content)) {
-        return content.flatMap((item): Array<Record<string, unknown>> => {
-          if (!item || typeof item !== "object") return [];
-          const part = item as Record<string, unknown>;
-          if (part.type === "text" && typeof part.text === "string") {
-            return [{ type: "text", text: part.text }];
-          }
-          return [];
-        });
-      }
-    }
-    const text = this.piToolResultText(result) || this.safeLegacyString(result);
-    return text ? [{ type: "text", text }] : [];
-  }
-
   private piRuntimeContentItems(result: unknown): unknown[] {
     if (!result || typeof result !== "object") return [];
     const content = (result as Record<string, unknown>).content;
@@ -8776,376 +6626,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private attachRunnerSocket(ws: WebSocket): void {
-    this.runnerSocket = ws;
-    this.trace("runner_socket_attached");
-
-    ws.addEventListener("message", (event: MessageEvent) => {
-      if (typeof event.data !== "string") return;
-      try {
-        const parsed = JSON.parse(event.data) as Record<string, unknown>;
-        this.trace("runner_socket_message", {
-          type: typeof parsed.type === "string" ? parsed.type : "unknown",
-          bytes: event.data.length,
-        });
-        this.handleRunnerEvent(parsed);
-      } catch {
-        // Non-JSON messages from the control plane; ignore.
-        this.trace("runner_socket_message_non_json", {
-          bytes: event.data.length,
-        });
-      }
-    });
-
-    ws.addEventListener("close", (event) => {
-      this.ctx.waitUntil(
-        this.withRunnerTransitionLock("runner_socket_close", async () => {
-          const wasActiveSocket = this.runnerSocket === ws;
-          if (!wasActiveSocket) {
-            this.trace("runner_socket_closed_stale", {
-              code: event.code,
-              reason: event.reason || "",
-            });
-            return;
-          }
-
-          this.stopRunnerPingLoop("runner_socket_close");
-          this.runnerSocket = null;
-
-          console.log(
-            `[ChatThreadDO] runner websocket closed (code=${event.code})`,
-          );
-          this.trace("runner_socket_closed", {
-            code: event.code,
-            reason: event.reason || "",
-          });
-
-          this.setChatIsStreaming(false);
-          this.setActiveTurnUserId(null);
-          this.clearPendingQuestions("runner_socket_close");
-          this.resolvePendingExternalTurn({
-            status: "error",
-            error:
-              event.code === RUNNER_CLOSE_CODE_BYOK_CHANGED
-                ? "BYOK credentials changed during turn"
-                : "Runner websocket closed",
-          });
-        }).catch((err) => {
-          console.error(
-            "[ChatThreadDO] runner socket close transition failed",
-            err,
-          );
-        }),
-      );
-    });
-
-    ws.addEventListener("error", (err) => {
-      if (this.runnerSocket === ws) {
-        this.stopRunnerPingLoop("runner_socket_error");
-      }
-      console.error("[ChatThreadDO] runner websocket error", err);
-      this.trace("runner_socket_error", {
-        error: String(err),
-      });
-    });
-
-    // Accept after handlers are attached so no early messages are lost.
-    ws.accept();
-    this.startRunnerPingLoop();
-  }
-
-  private handleRunnerEvent(event: Record<string, unknown>): void {
-    const eventType = typeof event.type === "string" ? event.type : "";
-    const seq =
-      typeof event.seq === "number" && Number.isFinite(event.seq)
-        ? Math.max(0, Math.floor(event.seq))
-        : null;
-
-    if (seq !== null) {
-      if (seq <= this.lastRunnerSeq) {
-        this.trace("runner_event_deduped", {
-          seq,
-          lastRunnerSeq: this.lastRunnerSeq,
-          eventType: eventType || "unknown",
-        });
-        return;
-      }
-      this.lastRunnerSeq = seq;
-      this.ctx.storage.kv.put(CHAT_RUNNER_LAST_SEQ_KEY, this.lastRunnerSeq);
-    }
-
-    this.trace("handle_runner_event", {
-      eventType: eventType || "unknown",
-      seq,
-    });
-
-    if (eventType === "pong") {
-      this.trace("runner_pong_received", {
-        ts: typeof event.ts === "number" ? event.ts : null,
-      });
-      return;
-    }
-
-    if (eventType === "replay_gap") {
-      this.trace("runner_replay_gap", {
-        oldestSeq: typeof event.oldestSeq === "number" ? event.oldestSeq : null,
-        newestSeq: typeof event.newestSeq === "number" ? event.newestSeq : null,
-        requestedAfterSeq:
-          typeof event.requestedAfterSeq === "number"
-            ? event.requestedAfterSeq
-            : null,
-      });
-      return;
-    }
-
-    if (eventType === "control") return;
-
-    if (eventType === "error") {
-      console.error(
-        `[ChatThreadDO] runner error: ${JSON.stringify({ error: event.error, source: event.source }).slice(0, 500)}`,
-      );
-      this.setChatIsStreaming(false);
-      this.setActiveTurnUserId(null);
-      this.completeTodoStateForTurnEnd();
-      this.resolvePendingExternalTurn({
-        status: "error",
-        error: typeof event.error === "string" ? event.error : "Runner error",
-      });
-    }
-
-    if (eventType === 'assistant_delta') {
-      return;
-    }
-
-    if (eventType === 'todo_state') {
-      const todos = event.todos;
-      if (Array.isArray(todos)) {
-        this.currentTodos = normalizeTodoItems(todos);
-        if (this.currentTodos.length > 0) {
-          this.ctx.storage.kv.put(CHAT_TODOS_KEY, this.currentTodos);
-        } else if (typeof this.ctx.storage.kv.delete === "function") {
-          this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
-        }
-      }
-    }
-
-    if (eventType === "active_turn_identity") {
-      this.setActiveTurnUserId(
-        typeof event.userId === "string" ? event.userId : null,
-      );
-      return;
-    }
-
-    if (eventType === "ask_user_question") {
-      const questionId =
-        typeof event.questionId === "string" ? event.questionId : "";
-      const questions = Array.isArray(event.questions) ? event.questions : [];
-      if (questionId && questions.length > 0) {
-        if (this.pendingQuestions.has(questionId)) {
-          this.trace("runner_question_duplicate", { questionId });
-          return;
-        }
-
-        this.pendingQuestions.set(questionId, {
-          questionId,
-          toolUseId:
-            typeof event.toolUseId === "string" ? event.toolUseId : undefined,
-          questions,
-        });
-
-        if (!this.hasAvailableBrowserUser()) {
-          this.markRunnerActivity("question_unavailable_no_browser");
-          this.ctx.waitUntil(
-            this.autoAnswerPendingQuestionAsUnavailable(
-              questionId,
-              DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
-            ).catch((err) => {
-              console.error(
-                "[ChatThreadDO] failed to auto-answer unavailable ask_user_question",
-                err,
-              );
-            }),
-          );
-          return;
-        }
-
-        if (this.pendingExternalTurn) {
-          this.markRunnerActivity("external_question_waiting_browser");
-          this.resolvePendingExternalTurn({
-            status: "busy",
-          });
-        }
-      }
-    }
-
-    if (eventType === "question_answered") {
-      const questionId =
-        typeof event.questionId === "string" ? event.questionId : "";
-      if (questionId) {
-        this.pendingQuestions.delete(questionId);
-      }
-    }
-
-    if (eventType === 'session_id') {
-      const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
-      if (sessionId) {
-        this.codexSessionId = sessionId;
-        this.ctx.storage.kv.put(CHAT_CODEX_SESSION_ID_KEY, sessionId);
-      }
-      return;
-    }
-
-    if (eventType === 'sdk_event') {
-      const sdkEvent = event.event as {
-        type?: string;
-        subtype?: string;
-        modelUsage?: unknown;
-        message?: { content?: unknown };
-        event?: {
-          type?: string;
-          message?: {
-            usage?: unknown;
-            model?: unknown;
-          };
-          delta?: {
-            type?: string;
-            text?: string;
-          };
-        };
-      } | undefined;
-
-      const contextUsageUpdate = applyContextUsageSdkEvent(
-        {
-          contextUsedPercent: this.contextUsedPercent,
-          transientContextUsedPercent: this.transientContextUsedPercent,
-          lastMessageStartUsage: this.lastMessageStartUsage,
-          usageIsPostCompaction: this.usageIsPostCompaction,
-          cachedContextWindowByModel: this.cachedContextWindowByModel,
-        },
-        sdkEvent,
-      );
-      this.contextUsedPercent = contextUsageUpdate.nextState.contextUsedPercent;
-      this.transientContextUsedPercent =
-        contextUsageUpdate.nextState.transientContextUsedPercent;
-      this.lastMessageStartUsage =
-        contextUsageUpdate.nextState.lastMessageStartUsage;
-      this.usageIsPostCompaction =
-        contextUsageUpdate.nextState.usageIsPostCompaction;
-      this.cachedContextWindowByModel =
-        contextUsageUpdate.nextState.cachedContextWindowByModel;
-
-      if (contextUsageUpdate.contextWindowCacheChanged) {
-        this.ctx.storage.kv.put(
-          CHAT_CONTEXT_WINDOW_BY_MODEL_KEY,
-          this.cachedContextWindowByModel,
-        );
-      }
-
-      if (contextUsageUpdate.liveUsedPercent !== undefined) {
-        this.broadcastRealtime({
-          type: "context_usage_state",
-          usedPercent: contextUsageUpdate.liveUsedPercent,
-        });
-      }
-
-      if (contextUsageUpdate.finalUsedPercent !== null) {
-        this.ctx.storage.kv.put(
-          CHAT_CONTEXT_USED_PERCENT_KEY,
-          contextUsageUpdate.finalUsedPercent,
-        );
-        this.broadcastRealtime({
-          type: "context_usage_state",
-          usedPercent: contextUsageUpdate.finalUsedPercent,
-        });
-      }
-
-      if (sdkEvent?.type === "stream_event" && this.pendingExternalTurn) {
-        const streamEvent = sdkEvent.event;
-        if (streamEvent?.type === "message_start") {
-          this.pendingExternalTurn.streamingText = "";
-        }
-        if (
-          streamEvent?.type === "content_block_delta" &&
-          streamEvent.delta?.type === "text_delta"
-        ) {
-          this.pendingExternalTurn.streamingText +=
-            streamEvent.delta.text || "";
-        }
-      }
-
-      if (sdkEvent?.type === "assistant" && this.pendingExternalTurn) {
-        const assistantText = this.extractAssistantTextFromContent(
-          sdkEvent.message?.content,
-        );
-        if (assistantText) {
-          this.pendingExternalTurn.latestAssistantText = assistantText;
-        }
-      }
-
-      if (sdkEvent?.type === "result") {
-        this.setChatIsStreaming(false, { markUnread: true });
-        this.setActiveTurnUserId(null);
-        this.completeTodoStateForTurnEnd();
-        this.resolvePendingExternalTurn({ status: "result" });
-      }
-
-    }
-
-    if (eventType === 'runtime_event') {
-      const runtimeEvent = event.event;
-
-      const method =
-        runtimeEvent && typeof runtimeEvent === 'object' && 'method' in (runtimeEvent as Record<string, unknown>)
-          ? (runtimeEvent as { method?: unknown }).method
-          : null;
-
-      if (method === 'turn/completed') {
-        this.setChatIsStreaming(false, { markUnread: true });
-        this.setActiveTurnUserId(null);
-        this.completeTodoStateForTurnEnd();
-      }
-    }
-
-    if (eventType === 'result') {
-      this.setChatIsStreaming(false, { markUnread: true });
-      this.setActiveTurnUserId(null);
-      this.completeTodoStateForTurnEnd();
-      const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
-      if (sessionId) {
-        this.codexSessionId = sessionId;
-        this.ctx.storage.kv.put(CHAT_CODEX_SESSION_ID_KEY, sessionId);
-      }
-      this.resolvePendingExternalTurn({
-        status: 'result',
-        reply: typeof event.result === 'string' ? event.result : undefined,
-      });
-      return;
-    }
-
-    if (eventType === "session" || eventType === "ready") {
-      if (
-        eventType === "ready" &&
-        this.pendingQuestions.size > 0 &&
-        !this.hasAvailableBrowserUser()
-      ) {
-        this.ctx.waitUntil(
-          this.autoAnswerAllPendingQuestionsAsUnavailable(
-            DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
-          ).catch((err) => {
-            console.error(
-              "[ChatThreadDO] failed to retry unavailable ask_user_question auto-answers",
-              err,
-            );
-          }),
-        );
-      }
-      // These are synthesized by ChatThreadDO on init.
-      return;
-    }
-
-    this.pushChatEvent(event);
-  }
-
   private sendRunnerCommand(message: Record<string, unknown>): boolean {
     if (this.piSession) {
       const type = typeof message.type === "string" ? message.type : "unknown";
@@ -9216,20 +6696,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
     }
 
-    if (!this.runnerSocket) return false;
-    try {
-      this.runnerSocket.send(JSON.stringify(message));
-      this.trace("send_runner_command", {
-        type: typeof message.type === "string" ? message.type : "unknown",
-      });
-      return true;
-    } catch {
-      this.runnerSocket = null;
-      this.trace("send_runner_command_failed", {
-        type: typeof message.type === "string" ? message.type : "unknown",
-      });
-      return false;
-    }
+    return false;
   }
 
   private async refreshPiSessionModel(): Promise<void> {
@@ -9238,22 +6705,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     const current = await this.piModelResolver();
     this.piSession.state.model = current.model;
-  }
-
-  private startRunnerPingLoop(): void {
-    this.stopRunnerPingLoop("restart");
-    this.runnerPingTimer = setInterval(() => {
-      const sent = this.sendRunnerCommand({ type: "ping", ts: Date.now() });
-      this.trace(sent ? "runner_ping_sent" : "runner_ping_send_failed");
-    }, RUNNER_PING_INTERVAL_MS) as unknown as number;
-    this.trace("runner_ping_started", { intervalMs: RUNNER_PING_INTERVAL_MS });
-  }
-
-  private stopRunnerPingLoop(reason: string): void {
-    if (this.runnerPingTimer === null) return;
-    clearInterval(this.runnerPingTimer);
-    this.runnerPingTimer = null;
-    this.trace("runner_ping_stopped", { reason });
   }
 
   private emitChatError(message: string): void {
@@ -9353,10 +6804,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private broadcastRealtime(message: object): void {
-    this.broadcastChat(message);
-  }
-
   private sendDirect(ws: WebSocket, message: object): void {
     try {
       const json = JSON.stringify(message);
@@ -9387,26 +6834,4 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       : 0;
   }
 
-  private sendPendingPromptsToWebSocket(ws: WebSocket): void {
-    const nativeConnectionPrompts = Array.from(
-      this.pendingConnectionSetupWaiters.entries(),
-    ).sort(([, a], [, b]) => a.info.createdAt - b.info.createdAt);
-    for (const [requestId, waiter] of nativeConnectionPrompts) {
-      const info = waiter.info;
-      this.sendDirect(ws, {
-        type: "connection_setup_prompt",
-        requestId,
-        integrationType: info.integrationType,
-        suggestedName: info.suggestedName,
-        message: info.message,
-        instructions: info.instructions,
-        dynamicSchema: info.dynamicSchema,
-      });
-    }
-
-  }
-}
-
-function normalizeCompletionTimestamp(_value: unknown): number {
-  return Date.now();
 }

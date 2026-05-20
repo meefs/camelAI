@@ -3,7 +3,7 @@
  */
 
 import type { Env, RouteContext } from "../types.js";
-import type { PiCoreMessageHistoryRepairReport, PiCoreMessageRow } from "../durable-objects.js";
+import type { PiCoreMessageHistoryRepairReport, PiCoreMessageRow } from "../chat-thread-do.js";
 import {
   ADMIN_MCP_SCOPE,
   AdminMcpOAuthProvider,

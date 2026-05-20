@@ -4,7 +4,7 @@ import type {
   ChatThreadDO,
   ExternalMessageRequest,
   ExternalTurnResult,
-} from "./durable-objects";
+} from "./chat-thread-do";
 import {
   getCronMinimumIntervalMs,
   getNextCronRunAt,

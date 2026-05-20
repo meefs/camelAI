@@ -28,7 +28,7 @@ import { requireSession } from "../helpers/auth.js";
 import type {
   ConnectionSetupResponse,
   ExternalTurnResult,
-} from "../durable-objects.js";
+} from "../chat-thread-do.js";
 import { runExternalMessageTurn } from "../helpers/external-turn.js";
 import { getWorkspaceStub, getOrgStub } from "../helpers/stubs.js";
 import {

@@ -2,7 +2,7 @@
  * Shared types and constants for the main worker
  */
 
-import type { ChatEnv } from "./durable-objects.js";
+import type { ChatEnv } from "./chat-thread-do.js";
 import type { DOEnv } from "./auth.js";
 import type { WorkspaceContainerEnv } from "./workspace-container.js";
 import type { DataProxyEnv } from "./data-proxy.js";

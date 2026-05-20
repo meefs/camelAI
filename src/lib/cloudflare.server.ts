@@ -1,7 +1,7 @@
 import type { AppLoadContext } from "react-router";
 import type { UserDO, OrgDO } from "../../workers/main/src/auth";
 import type { WorkspaceDO } from "../../workers/main/src/workspace";
-import type { ChatThreadDO } from "../../workers/main/src/durable-objects";
+import type { ChatThreadDO } from "../../workers/main/src/chat-thread-do";
 import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
 import type { AdminIndexDO } from "../../workers/main/src/admin-index-do";
 

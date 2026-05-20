@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { getModel, streamSimple, type AssistantMessageEvent, type Context } from '@mariozechner/pi-ai';
 
-import { ChatThreadDO } from '../src/durable-objects';
+import { ChatThreadDO } from '../src/chat-thread-do';
 
 type BedrockTestEnv = {
   AWS_BEARER_TOKEN_BEDROCK?: string;
