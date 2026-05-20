@@ -88,7 +88,7 @@ Important DOs and runtime classes live primarily in `workers/main/src/`:
 
 - `auth.ts` - `UserDO`, `OrgDO`, auth-related org/user behavior.
 - `workspace.ts` - `WorkspaceDO`, workspace metadata, integration state, token refresh alarms.
-- `durable-objects.ts` - `ChatThreadDO`, chat WebSocket state and agent turn coordination.
+- `chat-thread-do.ts` - `ChatThreadDO`, chat WebSocket state and agent turn coordination.
 - `workspace-cron.ts` - `WorkspaceCronDO`, scheduled prompt storage and dispatch.
 - `worker-logs-do.ts` - `WorkerLogsDO`, deployed app log storage/streaming.
 - `admin-index-do.ts` - `AdminIndexDO`, admin indexes and dashboard-style aggregates.
@@ -158,7 +158,7 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 - Workspace file API routes live under `/api/workspaces/:id/fs/*`.
 - Computer tab file mutations may be intentionally blocked during beta; check `src/routes/api/workspaces.utils.ts` before changing write behavior.
 - File safety logic lives in `workers/main/src/file-safety.ts` and is applied before agent turns for suspicious uploaded-file/deploy/bridge workflows.
-- The Pi system prompt is assembled in `workers/main/src/durable-objects.ts`; keep security-relevant prompt changes explicit and tested.
+- The Pi system prompt is assembled in `workers/main/src/chat-thread-do.ts`; keep security-relevant prompt changes explicit and tested.
 
 ## Proxies And Bindings
 

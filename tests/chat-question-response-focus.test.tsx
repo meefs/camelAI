@@ -10,9 +10,11 @@ import {
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
+import { BYOK_PROVIDERS } from "@/lib/byok-providers";
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
+const mockSubmit = vi.fn();
 
 function createFetcher() {
   return {
@@ -40,7 +42,9 @@ vi.mock("react-router", async () => {
       state: "idle" as const,
       revalidate: mockRevalidate,
     }),
+    useNavigation: () => ({ state: "idle", formData: undefined }),
     useFetcher: () => createFetcher(),
+    useSubmit: () => mockSubmit,
   };
 });
 
@@ -122,10 +126,6 @@ vi.mock("@/components/connection-setup-prompt", () => ({
   ConnectionSetupPrompt: () => null,
 }));
 
-vi.mock("@/components/bug-report-dialog", () => ({
-  BugReportDialog: () => null,
-}));
-
 vi.mock("@/components/ui/button", () => ({
   Button: ({ children, ...props }: React.ComponentProps<"button">) => (
     <button {...props}>{children}</button>
@@ -183,6 +183,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 }));
 
 import Chat from "@/components/Chat";
+
+const RATE_LIMIT_ERROR =
+  '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}';
 
 class MockWebSocket {
   static readonly CONNECTING = 0;
@@ -311,5 +314,65 @@ describe("Chat AskUserQuestion composer focus", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("Prompt")).toHaveFocus();
     });
+  });
+
+  it("uses worker provider metadata for BYOK rate-limit websocket errors", async () => {
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+        llmProvider={null}
+      />,
+    );
+
+    const socket = getMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({
+        type: "error",
+        error: RATE_LIMIT_ERROR,
+        billingSource: "byok",
+        provider: "bedrock",
+      });
+    });
+
+    expect(
+      await screen.findByText("Your Bedrock API key is rate limited"),
+    ).toBeInTheDocument();
+    const link = screen.getByRole("link", {
+      name: /Open the AWS Bedrock console/,
+    });
+    expect(link).toHaveAttribute("href", BYOK_PROVIDERS.bedrock.getKeyUrl);
+  });
+
+  it("falls back to the current provider when websocket provider metadata is absent", async () => {
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+        llmProvider="anthropic"
+        threadProvider="claude"
+      />,
+    );
+
+    const socket = getMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({
+        type: "error",
+        error: RATE_LIMIT_ERROR,
+        billingSource: "byok",
+      });
+    });
+
+    expect(
+      await screen.findByText("Your Anthropic API key is rate limited"),
+    ).toBeInTheDocument();
+    const link = screen.getByRole("link", {
+      name: /Open Anthropic API settings/,
+    });
+    expect(link).toHaveAttribute("href", BYOK_PROVIDERS.anthropic.getKeyUrl);
   });
 });

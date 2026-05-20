@@ -6,7 +6,7 @@ import type { RouteContext } from '../types.js';
 import { isSignedToken, validateSignedToken } from '../signed-tokens.js';
 import { getOrgStub, getThreadStub } from '../helpers/stubs.js';
 import { json } from '../helpers/response.js';
-import type { PreviewTarget } from '../durable-objects.js';
+import type { PreviewTarget } from '../chat-thread-do.js';
 
 export async function handleThreadPreview({ req, env, match }: RouteContext): Promise<Response> {
   const threadId = match[1];

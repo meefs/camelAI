@@ -1,9 +1,8 @@
 import type { AppLoadContext } from "react-router";
 import type { UserDO, OrgDO } from "../../workers/main/src/auth";
 import type { WorkspaceDO } from "../../workers/main/src/workspace";
-import type { ChatThreadDO } from "../../workers/main/src/durable-objects";
+import type { ChatThreadDO } from "../../workers/main/src/chat-thread-do";
 import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
-import type { AdminIndexDO } from "../../workers/main/src/admin-index-do";
 
 /**
  * Cloudflare environment bindings available in React Router loaders/actions.
@@ -15,7 +14,6 @@ export interface CloudflareEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
-  ADMIN_INDEX: DurableObjectNamespace<AdminIndexDO>;
   MCP_OBJECT: DurableObjectNamespace;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
 
@@ -37,6 +35,7 @@ export interface CloudflareEnv {
   BROWSER?: Fetcher;
   OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
+  APP_DB?: D1Database;
 
   // Environment variables
   NEXTJS_ENV?: string;

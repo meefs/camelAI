@@ -10,6 +10,8 @@ export type PlanPickerCtaKind =
 
 export interface PlanContent {
   tagline: string;
+  /** Optional "Everything in X, plus:" prefix shown above the bullet list. Renders muted, no checkmark. */
+  upsellPrefix?: string;
   ctaLabel: string;
   ctaKind: PlanPickerCtaKind;
   features: string[];
@@ -17,76 +19,74 @@ export interface PlanContent {
 
 export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   free: {
-    tagline: "Try the platform",
-    ctaLabel: "Add my API key",
-    ctaKind: "byok",
-    features: [
-      "Bring your own API key",
-      "1 workspace",
-      "3 deployed apps",
-      "5 GB storage",
-      "2 cron jobs (daily)",
-    ],
+    // Not rendered by the picker — INDIVIDUAL_PLANS does not include "free".
+    // Exists only to satisfy Record<BillingPlan, PlanContent>. Pay as you go is
+    // the actual free tier shown to users.
+    tagline: "Try it out",
+    ctaLabel: "Continue",
+    ctaKind: "payg",
+    features: [],
   },
   payg: {
-    tagline: "For a trial run, bring your own LLM provider",
+    tagline: "Try it out",
     ctaLabel: "Continue",
     ctaKind: "payg",
     features: [
-      "Buy credits before usage",
-      "No monthly subscription",
-      "1 workspace",
+      "Pay only for what you use, or bring your own API key",
       "3 deployed apps",
-      "2 cron jobs (daily)",
+      "1 automated task daily",
+      "5 GB storage",
     ],
   },
   starter: {
-    tagline: "For solo builders",
+    tagline: "Solo builders",
+    upsellPrefix: "Everything in Pay as you go, plus:",
     ctaLabel: "Start 7-day free trial",
     ctaKind: "trial",
     features: [
-      "$10 of model credits / mo",
-      "Bring your own API key",
+      "$10 of model credits / mo (at cost)",
       "30 deployed apps",
+      "10 custom domains",
+      "1 automated task hourly",
       "50 GB storage",
-      "10 cron jobs (hourly)",
     ],
   },
   pro: {
-    tagline: "For power users",
+    tagline: "Power users",
+    upsellPrefix: "Everything in Starter, plus:",
     ctaLabel: "Start 7-day free trial",
     ctaKind: "trial",
     features: [
-      "$30 of model credits / mo",
-      "Bring your own API key",
+      "$30 of model credits / mo (at cost)",
       "Unlimited deployed apps",
+      "Unlimited custom domains",
+      "Automations every 5 minutes",
       "100 GB storage",
-      "50 cron jobs (5-min)",
-      "Email inbox",
+      "Workspace email inbox",
     ],
   },
   team: {
-    tagline: "For teams shipping together",
+    tagline: "Teams shipping together",
+    upsellPrefix: "Everything in Pro for every seat, plus:",
     ctaLabel: "Start 7-day free trial",
     ctaKind: "trial",
     features: [
       "$10 of model credits / seat / mo",
-      "Everything in Pro",
-      "2 workspaces",
-      "Role-based access",
-      "Email inbox",
+      "2 shared workspaces",
+      "Role-based access (admin / member)",
     ],
   },
   enterprise: {
-    tagline: "Talk to sales",
+    tagline: "For larger teams",
+    upsellPrefix: "Everything in Team, plus:",
     ctaLabel: "Contact sales",
     ctaKind: "contact",
     features: [
       "SSO / SAML",
-      "BYOCloud",
+      "Bring your own cloud (BYOCloud)",
       "Multiple workspaces",
-      "Dedicated Slack support",
       "HIPAA / SOC 2",
+      "Dedicated Slack support",
     ],
   },
 };

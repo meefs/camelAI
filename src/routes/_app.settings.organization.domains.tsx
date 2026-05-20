@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useFetcher, useLoaderData, useNavigate, useRevalidator } from 'react-router';
+import { useFetcher, useLoaderData, useNavigation, useRevalidator, useSubmit } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.domains';
 import { requireAuthContext } from '@/lib/auth.server';
 import { APP_BUILD_ID } from '@/lib/app-build-id';
@@ -322,12 +322,11 @@ function AppDomainRow({
 export default function DomainsPage() {
   const { org, isAdmin, dnsTarget, workspaceId, apps } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
-  const navigate = useNavigate();
-  const chatFetcher = useFetcher<{
-    thread?: { id: string; model?: string | null; provider?: string | null };
-    error?: string;
-  }>();
-  const chatLoading = chatFetcher.state !== 'idle';
+  const submit = useSubmit();
+  const navigation = useNavigation();
+  const chatLoading =
+    navigation.state !== 'idle' &&
+    navigation.formData?.get('intent') === 'createThreadAndStart';
   const chatPrompt =
     '<camelai system message>The user clicked the custom-domain setup CTA from organization settings. Use the custom domain MCP tools to inspect or configure the domain when possible.</camelai system message>\n\nHelp me set up a custom domain.';
   const chatTitle = 'Set up custom domain';
@@ -338,23 +337,14 @@ export default function DomainsPage() {
     }
   };
 
-  useEffect(() => {
-    if (chatFetcher.state !== 'idle' || !chatFetcher.data) return;
-    if (!chatFetcher.data.thread) return;
-
-    navigate(`/chat/${chatFetcher.data.thread.id}`, {
-      state: { initialMessageContent: chatPrompt },
-    });
-  }, [chatFetcher.state, chatFetcher.data, chatPrompt, navigate]);
-
   const startCustomDomainChat = () => {
     if (chatLoading || !workspaceId) return;
-    chatFetcher.submit(
+    submit(
       {
-        intent: 'createThread',
+        intent: 'createThreadAndStart',
         clientBuildId: APP_BUILD_ID,
         initialTitle: chatTitle,
-        firstMessage: chatTitle,
+        firstMessage: chatPrompt,
       },
       { method: 'post', action: '/chat' }
     );
@@ -384,9 +374,6 @@ export default function DomainsPage() {
             Start chat with Camel
           </Button>
         </div>
-        {chatFetcher.data?.error ? (
-          <p className="text-xs text-destructive">{chatFetcher.data.error}</p>
-        ) : null}
         {!workspaceId ? (
           <p className="text-xs text-muted-foreground">
             Open a workspace to start a chat with Camel.

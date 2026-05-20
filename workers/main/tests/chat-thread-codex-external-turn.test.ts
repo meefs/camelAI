@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/durable-objects';
+import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/chat-thread-do';
+import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { validateSignedToken } from '../src/signed-tokens';
-import { WorkspaceContainer } from '../src/workspace-container';
 
 describe('ChatThreadDO Codex external turn completion', () => {
   function createPiEventFake() {
@@ -86,6 +86,64 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(model.provider).toBe('anthropic');
     expect(model.billingSource).toBe('hosted');
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
+  });
+
+  it('sends initial user messages after connecting the runner', async () => {
+    const sentCommands: any[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.chatContext = null;
+    fake.chatIsStreaming = false;
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: vi.fn() } },
+      waitUntil: vi.fn(),
+    };
+    fake.env = {
+      APP_KV: { get: vi.fn().mockResolvedValue(null) },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.setChatIsStreaming = vi.fn((value: boolean) => {
+      fake.chatIsStreaming = value;
+    });
+    fake.broadcastRunnerClients = vi.fn();
+    fake.emitChatError = vi.fn();
+    fake.ensureRunnerConnected = vi.fn(async () => undefined);
+    fake.applyConnectionMentionsForTurn = vi.fn(async (content: string) => content);
+    fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
+    fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
+    fake.sendRunnerCommand = vi.fn((command: any) => {
+      sentCommands.push(command);
+      return true;
+    });
+
+    const result = await ChatThreadDO.prototype.startInitialUserMessage.call(fake, {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      message: 'hello',
+      clientMessageId: 'initial:thread1',
+    });
+
+    expect(result).toEqual({ status: 'accepted' });
+    expect(fake.ensureRunnerConnected).toHaveBeenCalledTimes(1);
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
+    expect(fake.warmWorkspaceContainerForTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread1',
+        workspaceId: 'workspace1',
+        orgId: 'org1',
+      }),
+    );
+    expect(sentCommands).toHaveLength(1);
+    expect(sentCommands[0]).toMatchObject({
+      type: 'message',
+      threadId: 'thread1',
+      userId: 'user1',
+      clientMessageId: 'initial:thread1',
+    });
+    expect(sentCommands[0].content).toContain('hello');
   });
 
   it('keeps hosted OpenAI models on Responses while routing through OpenRouter AI Gateway', async () => {
@@ -303,7 +361,9 @@ describe('ChatThreadDO Codex external turn completion', () => {
         id: 'thread1',
         provider: 'claude',
         model: 'sonnet',
+        workspace_id: 'workspace1',
       })),
+      getLlmProviderConfig: vi.fn(async () => null),
     };
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = {
@@ -327,33 +387,17 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.lastRunnerSeq = 0;
     fake.trace = vi.fn();
     fake.getLegacyClaudeSessionId = vi.fn(() => null);
-    fake.hydratePiCoreMessagesFromLegacy = vi.fn(async () => undefined);
     fake.ensurePiSession = vi.fn(async () => undefined);
 
-    const buildEnvSpy = vi
-      .spyOn(WorkspaceContainer.prototype, 'buildChatRunnerEnv')
-      .mockResolvedValue({
-        envVars: {
-          CHIRIDION_CLAUDE_MODEL: 'sonnet',
-          CHIRIDION_CODEX_MODEL: 'gpt-5.4',
-        },
-      });
-
-    try {
-      await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
-    } finally {
-      buildEnvSpy.mockRestore();
-    }
+    await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
 
     expect(fake.chatContext.provider).toBe('claude');
-    expect(fake.hydratePiCoreMessagesFromLegacy).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'claude' }),
-      expect.any(WorkspaceContainer),
-      expect.any(Object),
-    );
     expect(fake.ensurePiSession).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'claude' }),
-      expect.any(Object),
+      expect.objectContaining({
+        CHIRIDION_CHAT_PROVIDER: 'claude',
+        CHIRIDION_CLAUDE_MODEL: 'sonnet',
+      }),
     );
   });
 
@@ -691,7 +735,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       'list_apps',
       'list_scheduled_prompts',
       'list_integrations',
-      'capture_bug_report',
       'get_custom_domain',
       'Agent',
       'Explore',
@@ -887,7 +930,8 @@ describe('ChatThreadDO Codex external turn completion', () => {
       CLOUDFLARE_ACCOUNT_ID: 'acct_1',
     }));
 
-    const commandEnv = await CodeModeToolsBinding.prototype['createContainerCommandEnv'].call(fake);
+    const tools = fake.piContainerTools as any;
+    const commandEnv = await tools.commandEnv();
 
     expect(commandEnv).toMatchObject({
       WORKSPACE_ID: 'workspace1',
@@ -934,7 +978,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       'list_scheduled_prompts',
       'list_integrations',
       'prompt_connection_setup',
-      'capture_bug_report',
       'get_custom_domain',
       'WebSearch',
       'WebFetch',
@@ -1178,10 +1221,15 @@ describe('ChatThreadDO Codex external turn completion', () => {
   it('normalizes AskUserQuestion string options before broadcasting to the browser', async () => {
     vi.useFakeTimers();
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.pendingQuestions = new Map();
-    fake.pendingQuestionWaiters = new Map();
-    fake.hasAvailableBrowserUser = vi.fn(() => true);
-    fake.broadcastRealtime = vi.fn();
+    fake.broadcastChat = vi.fn();
+    fake.browserPrompts = new BrowserPromptCoordinator({
+      hasAvailableBrowserUser: () => true,
+      broadcast: fake.broadcastChat,
+      sendDirect: vi.fn(),
+      askUserQuestionUnavailableMessage: 'unavailable',
+      questionTimeoutMs: 30 * 60 * 1000,
+      connectionSetupTimeoutMs: 30 * 60 * 1000,
+    });
 
     const promise = ChatThreadDO.prototype.askUserQuestion.call(fake, {
       toolUseId: 'tool-ask',
@@ -1191,7 +1239,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       }],
     });
 
-    expect(fake.broadcastRealtime).toHaveBeenCalledWith({
+    expect(fake.broadcastChat).toHaveBeenCalledWith({
       type: 'ask_user_question',
       questionId: expect.any(String),
       toolUseId: 'tool-ask',
@@ -1207,9 +1255,11 @@ describe('ChatThreadDO Codex external turn completion', () => {
       }],
     });
 
-    const waiter = Array.from(fake.pendingQuestionWaiters.values())[0] as any;
-    clearTimeout(waiter.timeoutId);
-    waiter.resolve({ answer: 'TypeScript' });
+    const prompt = fake.broadcastChat.mock.calls[0][0];
+    fake.browserPrompts.answerQuestion({
+      questionId: prompt.questionId,
+      answers: { answer: 'TypeScript' },
+    });
     await expect(promise).resolves.toEqual({ answer: 'TypeScript' });
     vi.useRealTimers();
   });
@@ -1403,6 +1453,59 @@ describe('ChatThreadDO Codex external turn completion', () => {
     ]);
   });
 
+  it('does not broadcast Pi recovery continue prompts as visible SDK user events', () => {
+    const { fake, events } = createPiEventFake();
+
+    fake.suppressNextPiRecoveryPromptEvent = true;
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'text',
+          text: 'continue',
+        }],
+      },
+    });
+
+    expect(events).toEqual([]);
+
+    fake.suppressNextPiRecoveryPromptEvent = true;
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        content: 'continue',
+      },
+    });
+
+    expect(events).toEqual([]);
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        content: 'continue',
+      },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'sdk_event' });
+  });
+
+  it('does not broadcast internal recovery context SDK user events', () => {
+    const { fake, events } = createPiEventFake();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: 'recovery context',
+        visibility: 'hidden',
+        metadata: { purpose: 'pi_turn_recovery_context' },
+      },
+    });
+
+    expect(events).toEqual([]);
+  });
+
   it('builds a recovery user message from in-flight messages', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.serializePiMessageForSummary =
@@ -1435,6 +1538,10 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(content).toContain('[The previous turn was interrupted');
     expect(content).toContain('list files');
     expect(content).toContain('tool1');
+    expect(recovery).toMatchObject({
+      visibility: 'hidden',
+      metadata: { purpose: 'pi_turn_recovery_context' },
+    });
   });
 
   it('renders an empty in-flight buffer as a context-only marker', () => {
@@ -1449,6 +1556,10 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     expect(recovery.role).toBe('user');
     expect(recovery.content).toContain('(no recorded events before the interruption)');
+    expect(recovery).toMatchObject({
+      visibility: 'hidden',
+      metadata: { purpose: 'pi_turn_recovery_context' },
+    });
   });
 
   it('turn_end snapshots agent.state.messages past the baseline into main', () => {
@@ -1539,8 +1650,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       ChatThreadDO.prototype['piUserContentToChatContent'];
     fake.piAssistantContentToChatContent =
       ChatThreadDO.prototype['piAssistantContentToChatContent'];
-    fake.isInvisibleSystemOnlyUserContent =
-      ChatThreadDO.prototype['isInvisibleSystemOnlyUserContent'];
     fake.attachPiToolResultToParsedMessages =
       ChatThreadDO.prototype['attachPiToolResultToParsedMessages'];
     fake.piToolResultContentToChatContent =
@@ -1592,6 +1701,48 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.loadPiCoreMessages).toHaveBeenCalledTimes(1);
     expect(fake.loadPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
+
+  it('omits internal recovery context messages from the parsed chat view', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.loadPiCoreMessages = vi.fn(() => [
+      { role: 'user', content: 'first turn', timestamp: 100 },
+      {
+        role: 'user',
+        content: 'recovery context that should not reach the client',
+        timestamp: 200,
+        visibility: 'hidden',
+        metadata: { purpose: 'pi_turn_recovery_context' },
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'recovered reply' }],
+        responseId: 'resp_recovered',
+        timestamp: 210,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ]);
+    fake.loadPiInFlightMessages = vi.fn(() => []);
+
+    const parsed = ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
+      fake,
+      'thread1',
+    );
+
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]).toMatchObject({ role: 'user', content: 'first turn' });
+    expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_recovered' });
+    expect(
+      parsed.some((message) =>
+        String(message.content).includes('recovery context'),
+      ),
+    ).toBe(false);
+  });
+
   it('sanitizes unsupported persisted Pi image tool results when loading history', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ensurePiCoreTables = vi.fn();
@@ -1774,6 +1925,36 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
+  it('resolves Pi agent_end provider errors as failed external turns', () => {
+    const { fake, events } = createPiEventFake();
+    const errorMessage =
+      '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}';
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [{
+        role: 'assistant',
+        content: [],
+        errorMessage,
+        responseId: 'resp_error',
+        timestamp: 789,
+      }],
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      error: errorMessage,
+      source: 'chat_thread_do_pi',
+      status: 429,
+      errorType: 'rate_limit_error',
+    }));
+    expect(fake.resolvePendingExternalTurn).toHaveBeenCalledWith({
+      status: 'error',
+      error: errorMessage,
+    });
+  });
+
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {
     const { fake, events } = createPiEventFake();
 
@@ -1911,7 +2092,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
     };
     fake.chatIsStreaming = false;
     fake.currentTodos = [{ content: 'Old task', status: 'in_progress' }];
-    fake.pendingQuestions = new Map();
     fake.previewTarget = null;
     fake.previewTabs = [];
     fake.previewActiveTabId = null;
@@ -1920,7 +2100,11 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.transientContextUsedPercent = null;
     fake.contextUsedPercent = null;
     fake.trace = vi.fn();
-    fake.sendPendingPromptsToWebSocket = vi.fn();
+    fake.browserPrompts = {
+      sendPendingPromptsToWebSocket: vi.fn(),
+      pendingQuestionPrompts: vi.fn(() => []),
+      pendingQuestionCount: 0,
+    };
     fake.replayChatEvents = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn(async () => {
       fake.currentTodos = [];
@@ -1941,185 +2125,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
   });
 
-  it('waits for the final result event instead of resolving on turn/completed', () => {
-    const resolve = vi.fn();
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    fake.lastRunnerSeq = 0;
-    fake.pendingQuestions = new Map();
-    fake.pendingExternalTurn = {
-      resolve,
-      streamingText: '',
-      latestAssistantText: '',
-    };
-    fake.ctx = {
-      storage: { kv: { put: vi.fn() } },
-      waitUntil: vi.fn(),
-    };
-    fake.trace = vi.fn();
-    fake.setChatIsStreaming = vi.fn();
-    fake.pushChatEvent = vi.fn();
-    fake.completeTodoStateForTurnEnd = vi.fn();
-    fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
-
-    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
-      type: 'runtime_event',
-      event: { method: 'turn/completed' },
-    });
-
-    expect(resolve).not.toHaveBeenCalled();
-    expect(fake.pendingExternalTurn).not.toBeNull();
-    expect(fake.completeTodoStateForTurnEnd).toHaveBeenCalledTimes(1);
-
-    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
-      type: 'result',
-      result: 'final reply',
-    });
-
-    expect(resolve).toHaveBeenCalledWith({
-      status: 'result',
-      reply: 'final reply',
-    });
-    expect(fake.pendingExternalTurn).toBeNull();
-  });
-
-  it('clears persisted incomplete todos when a turn completes', () => {
-    const resolve = vi.fn();
-    const deleteKey = vi.fn();
-    const sent: string[] = [];
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    fake.lastRunnerSeq = 0;
-    fake.currentTodos = [{ content: 'Ship fix', status: 'in_progress' }];
-    fake.pendingQuestions = new Map();
-    fake.pendingExternalTurn = {
-      resolve,
-      streamingText: '',
-      latestAssistantText: '',
-    };
-    fake.ctx = {
-      storage: { kv: { put: vi.fn(), delete: deleteKey } },
-      waitUntil: vi.fn(),
-      getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
-    };
-    fake.trace = vi.fn();
-    fake.setChatIsStreaming = vi.fn();
-    fake.setActiveTurnUserId = vi.fn();
-    fake.pushChatEvent = vi.fn();
-    fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
-
-    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
-      type: 'runtime_event',
-      event: { method: 'turn/completed' },
-    });
-
-    expect(fake.currentTodos).toEqual([]);
-    expect(deleteKey).toHaveBeenCalledWith('chatTodos');
-    expect(sent.map((message) => JSON.parse(message))).toContainEqual({
-      type: 'todo_state',
-      todos: [{ content: 'Ship fix', status: 'completed' }],
-    });
-    expect(resolve).not.toHaveBeenCalled();
-  });
-
-  it('dedupes replayed runner events by sequence', () => {
-    const resolve = vi.fn();
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    fake.lastRunnerSeq = 5;
-    fake.pendingQuestions = new Map();
-    fake.pendingExternalTurn = {
-      resolve,
-      streamingText: '',
-      latestAssistantText: '',
-    };
-    fake.ctx = {
-      storage: { kv: { put: vi.fn() } },
-    };
-    fake.trace = vi.fn();
-    fake.setChatIsStreaming = vi.fn();
-    fake.setActiveTurnUserId = vi.fn();
-    fake.completeTodoStateForTurnEnd = vi.fn();
-    fake.pushChatEvent = vi.fn();
-    fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
-
-    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
-      type: 'result',
-      seq: 5,
-      result: 'stale reply',
-    });
-
-    expect(resolve).not.toHaveBeenCalled();
-    expect(fake.pendingExternalTurn).not.toBeNull();
-
-    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
-      type: 'result',
-      seq: 6,
-      result: 'fresh reply',
-    });
-
-    expect(resolve).toHaveBeenCalledWith({
-      status: 'result',
-      reply: 'fresh reply',
-    });
-    expect(fake.lastRunnerSeq).toBe(6);
-  });
-
-  it('persists the last seen runner sequence', () => {
-    const put = vi.fn();
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    fake.lastRunnerSeq = 0;
-    fake.pendingQuestions = new Map();
-    fake.pendingExternalTurn = null;
-    fake.ctx = {
-      storage: { kv: { put } },
-    };
-    fake.trace = vi.fn();
-    fake.pushChatEvent = vi.fn();
-
-    ChatThreadDO.prototype['handleRunnerEvent'].call(fake, {
-      type: 'todo_state',
-      seq: 9,
-      todos: [],
-    });
-
-    expect(fake.lastRunnerSeq).toBe(9);
-    expect(put).toHaveBeenCalledWith('chatRunnerLastSeq', 9);
-  });
-
-  it('clears pending questions when the runner disconnects', () => {
-    const sent: string[] = [];
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    fake.pendingQuestions = new Map([
-      ['question1', { questionId: 'question1', questions: [] }],
-      ['question2', { questionId: 'question2', questions: [] }],
-    ]);
-    fake.ctx = {
-      storage: { kv: { put: vi.fn() } },
-      getWebSockets: vi.fn(() => [{ send: vi.fn((message: string) => sent.push(message)) }]),
-    };
-    fake.chatContext = { threadId: 'thread1' };
-    fake.nextChatEventId = 1;
-    fake.chatEventBuffer = [];
-    fake.trace = vi.fn();
-
-    ChatThreadDO.prototype['clearPendingQuestions'].call(fake, 'runner_socket_close');
-
-    expect(fake.pendingQuestions.size).toBe(0);
-    expect(sent.map((message) => JSON.parse(message))).toEqual([
-      expect.objectContaining({
-        type: 'question_answered',
-        questionId: 'question1',
-      }),
-      expect.objectContaining({
-        type: 'question_answered',
-        questionId: 'question2',
-      }),
-    ]);
-  });
-
   it('applies connection mention context before sending external turns', async () => {
     const workspaceStub = {
       getIntegrations: vi.fn().mockResolvedValue([
@@ -2138,7 +2143,9 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.chatContext = null;
     fake.chatIsStreaming = false;
     fake.pendingExternalTurn = null;
-    fake.pendingQuestions = new Map();
+    fake.browserPrompts = {
+      getOldestPendingQuestion: vi.fn(() => null),
+    };
     fake.ctx = {
       storage: { kv: { put: vi.fn() } },
       waitUntil: vi.fn(),

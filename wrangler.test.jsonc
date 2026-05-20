@@ -25,6 +25,14 @@
 			"id": "test-sessions"
 		}
 	],
+	"d1_databases": [
+		{
+			"binding": "APP_DB",
+			"database_name": "chiridion-app-test-db",
+			"database_id": "test-app-db",
+			"migrations_dir": "migrations"
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "USER", "class_name": "UserDO" },
@@ -32,7 +40,6 @@
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" },
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" }
 		]
 	},
@@ -41,6 +48,7 @@
 		{ "tag": "v2", "new_sqlite_classes": ["AdminIndexDO"] },
 		{ "tag": "v3", "new_sqlite_classes": ["OAuthStateDO"] },
 		{ "tag": "v4", "new_sqlite_classes": ["WorkspaceCronDO"] },
-		{ "tag": "v5", "deleted_classes": ["OAuthStateDO"] }
+		{ "tag": "v5", "deleted_classes": ["OAuthStateDO"] },
+		{ "tag": "v6", "deleted_classes": ["AdminIndexDO"] }
 	]
 }

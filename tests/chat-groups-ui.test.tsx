@@ -21,6 +21,7 @@ import {
   getGroupLandingHref,
   mergeActiveChatGroup,
   reconcileLocalThreadStatusesWithSnapshot,
+  shouldMarkActiveIdleThreadViewed,
   shouldMarkActiveUnreadThreadViewed,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -926,6 +927,18 @@ describe("applyLiveRunningStatuses", () => {
     ).toBe(false);
     expect(
       shouldMarkActiveUnreadThreadViewed("idle", "thread_1", "thread_1"),
+    ).toBe(false);
+  });
+
+  it("identifies active local idle completions as viewed work", () => {
+    expect(
+      shouldMarkActiveIdleThreadViewed("idle", "thread_1", "thread_1"),
+    ).toBe(true);
+    expect(
+      shouldMarkActiveIdleThreadViewed("idle", "thread_1", "thread_2"),
+    ).toBe(false);
+    expect(
+      shouldMarkActiveIdleThreadViewed("running", "thread_1", "thread_1"),
     ).toBe(false);
   });
 

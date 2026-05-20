@@ -119,10 +119,9 @@ Reading left → right. `│` = vertical separator. `──` = flex spacer. Open
 ### App
 
 ```
-[↻ Refresh] │ [🌐 vanityHost.camelai.app (click=copy)] ── [↗ Open live app] [Share status] [🐞 Bug*]
+[↻ Refresh] │ [🌐 vanityHost.camelai.app (click=copy)] ── [↗ Open live app] [Share status]
 ```
-- `*` Bug only renders for admins (`onBugReport` provided).
-- **Change vs today:** Open-elsewhere moves from *before* the URL chip to *immediately after* it. URL chip is now the center anchor. Share and Bug both sit in the right zone after the open button.
+- **Change vs today:** Open-elsewhere moves from *before* the URL chip to *immediately after* it. URL chip is now the center anchor. Share sits in the right zone after the open button.
 
 ### Notebook (.ipynb) — workspace source
 
@@ -265,9 +264,6 @@ Replace the current single-row flex with three explicit zones. Open-elsewhere is
   {/* RIGHT — outbound actions. Open-elsewhere always first. */}
   <OpenElsewhereButton kind={openElsewhereKind} onClick={onOpenElsewhere} />
   {activeTarget.kind === 'app' && appShareButton}
-  {activeTarget.kind === 'app' && onBugReport ? (
-    <ToolbarButton icon={Bug} tooltip="Report a bug" onClick={onBugReport} />
-  ) : null}
   {activeTarget.kind === 'file' && (
     <DownloadButton
       activeTarget={activeTarget}

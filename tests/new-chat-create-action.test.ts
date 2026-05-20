@@ -9,6 +9,7 @@ const deleteThreadMock = vi.fn();
 const generateThreadTitleMock = vi.fn();
 const createGroupForNewThreadMock = vi.fn();
 const addThreadToExistingGroupMock = vi.fn();
+const startInitialUserMessageMock = vi.fn();
 const CLIENT_BUILD_ID = 'development';
 
 vi.mock('@/lib/wait-until', () => ({
@@ -69,7 +70,14 @@ describe('new chat create action', () => {
       workspaceId: 'ws_123',
       userId: 'user_123',
     });
-    getEnvMock.mockReturnValue({});
+    getEnvMock.mockReturnValue({
+      CHAT_THREAD: {
+        idFromName: (name: string) => name,
+        get: vi.fn(() => ({
+          startInitialUserMessage: startInitialUserMessageMock,
+        })),
+      },
+    });
     getAuthEnvMock.mockReturnValue({});
     createThreadMock.mockResolvedValue({
       id: 'thread_123',
@@ -84,6 +92,7 @@ describe('new chat create action', () => {
     addThreadToExistingGroupMock.mockResolvedValue({
       id: 'group_existing',
     });
+    startInitialUserMessageMock.mockResolvedValue({ status: 'accepted' });
   });
 
   it('does not use the first user message as the initial chat group name', async () => {
@@ -131,6 +140,105 @@ describe('new chat create action', () => {
         defaultShouldRevalidate: true,
       }),
     ).toBe(false);
+
+    formData.set('intent', 'createThreadAndStart');
+    expect(
+      shouldRevalidate({
+        formData,
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('redirects immediately and starts the first message in the chat thread', async () => {
+    const formData = makeCreateThreadFormData();
+    formData.set('intent', 'createThreadAndStart');
+    formData.set('firstMessage', 'Build an analytics dashboard');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('Location')).toBe(
+      '/chat/thread_123?newThread=1&group=group_123',
+    );
+    expect(startInitialUserMessageMock).toHaveBeenCalledWith({
+      threadId: 'thread_123',
+      workspaceId: 'ws_123',
+      orgId: 'org_123',
+      userId: 'user_123',
+      message: 'Build an analytics dashboard',
+      clientMessageId: 'initial:thread_123',
+    });
+  });
+
+  it('accepts stale client build ids for compatible create-and-start submissions', async () => {
+    const formData = makeCreateThreadFormData();
+    formData.set('clientBuildId', 'stale-build');
+    formData.set('intent', 'createThreadAndStart');
+    formData.set('firstMessage', 'Build from an old tab');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('Location')).toBe(
+      '/chat/thread_123?newThread=1&group=group_123',
+    );
+    expect(createThreadMock).toHaveBeenCalledWith(
+      {},
+      'ws_123',
+      undefined,
+      'user_123',
+      'Build from an old tab',
+      'sonnet',
+    );
+    expect(startInitialUserMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread_123',
+        message: 'Build from an old tab',
+      }),
+    );
+  });
+
+  it('returns an error instead of redirecting when the initial turn cannot start', async () => {
+    startInitialUserMessageMock.mockResolvedValueOnce({
+      status: 'busy',
+      error: 'Thread is busy',
+    });
+
+    const formData = makeCreateThreadFormData();
+    formData.set('intent', 'createThreadAndStart');
+    formData.set('firstMessage', 'Build an analytics dashboard');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get('Location')).toBeNull();
+    await expect(response.json()).resolves.toEqual({
+      error: 'Thread is busy',
+    });
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
+    expect(createGroupForNewThreadMock).not.toHaveBeenCalled();
   });
 
   it('returns the new thread and group while title generation runs in the background', async () => {
@@ -158,31 +266,6 @@ describe('new chat create action', () => {
       'ws_123',
       'Persist this first message',
       'user_123',
-    );
-  });
-
-  it('creates the thread without sending the first message server-side', async () => {
-    const formData = makeCreateThreadFormData();
-    formData.set('firstMessage', 'Build an analytics dashboard');
-    formData.set('initialMessageContent', 'Build an analytics dashboard');
-    formData.set('model', 'sonnet');
-
-    const response = await action({
-      request: new Request('https://camelai.dev/chat', {
-        method: 'POST',
-        body: formData,
-      }),
-      context: {},
-    } as never);
-
-    expect(response.status).toBe(200);
-    expect(createThreadMock).toHaveBeenCalledWith(
-      {},
-      'ws_123',
-      undefined,
-      'user_123',
-      'Build an analytics dashboard',
-      'sonnet',
     );
   });
 

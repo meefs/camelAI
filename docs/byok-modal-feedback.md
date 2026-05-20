@@ -32,7 +32,7 @@ While there: re-check the X close button position after the height changes. The 
 </DialogTitle>
 ```
 
-The display font is correct on the paywall heading because it's a marketing-weight surface — the user is making a purchase decision. Dialogs in the rest of the product (`invite-member-dialog`, `create-workspace-dialog`, `create-org-dialog`, `bug-report-dialog`, etc.) use the default `text-sm font-medium` `DialogTitle` styling. Mixing the display font in here breaks that convention and makes this single dialog look like a different product surface.
+The display font is correct on the paywall heading because it's a marketing-weight surface — the user is making a purchase decision. Dialogs in the rest of the product (`invite-member-dialog`, `create-workspace-dialog`, `create-org-dialog`, etc.) use the default `text-sm font-medium` `DialogTitle` styling. Mixing the display font in here breaks that convention and makes this single dialog look like a different product surface.
 
 **Change:**
 

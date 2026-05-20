@@ -593,20 +593,6 @@ function MarkdownRendererBase({
     ],
   );
 
-  if (isStreaming && !allowInlineHtml) {
-    return (
-      <div
-        className={cn(
-          'markdown-content whitespace-pre-wrap break-words',
-          variant === 'user' && 'markdown-content-user',
-          className
-        )}
-      >
-        {processedContent}
-      </div>
-    );
-  }
-
   return (
     <div
       className={cn(

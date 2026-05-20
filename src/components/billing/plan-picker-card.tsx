@@ -155,7 +155,12 @@ export function PlanPickerCard({
           </Button>
         </CardFooter>
 
-        <CardContent className="flex-1">
+        <CardContent className="flex-1 space-y-3">
+          {content.upsellPrefix ? (
+            <p className="text-xs font-medium text-muted-foreground">
+              {content.upsellPrefix}
+            </p>
+          ) : null}
           <ul className="space-y-2 text-sm text-foreground/80">
             {content.features.map((feature) => (
               <li key={feature} className="flex items-start gap-2">

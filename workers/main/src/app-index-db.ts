@@ -1,6 +1,7 @@
 import type {
   AdminAppListRow,
   AdminEventType,
+  AdminOrgDirectoryRow,
   AdminThreadListRow,
   AdminUserSummaryRow,
   AppFilters,
@@ -9,7 +10,19 @@ import type {
   ThreadFilters,
   UserFilters,
   WorkspaceFilters,
-} from './admin-index-do.js';
+} from './admin-index-types.js';
+import {
+  computeDashboardSummary as computeDashboardSummaryFromSnapshot,
+  computeRetentionData as computeRetentionDataFromSnapshot,
+  filterDashboardEntitySnapshot,
+  type DashboardEntitySnapshot,
+  type DashboardMetricsFilterOptions,
+  type DashboardRetentionOptions,
+  type DashboardRetentionResponse,
+  type DashboardSummaryOptions,
+  type DashboardSummaryResponse,
+  type DashboardWorkspaceMetricsRow,
+} from './admin-dashboard-metrics.js';
 
 type AppIndexEnv = { APP_DB?: D1Database };
 
@@ -112,7 +125,6 @@ const ORG_SORT_COLS: Record<string, string> = { created_at: 'created_at', name: 
 const ORG_DIRECTORY_SORT_COLS: Record<string, string> = { created_at: 'o.created_at', name: 'o.name' };
 const WORKSPACE_SORT_COLS: Record<string, string> = { created_at: 'w.created_at', name: 'w.name' };
 const APP_SORT_COLS: Record<string, string> = { created_at: 'a.created_at', updated_at: 'a.updated_at' };
-const D1_BATCH_SIZE = 100;
 
 export class AppIndexDatabase {
   private schemaReady: Promise<void> | null = null;
@@ -243,46 +255,25 @@ export class AppIndexDatabase {
     return orgId ? `${orgId}:${scriptName}` : scriptName;
   }
 
-  async isReady(): Promise<boolean> {
+  async isBootstrapComplete(): Promise<boolean> {
     await this.ensureSchema();
     const row = await first<{ value: string }>(
-      this.db.prepare("SELECT value FROM app_index_metadata WHERE key = 'ready' LIMIT 1"),
+      this.db.prepare(`
+        SELECT value
+        FROM app_index_metadata
+        WHERE key IN ('bootstrap_complete', 'ready') AND value = '1'
+        LIMIT 1
+      `),
     );
     return row?.value === '1';
   }
 
-  async markReady(): Promise<void> {
+  async markBootstrapComplete(): Promise<void> {
     await this.ensureSchema();
     await this.db
-      .prepare("INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES ('ready', '1', ?)")
+      .prepare("INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES ('bootstrap_complete', '1', ?)")
       .bind(Date.now())
       .run();
-  }
-
-  async markNotReady(): Promise<void> {
-    await this.ensureSchema();
-    await this.db
-      .prepare("INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES ('ready', '0', ?)")
-      .bind(Date.now())
-      .run();
-  }
-
-  async clearAdminIndexTable(table: string): Promise<void> {
-    await this.ensureSchema();
-    switch (table) {
-      case 'users':
-      case 'orgs':
-      case 'workspaces':
-      case 'threads':
-      case 'apps':
-      case 'invitations':
-      case 'blocked_signup_ips':
-      case 'org_memberships':
-        await this.db.prepare(`DELETE FROM ${table}`).run();
-        return;
-      default:
-        throw new Error(`Unsupported app index import table: ${table}`);
-    }
   }
 
   private async all<T = Record<string, unknown>>(query: string, ...params: unknown[]): Promise<T[]> {
@@ -297,6 +288,33 @@ export class AppIndexDatabase {
     if (!normalizedIp) return false;
     const row = await first(this.db.prepare('SELECT 1 FROM blocked_signup_ips WHERE ip = ? LIMIT 1').bind(normalizedIp));
     return Boolean(row);
+  }
+
+  async blockSignupIp(ip: string, blockedBy: string | null = null, reason: string | null = null): Promise<void> {
+    await this.ensureSchema();
+    const normalizedIp = normalizeSignupIp(ip);
+    if (!normalizedIp) {
+      throw new Error('Invalid signup IP');
+    }
+
+    await this.db
+      .prepare(`
+        INSERT INTO blocked_signup_ips (ip, blocked_at, blocked_by, reason)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(ip) DO UPDATE SET
+          blocked_at = excluded.blocked_at,
+          blocked_by = excluded.blocked_by,
+          reason = excluded.reason
+      `)
+      .bind(normalizedIp, Date.now(), blockedBy, reason)
+      .run();
+  }
+
+  async unblockSignupIp(ip: string): Promise<void> {
+    await this.ensureSchema();
+    const normalizedIp = normalizeSignupIp(ip);
+    if (!normalizedIp) return;
+    await this.db.prepare('DELETE FROM blocked_signup_ips WHERE ip = ?').bind(normalizedIp).run();
   }
 
   async applyAdminEvent(event: AdminEventType): Promise<void> {
@@ -474,145 +492,110 @@ export class AppIndexDatabase {
     }
   }
 
-  async importAdminIndexRows(table: string, rows: Array<Record<string, unknown>>): Promise<number> {
-    await this.ensureSchema();
-    if (rows.length === 0) return 0;
+  async handleEvent(event: AdminEventType): Promise<void> {
+    await this.applyAdminEvent(event);
+  }
 
-    const statements = rows.map((row) => {
-      switch (table) {
-        case 'users':
-          return this.db
-            .prepare(`
-              INSERT INTO users (id, email, name, avatar_color, avatar_content, created_at, is_superuser, is_orphaned, org_count, signup_ip)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(id) DO UPDATE SET
-                email=excluded.email,
-                name=excluded.name,
-                avatar_color=excluded.avatar_color,
-                avatar_content=excluded.avatar_content,
-                created_at=excluded.created_at,
-                is_superuser=excluded.is_superuser,
-                is_orphaned=excluded.is_orphaned,
-                org_count=excluded.org_count,
-                signup_ip=excluded.signup_ip
-            `)
-            .bind(row.id, row.email ?? '', row.name ?? null, row.avatar_color ?? null, row.avatar_content ?? null, row.created_at ?? Date.now(), row.is_superuser ?? 0, row.is_orphaned ?? 0, row.org_count ?? 0, row.signup_ip ?? null);
-        case 'orgs':
-          return this.db
-            .prepare(`
-              INSERT INTO orgs (id, name, slug, created_at, archived, billing_status, created_by, member_count, workspace_count, llm_provider, llm_provider_updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(id) DO UPDATE SET
-                name=excluded.name,
-                slug=excluded.slug,
-                created_at=excluded.created_at,
-                archived=excluded.archived,
-                billing_status=excluded.billing_status,
-                created_by=excluded.created_by,
-                member_count=excluded.member_count,
-                workspace_count=excluded.workspace_count,
-                llm_provider=excluded.llm_provider,
-                llm_provider_updated_at=excluded.llm_provider_updated_at
-            `)
-            .bind(row.id, row.name ?? '', row.slug ?? null, row.created_at ?? Date.now(), row.archived ?? 0, row.billing_status ?? null, row.created_by ?? null, row.member_count ?? 0, row.workspace_count ?? 0, row.llm_provider ?? null, row.llm_provider_updated_at ?? null);
-        case 'workspaces':
-          return this.db
-            .prepare(`
-              INSERT INTO workspaces (id, name, org_id, description, avatar_color, avatar_content, created_at, created_by, archived, archived_at, archived_by, compute_tier, thread_count, integration_count)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(id) DO UPDATE SET
-                name=excluded.name,
-                org_id=excluded.org_id,
-                description=excluded.description,
-                avatar_color=excluded.avatar_color,
-                avatar_content=excluded.avatar_content,
-                created_at=excluded.created_at,
-                created_by=excluded.created_by,
-                archived=excluded.archived,
-                archived_at=excluded.archived_at,
-                archived_by=excluded.archived_by,
-                compute_tier=excluded.compute_tier,
-                thread_count=excluded.thread_count,
-                integration_count=excluded.integration_count
-            `)
-            .bind(row.id, row.name ?? '', row.org_id, row.description ?? null, row.avatar_color ?? null, row.avatar_content ?? null, row.created_at ?? Date.now(), row.created_by ?? null, row.archived ?? 0, row.archived_at ?? null, row.archived_by ?? null, row.compute_tier ?? 'standard', row.thread_count ?? 0, row.integration_count ?? 0);
-        case 'threads':
-          return this.db
-            .prepare(`
-              INSERT INTO threads (id, title, model, org_id, workspace_id, created_at, updated_at, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(id) DO UPDATE SET
-                title=excluded.title,
-                model=excluded.model,
-                org_id=excluded.org_id,
-                workspace_id=excluded.workspace_id,
-                created_at=excluded.created_at,
-                updated_at=excluded.updated_at,
-                created_by=excluded.created_by
-            `)
-            .bind(row.id, row.title ?? null, row.model ?? null, row.org_id, row.workspace_id, row.created_at ?? Date.now(), row.updated_at ?? Date.now(), row.created_by ?? null);
-        case 'apps':
-          return this.db
-            .prepare(`
-              INSERT INTO apps (app_id, script_name, org_id, workspace_id, created_by, created_at, updated_at, is_public, preview_status, preview_error)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(app_id) DO UPDATE SET
-                script_name=excluded.script_name,
-                org_id=excluded.org_id,
-                workspace_id=excluded.workspace_id,
-                created_by=excluded.created_by,
-                created_at=excluded.created_at,
-                updated_at=excluded.updated_at,
-                is_public=excluded.is_public,
-                preview_status=excluded.preview_status,
-                preview_error=excluded.preview_error
-            `)
-            .bind(row.app_id, row.script_name, row.org_id ?? null, row.workspace_id, row.created_by ?? null, row.created_at ?? Date.now(), row.updated_at ?? Date.now(), row.is_public ?? 0, row.preview_status ?? null, row.preview_error ?? null);
-        case 'invitations':
-          return this.db
-            .prepare(`
-              INSERT INTO invitations (id, org_id, email, role, invited_by, status, created_at, expires_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(id) DO UPDATE SET
-                org_id=excluded.org_id,
-                email=excluded.email,
-                role=excluded.role,
-                invited_by=excluded.invited_by,
-                status=excluded.status,
-                created_at=excluded.created_at,
-                expires_at=excluded.expires_at
-            `)
-            .bind(row.id, row.org_id, row.email, row.role, row.invited_by, row.status ?? 'pending', row.created_at ?? Date.now(), row.expires_at ?? Date.now());
-        case 'blocked_signup_ips':
-          return this.db
-            .prepare(`
-              INSERT INTO blocked_signup_ips (ip, blocked_at, blocked_by, reason)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT(ip) DO UPDATE SET
-                blocked_at=excluded.blocked_at,
-                blocked_by=excluded.blocked_by,
-                reason=excluded.reason
-            `)
-            .bind(row.ip, row.blocked_at, row.blocked_by ?? null, row.reason ?? null);
-        case 'org_memberships':
-          return this.db
-            .prepare(`
-              INSERT INTO org_memberships (org_id, user_id, role, joined_at)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT(org_id, user_id) DO UPDATE SET
-                role=excluded.role,
-                joined_at=excluded.joined_at
-            `)
-            .bind(row.org_id, row.user_id, row.role, row.joined_at);
-        default:
-          throw new Error(`Unsupported app index import table: ${table}`);
-      }
-    });
+  private async loadAllUsersForDashboardMetrics(): Promise<AdminUserSummaryRow[]> {
+    const users = await this.all<any>('SELECT * FROM users');
+    return users.map((row) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name ?? null,
+      avatar: {
+        color: row.avatar_color || '#666',
+        content: row.avatar_content || 'U',
+      },
+      created_at: row.created_at,
+      org_count: row.org_count ?? 0,
+      is_superuser: row.is_superuser === 1,
+      is_orphaned: row.is_orphaned === 1,
+      signup_ip: row.signup_ip ?? null,
+    }));
+  }
 
-    for (let i = 0; i < statements.length; i += D1_BATCH_SIZE) {
-      await this.db.batch(statements.slice(i, i + D1_BATCH_SIZE));
-    }
-    return rows.length;
+  private async loadAllThreadsForDashboardMetrics(): Promise<AdminThreadListRow[]> {
+    return this.all<AdminThreadListRow>(`
+      SELECT t.*, o.name as org_name, w.name as workspace_name
+      FROM threads t
+      LEFT JOIN orgs o ON t.org_id = o.id
+      LEFT JOIN workspaces w ON t.workspace_id = w.id
+      ORDER BY t.updated_at DESC, t.id ASC
+    `);
+  }
+
+  private async loadAllAppsForDashboardMetrics(): Promise<AdminAppListRow[]> {
+    const rows = await this.all<any>(`
+      SELECT
+        a.app_id,
+        a.script_name,
+        a.org_id,
+        o.name AS org_name,
+        o.slug AS org_slug,
+        a.workspace_id,
+        w.name AS workspace_name,
+        a.created_by,
+        u.name AS created_by_name,
+        u.email AS created_by_email,
+        a.created_at,
+        a.updated_at,
+        a.is_public,
+        a.preview_status,
+        a.preview_error
+      FROM apps a
+      LEFT JOIN orgs o ON a.org_id = o.id
+      LEFT JOIN workspaces w ON a.workspace_id = w.id
+      LEFT JOIN users u ON a.created_by = u.id
+      ORDER BY a.created_at DESC, a.app_id ASC
+    `);
+    return rows.map((row) => ({
+      app_id: row.app_id,
+      script_name: row.script_name,
+      org_id: row.org_id,
+      workspace_id: row.workspace_id,
+      org_name: row.org_name ?? null,
+      org_slug: row.org_slug ?? null,
+      workspace_name: row.workspace_name ?? null,
+      created_by: row.created_by,
+      created_by_name: row.created_by_name ?? null,
+      created_by_email: row.created_by_email ?? null,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      is_public: row.is_public === 1,
+      preview_status: row.preview_status ?? null,
+      preview_error: row.preview_error ?? null,
+    }));
+  }
+
+  private async loadAllWorkspacesForDashboardMetrics(): Promise<DashboardWorkspaceMetricsRow[]> {
+    const rows = await this.all<any>('SELECT id, org_id FROM workspaces');
+    return rows.map((row) => ({
+      id: row.id,
+      org_id: row.org_id,
+    }));
+  }
+
+  private async loadFilteredEntitySnapshot(
+    options: DashboardMetricsFilterOptions = {},
+  ): Promise<DashboardEntitySnapshot> {
+    const [users, threads, apps, workspaces, orgs] = await Promise.all([
+      this.loadAllUsersForDashboardMetrics(),
+      this.loadAllThreadsForDashboardMetrics(),
+      this.loadAllAppsForDashboardMetrics(),
+      this.loadAllWorkspacesForDashboardMetrics(),
+      this.getOrgDirectoryRows(),
+    ]);
+
+    return filterDashboardEntitySnapshot(
+      {
+        users,
+        threads,
+        apps,
+        orgs,
+        workspaces,
+      },
+      options,
+    );
   }
 
   async getOverview() {
@@ -626,6 +609,7 @@ export class AppIndexDatabase {
       this.all<any>('SELECT * FROM users'),
     ]);
     return {
+      users: users.map((u) => ({ ...u, avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' }, is_superuser: u.is_superuser === 1, is_orphaned: u.is_orphaned === 1, signup_ip: u.signup_ip ?? null })),
       total_users: toNumber(totalUsers?.count),
       total_orgs: toNumber(totalOrgs?.count),
       total_memberships: toNumber(totalMemberships?.count),
@@ -634,6 +618,16 @@ export class AppIndexDatabase {
       orphaned_users: toNumber(orphanedUsers?.count),
       superusers: users.filter((u) => u.is_superuser === 1).map((u) => ({ ...u, avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' }, is_superuser: true, is_orphaned: u.is_orphaned === 1 })),
     };
+  }
+
+  async computeDashboardSummary(options: DashboardSummaryOptions): Promise<DashboardSummaryResponse> {
+    const snapshot = await this.loadFilteredEntitySnapshot(options);
+    return computeDashboardSummaryFromSnapshot(snapshot, options);
+  }
+
+  async computeRetentionData(options: DashboardRetentionOptions = {}): Promise<DashboardRetentionResponse> {
+    const snapshot = await this.loadFilteredEntitySnapshot(options);
+    return computeRetentionDataFromSnapshot(snapshot, options);
   }
 
   async getUsersPaginated(offset: number, limit: number, search?: string, filters?: UserFilters) {
@@ -683,6 +677,20 @@ export class AppIndexDatabase {
     const items = await this.all<AdminThreadListRow>(`${base}${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`, ...params, limit, offset);
     const total = toNumber((await first<{ count: number }>(this.db.prepare(`${countBase}${where}`).bind(...params)))?.count);
     return { items, total, offset, limit, hasMore: offset + items.length < total };
+  }
+
+  async getAllThreads() {
+    return this.all<AdminThreadListRow>(`
+      SELECT t.*, o.name as org_name, w.name as workspace_name
+      FROM threads t
+      LEFT JOIN orgs o ON t.org_id = o.id
+      LEFT JOIN workspaces w ON t.workspace_id = w.id
+      ORDER BY t.updated_at DESC
+    `);
+  }
+
+  async getAppCount() {
+    return toNumber((await first<{ count: number }>(this.db.prepare('SELECT COUNT(*) AS count FROM apps')))?.count);
   }
 
   async getOrgsPaginated(offset: number, limit: number, search?: string, filters?: OrgFilters) {
@@ -789,6 +797,17 @@ export class AppIndexDatabase {
     return { items: rows.map(normalizeWorkspaceRow), total, offset, limit, hasMore: offset + rows.length < total };
   }
 
+  async getWorkspacesByOrg(orgId: string) {
+    const rows = await this.all<any>(`
+      SELECT w.*, o.name as org_name
+      FROM workspaces w
+      LEFT JOIN orgs o ON w.org_id = o.id
+      WHERE w.org_id = ?
+      ORDER BY w.created_at DESC
+    `, orgId);
+    return rows.map(normalizeWorkspaceRow);
+  }
+
   async getAppsPaginated(offset: number, limit: number, search?: string, filters?: AppFilters) {
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -822,8 +841,15 @@ export class AppIndexDatabase {
   }
 
   async getThreadContextById(threadId: string) {
-    return first<{ org_id: string; workspace_id: string }>(
-      this.db.prepare('SELECT org_id, workspace_id FROM threads WHERE id = ? LIMIT 1').bind(threadId),
+    return first<AdminThreadListRow>(
+      this.db.prepare(`
+        SELECT t.*, o.name as org_name, w.name as workspace_name
+        FROM threads t
+        LEFT JOIN orgs o ON t.org_id = o.id
+        LEFT JOIN workspaces w ON t.workspace_id = w.id
+        WHERE t.id = ?
+        LIMIT 1
+      `).bind(threadId),
     );
   }
 
@@ -894,6 +920,96 @@ export class AppIndexDatabase {
       ORDER BY o.created_at DESC, o.id ASC
     `, JSON.stringify(normalizedOrgIds));
     return rows.map(normalizeOrgDirectoryRow);
+  }
+
+  async getOrgRecentThreads(orgId: string, limit = 10) {
+    const resolvedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return this.all<AdminThreadListRow>(`
+      SELECT t.*, o.name as org_name, w.name as workspace_name
+      FROM threads t
+      LEFT JOIN orgs o ON t.org_id = o.id
+      LEFT JOIN workspaces w ON t.workspace_id = w.id
+      WHERE t.org_id = ?
+      ORDER BY t.updated_at DESC
+      LIMIT ?
+    `, orgId, resolvedLimit);
+  }
+
+  async getOrgRecentApps(orgId: string, limit = 10) {
+    const resolvedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = await this.all<any>(`
+      SELECT a.*, o.name as org_name, o.slug as org_slug, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email
+      FROM apps a
+      LEFT JOIN orgs o ON a.org_id = o.id
+      LEFT JOIN workspaces w ON a.workspace_id = w.id
+      LEFT JOIN users u ON a.created_by = u.id
+      WHERE a.org_id = ?
+      ORDER BY a.updated_at DESC
+      LIMIT ?
+    `, orgId, resolvedLimit);
+    return rows.map((row) => ({ ...row, is_public: row.is_public === 1 }));
+  }
+
+  async getOrgThreadCount(orgId: string) {
+    return toNumber((await first<{ count: number }>(
+      this.db.prepare('SELECT COUNT(*) AS count FROM threads WHERE org_id = ?').bind(orgId),
+    ))?.count);
+  }
+
+  async getOrgAppCount(orgId: string) {
+    return toNumber((await first<{ count: number }>(
+      this.db.prepare('SELECT COUNT(*) AS count FROM apps WHERE org_id = ?').bind(orgId),
+    ))?.count);
+  }
+
+  async getOrgRecentActivity(
+    orgId: string,
+    threadLimit = 10,
+    appLimit = 10,
+    includeCounts = true,
+  ) {
+    const [threads, apps, threadCount, appCount] = await Promise.all([
+      this.getOrgRecentThreads(orgId, threadLimit),
+      this.getOrgRecentApps(orgId, appLimit),
+      includeCounts ? this.getOrgThreadCount(orgId) : Promise.resolve(null),
+      includeCounts ? this.getOrgAppCount(orgId) : Promise.resolve(null),
+    ]);
+
+    return {
+      threads,
+      apps,
+      threadCount,
+      appCount,
+    };
+  }
+
+  async getInvitationsPaginated(offset: number, limit: number, search?: string) {
+    const now = Date.now();
+    const conditions = ['i.expires_at > ?'];
+    const params: unknown[] = [now];
+    if (search) {
+      conditions.push('(i.email LIKE ? OR o.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?)');
+      const like = `%${search}%`;
+      params.push(like, like, like, like);
+    }
+    const where = ` WHERE ${conditions.join(' AND ')}`;
+    const items = await this.all<any>(`
+      SELECT i.*, o.name as org_name, u.name as invited_by_name, u.email as invited_by_email
+      FROM invitations i
+      LEFT JOIN orgs o ON i.org_id = o.id
+      LEFT JOIN users u ON i.invited_by = u.id
+      ${where}
+      ORDER BY i.created_at DESC
+      LIMIT ? OFFSET ?
+    `, ...params, limit, offset);
+    const total = toNumber((await first<{ count: number }>(this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM invitations i
+      LEFT JOIN orgs o ON i.org_id = o.id
+      LEFT JOIN users u ON i.invited_by = u.id
+      ${where}
+    `).bind(...params)))?.count);
+    return { items, total, offset, limit, hasMore: offset + items.length < total };
   }
 }
 

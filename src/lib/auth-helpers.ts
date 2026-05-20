@@ -6,7 +6,6 @@ import type { Integration } from '@/types';
 import type { CloudflareEnv } from './cloudflare.server';
 import { UserDO, OrgDO } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
-import type { AdminIndexDO } from '../../workers/main/src/admin-index-do';
 
 // Re-export types that are only defined in worker modules
 export type { OrgThread } from '../../workers/main/src/auth';
@@ -22,7 +21,7 @@ export interface AuthEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
-  ADMIN_INDEX?: DurableObjectNamespace<AdminIndexDO>;
+  APP_DB?: D1Database;
   SESSIONS: KVNamespace;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
@@ -37,7 +36,7 @@ export function getAuthEnv(env: CloudflareEnv): AuthEnv {
     USER: env.USER as AuthEnv['USER'],
     ORG: env.ORG as AuthEnv['ORG'],
     WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
-    ADMIN_INDEX: (env as any).ADMIN_INDEX as AuthEnv['ADMIN_INDEX'],
+    APP_DB: (env as any).APP_DB as AuthEnv['APP_DB'],
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,

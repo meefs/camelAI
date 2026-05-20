@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Copy, Check, GitFork } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration, ChatHarness, LlmProvider } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -19,9 +19,14 @@ import { memo } from 'react';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
-import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
+import { ChatRateLimitNotice } from '@/components/chat-api-error-notice';
 import { isSupportedSlashCommand } from '@/lib/slash-commands';
+import {
+  getChatApiErrorPresentation,
+  isRateLimitChatApiErrorPresentation,
+} from '@/lib/chat-api-errors';
+import { parseByokProvider } from '@/lib/byok-providers';
 import {
   type AnnotatedMentionRef,
   stripMentionAnnotations,
@@ -326,6 +331,8 @@ interface ContentBlockRendererProps {
   workspaceId?: string;
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
+  llmProvider?: LlmProvider | null;
+  threadProvider?: ChatHarness | null;
 }
 
 export function ContentBlockRenderer({
@@ -335,6 +342,8 @@ export function ContentBlockRenderer({
   workspaceId,
   skillSheets,
   mentionSlugMap,
+  llmProvider,
+  threadProvider,
 }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
@@ -407,15 +416,31 @@ export function ContentBlockRenderer({
     }
 
     if (block.type === 'error') {
+      const blockProvider = parseByokProvider(block.provider);
+      const errorPayload =
+        typeof block.status === 'number' || typeof block.errorType === 'string'
+          ? {
+              error: block.error,
+              status: block.status,
+              type: block.errorType,
+            }
+          : block.error;
+      const presentation = getChatApiErrorPresentation(errorPayload, {
+        billingSource: block.billingSource,
+        llmProvider: blockProvider ?? llmProvider,
+        threadProvider,
+      });
       items.push({
         kind: 'other',
         key: `error-${index}`,
-        node: (
+        node: isRateLimitChatApiErrorPresentation(presentation) ? (
+          <ChatRateLimitNotice presentation={presentation} />
+        ) : (
           <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="min-w-0">
-              <div className="font-medium">{block.title || 'Error'}</div>
-              <div className="mt-1 break-words text-destructive/90">{block.error}</div>
+              <div className="font-medium">{block.title || presentation.title || 'Error'}</div>
+              <div className="mt-1 break-words text-destructive/90">{presentation.message}</div>
             </div>
           </div>
         ),
@@ -558,9 +583,9 @@ interface MessageBubbleProps {
   /** Optional hover/focus classes supplied by a parent turn group. */
   actionHoverClassName?: string;
   skillSheets?: Map<string, string>;
-  hostname?: string;
-  orgSlug?: string;
   mentionSlugMap?: Map<string, Integration>;
+  llmProvider?: LlmProvider | null;
+  threadProvider?: ChatHarness | null;
 }
 
 function getMessageToolUseIds(message: Message): string[] {
@@ -593,9 +618,9 @@ function MessageBubbleBase({
   actionCopyContent,
   actionHoverClassName = "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100",
   skillSheets,
-  hostname,
-  orgSlug,
   mentionSlugMap,
+  llmProvider,
+  threadProvider,
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
@@ -676,16 +701,6 @@ function MessageBubbleBase({
       displayContent = stripped.blocks;
     }
 
-    const rawText = typeof displayContent === 'string'
-      ? displayContent
-      : displayContent
-        .map(block => (block.type === 'text' ? block.text : ''))
-        .filter(Boolean)
-        .join('\n');
-
-    const bugReportText = rawText ? stripSystemMessageTags(rawText) : '';
-    const bugReport = bugReportText ? parseBugReport(bugReportText) : null;
-
     const uploadInfo = typeof displayContent === 'string'
       ? parseUploadRefs(displayContent)
       : { refs: [] as ReturnType<typeof parseUploadRefs>['refs'], cleanContent: displayContent };
@@ -695,69 +710,6 @@ function MessageBubbleBase({
     const hasCleanContent = typeof cleanedContent === 'string'
       ? cleanedContent.length > 0
       : cleanedContent.length > 0;
-
-    if (bugReport) {
-      return (
-        <div className="flex flex-col items-end gap-2">
-          {previewRefs.length > 0 && workspaceId && (
-            <div className="flex flex-wrap gap-2">
-              {previewRefs.map(ref => (
-                <FilePreviewChip
-                  key={ref.mountPath}
-                  filename={ref.originalName}
-                  previewUrl={`/api/workspaces/${workspaceId}/uploads/${encodePathSegments(ref.filename)}`}
-                  previewTarget={{
-                    kind: 'file',
-                    source: 'upload',
-                    workspaceId,
-                    path: ref.filename,
-                    filename: ref.originalName,
-                  }}
-                />
-              ))}
-            </div>
-          )}
-          <BugReportCard
-            appName={bugReport.appName}
-            description={bugReport.description}
-            timestamp={message.created_at}
-            hostname={hostname}
-            orgSlug={orgSlug}
-          />
-          {showActionRow && (
-            <div
-              className={cn("flex items-center gap-0.5 pointer-coarse:gap-1", actionVisibilityClassName)}
-              role="group"
-              aria-label="Message actions"
-            >
-              {author && (
-                <span className="text-muted-foreground text-xs mr-1">
-                  Sent by {author.displayName} at{' '}
-                </span>
-              )}
-              <span className="text-muted-foreground text-xs mr-1">
-                {formatMessageTime(message.created_at)}
-              </span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
-                    onClick={() => onCopy(message.id, bugReport.originalText)}
-                  >
-                    {isCopied ? <Check /> : <Copy />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {isCopied ? 'Copied!' : 'Copy message'}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
-        </div>
-      );
-    }
 
     return (
       <div className="flex flex-col items-end gap-2">
@@ -788,6 +740,8 @@ function MessageBubbleBase({
                 workspaceId={workspaceId}
                 skillSheets={skillSheets}
                 mentionSlugMap={mentionSlugMap}
+                llmProvider={llmProvider}
+                threadProvider={threadProvider}
               />
             </CollapsibleUserMessage>
           </div>
@@ -842,6 +796,8 @@ function MessageBubbleBase({
             workspaceId={workspaceId}
             skillSheets={skillSheets}
             mentionSlugMap={mentionSlugMap}
+            llmProvider={llmProvider}
+            threadProvider={threadProvider}
           />
         </div>
       )}
@@ -916,8 +872,6 @@ export const MessageBubble = memo(MessageBubbleBase, (prev, next) => {
     prev.showActionRow === next.showActionRow &&
     prev.actionCopyContent === next.actionCopyContent &&
     prev.actionHoverClassName === next.actionHoverClassName &&
-    prev.hostname === next.hostname &&
-    prev.orgSlug === next.orgSlug &&
     prev.mentionSlugMap === next.mentionSlugMap &&
     messageSkillSheetsEqual(prev.message, prev.skillSheets, next.skillSheets)
   );

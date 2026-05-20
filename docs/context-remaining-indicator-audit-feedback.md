@@ -109,7 +109,7 @@ const pct = computeContextUsedPercentFromResult(sdkEvent);
 if (pct !== null) {
   this.contextUsedPercent = pct;
   this.ctx.storage.kv.put(CHAT_CONTEXT_USED_PERCENT_KEY, pct);
-  this.broadcastRealtime({ type: 'context_usage_state', usedPercent: pct });
+  this.broadcastChat({ type: 'context_usage_state', usedPercent: pct });
 }
 
 // IMPORTANT: do not clear/overwrite when result has no modelUsage

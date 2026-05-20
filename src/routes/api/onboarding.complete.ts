@@ -12,6 +12,17 @@ import type { ChatHarness, LlmModel } from '@/types';
 
 type OnboardingAccessChoice = 'byok' | 'existing' | null;
 
+type InitialUserMessageRpc = {
+  startInitialUserMessage(args: {
+    threadId: string;
+    workspaceId: string;
+    orgId: string;
+    userId?: string | null;
+    message: string;
+    clientMessageId?: string;
+  }): Promise<{ status: 'accepted' | 'busy' | 'error'; error?: string }>;
+};
+
 function getQuestionToolName(provider: ChatHarness): string {
   return provider === 'codex' ? 'ask_user_question' : 'AskUserQuestion';
 }
@@ -80,6 +91,30 @@ function buildOnboardingInitialMessage(
   return salesPrompt
     ? `<camelai system message>${onboardingSystemMessage}</camelai system message>\n\n${salesPrompt}`
     : `<camelai system message>${onboardingSystemMessage}</camelai system message>`;
+}
+
+async function startOnboardingInitialMessage(args: {
+  env: ReturnType<typeof getEnv>;
+  threadId: string;
+  workspaceId: string;
+  orgId: string;
+  userId: string;
+  message: string;
+}) {
+  const chatThread = args.env.CHAT_THREAD.get(
+    args.env.CHAT_THREAD.idFromName(args.threadId),
+  ) as unknown as InitialUserMessageRpc;
+  const result = await chatThread.startInitialUserMessage({
+    threadId: args.threadId,
+    workspaceId: args.workspaceId,
+    orgId: args.orgId,
+    userId: args.userId,
+    message: args.message,
+    clientMessageId: `onboarding:${args.threadId}`,
+  });
+  if (result.status !== 'accepted') {
+    console.error('Failed to start onboarding message:', result.error);
+  }
 }
 
 async function readAccessChoice(request: Request): Promise<OnboardingAccessChoice> {
@@ -256,15 +291,23 @@ export async function action({ request, context }: Route.ActionArgs) {
         salesPrompt,
         existingThread.provider ?? 'claude',
       );
+      const onboardingInitialMessage = buildOnboardingInitialMessage(
+        onboardingSystemMessage,
+        salesPrompt,
+      );
+      await startOnboardingInitialMessage({
+        env,
+        threadId: existingThread.id,
+        workspaceId,
+        orgId: authContext.currentOrg.id,
+        userId: authContext.user.id,
+        message: onboardingInitialMessage,
+      });
       return Response.json({
         success: true,
         threadId: existingThread.id,
         salesPrompt,
         redirectTo: `/chat/${existingThread.id}?newThread=1`,
-        initialMessageContent: buildOnboardingInitialMessage(
-          onboardingSystemMessage,
-          salesPrompt,
-        ),
         showBootModal: true,
       });
     }
@@ -288,16 +331,24 @@ export async function action({ request, context }: Route.ActionArgs) {
       salesPrompt,
       recoveryThread.provider ?? 'claude',
     );
+    const onboardingInitialMessage = buildOnboardingInitialMessage(
+      onboardingSystemMessage,
+      salesPrompt,
+    );
+    await startOnboardingInitialMessage({
+      env,
+      threadId: recoveryThread.id,
+      workspaceId,
+      orgId: authContext.currentOrg.id,
+      userId: authContext.user.id,
+      message: onboardingInitialMessage,
+    });
 
     return Response.json({
       success: true,
       threadId: recoveryThread.id,
       salesPrompt,
       redirectTo: `/chat/${recoveryThread.id}?newThread=1`,
-      initialMessageContent: buildOnboardingInitialMessage(
-        onboardingSystemMessage,
-        salesPrompt,
-      ),
       showBootModal: true,
     });
   }
@@ -323,16 +374,24 @@ export async function action({ request, context }: Route.ActionArgs) {
     salesPrompt,
     thread.provider ?? 'claude',
   );
+  const onboardingInitialMessage = buildOnboardingInitialMessage(
+    onboardingSystemMessage,
+    salesPrompt,
+  );
+  await startOnboardingInitialMessage({
+    env,
+    threadId: thread.id,
+    workspaceId,
+    orgId: authContext.currentOrg.id,
+    userId: authContext.user.id,
+    message: onboardingInitialMessage,
+  });
 
   return Response.json({
     success: true,
     threadId: thread.id,
     salesPrompt,
     redirectTo: `/chat/${thread.id}?newThread=1`,
-    initialMessageContent: buildOnboardingInitialMessage(
-      onboardingSystemMessage,
-      salesPrompt,
-    ),
     showBootModal: true,
   });
 }

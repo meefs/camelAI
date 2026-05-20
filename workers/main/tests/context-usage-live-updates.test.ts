@@ -3,7 +3,7 @@ import {
   applyContextUsageSdkEvent,
   resolveContextUsageForInit,
   type ContextUsageTrackingState,
-} from '../src/durable-objects.js';
+} from '../src/chat-thread-do.js';
 
 function initialState(
   overrides: Partial<ContextUsageTrackingState> = {}

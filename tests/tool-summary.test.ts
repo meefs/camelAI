@@ -302,13 +302,22 @@ describe('getToolSummaryParts friendly dynamic tool labels', () => {
 
   it('has friendly summaries for every registered code-mode tool', () => {
     const source = fs.readFileSync(
-      path.join(root, 'workers/main/src/durable-objects.ts'),
+      path.join(root, 'workers/main/src/chat-thread-do.ts'),
       'utf8',
     );
-    const arrayStart = source.indexOf('const CODE_MODE_TOOL_DEFINITIONS');
-    const arrayEnd = source.indexOf('function codeModePiToolParameters', arrayStart);
-    const definitions = source.slice(arrayStart, arrayEnd);
-    const toolNames = Array.from(definitions.matchAll(/name:\s*"([^"]+)"/g), (match) => match[1]);
+    const registryStart = source.indexOf('const CODE_MODE_CONTAINER_TOOL_NAMES');
+    const registryEnd = source.indexOf('const CODE_MODE_TOOL_DEFINITIONS', registryStart);
+    const registry = source.slice(registryStart, registryEnd);
+    const toolNames = Array.from(new Set([
+      ...Array.from(
+        registry.matchAll(/CODE_MODE_CONTAINER_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]/g),
+        (match) => Array.from(match[1].matchAll(/"([^"]+)"/g), (nameMatch) => nameMatch[1]),
+      ).flat(),
+      ...Array.from(
+        registry.matchAll(/codeMode(?:Passthrough)?(?:Tool|Alias)\(\s*"([^"]+)"/g),
+        (match) => match[1],
+      ),
+    ]));
 
     expect(toolNames.length).toBeGreaterThan(20);
 

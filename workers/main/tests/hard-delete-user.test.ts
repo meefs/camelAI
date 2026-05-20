@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:test';
 import { hardDeleteAdminUser } from '../../../src/lib/auth-do.server';
 import { createUser, type TestEnv } from './test-helpers';
+import { getAppIndexDatabase } from '../src/app-index-db';
 
 const testEnv = env as unknown as TestEnv;
 
@@ -14,7 +15,7 @@ function makeContext() {
 }
 
 async function waitForAdminIndexUserPresence(userId: string, present: boolean): Promise<void> {
-  const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+  const adminIndex = getAppIndexDatabase(testEnv)!;
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const overview = await adminIndex.getOverview();
@@ -25,11 +26,11 @@ async function waitForAdminIndexUserPresence(userId: string, present: boolean): 
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
-  throw new Error(`Timed out waiting for user ${userId} presence=${present} in AdminIndexDO`);
+  throw new Error(`Timed out waiting for user ${userId} presence=${present} in D1 app index`);
 }
 
 describe('hardDeleteAdminUser', () => {
-  it('removes deleted users from AdminIndexDO user list', async () => {
+  it('removes deleted users from D1 app index user list', async () => {
     const email = `hard-delete-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
     const { userId } = await createUser(testEnv, email, 'password123', 'Delete Me');
 
@@ -47,7 +48,7 @@ describe('hardDeleteAdminUser', () => {
   it('ignores stale user_upsert events after delete', async () => {
     const email = `hard-delete-race-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
     const { userId } = await createUser(testEnv, email, 'password123', 'Race User');
-    const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+    const adminIndex = getAppIndexDatabase(testEnv)!;
 
     await waitForAdminIndexUserPresence(userId, true);
 

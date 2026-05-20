@@ -6,7 +6,13 @@
   "compatibility_date": "2025-12-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "upload_source_maps": true,
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+    },
+  },
   "limits": {
     "subrequests": 10000000,
   },
@@ -75,9 +81,6 @@
       "migrations_dir": "migrations",
     },
   ],
-  "triggers": {
-    "crons": ["*/10 * * * *"],
-  },
   "queues": {
     "producers": [
       {
@@ -108,39 +111,10 @@
       { "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
       { "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
       { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-      { "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" },
     ],
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ChatDurableObject"] },
-    { "tag": "v2", "deleted_classes": ["ChatDurableObject"] },
-    { "tag": "v3", "new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"] },
-    { "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
-    { "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
-    { "tag": "v6", "new_sqlite_classes": ["WorkspaceDO"] },
-    { "tag": "v7", "deleted_classes": ["SessionDO"] },
-    { "tag": "v8", "deleted_classes": ["ChatIndexDO"] },
-    { "tag": "v9", "new_sqlite_classes": ["ChiridionMcp"] },
-    { "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] },
-    { "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
-    {
-      "tag": "v12",
-      "deleted_classes": ["MssqlProxy"],
-      "new_sqlite_classes": ["DataProxy"],
-    },
-    { "tag": "v13", "deleted_classes": ["ThreadSandbox"] },
-    { "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] },
-    { "tag": "v15", "new_sqlite_classes": ["AdminIndexDO"] },
-    { "tag": "v16", "deleted_classes": ["DataProxy"] },
-    { "tag": "v17", "new_sqlite_classes": ["OAuthStateDO"] },
-    { "tag": "v18", "new_sqlite_classes": ["WorkspaceCronDO"] },
-    { "tag": "v19", "deleted_classes": ["OAuthStateDO"] },
-    { "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
-    { "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
-    { "tag": "v22" },
-    { "tag": "v23" },
-    { "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
-    { "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
-    { "tag": "v26", "deleted_classes": ["CloudflareSandbox", "WorkspaceFilesystemDO"] },
+    { "tag": "v27" },
+    { "tag": "v28" },
   ],
 }

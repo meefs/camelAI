@@ -24,7 +24,7 @@ import type {
   ChatGroup,
   ChatGroupSummary,
 } from "../../../src/types";
-import type { ChatThreadDO } from "./durable-objects";
+import type { ChatThreadDO } from "./chat-thread-do";
 import { WorkspaceDO } from "./workspace";
 import {
   DEFAULT_LLM_MODEL,
@@ -46,6 +46,8 @@ import {
   normalizeSeatCount,
 } from "../../../src/lib/billing-plans";
 import { calculateEffectiveUsageCostUsd } from "../../../src/lib/usage-pricing";
+import { getAppIndexDatabase } from "./app-index-db.js";
+import type { AdminEventType } from "./admin-index-types.js";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../src/types";
@@ -56,9 +58,6 @@ export interface DOEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
-  ADMIN_INDEX: DurableObjectNamespace<
-    import("./admin-index-do.js").AdminIndexDO
-  >;
   APP_DB?: D1Database;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
@@ -116,21 +115,24 @@ async function registerOrgSlug(
   await kv.put(`${ORG_SLUG_KV_PREFIX}${slug}`, orgId);
 }
 
-import type { AdminEventType } from "./admin-index-do.js";
-
 export function dispatchAdminEvent(
   ctx: DurableObjectState,
   env: DOEnv,
   event: AdminEventType,
 ) {
   try {
+    const appIndex = getAppIndexDatabase(env);
+    if (!appIndex) {
+      console.error("APP_DB binding is not configured; admin index event skipped");
+      return;
+    }
     ctx.waitUntil(
-      env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName("admin_index"))
-        .handleEvent(event)
-        .catch((err) => console.error("AdminIndex sync failed:", err)),
+      appIndex
+        .applyAdminEvent(event)
+        .catch((err) => console.error("D1 admin index sync failed:", err)),
     );
   } catch (err) {
-    console.error("Failed to dispatch to AdminIndex", err);
+    console.error("Failed to dispatch to D1 admin index", err);
   }
 }
 
@@ -950,7 +952,7 @@ export class UserDO extends DurableObject<DOEnv> {
     await this.setPasswordHash(passwordHash);
     if (signupIp) {
       this.setSignupIp(signupIp);
-      // Re-dispatch with signup_ip so AdminIndexDO can index it
+      // Re-dispatch with signup_ip so the D1 admin index can index it.
       dispatchAdminEvent(this.ctx, this.env, {
         type: "user_upsert",
         payload: { ...profile, signup_ip: signupIp },
@@ -1695,7 +1697,7 @@ export class UserDO extends DurableObject<DOEnv> {
     await this.linkOAuthProvider(provider, providerId);
     if (signupIp) {
       this.setSignupIp(signupIp);
-      // Re-dispatch with signup_ip so AdminIndexDO can index it
+      // Re-dispatch with signup_ip so the D1 admin index can index it.
       dispatchAdminEvent(this.ctx, this.env, {
         type: "user_upsert",
         payload: { ...profile, signup_ip: signupIp },

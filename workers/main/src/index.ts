@@ -66,7 +66,7 @@ import {
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
-export { ChatThreadDO, CodeModeToolsBinding } from './durable-objects.js';
+export { ChatThreadDO, CodeModeToolsBinding } from './chat-thread-do.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
 export { EmailHandleDO } from './email-handle-registry.js';
@@ -77,7 +77,6 @@ export { R2VirtualBucket } from './r2-virtual-bucket.js';
 export { DataProxyService } from './data-proxy-service.js';
 export { AIVirtualBinding } from './ai-virtual-binding.js';
 export { ConnectionsService } from './connections-service.js';
-export { AdminIndexDO } from './admin-index-do.js';
 
 // Extend React Router's AppLoadContext
 declare module 'react-router' {
@@ -327,18 +326,5 @@ export default {
 
     console.warn('[queue] unhandled queue batch', { queue: batch.queue, size: batch.messages.length });
     batch.ackAll();
-  },
-
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'))
-        .syncAppIndexDatabase()
-        .then((result) => {
-          if (result.enabled) {
-            console.log('[app-index] sync complete', result.imported);
-          }
-        })
-        .catch((error) => console.error('[app-index] sync failed', error)),
-    );
   },
 } satisfies ExportedHandler<Env>;

@@ -6,7 +6,13 @@
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"upload_source_maps": true,
-	"observability": { "enabled": true },
+	"observability": {
+		"enabled": true,
+		"traces": {
+			"enabled": true,
+			"head_sampling_rate": 1
+		}
+	},
 	"tail_consumers": [{ "service": "chiridion-user-logs-tail-dev-miguel" }],
 	"rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
 	"routes": [
@@ -63,9 +69,6 @@
 			"migrations_dir": "migrations"
 		}
 	],
-	"triggers": {
-		"crons": ["*/10 * * * *"]
-	},
 	"queues": {
 		"producers": [
 			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots-dev-miguel" },
@@ -90,7 +93,6 @@
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
 			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
-			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" }
 		]
 	},
 	"migrations": [
@@ -114,6 +116,7 @@
 		{ "tag": "v18", "new_sqlite_classes": ["WorkspaceCronDO"] },
 		{ "tag": "v19", "deleted_classes": ["OAuthStateDO"] },
 		{ "tag": "v20", "new_sqlite_classes": ["EmailHandleDO"] },
-		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] }
+		{ "tag": "v21", "new_classes": ["EphemeralWorkerLogsDO"] },
+		{ "tag": "v22", "deleted_classes": ["AdminIndexDO"] }
 	]
 }

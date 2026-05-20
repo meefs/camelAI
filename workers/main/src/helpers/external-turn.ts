@@ -2,7 +2,7 @@ import type { Env } from '../types.js';
 import type {
   ExternalMessageRequest,
   ExternalTurnResult,
-} from '../durable-objects.js';
+} from '../chat-thread-do.js';
 
 type ExternalMessageRpc = {
   externalMessage: (body: ExternalMessageRequest) => Promise<ExternalTurnResult>;

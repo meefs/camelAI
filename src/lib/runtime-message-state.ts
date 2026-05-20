@@ -1250,8 +1250,6 @@ function canonicalizeDynamicToolName(tool: unknown): string {
       return 'CreateConnection';
     case 'prompt_connection_setup':
       return 'PromptConnectionSetup';
-    case 'capture_bug_report':
-      return 'CaptureBugReport';
     case 'get_custom_domain':
       return 'GetCustomDomain';
     case 'set_custom_domain':

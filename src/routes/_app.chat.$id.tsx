@@ -142,7 +142,6 @@ interface ChatData {
   todos: TodoItem[];
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
-  previewTarget: PreviewTarget | null;
 }
 
 const EMPTY_CHAT_DATA: ChatData = {
@@ -151,7 +150,6 @@ const EMPTY_CHAT_DATA: ChatData = {
   todos: [],
   previewTabs: [],
   activeTabId: null,
-  previewTarget: null,
 };
 
 function getPreviewTabId(target: PreviewTarget): string {
@@ -200,13 +198,9 @@ async function buildChatData(
       };
     };
 
-    const fallbackTabs =
-      previewStateRaw.tabs.length > 0
-        ? previewStateRaw.tabs
-        : previewStateRaw.target
-          ? [previewStateRaw.target]
-          : [];
-    const previewTabs = await Promise.all(fallbackTabs.map(applyAppVisibility));
+    const previewTabs = await Promise.all(
+      previewStateRaw.tabs.map(applyAppVisibility),
+    );
     const tabIds = new Set(previewTabs.map(getPreviewTabId));
 
     let activeTabId = previewStateRaw.activeTabId;
@@ -214,18 +208,9 @@ async function buildChatData(
       activeTabId = previewTabs[0] ? getPreviewTabId(previewTabs[0]) : null;
     }
 
-    let previewTarget = activeTabId
-      ? (previewTabs.find((tab) => getPreviewTabId(tab) === activeTabId) ??
-        null)
-      : null;
-    if (!previewTarget && previewStateRaw.target) {
-      previewTarget = await applyAppVisibility(previewStateRaw.target);
-    }
-
     return {
       previewTabs,
       activeTabId,
-      previewTarget,
     };
   })();
 
@@ -361,7 +346,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     if ((thread.user_message_count ?? 0) > 0) {
       throw redirect(`/chat/${params.id}`);
     }
-    const [activeChatGroup, moveChatGroups] = await Promise.all([
+    const [chatData, activeChatGroup, moveChatGroups] = await Promise.all([
+      buildChatData(context, authEnv, params.id, {
+        orgId,
+        workspaceId,
+        loadMessages: true,
+      }).catch((error) => {
+        console.error("Failed to load new thread chat data:", error);
+        return EMPTY_CHAT_DATA;
+      }),
       groupId
         ? getGroupForWorkspace(context, {
             userId,
@@ -392,7 +385,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId,
-      chatData: EMPTY_CHAT_DATA,
+      chatData,
       threadTitle: thread.title ?? null,
       threadModel: thread.model,
       threadProvider: thread.provider,
@@ -614,7 +607,6 @@ export default function ChatPage() {
     threadId,
     workspaceId,
     chatData,
-    threadTitle,
     threadModel,
     threadProvider,
     llmProvider,
@@ -694,9 +686,6 @@ export default function ChatPage() {
     ) ??
     null;
   const isDisplayingLoaderThread = displayThreadId === threadId;
-  const displayThreadTitle = isDisplayingLoaderThread
-    ? threadTitle
-    : (activeThreadSummary?.title ?? threadTitle);
   const displayThreadModel = isDisplayingLoaderThread
     ? threadModel
     : (activeThreadSummary?.model ?? threadModel);
@@ -918,7 +907,6 @@ export default function ChatPage() {
             chatGroupId={liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null}
             initialMessages={displayChatData.messages}
             initialTodos={displayChatData.todos}
-            threadTitle={displayThreadTitle}
             threadModel={displayThreadModel}
             threadProvider={displayThreadProvider}
             llmProvider={llmProvider}
@@ -928,7 +916,6 @@ export default function ChatPage() {
             experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}
             initialError={initialChatError ?? displayChatData.messagesError}
-            initialPreviewTarget={displayChatData.previewTarget}
             initialPreviewTabs={displayChatData.previewTabs}
             initialActiveTabId={displayChatData.activeTabId}
             isNewThread={displayIsNewThread}

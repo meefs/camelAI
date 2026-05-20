@@ -7,29 +7,18 @@ import {
   useCallback,
   useMemo,
   useLayoutEffect,
-  memo,
 } from "react";
-import type {
-  CSSProperties,
-  Dispatch,
-  ReactNode,
-  RefObject,
-  SetStateAction,
-} from "react";
+import type { CSSProperties } from "react";
 import {
   useNavigate,
   useFetcher,
   useLocation,
+  useNavigation,
   useRevalidator,
+  useSubmit,
 } from "react-router";
 import {
   ArrowDown,
-  CircleAlert,
-  RefreshCw,
-  X,
-  ChevronDown,
-  Globe,
-  Lock,
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
@@ -39,7 +28,6 @@ import type {
   LlmProvider,
   Thread,
   ToolResultBlock,
-  ToolUseBlock,
   WorkerScriptWithCreator,
   Integration,
   PreviewTarget,
@@ -50,16 +38,12 @@ import { useAuthData } from "@/hooks/use-auth-data";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
 import {
-  Tooltip,
-  TooltipContent,
   TooltipProvider,
-  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PromptInput } from "@/components/prompt-input";
 import {
   FloatingTodoList,
   type TodoItem,
-  type TodoStatus,
 } from "@/components/floating-todo";
 import {
   AskUserQuestion,
@@ -68,56 +52,35 @@ import {
 import {
   ConnectionSetupPrompt,
   type ConnectionSetupPromptData,
-  type ConnectionSetupResponse,
 } from "@/components/connection-setup-prompt";
-import {
-  BugReportDialog,
-  type BugReportStatus,
-} from "@/components/bug-report-dialog";
 import { OnboardingLoadingModal } from "@/components/onboarding-loading-modal";
 import type { Attachment } from "@/components/attachment-list";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  MessageBubble,
-  userFacingContentToString,
   isInterruptMessage,
-  parseSlashCommand,
   parseLocalCommandStdout,
 } from "@/components/message-bubble";
-import { LoadingDots } from "@/components/loading-dots";
-import { Skeleton } from "@/components/ui/skeleton";
-import { CompactingIndicator } from "@/components/compacting-indicator";
 import { WelcomeScreen } from "@/components/welcome-screen";
-import {
-  FilePreviewContent,
-  isImageFile,
-  type NotebookPreviewLoadState,
-} from "@/components/chat-file-preview";
+import { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
+import { ChatMessagesView } from "@/components/chat-messages-view";
+import { ShareStatusButton } from "@/components/chat-share-status-button";
+import { isImageFile, type NotebookPreviewLoadState } from "@/components/chat-file-preview";
 import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
-import { PreviewTabRow } from "@/components/preview-panel/preview-tabs";
 import {
-  PreviewToolbar,
-  type OpenElsewhereKind,
-} from "@/components/preview-panel/preview-toolbar";
+  DEFAULT_NOTEBOOK_PREVIEW_STATE,
+  MobileViewSwitcher,
+  PreviewPanelShell,
+  normalizePreviewSessionState,
+} from "@/components/chat-preview/chat-preview-shell";
+import { useConnectionSetupResponse } from "@/components/chat-preview/use-connection-setup-response";
+import { useChatPreviewRenderState } from "@/components/chat-preview/use-chat-preview-render-state";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
-import { buildSetAppPublicPayload } from "@/lib/app-visibility";
-import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { buildSlugMap } from "@/lib/connection-mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
@@ -137,7 +100,6 @@ import {
 import { parseMessageContent } from "@/lib/chat-message-content";
 import {
   getAppUrl,
-  getVanityDomain,
   getIframeDomain,
   buildAppLabel,
 } from "@/lib/app-url";
@@ -151,6 +113,12 @@ import {
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
+import {
+  type ChatApiErrorContext,
+  type ChatApiErrorPresentation,
+  getChatApiErrorPresentation,
+} from "@/lib/chat-api-errors";
+import { parseByokProvider } from "@/lib/byok-providers";
 import {
   modelCatalogEntriesForIds,
   type ModelCatalogEntry,
@@ -174,12 +142,16 @@ import {
   isUserUploadMountPath,
 } from "@/lib/chat-attachment-refs";
 
+export { ChatErrorNotice } from "@/components/chat-error-notice";
+export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
+
+const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
+
 interface ChatProps {
   threadId?: string;
   workspaceId: string;
   initialMessages?: Message[];
   initialTodos?: TodoItem[];
-  threadTitle?: string | null;
   threadModel?: LlmModel | null;
   threadProvider?: ChatHarness | null;
   llmProvider?: LlmProvider | null;
@@ -190,8 +162,8 @@ interface ChatProps {
   recentModelScope?: RecentModelScope | null;
   billingCreditStatus?: BillingCreditStatus | null;
   initialError?: string | null;
+  newChatActionError?: string | null;
   experimentalSettings?: OrganizationExperimentalSettings | null;
-  initialPreviewTarget?: PreviewTarget | null;
   initialPreviewTabs?: PreviewTarget[];
   initialActiveTabId?: string | null;
   isNewThread?: boolean;
@@ -255,41 +227,6 @@ function resolveSelectedThreadModel(args: {
   );
 }
 
-type InitialChatMessageState = {
-  initialMessageContent?: string;
-};
-
-function getInitialMessageContentFromState(state: unknown): string | null {
-  if (!state || typeof state !== "object") return null;
-  const value = (state as InitialChatMessageState).initialMessageContent;
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function clearInitialMessageContentHistoryState(path: string): void {
-  if (typeof window === "undefined") return;
-
-  const historyState = window.history.state;
-  if (!historyState || typeof historyState !== "object") return;
-
-  const routerState = historyState as { usr?: unknown };
-  if (!routerState.usr || typeof routerState.usr !== "object") return;
-
-  const userState = routerState.usr as Record<string, unknown>;
-  if (!("initialMessageContent" in userState)) return;
-
-  const nextUserState = { ...userState };
-  delete nextUserState.initialMessageContent;
-
-  window.history.replaceState(
-    {
-      ...(historyState as Record<string, unknown>),
-      usr: Object.keys(nextUserState).length > 0 ? nextUserState : null,
-    },
-    "",
-    path,
-  );
-}
-
 function dispatchLocalThreadStatus(
   threadId: string | null | undefined,
   status: "idle" | "running",
@@ -311,40 +248,6 @@ function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
   } catch {
     return false;
   }
-}
-
-function summarizeMessagesForHistoryLog(messages: Message[]) {
-  return messages.map((message) => {
-    return {
-      id: message.id,
-      clientMessageId: message.clientMessageId,
-      role: message.role,
-      created_at: message.created_at,
-      isStreaming: message.isStreaming === true,
-      isMeta: message.isMeta === true,
-      isCompactSummary: message.isCompactSummary === true,
-      contentShape: Array.isArray(message.content)
-        ? message.content.map((block) =>
-            block && typeof block === "object" && "type" in block
-              ? String(block.type)
-              : "unknown",
-          )
-        : typeof message.content,
-    };
-  });
-}
-
-function logChatHistoryClient(
-  event: string,
-  fields: Record<string, unknown> = {},
-): void {
-  if (import.meta.env.MODE === "test") return;
-  if (!getChatDebugFlags().historyLogs) return;
-  console.info("[chat history client]", {
-    event,
-    at: new Date().toISOString(),
-    ...fields,
-  });
 }
 
 function messagesHaveSameContent(left: Message[], right: Message[]): boolean {
@@ -395,20 +298,6 @@ function buildMessageContent(text: string, attachments: Attachment[]): string {
 }
 
 /**
- * True when the message was directly authored by the user — not a
- * system-generated message that happens to carry `role: 'user'`
- * (e.g. compact summaries, meta/skill-sheet messages, interrupts,
- * slash commands, local-command-stdout).
- */
-function isDirectUserMessage(msg: Message): boolean {
-  if (msg.role !== "user" || msg.isCompactSummary) return false;
-  if (isInterruptMessage(msg.content)) return false;
-  if (parseSlashCommand(msg.content)) return false;
-  if (parseLocalCommandStdout(msg.content)) return false;
-  return true;
-}
-
-/**
  * User-authored messages that should anchor the page-style spacer animation.
  * Slash commands count; compact summaries and synthetic stdout/interrupt rows do not.
  */
@@ -425,49 +314,9 @@ function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
 
 const STREAM_MESSAGE_RENDER_THROTTLE_MS = 50;
 
-const MESSAGE_LAYOUT_CONTAINMENT_STYLE: CSSProperties = {
-  contain: "layout paint style",
-};
-
 const CHAT_SCROLL_CONTAINER_STYLE = {
   overflowAnchor: "none",
 } as CSSProperties;
-
-const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
-  notebook: null,
-  status: "idle",
-};
-
-function extractMetaInfo(event: SDKEvent): {
-  isMeta: boolean;
-  sourceToolUseID?: string;
-} {
-  const record = event as unknown as Record<string, unknown>;
-  const messageRecord = (event.message ?? {}) as unknown as Record<
-    string,
-    unknown
-  >;
-  const isMeta = Boolean(
-    record.isMeta ??
-    record.is_meta ??
-    messageRecord.isMeta ??
-    messageRecord.is_meta,
-  );
-  const sourceToolUseID =
-    record.sourceToolUseID ??
-    record.sourceToolUseId ??
-    record.source_tool_use_id ??
-    record.parent_tool_use_id ??
-    messageRecord.sourceToolUseID ??
-    messageRecord.sourceToolUseId ??
-    messageRecord.source_tool_use_id ??
-    messageRecord.parent_tool_use_id;
-  return {
-    isMeta,
-    sourceToolUseID:
-      typeof sourceToolUseID === "string" ? sourceToolUseID : undefined,
-  };
-}
 
 function getLastToolUseId(message?: Message): string | undefined {
   if (!message || !Array.isArray(message.content)) return undefined;
@@ -486,969 +335,11 @@ function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
   return undefined;
 }
 
-function coercePreviewTarget(value: unknown): PreviewTarget | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  if (record.kind === "app") {
-    if (typeof record.scriptName !== "string") return null;
-    return {
-      kind: "app",
-      scriptName: record.scriptName,
-      isPublic: Boolean(record.isPublic),
-    };
-  }
-
-  if (record.kind === "file") {
-    if (
-      typeof record.workspaceId !== "string" ||
-      typeof record.path !== "string" ||
-      (record.source !== "workspace" &&
-        record.source !== "upload" &&
-        record.source !== "output")
-    ) {
-      return null;
-    }
-    return {
-      kind: "file",
-      source: record.source,
-      workspaceId: record.workspaceId,
-      path: record.path,
-      filename:
-        typeof record.filename === "string" ? record.filename : undefined,
-      contentType:
-        typeof record.contentType === "string" ? record.contentType : undefined,
-    };
-  }
-
-  return null;
-}
-
-interface PreviewSessionState {
-  tabs: PreviewTab[];
-  activeTabId: string | null;
-  target: PreviewTarget | null;
-}
-
-function normalizePreviewSessionState(
-  tabsInput: unknown,
-  activeTabIdInput: unknown,
-  fallbackTarget: unknown,
-): PreviewSessionState {
-  const tabs: PreviewTab[] = [];
-  const tabIndexById = new Map<string, number>();
-
-  const upsert = (rawTarget: unknown) => {
-    const target = coercePreviewTarget(rawTarget);
-    if (!target) return;
-
-    const id = getPreviewTabId(target);
-    const tab: PreviewTab = { id, target };
-    const existingIndex = tabIndexById.get(id);
-    if (existingIndex === undefined) {
-      tabIndexById.set(id, tabs.length);
-      tabs.push(tab);
-      return;
-    }
-    tabs[existingIndex] = tab;
-  };
-
-  if (Array.isArray(tabsInput)) {
-    for (const tabTarget of tabsInput) {
-      upsert(tabTarget);
-    }
-  }
-
-  if (tabs.length === 0) {
-    upsert(fallbackTarget);
-  }
-
-  const activeTabId =
-    typeof activeTabIdInput === "string" && tabIndexById.has(activeTabIdInput)
-      ? activeTabIdInput
-      : (tabs[0]?.id ?? null);
-  const target = activeTabId
-    ? (tabs.find((tab) => tab.id === activeTabId)?.target ?? null)
-    : null;
-
-  return { tabs, activeTabId, target };
-}
-
-function MobileViewSwitcher({
-  value,
-  onChange,
-}: {
-  value: "chat" | "preview";
-  onChange: (value: "chat" | "preview") => void;
-}) {
-  return (
-    <div className="w-full bg-background px-4 py-3">
-      <Tabs
-        value={value}
-        onValueChange={(nextValue) => onChange(nextValue as "chat" | "preview")}
-        className="w-full"
-      >
-        <TabsList className="grid w-full grid-cols-2 overflow-hidden rounded-lg bg-muted/80 p-1 shadow-inner !h-11">
-          <TabsTrigger
-            value="chat"
-            className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9"
-          >
-            Chat
-          </TabsTrigger>
-          <TabsTrigger
-            value="preview"
-            className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9"
-          >
-            Preview
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-    </div>
-  );
-}
-
-const CREDIT_SEND_BLOCKED_MESSAGE =
-  "Message not sent — top up credits or add an API key to continue.";
-
-const creditFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 2,
-});
-
-function formatCredits(cents: number): string {
-  return creditFormatter.format(Math.max(0, cents) / 100);
-}
-
-function isHostedCreditExhaustedMessage(lowerMessage: string): boolean {
-  return lowerMessage.includes("credits are used up");
-}
-
-function extractChatErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return extractChatErrorMessage(error.message);
-  }
-
-  if (typeof error !== "string") {
-    return "";
-  }
-
-  const trimmed = error.trim();
-  if (!trimmed) {
-    return "";
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      "error" in parsed &&
-      typeof parsed.error === "string"
-    ) {
-      return parsed.error;
-    }
-  } catch {
-    // Raw SDK/proxy errors often wrap JSON inside a larger message.
-  }
-
-  const jsonStart = trimmed.indexOf("{");
-  const jsonEnd = trimmed.lastIndexOf("}");
-  if (jsonStart !== -1 && jsonEnd > jsonStart) {
-    try {
-      const parsed = JSON.parse(
-        trimmed.slice(jsonStart, jsonEnd + 1),
-      ) as unknown;
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        "error" in parsed &&
-        typeof parsed.error === "string"
-      ) {
-        return parsed.error;
-      }
-    } catch {
-      // Fall through to the original text.
-    }
-  }
-
-  return trimmed.replace(/^Error:\s*/i, "");
-}
-
-function normalizeChatErrorMessage(error: unknown): string {
-  const message = extractChatErrorMessage(error) || "An unknown error occurred";
-  const lower = message.toLowerCase();
-  const isBillingOrCreditError =
-    lower.includes("credit") ||
-    lower.includes("billing") ||
-    lower.includes("payment required") ||
-    lower.includes("subscription") ||
-    lower.includes("spend limit") ||
-    lower.includes("spending limit") ||
-    lower.includes("usage limit") ||
-    lower.includes("hosted model");
-
-  if (isBillingOrCreditError) {
-    if (isHostedCreditExhaustedMessage(lower)) {
-      return CREDIT_SEND_BLOCKED_MESSAGE;
-    }
-
-    return message;
-  }
-
-  if (lower.includes("429") || lower.includes("rate limit")) {
-    return `${message} Wait a minute and try again. If this is from hosted model spend limits, check Settings -> Billing.`;
-  }
-
-  return message;
-}
-
-export function BillingCreditNotice({
-  status,
-  onOpenUsage,
-  onTopUp,
-  canTopUp = true,
-  className,
-}: {
-  status: BillingCreditStatus;
-  onOpenUsage: () => void;
-  onTopUp: () => void;
-  canTopUp?: boolean;
-  className?: string;
-}) {
-  const usedCreditsCents = Math.max(
-    0,
-    status.totalCreditLimitCents - status.availableCreditsCents,
-  );
-  const usedPercent = Math.min(100, Math.max(0, status.usedPercent));
-
-  if (status.isExhausted) {
-    const description = status.hasByokProvider
-      ? canTopUp
-        ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
-        : "This thread uses a hosted model that isn't covered by your API key. Ask an organization admin to top up credits, or switch to a model your key supports."
-      : canTopUp
-        ? "Top up to keep going, or use your own API key."
-        : "Ask an organization admin to top up credits, or use your own API key.";
-
-    return (
-      <div
-        className={cn(
-          "mx-auto w-full max-w-3xl px-4 pt-3 md:px-6",
-          className,
-        )}
-      >
-        <div className="rounded-lg bg-foreground px-4 py-3 text-background">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <p className="text-sm font-semibold">
-                You&apos;re out of hosted credits this month
-              </p>
-              <p className="mt-0.5 text-xs text-background/80">
-                {description}
-              </p>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="border-background/40 bg-transparent text-background hover:bg-background/10 hover:text-background"
-                onClick={onOpenUsage}
-              >
-                View usage
-              </Button>
-              {canTopUp ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  className="bg-background text-foreground hover:bg-background/90"
-                  onClick={onTopUp}
-                >
-                  Top up
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={cn("mx-auto w-full max-w-3xl px-4 pt-3 md:px-6", className)}
-    >
-      <div className="rounded-lg border bg-card px-4 py-3 text-card-foreground">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <p className="text-sm font-medium">
-              {formatCredits(usedCreditsCents)} of{" "}
-              {formatCredits(status.totalCreditLimitCents)} credits used this
-              month
-            </p>
-            {status.hasByokProvider ? (
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                This thread uses a hosted model that isn&apos;t covered by your
-                API key, so it&apos;s drawing from hosted credits.
-              </p>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onOpenUsage}
-            >
-              View usage
-            </Button>
-            {canTopUp ? (
-              <Button type="button" size="sm" onClick={onTopUp}>
-                Top up
-              </Button>
-            ) : null}
-          </div>
-        </div>
-        <Progress value={usedPercent} className="mt-2 h-2" />
-      </div>
-    </div>
-  );
-}
-
-export function ChatErrorNotice({
-  error,
-  onDismiss,
-}: {
-  error: string;
-  onDismiss?: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 px-1 py-1.5 text-sm text-muted-foreground">
-      <CircleAlert className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <p className="min-w-0 flex-1 text-sm text-muted-foreground">{error}</p>
-      {onDismiss ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={onDismiss}
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
-      ) : null}
-    </div>
-  );
-}
-
-function DevChatCreditControls({
-  search,
-  onNavigate,
-}: {
-  search: string;
-  onNavigate: (nextSearch: string) => void;
-}) {
-  if (!import.meta.env.DEV) return null;
-
-  const params = new URLSearchParams(search);
-  const isEnabled =
-    params.get("devCreditTest") === "1" ||
-    params.has("devCreditState") ||
-    params.has("devChatError");
-  if (!isEnabled) return null;
-
-  const current = params.get("devCreditState") ?? "normal";
-  const currentError = params.get("devChatError");
-  const setState = (nextState: string | null, nextError?: string | null) => {
-    const nextParams = new URLSearchParams(search);
-    nextParams.set("devCreditTest", "1");
-    if (nextState) {
-      nextParams.set("devCreditState", nextState);
-    } else {
-      nextParams.delete("devCreditState");
-    }
-    if (nextError) {
-      nextParams.set("devChatError", nextError);
-    } else {
-      nextParams.delete("devChatError");
-    }
-    const nextSearch = nextParams.toString();
-    onNavigate(nextSearch ? `?${nextSearch}` : "");
-  };
-  const buttonVariant = (state: string, error?: string) =>
-    current === state && (error ? currentError === error : !currentError)
-      ? "default"
-      : "outline";
-
-  return (
-    <div className="mx-auto w-full max-w-3xl px-4 pt-3 md:px-6">
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">Credit test</span>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("normal")}
-          onClick={() => setState(null)}
-        >
-          Normal
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("low")}
-          onClick={() => setState("low")}
-        >
-          Low credits
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("low-byok")}
-          onClick={() => setState("low-byok")}
-        >
-          Low + BYOK
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("exhausted")}
-          onClick={() => setState("exhausted")}
-        >
-          No credits
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={buttonVariant("exhausted", "out-of-credits")}
-          onClick={() => setState("exhausted", "out-of-credits")}
-        >
-          Send failure
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-interface ShareStatusButtonProps {
-  threadId?: string;
-  scriptName: string;
-  isPublic: boolean;
-  isAdmin: boolean;
-  disabled?: boolean;
-  onStatusChange?: (isPublic: boolean) => void;
-}
-
-function ShareStatusButton({
-  threadId,
-  scriptName,
-  isPublic,
-  isAdmin,
-  disabled,
-  onStatusChange,
-}: ShareStatusButtonProps) {
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const pendingValueRef = useRef<boolean | null>(null);
-  const isPending = fetcher.state !== "idle";
-  const optimisticIsPublic =
-    isPending && fetcher.formData
-      ? fetcher.formData.get("isPublic") === "true"
-      : fetcher.data?.success && pendingValueRef.current !== null
-        ? pendingValueRef.current
-        : isPublic;
-
-  useEffect(() => {
-    if (fetcher.state !== "idle" || !fetcher.data) return;
-
-    if (fetcher.data.success && pendingValueRef.current !== null) {
-      onStatusChange?.(pendingValueRef.current);
-    } else if (fetcher.data.error) {
-      toast.error(fetcher.data.error);
-    }
-
-    pendingValueRef.current = null;
-  }, [fetcher.state, fetcher.data, onStatusChange]);
-
-  useEffect(() => {
-    pendingValueRef.current = null;
-  }, [scriptName, threadId]);
-
-  const handleChange = (value: string) => {
-    if (!isAdmin || disabled || isPending) return;
-    if (!scriptName) return;
-
-    const nextIsPublic = value === "true";
-    if (nextIsPublic === isPublic) return;
-
-    pendingValueRef.current = nextIsPublic;
-    fetcher.submit(
-      buildSetAppPublicPayload({
-        scriptName,
-        isPublic: nextIsPublic,
-        threadId,
-      }),
-      { method: "POST", action: "/apps" },
-    );
-  };
-
-  return (
-    <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={disabled || isPending}
-              className={cn(
-                "h-6 gap-1.5 rounded-md border px-2 text-xs font-medium",
-                optimisticIsPublic
-                  ? "border-primary/20 bg-primary/5 text-primary hover:bg-primary/10 dark:border-primary/30 dark:bg-primary/10 dark:text-primary dark:hover:bg-primary/20"
-                  : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-              )}
-            >
-              {optimisticIsPublic ? (
-                <Globe className="h-3.5 w-3.5" />
-              ) : (
-                <Lock className="h-3.5 w-3.5" />
-              )}
-              {optimisticIsPublic ? "Public" : "Private"}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent>Update visibility</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>Visibility</DropdownMenuLabel>
-        <DropdownMenuRadioGroup
-          value={optimisticIsPublic ? "true" : "false"}
-          onValueChange={handleChange}
-        >
-          <DropdownMenuRadioItem
-            value="false"
-            disabled={!isAdmin || disabled || isPending}
-            className="items-start"
-          >
-            <div className="flex flex-col gap-0.5">
-              <span className="font-medium">Private</span>
-              <span className="text-muted-foreground text-[10px]">
-                Only workspace members can view
-              </span>
-            </div>
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem
-            value="true"
-            disabled={!isAdmin || disabled || isPending}
-            className="items-start"
-          >
-            <div className="flex flex-col gap-0.5">
-              <span className="font-medium">Public</span>
-              <span className="text-muted-foreground text-[10px]">
-                Anyone with the link can view
-              </span>
-            </div>
-          </DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-interface ChatMessagesViewProps {
-  visibleMessages: Message[];
-  lastUserMessageId: string | null;
-  lastMessageId: string | null;
-  isAwaitingAssistant: boolean;
-  isLastMessageAssistantLike: boolean;
-  copyMessage: (messageId: string, content: string) => void;
-  copiedMessageId: string | null;
-  forkMessage?: (messageId: string, renderedMessageId?: string) => void;
-  forkingMessageId?: string | null;
-  assistantTurnActive: boolean;
-  activeAssistantMessageId: string | null;
-  skillSheetsByToolId: Map<string, string>;
-  hostname?: string;
-  orgSlug?: string;
-  error: string | null;
-  setError: Dispatch<SetStateAction<string | null>>;
-  isCompacting: boolean;
-  compactingPriorMessageId: string | null;
-  isLoadingMessages: boolean;
-  showGlobalAssistantIndicator: boolean;
-  shouldRenderSpacer: boolean;
-  lastUserMessageRef: RefObject<HTMLDivElement | null>;
-  assistantMeasureRef: RefObject<HTMLDivElement | null>;
-  assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
-  assistantSpacerRef: RefObject<HTMLDivElement | null>;
-  messagesEndRef: RefObject<HTMLDivElement | null>;
-  mentionSlugMap?: Map<string, Integration>;
-}
-
-const ChatMessagesView = memo(function ChatMessagesView({
-  visibleMessages,
-  lastUserMessageId,
-  lastMessageId,
-  isAwaitingAssistant,
-  isLastMessageAssistantLike,
-  copyMessage,
-  copiedMessageId,
-  forkMessage,
-  forkingMessageId,
-  assistantTurnActive,
-  activeAssistantMessageId,
-  skillSheetsByToolId,
-  hostname,
-  orgSlug,
-  error,
-  setError,
-  isCompacting,
-  compactingPriorMessageId,
-  isLoadingMessages,
-  showGlobalAssistantIndicator,
-  shouldRenderSpacer,
-  lastUserMessageRef,
-  assistantMeasureRef,
-  assistantPendingMeasureRef,
-  assistantSpacerRef,
-  messagesEndRef,
-  mentionSlugMap,
-}: ChatMessagesViewProps) {
-  const messageGroups = useMemo(() => {
-    const groups: Array<{
-      key: string;
-      messages: Message[];
-      isAssistantTurn: boolean;
-      actionMessageId: string;
-      copyContent?: string;
-    }> = [];
-
-    for (let index = 0; index < visibleMessages.length;) {
-      const firstMessage = visibleMessages[index];
-      const isAssistantTurn = firstMessage.role === "assistant";
-      let endIndex = index + 1;
-
-      if (isAssistantTurn) {
-        while (
-          endIndex < visibleMessages.length &&
-          visibleMessages[endIndex].role === "assistant"
-        ) {
-          endIndex += 1;
-        }
-      }
-
-      const messages = visibleMessages.slice(index, endIndex);
-      const actionMessage = messages[messages.length - 1];
-      const copyContent = isAssistantTurn
-        ? [...messages]
-            .reverse()
-            .map((message) => userFacingContentToString(message.content))
-            .find(Boolean) ?? ""
-        : undefined;
-
-      groups.push({
-        key: `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}`,
-        messages,
-        isAssistantTurn,
-        actionMessageId: actionMessage.id,
-        copyContent,
-      });
-
-      index = endIndex;
-    }
-
-    return groups;
-  }, [visibleMessages]);
-
-  return (
-    <>
-      {/* Message loading skeletons (deferred data still resolving) */}
-      {isLoadingMessages && visibleMessages.length === 0 && (
-        <>
-          <div className="flex flex-col items-end gap-1 mt-6">
-            <Skeleton className="h-16 w-3/4 rounded-3xl" />
-          </div>
-          <div className="flex flex-col gap-2 mt-4">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-5/6" />
-            <Skeleton className="h-4 w-4/5" />
-            <Skeleton className="h-4 w-2/3" />
-          </div>
-          <div className="flex flex-col items-end gap-1 mt-6">
-            <Skeleton className="h-12 w-1/2 rounded-3xl" />
-          </div>
-          <div className="flex flex-col gap-2 mt-4">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-11/12" />
-            <Skeleton className="h-4 w-3/4" />
-          </div>
-        </>
-      )}
-
-      {messageGroups.map((messageGroup) => (
-        <div
-          key={messageGroup.key}
-          style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
-          className={messageGroup.isAssistantTurn ? "group/turn" : undefined}
-        >
-          {messageGroup.messages.map((msg) => {
-            const isLastUserMessage = msg.id === lastUserMessageId;
-            const isLastAssistantMessage =
-              !isAwaitingAssistant &&
-              isLastMessageAssistantLike &&
-              msg.id === lastMessageId;
-            const messageRef = isLastUserMessage
-              ? lastUserMessageRef
-              : isLastAssistantMessage
-                ? assistantMeasureRef
-                : undefined;
-            const isTurnActionMessage = msg.id === messageGroup.actionMessageId;
-
-            return (
-              <div
-                key={msg.id}
-                ref={messageRef}
-                data-message-id={msg.id}
-                style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
-                className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
-              >
-                <MessageBubble
-                  message={msg}
-                  onCopy={copyMessage}
-                  copiedId={copiedMessageId}
-                  onFork={forkMessage}
-                  forkingId={forkingMessageId}
-                  showStreamingIndicator={
-                    assistantTurnActive && msg.id === activeAssistantMessageId
-                  }
-                  suppressFinalizedState={
-                    isCompacting && msg.id === compactingPriorMessageId
-                  }
-                  showActionRow={!messageGroup.isAssistantTurn || isTurnActionMessage}
-                  actionCopyContent={
-                    messageGroup.isAssistantTurn && isTurnActionMessage
-                      ? messageGroup.copyContent
-                      : undefined
-                  }
-                  actionHoverClassName={
-                    messageGroup.isAssistantTurn
-                      ? "opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100 pointer-coarse:opacity-100"
-                      : undefined
-                  }
-                  skillSheets={skillSheetsByToolId}
-                  hostname={hostname}
-                  orgSlug={orgSlug}
-                  mentionSlugMap={mentionSlugMap}
-                />
-              </div>
-            );
-          })}
-        </div>
-      ))}
-
-      {/* Error display */}
-      {error ? (
-        <ChatErrorNotice error={error} onDismiss={() => setError(null)} />
-      ) : null}
-
-      {/* Compaction in-progress indicator */}
-      {isCompacting && (
-        <div ref={assistantPendingMeasureRef}>
-          <CompactingIndicator />
-        </div>
-      )}
-
-      {/* Loading indicator when assistant is running but no message shows its own streaming dots */}
-      {showGlobalAssistantIndicator && !isCompacting && (
-        <div ref={assistantPendingMeasureRef}>
-          <LoadingDots />
-        </div>
-      )}
-      {shouldRenderSpacer ? (
-        <div className="flex flex-col">
-          <div
-            ref={assistantSpacerRef}
-            aria-hidden="true"
-            className="pointer-events-none w-full shrink-0"
-          />
-          <div ref={messagesEndRef} />
-        </div>
-      ) : (
-        <div ref={messagesEndRef} />
-      )}
-    </>
-  );
-});
-
-type TabRenderState = {
-  tabId: string;
-  target: PreviewTarget;
-  // App tab
-  appPreviewUrl: string;
-  vanityHost: string;
-  iframeKey: number;
-  isLoading: boolean;
-  // File tab
-  filePreviewUrl: string;
-  filePreviewOpenUrl: string;
-  previewFileName: string;
-  notebookViewMode: "report" | "notebook";
-  fileViewMode: "preview" | "source";
-  isNotebookPreview: boolean;
-};
-
-interface PreviewPanelShellProps {
-  previewTabs: PreviewTab[];
-  activeTabId: string | null;
-  previewTarget: PreviewTarget | null;
-  onTabSelect: (tabId: string) => void;
-  onTabClose: (tabId: string) => void;
-  onRefresh: () => void;
-  openElsewhereKind: OpenElsewhereKind | null;
-  onOpenElsewhere: () => void;
-  onBugReportOpen?: () => void;
-  appShareButton?: ReactNode;
-  notebookViewMode: "report" | "notebook";
-  onNotebookViewModeChange: (mode: "report" | "notebook") => void;
-  fileViewMode: "preview" | "source";
-  onFileViewModeChange: (mode: "preview" | "source") => void;
-  filePreviewOpenUrl: string;
-  activeNotebookState: NotebookPreviewLoadState;
-  isNotebookPdfExporting: boolean;
-  onNotebookStateChange: (
-    tabId: string,
-    state: NotebookPreviewLoadState,
-  ) => void;
-  onNotebookReportPdfDownload: () => void | Promise<void>;
-  iframeRef: RefObject<HTMLIFrameElement | null>;
-  tabRenderStates: TabRenderState[];
-  vanityUrl: string;
-  vanityHost: string;
-}
-
-const PreviewPanelShell = memo(function PreviewPanelShell({
-  previewTabs,
-  activeTabId,
-  previewTarget,
-  onTabSelect,
-  onTabClose,
-  onRefresh,
-  openElsewhereKind,
-  onOpenElsewhere,
-  onBugReportOpen,
-  appShareButton,
-  notebookViewMode,
-  onNotebookViewModeChange,
-  fileViewMode,
-  onFileViewModeChange,
-  filePreviewOpenUrl,
-  activeNotebookState,
-  isNotebookPdfExporting,
-  onNotebookStateChange,
-  onNotebookReportPdfDownload,
-  iframeRef,
-  tabRenderStates,
-  vanityUrl,
-  vanityHost,
-}: PreviewPanelShellProps) {
-  if (previewTabs.length === 0 || !previewTarget || !activeTabId) {
-    return null;
-  }
-
-  const activeTabState = tabRenderStates.find((s) => s.tabId === activeTabId);
-  const isNotebookPreview = activeTabState?.isNotebookPreview ?? false;
-
-  return (
-    <>
-      <PreviewTabRow
-        tabs={previewTabs}
-        activeTabId={activeTabId}
-        onTabSelect={onTabSelect}
-        onTabClose={onTabClose}
-      />
-
-      <PreviewToolbar
-        activeTarget={previewTarget}
-        vanityUrl={vanityUrl}
-        vanityHost={vanityHost}
-        onRefresh={onRefresh}
-        openElsewhereKind={openElsewhereKind}
-        onOpenElsewhere={onOpenElsewhere}
-        onBugReport={onBugReportOpen}
-        appShareButton={appShareButton}
-        notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
-        onNotebookViewModeChange={onNotebookViewModeChange}
-        fileViewMode={fileViewMode}
-        onFileViewModeChange={onFileViewModeChange}
-        filePreviewOpenUrl={filePreviewOpenUrl}
-        notebookState={isNotebookPreview ? activeNotebookState : undefined}
-        isNotebookPdfExporting={
-          isNotebookPreview ? isNotebookPdfExporting : undefined
-        }
-        onNotebookReportPdfDownload={
-          isNotebookPreview ? onNotebookReportPdfDownload : undefined
-        }
-      />
-
-      {tabRenderStates.map((state) => {
-        const isActive = state.tabId === activeTabId;
-        return (
-          <div
-            key={state.tabId}
-            className={cn(
-              "flex-1 min-h-0 overflow-hidden",
-              !isActive && "hidden",
-            )}
-          >
-            {state.target.kind === "app" ? (
-              state.isLoading ? (
-                <div className="flex h-full w-full items-center justify-center bg-muted/30">
-                  <div className="flex flex-col items-center gap-3">
-                    <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">
-                      Loading preview...
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <iframe
-                  ref={isActive ? iframeRef : null}
-                  key={state.iframeKey}
-                  src={state.appPreviewUrl || "about:blank"}
-                  className="h-full w-full bg-white"
-                  title="Deployed App Preview"
-                />
-              )
-            ) : (
-              <div className="h-full">
-                <FilePreviewContent
-                  filename={state.previewFileName}
-                  previewUrl={state.filePreviewUrl}
-                  contentType={state.target.contentType}
-                  layout="panel"
-                  notebookViewMode={
-                    state.isNotebookPreview ? state.notebookViewMode : undefined
-                  }
-                  fileViewMode={state.fileViewMode}
-                  onNotebookStateChange={
-                    state.isNotebookPreview
-                      ? (nextState) =>
-                          onNotebookStateChange(state.tabId, nextState)
-                      : undefined
-                  }
-                />
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </>
-  );
-});
-
 export default function Chat({
   threadId,
   workspaceId,
   initialMessages,
   initialTodos = [],
-  threadTitle,
   threadModel,
   threadProvider,
   llmProvider,
@@ -1459,8 +350,8 @@ export default function Chat({
   recentModelScope,
   billingCreditStatus,
   initialError,
+  newChatActionError,
   experimentalSettings,
-  initialPreviewTarget,
   initialPreviewTabs,
   initialActiveTabId,
   isNewThread = false,
@@ -1476,20 +367,9 @@ export default function Chat({
 }: ChatProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const navigation = useNavigation();
   const revalidator = useRevalidator();
-  const chatDebugFlags = getChatDebugFlags();
-  const markViewedEnabled = chatDebugFlags.markViewed;
-  const createThreadFetcher = useFetcher<{
-    thread?: {
-      id: string;
-      title?: string;
-      model: LlmModel;
-      provider: ChatHarness;
-    };
-    groupId?: string;
-    error?: string;
-    reloadRequired?: boolean;
-  }>({ key: "chat-create-thread" });
+  const submit = useSubmit();
   const updateThreadModelFetcher = useFetcher<{
     thread?: { id: string; model: LlmModel; provider: ChatHarness };
     error?: string;
@@ -1500,9 +380,9 @@ export default function Chat({
   const resolvedWorkspaceId = readOnly
     ? workspaceId
     : (currentWorkspace?.id ?? workspaceId);
-  const initialNavigationMessage = getInitialMessageContentFromState(
-    location.state,
-  );
+  const isSubmittingNewThread =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "createThreadAndStart";
   // Compute initial drafts once per mount (Chat is keyed by threadId) to avoid
   // synchronous localStorage reads on every streaming re-render.
   const initialDraftsRef = useRef<
@@ -1511,7 +391,7 @@ export default function Chat({
   if (initialDraftsRef.current === undefined) {
     const shouldRestore = !readOnly;
     initialDraftsRef.current = {
-      thread: shouldRestore && !initialNavigationMessage
+      thread: shouldRestore
         ? loadDraft(resolvedWorkspaceId, threadId ?? null)
         : null,
       welcome:
@@ -1540,9 +420,9 @@ export default function Chat({
       normalizePreviewSessionState(
         initialPreviewTabs,
         initialActiveTabId,
-        initialPreviewTarget,
+        null,
       ),
-    [initialPreviewTabs, initialActiveTabId, initialPreviewTarget],
+    [initialPreviewTabs, initialActiveTabId],
   );
 
   // Local state for messages, streaming, and loading
@@ -1569,15 +449,9 @@ export default function Chat({
   }, [currentTodos, messages, onSnapshotChange, readOnly, threadId]);
   const [pendingQuestion, setPendingQuestion] =
     useState<AskUserQuestionData | null>(null);
-  const [connectionSetupPrompt, setConnectionSetupPrompt] =
-    useState<ConnectionSetupPromptData | null>(null);
-  const [bugReportOpen, setBugReportOpen] = useState(false);
-  const [bugReportStatus, setBugReportStatus] =
-    useState<BugReportStatus>("idle");
   const [bootModalOpen, setBootModalOpen] = useState(() =>
     shouldShowBootModalFromStorage(isNewThread),
   );
-  const [bugReportError, setBugReportError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!bootModalOpen) return;
@@ -1655,10 +529,7 @@ export default function Chat({
   }, [initialWelcomeInput, readOnly, resolvedWorkspaceId, threadId]);
 
   // Compaction in-progress indicator
-  const [isCompacting, setIsCompactingState] = useState(false);
-  const setIsCompacting = useCallback((value: boolean) => {
-    setIsCompactingState(value);
-  }, []);
+  const [isCompacting, setIsCompacting] = useState(false);
   // Track compaction content block streaming (compaction summary arrives as a
   // content block of type 'compaction' with 'compaction_delta' deltas)
   const isInCompactionBlockRef = useRef(false);
@@ -1711,11 +582,6 @@ export default function Chat({
     queuedManualCompactionsRef.current = 0;
     syncCompactionIndicator();
   }, [syncCompactionIndicator]);
-  // MCP-triggered bug report capture
-  const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{
-    requestId: string;
-    message?: string;
-  } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const normalizedMessages = useMemo(
     () =>
@@ -1767,22 +633,8 @@ export default function Chat({
         typeof updater === "function"
           ? updater(pendingMessagesRef.current)
           : updater;
-      const previous = pendingMessagesRef.current;
       pendingMessagesRef.current = next;
       setPendingMessagesState(next);
-
-      const context = pendingThreadContextRef.current;
-      if (!context.readOnly && context.threadId) {
-        logChatHistoryClient("pending_overlay_updated", {
-          workspaceId: context.workspaceId,
-          threadId: context.threadId,
-          isNewThread: context.isNewThread,
-          previousCount: previous.length,
-          nextCount: next.length,
-          sentIds: Array.from(sentPendingMessageIdsRef.current),
-          pendingMessages: summarizeMessagesForHistoryLog(next),
-        });
-      }
     },
     [],
   );
@@ -1795,56 +647,20 @@ export default function Chat({
       streamingMessageIdRef.current ||
       pendingMessagesRef.current.length > 0
     ) {
-      logChatHistoryClient("route_sync_skipped", {
-        threadId,
-        reason: !initialMessagesChanged
-          ? "initial_messages_unchanged"
-          : streamingMessageIdRef.current
-            ? "streaming_active"
-            : "pending_local_send",
-        initialCount: parsedInitialMessages.length,
-        currentCount: messagesRef.current.length,
-        pendingCount: pendingMessagesRef.current.length,
-        streamingMessageId: streamingMessageIdRef.current,
-      });
       return;
     }
     prevInitialMessagesRef.current = initialMessages;
 
-    logChatHistoryClient("route_sync_considered", {
-      threadId,
-      readOnly,
-      serverCount: parsedInitialMessages.length,
-      currentCount: messagesRef.current.length,
-      pendingCount: pendingMessagesRef.current.length,
-      serverMessages: summarizeMessagesForHistoryLog(parsedInitialMessages),
-      currentMessages: summarizeMessagesForHistoryLog(messagesRef.current),
-    });
     if (
       parsedInitialMessages.length === 0 &&
       hasUserOrAssistantMessage(messagesRef.current)
     ) {
-      logChatHistoryClient("route_sync_skipped", {
-        threadId,
-        reason: "empty_server_history_after_local_messages",
-        currentCount: messagesRef.current.length,
-      });
       return;
     }
     setPendingMessages([]);
     if (messagesHaveSameContent(messagesRef.current, parsedInitialMessages)) {
-      logChatHistoryClient("route_sync_noop_same_content", {
-        threadId,
-        serverCount: parsedInitialMessages.length,
-      });
       return;
     }
-    logChatHistoryClient("route_sync_applied", {
-      threadId,
-      previousCount: messagesRef.current.length,
-      nextCount: parsedInitialMessages.length,
-      nextMessages: summarizeMessagesForHistoryLog(parsedInitialMessages),
-    });
     setMessages(parsedInitialMessages);
   }, [
     initialMessages,
@@ -1894,8 +710,13 @@ export default function Chat({
   }, [messages]);
   const [input, setInput] = useState(() => initialThreadDraft?.text ?? "");
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(() =>
-    initialError ? normalizeChatErrorMessage(initialError) : null,
+  const [error, setError] = useState<ChatApiErrorPresentation | null>(() =>
+    initialError
+      ? getChatApiErrorPresentation(initialError, {
+          llmProvider,
+          threadProvider: initialThreadProvider,
+        })
+      : null,
   );
   const [welcomeInput, setWelcomeInput] = useState(
     () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
@@ -1962,7 +783,6 @@ export default function Chat({
       ? "No models are available. Ask an admin to add a model in Settings > Models."
       : null;
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
-  const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
@@ -1977,12 +797,20 @@ export default function Chat({
   const inputRef = useRef(input);
   const welcomeInputRef = useRef(welcomeInput);
   const attachmentsRef = useRef(attachments);
-  const prevErrorRef = useRef<string | null>(null);
+  inputRef.current = input;
+  welcomeInputRef.current = welcomeInput;
+  attachmentsRef.current = attachments;
+  const prevErrorRef = useRef<ChatApiErrorPresentation | null>(null);
   const skipNextEmptyDraftSaveRef = useRef(false);
   const pendingDeliveryDraftRef = useRef<{
     workspaceId: string;
     threadId: string | null;
   } | null>(null);
+  const pendingNewThreadSubmissionRef = useRef<{
+    text: string;
+    attachments: Attachment[];
+  } | null>(null);
+  const handledNewChatActionErrorRef = useRef<string | null>(null);
   const pendingDraftCountRef = useRef(0);
   const { saveDraft, flushDraft } = useDraftPersistence(
     resolvedWorkspaceId,
@@ -1991,20 +819,44 @@ export default function Chat({
   const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
-    setError(initialError ? normalizeChatErrorMessage(initialError) : null);
-  }, [initialError]);
+    setError(
+      initialError
+        ? getChatApiErrorPresentation(initialError, {
+            llmProvider,
+            threadProvider: initialThreadProvider,
+          })
+        : null,
+    );
+  }, [initialError, initialThreadProvider, llmProvider]);
 
   useEffect(() => {
-    inputRef.current = input;
-  }, [input]);
+    if (
+      !newChatActionError ||
+      handledNewChatActionErrorRef.current === newChatActionError
+    ) {
+      return;
+    }
+    handledNewChatActionErrorRef.current = newChatActionError;
 
-  useEffect(() => {
-    welcomeInputRef.current = welcomeInput;
-  }, [welcomeInput]);
+    const pendingSubmission = pendingNewThreadSubmissionRef.current;
+    pendingNewThreadSubmissionRef.current = null;
+    if (!pendingSubmission || threadId || readOnly) {
+      return;
+    }
 
-  useEffect(() => {
-    attachmentsRef.current = attachments;
-  }, [attachments]);
+    if (
+      isComposerVisiblyEmpty(welcomeInputRef.current, attachmentsRef.current)
+    ) {
+      setWelcomeInput(pendingSubmission.text);
+      setAttachments(pendingSubmission.attachments);
+    }
+    writeDraft(
+      resolvedWorkspaceId,
+      null,
+      pendingSubmission.text,
+      pendingSubmission.attachments,
+    );
+  }, [newChatActionError, readOnly, resolvedWorkspaceId, threadId]);
 
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(
     () => initialPreviewSession.tabs,
@@ -2014,6 +866,8 @@ export default function Chat({
   );
   const previewTabsRef = useRef<PreviewTab[]>(previewTabs);
   const activeTabIdRef = useRef<string | null>(activeTabId);
+  previewTabsRef.current = previewTabs;
+  activeTabIdRef.current = activeTabId;
   const activeTab = useMemo(
     () => previewTabs.find((tab) => tab.id === activeTabId) ?? null,
     [previewTabs, activeTabId],
@@ -2054,7 +908,6 @@ export default function Chat({
     : false;
   const [mobileView, setMobileView] = useState<"chat" | "preview">("chat");
   const previewVersionRef = useRef<number>(0);
-  const supportsPreviewTabsStateRef = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageColumnRef = useRef<HTMLDivElement>(null);
@@ -2069,9 +922,14 @@ export default function Chat({
   const forceScrollOnNextUpdate = useRef(false);
   const splitStreamingMessageOnNextPartRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const oobWsRef = useRef<WebSocket | null>(null);
-  const questionResponseSocketRef = useRef<"runner" | "oob">("runner");
-  const connectionSetupResponseSocketRef = useRef<"runner" | "oob">("runner");
+  const {
+    connectionSetupPrompt,
+    handleConnectionSetupCancel,
+    handleConnectionSetupResponse,
+    setConnectionSetupPrompt,
+  } = useConnectionSetupResponse({
+    wsRef,
+  });
   const lastRunnerModelSelectionRef = useRef<string | null>(null);
   const iframeRefreshTimeoutsRef = useRef<
     Record<string, ReturnType<typeof setTimeout>>
@@ -2086,8 +944,7 @@ export default function Chat({
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const sessionIdRef = useRef<string | null>(null);
-  const lastSideChannelEventIdRef = useRef(0);
-  const lastRunnerSeqRef = useRef(0);
+  const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const fallbackRenderedAtRef = useRef<number>(Date.now());
 
@@ -2103,14 +960,6 @@ export default function Chat({
     setCompactingPriorMessageId(null);
   }, [threadId]);
 
-  useEffect(() => {
-    previewTabsRef.current = previewTabs;
-  }, [previewTabs]);
-
-  useEffect(() => {
-    activeTabIdRef.current = activeTabId;
-  }, [activeTabId]);
-
   const clearAllIframeRefreshTimeouts = useCallback(() => {
     for (const timeout of Object.values(iframeRefreshTimeoutsRef.current)) {
       clearTimeout(timeout);
@@ -2124,10 +973,13 @@ export default function Chat({
   }, []);
 
   useEffect(() => {
-    previewTabsRef.current = initialPreviewSession.tabs;
-    setPreviewTabs(initialPreviewSession.tabs);
-    activeTabIdRef.current = initialPreviewSession.activeTabId;
-    setActiveTabId(initialPreviewSession.activeTabId);
+    const nextTabs = threadId ? initialPreviewSession.tabs : [];
+    const nextActiveTabId = threadId ? initialPreviewSession.activeTabId : null;
+
+    previewTabsRef.current = nextTabs;
+    setPreviewTabs(nextTabs);
+    activeTabIdRef.current = nextActiveTabId;
+    setActiveTabId(nextActiveTabId);
 
     setTabIframeKeys({});
     setTabFilePreviewKeys({});
@@ -2137,26 +989,14 @@ export default function Chat({
     setTabNotebookPdfExporting({});
     setTabAppLoading({});
     previewVersionRef.current = 0;
-    supportsPreviewTabsStateRef.current = false;
     clearAllIframeRefreshTimeouts();
     setMobileView("chat");
-  }, [threadId, clearAllIframeRefreshTimeouts]);
-
-  useEffect(() => {
-    if (!threadId) {
-      previewTabsRef.current = [];
-      setPreviewTabs([]);
-      activeTabIdRef.current = null;
-      setActiveTabId(null);
-      setTabIframeKeys({});
-      setTabFilePreviewKeys({});
-      setTabNotebookViewModes({});
-      setTabFileViewModes({});
-      setTabAppLoading({});
-      supportsPreviewTabsStateRef.current = false;
-      clearAllIframeRefreshTimeouts();
-    }
-  }, [threadId, clearAllIframeRefreshTimeouts]);
+  }, [
+    threadId,
+    initialPreviewSession.tabs,
+    initialPreviewSession.activeTabId,
+    clearAllIframeRefreshTimeouts,
+  ]);
 
   // Retry iframe on transient errors (404/500/503) during deploy.
   // Dispatcher error pages postMessage({ type: 'chiridion-preview-error', status }) to parent.
@@ -2214,8 +1054,6 @@ export default function Chat({
     URL.revokeObjectURL(url);
   }, []);
 
-  const deployedApp =
-    previewTarget?.kind === "app" ? previewTarget.scriptName : null;
   const appIsPublic =
     previewTarget?.kind === "app" ? previewTarget.isPublic : false;
   const setAppIsPublic = useCallback(
@@ -2236,33 +1074,6 @@ export default function Chat({
     },
     [activeTabId],
   );
-
-  const lastMarkedViewedKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (
-      !markViewedEnabled ||
-      !threadId ||
-      readOnly ||
-      isStreaming ||
-      loading ||
-      isLoadingMessages
-    ) return;
-    const latestMessageAt = messages[messages.length - 1]?.created_at ?? 0;
-    const key = `${threadId}:${latestMessageAt}`;
-    if (lastMarkedViewedKeyRef.current === key) return;
-    lastMarkedViewedKeyRef.current = key;
-    void fetch(`/api/threads/${encodeURIComponent(threadId)}/mark-viewed`, {
-      method: "POST",
-    }).catch(() => {});
-  }, [
-    isLoadingMessages,
-    isStreaming,
-    loading,
-    markViewedEnabled,
-    messages,
-    readOnly,
-    threadId,
-  ]);
 
   useEffect(() => {
     if (!currentTodos.length || isStreaming) return;
@@ -2426,6 +1237,27 @@ export default function Chat({
     setInput(savedDraft.text);
     setAttachments(savedDraft.attachments);
   }, []);
+
+  const normalizeChatError = useCallback(
+    (
+      value: unknown,
+      context: Partial<ChatApiErrorContext> = {},
+    ): ChatApiErrorPresentation =>
+      getChatApiErrorPresentation(value, {
+        llmProvider,
+        threadProvider: activeThreadProvider,
+        ...context,
+      }),
+    [activeThreadProvider, llmProvider],
+  );
+
+  const showChatError = useCallback(
+    (value: unknown, context: Partial<ChatApiErrorContext> = {}) => {
+      setError(normalizeChatError(value, context));
+    },
+    [normalizeChatError],
+  );
+
   const logRunnerClient = useCallback(
     (event: string, fields: Record<string, unknown> = {}) => {
       if (import.meta.env.MODE === "test") return;
@@ -2463,12 +1295,13 @@ export default function Chat({
       setReady(false);
       setStreamingMessageId(null);
       restorePendingDeliveryDraft();
-      setError(message);
+      showChatError(message);
     },
     [
       clearQueuedSendReadyTimeout,
       logRunnerClient,
       restorePendingDeliveryDraft,
+      showChatError,
       setMessages,
       setPendingMessages,
       setStreamingMessageId,
@@ -2490,22 +1323,20 @@ export default function Chat({
             typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
           sessionIdRef.current =
             typeof parsed.sessionId === "string" ? parsed.sessionId : null;
-          lastSideChannelEventIdRef.current =
+          lastEventIdRef.current = Math.max(
+            legacyLastEventId,
             typeof parsed.lastSideChannelEventId === "number"
               ? parsed.lastSideChannelEventId
-              : legacyLastEventId;
-          lastRunnerSeqRef.current =
-            typeof parsed.lastRunnerSeq === "number"
-              ? parsed.lastRunnerSeq
-              : legacyLastEventId;
+              : 0,
+            typeof parsed.lastRunnerSeq === "number" ? parsed.lastRunnerSeq : 0,
+          );
           return;
         }
       } catch (e) {
         console.warn("Failed to load session state:", e);
       }
       sessionIdRef.current = null;
-      lastSideChannelEventIdRef.current = 0;
-      lastRunnerSeqRef.current = 0;
+      lastEventIdRef.current = 0;
     },
     [sessionStorageKey],
   );
@@ -2515,8 +1346,7 @@ export default function Chat({
       try {
         const payload = {
           sessionId: sessionIdRef.current,
-          lastSideChannelEventId: lastSideChannelEventIdRef.current,
-          lastRunnerSeq: lastRunnerSeqRef.current,
+          lastEventId: lastEventIdRef.current,
         };
         sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
       } catch (e) {
@@ -2529,31 +1359,11 @@ export default function Chat({
   useEffect(() => {
     if (!threadId) {
       sessionIdRef.current = null;
-      lastSideChannelEventIdRef.current = 0;
-      lastRunnerSeqRef.current = 0;
+      lastEventIdRef.current = 0;
       return;
     }
     loadSessionState(threadId);
   }, [threadId, loadSessionState, resolvedWorkspaceId]);
-
-  useEffect(() => {
-    if (!isNewThread || !threadId) return;
-    const searchParams = new URLSearchParams(location.search);
-    if (searchParams.get("newThread") !== "1") return;
-    searchParams.delete("newThread");
-    const nextSearch = searchParams.toString();
-    navigate(
-      `${location.pathname}${nextSearch ? `?${nextSearch}` : ""}${location.hash}`,
-      { replace: true, preventScrollReset: true },
-    );
-  }, [
-    isNewThread,
-    location.hash,
-    location.pathname,
-    location.search,
-    navigate,
-    threadId,
-  ]);
 
   useEffect(() => {
     if (!threadId || readOnly) {
@@ -2639,46 +1449,22 @@ export default function Chat({
     [activeTabId],
   );
 
-  const syncPreviewTargetBestEffort = useCallback(
-    (target: PreviewTarget | null) => {
+  const syncPreviewTabsStateBestEffort = useCallback(
+    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
       if (!threadId) return;
-      const socket = oobWsRef.current;
+      const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
       socket.send(
         JSON.stringify({
-          type: "set_preview_target",
-          target,
+          type: "set_preview_tabs_state",
+          tabs: nextTabs.map((tab) => tab.target),
+          activeTabId: nextActiveTabId,
           threadId,
         }),
       );
     },
     [threadId],
-  );
-
-  const syncPreviewTabsStateBestEffort = useCallback(
-    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
-      if (!threadId) return;
-      const socket = oobWsRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
-
-      const nextActiveTarget = nextActiveTabId
-        ? (nextTabs.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
-        : null;
-
-      if (supportsPreviewTabsStateRef.current) {
-        socket.send(
-          JSON.stringify({
-            type: "set_preview_tabs_state",
-            tabs: nextTabs.map((tab) => tab.target),
-            activeTabId: nextActiveTabId,
-            threadId,
-          }),
-        );
-      } else {
-        syncPreviewTargetBestEffort(nextActiveTarget);
-      }
-    },
-    [threadId, syncPreviewTargetBestEffort],
   );
 
   const setLocalPreviewSessionState = useCallback(
@@ -2890,7 +1676,7 @@ export default function Chat({
   }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
   const handleRealtimeSideChannelEvent = useCallback(
-    (data: any, source: "runner" | "oob" = "runner") => {
+    (data: any) => {
       if (data.type === "preview_state") {
         const newVersion = typeof data.version === "number" ? data.version : 0;
         const hasVersionBump = newVersion > previewVersionRef.current;
@@ -2899,75 +1685,38 @@ export default function Chat({
         const refreshTabId =
           typeof data.refreshTabId === "string" ? data.refreshTabId : null;
 
-        const hasTabsPayload =
-          Array.isArray(data.tabs) || data.activeTabId !== undefined;
-        supportsPreviewTabsStateRef.current = hasTabsPayload;
-        if (hasTabsPayload) {
-          const nextSession = normalizePreviewSessionState(
-            data.tabs,
-            data.activeTabId,
-            data.target,
-          );
-          setLocalPreviewSessionState(
-            nextSession.tabs,
-            nextSession.activeTabId,
-          );
+        const nextSession = normalizePreviewSessionState(
+          data.tabs,
+          data.activeTabId,
+          null,
+        );
+        setLocalPreviewSessionState(nextSession.tabs, nextSession.activeTabId);
 
-          if (!nextSession.target || !nextSession.activeTabId) {
-            return;
-          }
-
-          const nextActiveId = nextSession.activeTabId;
-          const shouldRefreshActiveTab = refreshTabId
-            ? refreshTabId === nextActiveId
-            : !hasRefreshHint && hasVersionBump;
-
-          if (nextSession.target.kind === "app" && shouldRefreshActiveTab) {
-            const existingTimeout =
-              iframeRefreshTimeoutsRef.current[nextActiveId];
-            if (existingTimeout) {
-              clearTimeout(existingTimeout);
-            }
-            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
-            iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
-              setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
-              bumpIframeKey(nextActiveId);
-              delete iframeRefreshTimeoutsRef.current[nextActiveId];
-            }, 1500);
-          } else if (
-            nextSession.target.kind === "file" &&
-            shouldRefreshActiveTab
-          ) {
-            bumpFilePreviewKey(nextActiveId);
-          }
+        if (!nextSession.target || !nextSession.activeTabId) {
           return;
         }
 
-        const nextTarget = coercePreviewTarget(data.target);
-        if (!nextTarget) {
-          // Keep client tab state even if the server has no active target.
-          return;
-        }
-
-        openTabForTarget(nextTarget);
-        const nextTabId = getPreviewTabId(nextTarget);
-        const shouldRefreshTab = refreshTabId
-          ? refreshTabId === nextTabId
+        const nextActiveId = nextSession.activeTabId;
+        const shouldRefreshActiveTab = refreshTabId
+          ? refreshTabId === nextActiveId
           : !hasRefreshHint && hasVersionBump;
 
-        if (nextTarget.kind === "app" && shouldRefreshTab) {
-          const existingTimeout = iframeRefreshTimeoutsRef.current[nextTabId];
+        if (nextSession.target.kind === "app" && shouldRefreshActiveTab) {
+          const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
           if (existingTimeout) {
             clearTimeout(existingTimeout);
           }
-          setTabAppLoading((prev) => ({ ...prev, [nextTabId]: true }));
-          iframeRefreshTimeoutsRef.current[nextTabId] = setTimeout(() => {
-            setTabAppLoading((prev) => ({ ...prev, [nextTabId]: false }));
-            bumpIframeKey(nextTabId);
-            delete iframeRefreshTimeoutsRef.current[nextTabId];
+          setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
+          iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
+            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
+            bumpIframeKey(nextActiveId);
+            delete iframeRefreshTimeoutsRef.current[nextActiveId];
           }, 1500);
-        } else if (nextTarget.kind === "file" && shouldRefreshTab) {
-          bumpFilePreviewKey(nextTabId);
+        } else if (
+          nextSession.target.kind === "file" &&
+          shouldRefreshActiveTab
+        ) {
+          bumpFilePreviewKey(nextActiveId);
         }
 
         return;
@@ -2993,7 +1742,6 @@ export default function Chat({
         data.requestId &&
         data.integrationType
       ) {
-        connectionSetupResponseSocketRef.current = source;
         setConnectionSetupPrompt({
           requestId: data.requestId as string,
           integrationType: data.integrationType as string,
@@ -3017,7 +1765,7 @@ export default function Chat({
         setConnectionSetupPrompt((prev) =>
           prev?.requestId === data.requestId ? null : prev,
         );
-        setError(
+        showChatError(
           typeof data.error === "string"
             ? data.error
             : "Connection setup failed. Please ask the agent to start connection setup again.",
@@ -3025,20 +1773,15 @@ export default function Chat({
         return;
       }
 
-      if (data.type === "bug_report_prompt" && data.requestId) {
-        setMcpBugReportPrompt({
-          requestId: data.requestId as string,
-          message: data.message as string | undefined,
-        });
-      }
+      return;
     },
     [
-      openTabForTarget,
       activeThreadProvider,
       revalidator,
       setLocalPreviewSessionState,
       bumpIframeKey,
       bumpFilePreviewKey,
+      showChatError,
     ],
   );
 
@@ -3065,10 +1808,6 @@ export default function Chat({
         wsRef.current.close();
         wsRef.current = null;
       }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
-      }
 
       // Clear any existing ping interval
       if (pingIntervalRef.current) {
@@ -3090,107 +1829,12 @@ export default function Chat({
         reconnectAttempts.current = 0;
       }
 
-      // Side-channel WebSocket stays on ChatThreadDO for preview, prompts, replay,
-      // and other out-of-band events.
       const wsHost = window.location.host;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const workspaceIdForConnection = resolvedWorkspaceId;
-      const oobWsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
-      const oobWs = new WebSocket(oobWsUrl);
-      oobWsRef.current = oobWs;
-
-      oobWs.onopen = () => {
-        if (connectionIdRef.current !== thisConnectionId) {
-          return;
-        }
-        oobWs.send(
-          JSON.stringify({
-            type: "init",
-            threadId: id,
-            sessionId: sessionIdRef.current,
-            lastEventId: lastSideChannelEventIdRef.current,
-          }),
-        );
-      };
-
-      oobWs.onmessage = (event) => {
-        if (oobWsRef.current !== oobWs) {
-          return;
-        }
-
-        const data = JSON.parse(event.data);
-
-        if (typeof data?.eventId === "number") {
-          lastSideChannelEventIdRef.current = Math.max(
-            lastSideChannelEventIdRef.current,
-            data.eventId,
-          );
-          if (id) {
-            persistSessionState(id);
-          }
-        }
-
-        if (data.type === "session" && typeof data.sessionId === "string") {
-          const newSessionId = data.sessionId;
-          if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-            lastSideChannelEventIdRef.current = 0;
-          }
-          sessionIdRef.current = newSessionId;
-          if (id) {
-            persistSessionState(id);
-          }
-        } else if (data.type === "todo_state") {
-          if (Array.isArray(data.todos)) {
-            setCurrentTodos(data.todos);
-          }
-        } else if (data.type === "context_usage_state") {
-          if (data.usedPercent === null) {
-            setContextUsedPercent(null);
-          } else if (
-            typeof data.usedPercent === "number" &&
-            Number.isFinite(data.usedPercent)
-          ) {
-            setContextUsedPercent(
-              Math.max(0, Math.min(100, Math.round(data.usedPercent))),
-            );
-          }
-        } else if (data.type === "ask_user_question") {
-          if (data.questionId && Array.isArray(data.questions)) {
-            questionResponseSocketRef.current = "oob";
-            setPendingQuestion({
-              questionId: data.questionId,
-              toolUseId: data.toolUseId,
-              questions: data.questions,
-            });
-          }
-        } else if (data.type === "question_answered") {
-        setPendingQuestion((prev) => {
-            if (prev?.questionId === data.questionId) {
-              return null;
-            }
-            return prev;
-          });
-        } else if (
-          data.type === "preview_state" ||
-          data.type === "title_updated" ||
-          data.type === "thread_model_updated" ||
-          data.type === "connection_setup_prompt" ||
-          data.type === "connection_setup_answered" ||
-          data.type === "connection_setup_error" ||
-          data.type === "bug_report_prompt"
-        ) {
-          handleRealtimeSideChannelEvent(data, "oob");
-        }
-      };
-
-      oobWs.onclose = () => {
-        if (oobWsRef.current === oobWs) {
-          oobWsRef.current = null;
-        }
-      };
-
-      // Runner WebSocket connects to ChatThreadDO, which owns the agent session.
-      const wsUrl = `${protocol}//${wsHost}/ws/runner/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
+      // One browser WebSocket connects to ChatThreadDO for agent streaming,
+      // replay, preview state, prompts, and other realtime chat state.
+      const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -3211,7 +1855,7 @@ export default function Chat({
         }
         pingIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "ping" }));
+            ws.send(CHAT_PING_MESSAGE);
           }
         }, 30000); // Ping every 30 seconds
 
@@ -3221,8 +1865,7 @@ export default function Chat({
             type: "init",
             threadId: id,
             sessionId: sessionIdRef.current,
-            lastEventId: lastRunnerSeqRef.current,
-            lastSeq: lastRunnerSeqRef.current,
+            lastEventId: lastEventIdRef.current,
           }),
         );
       };
@@ -3236,10 +1879,7 @@ export default function Chat({
         const data = JSON.parse(event.data);
 
         if (typeof data?.eventId === "number") {
-          lastRunnerSeqRef.current = Math.max(
-            lastRunnerSeqRef.current,
-            data.eventId,
-          );
+          lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
           if (id) {
             persistSessionState(id);
           }
@@ -3282,11 +1922,6 @@ export default function Chat({
                 contentLength: content.length,
               });
               sentPendingMessageIdsRef.current.add(msg.clientMessageId ?? msg.id);
-              logChatHistoryClient("queued_user_sent", {
-                threadId: id,
-                message: summarizeMessagesForHistoryLog([msg])[0],
-                sentIds: Array.from(sentPendingMessageIdsRef.current),
-              });
               ws.send(
                 JSON.stringify({
                   type: "message",
@@ -3305,7 +1940,7 @@ export default function Chat({
         ) {
           const newSessionId = data.sessionId;
           if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
-            lastRunnerSeqRef.current = 0;
+            lastEventIdRef.current = 0;
           }
           sessionIdRef.current = newSessionId;
           if (id) {
@@ -3541,12 +2176,6 @@ export default function Chat({
                 created_at: Date.now(),
                 isStreaming: true,
               };
-              logChatHistoryClient("assistant_stream_started", {
-                threadId: id,
-                streamingMessageId: msgId,
-                currentCount: messagesRef.current.length,
-                pendingCount: pendingMessagesRef.current.length,
-              });
               // Use functional update to avoid race conditions with rapid events
               setMessages((prev) => {
                 if (prev.some((m) => m.id === msgId)) {
@@ -3764,14 +2393,6 @@ export default function Chat({
             splitStreamingMessageOnNextPartRef.current = false;
             const msgId = streamingMessageIdRef.current;
             lastCompletedAssistantMessageIdRef.current = msgId;
-            logChatHistoryClient("assistant_result_received", {
-              threadId: id,
-              streamingMessageId: msgId,
-              messageCountBeforeFinalize: messagesRef.current.length,
-              messagesBeforeFinalize: summarizeMessagesForHistoryLog(
-                messagesRef.current,
-              ),
-            });
             if (msgId) {
               const parsedResultTimestamp =
                 typeof sdkEvent.timestamp === "string"
@@ -3796,11 +2417,6 @@ export default function Chat({
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
-            logChatHistoryClient("assistant_result_revalidate", {
-              threadId: id,
-              messageCountAfterFinalize: messagesRef.current.length,
-              pendingCount: pendingMessagesRef.current.length,
-            });
             revalidator.revalidate();
             isAutoCompactingRef.current = false;
             syncCompactionIndicator();
@@ -3830,7 +2446,6 @@ export default function Chat({
         } else if (data.type === "ask_user_question") {
           // Claude is asking the user a question
           if (data.questionId && Array.isArray(data.questions)) {
-            questionResponseSocketRef.current = "runner";
             setPendingQuestion({
               questionId: data.questionId,
               toolUseId: data.toolUseId,
@@ -3869,25 +2484,11 @@ export default function Chat({
             typeof data.clientMessageId === "string" ? data.clientMessageId : "";
           if (clientMessageId) {
             sentPendingMessageIdsRef.current.add(clientMessageId);
-            logChatHistoryClient("message_accepted", {
-              threadId: id,
-              clientMessageId,
-              pendingCount: pendingMessagesRef.current.length,
-              sentIds: Array.from(sentPendingMessageIdsRef.current),
-              pendingMessages: summarizeMessagesForHistoryLog(
-                pendingMessagesRef.current,
-              ),
-            });
             clearQueuedSendReadyTimeout();
           }
         } else if (data.type === "result") {
           if (id) {
             flushDeferredMessagesRender();
-            logChatHistoryClient("runner_result_revalidate_scheduled", {
-              threadId: id,
-              pendingCount: pendingMessagesRef.current.length,
-              currentCount: messagesRef.current.length,
-            });
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             for (const delay of [1000, 3000]) {
@@ -3899,7 +2500,28 @@ export default function Chat({
         } else if (data.type === "error") {
           flushDeferredMessagesRender();
           console.error("WebSocket error:", data.error);
-          setError(normalizeChatErrorMessage(data.error));
+          const billingSource =
+            data.billingSource === "byok" || data.billingSource === "hosted"
+              ? data.billingSource
+              : null;
+          const eventProvider = parseByokProvider(data.provider);
+          const errorPayload =
+            typeof data.status === "number" ||
+            typeof data.status === "string" ||
+            typeof data.errorType === "string"
+              ? {
+                  error: data.error,
+                  status: data.status,
+                  type: data.errorType,
+              }
+              : data.error;
+          const errorContext: Partial<ChatApiErrorContext> = {
+            billingSource,
+          };
+          if (eventProvider) {
+            errorContext.llmProvider = eventProvider;
+          }
+          showChatError(errorPayload, errorContext);
           // Finish streaming on error
           splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
@@ -3927,10 +2549,9 @@ export default function Chat({
           data.type === "thread_model_updated" ||
           data.type === "connection_setup_prompt" ||
           data.type === "connection_setup_answered" ||
-          data.type === "connection_setup_error" ||
-          data.type === "bug_report_prompt"
+          data.type === "connection_setup_error"
         ) {
-          handleRealtimeSideChannelEvent(data, "runner");
+          handleRealtimeSideChannelEvent(data);
         }
       };
 
@@ -3955,10 +2576,6 @@ export default function Chat({
           reason: event.reason || "closed",
           reconnectAttempts: reconnectAttempts.current,
         });
-        if (oobWsRef.current) {
-          oobWsRef.current.close();
-          oobWsRef.current = null;
-        }
 
         // Auto-reconnect with exponential backoff
         const maxAttempts = 5;
@@ -4014,6 +2631,7 @@ export default function Chat({
       setPendingMessages,
       setStreamingMessageId,
       handleRealtimeSideChannelEvent,
+      showChatError,
     ],
   );
 
@@ -4072,10 +2690,6 @@ export default function Chat({
         wsRef.current.close();
         wsRef.current = null;
       }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
-      }
 
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -4102,8 +2716,9 @@ export default function Chat({
     showAssistantTail && Boolean(lastMessage) && !isLastMessageAssistantLike;
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
-      if (isUserTurnAnchorMessage(visibleMessages[i]))
+      if (isUserTurnAnchorMessage(visibleMessages[i])) {
         return visibleMessages[i];
+      }
     }
     return null;
   }, [visibleMessages]);
@@ -4122,10 +2737,6 @@ export default function Chat({
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
-      }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -4149,10 +2760,6 @@ export default function Chat({
         if (wsRef.current) {
           wsRef.current.close();
           wsRef.current = null;
-        }
-        if (oobWsRef.current) {
-          oobWsRef.current.close();
-          oobWsRef.current = null;
         }
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -4188,10 +2795,6 @@ export default function Chat({
           wsRef.current.close();
           wsRef.current = null;
         }
-        if (oobWsRef.current) {
-          oobWsRef.current.close();
-          oobWsRef.current = null;
-        }
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
           reconnectTimeoutRef.current = null;
@@ -4217,10 +2820,6 @@ export default function Chat({
         wsRef.current.close();
         wsRef.current = null;
       }
-      if (oobWsRef.current) {
-        oobWsRef.current.close();
-        oobWsRef.current = null;
-      }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
@@ -4240,41 +2839,58 @@ export default function Chat({
     clearQueuedSendReadyTimeout,
   ]);
 
-  // Reconnect on visibility change (tab becomes visible)
+  // On tab return, poke live-looking sockets and reconnect sockets the browser
+  // already knows are gone.
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (readOnly) return;
       if (
         document.visibilityState === "visible" &&
         shouldShowChat &&
-        resolvedWorkspaceId
+        resolvedWorkspaceId &&
+        threadId
       ) {
-        // Check if main WebSocket is dead
-        const needsReconnect =
-          !wsRef.current ||
-          wsRef.current.readyState === WebSocket.CLOSED ||
-          wsRef.current.readyState === WebSocket.CLOSING ||
-          !oobWsRef.current ||
-          oobWsRef.current.readyState === WebSocket.CLOSED ||
-          oobWsRef.current.readyState === WebSocket.CLOSING;
+        const socketState = wsRef.current?.readyState;
+        if (socketState === WebSocket.CONNECTING) {
+          return;
+        }
 
-        if (needsReconnect && threadId) {
-          // Clear any stale reconnect timeout from before tab suspension
-          // (Safari suspends JS in background tabs, so pending timeouts are stale)
+        const reconnect = () => {
           if (reconnectTimeoutRef.current) {
             clearTimeout(reconnectTimeoutRef.current);
             reconnectTimeoutRef.current = null;
           }
-          reconnectAttempts.current = 0; // Fresh start when user returns to tab
+          reconnectAttempts.current = 0;
+          logRunnerClient("tab_return_reconnect", {
+            socketState,
+          });
           connectWebSocketRef.current?.(threadId, true);
+        };
+
+        if (socketState === WebSocket.OPEN) {
+          try {
+            wsRef.current?.send(CHAT_PING_MESSAGE);
+          } catch {
+            reconnect();
+          }
+          return;
         }
+
+        reconnect();
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
+    return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [threadId, shouldShowChat, resolvedWorkspaceId, readOnly]);
+    };
+  }, [
+    threadId,
+    shouldShowChat,
+    resolvedWorkspaceId,
+    readOnly,
+    logRunnerClient,
+  ]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = scrollContainerRef.current;
@@ -4361,7 +2977,6 @@ export default function Chat({
       const measureAssistant = assistantMeasureRef.current;
       const measurePendingAssistant = assistantPendingMeasureRef.current;
 
-      // Need at least a user message to calculate spacer
       if (!measureUser) {
         spacer.style.height = "0px";
         return;
@@ -4378,7 +2993,6 @@ export default function Chat({
       let exchangeHeight: number;
 
       if (measureAssistant) {
-        // Assistant message exists - calculate exchange height including both messages
         const assistantRect = measureAssistant.getBoundingClientRect();
         const assistantStyle = getComputedStyle(measureAssistant);
         const assistantMarginBottomValue = parseFloat(
@@ -4391,8 +3005,6 @@ export default function Chat({
         const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
       } else if (measurePendingAssistant) {
-        // No assistant message yet; include pending assistant placeholder
-        // (e.g. loading dots / compacting indicator) in the measured exchange.
         const pendingRect = measurePendingAssistant.getBoundingClientRect();
         const pendingStyle = getComputedStyle(measurePendingAssistant);
         const pendingMarginBottomValue = parseFloat(
@@ -4405,7 +3017,6 @@ export default function Chat({
         const exchangeBottom = pendingRect.bottom + pendingMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
       } else {
-        // No assistant message yet (awaiting response) - just use user message height
         const userMarginBottomValue = parseFloat(userStyle.marginBottom || "0");
         const userMarginBottom = Number.isNaN(userMarginBottomValue)
           ? 0
@@ -4555,7 +3166,6 @@ export default function Chat({
 
     if (shouldRenderSpacer) return;
 
-    // Keep bottom-follow behavior only for non-spacer transcript updates.
     if (stickToBottomRef.current || distanceFromBottom < 150) {
       scrollToBottom("auto");
     }
@@ -4609,7 +3219,7 @@ export default function Chat({
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to fork chat";
-        setError(message);
+        showChatError(message);
         toast.error(message);
       } finally {
         setForkingMessageId(null);
@@ -4621,7 +3231,7 @@ export default function Chat({
       readOnly,
       resolvedWorkspaceId,
       revalidator,
-      setError,
+      showChatError,
       threadId,
     ],
   );
@@ -4765,110 +3375,6 @@ export default function Chat({
     },
     [resolvedWorkspaceId, handleFilesSelected],
   );
-
-  // Track local draft cleanup for the create-thread response.
-  const pendingNewChatRef = useRef<{
-    threadModel: LlmModel;
-    initialMessageContent?: string;
-    draftText?: string;
-    draftAttachments?: Attachment[];
-  } | null>(null);
-
-  // Handle fetcher response for thread creation
-  useEffect(() => {
-    if (createThreadFetcher.state === "idle" && createThreadFetcher.data) {
-      const data = createThreadFetcher.data;
-      if (data.thread && pendingNewChatRef.current) {
-        const {
-          threadModel,
-          initialMessageContent,
-          draftText,
-          draftAttachments,
-        } = pendingNewChatRef.current;
-
-        if (resolvedWorkspaceId && initialMessageContent) {
-          writeDraft(
-            resolvedWorkspaceId,
-            data.thread.id,
-            draftText ?? initialMessageContent,
-            draftAttachments ?? [],
-          );
-          pendingDeliveryDraftRef.current = {
-            workspaceId: resolvedWorkspaceId,
-            threadId: data.thread.id,
-          };
-          pendingDraftCountRef.current = 1;
-        } else {
-          pendingDeliveryDraftRef.current = null;
-          pendingDraftCountRef.current = 0;
-        }
-        setSelectedThreadModel(data.thread.model ?? threadModel);
-        if (resolvedWorkspaceId && draftText !== undefined && draftAttachments) {
-          if (
-            isComposerVisiblyEmpty(
-              welcomeInputRef.current,
-              attachmentsRef.current,
-            )
-          ) {
-            removeDraft(resolvedWorkspaceId, null);
-          }
-        }
-
-        const nextUrl = new URL(
-          `/chat/${data.thread.id}?newThread=1`,
-          window.location.origin,
-        );
-        if (data.groupId) {
-          nextUrl.searchParams.set("group", data.groupId);
-        }
-
-        navigate(`${nextUrl.pathname}${nextUrl.search}`, {
-          state: initialMessageContent ? { initialMessageContent } : null,
-          preventScrollReset: true,
-        });
-        pendingNewChatRef.current = null;
-      } else if (data.error) {
-        // Thread creation failed
-        if (data.reloadRequired) {
-          window.location.reload();
-          return;
-        }
-        const pendingNewChat = pendingNewChatRef.current;
-        setIsCreatingThread(false);
-        setError(normalizeChatErrorMessage(data.error));
-        if (pendingNewChat?.draftText !== undefined) {
-          setWelcomeInput(pendingNewChat.draftText);
-          setAttachments(pendingNewChat.draftAttachments ?? []);
-        }
-        const pendingDraft = pendingDeliveryDraftRef.current;
-        pendingDeliveryDraftRef.current = null;
-        pendingDraftCountRef.current = 0;
-        if (
-          pendingDraft &&
-          isComposerVisiblyEmpty(
-            welcomeInputRef.current,
-            attachmentsRef.current,
-          )
-        ) {
-          const savedDraft = loadDraft(
-            pendingDraft.workspaceId,
-            pendingDraft.threadId,
-          );
-          if (savedDraft) {
-            setWelcomeInput(savedDraft.text);
-            setAttachments(savedDraft.attachments);
-          }
-        }
-        console.error("Failed to create thread:", data.error);
-        pendingNewChatRef.current = null;
-      }
-    }
-  }, [
-    createThreadFetcher.state,
-    createThreadFetcher.data,
-    navigate,
-    resolvedWorkspaceId,
-  ]);
 
   useEffect(() => {
     if (
@@ -5064,9 +3570,7 @@ export default function Chat({
         return;
       }
 
-      if (createThreadFetcher.state !== "idle" || isCreatingThread) return;
-
-      setIsCreatingThread(true);
+      if (isSubmittingNewThread) return;
 
       // Build the camelai system message
       const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
@@ -5076,17 +3580,13 @@ export default function Chat({
       const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
       const threadTitle = buildAppThreadFallbackTitle(app.script_name);
 
-      pendingNewChatRef.current = {
-        threadModel: selectedThreadModel,
-        initialMessageContent: systemMessage,
-      };
-
-      createThreadFetcher.submit(
+      submit(
         {
-          intent: "createThread",
+          intent: "createThreadAndStart",
           clientBuildId: APP_BUILD_ID,
           initialTitle: threadTitle,
           previewApps: app.script_name,
+          firstMessage: systemMessage,
           model: selectedThreadModel,
           ...(chatGroupId ? { groupId: chatGroupId } : {}),
         },
@@ -5097,8 +3597,8 @@ export default function Chat({
       hostname,
       orgSlug,
       resolvedWorkspaceId,
-      createThreadFetcher,
-      isCreatingThread,
+      submit,
+      isSubmittingNewThread,
       noModelsMessage,
       selectedThreadModel,
       chatGroupId,
@@ -5113,9 +3613,8 @@ export default function Chat({
 
     if (
       (!currentWelcomeInput.trim() && !hasCompletedAttachments) ||
-      isCreatingThread ||
+      isSubmittingNewThread ||
       !resolvedWorkspaceId ||
-      createThreadFetcher.state !== "idle" ||
       noModelsMessage
     )
       return;
@@ -5126,42 +3625,32 @@ export default function Chat({
     );
     if (hasUploadingAttachments) return;
 
-    preserveDraftBeforeOptimisticClear(
-      null,
-      currentWelcomeInput,
-      currentAttachments,
-    );
-    setIsCreatingThread(true);
     const userMessage = currentWelcomeInput.trim();
-    setWelcomeInput("");
-
     let finalContent: string;
     try {
       finalContent = buildMessageContent(userMessage, currentAttachments);
     } catch (error) {
-      setIsCreatingThread(false);
-      setError(normalizeChatErrorMessage(error));
+      showChatError(error);
       return;
     }
 
-    // Clear attachments (revoke any blob URLs to avoid memory leaks)
-    setAttachments((prev) => {
-      for (const a of prev) {
-        revokeAttachmentPreviewUrl(a.previewUrl);
-      }
-      return [];
-    });
-
-    pendingNewChatRef.current = {
-      threadModel: selectedThreadModel,
-      initialMessageContent: finalContent.trim() ? finalContent : undefined,
-      draftText: currentWelcomeInput,
-      draftAttachments: currentAttachments,
+    pendingNewThreadSubmissionRef.current = {
+      text: currentWelcomeInput,
+      attachments: currentAttachments,
     };
+    handledNewChatActionErrorRef.current = null;
+    setWelcomeInput("");
+    removeDraft(resolvedWorkspaceId, null);
+    skipNextEmptyDraftSaveRef.current = true;
 
-    // Submit to route action to create thread
+    // Keep blob URLs alive until redirect/unmount so an action error can restore
+    // image previews without rebuilding local object URLs.
+    setAttachments([]);
+
+    // Submit as a navigational route action. The action creates the thread,
+    // starts the first turn in the ChatThreadDO, then redirects to the thread.
     const createThreadPayload: Record<string, string> = {
-      intent: "createThread",
+      intent: "createThreadAndStart",
       clientBuildId: APP_BUILD_ID,
       model: selectedThreadModel,
     };
@@ -5171,7 +3660,7 @@ export default function Chat({
     if (finalContent) {
       createThreadPayload.firstMessage = finalContent;
     }
-    createThreadFetcher.submit(createThreadPayload, {
+    submit(createThreadPayload, {
       method: "post",
       action: "/chat",
     });
@@ -5186,10 +3675,7 @@ export default function Chat({
 
   const handleQuestionResponse = useCallback(
     (answers: Record<string, string>) => {
-      const socket =
-        questionResponseSocketRef.current === "oob"
-          ? oobWsRef.current
-          : wsRef.current;
+      const socket = wsRef.current;
       if (!pendingQuestion || !socket || socket.readyState !== WebSocket.OPEN) {
         return;
       }
@@ -5209,395 +3695,6 @@ export default function Chat({
     },
     [pendingQuestion],
   );
-
-  // Handle connection setup response through ChatThreadDO. This mirrors
-  // ask_user_question: the DO owns the pending waiter, and the modal closes
-  // only after the DO broadcasts connection_setup_answered.
-  const handleConnectionSetupResponse = useCallback(
-    async (response: ConnectionSetupResponse) => {
-      const payload = {
-        type: "connection_setup_response",
-        ...response,
-      };
-
-      const source = connectionSetupResponseSocketRef.current;
-      const socket = source === "oob" ? oobWsRef.current : wsRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        console.error(
-          "[Chat] WebSocket not available for connection setup response",
-          { source },
-        );
-        throw new Error(
-          source === "oob"
-            ? "The chat side-channel disconnected before the connection details could be submitted. Please try again."
-            : "The chat runner connection disconnected before the connection details could be submitted. Please try again.",
-        );
-      }
-
-      socket.send(JSON.stringify(payload));
-    },
-    [threadId],
-  );
-
-  const handleConnectionSetupCancel = useCallback(() => {
-    setConnectionSetupPrompt(null);
-  }, []);
-
-  // Handle bug report dialog open/close - sends cancellation if MCP-triggered
-  const handleBugReportOpenChange = useCallback(
-    (open: boolean) => {
-      if (!open && mcpBugReportPrompt) {
-        // User closed the dialog while MCP capture was pending - send cancellation
-        if (oobWsRef.current?.readyState === WebSocket.OPEN) {
-          oobWsRef.current.send(
-            JSON.stringify({
-              type: "bug_report_response",
-              requestId: mcpBugReportPrompt.requestId,
-              cancelled: true,
-            }),
-          );
-        }
-        setMcpBugReportPrompt(null);
-      }
-      setBugReportOpen(open);
-    },
-    [mcpBugReportPrompt],
-  );
-
-  // Bug report submission
-  const submitBugReport = useCallback(
-    async (report: { description: string }) => {
-      if (!deployedApp || !resolvedWorkspaceId || !threadId) return;
-
-      // Check if this is an MCP-triggered capture
-      const isMcpTriggered = !!mcpBugReportPrompt;
-      const mcpRequestId = mcpBugReportPrompt?.requestId;
-
-      // Only update UI status for manual (non-MCP) captures
-      if (!isMcpTriggered) {
-        setBugReportStatus("capturing");
-        setBugReportError(null);
-      }
-
-      // Generate unique request ID
-      const requestId = `bug_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-
-      // Set up response listener with timeout (10s to allow for screenshot capture)
-      const debugDataPromise = new Promise<{
-        domSnapshot: string;
-        pageState: {
-          url: string;
-          scrollX: number;
-          scrollY: number;
-          viewportWidth?: number;
-          viewportHeight?: number;
-          documentTitle?: string;
-        };
-        consoleLogs: Array<{
-          level: string;
-          timestamp: number;
-          deltaMs: number;
-          sinceStartMs: number;
-          args: string[];
-        }>;
-        networkRequests: Array<{
-          type: string;
-          method: string;
-          url: string;
-          status: number;
-          statusText: string;
-          ok: boolean;
-          failed?: boolean;
-          error?: string;
-          timestamp: number;
-          durationMs: number;
-        }>;
-        storage: {
-          localStorage: Record<string, string | null>;
-          sessionStorage: Record<string, string | null>;
-        };
-        screenshot: string | null;
-        sessionRecording: {
-          events: unknown[];
-          durationMs: number;
-          eventCount: number;
-        } | null;
-        capturedAt: number;
-        sessionDurationMs: number;
-      } | null>((resolve) => {
-        const timeout = setTimeout(() => {
-          window.removeEventListener("message", handler);
-          resolve(null);
-        }, 10000);
-
-        function handler(event: MessageEvent) {
-          if (
-            event.data?.type === "chiridion:bug-report-response" &&
-            event.data?.requestId === requestId
-          ) {
-            clearTimeout(timeout);
-            window.removeEventListener("message", handler);
-            if (event.data.success) {
-              resolve(event.data.data);
-            } else {
-              resolve(null);
-            }
-          }
-        }
-
-        window.addEventListener("message", handler);
-      });
-
-      // Send request to iframe
-      if (iframeRef.current?.contentWindow) {
-        iframeRef.current.contentWindow.postMessage(
-          { type: "chiridion:bug-report-request", requestId },
-          "*",
-        );
-      }
-
-      // Wait for response
-      const debugData = await debugDataPromise;
-
-      // Upload to R2
-      if (!isMcpTriggered) {
-        setBugReportStatus("uploading");
-      }
-      try {
-        const reportId = `bug-report-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-        let screenshotPath: string | null = null;
-        let sessionRecordingPath: string | null = null;
-
-        // Upload screenshot as separate image file if available
-        if (debugData?.screenshot) {
-          const base64Data = debugData.screenshot.split(",")[1];
-          const binaryData = atob(base64Data);
-          const bytes = new Uint8Array(binaryData.length);
-          for (let i = 0; i < binaryData.length; i++) {
-            bytes[i] = binaryData.charCodeAt(i);
-          }
-          const screenshotBlob = new Blob([bytes], { type: "image/jpeg" });
-          const screenshotFile = new File(
-            [screenshotBlob],
-            `${reportId}-screenshot.jpg`,
-            { type: "image/jpeg" },
-          );
-          try {
-            const screenshotData = await uploadWorkspaceFile(
-              resolvedWorkspaceId,
-              screenshotFile,
-            );
-            screenshotPath = screenshotData.path;
-          } catch (uploadError) {
-            console.error(
-              "Failed to upload bug report screenshot:",
-              uploadError,
-            );
-          }
-        }
-
-        // Upload session recording as separate JSON file if available
-        if (
-          debugData?.sessionRecording &&
-          debugData.sessionRecording.events.length > 0
-        ) {
-          const recordingBlob = new Blob(
-            [JSON.stringify(debugData.sessionRecording, null, 2)],
-            { type: "application/json" },
-          );
-          const recordingFile = new File(
-            [recordingBlob],
-            `${reportId}-session.json`,
-            { type: "application/json" },
-          );
-          try {
-            const recordingData = await uploadWorkspaceFile(
-              resolvedWorkspaceId,
-              recordingFile,
-            );
-            sessionRecordingPath = recordingData.path;
-          } catch (uploadError) {
-            console.error(
-              "Failed to upload bug report recording:",
-              uploadError,
-            );
-          }
-        }
-
-        // Create bug report bundle (without large data, using file references)
-        const vanityHost = orgSlug
-          ? `${buildAppLabel(deployedApp, orgSlug)}.${getVanityDomain(hostname)}`
-          : `${deployedApp}.${getVanityDomain(hostname)}`;
-        const vanityUrl = `https://${vanityHost}`;
-        const debugDataClean = debugData
-          ? {
-              ...debugData,
-              screenshot: undefined, // Remove base64 from JSON
-              screenshotPath, // Add file path reference
-              sessionRecording: debugData.sessionRecording
-                ? {
-                    durationMs: debugData.sessionRecording.durationMs,
-                    eventCount: debugData.sessionRecording.eventCount,
-                    events: undefined, // Remove events array from main JSON
-                  }
-                : null,
-              sessionRecordingPath, // Add file path reference
-            }
-          : null;
-
-        const bugReport = {
-          version: 1,
-          createdAt: new Date().toISOString(),
-          appName: deployedApp,
-          appUrl: vanityUrl,
-          userReport: {
-            description: report.description,
-          },
-          debugData: debugDataClean,
-        };
-
-        const fileName = `${reportId}.json`;
-        const blob = new Blob([JSON.stringify(bugReport, null, 2)], {
-          type: "application/json",
-        });
-        const file = new File([blob], fileName, { type: "application/json" });
-        const uploadData = await uploadWorkspaceFile(resolvedWorkspaceId, file);
-
-        if (!isMcpTriggered) {
-          setBugReportStatus("sending");
-        }
-
-        // If this is an MCP-triggered capture, send response via chat WebSocket
-        if (
-          isMcpTriggered &&
-          mcpRequestId &&
-          oobWsRef.current?.readyState === WebSocket.OPEN
-        ) {
-          oobWsRef.current.send(
-            JSON.stringify({
-              type: "bug_report_response",
-              requestId: mcpRequestId,
-              cancelled: false,
-              bugReport: {
-                reportPath: uploadData.path,
-                screenshotPath,
-                sessionRecordingPath,
-                appName: deployedApp,
-                appUrl: vanityUrl,
-                userDescription: report.description.trim() || undefined,
-              },
-            }),
-          );
-
-          // Clear the MCP prompt (no dialog to close)
-          setMcpBugReportPrompt(null);
-        } else {
-          // Manual bug report - send message to agent
-          const description = report.description.trim();
-          const agentMessage = description
-            ? `I found a bug in the deployed app "${deployedApp}".
-
-**Description:** ${description}
-
-I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
-
-(bug report: ${uploadData.path})`
-            : `I found a bug in the deployed app "${deployedApp}".
-
-I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
-
-(bug report: ${uploadData.path})`;
-
-          const userMsg: Message = {
-            id: `local_${Date.now()}`,
-            thread_id: threadId,
-            role: "user",
-            content: agentMessage,
-            created_at: Date.now(),
-          };
-          forceScrollOnNextUpdate.current = true;
-          setMessages((prev) => [...prev, userMsg]);
-
-          // Send via WebSocket if connected
-          if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: "message",
-                content: agentMessage,
-                sessionId: sessionIdRef.current,
-                threadId,
-              }),
-            );
-            setLoading(true);
-          } else {
-            // Queue the message
-            setPendingMessages((prev) => [...prev, userMsg]);
-            setLoading(true);
-
-            // Trigger reconnect if needed
-            if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-              connectWebSocketRef.current?.(threadId, true);
-            }
-          }
-
-          setBugReportStatus("done");
-          setTimeout(() => {
-            setBugReportOpen(false);
-            setBugReportStatus("idle");
-          }, 1000);
-        }
-      } catch (e) {
-        console.error("Bug report submission failed:", e);
-
-        // If MCP-triggered, send cancellation response
-        if (
-          isMcpTriggered &&
-          mcpRequestId &&
-          oobWsRef.current?.readyState === WebSocket.OPEN
-        ) {
-          oobWsRef.current.send(
-            JSON.stringify({
-              type: "bug_report_response",
-              requestId: mcpRequestId,
-              cancelled: true,
-            }),
-          );
-          setMcpBugReportPrompt(null);
-        } else {
-          // Only update UI status for manual captures
-          setBugReportStatus("error");
-          setBugReportError(
-            e instanceof Error ? e.message : "Failed to submit bug report",
-          );
-        }
-      }
-    },
-    [
-      deployedApp,
-      resolvedWorkspaceId,
-      threadId,
-      hostname,
-      ready,
-      setLoading,
-      setPendingMessages,
-      setMessages,
-      mcpBugReportPrompt,
-    ],
-  );
-
-  // Auto-capture when MCP triggers bug report (no dialog needed)
-  useEffect(() => {
-    if (mcpBugReportPrompt && deployedApp && resolvedWorkspaceId && threadId) {
-      // Trigger the capture automatically without showing dialog
-      submitBugReport({ description: "" });
-    }
-  }, [
-    mcpBugReportPrompt,
-    deployedApp,
-    resolvedWorkspaceId,
-    threadId,
-    submitBugReport,
-  ]);
 
   const resetPreviewTabsState = useCallback(() => {
     setLocalPreviewSessionState([], null);
@@ -5623,7 +3720,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         return;
       }
 
-      const socket = oobWsRef.current;
+      const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         if (target === null) {
           resetPreviewTabsState();
@@ -5713,7 +3810,7 @@ type SendOptions = {
         ? buildMessageContent(rawContent, currentAttachments)
         : rawContent;
     } catch (error) {
-      setError(normalizeChatErrorMessage(error));
+      showChatError(error);
       return false;
     }
 
@@ -5802,12 +3899,6 @@ type SendOptions = {
         contentLength: finalContent.length,
       });
       sentPendingMessageIdsRef.current.add(clientMessageId);
-      logChatHistoryClient("user_sent_immediate", {
-        threadId,
-        clientMessageId,
-        message: summarizeMessagesForHistoryLog([userMsg])[0],
-        sentIds: Array.from(sentPendingMessageIdsRef.current),
-      });
       wsRef.current.send(
         JSON.stringify({
           type: "message",
@@ -5858,53 +3949,6 @@ type SendOptions = {
 
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
-  const sentInitialNavigationMessageRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!threadId || readOnly) return;
-    const initialMessageContent = getInitialMessageContentFromState(
-      location.state,
-    );
-    if (!initialMessageContent) return;
-
-    const sendKey = `${threadId}:${initialMessageContent}`;
-    if (sentInitialNavigationMessageRef.current === sendKey) return;
-    if (resolvedWorkspaceId) {
-      if (!loadDraft(resolvedWorkspaceId, threadId)) {
-        writeDraft(resolvedWorkspaceId, threadId, initialMessageContent, []);
-      }
-      pendingDeliveryDraftRef.current = {
-        workspaceId: resolvedWorkspaceId,
-        threadId,
-      };
-      pendingDraftCountRef.current = Math.max(
-        1,
-        pendingDraftCountRef.current,
-      );
-    }
-
-    const didStartDelivery = sendMessageRef.current({
-      contentOverride: initialMessageContent,
-      preserveDraft: true,
-      skipAttachmentRefs: true,
-    });
-    if (!didStartDelivery) return;
-
-    sentInitialNavigationMessageRef.current = sendKey;
-    const url = new URL(window.location.href);
-    url.searchParams.delete("newThread");
-    clearInitialMessageContentHistoryState(`${url.pathname}${url.search}`);
-  }, [
-    location.pathname,
-    location.search,
-    location.state,
-    isLoadingMessages,
-    noModelsMessage,
-    readOnly,
-    resolvedWorkspaceId,
-    shouldShowChat,
-    threadId,
-  ]);
 
   const handleCompactFromIndicator = useCallback(() => {
     if (loading || isStreaming || isCompacting || readOnly) return;
@@ -5915,74 +3959,16 @@ type SendOptions = {
     });
   }, [loading, isStreaming, isCompacting, readOnly]);
 
-  const encodePathSegments = useCallback((path: string) => {
-    return path
-      .split("/")
-      .map((segment) => encodeURIComponent(segment))
-      .join("/");
-  }, []);
-
-  // Per-tab render state for all open tabs. Kept in the DOM simultaneously so
-  // switching between tabs never reloads iframes or file previews.
-  const tabRenderStates = useMemo((): TabRenderState[] => {
-    return previewTabs.map((tab) => {
-      const target = tab.target;
-      const tabId = tab.id;
-
-      if (target.kind === "app") {
-        const scriptName = target.scriptName;
-        const iframeHost = orgSlug
-          ? `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`
-          : `${scriptName}.${getIframeDomain(hostname)}`;
-        const vHost = orgSlug
-          ? `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`
-          : `${scriptName}.${getVanityDomain(hostname)}`;
-        return {
-          tabId,
-          target,
-          appPreviewUrl: `https://${iframeHost}`,
-          vanityHost: vHost,
-          iframeKey: tabIframeKeys[tabId] ?? 0,
-          isLoading: tabAppLoading[tabId] ?? false,
-          filePreviewUrl: "",
-          filePreviewOpenUrl: "",
-          previewFileName: "",
-          notebookViewMode: "report",
-          fileViewMode: "preview",
-          isNotebookPreview: false,
-        };
-      }
-
-      // File tab
-      const normalizedPath = target.path.replace(/^\/+/, "");
-      const encodedPath = encodePathSegments(normalizedPath);
-      const route =
-        target.source === "workspace"
-          ? `fs/content/${encodedPath}`
-          : `${target.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
-      const fileKey = tabFilePreviewKeys[tabId] ?? 0;
-      const filename =
-        target.filename ||
-        target.path.split("/").filter(Boolean).pop() ||
-        "file";
-      const isNotebook = filename.toLowerCase().endsWith(".ipynb");
-      return {
-        tabId,
-        target,
-        appPreviewUrl: "",
-        vanityHost: "",
-        iframeKey: 0,
-        isLoading: false,
-        filePreviewUrl: `/api/workspaces/${target.workspaceId}/${route}?v=${fileKey}`,
-        filePreviewOpenUrl: `/api/workspaces/${target.workspaceId}/${route}`,
-        previewFileName: filename,
-        notebookViewMode: tabNotebookViewModes[tabId] ?? "report",
-        fileViewMode: tabFileViewModes[tabId] ?? "preview",
-        isNotebookPreview: isNotebook,
-      };
-    });
-  }, [
+  const {
+    tabRenderStates,
+    previewDomains,
+    appPreviewVanityUrl,
+    filePreviewOpenUrl,
+    fileExternalOpenUrl,
+    openElsewhereKind,
+  } = useChatPreviewRenderState({
     previewTabs,
+    previewTarget,
     tabIframeKeys,
     tabAppLoading,
     tabFilePreviewKeys,
@@ -5990,51 +3976,8 @@ type SendOptions = {
     tabFileViewModes,
     hostname,
     orgSlug,
-    encodePathSegments,
-  ]);
-
-  const previewDomains = useMemo(() => {
-    if (previewTarget?.kind !== "app") {
-      return { iframeHost: "", vanityHost: "" };
-    }
-    const scriptName = previewTarget.scriptName;
-    if (orgSlug) {
-      return {
-        iframeHost: `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`,
-        vanityHost: `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`,
-      };
-    }
-    // Legacy format without org slug
-    return {
-      iframeHost: `${scriptName}.${getIframeDomain(hostname)}`,
-      vanityHost: `${scriptName}.${getVanityDomain(hostname)}`,
-    };
-  }, [previewTarget, hostname, orgSlug]);
-  const appPreviewVanityUrl = previewDomains.vanityHost
-    ? `https://${previewDomains.vanityHost}`
-    : "";
-
-  const filePreviewOpenUrl = useMemo(() => {
-    if (previewTarget?.kind !== "file") return "";
-    const normalizedPath = previewTarget.path.replace(/^\/+/, "");
-    const encodedPath = encodePathSegments(normalizedPath);
-    const route =
-      previewTarget.source === "workspace"
-        ? `fs/content/${encodedPath}`
-        : `${previewTarget.source === "upload" ? "uploads" : "outputs"}/${encodedPath}`;
-    return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
-  }, [previewTarget, encodePathSegments]);
-
-  const fileExternalOpenUrl = useMemo(() => {
-    if (previewTarget?.kind !== "file") return "";
-    if (previewTarget.source !== "workspace") return "";
-    const query = new URLSearchParams();
-    query.set("file", previewTarget.path);
-    if (readOnly) {
-      query.set("adminReadonly", "1");
-    }
-    return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
-  }, [previewTarget, readOnly]);
+    readOnly,
+  });
 
   const handlePreviewRefresh = useCallback(() => {
     if (!previewTarget) return;
@@ -6057,25 +4000,12 @@ type SendOptions = {
     window.open(fileExternalOpenUrl, "_blank", "noopener,noreferrer");
   }, [previewTarget, appPreviewVanityUrl, fileExternalOpenUrl]);
 
-  const handlePreviewBugReportOpen = useCallback(() => {
-    if (readOnly) return;
-    setBugReportOpen(true);
-    setBugReportStatus("idle");
-    setBugReportError(null);
-  }, [readOnly]);
-
   const showMobilePreview = previewTabs.length > 0 && mobileView === "preview";
   const currentMembership = orgs.find(
     (entry) => entry.org_id === currentOrg?.id,
   );
   const isAdmin =
     currentMembership?.role === "owner" || currentMembership?.role === "admin";
-  const openElsewhereKind: OpenElsewhereKind | null =
-    previewTarget?.kind === "app"
-      ? "app"
-      : previewTarget?.kind === "file" && previewTarget.source === "workspace"
-        ? "computer"
-        : null;
   const previewShareButton = useMemo(() => {
     if (readOnly) return undefined;
     if (previewTarget?.kind !== "app") return undefined;
@@ -6099,7 +4029,6 @@ type SendOptions = {
       onRefresh={handlePreviewRefresh}
       openElsewhereKind={openElsewhereKind}
       onOpenElsewhere={handlePreviewOpenElsewhere}
-      onBugReportOpen={readOnly ? undefined : handlePreviewBugReportOpen}
       appShareButton={previewShareButton}
       notebookViewMode={notebookViewMode}
       onNotebookViewModeChange={setActiveNotebookViewMode}
@@ -6125,14 +4054,6 @@ type SendOptions = {
           onOpenUsage={() => navigate("/settings/organization/usage")}
           onTopUp={() => navigate("/settings/organization/usage?action=topup")}
           canTopUp={Boolean(isAdmin)}
-        />
-      ) : null}
-      {!readOnly ? (
-        <DevChatCreditControls
-          search={location.search}
-          onNavigate={(nextSearch) =>
-            navigate(`${location.pathname}${nextSearch}`)
-          }
         />
       ) : null}
       {readOnly && (
@@ -6170,10 +4091,10 @@ type SendOptions = {
             assistantTurnActive={assistantTurnActive}
             activeAssistantMessageId={activeAssistantMessageId}
             skillSheetsByToolId={skillSheetsByToolId}
-            hostname={hostname}
-            orgSlug={orgSlug}
             error={error}
             setError={setError}
+            llmProvider={llmProvider}
+            threadProvider={activeThreadProvider}
             isCompacting={isCompacting}
             compactingPriorMessageId={compactingPriorMessageId}
             isLoadingMessages={isLoadingMessages}
@@ -6395,9 +4316,7 @@ type SendOptions = {
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
                   onAttachmentRemove={handleAttachmentRemove}
-                  isCreatingThread={
-                    isCreatingThread || createThreadFetcher.state !== "idle"
-                  }
+                  isCreatingThread={isSubmittingNewThread}
                   model={selectedThreadModel}
                   onModelChange={handleThreadModelChange}
                   modelOptions={availableThreadModels}
@@ -6419,15 +4338,6 @@ type SendOptions = {
           onCancel={handleConnectionSetupCancel}
         />
       )}
-
-      {/* Bug Report Dialog (for manual user-initiated reports) */}
-      <BugReportDialog
-        open={bugReportOpen}
-        onOpenChange={handleBugReportOpenChange}
-        onSubmit={submitBugReport}
-        status={bugReportStatus}
-        error={bugReportError}
-      />
 
       {/* Post-onboarding boot sequence modal */}
       {bootModalOpen && (

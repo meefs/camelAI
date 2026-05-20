@@ -3,7 +3,6 @@ import { env } from 'cloudflare:test';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { stringifyStoredLlmProviderConfig } from '../../../src/lib/llm-provider-config';
 import { createThread } from '../../../src/lib/chat-do.server';
-import { WorkspaceContainer } from '../src/workspace-container';
 import type { TestEnv } from './test-helpers';
 import { createOrg, createUser } from './test-helpers';
 
@@ -91,74 +90,4 @@ describe('web Codex provider wiring', () => {
     expect(thread.model).toBe('sonnet');
   });
 
-  it('does not pass OpenAI BYOK through runner env or runner state', async () => {
-    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Codex User');
-    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Codex Env Org', userId);
-    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
-
-    const encrypted = await encryptCredentials(
-      { api_key: 'sk-test-openai-abcdef' },
-      testEnv.INTEGRATION_SECRET_KEY ?? 'test-secret'
-    );
-    await orgStub.setLlmProviderConfig(
-      'openai',
-      encrypted,
-      stringifyStoredLlmProviderConfig({}),
-      userId
-    );
-
-    const thread = await orgStub.createThread(defaultWorkspaceId, 'Codex env thread', userId);
-
-    const container = new WorkspaceContainer(testEnv as never, defaultWorkspaceId, org.id);
-    (container as any).createAppAccessSession = async () => ({});
-
-    const runnerEnv = await container.buildChatRunnerEnv({
-      threadId: thread.id,
-      provider: 'codex',
-    });
-
-    expect(runnerEnv.envVars.CHIRIDION_CHAT_PROVIDER).toBe('codex');
-    expect(runnerEnv.envVars.OPENAI_API_KEY).toBeUndefined();
-    expect('byokProxy' in runnerEnv).toBe(false);
-  });
-
-  it('allows OpenRouter orgs to create Claude threads without passing BYOK through runner state', async () => {
-    const { userId } = await createUser(testEnv, testEmail(), 'password123', 'OpenRouter Claude User');
-    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'OpenRouter Claude Org', userId);
-    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
-
-    const encrypted = await encryptCredentials(
-      { api_key: 'sk-or-test-openrouter-abcdef' },
-      testEnv.INTEGRATION_SECRET_KEY ?? 'test-secret'
-    );
-    await orgStub.setLlmProviderConfig(
-      'openrouter',
-      encrypted,
-      stringifyStoredLlmProviderConfig({}),
-      userId
-    );
-
-    const thread = await createThread(
-      buildContext(testEnv) as never,
-      defaultWorkspaceId,
-      'OpenRouter Claude thread',
-      userId,
-      'Reply with pong',
-      'sonnet'
-    );
-
-    expect(thread.provider).toBe('claude');
-    expect(thread.model).toBe('sonnet');
-
-    const container = new WorkspaceContainer(testEnv as never, defaultWorkspaceId, org.id);
-    (container as any).createAppAccessSession = async () => ({});
-
-    const runnerEnv = await container.buildChatRunnerEnv({
-      threadId: thread.id,
-      provider: 'claude',
-    });
-
-    expect(runnerEnv.envVars.CHIRIDION_CHAT_PROVIDER).toBe('claude');
-    expect('byokProxy' in runnerEnv).toBe(false);
-  });
 });

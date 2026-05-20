@@ -36,7 +36,7 @@ describe('signup action IP handling', () => {
     USER: {},
     ORG: {},
     WORKSPACE: {},
-    ADMIN_INDEX: {},
+    APP_DB: {},
     SESSIONS: {},
     EMAIL_TO_USER: {},
     APP_KV: { get: vi.fn().mockResolvedValue(null) },

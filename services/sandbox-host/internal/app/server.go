@@ -185,7 +185,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return nil
 	}
 
-	if strings.HasPrefix(route.Subpath, "/fs/") || route.Subpath == "/chat/messages" || route.Subpath == "/chat/pi-core-messages" {
+	if strings.HasPrefix(route.Subpath, "/fs/") || route.Subpath == "/chat/messages" {
 		if _, err := s.workspaces.Ensure(name); err != nil {
 			return err
 		}
@@ -210,8 +210,6 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleExec(w, req, name, opts)
 	case route.Subpath == "/chat/messages" && req.Method == http.MethodGet:
 		return s.handleChatMessages(w, req, name)
-	case route.Subpath == "/chat/pi-core-messages" && req.Method == http.MethodGet:
-		return s.handleChatPiCoreMessages(w, req, name)
 	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
 		return s.forwardDataProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
@@ -352,37 +350,6 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":  true,
 		"messages": []parsedChatMessage{},
-	})
-	return nil
-}
-
-func (s *Server) handleChatPiCoreMessages(w http.ResponseWriter, req *http.Request, name string) error {
-	threadID := strings.TrimSpace(req.URL.Query().Get("threadId"))
-	if threadID == "" {
-		errorJSON(w, "threadId query param required", http.StatusBadRequest)
-		return nil
-	}
-	if strings.ContainsAny(threadID, `/\`) {
-		errorJSON(w, "invalid threadId", http.StatusBadRequest)
-		return nil
-	}
-
-	started := time.Now()
-	s.containers.AddInFlightRequest(name, "chat_pi_core_messages")
-	defer func() {
-		s.containers.RemoveInFlightRequest(name, "chat_pi_core_messages", http.StatusOK, time.Since(started).Milliseconds())
-	}()
-
-	messages, err := readHostPiCoreMessages(s.cfg.HostPiSessionRoot, threadID)
-	if err != nil {
-		log.Printf("[SandboxHost] host Pi core message history unavailable thread=%s sessionRoot=%s: %v", threadID, s.cfg.HostPiSessionRoot, err)
-		errorJSON(w, "Host Pi message history unavailable", http.StatusInternalServerError)
-		return nil
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success":  true,
-		"messages": messages,
 	})
 	return nil
 }

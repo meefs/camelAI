@@ -215,13 +215,23 @@ export function PlanPicker({
       ) : null}
 
       {showFooter ? (
-        <div className="space-y-4">
+        <div className="space-y-2">
           <p className="text-center text-sm text-muted-foreground">
             {legacyMode
               ? LEGACY_FOOTER_COPY
               : trialAvailable
                 ? "Subscription plans include one 7-day free trial per org."
                 : "Your free trial has already been used for this org."}
+          </p>
+          <p className="text-center text-sm text-muted-foreground">
+            <a
+              href="https://camelai.com/docs/plans/overview"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Compare every plan in detail →
+            </a>
           </p>
         </div>
       ) : null}
