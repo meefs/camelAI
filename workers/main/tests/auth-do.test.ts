@@ -239,6 +239,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.first_user_message).toBeNull();
       expect(stored?.last_user_message).toBeNull();
       expect(stored?.model).toBe('sonnet');
+      expect(stored?.last_assistant_summary_status).toBeNull();
     });
 
     it('self-heals legacy thread schema before creating new threads', async () => {
@@ -270,6 +271,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.last_user_message).toBe('hello');
       expect(stored?.last_assistant_completed_at).toBeNull();
       expect(stored?.last_assistant_summary).toBeNull();
+      expect(stored?.last_assistant_summary_status).toBeNull();
     });
 
     it('stores and preserves the first user message separately from the thread title', async () => {
@@ -321,6 +323,29 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.first_user_message).toBeNull();
     });
 
+    it('loads multiple threads for one workspace in a single batch call', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Batch Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const first = await orgStub.createThread(defaultWorkspaceId, 'First thread', userId);
+      const second = await orgStub.createThread(defaultWorkspaceId, 'Second thread', userId);
+      const otherWorkspace = await createWorkspace(testEnv, org.id, 'Other workspace', userId);
+      const otherThread = await orgStub.createThread(otherWorkspace.id, 'Other thread', userId);
+
+      const threads = await orgStub.getThreadsByIds(defaultWorkspaceId, [
+        first.id,
+        second.id,
+        first.id,
+        otherThread.id,
+      ]);
+
+      expect(threads.map((thread) => thread.id).sort()).toEqual(
+        [first.id, second.id].sort(),
+      );
+    });
+
     it('records assistant completion metadata without incrementing user messages', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
@@ -345,6 +370,7 @@ describe('Auth flow (full-stack with DOs)', () => {
         completedAt,
       );
       expect(afterCompletion?.last_assistant_summary).toBe('Found the issue.');
+      expect(afterCompletion?.last_assistant_summary_status).toBe('ready');
     });
 
     it('stores monotonic assistant completion timestamps for stale inputs', async () => {
@@ -361,6 +387,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       await orgStub.recordThreadAssistantCompletion(thread.id, {
         completedAt: staleCompletionAt,
         summary: null,
+        summaryStatus: 'pending',
       });
       const afterCompletion = await orgStub.getThread(thread.id);
 
@@ -371,6 +398,7 @@ describe('Auth flow (full-stack with DOs)', () => {
         afterCompletion?.last_assistant_completed_at,
       );
       expect(afterCompletion?.last_assistant_summary).toBeNull();
+      expect(afterCompletion?.last_assistant_summary_status).toBe('pending');
       expect(afterCompletion?.user_message_count).toBe(1);
     });
 
@@ -385,6 +413,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       await orgStub.recordThreadAssistantCompletion(thread.id, {
         completedAt: Date.now(),
         summary: null,
+        summaryStatus: 'pending',
       });
       const beforeSummary = await orgStub.getThread(thread.id);
 
@@ -399,6 +428,36 @@ describe('Auth flow (full-stack with DOs)', () => {
       );
       expect(afterSummary?.updated_at).toBe(beforeSummary?.updated_at);
       expect(afterSummary?.last_assistant_summary).toBe('Finished the work.');
+      expect(afterSummary?.last_assistant_summary_status).toBe('ready');
+    });
+
+    it('marks empty or failed assistant summaries as failed without moving the completion timestamp', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Failed Summary Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Completion thread', userId);
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: Date.now(),
+        summary: null,
+        summaryStatus: 'pending',
+      });
+      const beforeFailure = await orgStub.getThread(thread.id);
+
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: beforeFailure?.last_assistant_completed_at ?? Date.now(),
+        summary: null,
+        summaryStatus: 'failed',
+      });
+      const afterFailure = await orgStub.getThread(thread.id);
+
+      expect(afterFailure?.last_assistant_completed_at).toBe(
+        beforeFailure?.last_assistant_completed_at,
+      );
+      expect(afterFailure?.updated_at).toBe(beforeFailure?.updated_at);
+      expect(afterFailure?.last_assistant_summary).toBeNull();
+      expect(afterFailure?.last_assistant_summary_status).toBe('failed');
     });
 
     it('ignores stale summaries from older assistant completions', async () => {
@@ -411,11 +470,13 @@ describe('Auth flow (full-stack with DOs)', () => {
       await orgStub.recordThreadAssistantCompletion(thread.id, {
         completedAt: Date.now(),
         summary: null,
+        summaryStatus: 'pending',
       });
       const firstCompletion = await orgStub.getThread(thread.id);
       await orgStub.recordThreadAssistantCompletion(thread.id, {
         completedAt: (firstCompletion?.last_assistant_completed_at ?? Date.now()) + 10,
         summary: null,
+        summaryStatus: 'pending',
       });
       const secondCompletion = await orgStub.getThread(thread.id);
 
@@ -429,6 +490,7 @@ describe('Auth flow (full-stack with DOs)', () => {
         secondCompletion?.last_assistant_completed_at,
       );
       expect(afterStaleSummary?.last_assistant_summary).toBeNull();
+      expect(afterStaleSummary?.last_assistant_summary_status).toBe('pending');
     });
 
     it('persists per-thread model changes after creation', async () => {

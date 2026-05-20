@@ -6,12 +6,24 @@ import { validateSignedToken } from '../src/signed-tokens';
 describe('ChatThreadDO Codex external turn completion', () => {
   function createPiEventFake() {
     const events: any[] = [];
+    const activityRecords: any[] = [];
+    const workspaceStub = {
+      recordThreadStreaming: vi.fn(async (...args: any[]) => {
+        activityRecords.push(args);
+      }),
+    };
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = {
       threadId: 'thread1',
       workspaceId: 'workspace1',
       orgId: 'org1',
       userId: 'user1',
+    };
+    fake.env = {
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => workspaceStub),
+      },
     };
     fake.ctx = { waitUntil: vi.fn() };
     fake.piActiveItemId = null;
@@ -31,7 +43,15 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.completeTodoStateForTurnEnd = vi.fn();
     fake.resolvePendingExternalTurn = vi.fn();
     fake.pushChatEvent = vi.fn((event: any) => events.push(event));
-    return { fake, events };
+    return { fake, events, activityRecords, workspaceStub };
+  }
+
+  async function flushWaitUntil(fake: any) {
+    await Promise.all(
+      fake.ctx.waitUntil.mock.calls
+        .map(([promise]: [Promise<unknown>]) => promise)
+        .filter(Boolean),
+    );
   }
 
   it('resolves harness-prefixed Codex model ids before selecting the Pi model', () => {
@@ -100,6 +120,10 @@ describe('ChatThreadDO Codex external turn completion', () => {
     };
     fake.env = {
       APP_KV: { get: vi.fn().mockResolvedValue(null) },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadStreaming: vi.fn(async () => {}) })),
+      },
     };
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
@@ -1396,6 +1420,56 @@ describe('ChatThreadDO Codex external turn completion', () => {
       status: 'completed',
       aggregatedOutput: 'hi\n',
     });
+  });
+
+  it('publishes live Pi running activity for thinking, text, and tools', async () => {
+    const { fake, activityRecords } = createPiEventFake();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'message_update',
+      message: { role: 'assistant', content: [] },
+      assistantMessageEvent: {
+        type: 'thinking_start',
+        contentIndex: 0,
+      },
+    });
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'message_update',
+      message: { role: 'assistant', content: [] },
+      assistantMessageEvent: {
+        type: 'text_delta',
+        delta: 'Streaming assistant update.',
+      },
+    });
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'tool_execution_start',
+      toolCallId: 'tool-read',
+      toolName: 'read',
+      args: { file_path: '/workspace/src/App.tsx' },
+    });
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'tool_execution_end',
+      toolCallId: 'tool-read',
+      toolName: 'read',
+      args: { file_path: '/workspace/src/App.tsx' },
+      result: { content: [{ type: 'text', text: 'ok' }] },
+      isError: false,
+    });
+
+    await flushWaitUntil(fake);
+
+    expect(
+      activityRecords.map(([, isStreaming, options]) => ({
+        isStreaming,
+        activityText: options.activityText,
+      })),
+    ).toEqual([
+      { isStreaming: true, activityText: 'Thinking' },
+      { isStreaming: true, activityText: 'Streaming assistant update.' },
+      { isStreaming: true, activityText: 'Reading App.tsx' },
+      { isStreaming: true, activityText: 'Read App.tsx' },
+    ]);
   });
 
   it('renders persisted Pi tool result messages with their assistant tool calls', () => {

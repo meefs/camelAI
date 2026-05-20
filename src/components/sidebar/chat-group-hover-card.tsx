@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ChatGroupThreadSummary, ChatGroupView } from "@/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   formatHoverRelativeTime,
   formatRunningElapsed,
@@ -68,7 +69,10 @@ export function ChatGroupHoverCard({
         </div>
       </div>
 
-      <ScrollArea className="max-h-[26rem]" viewportClassName="px-1 pb-2">
+      <ScrollArea
+        className="max-h-[26rem]"
+        viewportClassName="px-1 pb-2 [&>div]:!block [&>div]:!w-full"
+      >
         {sections.inProgress.length > 0 && (
           <HoverSection label="In progress">
             {sections.inProgress.map((thread) => (
@@ -147,7 +151,7 @@ function HoverRow({
       onClick={onClick}
       disabled={isPending}
       className={cn(
-        "group/hover-row flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left",
+        "group/hover-row flex w-full min-w-0 max-w-full flex-col gap-0.5 overflow-hidden rounded-md px-2 py-1.5 text-left",
         "transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
         isPending && "opacity-60",
       )}
@@ -158,18 +162,21 @@ function HoverRow({
 }
 
 function InProgressRow({ thread, onSelect, isPending }: RowProps) {
+  const activityText =
+    thread.running_activity_text?.trim() || thread.latest_user_message?.trim() || "";
+
   return (
     <HoverRow onClick={() => void onSelect(thread)} isPending={isPending}>
-      <div className="flex items-center gap-2">
+      <div className="flex w-full min-w-0 max-w-full items-center gap-2">
         <StatusDot status="running" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-popover-foreground">
           {thread.title || "New chat"}
         </span>
         <RunningTimerSlot startedAt={thread.running_started_at} />
       </div>
-      {thread.latest_user_message && (
-        <div className="truncate text-xs text-muted-foreground">
-          {thread.latest_user_message}
+      {activityText && (
+        <div className="w-full min-w-0 max-w-full truncate text-xs text-muted-foreground">
+          {activityText}
         </div>
       )}
     </HoverRow>
@@ -180,7 +187,7 @@ function CompletedRow({ thread, onSelect, isPending }: RowProps) {
   const timestamp = thread.last_assistant_completed_at ?? thread.updated_at;
   return (
     <HoverRow onClick={() => void onSelect(thread)} isPending={isPending}>
-      <div className="flex items-center gap-2">
+      <div className="flex w-full min-w-0 max-w-full items-center gap-2">
         <StatusDot status="unread" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-popover-foreground">
           {thread.title || "New chat"}
@@ -192,19 +199,41 @@ function CompletedRow({ thread, onSelect, isPending }: RowProps) {
           {formatHoverRelativeTime(timestamp)}
         </time>
       </div>
-      {thread.last_assistant_summary && (
-        <div className="line-clamp-2 text-xs leading-snug text-muted-foreground">
-          {thread.last_assistant_summary}
-        </div>
-      )}
+      <CompletedRowSubheader thread={thread} />
     </HoverRow>
   );
+}
+
+function CompletedRowSubheader({ thread }: { thread: ChatGroupThreadSummary }) {
+  const text = thread.last_assistant_summary?.trim() ?? "";
+  if (text) {
+    return (
+      <div className="line-clamp-2 w-full min-w-0 max-w-full break-words text-xs leading-snug text-muted-foreground">
+        {thread.last_assistant_summary}
+      </div>
+    );
+  }
+
+  if (thread.last_assistant_summary_status === "pending") {
+    return (
+      <div
+        role="status"
+        aria-label="Generating summary"
+        className="flex min-h-[2.0625rem] w-full min-w-0 max-w-full flex-col justify-center gap-1.5"
+      >
+        <Skeleton className="h-2.5 w-full motion-reduce:animate-none" />
+        <Skeleton className="h-2.5 w-3/5 motion-reduce:animate-none" />
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function QuietRow({ thread, onSelect, isPending }: RowProps) {
   return (
     <HoverRow onClick={() => void onSelect(thread)} isPending={isPending}>
-      <div className="flex items-center gap-2">
+      <div className="flex w-full min-w-0 max-w-full items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {thread.title || "New chat"}
         </span>

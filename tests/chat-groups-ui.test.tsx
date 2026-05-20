@@ -52,8 +52,11 @@ function makeThreadSummary(
     membership: "open",
     last_active_at: updatedAt,
     latest_user_message: null,
+    running_activity_text: null,
+    running_activity_at: null,
     last_assistant_completed_at: null,
     last_assistant_summary: null,
+    last_assistant_summary_status: null,
     running_started_at: null,
     ...overrides,
   };
@@ -1074,11 +1077,23 @@ describe("applyLiveRunningStatuses", () => {
       new Set(),
       true,
       null,
-      new Map([["thread_1", { status: "unread", completedAt: 20 }]]),
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "unread",
+            completedAt: 20,
+            summaryStatus: "ready",
+            summary: "Generated summary",
+          },
+        ],
+      ]),
     );
 
     expect(group.status).toBe("unread");
     expect(group.open_threads[0].last_assistant_completed_at).toBe(20);
+    expect(group.open_threads[0].last_assistant_summary).toBe("Generated summary");
+    expect(group.open_threads[0].last_assistant_summary_status).toBe("ready");
     expect(group.open_threads[0].updated_at).toBe(20);
     expect(group.open_threads[0].last_active_at).toBe(20);
   });
@@ -1114,5 +1129,31 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.status).toBe("running");
     expect(group.open_threads[0].status).toBe("running");
     expect(group.open_threads[0].latest_user_message).toBe("fresh prompt");
+  });
+
+  it("overlays live running activity metadata while running", () => {
+    const [group] = applyLiveRunningStatuses(
+      [groupView],
+      new Set(),
+      true,
+      null,
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "running",
+            runningActivityText: "Running typecheck...",
+            runningActivityAt: 40,
+            runningStartedAt: 30,
+          },
+        ],
+      ]),
+    );
+
+    expect(group.status).toBe("running");
+    expect(group.open_threads[0].running_activity_text).toBe("Running typecheck...");
+    expect(group.open_threads[0].running_activity_at).toBe(40);
+    expect(group.open_threads[0].running_started_at).toBe(30);
+    expect(group.open_threads[0].last_active_at).toBe(40);
   });
 });

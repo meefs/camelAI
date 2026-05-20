@@ -103,9 +103,12 @@ describe("ChatThreadDO completion summaries", () => {
     expect(recordThreadStreaming).toHaveBeenCalledTimes(2);
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
       completedAt: expect.any(Number),
+      summaryStatus: "pending",
     });
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
       completedAt: expect.any(Number),
+      summaryStatus: "ready",
+      summary: "Generated hover summary.",
     });
     expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
       1,
@@ -113,6 +116,7 @@ describe("ChatThreadDO completion summaries", () => {
       {
         completedAt: expect.any(Number),
         summary: null,
+        summaryStatus: "pending",
       },
     );
     expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
@@ -121,6 +125,7 @@ describe("ChatThreadDO completion summaries", () => {
       {
         completedAt: expect.any(Number),
         summary: "Generated hover summary.",
+        summaryStatus: "ready",
       },
     );
     expect(recordThreadAssistantCompletion).not.toHaveBeenCalledWith(
@@ -129,7 +134,7 @@ describe("ChatThreadDO completion summaries", () => {
     );
   });
 
-  it("keeps completion status persisted when summary generation fails", async () => {
+  it("marks summary generation failures as failed after completion is persisted", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ error: { message: "Unauthorized" } }), {
@@ -151,14 +156,113 @@ describe("ChatThreadDO completion summaries", () => {
 
     await Promise.all(waitUntilPromises);
 
-    expect(recordThreadStreaming).toHaveBeenCalledTimes(1);
+    expect(recordThreadStreaming).toHaveBeenCalledTimes(2);
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
+      completedAt: expect.any(Number),
+      summaryStatus: "pending",
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
+      completedAt: expect.any(Number),
+      summaryStatus: "failed",
+    });
+    expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
+      1,
+      "thread1",
+      {
+        completedAt: expect.any(Number),
+        summary: null,
+        summaryStatus: "pending",
+      },
+    );
+    expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
+      2,
+      "thread1",
+      {
+        completedAt: expect.any(Number),
+        summary: null,
+        summaryStatus: "failed",
+      },
+    );
+  });
+
+  it("marks empty generated summaries as failed", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "resp_1",
+          object: "response",
+          status: "completed",
+          output: [
+            {
+              id: "msg_1",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "   ",
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      summarySource: "Raw final answer.",
+    });
+
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
+      completedAt: expect.any(Number),
+      summaryStatus: "failed",
+    });
+    expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
+      2,
+      "thread1",
+      {
+        completedAt: expect.any(Number),
+        summary: null,
+        summaryStatus: "failed",
+      },
+    );
+  });
+
+  it("marks completion summary as failed when no source text is available", async () => {
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      summarySource: null,
+    });
+
+    await Promise.all(waitUntilPromises);
+
     expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
       completedAt: expect.any(Number),
+      summaryStatus: "failed",
     });
-    expect(recordThreadAssistantCompletion).toHaveBeenCalledTimes(1);
     expect(recordThreadAssistantCompletion).toHaveBeenCalledWith("thread1", {
       completedAt: expect.any(Number),
       summary: null,
+      summaryStatus: "failed",
     });
   });
 });

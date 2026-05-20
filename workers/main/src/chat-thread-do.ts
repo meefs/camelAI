@@ -33,7 +33,14 @@ import {
   extractThreadCompletionSummarySource,
   generateThreadCompletionSummaryWithOpenAI,
 } from '../../../src/lib/thread-completion-summary-generation.server';
-import type { LlmModel } from '../../../src/types';
+import { normalizeThreadPreviewUserMessage } from '../../../src/lib/thread-preview';
+import { getToolSummary } from '../../../src/lib/tool-activity-summary';
+import type {
+  LlmModel,
+  ThreadCompletionSummaryStatus,
+  ToolResultBlock,
+  ToolUseBlock,
+} from '../../../src/types';
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
   DEFAULT_CODEX_MODEL,
@@ -1485,6 +1492,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piReasoningItemId: string | null = null;
   private piToolArgs: Map<string, Record<string, unknown>> = new Map();
   private piAssistantText = "";
+  private runningActivityLastText: string | null = null;
+  private runningActivityLastSentAt = 0;
   private piTurnStartedAtMs: number = 0;
   private suppressNextPiRecoveryPromptEvent = false;
   private piCurrentBillingSource: PiBillingSource = "hosted";
@@ -4013,6 +4022,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     this.setActiveTurnUserId(context.userId);
     this.setChatIsStreaming(true);
+    this.publishRunningUserMessageActivity(rawContent);
     this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
     this.ctx.waitUntil(
       this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
@@ -4279,6 +4289,90 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
+  private resetRunningActivityState(): void {
+    this.runningActivityLastText = null;
+    this.runningActivityLastSentAt = 0;
+  }
+
+  private normalizeRunningActivityText(text: string | null | undefined): string | null {
+    const normalized = text?.replace(/\s+/g, " ").trim() ?? "";
+    if (!normalized) return null;
+    return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
+  }
+
+  private shouldPublishRunningActivity(
+    activityText: string,
+    now: number,
+    immediate: boolean,
+  ): boolean {
+    if (this.runningActivityLastText === activityText) return false;
+    if (immediate || this.runningActivityLastSentAt === 0) return true;
+    if (now - this.runningActivityLastSentAt >= 900) return true;
+    return /[.!?)]$/.test(activityText);
+  }
+
+  private publishRunningActivity(
+    text: string | null | undefined,
+    options: { immediate?: boolean; activityAt?: number } = {},
+  ): void {
+    const activityText = this.normalizeRunningActivityText(text);
+    if (!activityText) return;
+    const context = this.chatContext;
+    if (!context?.workspaceId || !context.threadId) return;
+    const now =
+      typeof options.activityAt === "number" && Number.isFinite(options.activityAt)
+        ? Math.floor(options.activityAt)
+        : Date.now();
+    if (!this.shouldPublishRunningActivity(activityText, now, options.immediate === true)) {
+      return;
+    }
+    this.runningActivityLastText = activityText;
+    this.runningActivityLastSentAt = now;
+    this.ctx.waitUntil(
+      recordWorkspaceThreadStreaming(
+        this.env,
+        context.workspaceId,
+        context.threadId,
+        true,
+        { activityText, activityAt: now },
+      ).catch((error) => {
+        console.error("[ChatThreadDO] failed to record running activity", error);
+      }),
+    );
+  }
+
+  private publishRunningUserMessageActivity(content: string | null | undefined): void {
+    const preview = normalizeThreadPreviewUserMessage(content ?? "");
+    this.publishRunningActivity(preview, { immediate: true });
+  }
+
+  private publishPiToolActivity(
+    toolCallId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    status: "running" | "complete" | "error",
+    result?: unknown,
+  ): void {
+    const tool: ToolUseBlock = {
+      type: "tool_use",
+      id: toolCallId,
+      name: toolName,
+      input: args,
+    };
+    const resultBlock: ToolResultBlock | undefined =
+      status === "running"
+        ? undefined
+        : {
+            type: "tool_result",
+            tool_use_id: toolCallId,
+            content: this.piToolResultText(result),
+          };
+    this.publishRunningActivity(
+      getToolSummary(tool, resultBlock, status, status === "running"),
+      { immediate: true },
+    );
+  }
+
   private broadcastPreviewState(options?: {
     refreshTabId?: string | null;
   }): void {
@@ -4325,6 +4419,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.assistantCompletionRecordedAt = null;
       this.assistantCompletionSummaryRequestedAt = null;
     }
+    this.resetRunningActivityState();
     const statusChanged = this.chatIsStreaming !== value;
     this.chatIsStreaming = value;
     // Clear persisted todos when a new turn starts so they don't go stale
@@ -4388,22 +4483,31 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     completedAt: number,
     summarySource: string | null,
   ): Promise<void> {
-    await this.persistThreadAssistantCompletion(context, completedAt, null);
+    const hasSummarySource = Boolean(summarySource?.trim());
+    const initialSummaryStatus: ThreadCompletionSummaryStatus = hasSummarySource
+      ? "pending"
+      : "failed";
+    await this.persistThreadAssistantCompletion(
+      context,
+      completedAt,
+      null,
+      initialSummaryStatus,
+    );
 
     await recordWorkspaceThreadStreaming(
       this.env,
       context.workspaceId,
       context.threadId,
       false,
-      { completedAt },
+      { completedAt, summaryStatus: initialSummaryStatus },
     );
 
-    if (summarySource?.trim()) {
+    if (hasSummarySource) {
       this.assistantCompletionSummaryRequestedAt = completedAt;
       await this.generateAndPersistThreadAssistantCompletionSummary(
         context,
         completedAt,
-        summarySource,
+        summarySource!,
       );
     }
   }
@@ -4412,17 +4516,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     context: ChatContextState,
     completedAt: number,
     summary: string | null,
+    summaryStatus: ThreadCompletionSummaryStatus | null,
   ): Promise<void> {
     try {
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
         recordThreadAssistantCompletion(
           id: string,
-          input: { completedAt: number; summary: string | null },
+          input: {
+            completedAt: number;
+            summary: string | null;
+            summaryStatus?: ThreadCompletionSummaryStatus | null;
+          },
         ): Promise<boolean> | boolean;
       };
       await orgStub.recordThreadAssistantCompletion(context.threadId, {
         completedAt,
         summary,
+        summaryStatus,
       });
     } catch (error) {
       console.error("[ChatThreadDO] failed to persist assistant completion", error);
@@ -4444,17 +4554,50 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           threadId: context.threadId,
         },
       );
-      if (!summary) return;
-      await this.persistThreadAssistantCompletion(context, completedAt, summary);
+      if (!summary) {
+        await this.persistThreadAssistantCompletion(
+          context,
+          completedAt,
+          null,
+          "failed",
+        );
+        await recordWorkspaceThreadStreaming(
+          this.env,
+          context.workspaceId,
+          context.threadId,
+          false,
+          { completedAt, summaryStatus: "failed" },
+        );
+        return;
+      }
+      await this.persistThreadAssistantCompletion(
+        context,
+        completedAt,
+        summary,
+        "ready",
+      );
       await recordWorkspaceThreadStreaming(
         this.env,
         context.workspaceId,
         context.threadId,
         false,
-        { completedAt },
+        { completedAt, summaryStatus: "ready", summary },
       );
     } catch (error) {
       console.error("[ChatThreadDO] failed to generate assistant completion summary", error);
+      await this.persistThreadAssistantCompletion(
+        context,
+        completedAt,
+        null,
+        "failed",
+      );
+      await recordWorkspaceThreadStreaming(
+        this.env,
+        context.workspaceId,
+        context.threadId,
+        false,
+        { completedAt, summaryStatus: "failed" },
+      );
     }
   }
 
@@ -4646,6 +4789,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     this.setChatIsStreaming(true);
+    this.publishRunningUserMessageActivity(rawMessage);
     this.ctx.waitUntil(
       this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
         console.error('[ChatThreadDO] failed to update thread metadata after external user message', err);
@@ -6417,6 +6561,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piReasoningItemId = null;
       this.piToolArgs = new Map();
       this.piTurnStartedAtMs = Date.now();
+      this.resetRunningActivityState();
       this.touchPiTurnRecovery("running");
       this.setChatIsStreaming(true);
       return;
@@ -6480,6 +6625,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           if (contentIndex === 0 || !this.piReasoningItemId) {
             this.piReasoningItemId = `pi_reasoning_${crypto.randomUUID()}`;
           }
+          this.publishRunningActivity("Thinking", { immediate: true });
           break;
         }
         case "thinking_delta": {
@@ -6509,6 +6655,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             itemId,
             delta: assistantEvent.delta,
           });
+          this.publishRunningActivity(this.piActiveItemText);
           break;
         }
         case "toolcall_start": {
@@ -6524,6 +6671,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           if (Object.keys(args).length > 0) {
             this.rememberPiToolArgs(toolCallId, args);
           }
+          this.publishPiToolActivity(toolCallId, toolName, args, "running");
           this.pushPiRuntimeEvent("item/started", {
             threadId,
             item: this.piRuntimeToolItem(
@@ -6548,6 +6696,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (shouldSendCompleted) {
           this.piAssistantText += text;
           this.piActiveItemText = text;
+          this.publishRunningActivity(text, { immediate: true });
           this.pushPiRuntimeEvent("item/completed", {
             threadId: this.piRuntimeThreadId(),
             item: {
@@ -6576,6 +6725,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const toolCallId = event.toolCallId || `pi_tool_${crypto.randomUUID()}`;
       const toolName = event.toolName || "tool";
       const args = this.rememberPiToolArgs(toolCallId, this.piEventArgs(event.args));
+      this.publishPiToolActivity(toolCallId, toolName, args, "running");
       this.pushPiRuntimeEvent("item/started", {
         threadId: this.piRuntimeThreadId(),
         item: this.piRuntimeToolItem(toolCallId, toolName, args, "running"),
@@ -6618,6 +6768,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         item.aggregatedOutput = this.piToolResultText(event.result);
         item.result = event.result;
       }
+      this.publishPiToolActivity(
+        toolCallId,
+        toolName,
+        args,
+        event.isError ? "error" : "complete",
+        event.result,
+      );
       this.pushPiRuntimeEvent("item/completed", {
         threadId: this.piRuntimeThreadId(),
         item,
@@ -6685,6 +6842,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piReasoningItemId = null;
       this.piToolArgs = new Map();
       this.piAssistantText = "";
+      this.resetRunningActivityState();
       return;
     }
 

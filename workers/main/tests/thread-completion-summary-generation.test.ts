@@ -44,7 +44,7 @@ describe("thread completion summary generation", () => {
     );
   });
 
-  it("uses a final tool result when it is the only tail conclusion artifact", () => {
+  it("uses a final Pi toolResult when it is the only tail conclusion artifact", () => {
     const source = extractThreadCompletionSummarySource(
       [
         {
@@ -54,11 +54,11 @@ describe("thread completion summary generation", () => {
           ],
         },
         {
-          role: "tool",
+          role: "toolResult",
           content: [
             {
-              type: "tool_result",
-              content: [{ type: "text", text: "Patch applied and tests passed." }],
+              type: "text",
+              text: "Patch applied and tests passed.",
             },
           ],
         },
@@ -67,6 +67,35 @@ describe("thread completion summary generation", () => {
     );
 
     expect(source).toBe("Patch applied and tests passed.");
+  });
+
+  it("skips tail assistant tool-call noise and selects the following Pi toolResult", () => {
+    const source = extractThreadCompletionSummarySource(
+      [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Earlier answer." }],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", name: "task", input: { prompt: "summarize" } },
+          ],
+        },
+        {
+          role: "toolResult",
+          content: [
+            {
+              type: "text",
+              text: "Identified the account-level BYOK configuration issue.",
+            },
+          ],
+        },
+      ],
+      "Fallback text",
+    );
+
+    expect(source).toBe("Identified the account-level BYOK configuration issue.");
   });
 
   it("uses the OpenAI Responses API through Cloudflare AI Gateway", async () => {

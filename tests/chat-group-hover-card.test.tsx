@@ -19,8 +19,11 @@ function makeThread(
     membership: "open",
     last_active_at: updatedAt,
     latest_user_message: null,
+    running_activity_text: null,
+    running_activity_at: null,
     last_assistant_completed_at: null,
     last_assistant_summary: null,
+    last_assistant_summary_status: null,
     running_started_at: null,
     ...overrides,
   };
@@ -78,6 +81,7 @@ describe("ChatGroupHoverCard", () => {
       last_active_at: now - 60_000,
       last_assistant_completed_at: now - 12 * 60_000,
       last_assistant_summary: "Found three common setup issues.",
+      last_assistant_summary_status: "ready",
     });
     const quiet = makeThread({
       id: "quiet",
@@ -87,7 +91,7 @@ describe("ChatGroupHoverCard", () => {
       last_active_at: now - 2 * 3_600_000,
     });
 
-    render(
+    const { container } = render(
       <ChatGroupHoverCard
         group={makeGroup({ open_threads: [running, completed, quiet] })}
         onSelectThread={vi.fn()}
@@ -100,11 +104,19 @@ describe("ChatGroupHoverCard", () => {
     expect(screen.getByText("Completed")).toBeInTheDocument();
     expect(screen.getByText("Quiet")).toBeInTheDocument();
     expect(screen.getByText("does org 097d have BYOK enabled?")).toBeInTheDocument();
+    expect(screen.getByText("does org 097d have BYOK enabled?")).toHaveClass(
+      "truncate",
+      "max-w-full",
+      "min-w-0",
+    );
     expect(screen.getByText("does org 097d have BYOK enabled?")).not.toHaveClass(
       "pl-4",
     );
     expect(screen.getByText("Found three common setup issues.")).toHaveClass(
       "line-clamp-2",
+      "max-w-full",
+      "min-w-0",
+      "break-words",
     );
     expect(screen.getByText("Found three common setup issues.")).not.toHaveClass(
       "pl-4",
@@ -116,6 +128,107 @@ describe("ChatGroupHoverCard", () => {
     expect(screen.getByText("12m ago")).toBeInTheDocument();
     expect(screen.getByText("2h ago")).toBeInTheDocument();
     expect(screen.getByText("\u2014")).toBeInTheDocument();
+    const viewport = container.querySelector("[data-slot='scroll-area-viewport']");
+    expect(viewport?.className).toContain("[&>div]:!block");
+    expect(viewport?.className).toContain("[&>div]:!w-full");
+  });
+
+  it("reserves completed-row summary space while generation is pending", () => {
+    const { container } = render(
+      <ChatGroupHoverCard
+        group={makeGroup({
+          open_threads: [
+            makeThread({
+              id: "completed",
+              title: "Summarize custom domains",
+              status: "unread",
+              last_assistant_completed_at: now - 60_000,
+              last_assistant_summary_status: "pending",
+            }),
+          ],
+        })}
+        onSelectThread={vi.fn()}
+      />,
+    );
+
+    const pendingSummary = screen.getByRole("status", {
+      name: "Generating summary",
+    });
+    expect(pendingSummary).toHaveClass("min-h-[2.0625rem]");
+    expect(
+      pendingSummary.querySelectorAll("[data-slot='skeleton']"),
+    ).toHaveLength(2);
+    expect(
+      container.querySelector("[data-slot='skeleton']"),
+    ).toHaveClass("motion-reduce:animate-none");
+  });
+
+  it("constrains long streaming update text inside the popover width", () => {
+    const longText =
+      "can you build me a screen saver? just an html file will suffice but make sure this sentence is very long and keeps streaming into the row";
+    render(
+      <ChatGroupHoverCard
+        group={makeGroup({
+          open_threads: [
+            makeThread({
+              id: "running",
+              title: "Build screen saver",
+              status: "running",
+              latest_user_message: longText,
+            }),
+            makeThread({
+              id: "completed",
+              title: "Completed screen saver",
+              status: "unread",
+              last_assistant_completed_at: now - 60_000,
+              last_assistant_summary:
+                "Created a polished interactive particle screensaver with 11 configurable display modes and a responsive animation surface that should stay constrained.",
+              last_assistant_summary_status: "ready",
+            }),
+          ],
+        })}
+        onSelectThread={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(longText)).toHaveClass(
+      "w-full",
+      "max-w-full",
+      "truncate",
+    );
+    expect(
+      screen.getByText(/Created a polished interactive particle screensaver/),
+    ).toHaveClass(
+      "w-full",
+      "max-w-full",
+      "line-clamp-2",
+      "break-words",
+    );
+  });
+
+  it("prefers live running activity over the latest user message", () => {
+    render(
+      <ChatGroupHoverCard
+        group={makeGroup({
+          open_threads: [
+            makeThread({
+              id: "running",
+              title: "Build screen saver",
+              status: "running",
+              latest_user_message: "build a screen saver",
+              running_activity_text:
+                "Implemented controls and wiring up the animation loop",
+            }),
+          ],
+        })}
+        onSelectThread={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("Implemented controls and wiring up the animation loop"),
+    ).toHaveClass("truncate", "max-w-full");
+    expect(screen.queryByText("build a screen saver")).toBeNull();
   });
 
   it("omits empty sections and sorts each section newest first", () => {

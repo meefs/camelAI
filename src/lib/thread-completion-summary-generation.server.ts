@@ -95,7 +95,7 @@ export function extractThreadCompletionSummarySource(
     const message = messages[index];
     if (!message || typeof message !== "object") continue;
     const role = (message as { role?: unknown }).role;
-    if (role !== "assistant" && role !== "tool") continue;
+    if (role !== "assistant" && role !== "tool" && role !== "toolResult") continue;
     const text = normalizeSummarySource(extractMessageContentText(message));
     if (text) return text;
   }

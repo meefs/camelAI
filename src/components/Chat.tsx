@@ -230,7 +230,11 @@ function resolveSelectedThreadModel(args: {
 function dispatchLocalThreadStatus(
   threadId: string | null | undefined,
   status: "idle" | "running",
-  options: { latestUserMessage?: string | null } = {},
+  options: {
+    latestUserMessage?: string | null;
+    runningActivityText?: string | null;
+    runningActivityAt?: number | null;
+  } = {},
 ): void {
   if (typeof window === "undefined" || !threadId) return;
   window.dispatchEvent(
@@ -3890,8 +3894,11 @@ type SendOptions = {
     });
 
     // If WebSocket is connected and ready, send immediately
+    const previewUserMessage = normalizeThreadPreviewUserMessage(rawContent);
     dispatchLocalThreadStatus(threadId, "running", {
-      latestUserMessage: normalizeThreadPreviewUserMessage(rawContent),
+      latestUserMessage: previewUserMessage,
+      runningActivityText: previewUserMessage,
+      runningActivityAt: Date.now(),
     });
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);

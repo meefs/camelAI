@@ -1,6 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
-import type { Workspace, WorkspaceModelPickerConfig } from '../../../src/types';
+import type {
+  ThreadCompletionSummaryStatus,
+  Workspace,
+  WorkspaceModelPickerConfig,
+} from '../../../src/types';
 import type { OrgDO } from './auth';
 import { dispatchAdminEvent } from './auth';
 import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
@@ -32,6 +36,22 @@ const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
 // normal coding-agent turn so long-running work does not disappear from status.
 const THREAD_STREAMING_STATUS_TTL_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_STATUS_SOCKET_TAG = 'status';
+type BroadcastThreadStatus = 'running' | 'idle' | 'unread';
+
+export interface WorkspaceRunningThreadStatus {
+  threadId: string;
+  startedAt: number;
+  updatedAt: number;
+  latestActivityText: string | null;
+  latestActivityAt: number | null;
+}
+
+function normalizeRunningActivityText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+  return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
+}
 
 /**
  * Thrown when a token refresh fails permanently (e.g. revoked token, invalid_grant).
@@ -172,6 +192,7 @@ export interface WorkspaceEnv {
  */
 export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   private sql: SqlStorage;
+  private lastThreadStatusBroadcasts = new Map<string, string>();
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
@@ -309,7 +330,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       this.sql.exec("CREATE INDEX IF NOT EXISTS idx_integrations_auth_status ON integrations(auth_status) WHERE auth_status != 'connected' AND deleted_at IS NULL");
     }
 
-    const CURRENT_SCHEMA_VERSION = 6;
+    if (version < 7) {
+      // V7: Track ephemeral running activity text for workspace status sockets.
+      this.sql.exec('ALTER TABLE thread_streaming_status ADD COLUMN latest_activity_text TEXT');
+      this.sql.exec('ALTER TABLE thread_streaming_status ADD COLUMN latest_activity_at INTEGER');
+    }
+
+    const CURRENT_SCHEMA_VERSION = 7;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -325,7 +352,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   recordThreadStreaming(
     threadId: string,
     isStreaming: boolean,
-    options?: { completedAt?: number },
+    options?: {
+      completedAt?: number;
+      summaryStatus?: ThreadCompletionSummaryStatus | null;
+      summary?: string | null;
+      activityText?: string | null;
+      activityAt?: number | null;
+    },
   ): void {
     const normalizedThreadId = threadId.trim();
     if (!normalizedThreadId) return;
@@ -334,49 +367,164 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       typeof options?.completedAt === 'number' && Number.isFinite(options.completedAt)
         ? options.completedAt
         : null;
+    const summaryStatus =
+      options?.summaryStatus === 'pending' ||
+      options?.summaryStatus === 'ready' ||
+      options?.summaryStatus === 'failed'
+        ? options.summaryStatus
+        : null;
+    const summary =
+      typeof options?.summary === 'string' && options.summary.trim()
+        ? options.summary.trim()
+        : null;
+    const hasActivityTextUpdate =
+      options !== undefined &&
+      Object.prototype.hasOwnProperty.call(options, 'activityText');
+    const activityText = hasActivityTextUpdate
+      ? normalizeRunningActivityText(options?.activityText)
+      : undefined;
+    const activityAt =
+      hasActivityTextUpdate && activityText !== null
+        ? typeof options?.activityAt === 'number' && Number.isFinite(options.activityAt)
+          ? Math.floor(options.activityAt)
+          : now
+        : null;
     this.pruneStaleStreamingRows(now);
     if (isStreaming) {
-      this.sql.exec(
-        `INSERT INTO thread_streaming_status (thread_id, started_at, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(thread_id) DO UPDATE SET updated_at = excluded.updated_at`,
-        normalizedThreadId,
-        now,
-        now,
-      );
+      if (hasActivityTextUpdate) {
+        this.sql.exec(
+          `INSERT INTO thread_streaming_status (
+             thread_id,
+             started_at,
+             updated_at,
+             latest_activity_text,
+             latest_activity_at
+           )
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(thread_id) DO UPDATE SET
+             updated_at = excluded.updated_at,
+             latest_activity_text = excluded.latest_activity_text,
+             latest_activity_at = excluded.latest_activity_at`,
+          normalizedThreadId,
+          now,
+          now,
+          activityText,
+          activityAt,
+        );
+      } else {
+        this.sql.exec(
+          `INSERT INTO thread_streaming_status (
+             thread_id,
+             started_at,
+             updated_at,
+             latest_activity_text,
+             latest_activity_at
+           )
+           VALUES (?, ?, ?, NULL, NULL)
+           ON CONFLICT(thread_id) DO UPDATE SET updated_at = excluded.updated_at`,
+          normalizedThreadId,
+          now,
+          now,
+        );
+      }
     } else {
       this.sql.exec(
         'DELETE FROM thread_streaming_status WHERE thread_id = ?',
         normalizedThreadId,
       );
     }
+    const runningActivity = isStreaming
+      ? this.sql
+          .exec<{
+            started_at: number;
+            latest_activity_text: string | null;
+            latest_activity_at: number | null;
+          }>(
+            `SELECT started_at, latest_activity_text, latest_activity_at
+             FROM thread_streaming_status
+             WHERE thread_id = ?`,
+            normalizedThreadId,
+          )
+          .toArray()[0] ?? null
+      : null;
     this.broadcastThreadStatus(
       normalizedThreadId,
       isStreaming ? 'running' : completedAt === null ? 'idle' : 'unread',
       completedAt,
+      summaryStatus,
+      summary,
+      runningActivity?.latest_activity_text ?? null,
+      runningActivity?.latest_activity_at ?? null,
+      runningActivity?.started_at ?? null,
     );
   }
 
-  listStreamingThreadIds(): string[] {
+  listStreamingThreadStatuses(): WorkspaceRunningThreadStatus[] {
     this.pruneStaleStreamingRows();
     return this.sql
-      .exec<{ thread_id: string }>(
-        'SELECT thread_id FROM thread_streaming_status ORDER BY updated_at DESC',
+      .exec<{
+        thread_id: string;
+        started_at: number;
+        updated_at: number;
+        latest_activity_text: string | null;
+        latest_activity_at: number | null;
+      }>(
+        `SELECT
+           thread_id,
+           started_at,
+           updated_at,
+           latest_activity_text,
+           latest_activity_at
+         FROM thread_streaming_status
+         ORDER BY updated_at DESC`,
       )
       .toArray()
-      .map((row) => row.thread_id);
+      .map((row) => ({
+        threadId: row.thread_id,
+        startedAt: row.started_at,
+        updatedAt: row.updated_at,
+        latestActivityText: row.latest_activity_text ?? null,
+        latestActivityAt: row.latest_activity_at ?? null,
+      }));
+  }
+
+  listStreamingThreadIds(): string[] {
+    return this.listStreamingThreadStatuses().map((row) => row.threadId);
   }
 
   private broadcastThreadStatus(
     threadId: string,
-    status: 'running' | 'idle' | 'unread',
+    status: BroadcastThreadStatus,
     completedAt: number | null = null,
+    summaryStatus: ThreadCompletionSummaryStatus | null = null,
+    summary: string | null = null,
+    runningActivityText: string | null = null,
+    runningActivityAt: number | null = null,
+    runningStartedAt: number | null = null,
   ): void {
+    const dedupeKey = JSON.stringify([
+      status,
+      completedAt,
+      summaryStatus,
+      summary,
+      runningActivityText,
+      runningActivityAt,
+      runningStartedAt,
+    ]);
+    if (this.lastThreadStatusBroadcasts.get(threadId) === dedupeKey) {
+      return;
+    }
+    this.lastThreadStatusBroadcasts.set(threadId, dedupeKey);
     const payload = JSON.stringify({
       type: 'thread_status',
       threadId,
       status,
       ...(completedAt === null ? {} : { completedAt }),
+      ...(summaryStatus === null ? {} : { summaryStatus }),
+      ...(summary === null ? {} : { summary }),
+      runningActivityText,
+      runningActivityAt,
+      runningStartedAt,
     });
     for (const socket of this.ctx.getWebSockets(WORKSPACE_STATUS_SOCKET_TAG)) {
       if (socket.readyState !== WebSocket.OPEN) {
@@ -389,10 +537,20 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   private sendThreadStatusSnapshot(socket: WebSocket): void {
+    const runningThreads = this.listStreamingThreadStatuses();
     socket.send(
       JSON.stringify({
         type: 'thread_status_snapshot',
-        runningThreadIds: this.listStreamingThreadIds(),
+        runningThreadIds: runningThreads.map((thread) => thread.threadId),
+        runningThreads: runningThreads.map((thread) => ({
+          threadId: thread.threadId,
+          startedAt: thread.startedAt,
+          updatedAt: thread.updatedAt,
+          runningActivityText: thread.latestActivityText,
+          runningActivityAt: thread.latestActivityAt,
+          latestActivityText: thread.latestActivityText,
+          latestActivityAt: thread.latestActivityAt,
+        })),
       }),
     );
   }

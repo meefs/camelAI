@@ -11,7 +11,11 @@ import {
   type ReactNode,
 } from "react";
 import { useMatches, useRouteLoaderData, useRevalidator } from "react-router";
-import type { ChatGroupView, ThreadStatus } from "@/types";
+import type {
+  ChatGroupView,
+  ThreadCompletionSummaryStatus,
+  ThreadStatus,
+} from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { maxThreadStatus } from "@/lib/thread-status";
@@ -29,7 +33,12 @@ interface ChatRouteData {
 export interface LiveThreadMetadata {
   status: ThreadStatus;
   completedAt?: number | null;
+  summaryStatus?: ThreadCompletionSummaryStatus | null;
+  summary?: string | null;
   latestUserMessage?: string | null;
+  runningActivityText?: string | null;
+  runningActivityAt?: number | null;
+  runningStartedAt?: number | null;
 }
 
 type ThreadStatusOverlay = ThreadStatus | LiveThreadMetadata;
@@ -113,7 +122,13 @@ export function reconcileLocalThreadStatusesWithSnapshot<T extends ThreadStatusO
     const status = getOverlayStatus(overlay);
     const metadata = getOverlayMetadata(overlay);
     const hasOptimisticFields =
-      metadata?.latestUserMessage !== undefined || metadata?.completedAt !== undefined;
+      metadata?.latestUserMessage !== undefined ||
+      metadata?.runningActivityText !== undefined ||
+      metadata?.runningActivityAt !== undefined ||
+      metadata?.runningStartedAt !== undefined ||
+      metadata?.completedAt !== undefined ||
+      metadata?.summaryStatus !== undefined ||
+      metadata?.summary !== undefined;
     if (
       (status === "running" && !runningThreadIds.has(threadId)) ||
       (status !== "running" && runningThreadIds.has(threadId) && !hasOptimisticFields)
@@ -222,16 +237,48 @@ export function applyLiveRunningStatuses(
         liveMetadata?.latestUserMessage !== undefined
           ? liveMetadata.latestUserMessage
           : undefined;
+      const runningActivityText =
+        liveMetadata?.runningActivityText !== undefined
+          ? liveMetadata.runningActivityText
+          : undefined;
+      const runningActivityAt =
+        typeof liveMetadata?.runningActivityAt === "number" &&
+        Number.isFinite(liveMetadata.runningActivityAt)
+          ? liveMetadata.runningActivityAt
+          : liveMetadata?.runningActivityAt === null
+            ? null
+            : undefined;
+      const runningStartedAt =
+        typeof liveMetadata?.runningStartedAt === "number" &&
+        Number.isFinite(liveMetadata.runningStartedAt)
+          ? liveMetadata.runningStartedAt
+          : liveMetadata?.runningStartedAt === null
+            ? null
+            : undefined;
       const lastAssistantCompletedAt =
         completedAt !== null
           ? completedAt
           : thread.last_assistant_completed_at;
+      const lastAssistantSummaryStatus =
+        liveMetadata?.summaryStatus !== undefined
+          ? liveMetadata.summaryStatus
+          : thread.last_assistant_summary_status;
+      const lastAssistantSummary =
+        liveMetadata?.summary !== undefined
+          ? liveMetadata.summary
+          : thread.last_assistant_summary;
       const updatedAt =
         completedAt !== null ? Math.max(thread.updated_at, completedAt) : thread.updated_at;
       const lastActiveAt = Math.max(
         thread.last_active_at,
         updatedAt,
         lastAssistantCompletedAt ?? 0,
+        resolvedStatus === "running"
+          ? (runningActivityAt ?? thread.running_activity_at ?? 0)
+          : 0,
+        resolvedStatus === "running"
+          ? (runningStartedAt ?? thread.running_started_at ?? 0)
+          : 0,
       );
       return {
         ...thread,
@@ -240,10 +287,30 @@ export function applyLiveRunningStatuses(
         status: resolvedStatus,
         last_active_at: lastActiveAt,
         last_assistant_completed_at: lastAssistantCompletedAt,
+        last_assistant_summary: lastAssistantSummary,
+        last_assistant_summary_status: lastAssistantSummaryStatus,
         latest_user_message:
           latestUserMessage !== undefined
             ? latestUserMessage
             : thread.latest_user_message,
+        running_activity_text:
+          resolvedStatus === "running"
+            ? runningActivityText !== undefined
+              ? runningActivityText
+              : thread.running_activity_text
+            : null,
+        running_activity_at:
+          resolvedStatus === "running"
+            ? runningActivityAt !== undefined
+              ? runningActivityAt
+              : thread.running_activity_at
+            : null,
+        running_started_at:
+          resolvedStatus === "running"
+            ? runningStartedAt !== undefined
+              ? runningStartedAt
+              : thread.running_started_at
+            : null,
       };
     };
     const open_threads = group.open_threads.map(resolveThread);
@@ -365,6 +432,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         threadId?: unknown;
         status?: unknown;
         latestUserMessage?: unknown;
+        runningActivityText?: unknown;
+        runningActivityAt?: unknown;
+        runningStartedAt?: unknown;
       };
       if (
         typeof payload.threadId !== "string" ||
@@ -378,6 +448,26 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         typeof payload.latestUserMessage === "string"
           ? payload.latestUserMessage
           : payload.latestUserMessage === null
+            ? null
+            : undefined;
+      const runningActivityText =
+        typeof payload.runningActivityText === "string"
+          ? payload.runningActivityText
+          : payload.runningActivityText === null
+            ? null
+            : undefined;
+      const runningActivityAt =
+        typeof payload.runningActivityAt === "number" &&
+        Number.isFinite(payload.runningActivityAt)
+          ? payload.runningActivityAt
+          : payload.runningActivityAt === null
+            ? null
+            : undefined;
+      const runningStartedAt =
+        typeof payload.runningStartedAt === "number" &&
+        Number.isFinite(payload.runningStartedAt)
+          ? payload.runningStartedAt
+          : payload.runningStartedAt === null
             ? null
             : undefined;
       if (
@@ -394,7 +484,13 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         if (
           existing?.status === status &&
           (latestUserMessage === undefined ||
-            existing.latestUserMessage === latestUserMessage)
+            existing.latestUserMessage === latestUserMessage) &&
+          (runningActivityText === undefined ||
+            existing.runningActivityText === runningActivityText) &&
+          (runningActivityAt === undefined ||
+            existing.runningActivityAt === runningActivityAt) &&
+          (runningStartedAt === undefined ||
+            existing.runningStartedAt === runningStartedAt)
         ) {
           return current;
         }
@@ -404,6 +500,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
           mergeThreadMetadata(existing, {
             status,
             ...(latestUserMessage === undefined ? {} : { latestUserMessage }),
+            ...(runningActivityText === undefined ? {} : { runningActivityText }),
+            ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
+            ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
           }),
         );
         return next;
@@ -457,17 +556,86 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
           const payload = JSON.parse(event.data as string) as {
             type?: unknown;
             runningThreadIds?: unknown;
+            runningThreads?: unknown;
             threadId?: unknown;
             status?: unknown;
             completedAt?: unknown;
+            summaryStatus?: unknown;
+            summary?: unknown;
+            runningActivityText?: unknown;
+            runningActivityAt?: unknown;
+            runningStartedAt?: unknown;
           };
           if (
             payload.type === "thread_status_snapshot" &&
-            Array.isArray(payload.runningThreadIds)
+            (Array.isArray(payload.runningThreadIds) ||
+              Array.isArray(payload.runningThreads))
           ) {
             setHasStatusSnapshot(true);
-            const nextRunningThreadIds = payload.runningThreadIds.filter(
-              (threadId): threadId is string => typeof threadId === "string",
+            const fallbackRunningThreadIds = Array.isArray(payload.runningThreadIds)
+              ? payload.runningThreadIds.filter(
+                  (threadId): threadId is string => typeof threadId === "string",
+                )
+              : [];
+            type RunningThreadSnapshot = {
+              threadId: string;
+              runningActivityText?: string | null;
+              runningActivityAt?: number | null;
+              runningStartedAt?: number | null;
+            };
+            const parsedRunningThreads: RunningThreadSnapshot[] = Array.isArray(payload.runningThreads)
+              ? payload.runningThreads.flatMap((entry) => {
+                  if (!entry || typeof entry !== "object") return [];
+                  const record = entry as {
+                    threadId?: unknown;
+                    startedAt?: unknown;
+                    runningActivityText?: unknown;
+                    latestActivityText?: unknown;
+                    runningActivityAt?: unknown;
+                    latestActivityAt?: unknown;
+                  };
+                  if (typeof record.threadId !== "string") return [];
+                  const runningActivityText =
+                    typeof record.runningActivityText === "string"
+                      ? record.runningActivityText
+                      : typeof record.latestActivityText === "string"
+                        ? record.latestActivityText
+                        : record.runningActivityText === null ||
+                            record.latestActivityText === null
+                          ? null
+                          : undefined;
+                  const runningActivityAt =
+                    typeof record.runningActivityAt === "number" &&
+                    Number.isFinite(record.runningActivityAt)
+                      ? record.runningActivityAt
+                      : typeof record.latestActivityAt === "number" &&
+                          Number.isFinite(record.latestActivityAt)
+                        ? record.latestActivityAt
+                        : record.runningActivityAt === null ||
+                            record.latestActivityAt === null
+                          ? null
+                          : undefined;
+                  const runningStartedAt =
+                    typeof record.startedAt === "number" &&
+                    Number.isFinite(record.startedAt)
+                      ? record.startedAt
+                      : undefined;
+                  return [
+                    {
+                      threadId: record.threadId,
+                      runningActivityText,
+                      runningActivityAt,
+                      runningStartedAt,
+                    },
+                  ];
+                })
+              : [];
+            const nextRunningThreads: RunningThreadSnapshot[] =
+              parsedRunningThreads.length > 0
+                ? parsedRunningThreads
+                : fallbackRunningThreadIds.map((threadId) => ({ threadId }));
+            const nextRunningThreadIds = nextRunningThreads.map(
+              (thread) => thread.threadId,
             );
             const nextRunningThreadIdSet = new Set(nextRunningThreadIds);
             const staleRunningThreadIds =
@@ -482,8 +650,19 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               for (const [threadId, metadata] of next) {
                 if (metadata.status === "running") next.delete(threadId);
               }
-              for (const threadId of nextRunningThreadIds) {
-                next.set(threadId, { status: "running" });
+              for (const thread of nextRunningThreads) {
+                next.set(thread.threadId, {
+                  status: "running",
+                  ...(thread.runningActivityText === undefined
+                    ? {}
+                    : { runningActivityText: thread.runningActivityText }),
+                  ...(thread.runningActivityAt === undefined
+                    ? {}
+                    : { runningActivityAt: thread.runningActivityAt }),
+                  ...(thread.runningStartedAt === undefined
+                    ? {}
+                    : { runningStartedAt: thread.runningStartedAt }),
+                });
               }
               return next;
             });
@@ -520,6 +699,52 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               Number.isFinite(payload.completedAt)
                 ? payload.completedAt
                 : undefined;
+            const summaryStatus =
+              payload.summaryStatus === "pending" ||
+              payload.summaryStatus === "ready" ||
+              payload.summaryStatus === "failed"
+                ? payload.summaryStatus
+                : undefined;
+            const summary =
+              typeof payload.summary === "string"
+                ? payload.summary
+                : payload.summary === null
+                  ? null
+                  : undefined;
+            const runningActivityText =
+              typeof payload.runningActivityText === "string"
+                ? payload.runningActivityText
+                : payload.runningActivityText === null
+                  ? null
+                  : undefined;
+            const runningActivityAt =
+              typeof payload.runningActivityAt === "number" &&
+              Number.isFinite(payload.runningActivityAt)
+                ? payload.runningActivityAt
+                : payload.runningActivityAt === null
+                  ? null
+                  : undefined;
+            const runningStartedAt =
+              typeof payload.runningStartedAt === "number" &&
+              Number.isFinite(payload.runningStartedAt)
+                ? payload.runningStartedAt
+                : payload.runningStartedAt === null
+                  ? null
+                  : undefined;
+            const existingMetadata =
+              localThreadStatusesRef.current.get(threadId) ??
+              liveThreadStatusesRef.current.get(threadId);
+            const hasMetadataOnlyUpdate =
+              summaryStatus !== undefined ||
+              summary !== undefined ||
+              runningActivityText !== undefined ||
+              runningActivityAt !== undefined ||
+              runningStartedAt !== undefined;
+            const isMetadataOnlyUpdate =
+              hasMetadataOnlyUpdate &&
+              existingMetadata?.status === status &&
+              (completedAt === undefined ||
+                existingMetadata.completedAt === completedAt);
             setHasStatusSnapshot(true);
             setLiveThreadStatuses((current) => {
               const next = new Map(current);
@@ -528,6 +753,11 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
                 mergeThreadMetadata(current.get(threadId), {
                   status,
                   ...(completedAt === undefined ? {} : { completedAt }),
+                  ...(summaryStatus === undefined ? {} : { summaryStatus }),
+                  ...(summary === undefined ? {} : { summary }),
+                  ...(runningActivityText === undefined ? {} : { runningActivityText }),
+                  ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
+                  ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
                 }),
               );
               return next;
@@ -536,7 +766,15 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               const existing = current.get(threadId);
               if (
                 existing?.status === status &&
-                (completedAt === undefined || existing.completedAt === completedAt)
+                (completedAt === undefined || existing.completedAt === completedAt) &&
+                (summaryStatus === undefined || existing.summaryStatus === summaryStatus) &&
+                (summary === undefined || existing.summary === summary) &&
+                (runningActivityText === undefined ||
+                  existing.runningActivityText === runningActivityText) &&
+                (runningActivityAt === undefined ||
+                  existing.runningActivityAt === runningActivityAt) &&
+                (runningStartedAt === undefined ||
+                  existing.runningStartedAt === runningStartedAt)
               ) {
                 return current;
               }
@@ -546,11 +784,19 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
                 mergeThreadMetadata(existing, {
                   status,
                   ...(completedAt === undefined ? {} : { completedAt }),
+                  ...(summaryStatus === undefined ? {} : { summaryStatus }),
+                  ...(summary === undefined ? {} : { summary }),
+                  ...(runningActivityText === undefined ? {} : { runningActivityText }),
+                  ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
+                  ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
                 }),
               );
               return next;
             });
-            if (status === "running" || status === "idle" || status === "unread") {
+            if (
+              !isMetadataOnlyUpdate &&
+              (status === "running" || status === "idle" || status === "unread")
+            ) {
               scheduleStatusRevalidate(threadId);
             }
           }

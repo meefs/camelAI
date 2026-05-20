@@ -23,6 +23,7 @@ import type {
   OnboardingPreferences,
   ChatGroup,
   ChatGroupSummary,
+  ThreadCompletionSummaryStatus,
 } from "../../../src/types";
 import type { ChatThreadDO } from "./chat-thread-do";
 import { WorkspaceDO } from "./workspace";
@@ -77,6 +78,14 @@ function isSuperuserEmail(email: string | null): boolean {
 const ORG_INDEX_PREFIX = "org_index:";
 const ORG_SLUG_KV_PREFIX = "org_slug:";
 const CUSTOM_DOMAIN_HOST_PREFIX = "custom_domain_host:";
+
+function normalizeThreadCompletionSummaryStatus(
+  value: unknown,
+): ThreadCompletionSummaryStatus | null {
+  return value === "pending" || value === "ready" || value === "failed"
+    ? value
+    : null;
+}
 
 async function hashOrgSlug(orgId: string): Promise<string> {
   const data = new TextEncoder().encode(orgId);
@@ -420,6 +429,7 @@ export interface OrgThread {
   last_user_message: string | null;
   last_assistant_completed_at: number | null;
   last_assistant_summary: string | null;
+  last_assistant_summary_status: ThreadCompletionSummaryStatus | null;
 }
 
 export type OrgChatThreadAccessResult =
@@ -1955,7 +1965,8 @@ export class OrgDO extends DurableObject<DOEnv> {
           source TEXT NOT NULL DEFAULT 'web',
           last_user_message TEXT,
           last_assistant_completed_at INTEGER,
-          last_assistant_summary TEXT
+          last_assistant_summary TEXT,
+          last_assistant_summary_status TEXT
         )
       `);
       this.sql.exec(
@@ -2120,7 +2131,8 @@ export class OrgDO extends DurableObject<DOEnv> {
           source TEXT NOT NULL DEFAULT 'web',
           last_user_message TEXT,
           last_assistant_completed_at INTEGER,
-          last_assistant_summary TEXT
+          last_assistant_summary TEXT,
+          last_assistant_summary_status TEXT
         )
       `);
       this.sql.exec(
@@ -2500,7 +2512,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureColumn("threads", "last_assistant_summary", "TEXT");
     }
 
-    const CURRENT_SCHEMA_VERSION = 26;
+    if (version < 27) {
+      // V27: Explicit completion-summary lifecycle state.
+      this.ensureColumn("threads", "last_assistant_summary_status", "TEXT");
+    }
+
+    const CURRENT_SCHEMA_VERSION = 27;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2607,6 +2624,14 @@ export class OrgDO extends DurableObject<DOEnv> {
         try {
           this.sql.exec(
             "ALTER TABLE threads ADD COLUMN last_assistant_summary TEXT",
+          );
+        } catch {}
+      }
+
+      if (!names.has("last_assistant_summary_status")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN last_assistant_summary_status TEXT",
           );
         } catch {}
       }
@@ -5128,6 +5153,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       last_user_message: lastUserMessage,
       last_assistant_completed_at: null,
       last_assistant_summary: null,
+      last_assistant_summary_status: null,
     };
     this.getInfo().then((info) => {
       if (info)
@@ -5148,6 +5174,25 @@ export class OrgDO extends DurableObject<DOEnv> {
       .exec("SELECT * FROM threads WHERE id = ?", id)
       .toArray() as unknown as OrgThread[];
     return rows[0] || null;
+  }
+
+  getThreadsByIds(workspaceId: string, ids: string[]): OrgThread[] {
+    this.ensureThreadSchemaColumns();
+    const normalizedWorkspaceId = workspaceId.trim();
+    const uniqueIds = Array.from(
+      new Set(ids.map((id) => id.trim()).filter(Boolean)),
+    );
+    if (!normalizedWorkspaceId || uniqueIds.length === 0) {
+      return [];
+    }
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    return this.sql
+      .exec(
+        `SELECT * FROM threads WHERE workspace_id = ? AND id IN (${placeholders})`,
+        normalizedWorkspaceId,
+        ...uniqueIds,
+      )
+      .toArray() as unknown as OrgThread[];
   }
 
   // Test helper RPC: simulate a legacy thread schema before provider/model columns existed.
@@ -5456,7 +5501,11 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   recordThreadAssistantCompletion(
     id: string,
-    input: { completedAt: number; summary: string | null },
+    input: {
+      completedAt: number;
+      summary: string | null;
+      summaryStatus?: ThreadCompletionSummaryStatus | null;
+    },
   ): boolean {
     const existing = this.getThread(id);
     if (!existing) return false;
@@ -5464,17 +5513,35 @@ export class OrgDO extends DurableObject<DOEnv> {
       ? input.completedAt
       : Date.now();
     const summary = normalizeThreadCompletionSummary(input.summary);
+    const requestedSummaryStatus =
+      summary !== null
+        ? "ready"
+        : normalizeThreadCompletionSummaryStatus(input.summaryStatus);
     const previousCompletedAt = existing.last_assistant_completed_at ?? null;
     if (previousCompletedAt !== null && requestedAt < previousCompletedAt) {
       return true;
     }
-    if (previousCompletedAt !== null && requestedAt === previousCompletedAt && summary === null) {
+    if (
+      previousCompletedAt !== null &&
+      requestedAt === previousCompletedAt &&
+      summary === null &&
+      existing.last_assistant_summary_status === "ready" &&
+      requestedSummaryStatus !== null
+    ) {
+      return true;
+    }
+    if (
+      previousCompletedAt !== null &&
+      requestedAt === previousCompletedAt &&
+      summary === null &&
+      requestedSummaryStatus === null
+    ) {
       return true;
     }
     const isSummaryOnlyUpdate =
       previousCompletedAt !== null &&
       requestedAt === previousCompletedAt &&
-      summary !== null;
+      (summary !== null || requestedSummaryStatus !== null);
     const completedAt = isSummaryOnlyUpdate
       ? previousCompletedAt
       : Math.max(
@@ -5486,10 +5553,11 @@ export class OrgDO extends DurableObject<DOEnv> {
         );
     const updatedAt = isSummaryOnlyUpdate ? existing.updated_at : completedAt;
     this.sql.exec(
-      "UPDATE threads SET updated_at = ?, last_assistant_completed_at = ?, last_assistant_summary = ? WHERE id = ?",
+      "UPDATE threads SET updated_at = ?, last_assistant_completed_at = ?, last_assistant_summary = ?, last_assistant_summary_status = ? WHERE id = ?",
       updatedAt,
       completedAt,
       summary,
+      requestedSummaryStatus,
       id,
     );
     const updated: OrgThread = {
@@ -5497,6 +5565,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       updated_at: updatedAt,
       last_assistant_completed_at: completedAt,
       last_assistant_summary: summary,
+      last_assistant_summary_status: requestedSummaryStatus,
     };
     this.getInfo()
       .then((info) => {
