@@ -5,6 +5,10 @@ import {
   validateAvatarContent,
 } from "../../../src/lib/avatar";
 import { DEFAULT_THREAD_TITLE } from "../../../src/lib/thread-title";
+import {
+  normalizeThreadCompletionSummary,
+  normalizeThreadPreviewUserMessage,
+} from "../../../src/lib/thread-preview";
 import { slugifyWorkspaceName } from "../../../src/lib/workspace-email";
 import type {
   OrgRole,
@@ -411,6 +415,9 @@ export interface OrgThread {
   updated_at: number;
   user_message_count: number;
   first_user_message: string | null;
+  last_user_message: string | null;
+  last_assistant_completed_at: number | null;
+  last_assistant_summary: string | null;
 }
 
 export type OrgChatThreadAccessResult =
@@ -1943,7 +1950,10 @@ export class OrgDO extends DurableObject<DOEnv> {
           created_by TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
-          source TEXT NOT NULL DEFAULT 'web'
+          source TEXT NOT NULL DEFAULT 'web',
+          last_user_message TEXT,
+          last_assistant_completed_at INTEGER,
+          last_assistant_summary TEXT
         )
       `);
       this.sql.exec(
@@ -2105,7 +2115,10 @@ export class OrgDO extends DurableObject<DOEnv> {
           created_by TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
-          source TEXT NOT NULL DEFAULT 'web'
+          source TEXT NOT NULL DEFAULT 'web',
+          last_user_message TEXT,
+          last_assistant_completed_at INTEGER,
+          last_assistant_summary TEXT
         )
       `);
       this.sql.exec(
@@ -2478,7 +2491,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
     }
 
-    const CURRENT_SCHEMA_VERSION = 25;
+    if (version < 26) {
+      // V26: Thread hover metadata for chat group summaries.
+      this.ensureColumn("threads", "last_user_message", "TEXT");
+      this.ensureColumn("threads", "last_assistant_completed_at", "INTEGER");
+      this.ensureColumn("threads", "last_assistant_summary", "TEXT");
+    }
+
+    const CURRENT_SCHEMA_VERSION = 26;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2563,6 +2583,28 @@ export class OrgDO extends DurableObject<DOEnv> {
         try {
           this.sql.exec(
             "ALTER TABLE threads ADD COLUMN first_user_message TEXT",
+          );
+        } catch {}
+      }
+
+      if (!names.has("last_user_message")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_user_message TEXT");
+        } catch {}
+      }
+
+      if (!names.has("last_assistant_completed_at")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN last_assistant_completed_at INTEGER",
+          );
+        } catch {}
+      }
+
+      if (!names.has("last_assistant_summary")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN last_assistant_summary TEXT",
           );
         } catch {}
       }
@@ -5049,9 +5091,12 @@ export class OrgDO extends DurableObject<DOEnv> {
     const t = title || DEFAULT_THREAD_TITLE;
     const creator = createdBy?.trim() || "system";
     const msg = firstUserMessage?.slice(0, 500) || null;
+    const lastUserMessage = firstUserMessage
+      ? normalizeThreadPreviewUserMessage(firstUserMessage)
+      : null;
     const normalizedModel = normalizeLlmModel(model, provider);
     this.sql.exec(
-      "INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message, last_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       id,
       workspaceId,
       t,
@@ -5061,6 +5106,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       now,
       now,
       msg,
+      lastUserMessage,
     );
     this.log("thread_created", creator, id, {
       workspace_id: workspaceId,
@@ -5077,6 +5123,9 @@ export class OrgDO extends DurableObject<DOEnv> {
       updated_at: now,
       user_message_count: 0,
       first_user_message: msg,
+      last_user_message: lastUserMessage,
+      last_assistant_completed_at: null,
+      last_assistant_summary: null,
     };
     this.getInfo().then((info) => {
       if (info)
@@ -5369,6 +5418,96 @@ export class OrgDO extends DurableObject<DOEnv> {
       .catch((err) => {
         console.error("Failed to sync thread touch to AdminIndex", err);
       });
+  }
+
+  recordThreadUserMessage(id: string, message: string): OrgThread | null {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+    const now = Date.now();
+    const lastUserMessage = normalizeThreadPreviewUserMessage(message);
+    const userMessageCount = (existing.user_message_count ?? 0) + 1;
+    this.sql.exec(
+      "UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1, last_user_message = ? WHERE id = ?",
+      now,
+      lastUserMessage,
+      id,
+    );
+    const updated: OrgThread = {
+      ...existing,
+      updated_at: now,
+      user_message_count: userMessageCount,
+      last_user_message: lastUserMessage,
+    };
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync thread user message to AdminIndex", err);
+      });
+    return updated;
+  }
+
+  recordThreadAssistantCompletion(
+    id: string,
+    input: { completedAt: number; summary: string | null },
+  ): boolean {
+    const existing = this.getThread(id);
+    if (!existing) return false;
+    const requestedAt = Number.isFinite(input.completedAt)
+      ? input.completedAt
+      : Date.now();
+    const summary = normalizeThreadCompletionSummary(input.summary);
+    const previousCompletedAt = existing.last_assistant_completed_at ?? null;
+    if (previousCompletedAt !== null && requestedAt < previousCompletedAt) {
+      return true;
+    }
+    if (previousCompletedAt !== null && requestedAt === previousCompletedAt && summary === null) {
+      return true;
+    }
+    const isSummaryOnlyUpdate =
+      previousCompletedAt !== null &&
+      requestedAt === previousCompletedAt &&
+      summary !== null;
+    const completedAt = isSummaryOnlyUpdate
+      ? previousCompletedAt
+      : Math.max(
+          requestedAt,
+          requestedAt < existing.updated_at ? existing.updated_at + 1 : requestedAt,
+          previousCompletedAt !== null && requestedAt <= previousCompletedAt
+            ? previousCompletedAt + 1
+            : requestedAt,
+        );
+    const updatedAt = isSummaryOnlyUpdate ? existing.updated_at : completedAt;
+    this.sql.exec(
+      "UPDATE threads SET updated_at = ?, last_assistant_completed_at = ?, last_assistant_summary = ? WHERE id = ?",
+      updatedAt,
+      completedAt,
+      summary,
+      id,
+    );
+    const updated: OrgThread = {
+      ...existing,
+      updated_at: updatedAt,
+      last_assistant_completed_at: completedAt,
+      last_assistant_summary: summary,
+    };
+    this.getInfo()
+      .then((info) => {
+        if (info)
+          dispatchAdminEvent(this.ctx, this.env, {
+            type: "thread_upsert",
+            payload: { ...updated, org_id: info.id },
+          });
+      })
+      .catch((err) => {
+        console.error("Failed to sync thread assistant completion to AdminIndex", err);
+      });
+    return true;
   }
 
   /**

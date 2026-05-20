@@ -233,9 +233,11 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       expect(thread.title).toBe('Working on my-todo-app');
       expect(thread.first_user_message).toBeNull();
+      expect(thread.last_user_message).toBeNull();
       expect(thread.model).toBe('sonnet');
       expect(stored?.title).toBe('Working on my-todo-app');
       expect(stored?.first_user_message).toBeNull();
+      expect(stored?.last_user_message).toBeNull();
       expect(stored?.model).toBe('sonnet');
     });
 
@@ -259,11 +261,15 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(thread.provider).toBe('codex');
       expect(thread.model).toBe('gpt-5.4');
       expect(thread.first_user_message).toBe('hello');
+      expect(thread.last_user_message).toBe('hello');
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.provider).toBe('codex');
       expect(stored?.model).toBe('gpt-5.4');
       expect(stored?.first_user_message).toBe('hello');
+      expect(stored?.last_user_message).toBe('hello');
+      expect(stored?.last_assistant_completed_at).toBeNull();
+      expect(stored?.last_assistant_summary).toBeNull();
     });
 
     it('stores and preserves the first user message separately from the thread title', async () => {
@@ -281,14 +287,148 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       expect(thread.title).toBe('New Chat');
       expect(thread.first_user_message).toBe('Please keep this first prompt');
+      expect(thread.last_user_message).toBe('Please keep this first prompt');
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.title).toBe('New Chat');
       expect(stored?.first_user_message).toBe('Please keep this first prompt');
+      expect(stored?.last_user_message).toBe('Please keep this first prompt');
 
       await orgStub.setThreadFirstUserMessage(thread.id, 'Do not overwrite it');
       const afterBackfill = await orgStub.getThread(thread.id);
       expect(afterBackfill?.first_user_message).toBe('Please keep this first prompt');
+      expect(afterBackfill?.last_user_message).toBe('Please keep this first prompt');
+    });
+
+    it('records normalized latest user messages and increments the user message count', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Latest Message Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Latest message', userId);
+      const updated = await orgStub.recordThreadUserMessage(
+        thread.id,
+        '[Thread Owner (owner@example.com)]: <camelai system message>hidden</camelai system message>\n\nBuild the hover card',
+      );
+
+      expect(updated?.user_message_count).toBe(1);
+      expect(updated?.last_user_message).toBe('Build the hover card');
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.user_message_count).toBe(1);
+      expect(stored?.last_user_message).toBe('Build the hover card');
+      expect(stored?.first_user_message).toBeNull();
+    });
+
+    it('records assistant completion metadata without incrementing user messages', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Completion Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Completion thread', userId);
+      await orgStub.recordThreadUserMessage(thread.id, 'First prompt');
+      const afterUserMessage = await orgStub.getThread(thread.id);
+      const completedAt = (afterUserMessage?.updated_at ?? Date.now()) + 10;
+
+      await expect(
+        orgStub.recordThreadAssistantCompletion(thread.id, {
+          completedAt,
+          summary: 'Summary:\n\nFound the issue.',
+        }),
+      ).resolves.toBe(true);
+      const afterCompletion = await orgStub.getThread(thread.id);
+
+      expect(afterCompletion?.user_message_count).toBe(1);
+      expect(afterCompletion?.last_assistant_completed_at).toBeGreaterThanOrEqual(
+        completedAt,
+      );
+      expect(afterCompletion?.last_assistant_summary).toBe('Found the issue.');
+    });
+
+    it('stores monotonic assistant completion timestamps for stale inputs', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Stale Completion Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Completion thread', userId);
+      await orgStub.recordThreadUserMessage(thread.id, 'First prompt');
+      const afterUserMessage = await orgStub.getThread(thread.id);
+      const staleCompletionAt = (afterUserMessage?.updated_at ?? Date.now()) - 1_000;
+
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: staleCompletionAt,
+        summary: null,
+      });
+      const afterCompletion = await orgStub.getThread(thread.id);
+
+      expect(afterCompletion?.last_assistant_completed_at ?? 0).toBeGreaterThan(
+        afterUserMessage?.updated_at ?? 0,
+      );
+      expect(afterCompletion?.updated_at ?? 0).toBe(
+        afterCompletion?.last_assistant_completed_at,
+      );
+      expect(afterCompletion?.last_assistant_summary).toBeNull();
+      expect(afterCompletion?.user_message_count).toBe(1);
+    });
+
+    it('fills in a late assistant summary without moving the completion timestamp', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Late Summary Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Completion thread', userId);
+      await orgStub.recordThreadUserMessage(thread.id, 'First prompt');
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: Date.now(),
+        summary: null,
+      });
+      const beforeSummary = await orgStub.getThread(thread.id);
+
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: beforeSummary?.last_assistant_completed_at ?? Date.now(),
+        summary: 'Final answer: Finished the work.',
+      });
+      const afterSummary = await orgStub.getThread(thread.id);
+
+      expect(afterSummary?.last_assistant_completed_at).toBe(
+        beforeSummary?.last_assistant_completed_at,
+      );
+      expect(afterSummary?.updated_at).toBe(beforeSummary?.updated_at);
+      expect(afterSummary?.last_assistant_summary).toBe('Finished the work.');
+    });
+
+    it('ignores stale summaries from older assistant completions', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Stale Summary Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Completion thread', userId);
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: Date.now(),
+        summary: null,
+      });
+      const firstCompletion = await orgStub.getThread(thread.id);
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: (firstCompletion?.last_assistant_completed_at ?? Date.now()) + 10,
+        summary: null,
+      });
+      const secondCompletion = await orgStub.getThread(thread.id);
+
+      await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: firstCompletion?.last_assistant_completed_at ?? Date.now(),
+        summary: 'Old turn summary',
+      });
+      const afterStaleSummary = await orgStub.getThread(thread.id);
+
+      expect(afterStaleSummary?.last_assistant_completed_at).toBe(
+        secondCompletion?.last_assistant_completed_at,
+      );
+      expect(afterStaleSummary?.last_assistant_summary).toBeNull();
     });
 
     it('persists per-thread model changes after creation', async () => {

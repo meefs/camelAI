@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, X } from "lucide-react";
-import type { ChatGroupView, ThreadStatus } from "@/types";
+import type { ChatGroupThreadSummary, ChatGroupView, ThreadStatus } from "@/types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +14,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ChatGroupHoverCard } from "@/components/sidebar/chat-group-hover-card";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import {
   SidebarMenu,
   SidebarMenuAction,
@@ -56,6 +62,10 @@ interface ChatGroupsListProps {
   activeGroupId: string | null;
   onSelectGroup: (groupId: string) => void;
   onCloseGroup: (groupId: string) => void;
+  onSelectThread?: (
+    groupId: string,
+    thread: ChatGroupThreadSummary,
+  ) => void | Promise<void>;
   onMoveThreadToGroup?: (threadId: string, targetGroupId: string) => void;
 }
 
@@ -80,7 +90,10 @@ export function ChatGroupRightSlot({
           className="size-1.5 rounded-full bg-red-500"
         />
       ) : null}
-      <span className="tabular-nums" aria-label={countLabel}>
+      <span
+        className="tabular-nums transition-opacity group-hover/menu-item:opacity-0 group-has-[[data-state=open]]/menu-item:opacity-0"
+        aria-label={countLabel}
+      >
         {count}
       </span>
     </span>
@@ -119,6 +132,7 @@ export function ChatGroupsList({
   activeGroupId,
   onSelectGroup,
   onCloseGroup,
+  onSelectThread,
   onMoveThreadToGroup,
 }: ChatGroupsListProps) {
   const [suppressCloseConfirmation, setSuppressCloseConfirmation] = useState(
@@ -127,6 +141,7 @@ export function ChatGroupsList({
   const [confirmGroup, setConfirmGroup] = useState<ChatGroupView | null>(null);
   const [rememberSuppression, setRememberSuppression] = useState(false);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
+  const [openHoverGroupId, setOpenHoverGroupId] = useState<string | null>(null);
 
   if (groups.length === 0) {
     return (
@@ -146,45 +161,68 @@ export function ChatGroupsList({
           const isActive = group.id === activeGroupId;
           return (
             <SidebarMenuItem key={group.id}>
-              <SidebarMenuButton
-                type="button"
-                aria-label={group.name}
-                isActive={isActive}
-                size="sm"
-                tooltip={group.name}
-                className={cn(
-                  "group/chat-group cursor-pointer gap-2 select-none group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&_*]:pointer-events-none group-data-[collapsible=icon]:[&_*]:cursor-pointer",
-                  dragOverGroupId === group.id && "bg-sidebar-accent/50",
-                  dragOverGroupId === group.id &&
-                    "group-data-[collapsible=icon]:bg-sidebar-accent group-data-[collapsible=icon]:ring-2 group-data-[collapsible=icon]:ring-blue-500 group-data-[collapsible=icon]:ring-offset-1",
-                )}
-                onClick={() => onSelectGroup(group.id)}
-                onDragOver={(event) => {
-                  if (!onMoveThreadToGroup) return;
-                  if (event.dataTransfer.types.includes(THREAD_DRAG_MIME)) {
-                    event.preventDefault();
-                    setDragOverGroupId(group.id);
-                  }
-                }}
-                onDragLeave={() => setDragOverGroupId(null)}
-                onDrop={(event) => {
-                  if (!onMoveThreadToGroup) return;
-                  const threadId = event.dataTransfer.getData(THREAD_DRAG_MIME);
-                  setDragOverGroupId(null);
-                  if (!threadId) return;
-                  event.preventDefault();
-                  onMoveThreadToGroup(threadId, group.id);
-                }}
+              <HoverCard
+                open={openHoverGroupId === group.id}
+                onOpenChange={(open) => setOpenHoverGroupId(open ? group.id : null)}
+                openDelay={250}
+                closeDelay={150}
               >
-                <ChatGroupCollapsedIcon group={group} />
-                <span className="min-w-0 flex-1 truncate text-left group-data-[collapsible=icon]:hidden">
-                  {group.name}
-                </span>
-                <ChatGroupRightSlot
-                  status={group.status}
-                  count={group.open_threads.length}
-                />
-              </SidebarMenuButton>
+                <HoverCardTrigger asChild>
+                  <SidebarMenuButton
+                    type="button"
+                    aria-label={group.name}
+                    isActive={isActive}
+                    size="sm"
+                    className={cn(
+                      "group/chat-group cursor-pointer gap-2 !pr-2 select-none group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&_*]:pointer-events-none group-data-[collapsible=icon]:[&_*]:cursor-pointer",
+                      dragOverGroupId === group.id && "bg-sidebar-accent/50",
+                      dragOverGroupId === group.id &&
+                        "group-data-[collapsible=icon]:bg-sidebar-accent group-data-[collapsible=icon]:ring-2 group-data-[collapsible=icon]:ring-blue-500 group-data-[collapsible=icon]:ring-offset-1",
+                    )}
+                    onClick={() => onSelectGroup(group.id)}
+                    onDragOver={(event) => {
+                      if (!onMoveThreadToGroup) return;
+                      if (event.dataTransfer.types.includes(THREAD_DRAG_MIME)) {
+                        event.preventDefault();
+                        setDragOverGroupId(group.id);
+                      }
+                    }}
+                    onDragLeave={() => setDragOverGroupId(null)}
+                    onDrop={(event) => {
+                      if (!onMoveThreadToGroup) return;
+                      const threadId = event.dataTransfer.getData(THREAD_DRAG_MIME);
+                      setDragOverGroupId(null);
+                      if (!threadId) return;
+                      event.preventDefault();
+                      onMoveThreadToGroup(threadId, group.id);
+                    }}
+                  >
+                    <ChatGroupCollapsedIcon group={group} />
+                    <span className="min-w-0 flex-1 truncate text-left group-data-[collapsible=icon]:hidden">
+                      {group.name}
+                    </span>
+                    <ChatGroupRightSlot
+                      status={group.status}
+                      count={group.open_threads.length}
+                    />
+                  </SidebarMenuButton>
+                </HoverCardTrigger>
+                <HoverCardContent
+                  side="right"
+                  align="start"
+                  sideOffset={8}
+                  collisionPadding={8}
+                  className="w-[20rem] p-0"
+                >
+                  <ChatGroupHoverCard
+                    group={group}
+                    onSelectThread={async (thread) => {
+                      setOpenHoverGroupId(null);
+                      await onSelectThread?.(group.id, thread);
+                    }}
+                  />
+                </HoverCardContent>
+              </HoverCard>
               <SidebarMenuAction
                 type="button"
                 aria-label={`Close ${group.name}`}

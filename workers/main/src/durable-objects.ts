@@ -29,6 +29,10 @@ import {
   isPlaceholderThreadTitle,
 } from '../../../src/lib/thread-title';
 import { generateThreadTitleWithOpenAI } from '../../../src/lib/thread-title-generation.server';
+import {
+  extractThreadCompletionSummarySource,
+  generateThreadCompletionSummaryWithOpenAI,
+} from '../../../src/lib/thread-completion-summary-generation.server';
 import type { IntegrationCategory, LlmModel } from '../../../src/types';
 import { decryptCredentials, encryptCredentials } from "../../../src/lib/integration-crypto";
 import { parseStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
@@ -3357,6 +3361,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private cachedContextWindowByModel: Record<string, number> = {};
   private chatIsStreaming: boolean = false;
   private assistantCompletionRecordedAt: number | null = null;
+  private assistantCompletionSummaryRequestedAt: number | null = null;
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
   private pendingQuestionWaiters: Map<string, PendingQuestionWaiter> = new Map();
   private pendingConnectionSetupWaiters: Map<string, PendingConnectionSetupWaiter> =
@@ -6607,17 +6612,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private setChatIsStreaming(
     value: boolean,
-    options: { markUnread?: boolean; completedAt?: number } = {},
+    options: { markUnread?: boolean; completedAt?: number; summarySource?: string | null } = {},
   ): void {
     const shouldRecordCompletion =
       !value && options.markUnread === true && this.assistantCompletionRecordedAt === null;
-    if (this.chatIsStreaming === value && !shouldRecordCompletion) return;
+    const shouldRecordCompletionSummary =
+      !value &&
+      options.markUnread === true &&
+      !shouldRecordCompletion &&
+      this.assistantCompletionRecordedAt !== null &&
+      this.assistantCompletionSummaryRequestedAt !== this.assistantCompletionRecordedAt &&
+      typeof options.summarySource === "string" &&
+      options.summarySource.trim().length > 0;
+    if (
+      this.chatIsStreaming === value &&
+      !shouldRecordCompletion &&
+      !shouldRecordCompletionSummary
+    ) {
+      return;
+    }
     this.trace("set_chat_is_streaming", {
       from: this.chatIsStreaming,
       to: value,
     });
     if (value) {
       this.assistantCompletionRecordedAt = null;
+      this.assistantCompletionSummaryRequestedAt = null;
     }
     const statusChanged = this.chatIsStreaming !== value;
     this.chatIsStreaming = value;
@@ -6637,8 +6657,25 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const completedAt = normalizeCompletionTimestamp(options.completedAt);
         this.assistantCompletionRecordedAt = completedAt;
         this.ctx.waitUntil(
-          this.recordThreadAssistantCompletion(context, completedAt).catch((error) => {
+          this.recordThreadAssistantCompletion(
+            context,
+            completedAt,
+            options.summarySource ?? null,
+          ).catch((error) => {
             console.error("[ChatThreadDO] failed to record assistant completion", error);
+          }),
+        );
+      } else if (shouldRecordCompletionSummary) {
+        const completedAt = this.assistantCompletionRecordedAt;
+        if (completedAt === null) return;
+        this.assistantCompletionSummaryRequestedAt = completedAt;
+        this.ctx.waitUntil(
+          this.generateAndPersistThreadAssistantCompletionSummary(
+            context,
+            completedAt,
+            options.summarySource!,
+          ).catch((error) => {
+            console.error("[ChatThreadDO] failed to record assistant completion summary", error);
           }),
         );
       } else if (statusChanged) {
@@ -6659,15 +6696,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private async recordThreadAssistantCompletion(
     context: ChatContextState,
     completedAt: number,
+    summarySource: string | null,
   ): Promise<void> {
-    try {
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
-        touchThreadActivity(id: string, at?: number): Promise<boolean> | boolean;
-      };
-      await orgStub.touchThreadActivity(context.threadId, completedAt);
-    } catch (error) {
-      console.error("[ChatThreadDO] failed to touch thread activity", error);
-    }
+    await this.persistThreadAssistantCompletion(context, completedAt, null);
 
     await recordWorkspaceThreadStreaming(
       this.env,
@@ -6676,6 +6707,65 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       false,
       { completedAt },
     );
+
+    if (summarySource?.trim()) {
+      this.assistantCompletionSummaryRequestedAt = completedAt;
+      await this.generateAndPersistThreadAssistantCompletionSummary(
+        context,
+        completedAt,
+        summarySource,
+      );
+    }
+  }
+
+  private async persistThreadAssistantCompletion(
+    context: ChatContextState,
+    completedAt: number,
+    summary: string | null,
+  ): Promise<void> {
+    try {
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
+        recordThreadAssistantCompletion(
+          id: string,
+          input: { completedAt: number; summary: string | null },
+        ): Promise<boolean> | boolean;
+      };
+      await orgStub.recordThreadAssistantCompletion(context.threadId, {
+        completedAt,
+        summary,
+      });
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to persist assistant completion", error);
+    }
+  }
+
+  private async generateAndPersistThreadAssistantCompletionSummary(
+    context: ChatContextState,
+    completedAt: number,
+    sourceText: string,
+  ): Promise<void> {
+    try {
+      const summary = await generateThreadCompletionSummaryWithOpenAI(
+        this.env,
+        sourceText,
+        {
+          orgId: context.orgId,
+          workspaceId: context.workspaceId,
+          threadId: context.threadId,
+        },
+      );
+      if (!summary) return;
+      await this.persistThreadAssistantCompletion(context, completedAt, summary);
+      await recordWorkspaceThreadStreaming(
+        this.env,
+        context.workspaceId,
+        context.threadId,
+        false,
+        { completedAt },
+      );
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to generate assistant completion summary", error);
+    }
   }
 
   private getSocketChatContext(ws: WebSocket): ChatContextState | null {
@@ -7014,7 +7104,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const thread = await orgStub.getThread(context.threadId);
     if (!thread) return;
 
-    await orgStub.touchThread(context.threadId);
+    await orgStub.recordThreadUserMessage(context.threadId, messageContent);
     if (context.userId) {
       const userStub = this.env.USER.get(this.env.USER.idFromName(context.userId));
       await userStub.touchGroupForThread(context.threadId);
@@ -8914,6 +9004,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           });
         }
       }
+      const summarySource = extractThreadCompletionSummarySource(
+        newMessages,
+        finalText,
+      );
       const forkEntryId = this.latestPiAssistantForkEntryId(newMessages);
       this.pushPiRuntimeEvent("turn/completed", {
         threadId,
@@ -8936,7 +9030,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           });
         }
       }
-      this.setChatIsStreaming(false, { markUnread: true, completedAt });
+      this.setChatIsStreaming(false, {
+        markUnread: true,
+        completedAt,
+        summarySource,
+      });
       this.setActiveTurnUserId(null);
       this.clearPiTurnRecovery();
       this.completeTodoStateForTurnEnd();
@@ -9326,7 +9424,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       if (sdkEvent?.type === "result") {
-        this.setChatIsStreaming(false, { markUnread: true });
+        const summary =
+          this.pendingExternalTurn?.latestAssistantText ||
+          this.pendingExternalTurn?.streamingText ||
+          null;
+        this.setChatIsStreaming(false, { markUnread: true, summarySource: summary });
         this.setActiveTurnUserId(null);
         this.completeTodoStateForTurnEnd();
         this.resolvePendingExternalTurn({ status: "result" });
@@ -9350,7 +9452,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (eventType === 'result') {
-      this.setChatIsStreaming(false, { markUnread: true });
+      const reply = typeof event.result === 'string' ? event.result : undefined;
+      this.setChatIsStreaming(false, {
+        markUnread: true,
+        summarySource: reply ?? null,
+      });
       this.setActiveTurnUserId(null);
       this.completeTodoStateForTurnEnd();
       const sessionId = typeof event.sessionId === 'string' ? event.sessionId.trim() : '';
@@ -9360,7 +9466,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
       this.resolvePendingExternalTurn({
         status: 'result',
-        reply: typeof event.result === 'string' ? event.result : undefined,
+        reply,
       });
       return;
     }
@@ -9661,6 +9767,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 }
 
-function normalizeCompletionTimestamp(_value: unknown): number {
+function normalizeCompletionTimestamp(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
   return Date.now();
 }

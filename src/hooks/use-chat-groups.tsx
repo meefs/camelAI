@@ -26,6 +26,14 @@ interface ChatRouteData {
   threadId?: string | null;
 }
 
+export interface LiveThreadMetadata {
+  status: ThreadStatus;
+  completedAt?: number | null;
+  latestUserMessage?: string | null;
+}
+
+type ThreadStatusOverlay = ThreadStatus | LiveThreadMetadata;
+
 interface ChatGroupsContextValue {
   groups: ChatGroupView[];
   activeGroupId: string | null;
@@ -63,6 +71,29 @@ function getActiveThreadIdFromMatches(matches: ReturnType<typeof useMatches>) {
   return null;
 }
 
+function getOverlayStatus(value: ThreadStatusOverlay | undefined): ThreadStatus | null {
+  if (!value) return null;
+  return typeof value === "string" ? value : value.status;
+}
+
+function getOverlayMetadata(
+  value: ThreadStatusOverlay | undefined,
+): LiveThreadMetadata | null {
+  if (!value || typeof value === "string") return null;
+  return value;
+}
+
+function mergeThreadMetadata(
+  previous: LiveThreadMetadata | undefined,
+  metadata: LiveThreadMetadata,
+): LiveThreadMetadata {
+  return {
+    ...previous,
+    ...metadata,
+    status: metadata.status,
+  };
+}
+
 export function getGroupLandingHref(group: ChatGroupView): string {
   const activeThreadStillOpen =
     group.last_active_thread_id &&
@@ -73,13 +104,20 @@ export function getGroupLandingHref(group: ChatGroupView): string {
   return `/chat?group=${encodeURIComponent(group.id)}`;
 }
 
-export function reconcileLocalThreadStatusesWithSnapshot(
-  localStatuses: Map<string, ThreadStatus>,
+export function reconcileLocalThreadStatusesWithSnapshot<T extends ThreadStatusOverlay>(
+  localStatuses: Map<string, T>,
   runningThreadIds: Set<string>,
-): Map<string, ThreadStatus> {
-  let next: Map<string, ThreadStatus> | null = null;
-  for (const [threadId, status] of localStatuses) {
-    if (status === "running" || runningThreadIds.has(threadId)) {
+): Map<string, T> {
+  let next: Map<string, T> | null = null;
+  for (const [threadId, overlay] of localStatuses) {
+    const status = getOverlayStatus(overlay);
+    const metadata = getOverlayMetadata(overlay);
+    const hasOptimisticFields =
+      metadata?.latestUserMessage !== undefined || metadata?.completedAt !== undefined;
+    if (
+      (status === "running" && !runningThreadIds.has(threadId)) ||
+      (status !== "running" && runningThreadIds.has(threadId) && !hasOptimisticFields)
+    ) {
       next ??= new Map(localStatuses);
       next.delete(threadId);
     }
@@ -96,16 +134,18 @@ export function shouldMarkActiveUnreadThreadViewed(
 }
 
 export function getThreadIdsRequiringSnapshotRevalidation(
-  liveStatuses: ReadonlyMap<string, ThreadStatus>,
-  localStatuses: ReadonlyMap<string, ThreadStatus>,
+  liveStatuses: ReadonlyMap<string, ThreadStatusOverlay>,
+  localStatuses: ReadonlyMap<string, ThreadStatusOverlay>,
   runningThreadIds: Set<string>,
   activeThreadId: string | null,
 ): string[] {
   const threadIds = new Set<string>();
-  for (const [threadId, status] of liveStatuses) {
+  for (const [threadId, overlay] of liveStatuses) {
+    const status = getOverlayStatus(overlay);
     if (status === "running") threadIds.add(threadId);
   }
-  for (const [threadId, status] of localStatuses) {
+  for (const [threadId, overlay] of localStatuses) {
+    const status = getOverlayStatus(overlay);
     if (status === "running") threadIds.add(threadId);
   }
 
@@ -143,13 +183,14 @@ export function applyLiveRunningStatuses(
   runningThreadIds: Set<string>,
   hasStatusSnapshot: boolean,
   activeThreadId: string | null = null,
-  liveThreadStatuses: ReadonlyMap<string, ThreadStatus> = new Map(),
+  liveThreadStatuses: ReadonlyMap<string, ThreadStatusOverlay> = new Map(),
 ): ChatGroupView[] {
   return source.map((group) => {
     const resolveThread = (
       thread: ChatGroupView["open_threads"][number],
     ): ChatGroupView["open_threads"][number] => {
-      const liveStatus = liveThreadStatuses.get(thread.id);
+      const liveMetadata = getOverlayMetadata(liveThreadStatuses.get(thread.id));
+      const liveStatus = getOverlayStatus(liveThreadStatuses.get(thread.id));
       const status =
         liveStatus === "running" ||
         liveStatus === "unread" ||
@@ -164,10 +205,37 @@ export function applyLiveRunningStatuses(
                 : thread.status;
       const resolvedStatus =
         thread.id === activeThreadId && status === "unread" ? "idle" : status;
+      const completedAt =
+        typeof liveMetadata?.completedAt === "number" &&
+        Number.isFinite(liveMetadata.completedAt)
+          ? liveMetadata.completedAt
+          : null;
+      const latestUserMessage =
+        liveMetadata?.latestUserMessage !== undefined
+          ? liveMetadata.latestUserMessage
+          : undefined;
+      const lastAssistantCompletedAt =
+        completedAt !== null
+          ? completedAt
+          : thread.last_assistant_completed_at;
+      const updatedAt =
+        completedAt !== null ? Math.max(thread.updated_at, completedAt) : thread.updated_at;
+      const lastActiveAt = Math.max(
+        thread.last_active_at,
+        updatedAt,
+        lastAssistantCompletedAt ?? 0,
+      );
       return {
         ...thread,
+        updated_at: updatedAt,
         is_unread: resolvedStatus === "unread",
         status: resolvedStatus,
+        last_active_at: lastActiveAt,
+        last_assistant_completed_at: lastAssistantCompletedAt,
+        latest_user_message:
+          latestUserMessage !== undefined
+            ? latestUserMessage
+            : thread.latest_user_message,
       };
     };
     const open_threads = group.open_threads.map(resolveThread);
@@ -199,20 +267,20 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const activeThreadId = getActiveThreadIdFromMatches(matches);
   const activeThreadIdRef = useRef(activeThreadId);
   const [liveThreadStatuses, setLiveThreadStatuses] = useState<
-    Map<string, ThreadStatus>
+    Map<string, LiveThreadMetadata>
   >(
     () => new Map(),
   );
   const [localThreadStatuses, setLocalThreadStatuses] = useState<
-    Map<string, ThreadStatus>
+    Map<string, LiveThreadMetadata>
   >(() => new Map());
   const liveThreadStatusesRef = useRef(liveThreadStatuses);
   const localThreadStatusesRef = useRef(localThreadStatuses);
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
   const resolvedThreadStatuses = useMemo(() => {
     const next = new Map(liveThreadStatuses);
-    for (const [threadId, status] of localThreadStatuses) {
-      next.set(threadId, status);
+    for (const [threadId, metadata] of localThreadStatuses) {
+      next.set(threadId, mergeThreadMetadata(next.get(threadId), metadata));
     }
     return next;
   }, [liveThreadStatuses, localThreadStatuses]);
@@ -220,7 +288,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     () =>
       new Set(
         Array.from(resolvedThreadStatuses)
-          .filter(([, status]) => status === "running")
+          .filter(([, metadata]) => metadata.status === "running")
           .map(([threadId]) => threadId),
       ),
     [resolvedThreadStatuses],
@@ -245,9 +313,17 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!activeThreadId) return;
     setLiveThreadStatuses((current) => {
-      if (current.get(activeThreadId) !== "unread") return current;
+      const currentMetadata = current.get(activeThreadId);
+      if (currentMetadata?.status !== "unread") return current;
       const next = new Map(current);
-      next.delete(activeThreadId);
+      next.set(activeThreadId, { ...currentMetadata, status: "idle" });
+      return next;
+    });
+    setLocalThreadStatuses((current) => {
+      const currentMetadata = current.get(activeThreadId);
+      if (currentMetadata?.status !== "unread") return current;
+      const next = new Map(current);
+      next.set(activeThreadId, { ...currentMetadata, status: "idle" });
       return next;
     });
   }, [activeThreadId]);
@@ -258,11 +334,15 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     setLocalThreadStatuses((current) => {
       const currentStatus =
         current.get(normalizedThreadId) ?? liveThreadStatuses.get(normalizedThreadId);
-      if (currentStatus === "running" || currentStatus === "idle") {
+      const status = currentStatus?.status;
+      if (status === "running" || status === "idle") {
         return current;
       }
       const next = new Map(current);
-      next.set(normalizedThreadId, "idle");
+      next.set(normalizedThreadId, {
+        ...(currentStatus ?? { status: "idle" as const }),
+        status: "idle",
+      });
       return next;
     });
   }, [liveThreadStatuses]);
@@ -273,7 +353,11 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     const handleLocalThreadStatus = (event: Event) => {
       const detail = (event as CustomEvent<unknown>).detail;
       if (!detail || typeof detail !== "object") return;
-      const payload = detail as { threadId?: unknown; status?: unknown };
+      const payload = detail as {
+        threadId?: unknown;
+        status?: unknown;
+        latestUserMessage?: unknown;
+      };
       if (
         typeof payload.threadId !== "string" ||
         (payload.status !== "idle" && payload.status !== "running")
@@ -282,11 +366,30 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       }
       const threadId = payload.threadId;
       const status = payload.status;
+      const latestUserMessage =
+        typeof payload.latestUserMessage === "string"
+          ? payload.latestUserMessage
+          : payload.latestUserMessage === null
+            ? null
+            : undefined;
 
       setLocalThreadStatuses((current) => {
-        if (current.get(threadId) === status) return current;
+        const existing = current.get(threadId);
+        if (
+          existing?.status === status &&
+          (latestUserMessage === undefined ||
+            existing.latestUserMessage === latestUserMessage)
+        ) {
+          return current;
+        }
         const next = new Map(current);
-        next.set(threadId, status);
+        next.set(
+          threadId,
+          mergeThreadMetadata(existing, {
+            status,
+            ...(latestUserMessage === undefined ? {} : { latestUserMessage }),
+          }),
+        );
         return next;
       });
     };
@@ -340,6 +443,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
             runningThreadIds?: unknown;
             threadId?: unknown;
             status?: unknown;
+            completedAt?: unknown;
           };
           if (
             payload.type === "thread_status_snapshot" &&
@@ -359,11 +463,11 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               );
             setLiveThreadStatuses((current) => {
               const next = new Map(current);
-              for (const [threadId, status] of next) {
-                if (status === "running") next.delete(threadId);
+              for (const [threadId, metadata] of next) {
+                if (metadata.status === "running") next.delete(threadId);
               }
               for (const threadId of nextRunningThreadIds) {
-                next.set(threadId, "running");
+                next.set(threadId, { status: "running" });
               }
               return next;
             });
@@ -395,19 +499,42 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               markActiveThreadViewed(threadId);
             }
             const status = isActiveUnread ? "idle" : payloadStatus;
+            const completedAt =
+              typeof payload.completedAt === "number" &&
+              Number.isFinite(payload.completedAt)
+                ? payload.completedAt
+                : undefined;
             setHasStatusSnapshot(true);
             setLiveThreadStatuses((current) => {
               const next = new Map(current);
-              next.set(threadId, status);
+              next.set(
+                threadId,
+                mergeThreadMetadata(current.get(threadId), {
+                  status,
+                  ...(completedAt === undefined ? {} : { completedAt }),
+                }),
+              );
               return next;
             });
             setLocalThreadStatuses((current) => {
-              if (current.get(threadId) === status) return current;
+              const existing = current.get(threadId);
+              if (
+                existing?.status === status &&
+                (completedAt === undefined || existing.completedAt === completedAt)
+              ) {
+                return current;
+              }
               const next = new Map(current);
-              next.set(threadId, status);
+              next.set(
+                threadId,
+                mergeThreadMetadata(existing, {
+                  status,
+                  ...(completedAt === undefined ? {} : { completedAt }),
+                }),
+              );
               return next;
             });
-            if (status === "idle" || status === "unread") {
+            if (status === "running" || status === "idle" || status === "unread") {
               scheduleStatusRevalidate(threadId);
             }
           }

@@ -99,7 +99,10 @@ export async function hydrateChatGroups(
 
   const runningThreadIds = new Set(streamingThreadIds);
   const now = Date.now();
-  const toThreadSummary = (threadId: string): ChatGroupThreadSummary | null => {
+  const toThreadSummary = (
+    threadId: string,
+    membership: ChatGroupThreadSummary["membership"],
+  ): ChatGroupThreadSummary | null => {
     const thread = threadMap.get(threadId);
     if (!thread) return null;
     const isRunning = runningThreadIds.has(threadId);
@@ -107,10 +110,13 @@ export async function hydrateChatGroups(
       !isRunning &&
       thread.user_message_count > 0 &&
       now - thread.created_at < 30_000;
+    const viewedAt = viewedAtByThreadId[threadId] ?? 0;
+    const completedAt = thread.last_assistant_completed_at ?? null;
     const isUnread =
       !isRunning &&
       !isOptimisticNewThreadRunning &&
-      thread.updated_at > (viewedAtByThreadId[threadId] ?? 0);
+      (completedAt !== null ? completedAt > viewedAt : thread.updated_at > viewedAt);
+    const lastActiveAt = Math.max(thread.updated_at, completedAt ?? 0);
     return {
       id: thread.id,
       title: thread.title,
@@ -118,6 +124,12 @@ export async function hydrateChatGroups(
       provider: thread.provider,
       updated_at: thread.updated_at,
       is_unread: isUnread,
+      membership,
+      last_active_at: lastActiveAt,
+      latest_user_message: thread.last_user_message ?? null,
+      last_assistant_completed_at: completedAt,
+      last_assistant_summary: thread.last_assistant_summary ?? null,
+      running_started_at: null,
       status:
         isRunning || isOptimisticNewThreadRunning
           ? "running"
@@ -129,10 +141,10 @@ export async function hydrateChatGroups(
 
   return groups.map((group) => {
     const openThreads = group.open_thread_ids
-      .map(toThreadSummary)
+      .map((threadId) => toThreadSummary(threadId, "open"))
       .filter((thread): thread is ChatGroupThreadSummary => thread !== null);
     const closedThreads = group.closed_thread_ids
-      .map(toThreadSummary)
+      .map((threadId) => toThreadSummary(threadId, "closed"))
       .filter((thread): thread is ChatGroupThreadSummary => thread !== null);
     const fallbackName =
       group.name.trim() ||

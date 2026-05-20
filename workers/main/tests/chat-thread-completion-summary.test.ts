@@ -1,0 +1,163 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { ChatThreadDO } from "../src/durable-objects";
+
+describe("ChatThreadDO completion summaries", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function createFakeThread() {
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const recordThreadAssistantCompletion = vi.fn(async () => true);
+    const recordThreadStreaming = vi.fn(async () => undefined);
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.chatContext = {
+      orgId: "org1",
+      workspaceId: "workspace1",
+      threadId: "thread1",
+      userId: "user1",
+    };
+    fake.chatIsStreaming = true;
+    fake.assistantCompletionRecordedAt = null;
+    fake.assistantCompletionSummaryRequestedAt = null;
+    fake.currentTodos = [];
+    fake.trace = vi.fn();
+    fake.broadcastRealtime = vi.fn();
+    fake.ctx = {
+      storage: { kv: { delete: vi.fn() } },
+      waitUntil: vi.fn((promise: Promise<unknown>) => {
+        waitUntilPromises.push(promise);
+      }),
+    };
+    fake.env = {
+      CF_ACCOUNT_ID: "acct_1",
+      CF_GATEWAY_NAME: "gw_1",
+      CF_GATEWAY_TOKEN: "tok_1",
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          recordThreadAssistantCompletion,
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          recordThreadStreaming,
+        })),
+      },
+    };
+
+    return {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    };
+  }
+
+  it("stores generated completion summaries instead of raw final text", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "resp_1",
+          object: "response",
+          status: "completed",
+          output: [
+            {
+              id: "msg_1",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "Generated hover summary.",
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+    const rawFinalText =
+      "Final answer: I changed several files, ran commands, and here are verbose details.";
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      summarySource: rawFinalText,
+    });
+
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadStreaming).toHaveBeenCalledTimes(2);
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
+      completedAt: expect.any(Number),
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
+      completedAt: expect.any(Number),
+    });
+    expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
+      1,
+      "thread1",
+      {
+        completedAt: expect.any(Number),
+        summary: null,
+      },
+    );
+    expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
+      2,
+      "thread1",
+      {
+        completedAt: expect.any(Number),
+        summary: "Generated hover summary.",
+      },
+    );
+    expect(recordThreadAssistantCompletion).not.toHaveBeenCalledWith(
+      "thread1",
+      expect.objectContaining({ summary: rawFinalText }),
+    );
+  });
+
+  it("keeps completion status persisted when summary generation fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "Unauthorized" } }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      summarySource: "Raw final answer that should not be stored on failure.",
+    });
+
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadStreaming).toHaveBeenCalledTimes(1);
+    expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
+      completedAt: expect.any(Number),
+    });
+    expect(recordThreadAssistantCompletion).toHaveBeenCalledTimes(1);
+    expect(recordThreadAssistantCompletion).toHaveBeenCalledWith("thread1", {
+      completedAt: expect.any(Number),
+      summary: null,
+    });
+  });
+});
