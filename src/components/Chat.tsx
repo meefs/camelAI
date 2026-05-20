@@ -144,6 +144,8 @@ import {
 export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
+const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
+
 interface ChatProps {
   threadId?: string;
   workspaceId: string;
@@ -1851,7 +1853,7 @@ export default function Chat({
         }
         pingIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "ping" }));
+            ws.send(CHAT_PING_MESSAGE);
           }
         }, 30000); // Ping every 30 seconds
 
@@ -2835,38 +2837,58 @@ export default function Chat({
     clearQueuedSendReadyTimeout,
   ]);
 
-  // Reconnect on visibility change (tab becomes visible)
+  // On tab return, poke live-looking sockets and reconnect sockets the browser
+  // already knows are gone.
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (readOnly) return;
       if (
         document.visibilityState === "visible" &&
         shouldShowChat &&
-        resolvedWorkspaceId
+        resolvedWorkspaceId &&
+        threadId
       ) {
-        // Check if main WebSocket is dead
-        const needsReconnect =
-          !wsRef.current ||
-          wsRef.current.readyState === WebSocket.CLOSED ||
-          wsRef.current.readyState === WebSocket.CLOSING;
+        const socketState = wsRef.current?.readyState;
+        if (socketState === WebSocket.CONNECTING) {
+          return;
+        }
 
-        if (needsReconnect && threadId) {
-          // Clear any stale reconnect timeout from before tab suspension
-          // (Safari suspends JS in background tabs, so pending timeouts are stale)
+        const reconnect = () => {
           if (reconnectTimeoutRef.current) {
             clearTimeout(reconnectTimeoutRef.current);
             reconnectTimeoutRef.current = null;
           }
-          reconnectAttempts.current = 0; // Fresh start when user returns to tab
+          reconnectAttempts.current = 0;
+          logRunnerClient("tab_return_reconnect", {
+            socketState,
+          });
           connectWebSocketRef.current?.(threadId, true);
+        };
+
+        if (socketState === WebSocket.OPEN) {
+          try {
+            wsRef.current?.send(CHAT_PING_MESSAGE);
+          } catch {
+            reconnect();
+          }
+          return;
         }
+
+        reconnect();
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
+    return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [threadId, shouldShowChat, resolvedWorkspaceId, readOnly]);
+    };
+  }, [
+    threadId,
+    shouldShowChat,
+    resolvedWorkspaceId,
+    readOnly,
+    logRunnerClient,
+  ]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = scrollContainerRef.current;
