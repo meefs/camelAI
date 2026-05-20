@@ -1,22 +1,21 @@
 /**
- * DO stub accessors for the admin API.
+ * Shared accessors for the admin API.
  */
 
 import type { Env } from '../../types.js';
 import type { OrgDO, UserDO } from '../../auth.js';
-import type { AdminIndexDO } from '../../admin-index-do.js';
-import { getAppIndexReadDatabase } from '../../app-index-db.js';
-import { ensureAdminIndexReady } from '../../../../../src/lib/auth-do.server';
+import { getAppIndexDatabase } from '../../app-index-db.js';
+import { ensureAdminIndexReady } from '../../admin-index-bootstrap.js';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from '../../workspace-container.js';
 
 // ---------------------------------------------------------------------------
-// DO stub helpers
+// Shared data access helpers
 // ---------------------------------------------------------------------------
 
-type AdminIndexEnv = Pick<Env, 'ADMIN_INDEX' | 'APP_DB'>;
+type AdminIndexEnv = Pick<Env, 'APP_DB' | 'APP_KV' | 'EMAIL_TO_USER' | 'USER' | 'ORG' | 'WORKSPACE'>;
 type OrgEnv = Pick<Env, 'ORG'>;
 type UserEnv = Pick<Env, 'USER'>;
 type AdminThreadContextLookup = {
@@ -59,55 +58,23 @@ async function getOptionalChatThreadSessionId(
 }
 
 export function getAdminIndexStub(env: AdminIndexEnv) {
-  const adminIndex = env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index')) as DurableObjectStub<AdminIndexDO>;
-  const appIndex = getAppIndexReadDatabase(env);
+  const appIndex = getAppIndexDatabase(env);
   if (!appIndex) {
-    return adminIndex;
+    throw new Error('APP_DB binding is not configured');
   }
-
-  const indexWriteMethods = new Set(['blockSignupIp', 'unblockSignupIp', 'handleEvent']);
-  const adminIndexOnlyMethods = new Set([
-    // AdminIndexDO repairs legacy/stale org membership rows before answering.
-    'getUsersByOrgIds',
-    // Thread admin flows need read-after-write freshness for newly-created threads.
-    'getThreadContextById',
-    // Thread update fallback scans orgs to recover from stale indexes.
-    'getOrgsPaginated',
-  ]);
-  return new Proxy(adminIndex as unknown as Record<string, unknown>, {
+  return new Proxy(appIndex as unknown as Record<string, unknown>, {
     get(target, prop, receiver) {
-      if (typeof prop !== 'string' || indexWriteMethods.has(prop) || adminIndexOnlyMethods.has(prop)) {
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === 'function' ? (...args: unknown[]) => value(...args) : value;
-      }
-
-      const d1Value = Reflect.get(appIndex as unknown as Record<string, unknown>, prop, appIndex);
-      if (typeof d1Value !== 'function') {
-        return Reflect.get(target, prop, receiver);
-      }
-
-      const fallbackValue = Reflect.get(target, prop, receiver);
-      if (typeof fallbackValue !== 'function') {
-        return d1Value.bind(appIndex);
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') {
+        return value;
       }
 
       return async (...args: unknown[]) => {
-        try {
-          const appIndexReady = await appIndex.isReady().catch((error) => {
-            console.warn('D1 admin index readiness check failed, falling back to AdminIndex', error);
-            return false;
-          });
-          if (!appIndexReady) {
-            return fallbackValue(...args);
-          }
-          return await d1Value.apply(appIndex, args);
-        } catch (error) {
-          console.warn(`D1 admin index read failed for ${prop}, falling back to AdminIndex`, error);
-          return fallbackValue(...args);
-        }
+        await ensureAdminIndexReady(env);
+        return value.apply(appIndex, args);
       };
     },
-  }) as unknown as DurableObjectStub<AdminIndexDO>;
+  });
 }
 
 export function getOrgStub(env: OrgEnv, orgId: string) {
@@ -130,8 +97,6 @@ export async function loadAdminThreadMessagesResponse(
   if (!trimmedThreadId) {
     return Response.json({ error: 'Thread ID required' }, { status: 400 });
   }
-
-  await ensureAdminIndexReady(env as never);
 
   const adminIndex = getAdminIndexStub(env) as unknown as AdminThreadContextLookup;
   const threadContext = await adminIndex.getThreadContextById(trimmedThreadId);

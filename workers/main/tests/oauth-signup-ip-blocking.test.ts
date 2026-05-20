@@ -2,14 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:test';
 import { getOrCreateUserFromOAuth } from '../src/services/oauth';
 import type { Env as WorkerEnv } from '../src/types';
-import type { AdminIndexDO } from '../src/admin-index-do';
 import type { TestEnv } from './test-helpers';
+import { getAppIndexDatabase } from '../src/app-index-db';
 
-type OAuthSignupTestEnv = TestEnv & {
-  ADMIN_INDEX: DurableObjectNamespace<AdminIndexDO>;
-};
-
-const testEnv = env as unknown as OAuthSignupTestEnv;
+const testEnv = env as unknown as TestEnv;
 
 function testEmail() {
   return `oauth-signup-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
@@ -36,9 +32,9 @@ describe('OAuth signup IP logging and blocking', () => {
     const blockedIp = '203.0.113.21';
     const email = testEmail();
     const providerId = `github-${crypto.randomUUID()}`;
-    const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+    const appIndex = getAppIndexDatabase(testEnv)!;
 
-    await adminIndex.blockSignupIp(blockedIp, 'test-suite', 'abuse');
+    await appIndex.blockSignupIp(blockedIp, 'test-suite', 'abuse');
 
     await expect(
       getOrCreateUserFromOAuth(
@@ -52,6 +48,6 @@ describe('OAuth signup IP logging and blocking', () => {
     expect(await testEnv.EMAIL_TO_USER.get(`email:${email.toLowerCase()}`)).toBeNull();
     expect(await testEnv.EMAIL_TO_USER.get(`oauth:github:${providerId}`)).toBeNull();
 
-    await adminIndex.unblockSignupIp(blockedIp);
+    await appIndex.unblockSignupIp(blockedIp);
   });
 });

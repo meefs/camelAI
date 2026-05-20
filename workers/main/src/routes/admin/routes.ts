@@ -5,7 +5,7 @@
  * its request/response schemas. The OpenAPI spec is auto-generated from these
  * declarations — no separate spec file needed.
  *
- * List endpoints use AdminIndexDO (SQLite-backed) for efficient paginated,
+ * List endpoints use the D1 app index for efficient paginated,
  * filterable, sortable queries. Mutation endpoints still use individual DO stubs.
  *
  * All handlers assume Bearer auth has already been validated by the wrapper
@@ -30,7 +30,7 @@ import type {
   AdminUserSummaryRow,
   AdminThreadListRow,
   AdminAppListRow,
-} from "../../admin-index-do.js";
+} from "../../admin-index-types.js";
 import type {
   DashboardRetentionOptions,
   DashboardRetentionResponse,
@@ -546,6 +546,7 @@ routes.put(
         targetOrgId,
       );
     } catch (error) {
+      console.error('[admin] failed to load spam summary', error);
       return c.json(
         {
           error:
@@ -989,7 +990,7 @@ routes.get(
     const orgId = c.req.param("id");
     const adminIndex = getAdminIndexStub(c.env);
 
-    // Get org metadata (including member_count, workspace_count) from AdminIndexDO
+    // Get org metadata, including member_count and workspace_count, from D1.
     const orgInfo = await adminIndex.getOrgById(orgId);
     if (!orgInfo) {
       return c.json({ error: "Organization not found" }, 404);
@@ -1359,7 +1360,7 @@ routes.patch(
       );
     }
 
-    // Try AdminIndexDO first (fast single-SQL lookup)
+    // Try the D1 index first (fast single-SQL lookup).
     const adminIndex = getAdminIndexStub(env);
     const threadContext = await adminIndex.getThreadContextById(threadId);
 
@@ -1385,7 +1386,7 @@ routes.patch(
       }
     }
 
-    // Fallback: index may be stale — scan orgs via AdminIndexDO org list
+    // Fallback: index may be stale, so scan indexed orgs.
     const orgsResult = await adminIndex.getOrgsPaginated(0, 1000);
     for (const org of orgsResult.items) {
       const orgStub = getOrgStub(env, org.id);
@@ -1799,13 +1800,44 @@ routes.get(
       ) as unknown as AdminOrgDirectoryLookup;
       const spamOrgIds = await fetchSpamOrgIds(c.env);
 
-      const [users, threads, apps, orgs, usageByOrgId] = await Promise.all([
+      let [users, threads, apps, orgs, usageByOrgId] = await Promise.all([
         adminIndex.getUsersByOrgIds(spamOrgIds),
         adminIndex.getThreadsByOrgIds(spamOrgIds),
         adminIndex.getAppsByOrgIds(spamOrgIds),
         adminIndex.getOrgDirectoryByIds(spamOrgIds),
         fetchOrgUsageAnalytics(c.env, spamOrgIds, { includeWindows: true }),
       ]);
+      if (users.length === 0 && spamOrgIds.length > 0) {
+        const memberRows = await Promise.all(
+          spamOrgIds.map(async (orgId) => {
+            try {
+              return await getOrgStub(c.env, orgId).getMembers();
+            } catch {
+              return [];
+            }
+          }),
+        );
+        users = Array.from(
+          new Map(
+            (await Promise.all(
+              memberRows
+                .flat()
+                .map(async (member: any) => {
+                  const profile = await getUserStub(c.env, member.user_id).getProfile().catch(() => null);
+                  if (!profile) return null;
+                  return [
+                    profile.id,
+                    {
+                      ...profile,
+                      org_count: 1,
+                      signup_ip: null,
+                    },
+                  ] as const;
+                }),
+            )).filter((entry): entry is readonly [string, any] => entry !== null),
+          ).values(),
+        );
+      }
 
       const org_usage = orgs
         .map((org) => toDashboardTopOrgItem(org, usageByOrgId.get(org.id)))

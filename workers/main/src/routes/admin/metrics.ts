@@ -1,4 +1,4 @@
-import type { AdminOrgDirectoryRow } from '../../admin-index-do.js';
+import type { AdminOrgDirectoryRow } from '../../admin-index-types.js';
 import type { Env } from '../../types.js';
 
 export interface OrgUsageAnalyticsItem {

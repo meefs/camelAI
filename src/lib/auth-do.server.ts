@@ -39,12 +39,19 @@ import {
   type WorkspaceContainerEnv,
 } from "../../workers/main/src/workspace-container";
 import {
+  getAppIndexDatabase,
+  getAppIndexReadDatabase,
+} from "../../workers/main/src/app-index-db";
+import { ensureAdminIndexReady } from "../../workers/main/src/admin-index-bootstrap";
+import {
   type BanRecord,
   type BanScope,
   getOrgBanById,
   getUserBanById,
   putBanRecord,
 } from "../../workers/main/src/ban-list";
+
+export { ensureAdminIndexReady } from "../../workers/main/src/admin-index-bootstrap";
 
 // Helper: Collect all user IDs from KV
 async function collectAllUserIds(env: CloudflareEnv): Promise<string[]> {
@@ -145,11 +152,6 @@ const API_TOKEN_PREFIX = "tok_";
 const SESSION_PREFIX = "session:";
 const WORKER_SESSION_PREFIX = "worker_session:";
 const SCREENSHOT_SESSION_PREFIX = "screenshot_session:";
-const ADMIN_INDEX_SYNC_KEY = "admin_index_synced";
-const ADMIN_INDEX_SYNC_READY = "1";
-const ADMIN_INDEX_SYNC_IN_PROGRESS = "syncing";
-const ADMIN_INDEX_SYNC_WAIT_MS = 10_000;
-const ADMIN_INDEX_SYNC_POLL_MS = 200;
 const SCREENSHOT_TOKEN_PREFIX = "screenshot_token:";
 const WORKER_AUTH_STATE_PREFIX = "wauth_state:";
 const WORKER_AUTH_TOKEN_PREFIX = "wauth_token:";
@@ -362,168 +364,11 @@ async function deleteR2Prefix(
 
 // Admin overview functions
 function getAdminIndex(env: CloudflareEnv) {
-  const namespace = (env as any).ADMIN_INDEX;
-  if (!namespace) {
-    throw new Error("ADMIN_INDEX binding is not configured");
+  const appIndex = getAppIndexReadDatabase(env);
+  if (!appIndex) {
+    throw new Error("APP_DB binding is not configured");
   }
-  return namespace.get(namespace.idFromName("admin_index")) as any;
-}
-
-async function waitForAdminIndexSync(authEnv: AuthEnv): Promise<void> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < ADMIN_INDEX_SYNC_WAIT_MS) {
-    const syncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
-    if (syncState === ADMIN_INDEX_SYNC_READY) {
-      return;
-    }
-    if (syncState !== ADMIN_INDEX_SYNC_IN_PROGRESS) {
-      return;
-    }
-    await new Promise((resolve) =>
-      setTimeout(resolve, ADMIN_INDEX_SYNC_POLL_MS),
-    );
-  }
-}
-
-async function performInitialAdminSync(env: CloudflareEnv) {
-  const authEnv = getAuthEnv(env);
-  const syncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
-  if (syncState === ADMIN_INDEX_SYNC_READY) {
-    return;
-  }
-  if (syncState === ADMIN_INDEX_SYNC_IN_PROGRESS) {
-    await waitForAdminIndexSync(authEnv);
-    return;
-  }
-
-  await authEnv.APP_KV.put(ADMIN_INDEX_SYNC_KEY, ADMIN_INDEX_SYNC_IN_PROGRESS, {
-    expirationTtl: 300,
-  });
-
-  try {
-    const adminIndex = getAdminIndex(env);
-    const userIds = await collectAllUserIds(env);
-
-    // Process users
-    for (const userId of userIds) {
-      const profile = await authEnv.USER.get(
-        authEnv.USER.idFromName(userId),
-      ).getProfile();
-      if (!profile) {
-        continue;
-      }
-      const orgs = await authDO.getUserOrgs(authEnv, userId);
-      await adminIndex.handleEvent({
-        type: "user_upsert",
-        payload: {
-          ...profile,
-          org_count: orgs.length,
-        },
-      });
-    }
-
-    // Process orgs
-    const orgIds = await collectAllOrgIds(env);
-    for (const orgId of orgIds) {
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-      const [info, members, workspaces, scripts, threads, invitations] =
-        await Promise.all([
-          authDO.getOrg(authEnv, orgId),
-          authDO.getOrgMembers(authEnv, orgId),
-          authDO.listOrgWorkspaces(authEnv, orgId),
-          orgStub.listWorkerScripts(),
-          orgStub.getThreads(),
-          authDO.getOrgInvitations(authEnv, orgId),
-        ]);
-
-      if (info) {
-        await adminIndex.handleEvent({
-          type: "org_upsert",
-          payload: {
-            ...info,
-            member_count: members.length,
-            workspace_count: workspaces.length,
-          },
-        });
-      }
-
-      for (const member of members) {
-        await adminIndex.handleEvent({
-          type: 'org_membership_upsert',
-          payload: {
-            org_id: orgId,
-            user_id: member.user.id,
-            role: member.role,
-            joined_at: member.joined_at,
-          },
-        });
-      }
-
-      const integrationCounts = await Promise.all(
-        workspaces.map(
-          async (ws) =>
-            [
-              ws.id,
-              (await authDO.listWorkspaceIntegrations(authEnv, ws.id)).length,
-            ] as const,
-        ),
-      );
-      const integrationCountByWorkspace = new Map<string, number>(
-        integrationCounts,
-      );
-
-      for (const ws of workspaces) {
-        await adminIndex.handleEvent({
-          type: "workspace_upsert",
-          payload: {
-            ...ws,
-            integration_count: integrationCountByWorkspace.get(ws.id) ?? 0,
-          },
-        });
-      }
-
-      for (const script of scripts) {
-        await adminIndex.handleEvent({
-          type: "app_upsert",
-          payload: { ...script, org_id: orgId },
-        });
-      }
-
-      for (const thread of threads) {
-        await adminIndex.handleEvent({
-          type: "thread_upsert",
-          payload: { ...thread, org_id: orgId },
-        });
-      }
-
-      for (const inv of invitations) {
-        await adminIndex.handleEvent({
-          type: "invitation_upsert",
-          payload: { ...inv, org_id: orgId },
-        });
-      }
-    }
-
-    await authEnv.APP_KV.put(ADMIN_INDEX_SYNC_KEY, ADMIN_INDEX_SYNC_READY);
-  } catch (err) {
-    await authEnv.APP_KV.delete(ADMIN_INDEX_SYNC_KEY);
-    throw err;
-  }
-}
-
-export async function ensureAdminIndexReady(env: CloudflareEnv): Promise<void> {
-  const authEnv = getAuthEnv(env);
-  const syncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
-  if (syncState === ADMIN_INDEX_SYNC_READY) {
-    return;
-  }
-
-  await performInitialAdminSync(env);
-
-  const postSyncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
-  if (postSyncState !== ADMIN_INDEX_SYNC_READY) {
-    await waitForAdminIndexSync(authEnv);
-  }
+  return appIndex as any;
 }
 
 export async function getAdminOverview(
@@ -1596,9 +1441,13 @@ export async function hardDeleteAdminUserWithEnv(
     );
   }
 
-  // Keep AdminIndexDO aligned with UserDO + EMAIL_TO_USER cleanup.
+  // Keep the D1 admin index aligned with UserDO + EMAIL_TO_USER cleanup.
   try {
-    await getAdminIndex(env).handleEvent({
+    const appIndex = getAppIndexDatabase(env);
+    if (!appIndex) {
+      throw new Error("APP_DB binding is not configured");
+    }
+    await appIndex.applyAdminEvent({
       type: "user_delete",
       payload: { id: userId },
     });

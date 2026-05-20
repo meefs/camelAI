@@ -1,16 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:test';
-import type { AdminIndexDO } from '../src/admin-index-do';
 import { handleAdminApi } from '../src/routes/admin/index';
 import type { Env as WorkerEnv } from '../src/types';
 import { createUser, type TestEnv } from './test-helpers';
+import { getAppIndexReadDatabase } from '../src/app-index-db';
 
 const testEmail = () => `signup-ip-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 
 describe('signup IP logging and blocking storage', () => {
-  const testEnv = env as unknown as TestEnv & {
-    ADMIN_INDEX: DurableObjectNamespace<AdminIndexDO>;
-  };
+  const testEnv = env as unknown as TestEnv;
 
   it('stores the signup IP on the user record', async () => {
     const email = testEmail();
@@ -29,7 +27,7 @@ describe('signup IP logging and blocking storage', () => {
 
   it('blocks and unblocks signup IPs through the admin API', async () => {
     const blockedIp = '203.0.113.99';
-    const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+    const appIndex = getAppIndexReadDatabase(testEnv)!;
     const adminEnv = {
       ...testEnv,
       ADMIN_API_KEY: 'test-admin-api-key',
@@ -66,7 +64,7 @@ describe('signup IP logging and blocking storage', () => {
       blocked_by: 'test-suite',
       reason: 'abuse',
     });
-    expect(await adminIndex.isSignupIpBlocked(blockedIp)).toBe(true);
+    expect(await appIndex.isSignupIpBlocked(blockedIp)).toBe(true);
 
     const unblockRequest = new Request(
       `http://example/api/admin/signup-blocked-ips/${encodeURIComponent(blockedIp)}`,
@@ -92,6 +90,6 @@ describe('signup IP logging and blocking storage', () => {
       ip: blockedIp,
       blocked: false,
     });
-    expect(await adminIndex.isSignupIpBlocked(blockedIp)).toBe(false);
+    expect(await appIndex.isSignupIpBlocked(blockedIp)).toBe(false);
   });
 });
