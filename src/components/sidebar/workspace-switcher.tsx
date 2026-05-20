@@ -1,6 +1,7 @@
 "use client"
 
 import { Check, ChevronsUpDown, CircleAlert } from "lucide-react"
+import { toast } from "sonner"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
@@ -26,6 +27,13 @@ export function WorkspaceSwitcher() {
   const { switchWorkspace } = useSwitchWorkspace()
   const workspaceList = allWorkspaces ?? []
   const orgNameById = new Map(orgs.map((org) => [org.org_id, org.org_name]))
+  const handleSwitchWorkspace = (workspaceId: string) => {
+    void switchWorkspace(workspaceId).catch((error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to switch workspace",
+      )
+    })
+  }
 
   if (!currentOrg) {
     return null
@@ -81,7 +89,7 @@ export function WorkspaceSwitcher() {
                   return (
                     <DropdownMenuItem
                       key={workspace.id}
-                      onClick={() => switchWorkspace(workspace.id)}
+                      onClick={() => handleSwitchWorkspace(workspace.id)}
                       className="gap-2 p-2"
                     >
                       <Avatar size="md" className="shrink-0">
@@ -163,7 +171,7 @@ export function WorkspaceSwitcher() {
               return (
                 <DropdownMenuItem
                   key={workspace.id}
-                  onClick={() => switchWorkspace(workspace.id)}
+                  onClick={() => handleSwitchWorkspace(workspace.id)}
                   className="gap-2 p-2"
                 >
                   <Avatar size="md" className="shrink-0">

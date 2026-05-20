@@ -5506,7 +5506,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       summary: string | null;
       summaryStatus?: ThreadCompletionSummaryStatus | null;
     },
-  ): boolean {
+  ): number | false {
     const existing = this.getThread(id);
     if (!existing) return false;
     const requestedAt = Number.isFinite(input.completedAt)
@@ -5519,7 +5519,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         : normalizeThreadCompletionSummaryStatus(input.summaryStatus);
     const previousCompletedAt = existing.last_assistant_completed_at ?? null;
     if (previousCompletedAt !== null && requestedAt < previousCompletedAt) {
-      return true;
+      return false;
     }
     if (
       previousCompletedAt !== null &&
@@ -5528,7 +5528,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       existing.last_assistant_summary_status === "ready" &&
       requestedSummaryStatus !== null
     ) {
-      return true;
+      return previousCompletedAt;
     }
     if (
       previousCompletedAt !== null &&
@@ -5536,7 +5536,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       summary === null &&
       requestedSummaryStatus === null
     ) {
-      return true;
+      return previousCompletedAt;
     }
     const isSummaryOnlyUpdate =
       previousCompletedAt !== null &&
@@ -5578,7 +5578,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       .catch((err) => {
         console.error("Failed to sync thread assistant completion to AdminIndex", err);
       });
-    return true;
+    return completedAt;
   }
 
   /**

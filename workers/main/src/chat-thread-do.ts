@@ -163,6 +163,11 @@ interface PiResolvedModelConfig {
   usageProvider: string;
 }
 
+type AssistantCompletionPersistenceResult =
+  | { status: "stored"; completedAt: number }
+  | { status: "stale" }
+  | { status: "failed" };
+
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
   "openrouter/google/gemini-3.5-flash": {
     id: "google/gemini-3.5-flash",
@@ -4487,26 +4492,41 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const initialSummaryStatus: ThreadCompletionSummaryStatus = hasSummarySource
       ? "pending"
       : "failed";
-    await this.persistThreadAssistantCompletion(
+    const persistenceResult = await this.persistThreadAssistantCompletion(
       context,
       completedAt,
       null,
       initialSummaryStatus,
     );
+    if (persistenceResult.status === "stale") {
+      return;
+    }
+    if (persistenceResult.status === "failed") {
+      await recordWorkspaceThreadStreaming(
+        this.env,
+        context.workspaceId,
+        context.threadId,
+        false,
+        { completedAt, summaryStatus: "failed" },
+      );
+      return;
+    }
+    const storedCompletedAt = persistenceResult.completedAt;
 
     await recordWorkspaceThreadStreaming(
       this.env,
       context.workspaceId,
       context.threadId,
       false,
-      { completedAt, summaryStatus: initialSummaryStatus },
+      { completedAt: storedCompletedAt, summaryStatus: initialSummaryStatus },
     );
 
     if (hasSummarySource) {
-      this.assistantCompletionSummaryRequestedAt = completedAt;
+      this.assistantCompletionRecordedAt = storedCompletedAt;
+      this.assistantCompletionSummaryRequestedAt = storedCompletedAt;
       await this.generateAndPersistThreadAssistantCompletionSummary(
         context,
-        completedAt,
+        storedCompletedAt,
         summarySource!,
       );
     }
@@ -4517,7 +4537,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     completedAt: number,
     summary: string | null,
     summaryStatus: ThreadCompletionSummaryStatus | null,
-  ): Promise<void> {
+  ): Promise<AssistantCompletionPersistenceResult> {
     try {
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
         recordThreadAssistantCompletion(
@@ -4527,16 +4547,54 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             summary: string | null;
             summaryStatus?: ThreadCompletionSummaryStatus | null;
           },
-        ): Promise<boolean> | boolean;
+        ): Promise<number | false> | number | false;
       };
-      await orgStub.recordThreadAssistantCompletion(context.threadId, {
+      const storedCompletedAt = await orgStub.recordThreadAssistantCompletion(context.threadId, {
         completedAt,
         summary,
         summaryStatus,
       });
+      return typeof storedCompletedAt === "number" &&
+        Number.isFinite(storedCompletedAt)
+        ? { status: "stored", completedAt: storedCompletedAt }
+        : { status: "stale" };
     } catch (error) {
       console.error("[ChatThreadDO] failed to persist assistant completion", error);
+      return { status: "failed" };
     }
+  }
+
+  private async recordCompletionSummaryStatus(
+    context: ChatContextState,
+    completedAt: number,
+    summaryStatus: ThreadCompletionSummaryStatus,
+    summary?: string,
+  ): Promise<void> {
+    const persistenceResult = await this.persistThreadAssistantCompletion(
+      context,
+      completedAt,
+      summary ?? null,
+      summaryStatus,
+    );
+    if (persistenceResult.status === "stale") return;
+    const statusCompletedAt =
+      persistenceResult.status === "stored"
+        ? persistenceResult.completedAt
+        : completedAt;
+    await recordWorkspaceThreadStreaming(
+      this.env,
+      context.workspaceId,
+      context.threadId,
+      false,
+      {
+        completedAt: statusCompletedAt,
+        summaryStatus:
+          persistenceResult.status === "failed" ? "failed" : summaryStatus,
+        ...(persistenceResult.status === "stored" && summary
+          ? { summary }
+          : {}),
+      },
+    );
   }
 
   private async generateAndPersistThreadAssistantCompletionSummary(
@@ -4555,49 +4613,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         },
       );
       if (!summary) {
-        await this.persistThreadAssistantCompletion(
-          context,
-          completedAt,
-          null,
-          "failed",
-        );
-        await recordWorkspaceThreadStreaming(
-          this.env,
-          context.workspaceId,
-          context.threadId,
-          false,
-          { completedAt, summaryStatus: "failed" },
-        );
+        await this.recordCompletionSummaryStatus(context, completedAt, "failed");
         return;
       }
-      await this.persistThreadAssistantCompletion(
+      await this.recordCompletionSummaryStatus(
         context,
         completedAt,
-        summary,
         "ready",
-      );
-      await recordWorkspaceThreadStreaming(
-        this.env,
-        context.workspaceId,
-        context.threadId,
-        false,
-        { completedAt, summaryStatus: "ready", summary },
+        summary,
       );
     } catch (error) {
       console.error("[ChatThreadDO] failed to generate assistant completion summary", error);
-      await this.persistThreadAssistantCompletion(
-        context,
-        completedAt,
-        null,
-        "failed",
-      );
-      await recordWorkspaceThreadStreaming(
-        this.env,
-        context.workspaceId,
-        context.threadId,
-        false,
-        { completedAt, summaryStatus: "failed" },
-      );
+      await this.recordCompletionSummaryStatus(context, completedAt, "failed");
     }
   }
 

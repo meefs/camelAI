@@ -19,6 +19,7 @@ import {
   getThreadIdsRequiringSnapshotRevalidation,
   getCloseGroupRedirect,
   getGroupLandingHref,
+  mergeLiveAndLocalThreadStatuses,
   mergeActiveChatGroup,
   reconcileLocalThreadStatusesWithSnapshot,
   shouldMarkActiveIdleThreadViewed,
@@ -865,6 +866,56 @@ describe("reconcileLocalThreadStatusesWithSnapshot", () => {
     );
 
     expect(Array.from(next.entries())).toEqual([["thread_2", "unread"]]);
+  });
+
+  it("clears stale local idle metadata when the snapshot says the thread is running", () => {
+    const current = new Map([
+      [
+        "thread_1",
+        {
+          status: "idle" as const,
+          latestUserMessage: "optimistic prompt",
+          runningActivityText: "optimistic prompt",
+        },
+      ],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(
+      current,
+      new Set(["thread_1"]),
+    );
+
+    expect(Array.from(next.entries())).toEqual([]);
+  });
+});
+
+describe("mergeLiveAndLocalThreadStatuses", () => {
+  it("keeps authoritative live running state over stale local idle overlays", () => {
+    const merged = mergeLiveAndLocalThreadStatuses(
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "running",
+            runningActivityText: "Running typecheck...",
+          },
+        ],
+      ]),
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "idle",
+            latestUserMessage: "local prompt",
+          },
+        ],
+      ]),
+    );
+
+    expect(merged.get("thread_1")).toEqual({
+      status: "running",
+      runningActivityText: "Running typecheck...",
+    });
   });
 });
 

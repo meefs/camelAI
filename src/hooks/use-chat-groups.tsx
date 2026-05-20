@@ -120,24 +120,30 @@ export function reconcileLocalThreadStatusesWithSnapshot<T extends ThreadStatusO
   let next: Map<string, T> | null = null;
   for (const [threadId, overlay] of localStatuses) {
     const status = getOverlayStatus(overlay);
-    const metadata = getOverlayMetadata(overlay);
-    const hasOptimisticFields =
-      metadata?.latestUserMessage !== undefined ||
-      metadata?.runningActivityText !== undefined ||
-      metadata?.runningActivityAt !== undefined ||
-      metadata?.runningStartedAt !== undefined ||
-      metadata?.completedAt !== undefined ||
-      metadata?.summaryStatus !== undefined ||
-      metadata?.summary !== undefined;
     if (
       (status === "running" && !runningThreadIds.has(threadId)) ||
-      (status !== "running" && runningThreadIds.has(threadId) && !hasOptimisticFields)
+      (status !== "running" && runningThreadIds.has(threadId))
     ) {
       next ??= new Map(localStatuses);
       next.delete(threadId);
     }
   }
   return next ?? localStatuses;
+}
+
+export function mergeLiveAndLocalThreadStatuses(
+  liveStatuses: ReadonlyMap<string, LiveThreadMetadata>,
+  localStatuses: ReadonlyMap<string, LiveThreadMetadata>,
+): Map<string, LiveThreadMetadata> {
+  const next = new Map(liveStatuses);
+  for (const [threadId, metadata] of localStatuses) {
+    const liveMetadata = next.get(threadId);
+    if (liveMetadata?.status === "running" && metadata.status !== "running") {
+      continue;
+    }
+    next.set(threadId, mergeThreadMetadata(liveMetadata, metadata));
+  }
+  return next;
 }
 
 export function shouldMarkActiveUnreadThreadViewed(
@@ -352,13 +358,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const liveThreadStatusesRef = useRef(liveThreadStatuses);
   const localThreadStatusesRef = useRef(localThreadStatuses);
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
-  const resolvedThreadStatuses = useMemo(() => {
-    const next = new Map(liveThreadStatuses);
-    for (const [threadId, metadata] of localThreadStatuses) {
-      next.set(threadId, mergeThreadMetadata(next.get(threadId), metadata));
-    }
-    return next;
-  }, [liveThreadStatuses, localThreadStatuses]);
+  const resolvedThreadStatuses = useMemo(
+    () => mergeLiveAndLocalThreadStatuses(liveThreadStatuses, localThreadStatuses),
+    [liveThreadStatuses, localThreadStatuses],
+  );
   const runningThreadIds = useMemo(
     () =>
       new Set(

@@ -362,7 +362,7 @@ describe('Auth flow (full-stack with DOs)', () => {
           completedAt,
           summary: 'Summary:\n\nFound the issue.',
         }),
-      ).resolves.toBe(true);
+      ).resolves.toEqual(expect.any(Number));
       const afterCompletion = await orgStub.getThread(thread.id);
 
       expect(afterCompletion?.user_message_count).toBe(1);
@@ -371,6 +371,28 @@ describe('Auth flow (full-stack with DOs)', () => {
       );
       expect(afterCompletion?.last_assistant_summary).toBe('Found the issue.');
       expect(afterCompletion?.last_assistant_summary_status).toBe('ready');
+    });
+
+    it('returns the stored assistant completion timestamp when coercing stale inputs', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Returned Completion Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Completion thread', userId);
+      await orgStub.recordThreadUserMessage(thread.id, 'First prompt');
+      const afterUserMessage = await orgStub.getThread(thread.id);
+      const staleCompletionAt = (afterUserMessage?.updated_at ?? Date.now()) - 1_000;
+
+      const storedCompletedAt = await orgStub.recordThreadAssistantCompletion(thread.id, {
+        completedAt: staleCompletionAt,
+        summary: null,
+        summaryStatus: 'pending',
+      });
+      const afterCompletion = await orgStub.getThread(thread.id);
+
+      expect(storedCompletedAt).toBe(afterCompletion?.last_assistant_completed_at);
+      expect(storedCompletedAt).toBeGreaterThan(afterUserMessage?.updated_at ?? 0);
     });
 
     it('stores monotonic assistant completion timestamps for stale inputs', async () => {

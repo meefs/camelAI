@@ -9,7 +9,9 @@ describe("ChatThreadDO completion summaries", () => {
 
   function createFakeThread() {
     const waitUntilPromises: Promise<unknown>[] = [];
-    const recordThreadAssistantCompletion = vi.fn(async () => true);
+    const recordThreadAssistantCompletion = vi.fn(
+      async (_threadId: string, input: { completedAt: number }) => input.completedAt,
+    );
     const recordThreadStreaming = vi.fn(async () => undefined);
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
@@ -183,6 +185,125 @@ describe("ChatThreadDO completion summaries", () => {
         summaryStatus: "failed",
       },
     );
+  });
+
+  it("uses the stored completion timestamp for generated summaries", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "resp_1",
+          object: "response",
+          status: "completed",
+          output: [
+            {
+              id: "msg_1",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "Stored timestamp summary.",
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+    const storedCompletedAt = 123456;
+    recordThreadAssistantCompletion.mockImplementation(
+      async (
+        _threadId: string,
+        input: { completedAt: number; summaryStatus?: string | null },
+      ) =>
+        input.summaryStatus === "pending" ? storedCompletedAt : input.completedAt,
+    );
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      completedAt: 100,
+      summarySource: "Raw final answer.",
+    });
+
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(2, "thread1", {
+      completedAt: storedCompletedAt,
+      summary: "Stored timestamp summary.",
+      summaryStatus: "ready",
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
+      completedAt: storedCompletedAt,
+      summaryStatus: "pending",
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
+      completedAt: storedCompletedAt,
+      summaryStatus: "ready",
+      summary: "Stored timestamp summary.",
+    });
+  });
+
+  it("does not clear workspace running state when OrgDO rejects a stale completion", async () => {
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+    recordThreadAssistantCompletion.mockResolvedValue(false);
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      completedAt: 100,
+      summarySource: "Stale final answer.",
+    });
+
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadAssistantCompletion).toHaveBeenCalledWith("thread1", {
+      completedAt: 100,
+      summary: null,
+      summaryStatus: "pending",
+    });
+    expect(recordThreadStreaming).not.toHaveBeenCalled();
+  });
+
+  it("clears workspace running state when completion persistence fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+    recordThreadAssistantCompletion.mockRejectedValue(new Error("transient"));
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      completedAt: 100,
+      summarySource: "Completed final answer.",
+    });
+
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadAssistantCompletion).toHaveBeenCalledWith("thread1", {
+      completedAt: 100,
+      summary: null,
+      summaryStatus: "pending",
+    });
+    expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
+      completedAt: 100,
+      summaryStatus: "failed",
+    });
   });
 
   it("marks empty generated summaries as failed", async () => {
