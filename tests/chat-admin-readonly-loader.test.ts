@@ -99,7 +99,7 @@ describe('chat loader admin readonly mode', () => {
     listGroupsForMoveMock.mockResolvedValue([]);
   });
 
-  it('route shouldRevalidate skips same-thread same-URL revalidation before message loading', () => {
+  it('route shouldRevalidate preserves explicit same-thread same-URL revalidation', () => {
     const shouldRunLoader = shouldRevalidate({
       currentUrl: new URL('https://camelai.com/chat/thread_123?group=group_1'),
       nextUrl: new URL('https://camelai.com/chat/thread_123?group=group_1'),
@@ -108,7 +108,7 @@ describe('chat loader admin readonly mode', () => {
       defaultShouldRevalidate: true,
     });
 
-    expect(shouldRunLoader).toBe(false);
+    expect(shouldRunLoader).toBe(true);
     expect(readThreadMessagesMock).not.toHaveBeenCalled();
   });
 
@@ -263,7 +263,7 @@ describe('chat loader workspace mismatch handling', () => {
     });
   });
 
-  it('skips message loading for same-thread revalidation but loads on thread navigation', async () => {
+  it('loads messages for explicit same-thread revalidation and thread navigation', async () => {
     const context = {};
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },
@@ -298,7 +298,14 @@ describe('chat loader workspace mismatch handling', () => {
         params: { id: 'thread_123' },
       } as never);
     }
-    expect(readThreadMessagesMock).not.toHaveBeenCalled();
+    expect(readThreadMessagesMock).toHaveBeenCalledTimes(1);
+    expect(readThreadMessagesMock).toHaveBeenCalledWith(context, {
+      workspaceId: 'ws_active',
+      orgId: 'org_active',
+      threadId: 'thread_123',
+      skipBanCheck: undefined,
+    });
+    readThreadMessagesMock.mockClear();
 
     const threadChangeShouldRevalidate = shouldRevalidate({
       currentUrl: new URL('https://camelai.com/chat/thread_123'),

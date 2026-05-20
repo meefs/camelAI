@@ -251,6 +251,47 @@ describe('SourcePreview', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/preview/versioned.html?v=1');
   });
 
+  it('revalidates cached HTML source when the same preview URL remounts', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue('<h1>Cached version</h1>'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue('<h1>Fresh version</h1>'),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const preview = (
+      <FilePreviewContent
+        filename="revalidated.html"
+        previewUrl="/preview/revalidated.html"
+        contentType="text/html"
+        layout="panel"
+        fileViewMode="source"
+      />
+    );
+    const { container, unmount } = render(preview);
+
+    await waitFor(() => {
+      expect(container).toHaveTextContent('Cached version');
+    });
+    unmount();
+
+    const { container: remountedContainer } = render(preview);
+
+    await waitFor(() => {
+      expect(remountedContainer).toHaveTextContent('Fresh version');
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe('/preview/revalidated.html');
+    expect(fetchMock.mock.calls[1][0]).toBe('/preview/revalidated.html');
+  });
+
   it('renders HTML preview mode through the iframe even when the URL changes', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

@@ -6,7 +6,7 @@ function url(value: string) {
 }
 
 describe("active chat route revalidation", () => {
-  it("skips same-thread same-URL global revalidation", () => {
+  it("preserves default same-thread same-URL revalidation", () => {
     expect(
       shouldRevalidateActiveChatRoute({
         currentUrl: url("https://camelai.dev/chat/thread_1?group=group_1"),
@@ -14,6 +14,18 @@ describe("active chat route revalidation", () => {
         currentParams: { id: "thread_1" },
         nextParams: { id: "thread_1" },
         defaultShouldRevalidate: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("preserves default same-thread same-URL revalidation skips", () => {
+    expect(
+      shouldRevalidateActiveChatRoute({
+        currentUrl: url("https://camelai.dev/chat/thread_1?group=group_1"),
+        nextUrl: url("https://camelai.dev/chat/thread_1?group=group_1"),
+        currentParams: { id: "thread_1" },
+        nextParams: { id: "thread_1" },
+        defaultShouldRevalidate: false,
       }),
     ).toBe(false);
   });

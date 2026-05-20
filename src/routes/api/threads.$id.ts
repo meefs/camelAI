@@ -1,6 +1,22 @@
-import type { ActionFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { requireSessionWorkspaceAccess } from "@/lib/auth.server";
 import * as chatDO from "@/lib/chat-do.server";
+
+export async function loader({ request, context, params }: LoaderFunctionArgs) {
+  if (request.method !== "GET") {
+    return Response.json({ error: "Method not allowed" }, { status: 405 });
+  }
+  const { workspaceId } = await requireSessionWorkspaceAccess(request, context);
+  const threadId = params.id?.trim();
+  if (!threadId) {
+    return Response.json({ error: "Thread ID required" }, { status: 400 });
+  }
+  const thread = await chatDO.getThread(context, threadId, workspaceId);
+  if (!thread) {
+    return Response.json({ error: "Thread not found" }, { status: 404 });
+  }
+  return Response.json({ thread });
+}
 
 export async function action({ request, context, params }: ActionFunctionArgs) {
   if (request.method !== "PATCH") {

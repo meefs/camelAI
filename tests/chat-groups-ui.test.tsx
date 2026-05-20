@@ -95,11 +95,14 @@ function groupViewWithThreadRevision(
   };
 }
 
-function ChatGroupsProviderProbe() {
+function ChatGroupsProviderProbe({ threadId = "thread_1" }: { threadId?: string }) {
   const { groups } = useChatGroups();
+  const thread = groups
+    .flatMap((group) => [...group.open_threads, ...group.closed_threads])
+    .find((candidate) => candidate.id === threadId);
   return (
     <div data-testid="thread-title">
-      {groups[0]?.open_threads[0]?.title ?? ""}
+      {thread?.title ?? ""}
     </div>
   );
 }
@@ -116,7 +119,39 @@ function authLoaderState(chatGroups: ChatGroupView[]) {
   };
 }
 
+class MockStatusWebSocket {
+  static instances: MockStatusWebSocket[] = [];
+
+  readonly url: string;
+  readonly listeners = new Map<string, Set<(event: MessageEvent | Event) => void>>();
+
+  constructor(url: string) {
+    this.url = url;
+    MockStatusWebSocket.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: MessageEvent | Event) => void) {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  close() {
+    for (const listener of this.listeners.get("close") ?? []) {
+      listener(new Event("close"));
+    }
+  }
+
+  emit(payload: unknown) {
+    const event = { data: JSON.stringify(payload) } as MessageEvent;
+    for (const listener of this.listeners.get("message") ?? []) {
+      listener(event);
+    }
+  }
+}
+
 beforeEach(() => {
+  MockStatusWebSocket.instances = [];
   window.localStorage.removeItem(CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY);
   window.localStorage.removeItem(
     "camelai:close-chat-group-confirmation-suppressed",
@@ -996,6 +1031,85 @@ describe("ChatGroupsProvider summary patches", () => {
         "Server title",
       );
     });
+  });
+
+  it("refreshes inactive thread metadata from status completions without broad revalidation", async () => {
+    vi.stubGlobal("WebSocket", MockStatusWebSocket as unknown as typeof WebSocket);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          thread: {
+            id: "thread_2",
+            title: "Generated UI polish",
+            model: "sonnet",
+            provider: "claude",
+            updated_at: 10,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const runningGroup: ChatGroupView = {
+      ...multiChatGroupView,
+      status: "running",
+      open_threads: multiChatGroupView.open_threads.map((thread) =>
+        thread.id === "thread_2"
+          ? { ...thread, status: "running" as const }
+          : thread,
+      ),
+    };
+    const loader = vi.fn(() => authLoaderState([runningGroup]));
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe threadId="thread_2" />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    try {
+      render(<RouterProvider router={router} />);
+
+      expect(await screen.findByTestId("thread-title")).toHaveTextContent(
+        "UI polish",
+      );
+      await waitFor(() => {
+        expect(MockStatusWebSocket.instances).toHaveLength(1);
+      });
+
+      act(() => {
+        MockStatusWebSocket.instances[0].emit({
+          type: "thread_status",
+          threadId: "thread_2",
+          status: "unread",
+          completedAt: 10,
+        });
+      });
+
+      await waitFor(
+        () => {
+          expect(fetchMock).toHaveBeenCalledWith("/api/threads/thread_2");
+        },
+        { timeout: 1200 },
+      );
+      await waitFor(() => {
+        expect(screen.getByTestId("thread-title")).toHaveTextContent(
+          "Generated UI polish",
+        );
+      });
+      expect(loader).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

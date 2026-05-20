@@ -190,6 +190,58 @@ export function reconcileThreadSummaryPatchesWithGroups(
   return next ?? (patches as Map<string, ThreadSummaryPatch>);
 }
 
+function getThreadSummaryPatchFromPayload(payload: unknown): ThreadSummaryPatch | null {
+  if (!payload || typeof payload !== "object") return null;
+  const thread = (payload as { thread?: unknown }).thread;
+  if (!thread || typeof thread !== "object") return null;
+  const record = thread as Record<string, unknown>;
+  if (
+    typeof record.title !== "string" ||
+    typeof record.model !== "string" ||
+    (record.provider !== "claude" && record.provider !== "codex") ||
+    typeof record.updated_at !== "number" ||
+    !Number.isFinite(record.updated_at)
+  ) {
+    return null;
+  }
+
+  return {
+    title: record.title,
+    model: record.model as ChatGroupThreadSummary["model"],
+    provider: record.provider,
+    updatedAt: record.updated_at,
+  };
+}
+
+function mergeThreadSummaryPatch(
+  current: ReadonlyMap<string, ThreadSummaryPatch>,
+  threadId: string,
+  patch: ThreadSummaryPatch,
+): Map<string, ThreadSummaryPatch> {
+  const currentPatch = current.get(threadId);
+  if (currentPatch && currentPatch.updatedAt > patch.updatedAt) {
+    return current as Map<string, ThreadSummaryPatch>;
+  }
+
+  const nextPatch: ThreadSummaryPatch = {
+    ...currentPatch,
+    ...patch,
+    updatedAt: Math.max(currentPatch?.updatedAt ?? 0, patch.updatedAt),
+  };
+  if (
+    currentPatch?.title === nextPatch.title &&
+    currentPatch?.model === nextPatch.model &&
+    currentPatch?.provider === nextPatch.provider &&
+    currentPatch?.updatedAt === nextPatch.updatedAt
+  ) {
+    return current as Map<string, ThreadSummaryPatch>;
+  }
+
+  const next = new Map(current);
+  next.set(threadId, nextPatch);
+  return next;
+}
+
 export function applyLiveRunningStatuses(
   source: ChatGroupView[],
   runningThreadIds: Set<string>,
@@ -437,26 +489,14 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
           if (currentPatch && currentPatch.updatedAt > updatedAt) {
             return current;
           }
-          const nextPatch: ThreadSummaryPatch = {
-            ...currentPatch,
+          return mergeThreadSummaryPatch(current, threadId, {
             ...(title ? { title } : {}),
             ...(model ? { model: model as ChatGroupThreadSummary["model"] } : {}),
             ...(provider
               ? { provider: provider as ChatGroupThreadSummary["provider"] }
               : {}),
-            updatedAt: Math.max(currentPatch?.updatedAt ?? 0, updatedAt),
-          };
-          if (
-            currentPatch?.title === nextPatch.title &&
-            currentPatch?.model === nextPatch.model &&
-            currentPatch?.provider === nextPatch.provider &&
-            currentPatch?.updatedAt === nextPatch.updatedAt
-          ) {
-            return current;
-          }
-          const next = new Map(current);
-          next.set(threadId, nextPatch);
-          return next;
+            updatedAt,
+          });
         });
       }
     };
@@ -482,6 +522,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
     let revalidateTimer: number | null = null;
+    const metadataRefreshTimers = new Map<string, number>();
     let closedByEffect = false;
 
     const scheduleStatusRevalidate = (threadId: string) => {
@@ -492,6 +533,28 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         revalidateTimer = null;
         revalidateRef.current();
       }, 750);
+    };
+    const refreshThreadSummary = async (threadId: string) => {
+      try {
+        const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`);
+        if (!response.ok || closedByEffect) return;
+        const patch = getThreadSummaryPatchFromPayload(await response.json());
+        if (!patch || closedByEffect) return;
+        setLocalThreadSummaryPatches((current) =>
+          mergeThreadSummaryPatch(current, threadId, patch),
+        );
+      } catch {
+        // The next loader refresh will catch up if this narrow metadata fetch fails.
+      }
+    };
+    const scheduleThreadSummaryRefresh = (threadId: string) => {
+      if (threadId === activeThreadIdRef.current) return;
+      if (metadataRefreshTimers.has(threadId)) return;
+      const timer = window.setTimeout(() => {
+        metadataRefreshTimers.delete(threadId);
+        void refreshThreadSummary(threadId);
+      }, 750);
+      metadataRefreshTimers.set(threadId, timer);
     };
     const markActiveThreadViewed = (threadId: string) => {
       if (!markViewedEnabled) return;
@@ -552,6 +615,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
             );
             if (staleRunningThreadIds.length > 0) {
               scheduleStatusRevalidate(staleRunningThreadIds[0]);
+              for (const threadId of staleRunningThreadIds) {
+                scheduleThreadSummaryRefresh(threadId);
+              }
             }
           }
           if (
@@ -587,6 +653,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
             });
             if (status === "idle" || status === "unread") {
               scheduleStatusRevalidate(threadId);
+              scheduleThreadSummaryRefresh(threadId);
             }
           }
         } catch {
@@ -610,6 +677,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       closedByEffect = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (revalidateTimer) window.clearTimeout(revalidateTimer);
+      for (const timer of metadataRefreshTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      metadataRefreshTimers.clear();
       socket?.close();
     };
   }, [

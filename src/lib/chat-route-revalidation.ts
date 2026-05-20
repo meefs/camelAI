@@ -46,9 +46,5 @@ export function shouldRevalidateActiveChatRoute({
     return false;
   }
 
-  if (!defaultShouldRevalidate) {
-    return false;
-  }
-
-  return false;
+  return defaultShouldRevalidate;
 }

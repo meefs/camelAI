@@ -279,7 +279,6 @@ function FilePreviewContentComponent({
           totalLines: cached.totalLines,
         });
         setTextStatus('ready');
-        return;
       }
     }
 
