@@ -6,13 +6,16 @@ import {
   ScrollRestoration,
   isRouteErrorResponse,
 } from 'react-router';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 import type { Route } from './+types/root';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import { NavigationProgress } from '@/components/ui/navigation-progress';
-import { reportClientError } from '@/lib/client-error-reporting';
+import {
+  reportClientError,
+  scheduleClientErrorReload,
+} from '@/lib/client-error-reporting';
 
 // Import global styles
 import './styles/globals.css';
@@ -117,6 +120,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let details = 'An unexpected error occurred.';
   let stack: string | undefined;
   const statusCode = isRouteErrorResponse(error) ? error.status : undefined;
+  const [isRecovering, setIsRecovering] = useState(false);
 
   if (isRouteErrorResponse(error)) {
     message = error.status === 404 ? '404' : 'Error';
@@ -137,7 +141,13 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
       routeId: 'root',
       statusCode,
     });
+    setIsRecovering(scheduleClientErrorReload({ error, statusCode }));
   }, [error, statusCode]);
+
+  if (isRecovering) {
+    message = 'Reloading...';
+    details = 'Refreshing the app to recover from a temporary loading error.';
+  }
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4">

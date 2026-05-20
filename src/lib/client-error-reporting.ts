@@ -27,6 +27,7 @@ type SerializedClientError = {
 const CLIENT_ERROR_ENDPOINT = '/api/client-errors';
 const MAX_REPORTS_PER_PAGE = 10;
 const MAX_REPORTS_PER_SIGNATURE = 2;
+const AUTO_RELOAD_DELAY_MS = 250;
 
 let initialized = false;
 let reportCount = 0;
@@ -37,18 +38,52 @@ export function initClientErrorReporting(): void {
   initialized = true;
 
   window.addEventListener('error', (event) => {
+    const error = event.error ?? event.message;
     reportClientError({
       source: 'window_error',
-      error: event.error ?? event.message,
+      error,
     });
+    scheduleClientErrorReload({ error });
   });
 
   window.addEventListener('unhandledrejection', (event) => {
+    const error = event.reason;
     reportClientError({
       source: 'unhandled_rejection',
-      error: event.reason,
+      error,
     });
+    scheduleClientErrorReload({ error });
   });
+}
+
+export function scheduleClientErrorReload(input: {
+  error: unknown;
+  statusCode?: number;
+}): boolean {
+  if (typeof window === 'undefined') return false;
+  if (input.statusCode && input.statusCode < 500) return false;
+
+  const details = errorDetails(input.error);
+  if (!isAutoReloadRecoverable(details)) return false;
+
+  const key = [
+    'camelai:auto-reload',
+    window.location.pathname,
+    details.name,
+    details.message,
+  ].join(':');
+
+  try {
+    if (window.sessionStorage.getItem(key)) return false;
+    window.sessionStorage.setItem(key, String(Date.now()));
+  } catch {
+    return false;
+  }
+
+  window.setTimeout(() => {
+    window.location.reload();
+  }, AUTO_RELOAD_DELAY_MS);
+  return true;
 }
 
 export function reportClientError(input: ClientErrorInput): void {
@@ -95,7 +130,7 @@ function serializeClientError(input: ClientErrorInput): SerializedClientError {
     source: input.source,
     name: limit(details.name, 128),
     message: limit(details.message, 2048),
-    stack: details.stack ? limit(details.stack, 4096) : undefined,
+    stack: details.stack ? limit(redactStack(details.stack), 4096) : undefined,
     path,
     url: `${window.location.origin}${path}`,
     routeId: input.routeId ? limit(input.routeId, 256) : undefined,
@@ -147,6 +182,24 @@ function errorDetails(error: unknown): {
   return { name: 'Error', message: stringifyUnknown(error) };
 }
 
+function isAutoReloadRecoverable(error: {
+  name: string;
+  message: string;
+  stack?: string;
+}): boolean {
+  const text = `${error.name}\n${error.message}\n${error.stack ?? ''}`.toLowerCase();
+  return [
+    'chunkloaderror',
+    'loading chunk',
+    'failed to fetch dynamically imported module',
+    'error loading dynamically imported module',
+    'importing a module script failed',
+    'module script load failed',
+    'unable to preload css',
+    'loading css chunk',
+  ].some((needle) => text.includes(needle));
+}
+
 function stringifyUnknown(value: unknown): string {
   if (value === undefined) return 'undefined';
   if (value === null) return 'null';
@@ -160,6 +213,23 @@ function stringifyUnknown(value: unknown): string {
 function sanitizePath(pathname: string): string {
   if (!pathname.startsWith('/')) return '/';
   return pathname.slice(0, 512);
+}
+
+function redactStack(stack: string): string {
+  return stack
+    .replace(/https?:\/\/[^\s)]+/g, (match) => redactUrl(match))
+    .replace(/\/[^\s)]+[?#][^\s)]*/g, (match) => match.split(/[?#]/, 1)[0]);
+}
+
+function redactUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return value.split(/[?#]/, 1)[0];
+  }
 }
 
 function limit(value: string, maxLength: number): string {

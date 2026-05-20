@@ -36,8 +36,8 @@ export async function action({ request, context }: ActionFunctionArgs) {
     return Response.json({ error: 'Payload too large' }, { status: 413 });
   }
 
-  const text = await request.text();
-  if (text.length > MAX_CLIENT_ERROR_BODY_BYTES) {
+  const text = await readLimitedText(request, MAX_CLIENT_ERROR_BODY_BYTES);
+  if (text === null) {
     return Response.json({ error: 'Payload too large' }, { status: 413 });
   }
 
@@ -52,15 +52,23 @@ export async function action({ request, context }: ActionFunctionArgs) {
   const source = safeString(payload.source, 64) || 'client_error';
   const name = safeString(payload.name, 128) || 'Error';
   const message = safeString(payload.message, 2048) || 'Unknown client error';
-  const stack = safeString(payload.stack, 4096);
+  const stack = redactStack(safeString(payload.stack, 4096));
   const routeId = safeString(payload.routeId, 256);
   const statusCode = safeStatusCode(payload.statusCode);
   const timestamp = safeTimestamp(payload.timestamp);
   const userAgent = safeString(payload.userAgent, 512);
   const viewport = safeString(payload.viewport, 64);
 
+  const fingerprint = createErrorFingerprint({
+    source,
+    name,
+    message,
+    path,
+    stack,
+  });
   const stackWithContext = [
     stack,
+    `Fingerprint: ${fingerprint}`,
     userAgent ? `User agent: ${userAgent}` : '',
     viewport ? `Viewport: ${viewport}` : '',
   ]
@@ -83,14 +91,49 @@ export async function action({ request, context }: ActionFunctionArgs) {
     userId: session?.session.user_id,
     orgId: session?.session.org_id,
     workspaceId: session?.session.workspace_id,
-    requestId: request.headers.get('cf-ray') ?? undefined,
+    requestId: request.headers.get('cf-ray') ?? crypto.randomUUID(),
     statusCode,
     timestamp,
-    sampleIndex: session?.session.user_id ?? path,
+    sampleIndex: fingerprint,
     error,
   });
 
   return new Response(null, { status: 204 });
+}
+
+async function readLimitedText(
+  request: Request,
+  maxBytes: number,
+): Promise<string | null> {
+  if (!request.body) return '';
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return new TextDecoder().decode(body);
 }
 
 function parsePayload(text: string): ClientErrorPayload | null {
@@ -101,6 +144,57 @@ function parsePayload(text: string): ClientErrorPayload | null {
   } catch {
     return null;
   }
+}
+
+function redactStack(stack: string): string {
+  return stack
+    .replace(/https?:\/\/[^\s)]+/g, (match) => redactUrl(match))
+    .replace(/\/[^\s)]+[?#][^\s)]*/g, (match) => match.split(/[?#]/, 1)[0]);
+}
+
+function redactUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return value.split(/[?#]/, 1)[0];
+  }
+}
+
+function createErrorFingerprint(input: {
+  source: string;
+  name: string;
+  message: string;
+  path: string;
+  stack: string;
+}): string {
+  const firstFrame = input.stack.split('\n').find((line) => line.trim()) ?? '';
+  const basis = [
+    input.source,
+    input.name,
+    normalizeMessageForGrouping(input.message),
+    input.path,
+    firstFrame.trim(),
+  ].join('|');
+  return `client:${hashString(basis)}`;
+}
+
+function normalizeMessageForGrouping(message: string): string {
+  return message
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, ':uuid')
+    .replace(/\b[0-9a-f]{24,}\b/gi, ':hex')
+    .replace(/\d{5,}/g, ':number');
+}
+
+function hashString(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 function normalizeClientPath(

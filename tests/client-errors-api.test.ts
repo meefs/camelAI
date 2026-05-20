@@ -50,7 +50,8 @@ describe('POST /api/client-errors', () => {
         source: 'react_error_boundary',
         name: 'TypeError',
         message: 'Cannot read properties of undefined',
-        stack: 'TypeError: Cannot read properties\n    at Component',
+        stack:
+          'TypeError: Cannot read properties\n    at Component (https://staging.camelai.dev/assets/app.js?token=secret#frag:1:1)',
         path: '/chat/018f64b8-0f6a-4b0f-9e70-8a5d9c0d4f5b?token=secret',
         routeId: 'root',
         statusCode: 500,
@@ -78,8 +79,12 @@ describe('POST /api/client-errors', () => {
     expect(errorPoint.blobs[10]).toBe('ray-123-SJC');
     expect(errorPoint.blobs[11]).toBe('root');
     expect(errorPoint.blobs[12]).toBe('/chat/:uuid');
+    expect(errorPoint.blobs[13]).not.toContain('token=secret');
+    expect(errorPoint.blobs[13]).not.toContain('#frag');
+    expect(errorPoint.blobs[13]).toContain('Fingerprint: client:');
     expect(errorPoint.blobs[13]).toContain('Viewport: 1440x900');
     expect(errorPoint.doubles[2]).toBe(500);
+    expect(errorPoint.indexes[0]).toMatch(/^client:[0-9a-f]{8}$/);
   });
 
   it('rejects invalid JSON payloads', async () => {
@@ -98,6 +103,17 @@ describe('POST /api/client-errors', () => {
       request: makeRequest('x'.repeat(17 * 1024), {
         'content-length': String(17 * 1024),
       }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(413);
+    expect(errorWrite).not.toHaveBeenCalled();
+  });
+
+  it('enforces payload limits by bytes without trusting content-length', async () => {
+    const response = await action({
+      request: makeRequest('😀'.repeat(5_000), {}),
       context: {},
       params: {},
     } as never);
