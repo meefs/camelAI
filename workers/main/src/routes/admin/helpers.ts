@@ -4,7 +4,10 @@
 
 import type { Env } from '../../types.js';
 import type { OrgDO, UserDO } from '../../auth.js';
-import { getAppIndexDatabase } from '../../app-index-db.js';
+import {
+  getAppIndexDatabase,
+  getAppIndexReadDatabase,
+} from '../../app-index-db.js';
 import { ensureAdminIndexReady } from '../../admin-index-bootstrap.js';
 import {
   WorkspaceContainer,
@@ -58,12 +61,23 @@ async function getOptionalChatThreadSessionId(
 }
 
 export function getAdminIndexStub(env: AdminIndexEnv) {
-  const appIndex = getAppIndexDatabase(env);
-  if (!appIndex) {
+  const readIndex = getAppIndexReadDatabase(env);
+  const writeIndex = getAppIndexDatabase(env);
+  if (!readIndex || !writeIndex) {
     throw new Error('APP_DB binding is not configured');
   }
-  return new Proxy(appIndex as unknown as Record<string, unknown>, {
-    get(target, prop, receiver) {
+  const writeMethods = new Set([
+    'applyAdminEvent',
+    'blockSignupIp',
+    'markBootstrapComplete',
+    'unblockSignupIp',
+  ]);
+
+  return new Proxy(readIndex as unknown as Record<string, unknown>, {
+    get(_target, prop, receiver) {
+      const target = typeof prop === 'string' && writeMethods.has(prop)
+        ? writeIndex
+        : readIndex;
       const value = Reflect.get(target, prop, receiver);
       if (typeof value !== 'function') {
         return value;
@@ -71,7 +85,7 @@ export function getAdminIndexStub(env: AdminIndexEnv) {
 
       return async (...args: unknown[]) => {
         await ensureAdminIndexReady(env);
-        return value.apply(appIndex, args);
+        return value.apply(target, args);
       };
     },
   });

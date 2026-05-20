@@ -144,6 +144,6 @@
     { "tag": "v24", "new_sqlite_classes": ["CloudflareSandbox"] },
     { "tag": "v25", "new_sqlite_classes": ["WorkspaceFilesystemDO"] },
     { "tag": "v26", "deleted_classes": ["CloudflareSandbox", "WorkspaceFilesystemDO"] },
-    { "tag": "v27", "deleted_classes": ["AdminIndexDO"] },
+    { "tag": "v28", "deleted_classes": ["AdminIndexDO"] },
   ],
 }
