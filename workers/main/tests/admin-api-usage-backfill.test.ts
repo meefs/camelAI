@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:test";
 import { handleAdminApi } from "../src/routes/admin/index";
-import { ChatThreadDO } from "../src/durable-objects";
+import { ChatThreadDO } from "../src/chat-thread-do";
 import type { Env as WorkerEnv } from "../src/types";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
 

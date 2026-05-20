@@ -51,7 +51,7 @@ describe('model pricing coverage', () => {
 
   it('registers new Pi models with the expected DO harness providers', () => {
     const source = fs.readFileSync(
-      path.join(root, 'workers/main/src/durable-objects.ts'),
+      path.join(root, 'workers/main/src/chat-thread-do.ts'),
       'utf8',
     );
 

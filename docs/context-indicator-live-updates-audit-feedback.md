@@ -47,14 +47,14 @@ private transientContextUsedPercent: number | null = null;
 // On message_start live update:
 const livePct = computeFromMessageStart(...);
 this.transientContextUsedPercent = livePct;
-this.broadcastRealtime({ type: 'context_usage_state', usedPercent: livePct });
+this.broadcastChat({ type: 'context_usage_state', usedPercent: livePct });
 
 // On result final update:
 const finalPct = computeFinalFromLastMessageStart(...);
 this.contextUsedPercent = finalPct;
 this.transientContextUsedPercent = null;
 this.ctx.storage.kv.put(CHAT_CONTEXT_USED_PERCENT_KEY, finalPct);
-this.broadcastRealtime({ type: 'context_usage_state', usedPercent: finalPct });
+this.broadcastChat({ type: 'context_usage_state', usedPercent: finalPct });
 ```
 
 If you do not need mid-turn reconnect replay, skip `transientContextUsedPercent` entirely.

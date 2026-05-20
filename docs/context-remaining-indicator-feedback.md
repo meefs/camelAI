@@ -126,7 +126,7 @@ if (sdkEvent?.type === 'result' && this.lastMessageStartUsage && this.usageIsPos
     const pct = Math.max(0, Math.min(100, Math.round((totalInput / contextWindow) * 100)));
     this.contextUsedPercent = pct;
     this.ctx.storage.kv.put(CHAT_CONTEXT_USED_PERCENT_KEY, pct);
-    this.broadcastRealtime({ type: 'context_usage_state', usedPercent: pct });
+    this.broadcastChat({ type: 'context_usage_state', usedPercent: pct });
   }
   this.lastMessageStartUsage = null; // reset for next turn
   this.usageIsPostCompaction = true;  // reset flag

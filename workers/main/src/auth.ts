@@ -20,7 +20,7 @@ import type {
   ChatGroup,
   ChatGroupSummary,
 } from "../../../src/types";
-import type { ChatThreadDO } from "./durable-objects";
+import type { ChatThreadDO } from "./chat-thread-do";
 import { WorkspaceDO } from "./workspace";
 import {
   DEFAULT_LLM_MODEL,

@@ -10,7 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
-import type { ChatThreadDO, PreviewTarget } from './durable-objects';
+import type { ChatThreadDO, PreviewTarget } from './chat-thread-do';
 import type { WorkspaceCronDO } from './workspace-cron';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
 import {

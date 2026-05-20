@@ -66,7 +66,7 @@ import {
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
-export { ChatThreadDO, CodeModeToolsBinding } from './durable-objects.js';
+export { ChatThreadDO, CodeModeToolsBinding } from './chat-thread-do.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
 export { EmailHandleDO } from './email-handle-registry.js';

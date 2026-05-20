@@ -168,7 +168,7 @@ if (streamEvent?.type === 'message_start' && streamEvent.message?.usage) {
       this.lastMessageStartUsage.cacheCreationInputTokens;
     const livePct = Math.max(0, Math.min(100, Math.round((totalInput / contextWindow) * 100)));
     this.transientContextUsedPercent = livePct;
-    this.broadcastRealtime({ type: 'context_usage_state', usedPercent: livePct });
+    this.broadcastChat({ type: 'context_usage_state', usedPercent: livePct });
   }
 }
 ```
@@ -242,7 +242,7 @@ if (sdkEvent?.type === 'result') {
       );
       this.contextUsedPercent = contextUsedPercent;
       this.ctx.storage.kv.put(CHAT_CONTEXT_USED_PERCENT_KEY, contextUsedPercent);
-      this.broadcastRealtime({ type: 'context_usage_state', usedPercent: contextUsedPercent });
+      this.broadcastChat({ type: 'context_usage_state', usedPercent: contextUsedPercent });
     }
   }
 
@@ -300,7 +300,7 @@ The existing `usageIsPostCompaction` flag is checked before intermediate broadca
 If a client reconnects mid-turn, `handleChatInit` replays `transientContextUsedPercent ?? contextUsedPercent`, so users get the freshest live value when available without mutating canonical persisted state.
 
 ### Multiple chat clients connected
-`broadcastRealtime` sends to all connected chat WebSocket clients. All clients see the same live updates. Correct behavior.
+`broadcastChat` sends to all connected chat WebSocket clients. All clients see the same live updates. Correct behavior.
 
 ---
 

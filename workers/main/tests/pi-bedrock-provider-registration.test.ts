@@ -20,7 +20,7 @@ vi.mock('../src/pi-bedrock-provider', () => ({
 
 describe('Pi Bedrock provider registration', () => {
   it('registers the Bedrock provider module during worker initialization', async () => {
-    await import('../src/durable-objects');
+    await import('../src/chat-thread-do');
 
     expect(setBedrockProviderModule).toHaveBeenCalledTimes(1);
     expect(setBedrockProviderModule).toHaveBeenCalledWith(bedrockProviderModule);
