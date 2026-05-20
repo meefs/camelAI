@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ChatThreadDO } from "../src/durable-objects";
+import { ChatThreadDO } from "../src/chat-thread-do";
 
 describe("ChatThreadDO completion summaries", () => {
   afterEach(() => {
@@ -30,6 +30,7 @@ describe("ChatThreadDO completion summaries", () => {
       waitUntil: vi.fn((promise: Promise<unknown>) => {
         waitUntilPromises.push(promise);
       }),
+      getWebSockets: vi.fn(() => [] as WebSocket[]),
     };
     fake.env = {
       CF_ACCOUNT_ID: "acct_1",
