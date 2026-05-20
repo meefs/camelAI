@@ -35,6 +35,7 @@ import {
 import { cn } from '@/lib/utils';
 
 const messageTimeCache = new Map<number, string>();
+const EMPTY_ANNOTATED_MENTIONS: AnnotatedMentionRef[] = [];
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -140,7 +141,8 @@ function prepareDisplayText(text: string): {
   );
   return {
     displayText: displayText.trim(),
-    annotatedMentions,
+    annotatedMentions:
+      annotatedMentions.length > 0 ? annotatedMentions : EMPTY_ANNOTATED_MENTIONS,
   };
 }
 
@@ -377,6 +379,17 @@ export function ContentBlockRenderer({
       toolUseIds.add(block.id);
     }
   });
+  const agentContinuedAfterIndex = new Map<number, boolean>();
+  let hasAgentContinuationAfterCurrentBlock = false;
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    const block = content[index];
+    if (block.type === 'tool_use') {
+      agentContinuedAfterIndex.set(index, hasAgentContinuationAfterCurrentBlock);
+    }
+    if (block.type === 'text' || block.type === 'tool_result') {
+      hasAgentContinuationAfterCurrentBlock = true;
+    }
+  }
   const items: Array<{ kind: 'tool' | 'other'; node: ReactNode; key: string }> = [];
 
   content.forEach((block, index) => {
@@ -453,18 +466,7 @@ export function ContentBlockRenderer({
       const latestResult = results[results.length - 1];
       const isTaskTool = isSubAgentTool(block.name);
       const skillSheet = skillSheets?.get(block.id);
-      // Check if the agent received results after this tool call.
-      // A subsequent text block means the agent continued with a response;
-      // a subsequent tool_result means results arrived for this batch.
-      // Sibling tool_use blocks are excluded — parallel calls are emitted
-      // together before any results arrive, so they don't prove completion.
-      // Note: any tool_result (not just ID-matched ones) is sufficient because
-      // parallel results arrive atomically in a single SDK user event — if one
-      // result exists, all results for the batch exist (possibly with mismatched
-      // IDs, which is the bug this heuristic compensates for).
-      const agentContinued = content.slice(index + 1).some(
-        b => b.type === 'text' || b.type === 'tool_result'
-      );
+      const agentContinued = agentContinuedAfterIndex.get(index) ?? false;
       items.push({
         kind: 'tool',
         key: `tool-${block.id || index}`,

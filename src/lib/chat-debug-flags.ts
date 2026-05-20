@@ -9,7 +9,7 @@ export const CHAT_DEBUG_STORAGE_KEY = "camelai.chatDebug";
 
 const DEFAULT_CHAT_DEBUG_FLAGS: ChatDebugFlags = {
   statusSocket: true,
-  statusRevalidate: true,
+  statusRevalidate: false,
   markViewed: true,
   historyLogs: false,
 };

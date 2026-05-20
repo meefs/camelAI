@@ -298,6 +298,7 @@ async function notifyThreadMetadataChange(
       | "kimi-k2.6"
       | "grok-4.3";
   },
+  updatedAt?: number,
 ): Promise<void> {
   if (
     !env.CHAT_THREAD ||
@@ -321,15 +322,17 @@ async function notifyThreadMetadataChange(
           | "gpt-5.4-mini"
           | "kimi-k2.6"
           | "grok-4.3",
+        provider?: "claude" | "codex",
+        updatedAt?: number,
       ): Promise<void>;
       refreshRunnerConfig(): Promise<void>;
     };
 
     if (updates.title) {
-      await chatThread.setTitle(updates.title);
+      await chatThread.setTitle(updates.title, updatedAt);
     }
     if (updates.model) {
-      await chatThread.setModel(updates.model);
+      await chatThread.setModel(updates.model, undefined, updatedAt);
       await chatThread.refreshRunnerConfig();
     }
   } catch (error) {
@@ -1381,7 +1384,7 @@ routes.patch(
         throw error;
       }
       if (result) {
-        await notifyThreadMetadataChange(env, threadId, body);
+        await notifyThreadMetadataChange(env, threadId, body, result.updated_at);
         return c.json(result);
       }
     }
@@ -1405,7 +1408,7 @@ routes.patch(
         throw error;
       }
       if (result) {
-        await notifyThreadMetadataChange(env, threadId, body);
+        await notifyThreadMetadataChange(env, threadId, body, result.updated_at);
         return c.json(result);
       }
     }

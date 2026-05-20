@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router";
+import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import {
   ChatTabBar,
   MAX_OPEN_CHAT_TABS_PER_GROUP,
@@ -16,13 +16,16 @@ import {
 } from "@/components/sidebar/chat-groups-list";
 import {
   applyLiveRunningStatuses,
+  ChatGroupsProvider,
   getThreadIdsRequiringSnapshotRevalidation,
   getCloseGroupRedirect,
   getGroupLandingHref,
   mergeActiveChatGroup,
   reconcileLocalThreadStatusesWithSnapshot,
+  reconcileThreadSummaryPatchesWithGroups,
   shouldMarkActiveIdleThreadViewed,
   shouldMarkActiveUnreadThreadViewed,
+  useChatGroups,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import type { ChatGroup, ChatGroupView } from "@/types";
@@ -75,6 +78,43 @@ const multiChatGroupView: ChatGroupView = {
   ],
   member_count: 2,
 };
+
+function groupViewWithThreadRevision(
+  title: string,
+  updatedAt: number,
+): ChatGroupView {
+  return {
+    ...groupView,
+    open_threads: [
+      {
+        ...groupView.open_threads[0],
+        title,
+        updated_at: updatedAt,
+      },
+    ],
+  };
+}
+
+function ChatGroupsProviderProbe() {
+  const { groups } = useChatGroups();
+  return (
+    <div data-testid="thread-title">
+      {groups[0]?.open_threads[0]?.title ?? ""}
+    </div>
+  );
+}
+
+function authLoaderState(chatGroups: ChatGroupView[]) {
+  return {
+    authState: {
+      user: { id: "user_1" },
+      currentWorkspace: { id: "workspace_1" },
+      currentOrg: { id: "org_1" },
+      orgs: [],
+    },
+    chatGroups,
+  };
+}
 
 beforeEach(() => {
   window.localStorage.removeItem(CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY);
@@ -847,7 +887,134 @@ describe("reconcileLocalThreadStatusesWithSnapshot", () => {
   });
 });
 
+describe("reconcileThreadSummaryPatchesWithGroups", () => {
+  it("keeps optimistic patches when refreshed group data is older", () => {
+    const current = new Map([
+      ["thread_1", { title: "Optimistic title", updatedAt: 5 }],
+    ]);
+
+    expect(reconcileThreadSummaryPatchesWithGroups(current, [groupView])).toBe(
+      current,
+    );
+  });
+
+  it("drops optimistic patches for threads present in matching-or-newer group data", () => {
+    const current = new Map([
+      ["thread_1", { title: "Optimistic title", updatedAt: 1 }],
+      ["thread_missing", { title: "Drop me", updatedAt: 1 }],
+    ]);
+
+    const next = reconcileThreadSummaryPatchesWithGroups(current, [groupView]);
+
+    expect(next).not.toBe(current);
+    expect(next.has("thread_1")).toBe(false);
+    expect(next.has("thread_missing")).toBe(false);
+  });
+
+  it("preserves patch identity when no refreshed thread matches", () => {
+    const current = new Map([["thread_other", { title: "Pending", updatedAt: 5 }]]);
+
+    expect(reconcileThreadSummaryPatchesWithGroups(current, undefined)).toBe(current);
+  });
+
+  it("clears all patches when fresh group data has no threads", () => {
+    const current = new Map([["thread_1", { title: "Pending", updatedAt: 5 }]]);
+    const emptyGroup: ChatGroupView = {
+      ...groupView,
+      open_thread_ids: [],
+      closed_thread_ids: [],
+      open_threads: [],
+      closed_threads: [],
+      member_count: 0,
+      status: "idle",
+    };
+
+    expect(
+      reconcileThreadSummaryPatchesWithGroups(current, [emptyGroup]).size,
+    ).toBe(0);
+  });
+});
+
+describe("ChatGroupsProvider summary patches", () => {
+  it("keeps newer local title patches over older loader group data", async () => {
+    let loaderState = authLoaderState([groupViewWithThreadRevision("API plan", 1)]);
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader: () => loaderState,
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByTestId("thread-title")).toHaveTextContent(
+      "API plan",
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("camelai:thread-status", {
+          detail: {
+            threadId: "thread_1",
+            title: "Optimistic title",
+            updatedAt: 5,
+          },
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-title")).toHaveTextContent(
+        "Optimistic title",
+      );
+    });
+
+    loaderState = authLoaderState([groupViewWithThreadRevision("Old title", 1)]);
+    await act(async () => {
+      await router.revalidate();
+    });
+
+    expect(screen.getByTestId("thread-title")).toHaveTextContent(
+      "Optimistic title",
+    );
+
+    loaderState = authLoaderState([groupViewWithThreadRevision("Server title", 6)]);
+    await act(async () => {
+      await router.revalidate();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-title")).toHaveTextContent(
+        "Server title",
+      );
+    });
+  });
+});
+
 describe("applyLiveRunningStatuses", () => {
+  it("preserves group and thread identities for no-op status frames", () => {
+    const source = [groupView];
+    const result = applyLiveRunningStatuses(
+      source,
+      new Set(),
+      false,
+      null,
+      new Map([["thread_1", "idle"] as const]),
+    );
+
+    expect(result).toBe(source);
+    expect(result[0]).toBe(groupView);
+    expect(result[0].open_threads[0]).toBe(groupView.open_threads[0]);
+  });
+
   it("clears loader-derived running state after the socket snapshot arrives", () => {
     const [group] = applyLiveRunningStatuses(
       [
@@ -1046,5 +1213,19 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.status).toBe("unread");
     expect(group.open_threads[0].status).toBe("unread");
     expect(group.open_threads[1].status).toBe("idle");
+  });
+
+  it("applies local thread summary patches without status revalidation", () => {
+    const [group] = applyLiveRunningStatuses(
+      [groupView],
+      new Set(),
+      false,
+      null,
+      new Map(),
+      new Map([["thread_1", { title: "Renamed thread", updatedAt: 2 }]]),
+    );
+
+    expect(group.open_threads[0].title).toBe("Renamed thread");
+    expect(group.open_threads[0].status).toBe("idle");
   });
 });

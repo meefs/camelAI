@@ -12,6 +12,13 @@ import type { SpreadsheetToolbarState } from './spreadsheet';
 
 const MAX_TEXT_LINES = 500;
 const MAX_SPREADSHEET_LINES = 500;
+const HTML_PREVIEW_SANDBOX =
+  'allow-scripts allow-forms allow-modals allow-popups allow-downloads';
+const HTML_SOURCE_CACHE_LIMIT = 20;
+const htmlSourceCache = new Map<
+  string,
+  { text: string; truncated: boolean; totalLines: number }
+>();
 const SpreadsheetPreview = lazy(() =>
   import('./spreadsheet').then((module) => ({ default: module.SpreadsheetPreview }))
 );
@@ -35,6 +42,18 @@ function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
     truncated: true,
     totalLines,
   };
+}
+
+function cacheHtmlSource(
+  previewUrl: string,
+  entry: { text: string; truncated: boolean; totalLines: number }
+) {
+  htmlSourceCache.delete(previewUrl);
+  htmlSourceCache.set(previewUrl, entry);
+  if (htmlSourceCache.size > HTML_SOURCE_CACHE_LIMIT) {
+    const firstKey = htmlSourceCache.keys().next().value;
+    if (firstKey) htmlSourceCache.delete(firstKey);
+  }
 }
 
 function formatJsonPreview(raw: string): FormattedTextResult {
@@ -137,16 +156,18 @@ function HtmlPreview({
   layout: PreviewLayout;
 }) {
   return (
-    <iframe
-      src={src}
-      title={title}
-      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
-      referrerPolicy="no-referrer"
-      className={cn(
-        'w-full bg-white',
-        layout === 'panel' ? 'h-full' : 'h-[60vh]'
-      )}
-    />
+    <div className="relative h-full min-h-[240px]">
+      <iframe
+        src={src}
+        title={title}
+        sandbox={HTML_PREVIEW_SANDBOX}
+        referrerPolicy="no-referrer"
+        className={cn(
+          'w-full bg-white',
+          layout === 'panel' ? 'h-full' : 'h-[60vh]'
+        )}
+      />
+    </div>
   );
 }
 
@@ -227,7 +248,7 @@ function FilePreviewContentComponent({
       previewType === 'spreadsheet' ||
       previewType === 'notebook' ||
       previewType === 'markdown' ||
-      previewType === 'html' ||
+      (previewType === 'html' && currentFileViewMode === 'source') ||
       previewType === 'svg' ||
       previewType === 'json' ||
       previewType === 'jsonl';
@@ -247,6 +268,19 @@ function FilePreviewContentComponent({
     setNotebook(null);
     if (previewType === 'notebook') {
       notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
+    }
+
+    if (previewType === 'html') {
+      const cached = htmlSourceCache.get(previewUrl);
+      if (cached) {
+        setTextPreview(cached.text);
+        setLineInfo({
+          truncated: cached.truncated,
+          totalLines: cached.totalLines,
+        });
+        setTextStatus('ready');
+        return;
+      }
     }
 
     fetch(previewUrl, { signal: controller.signal })
@@ -295,6 +329,13 @@ function FilePreviewContentComponent({
         const { text: truncatedText, truncated, totalLines } = truncateTextLines(bodyText);
         setTextPreview(truncatedText);
         setLineInfo({ truncated, totalLines });
+        if (previewType === 'html') {
+          cacheHtmlSource(previewUrl, {
+            text: truncatedText,
+            truncated,
+            totalLines,
+          });
+        }
         if (previewType === 'json' || previewType === 'jsonl') {
           const formatted =
             previewType === 'json'
@@ -329,7 +370,7 @@ function FilePreviewContentComponent({
       cancelled = true;
       controller.abort();
     };
-  }, [binarySpreadsheet, previewType, previewUrl]);
+  }, [binarySpreadsheet, currentFileViewMode, previewType, previewUrl]);
 
   useEffect(() => {
     if (previewType === 'pdf' || previewType === 'audio' || previewType === 'video') {
@@ -356,26 +397,29 @@ function FilePreviewContentComponent({
               (currentFileViewMode === 'preview' ? 'h-full overflow-hidden' : 'h-full overflow-auto')
           )}
         >
-          {(textStatus === 'loading' || textStatus === 'idle') && (
-            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          {currentFileViewMode === 'preview' ? (
+            <HtmlPreview src={previewUrl} title={filename} layout={layout} />
+          ) : (
+            <>
+              {(textStatus === 'loading' || textStatus === 'idle') && (
+                <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+              )}
+              {textStatus === 'error' && (
+                <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+              )}
+              {textStatus === 'ready' && (
+                <SourcePreview
+                  code={textPreview}
+                  filename={filename}
+                  layout={layout}
+                  truncated={lineInfo.truncated}
+                  totalLines={lineInfo.totalLines}
+                  maxLines={MAX_TEXT_LINES}
+                  languageOverride="html"
+                />
+              )}
+            </>
           )}
-          {textStatus === 'error' && (
-            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
-          )}
-          {textStatus === 'ready' &&
-            (currentFileViewMode === 'preview' ? (
-              <HtmlPreview src={previewUrl} title={filename} layout={layout} />
-            ) : (
-              <SourcePreview
-                code={textPreview}
-                filename={filename}
-                layout={layout}
-                truncated={lineInfo.truncated}
-                totalLines={lineInfo.totalLines}
-                maxLines={MAX_TEXT_LINES}
-                languageOverride="html"
-              />
-            ))}
         </div>
       )}
 

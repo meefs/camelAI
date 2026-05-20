@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { handleAdminApi } from '../src/routes/admin/index';
 import type { Env as WorkerEnv } from '../src/types';
@@ -76,5 +76,63 @@ describe('admin API thread patch route', () => {
     await waitForAdminIndexThreadPresence(thread.id);
 
     await expect(appIndex.getThreadContextById(thread.id)).resolves.toMatchObject({ model: 'sonnet' });
+  });
+
+  it('forwards updated thread revisions to ChatThreadDO metadata broadcasts', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Admin API Revision User');
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Admin API Revision Org', userId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const thread = await orgStub.createThread(defaultWorkspaceId, 'Patch thread title', userId);
+    await waitForAdminIndexThreadPresence(thread.id);
+
+    const setTitle = vi.fn().mockResolvedValue(undefined);
+    const setModel = vi.fn().mockResolvedValue(undefined);
+    const refreshRunnerConfig = vi.fn().mockResolvedValue(undefined);
+    const chatThreadGet = vi.fn().mockReturnValue({
+      setTitle,
+      setModel,
+      refreshRunnerConfig,
+    });
+    const chatThreadIdFromName = vi.fn((id: string) => `chat-thread:${id}`);
+    const request = new Request(`http://example/api/admin/threads/${thread.id}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: 'Bearer test-admin-api-key',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ title: 'Renamed through admin API', model: 'sonnet' }),
+    });
+
+    const response = await handleAdminApi({
+      req: request,
+      env: {
+        ...testEnv,
+        ADMIN_API_KEY: 'test-admin-api-key',
+        CHAT_THREAD: {
+          idFromName: chatThreadIdFromName,
+          get: chatThreadGet,
+        },
+      } as unknown as WorkerEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL(request.url),
+      match: request.url.match(/^.*$/)!,
+    });
+
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    const result = await response!.json() as { updated_at: number };
+    expect(typeof result.updated_at).toBe('number');
+    expect(chatThreadIdFromName).toHaveBeenCalledWith(thread.id);
+    expect(setTitle).toHaveBeenCalledWith(
+      'Renamed through admin API',
+      result.updated_at,
+    );
+    expect(setModel).toHaveBeenCalledWith(
+      'sonnet',
+      undefined,
+      result.updated_at,
+    );
+    expect(refreshRunnerConfig).toHaveBeenCalledTimes(1);
   });
 });

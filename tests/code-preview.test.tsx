@@ -157,8 +157,9 @@ describe('SourcePreview', () => {
     expect(sourceWrapper?.className).not.toContain('min-w-max');
   });
 
-  it('renders HTML previews in a sandboxed iframe without same-origin access', async () => {
-    mockFetchText('<!doctype html><h1>Hello</h1>');
+  it('renders HTML previews in an immediate script sandbox without fetching source', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
 
     const { container } = render(
       <FilePreviewContent
@@ -169,20 +170,19 @@ describe('SourcePreview', () => {
       />
     );
 
-    await waitFor(() => {
-      const iframe = container.querySelector('iframe');
-      expect(iframe).not.toBeNull();
-      expect(iframe).toHaveAttribute('src', '/preview/index.html');
-      expect(iframe).toHaveAttribute(
-        'sandbox',
-        'allow-scripts allow-forms allow-modals allow-popups allow-downloads'
-      );
-      expect(iframe?.getAttribute('sandbox')).not.toContain('allow-same-origin');
-      expect(iframe?.className).not.toContain('rounded-md');
-      expect(iframe?.className).not.toContain('border');
-      expect(iframe?.parentElement?.className).toContain('overflow-hidden');
-      expect(iframe?.parentElement?.className).not.toContain('p-3');
-    });
+    const iframe = container.querySelector('iframe');
+    expect(iframe).not.toBeNull();
+    expect(iframe).toHaveAttribute('src', '/preview/index.html');
+    expect(iframe).toHaveAttribute(
+      'sandbox',
+      'allow-scripts allow-forms allow-modals allow-popups allow-downloads'
+    );
+    expect(iframe?.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(iframe?.className).not.toContain('rounded-md');
+    expect(iframe?.className).not.toContain('border');
+    expect(iframe?.parentElement?.parentElement?.className).toContain('overflow-hidden');
+    expect(iframe?.parentElement?.parentElement?.className).not.toContain('p-3');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('renders HTML source mode through SourcePreview', async () => {
@@ -201,6 +201,134 @@ describe('SourcePreview', () => {
     await waitFor(() => {
       expect(container.querySelector('.source-preview-lines')).not.toBeNull();
     });
+  });
+
+  it('fetches HTML source again when the preview URL version changes', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue('<h1>Version 0</h1>'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue('<h1>Version 1</h1>'),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container, rerender } = render(
+      <FilePreviewContent
+        filename="versioned.html"
+        previewUrl="/preview/versioned.html?v=0"
+        contentType="text/html"
+        layout="panel"
+        fileViewMode="source"
+      />
+    );
+
+    await waitFor(() => {
+      expect(container).toHaveTextContent('Version 0');
+    });
+
+    rerender(
+      <FilePreviewContent
+        filename="versioned.html"
+        previewUrl="/preview/versioned.html?v=1"
+        contentType="text/html"
+        layout="panel"
+        fileViewMode="source"
+      />
+    );
+
+    await waitFor(() => {
+      expect(container).toHaveTextContent('Version 1');
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe('/preview/versioned.html?v=0');
+    expect(fetchMock.mock.calls[1][0]).toBe('/preview/versioned.html?v=1');
+  });
+
+  it('renders HTML preview mode through the iframe even when the URL changes', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container, rerender } = render(
+      <FilePreviewContent
+        filename="index.html"
+        previewUrl="/preview/index.html"
+        contentType="text/html"
+        layout="panel"
+      />
+    );
+
+    expect(container.querySelector('iframe')).toHaveAttribute(
+      'sandbox',
+      'allow-scripts allow-forms allow-modals allow-popups allow-downloads'
+    );
+
+    rerender(
+      <FilePreviewContent
+        filename="index.html"
+        previewUrl="/preview/other.html"
+        contentType="text/html"
+        layout="panel"
+      />
+    );
+
+    const iframe = container.querySelector('iframe');
+    expect(iframe).toHaveAttribute('src', '/preview/other.html');
+    expect(iframe).toHaveAttribute(
+      'sandbox',
+      'allow-scripts allow-forms allow-modals allow-popups allow-downloads'
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the existing not-found error only in HTML source mode', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: vi.fn(),
+      })
+    );
+
+    const { container } = render(
+      <FilePreviewContent
+        filename="missing.html"
+        previewUrl="/preview/missing.html"
+        contentType="text/html"
+        layout="panel"
+        fileViewMode="source"
+      />
+    );
+
+    await waitFor(() => {
+      expect(container).toHaveTextContent('This file no longer exists in the workspace.');
+    });
+  });
+
+  it('delegates HTML preview-mode request errors to the iframe document', () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('should not fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(
+      <FilePreviewContent
+        filename="missing.html"
+        previewUrl="/preview/missing.html"
+        contentType="text/html"
+        layout="panel"
+      />
+    );
+
+    const iframe = container.querySelector('iframe');
+    expect(iframe).toHaveAttribute('src', '/preview/missing.html');
+    expect(container).not.toHaveTextContent('This file no longer exists in the workspace.');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('keeps SVG previews rendered as images by default', async () => {

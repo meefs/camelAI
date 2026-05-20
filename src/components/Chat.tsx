@@ -79,6 +79,10 @@ import {
 } from "@/components/chat-preview/chat-preview-shell";
 import { useConnectionSetupResponse } from "@/components/chat-preview/use-connection-setup-response";
 import { useChatPreviewRenderState } from "@/components/chat-preview/use-chat-preview-render-state";
+import {
+  arePreviewSessionsExactlyEqual,
+  arePreviewSessionsSemanticallyEqual,
+} from "@/components/chat-preview/preview-session-compare";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSlugMap } from "@/lib/connection-mentions";
@@ -238,6 +242,27 @@ function dispatchLocalThreadStatus(
   );
 }
 
+function dispatchLocalThreadSummaryUpdate(
+  threadId: string | null | undefined,
+  patch: {
+    title?: string;
+    model?: LlmModel;
+    provider?: ChatHarness;
+    updatedAt?: number;
+  },
+): void {
+  if (typeof window === "undefined" || !threadId) return;
+  const updatedAt =
+    typeof patch.updatedAt === "number" && Number.isFinite(patch.updatedAt)
+      ? patch.updatedAt
+      : Date.now();
+  window.dispatchEvent(
+    new CustomEvent("camelai:thread-status", {
+      detail: { threadId, ...patch, updatedAt },
+    }),
+  );
+}
+
 function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
   if (typeof window === "undefined" || !isNewThread) return false;
 
@@ -369,7 +394,12 @@ export default function Chat({
   const revalidator = useRevalidator();
   const submit = useSubmit();
   const updateThreadModelFetcher = useFetcher<{
-    thread?: { id: string; model: LlmModel; provider: ChatHarness };
+    thread?: {
+      id: string;
+      model: LlmModel;
+      provider: ChatHarness;
+      updated_at: number;
+    };
     error?: string;
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
@@ -619,6 +649,7 @@ export default function Chat({
 
   const prevInitialMessagesRef = useRef(initialMessages);
   const hasSyncedInitialPreviewRef = useRef(false);
+  const previousPreviewThreadIdRef = useRef(threadId);
 
   const setStreamingMessageId = useCallback((id: string | null) => {
     streamingMessageIdRef.current = id;
@@ -970,9 +1001,43 @@ export default function Chat({
     iframeRetryCountsRef.current = {};
   }, []);
 
+  const setLocalPreviewSessionState = useCallback(
+    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
+      previewTabsRef.current = nextTabs;
+      setPreviewTabs(nextTabs);
+      activeTabIdRef.current = nextActiveTabId;
+      setActiveTabId(nextActiveTabId);
+    },
+    [],
+  );
+
   useEffect(() => {
     const nextTabs = threadId ? initialPreviewSession.tabs : [];
     const nextActiveTabId = threadId ? initialPreviewSession.activeTabId : null;
+    const didThreadChange = previousPreviewThreadIdRef.current !== threadId;
+    previousPreviewThreadIdRef.current = threadId;
+
+    if (
+      !didThreadChange &&
+      arePreviewSessionsSemanticallyEqual(
+        previewTabsRef.current,
+        activeTabIdRef.current,
+        nextTabs,
+        nextActiveTabId,
+      )
+    ) {
+      if (
+        !arePreviewSessionsExactlyEqual(
+          previewTabsRef.current,
+          activeTabIdRef.current,
+          nextTabs,
+          nextActiveTabId,
+        )
+      ) {
+        setLocalPreviewSessionState(nextTabs, nextActiveTabId);
+      }
+      return;
+    }
 
     previewTabsRef.current = nextTabs;
     setPreviewTabs(nextTabs);
@@ -994,6 +1059,7 @@ export default function Chat({
     initialPreviewSession.tabs,
     initialPreviewSession.activeTabId,
     clearAllIframeRefreshTimeouts,
+    setLocalPreviewSessionState,
   ]);
 
   // Retry iframe on transient errors (404/500/503) during deploy.
@@ -1027,6 +1093,7 @@ export default function Chat({
         : null;
       const tabId = matchedTab?.id ?? activeTabIdRef.current;
       if (!tabId) return;
+      if (tabId !== activeTabIdRef.current) return;
 
       const retries = iframeRetryCountsRef.current[tabId] ?? 0;
       if (retries >= IFRAME_MAX_RETRIES) return;
@@ -1045,6 +1112,35 @@ export default function Chat({
     window.addEventListener("message", handlePreviewError);
     return () => window.removeEventListener("message", handlePreviewError);
   }, [hostname, orgSlug]);
+
+  const clearIframeTimersForTab = useCallback((tabId: string) => {
+    const refreshTimeout = iframeRefreshTimeoutsRef.current[tabId];
+    if (refreshTimeout) {
+      clearTimeout(refreshTimeout);
+      delete iframeRefreshTimeoutsRef.current[tabId];
+    }
+    const retryTimeout = iframeRetryTimeoutsRef.current[tabId];
+    if (retryTimeout) {
+      clearTimeout(retryTimeout);
+      delete iframeRetryTimeoutsRef.current[tabId];
+    }
+    delete iframeRetryCountsRef.current[tabId];
+    setTabAppLoading((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    for (const tabId of Object.keys(iframeRefreshTimeoutsRef.current)) {
+      if (tabId !== activeTabId) clearIframeTimersForTab(tabId);
+    }
+    for (const tabId of Object.keys(iframeRetryTimeoutsRef.current)) {
+      if (tabId !== activeTabId) clearIframeTimersForTab(tabId);
+    }
+  }, [activeTabId, clearIframeTimersForTab]);
 
   const revokeAttachmentPreviewUrl = useCallback((url?: string) => {
     if (!url) return;
@@ -1465,16 +1561,6 @@ export default function Chat({
     [threadId],
   );
 
-  const setLocalPreviewSessionState = useCallback(
-    (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
-      previewTabsRef.current = nextTabs;
-      setPreviewTabs(nextTabs);
-      activeTabIdRef.current = nextActiveTabId;
-      setActiveTabId(nextActiveTabId);
-    },
-    [],
-  );
-
   useEffect(() => {
     if (!threadId || hasSyncedInitialPreviewRef.current) return;
     if (previewTabsRef.current.length > 0) {
@@ -1539,18 +1625,8 @@ export default function Chat({
       return next;
     });
 
-    const timeout = iframeRefreshTimeoutsRef.current[tabId];
-    if (timeout) {
-      clearTimeout(timeout);
-      delete iframeRefreshTimeoutsRef.current[tabId];
-    }
-    const retryTimeout = iframeRetryTimeoutsRef.current[tabId];
-    if (retryTimeout) {
-      clearTimeout(retryTimeout);
-      delete iframeRetryTimeoutsRef.current[tabId];
-    }
-    delete iframeRetryCountsRef.current[tabId];
-  }, []);
+    clearIframeTimersForTab(tabId);
+  }, [clearIframeTimersForTab]);
 
   const openTabForTarget = useCallback(
     (target: PreviewTarget, options?: { sync?: boolean }) => {
@@ -1706,9 +1782,18 @@ export default function Chat({
           }
           setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
           iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
+            delete iframeRefreshTimeoutsRef.current[nextActiveId];
+            if (activeTabIdRef.current !== nextActiveId) {
+              setTabAppLoading((prev) => {
+                if (!(nextActiveId in prev)) return prev;
+                const next = { ...prev };
+                delete next[nextActiveId];
+                return next;
+              });
+              return;
+            }
             setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
             bumpIframeKey(nextActiveId);
-            delete iframeRefreshTimeoutsRef.current[nextActiveId];
           }, 1500);
         } else if (
           nextSession.target.kind === "file" &&
@@ -1720,18 +1805,37 @@ export default function Chat({
         return;
       }
 
-      if (data.type === "title_updated" && data.title) {
-        revalidator.revalidate();
+      if (data.type === "title_updated" && typeof data.title === "string") {
+        if (typeof document !== "undefined") {
+          document.title = `${data.title || "Chat"} - camelAI`;
+        }
+        const updatedAt =
+          typeof data.updatedAt === "number" && Number.isFinite(data.updatedAt)
+            ? data.updatedAt
+            : Date.now();
+        dispatchLocalThreadSummaryUpdate(threadId, {
+          title: data.title,
+          updatedAt,
+        });
         return;
       }
 
       if (data.type === "thread_model_updated" && isLlmModel(data.model)) {
+        const updatedAt =
+          typeof data.updatedAt === "number" && Number.isFinite(data.updatedAt)
+            ? data.updatedAt
+            : Date.now();
         const nextProvider =
           data.provider === "codex" || data.provider === "claude"
             ? data.provider
             : getProviderForModel(data.model, activeThreadProvider);
         setActiveThreadProvider(nextProvider);
         setSelectedThreadModel(data.model);
+        dispatchLocalThreadSummaryUpdate(threadId, {
+          model: data.model,
+          provider: nextProvider,
+          updatedAt,
+        });
         return;
       }
 
@@ -1775,7 +1879,7 @@ export default function Chat({
     },
     [
       activeThreadProvider,
-      revalidator,
+      threadId,
       setLocalPreviewSessionState,
       bumpIframeKey,
       bumpFilePreviewKey,
@@ -1963,24 +2067,18 @@ export default function Chat({
             runtimeStreamingMessageIdsRef.current[id] ?? null;
           setStreamingMessageId(nextStreamingId);
 
-        if (
-          runtimeEvent &&
-          typeof runtimeEvent === "object" &&
-          (runtimeEvent as { method?: unknown }).method === "turn/completed"
-        ) {
-          flushDeferredMessagesRender();
-          lastCompletedAssistantMessageIdRef.current = nextStreamingId;
-          setStreamingMessageId(null);
-          setLoading(false);
-          setPendingMessages([]);
-          dispatchLocalThreadStatus(id, "idle");
-          clearPendingDeliveryDraft();
-          revalidator.revalidate();
-          for (const delay of [1000, 3000]) {
-              window.setTimeout(() => {
-                revalidator.revalidate();
-              }, delay);
-            }
+          if (
+            runtimeEvent &&
+            typeof runtimeEvent === "object" &&
+            (runtimeEvent as { method?: unknown }).method === "turn/completed"
+          ) {
+            flushDeferredMessagesRender();
+            lastCompletedAssistantMessageIdRef.current = nextStreamingId;
+            setStreamingMessageId(null);
+            setLoading(false);
+            setPendingMessages([]);
+            dispatchLocalThreadStatus(id, "idle");
+            clearPendingDeliveryDraft();
           }
         } else if (data.type === "sdk_event") {
           // Handle SDK events for streaming
@@ -2415,7 +2513,6 @@ export default function Chat({
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
-            revalidator.revalidate();
             isAutoCompactingRef.current = false;
             syncCompactionIndicator();
             compactingPriorMessageIdRef.current = null;
@@ -2489,11 +2586,6 @@ export default function Chat({
             flushDeferredMessagesRender();
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
-            for (const delay of [1000, 3000]) {
-              window.setTimeout(() => {
-                revalidator.revalidate();
-              }, delay);
-            }
           }
         } else if (data.type === "error") {
           flushDeferredMessagesRender();
@@ -2620,7 +2712,6 @@ export default function Chat({
       isNewThread,
       logRunnerClient,
       persistSessionState,
-      revalidator,
       resolvedWorkspaceId,
       restorePendingDeliveryDraft,
       flushDeferredMessagesRender,
@@ -3401,10 +3492,16 @@ export default function Chat({
     if (updateThreadModelFetcher.data.thread?.model) {
       const nextModel = updateThreadModelFetcher.data.thread.model;
       const nextProvider = updateThreadModelFetcher.data.thread.provider;
+      const updatedAt = updateThreadModelFetcher.data.thread.updated_at;
       const nextSelectionKey = `${nextProvider}/${nextModel}`;
       optimisticThreadModelRef.current = null;
       setActiveThreadProvider(nextProvider);
       setSelectedThreadModel(nextModel);
+      dispatchLocalThreadSummaryUpdate(threadId, {
+        model: nextModel,
+        provider: nextProvider,
+        updatedAt,
+      });
       if (
         lastRunnerModelSelectionRef.current !== nextSelectionKey &&
         wsRef.current?.readyState === WebSocket.OPEN &&
@@ -3421,14 +3518,12 @@ export default function Chat({
           }),
         );
       }
-      revalidator.revalidate();
     }
   }, [
     initialThreadProvider,
     llmProvider,
     threadId,
     ready,
-    revalidator,
     threadModel,
     updateThreadModelFetcher.state,
     updateThreadModelFetcher.data,

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <body>
+    <script>
+      function tick() {
+        parent.postMessage(
+          { type: 'html-preview-fixture', name: 'inactive' },
+          '*',
+        );
+        requestAnimationFrame(tick);
+      }
+      tick();
+    </script>
+  </body>
+</html>

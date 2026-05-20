@@ -26,7 +26,7 @@ vi.mock('@/lib/app-url.server', () => ({
   getVanityDomain: getVanityDomainMock,
 }));
 
-const { loader } = await import('@/routes/_admin.threads.$id');
+const { action, loader } = await import('@/routes/_admin.threads.$id');
 
 describe('admin thread detail loader', () => {
   beforeEach(() => {
@@ -98,5 +98,79 @@ describe('admin thread detail loader', () => {
     expect(result.jsonlDownloadUrl).toBe(
       '/api/admin/threads/thread_123/jsonl?orgId=org_123&workspaceId=ws_123',
     );
+  });
+
+  it('forwards admin thread update revisions to ChatThreadDO metadata broadcasts', async () => {
+    requireSuperuserMock.mockResolvedValue({
+      user: { is_superuser: true },
+    });
+    const setTitleMock = vi.fn().mockResolvedValue(undefined);
+    const setModelMock = vi.fn().mockResolvedValue(undefined);
+    const refreshRunnerConfigMock = vi.fn().mockResolvedValue(undefined);
+    const chatThreadGetMock = vi.fn().mockReturnValue({
+      setTitle: setTitleMock,
+      setModel: setModelMock,
+      refreshRunnerConfig: refreshRunnerConfigMock,
+    });
+    const chatThreadIdFromNameMock = vi.fn((id: string) => `chat-thread:${id}`);
+    const env = {
+      CHAT_THREAD: {
+        idFromName: chatThreadIdFromNameMock,
+        get: chatThreadGetMock,
+      },
+    };
+    getEnvMock.mockReturnValue(env);
+    const adminUpdateThreadMock = vi.fn().mockResolvedValue({
+      id: 'thread_123',
+      title: 'Renamed thread',
+      model: 'sonnet',
+      updated_at: 1_710_000_200_000,
+    });
+    orgGetMock.mockReturnValue({
+      getThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        title: 'Old title',
+        provider: 'claude',
+        model: 'sonnet',
+      }),
+      adminUpdateThread: adminUpdateThreadMock,
+    });
+    getAuthEnvMock.mockReturnValue({
+      ORG: {
+        idFromName: orgIdFromNameMock,
+        get: orgGetMock,
+      },
+    });
+    const formData = new FormData();
+    formData.set('intent', 'updateThread');
+    formData.set('title', ' Renamed thread ');
+    formData.set('model', 'sonnet');
+    formData.set('orgId', 'org_123');
+
+    const result = await action({
+      request: new Request('https://camelai.dev/qaml-backdoor/threads/thread_123', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result).toEqual({ success: true });
+    expect(adminUpdateThreadMock).toHaveBeenCalledWith(
+      'thread_123',
+      { title: 'Renamed thread', model: 'sonnet' },
+      'system-admin',
+    );
+    expect(setTitleMock).toHaveBeenCalledWith(
+      'Renamed thread',
+      1_710_000_200_000,
+    );
+    expect(setModelMock).toHaveBeenCalledWith(
+      'sonnet',
+      undefined,
+      1_710_000_200_000,
+    );
+    expect(refreshRunnerConfigMock).toHaveBeenCalledTimes(1);
   });
 });
