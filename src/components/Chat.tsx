@@ -236,6 +236,7 @@ function dispatchLocalThreadStatus(
   status: "idle" | "running",
   options: {
     latestUserMessage?: string | null;
+    latestUserMessageAt?: number | null;
     runningActivityText?: string | null;
     runningActivityAt?: number | null;
   } = {},
@@ -3962,10 +3963,12 @@ type SendOptions = {
 
     // If WebSocket is connected and ready, send immediately
     const previewUserMessage = normalizeThreadPreviewUserMessage(rawContent);
+    const userMessageAt = Date.now();
     dispatchLocalThreadStatus(threadId, "running", {
       latestUserMessage: previewUserMessage,
+      latestUserMessageAt: userMessageAt,
       runningActivityText: previewUserMessage,
-      runningActivityAt: Date.now(),
+      runningActivityAt: userMessageAt,
     });
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);

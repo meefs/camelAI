@@ -769,6 +769,11 @@ export async function adminGetWorkspaceDetail(
       updated_at: t.updated_at,
       user_message_count: t.user_message_count ?? 0,
       first_user_message: t.first_user_message ?? null,
+      last_user_message: t.last_user_message ?? null,
+      last_user_message_at: t.last_user_message_at ?? null,
+      last_assistant_completed_at: t.last_assistant_completed_at ?? null,
+      last_assistant_summary: t.last_assistant_summary ?? null,
+      last_assistant_summary_status: t.last_assistant_summary_status ?? null,
     }));
 
   return {

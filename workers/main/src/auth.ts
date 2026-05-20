@@ -427,6 +427,7 @@ export interface OrgThread {
   user_message_count: number;
   first_user_message: string | null;
   last_user_message: string | null;
+  last_user_message_at: number | null;
   last_assistant_completed_at: number | null;
   last_assistant_summary: string | null;
   last_assistant_summary_status: ThreadCompletionSummaryStatus | null;
@@ -1964,6 +1965,7 @@ export class OrgDO extends DurableObject<DOEnv> {
           updated_at INTEGER NOT NULL,
           source TEXT NOT NULL DEFAULT 'web',
           last_user_message TEXT,
+          last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
           last_assistant_summary TEXT,
           last_assistant_summary_status TEXT
@@ -2130,6 +2132,7 @@ export class OrgDO extends DurableObject<DOEnv> {
           updated_at INTEGER NOT NULL,
           source TEXT NOT NULL DEFAULT 'web',
           last_user_message TEXT,
+          last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
           last_assistant_summary TEXT,
           last_assistant_summary_status TEXT
@@ -2517,7 +2520,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureColumn("threads", "last_assistant_summary_status", "TEXT");
     }
 
-    const CURRENT_SCHEMA_VERSION = 27;
+    if (version < 28) {
+      // V28: Stable latest user-message timestamp for chat group ordering.
+      this.ensureColumn("threads", "last_user_message_at", "INTEGER");
+    }
+
+    const CURRENT_SCHEMA_VERSION = 28;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2609,6 +2617,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       if (!names.has("last_user_message")) {
         try {
           this.sql.exec("ALTER TABLE threads ADD COLUMN last_user_message TEXT");
+        } catch {}
+      }
+
+      if (!names.has("last_user_message_at")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN last_user_message_at INTEGER");
         } catch {}
       }
 
@@ -5121,9 +5135,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     const lastUserMessage = firstUserMessage
       ? normalizeThreadPreviewUserMessage(firstUserMessage)
       : null;
+    const lastUserMessageAt = lastUserMessage ? now : null;
     const normalizedModel = normalizeLlmModel(model, provider);
     this.sql.exec(
-      "INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message, last_user_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message, last_user_message, last_user_message_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       id,
       workspaceId,
       t,
@@ -5134,6 +5149,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       now,
       msg,
       lastUserMessage,
+      lastUserMessageAt,
     );
     this.log("thread_created", creator, id, {
       workspace_id: workspaceId,
@@ -5151,6 +5167,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       user_message_count: 0,
       first_user_message: msg,
       last_user_message: lastUserMessage,
+      last_user_message_at: lastUserMessageAt,
       last_assistant_completed_at: null,
       last_assistant_summary: null,
       last_assistant_summary_status: null,
@@ -5445,7 +5462,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return;
     const now = Date.now();
     this.sql.exec(
-      "UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1 WHERE id = ?",
+      "UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1, last_user_message_at = ? WHERE id = ?",
+      now,
       now,
       id,
     );
@@ -5453,6 +5471,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       ...existing,
       updated_at: now,
       user_message_count: existing.user_message_count + 1,
+      last_user_message_at: now,
     };
     this.getInfo()
       .then((info) => {
@@ -5474,9 +5493,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     const lastUserMessage = normalizeThreadPreviewUserMessage(message);
     const userMessageCount = (existing.user_message_count ?? 0) + 1;
     this.sql.exec(
-      "UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1, last_user_message = ? WHERE id = ?",
+      "UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1, last_user_message = ?, last_user_message_at = ? WHERE id = ?",
       now,
       lastUserMessage,
+      now,
       id,
     );
     const updated: OrgThread = {
@@ -5484,6 +5504,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       updated_at: now,
       user_message_count: userMessageCount,
       last_user_message: lastUserMessage,
+      last_user_message_at: now,
     };
     this.getInfo()
       .then((info) => {
