@@ -72,7 +72,6 @@ function makeLoaderData() {
     paymentMethod: null,
     invoices: [],
     subscription: null,
-    trialAvailable: false,
     legacyMigration: null,
   };
 }

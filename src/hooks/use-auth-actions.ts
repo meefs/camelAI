@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 import { useFetcher, useNavigate, useRevalidator } from 'react-router';
 import { clearWarmupCache } from './use-workspace-warmup';
 
@@ -34,47 +34,96 @@ type PendingPromise = {
   reject: (error: Error) => void;
 };
 
+let activeWorkspaceSwitchController: AbortController | null = null;
+
+export class WorkspaceSwitchSupersededError extends Error {
+  constructor() {
+    super('Workspace switch was superseded');
+    this.name = 'WorkspaceSwitchSupersededError';
+  }
+}
+
+export function isWorkspaceSwitchSupersededError(
+  error: unknown,
+): error is WorkspaceSwitchSupersededError {
+  return error instanceof WorkspaceSwitchSupersededError;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
 /**
  * Hook for switching the current workspace.
- * React Router will automatically revalidate loaders after the switch.
+ * Explicitly revalidates loaders after the session cookie changes.
  * Returns a Promise that resolves when the switch completes successfully.
  */
 export function useSwitchWorkspace() {
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const pendingRef = useRef<PendingPromise | null>(null);
-
-  // Resolve or reject the pending promise when the fetcher completes
-  useEffect(() => {
-    if (fetcher.state === 'idle' && pendingRef.current) {
-      const pending = pendingRef.current;
-      pendingRef.current = null;
-
-      if (fetcher.data?.error) {
-        pending.reject(new Error(fetcher.data.error));
-      } else {
-        pending.resolve();
-      }
-    }
-  }, [fetcher.state, fetcher.data]);
+  const revalidator = useRevalidator();
+  const requestIdRef = useRef(0);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [error, setError] = useState<string | undefined>();
 
   const switchWorkspace = useCallback(
-    (workspaceId: string): Promise<void> => {
-      return new Promise((resolve, reject) => {
-        pendingRef.current = { resolve, reject };
-        fetcher.submit(JSON.stringify({ workspaceId }), {
-          method: 'post',
-          action: '/api/auth/switch-workspace',
-          encType: 'application/json',
+    async (workspaceId: string): Promise<void> => {
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      setIsSwitching(true);
+      setError(undefined);
+      activeWorkspaceSwitchController?.abort();
+      const controller = new AbortController();
+      activeWorkspaceSwitchController = controller;
+
+      try {
+        const response = await fetch('/api/auth/switch-workspace', {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ workspaceId }),
+          credentials: 'same-origin',
+          signal: controller.signal,
         });
-      });
+        const contentType = response.headers.get('content-type') ?? '';
+        const data = contentType.includes('application/json')
+          ? ((await response.json()) as { error?: string })
+          : {};
+
+        if (!response.ok || data.error) {
+          throw new Error(data.error ?? 'Failed to switch workspace');
+        }
+
+        revalidator.revalidate();
+      } catch (caught) {
+        if (isAbortError(caught)) {
+          throw new WorkspaceSwitchSupersededError();
+        }
+
+        const nextError =
+          caught instanceof Error
+            ? caught
+            : new Error('Failed to switch workspace');
+        if (requestIdRef.current === requestId) {
+          setError(nextError.message);
+        }
+        throw nextError;
+      } finally {
+        if (activeWorkspaceSwitchController === controller) {
+          activeWorkspaceSwitchController = null;
+        }
+        if (requestIdRef.current === requestId) {
+          setIsSwitching(false);
+        }
+      }
     },
-    [fetcher]
+    [revalidator]
   );
 
   return {
     switchWorkspace,
-    isSwitching: fetcher.state !== 'idle',
-    error: fetcher.data?.error as string | undefined,
+    isSwitching,
+    error,
   };
 }
 

@@ -140,7 +140,10 @@ export default [
   route("api/auth/switch-org", "routes/api/auth.switch-org.ts"),
   route("api/auth/switch-workspace", "routes/api/auth.switch-workspace.ts"),
   route("api/onboarding/complete", "routes/api/onboarding.complete.ts"),
-  route("api/billing/start-trial", "routes/api/billing.start-trial.ts"),
+  route(
+    "api/billing/start-subscription",
+    "routes/api/billing.start-subscription.ts",
+  ),
   route("api/billing/start-payg", "routes/api/billing.start-payg.ts"),
   route(
     "api/billing/legacy-migration",

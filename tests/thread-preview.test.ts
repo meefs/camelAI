@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeThreadPreviewUserMessage } from '@/lib/thread-preview';
+import {
+  normalizeThreadCompletionSummary,
+  normalizeThreadPreviewUserMessage,
+} from '@/lib/thread-preview';
 
 describe('normalizeThreadPreviewUserMessage', () => {
   it('strips author prefixes with name and email', () => {
@@ -30,5 +33,21 @@ describe('normalizeThreadPreviewUserMessage', () => {
   it('truncates to 500 characters', () => {
     const content = 'a'.repeat(800);
     expect(normalizeThreadPreviewUserMessage(content)?.length).toBe(500);
+  });
+});
+
+describe('normalizeThreadCompletionSummary', () => {
+  it('collapses whitespace and removes simple operational wrappers', () => {
+    expect(
+      normalizeThreadCompletionSummary('Final answer:\n\nFound the root cause.'),
+    ).toBe('Found the root cause.');
+  });
+
+  it('returns null for blank summaries', () => {
+    expect(normalizeThreadCompletionSummary('  \n\t  ')).toBeNull();
+  });
+
+  it('truncates summaries to 240 characters', () => {
+    expect(normalizeThreadCompletionSummary('a'.repeat(400))?.length).toBe(240);
   });
 });

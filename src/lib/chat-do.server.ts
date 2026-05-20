@@ -103,6 +103,11 @@ function toThread(orgThread: OrgThread): Thread {
     updated_at: orgThread.updated_at,
     user_message_count: orgThread.user_message_count ?? 0,
     first_user_message: orgThread.first_user_message ?? null,
+    last_user_message: orgThread.last_user_message ?? null,
+    last_assistant_completed_at: orgThread.last_assistant_completed_at ?? null,
+    last_assistant_summary: orgThread.last_assistant_summary ?? null,
+    last_assistant_summary_status:
+      orgThread.last_assistant_summary_status ?? null,
   };
 }
 
@@ -416,6 +421,26 @@ export async function getThread(
   // Verify the thread belongs to this workspace
   if (thread.workspace_id !== workspaceId) return null;
   return toThread(thread);
+}
+
+export async function getThreadsByIds(
+  context: AppLoadContext,
+  workspaceId: string,
+  threadIds: string[],
+): Promise<Thread[]> {
+  const env = getEnv(context);
+  const wsInfo = await getWorkspaceInfo(env, workspaceId);
+  if (!wsInfo) return [];
+  const uniqueThreadIds = Array.from(
+    new Set(threadIds.map((threadId) => threadId.trim()).filter(Boolean)),
+  );
+  if (uniqueThreadIds.length === 0) return [];
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  const threads = await retryTransientDurableObjectRead(
+    "OrgDO.getThreadsByIds",
+    () => orgStub.getThreadsByIds(workspaceId, uniqueThreadIds),
+  );
+  return threads.map((thread) => toThread(thread));
 }
 
 export async function updateThread(

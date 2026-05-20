@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { AppWindowMac, Cable, CircleHelp, LayoutGrid, MessagesSquare, Plus } from "lucide-react"
 import { Link, useLocation, useNavigate, useRevalidator } from "react-router"
+import type { ChatGroupThreadSummary } from "@/types"
 
 import { useAuthData } from "@/hooks/use-auth-data"
 import {
@@ -72,6 +73,34 @@ export function AppSidebar(props: AppSidebarProps) {
     }
   }
 
+  const handleSelectThreadFromHover = async (
+    groupId: string,
+    thread: ChatGroupThreadSummary,
+  ) => {
+    const href = `/chat/${encodeURIComponent(thread.id)}?group=${encodeURIComponent(groupId)}`
+    if (thread.membership === "open") {
+      navigate(href)
+      return
+    }
+
+    try {
+      const response = await fetch(
+        `/api/chat-groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(thread.id)}/reopen`,
+        { method: "POST" },
+      )
+      if (!response.ok) {
+        console.error("Failed to reopen chat group member", await response.text())
+        return
+      }
+    } catch (error) {
+      console.error("Failed to reopen chat group member", error)
+      return
+    }
+
+    revalidator.revalidate()
+    navigate(href)
+  }
+
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader className="[--safe-area-padding-left:0.5rem] [--safe-area-padding-right:0.5rem] pl-safe pr-safe">
@@ -110,6 +139,7 @@ export function AppSidebar(props: AppSidebarProps) {
               navigate(group ? getGroupLandingHref(group) : "/chat")
             }}
             onCloseGroup={handleCloseGroup}
+            onSelectThread={handleSelectThreadFromHover}
             onMoveThreadToGroup={handleMoveThreadToGroup}
           />
         </SidebarGroup>

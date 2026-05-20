@@ -9,6 +9,10 @@ export interface Thread {
   updated_at: number;
   user_message_count: number;
   first_user_message?: string | null;
+  last_user_message?: string | null;
+  last_assistant_completed_at?: number | null;
+  last_assistant_summary?: string | null;
+  last_assistant_summary_status?: ThreadCompletionSummaryStatus | null;
   creator?: User;
 }
 
@@ -37,6 +41,7 @@ export interface ChatGroupSummary extends ChatGroup {
 }
 
 export type ThreadStatus = "idle" | "running" | "unread";
+export type ThreadCompletionSummaryStatus = "pending" | "ready" | "failed";
 
 export interface ChatGroupThreadSummary {
   id: string;
@@ -46,6 +51,15 @@ export interface ChatGroupThreadSummary {
   updated_at: number;
   is_unread?: boolean;
   status: ThreadStatus;
+  membership: "open" | "closed";
+  last_active_at: number;
+  latest_user_message: string | null;
+  running_activity_text: string | null;
+  running_activity_at: number | null;
+  last_assistant_completed_at: number | null;
+  last_assistant_summary: string | null;
+  last_assistant_summary_status: ThreadCompletionSummaryStatus | null;
+  running_started_at: number | null;
 }
 
 export interface ChatGroupView extends ChatGroupSummary {

@@ -1,4 +1,4 @@
-import type { Route } from "./+types/billing.start-trial";
+import type { Route } from "./+types/billing.start-subscription";
 import { requireAuthContext } from "@/lib/auth.server";
 import {
   createSubscriptionCheckoutSession,
@@ -7,10 +7,10 @@ import {
 import { isBillingPlan } from "@/lib/billing-plans";
 import { getEnv } from "@/lib/cloudflare.server";
 
-const TRIAL_PLANS = new Set(["starter", "pro", "team"]);
+const SUBSCRIPTION_PLANS = new Set(["starter", "pro", "team"]);
 
-function isTrialPlan(plan: string): plan is "starter" | "pro" | "team" {
-  return isBillingPlan(plan) && TRIAL_PLANS.has(plan);
+function isSubscriptionPlan(plan: string): plan is "starter" | "pro" | "team" {
+  return isBillingPlan(plan) && SUBSCRIPTION_PLANS.has(plan);
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -23,9 +23,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   const formData = await request.formData();
   const rawPlan = String(formData.get("plan") || "").trim();
 
-  if (!isTrialPlan(rawPlan)) {
+  if (!isSubscriptionPlan(rawPlan)) {
     return Response.json(
-      { error: "Choose Starter, Pro, or Team to start a trial." },
+      { error: "Choose Starter, Pro, or Team to start a subscription." },
       { status: 400 },
     );
   }
@@ -51,7 +51,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     return Response.json({ checkoutUrl });
   } catch (error) {
-    console.error("[billing] failed to create takeover trial checkout", {
+    console.error("[billing] failed to create subscription checkout", {
       orgId: authContext.currentOrg.id,
       plan: rawPlan,
       error: error instanceof Error ? error.message : String(error),
@@ -61,7 +61,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to start trial checkout",
+            : "Failed to start subscription checkout",
       },
       { status: 503 },
     );

@@ -86,7 +86,6 @@ describe("TeamUpgradeDialog", () => {
           open
           onOpenChange={vi.fn()}
           currentPlan={currentPlan}
-          trialAvailable
           stripeConfigured
           legacyMigration={null}
         />,
@@ -102,13 +101,12 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={vi.fn()}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={null}
       />,
     )
 
-    fireEvent.click(screen.getByRole("button", { name: /start 7-day free trial/i }))
+    fireEvent.click(screen.getByRole("button", { name: /subscribe/i }))
 
     expect(fetcherSubmitMock).toHaveBeenCalledWith(
       { intent: "changePlan", plan: "team" },
@@ -122,7 +120,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={vi.fn()}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={makeLegacyMigration()}
       />,
@@ -142,7 +139,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={vi.fn()}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={makeLegacyMigration({
           activeLegacySubscriptionCount: 2,
@@ -161,33 +157,12 @@ describe("TeamUpgradeDialog", () => {
     expect(fetcherSubmitMock).not.toHaveBeenCalled()
   })
 
-  it("renders Choose plan when no trial is available", () => {
-    render(
-      <TeamUpgradeDialog
-        open
-        onOpenChange={vi.fn()}
-        currentPlan="starter"
-        trialAvailable={false}
-        stripeConfigured
-        legacyMigration={null}
-      />,
-    )
-
-    expect(
-      screen.getByRole("button", { name: /choose plan/i }),
-    ).toBeInTheDocument()
-    expect(
-      screen.queryByRole("button", { name: /start 7-day free trial/i }),
-    ).not.toBeInTheDocument()
-  })
-
   it("disables the CTA and the Compare plans button and renders helper text when Stripe is unconfigured", () => {
     render(
       <TeamUpgradeDialog
         open
         onOpenChange={vi.fn()}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured={false}
         legacyMigration={null}
       />,
@@ -197,7 +172,7 @@ describe("TeamUpgradeDialog", () => {
       screen.getByText(/Hosted billing isn't configured in this environment/),
     ).toBeInTheDocument()
 
-    const cta = screen.getByRole("button", { name: /start 7-day free trial/i })
+    const cta = screen.getByRole("button", { name: /subscribe/i })
     expect(cta).toBeDisabled()
 
     const compare = screen.getByRole("button", { name: /compare plans/i })
@@ -221,7 +196,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={onOpenChange}
         currentPlan="free"
-        trialAvailable
         stripeConfigured
         legacyMigration={null}
       />,
@@ -253,7 +227,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={onOpenChange}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={makeLegacyMigration()}
       />,
@@ -285,7 +258,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={onOpenChange}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={makeLegacyMigration()}
       />,
@@ -309,7 +281,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={vi.fn()}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={null}
       />,
@@ -335,7 +306,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={onOpenChange}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={null}
       />,
@@ -351,7 +321,6 @@ describe("TeamUpgradeDialog", () => {
         open
         onOpenChange={onOpenChange}
         currentPlan="pro"
-        trialAvailable
         stripeConfigured
         legacyMigration={null}
       />,

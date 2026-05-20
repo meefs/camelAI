@@ -25,8 +25,6 @@ import {
 import {
   bestEffortSyncTeamSubscriptionSeatCount,
   getVerifiedLegacyStripeMigrationEligibility,
-  getOrgBillingOverview,
-  hasOrgUsedSubscriptionTrial,
   isStripeBillingConfigured,
   syncTeamSubscriptionSeatCount,
 } from '@/lib/billing.server';
@@ -471,10 +469,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     canManageMembers && seatLimit !== null && seatLimit <= 1;
 
   const stripeConfigured = isStripeBillingConfigured(env);
-  const overview = requiresTeamUpgrade
-    ? await getOrgBillingOverview(env, authContext.currentOrg).catch(() => null)
-    : null;
-  const trialAvailable = overview ? !hasOrgUsedSubscriptionTrial(overview) : true;
   const legacyMigration = requiresTeamUpgrade
     ? await getVerifiedLegacyStripeMigrationEligibility({
         env,
@@ -505,7 +499,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     canManageMembers,
     requiresTeamUpgrade,
     currentPlan,
-    trialAvailable,
     stripeConfigured,
     legacyMigration,
   };
@@ -522,7 +515,6 @@ export default function TeamPage() {
     canManageMembers,
     requiresTeamUpgrade,
     currentPlan,
-    trialAvailable,
     stripeConfigured,
     legacyMigration,
   } =
@@ -544,7 +536,6 @@ export default function TeamPage() {
         workspaces={workspaces}
         requiresTeamUpgrade={requiresTeamUpgrade}
         currentPlan={currentPlan}
-        trialAvailable={trialAvailable}
         stripeConfigured={stripeConfigured}
         legacyMigration={legacyMigration}
         teamInviteBillingContext={teamInviteBillingContext}

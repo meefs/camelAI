@@ -10,6 +10,7 @@ import type {
 import * as chatDO from "@/lib/chat-do.server";
 import { getAuthEnv } from "@/lib/auth-helpers";
 import type { OrgDO, UserDO } from "../../workers/main/src/auth";
+import type { WorkspaceRunningThreadStatus } from "../../workers/main/src/workspace";
 import { maxThreadStatus } from "@/lib/thread-status";
 import { getInitialChatGroupNameFromThreadTitle } from "@/lib/thread-title";
 
@@ -37,13 +38,13 @@ function getOrgStub(context: AppLoadContext, orgId: string): OrgDO {
   return authEnv.ORG.get(authEnv.ORG.idFromName(orgId)) as unknown as OrgDO;
 }
 
-async function getStreamingThreadIds(
+async function getStreamingThreadStatuses(
   context: AppLoadContext,
   workspaceId: string,
-): Promise<string[]> {
+): Promise<WorkspaceRunningThreadStatus[]> {
   const env = getEnv(context);
   return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
-    .listStreamingThreadIds()
+    .listStreamingThreadStatuses()
     .catch((error) => {
       console.error("Failed to load workspace streaming status:", error);
       return [];
@@ -66,14 +67,13 @@ async function hydrateThreads(
   workspaceId: string,
   threadIds: string[],
 ): Promise<Map<string, Thread>> {
-  const entries = await Promise.all(
-    threadIds.map(async (threadId) => {
-      const thread = await chatDO.getThread(context, threadId, workspaceId);
-      return [threadId, thread] as const;
-    }),
+  const threads = await chatDO.getThreadsByIds(
+    context,
+    workspaceId,
+    threadIds,
   );
   return new Map(
-    entries.filter((entry): entry is [string, Thread] => entry[1] !== null),
+    threads.map((thread) => [thread.id, thread] as const),
   );
 }
 
@@ -86,9 +86,9 @@ export async function hydrateChatGroups(
   if (groups.length === 0) return [];
   const userStub = getUserStub(context, userId);
   const threadIds = collectThreadIds(groups);
-  const [threadMap, streamingThreadIds, viewedAtByThreadId] = await Promise.all([
+  const [threadMap, streamingThreadStatuses, viewedAtByThreadId] = await Promise.all([
     hydrateThreads(context, workspaceId, threadIds),
-    getStreamingThreadIds(context, workspaceId),
+    getStreamingThreadStatuses(context, workspaceId),
     userStub.listThreadViews(threadIds),
   ]);
 
@@ -97,20 +97,29 @@ export async function hydrateChatGroups(
     await userStub.pruneMissingThreads(missingThreadIds);
   }
 
-  const runningThreadIds = new Set(streamingThreadIds);
+  const runningThreadStatusById = new Map(
+    streamingThreadStatuses.map((status) => [status.threadId, status] as const),
+  );
   const now = Date.now();
-  const toThreadSummary = (threadId: string): ChatGroupThreadSummary | null => {
+  const toThreadSummary = (
+    threadId: string,
+    membership: ChatGroupThreadSummary["membership"],
+  ): ChatGroupThreadSummary | null => {
     const thread = threadMap.get(threadId);
     if (!thread) return null;
-    const isRunning = runningThreadIds.has(threadId);
+    const runningThreadStatus = runningThreadStatusById.get(threadId);
+    const isRunning = Boolean(runningThreadStatus);
     const isOptimisticNewThreadRunning =
       !isRunning &&
       thread.user_message_count > 0 &&
       now - thread.created_at < 30_000;
+    const viewedAt = viewedAtByThreadId[threadId] ?? 0;
+    const completedAt = thread.last_assistant_completed_at ?? null;
+    const lastActiveAt = Math.max(thread.updated_at, completedAt ?? 0);
     const isUnread =
       !isRunning &&
       !isOptimisticNewThreadRunning &&
-      thread.updated_at > (viewedAtByThreadId[threadId] ?? 0);
+      lastActiveAt > viewedAt;
     return {
       id: thread.id,
       title: thread.title,
@@ -118,6 +127,16 @@ export async function hydrateChatGroups(
       provider: thread.provider,
       updated_at: thread.updated_at,
       is_unread: isUnread,
+      membership,
+      last_active_at: lastActiveAt,
+      latest_user_message: thread.last_user_message ?? null,
+      running_activity_text: runningThreadStatus?.latestActivityText ?? null,
+      running_activity_at: runningThreadStatus?.latestActivityAt ?? null,
+      last_assistant_completed_at: completedAt,
+      last_assistant_summary: thread.last_assistant_summary ?? null,
+      last_assistant_summary_status:
+        thread.last_assistant_summary_status ?? null,
+      running_started_at: runningThreadStatus?.startedAt ?? null,
       status:
         isRunning || isOptimisticNewThreadRunning
           ? "running"
@@ -129,10 +148,10 @@ export async function hydrateChatGroups(
 
   return groups.map((group) => {
     const openThreads = group.open_thread_ids
-      .map(toThreadSummary)
+      .map((threadId) => toThreadSummary(threadId, "open"))
       .filter((thread): thread is ChatGroupThreadSummary => thread !== null);
     const closedThreads = group.closed_thread_ids
-      .map(toThreadSummary)
+      .map((threadId) => toThreadSummary(threadId, "closed"))
       .filter((thread): thread is ChatGroupThreadSummary => thread !== null);
     const fallbackName =
       group.name.trim() ||

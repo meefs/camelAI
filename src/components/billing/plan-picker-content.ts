@@ -4,7 +4,7 @@ import type { BillingPlan } from "@/types";
 export type PlanPickerCtaKind =
   | "byok"
   | "payg"
-  | "trial"
+  | "subscribe"
   | "contact"
   | "downgrade";
 
@@ -41,8 +41,8 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   starter: {
     tagline: "Solo builders",
     upsellPrefix: "Everything in Pay as you go, plus:",
-    ctaLabel: "Start 7-day free trial",
-    ctaKind: "trial",
+    ctaLabel: "Subscribe",
+    ctaKind: "subscribe",
     features: [
       "$10 of model credits / mo (at cost)",
       "30 deployed apps",
@@ -54,8 +54,8 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   pro: {
     tagline: "Power users",
     upsellPrefix: "Everything in Starter, plus:",
-    ctaLabel: "Start 7-day free trial",
-    ctaKind: "trial",
+    ctaLabel: "Subscribe",
+    ctaKind: "subscribe",
     features: [
       "$30 of model credits / mo (at cost)",
       "Unlimited deployed apps",
@@ -68,8 +68,8 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
   team: {
     tagline: "Teams shipping together",
     upsellPrefix: "Everything in Pro for every seat, plus:",
-    ctaLabel: "Start 7-day free trial",
-    ctaKind: "trial",
+    ctaLabel: "Subscribe",
+    ctaKind: "subscribe",
     features: [
       "$10 of model credits / seat / mo",
       "2 shared workspaces",

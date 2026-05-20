@@ -28,7 +28,6 @@ import {
   getConfiguredSubscriptionPriceId,
   getLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
-  hasOrgUsedSubscriptionTrial,
   getVerifiedLegacyStripeMigrationEligibility,
   isBillingSetupPath,
   isConfiguredEnterpriseOrg,
@@ -2134,14 +2133,17 @@ describe("billing helpers", () => {
     expect(params.get("subscription_data[metadata][billing_plan]")).toBe(
       "team",
     );
-    expect(params.get("subscription_data[trial_period_days]")).toBe("7");
+    expect(params.has("subscription_data[trial_period_days]")).toBe(false);
     expect(params.get("subscription_data[metadata][trial_credit_cents]")).toBe(
-      "1000",
+      "0",
     );
     expect(
       params.get(
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
+    ).toBe("3000");
+    expect(
+      params.get("subscription_data[metadata][initial_included_credit_cents]"),
     ).toBe("3000");
   });
 
@@ -2172,7 +2174,7 @@ describe("billing helpers", () => {
     ).rejects.toThrow("Enterprise orgs are billed outside Stripe Checkout");
   });
 
-  it("does not scale team trial credits with seat count", async () => {
+  it("sets team included credits with seat count and no trial credits", async () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
@@ -2219,12 +2221,15 @@ describe("billing helpers", () => {
       params.get("line_items[0][adjustable_quantity][maximum]"),
     ).toBe("999999");
     expect(params.get("subscription_data[metadata][trial_credit_cents]")).toBe(
-      "1000",
+      "0",
     );
     expect(
       params.get(
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
+    ).toBe("25000");
+    expect(
+      params.get("subscription_data[metadata][initial_included_credit_cents]"),
     ).toBe("25000");
   });
 
@@ -2273,7 +2278,7 @@ describe("billing helpers", () => {
     ).toBe("999999");
   });
 
-  it("omits Stripe trial days after the org has already used a trial", async () => {
+  it("omits Stripe trial days for subscription checkout", async () => {
     let checkoutRequestBody: string | null = null;
     vi.stubGlobal(
       "fetch",
@@ -2285,14 +2290,6 @@ describe("billing helpers", () => {
         };
       }),
     );
-
-    expect(
-      hasOrgUsedSubscriptionTrial({
-        billing_trial_started_at: 123,
-        billing_trial_ends_at: null,
-        billing_trial_credit_granted_at: null,
-      }),
-    ).toBe(true);
 
     await createSubscriptionCheckoutSession({
       env: {
@@ -2647,12 +2644,15 @@ describe("billing helpers", () => {
 
     const params = new URLSearchParams(checkoutRequestBody ?? "");
     expect(params.get("subscription_data[metadata][trial_credit_cents]")).toBe(
-      "700",
+      "0",
     );
     expect(
       params.get(
         "subscription_data[metadata][subscription_included_credit_cents]",
       ),
+    ).toBe("4500");
+    expect(
+      params.get("subscription_data[metadata][initial_included_credit_cents]"),
     ).toBe("4500");
   });
 

@@ -88,7 +88,6 @@ interface TeamTableProps {
   workspaces: Workspace[]
   requiresTeamUpgrade?: boolean
   currentPlan?: "free" | "payg" | "starter" | "pro" | "team" | "enterprise"
-  trialAvailable?: boolean
   stripeConfigured?: boolean
   legacyMigration?: LegacyMigrationDialogData | null
   teamInviteBillingContext?: TeamInviteBillingContext | null
@@ -107,7 +106,6 @@ export function TeamTable({
   workspaces,
   requiresTeamUpgrade = false,
   currentPlan = "free",
-  trialAvailable = true,
   stripeConfigured = true,
   legacyMigration = null,
   teamInviteBillingContext = null,
@@ -733,7 +731,6 @@ export function TeamTable({
         open={upgradeOpen}
         onOpenChange={setUpgradeOpen}
         currentPlan={upgradeCurrentPlan}
-        trialAvailable={trialAvailable}
         stripeConfigured={stripeConfigured}
         legacyMigration={legacyMigration}
       />
