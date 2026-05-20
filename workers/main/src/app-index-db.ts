@@ -223,6 +223,11 @@ export class AppIndexDatabase {
         joined_at INTEGER NOT NULL,
         PRIMARY KEY (org_id, user_id)
       );
+      CREATE TABLE IF NOT EXISTS app_index_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
       CREATE INDEX IF NOT EXISTS idx_orgs_created_at ON orgs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_orgs_llm_provider_created_at ON orgs(llm_provider, created_at DESC);
@@ -248,6 +253,27 @@ export class AppIndexDatabase {
 
   private getAppId(orgId: string | null | undefined, scriptName: string): string {
     return orgId ? `${orgId}:${scriptName}` : scriptName;
+  }
+
+  async isBootstrapComplete(): Promise<boolean> {
+    await this.ensureSchema();
+    const row = await first<{ value: string }>(
+      this.db.prepare(`
+        SELECT value
+        FROM app_index_metadata
+        WHERE key IN ('bootstrap_complete', 'ready') AND value = '1'
+        LIMIT 1
+      `),
+    );
+    return row?.value === '1';
+  }
+
+  async markBootstrapComplete(): Promise<void> {
+    await this.ensureSchema();
+    await this.db
+      .prepare("INSERT OR REPLACE INTO app_index_metadata (key, value, updated_at) VALUES ('bootstrap_complete', '1', ?)")
+      .bind(Date.now())
+      .run();
   }
 
   private async all<T = Record<string, unknown>>(query: string, ...params: unknown[]): Promise<T[]> {

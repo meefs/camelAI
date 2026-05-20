@@ -5,6 +5,7 @@
 import type { Env } from '../../types.js';
 import type { OrgDO, UserDO } from '../../auth.js';
 import { getAppIndexDatabase } from '../../app-index-db.js';
+import { ensureAdminIndexReady } from '../../admin-index-bootstrap.js';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -14,7 +15,7 @@ import {
 // Shared data access helpers
 // ---------------------------------------------------------------------------
 
-type AdminIndexEnv = Pick<Env, 'APP_DB'>;
+type AdminIndexEnv = Pick<Env, 'APP_DB' | 'APP_KV' | 'EMAIL_TO_USER' | 'USER' | 'ORG' | 'WORKSPACE'>;
 type OrgEnv = Pick<Env, 'ORG'>;
 type UserEnv = Pick<Env, 'USER'>;
 type AdminThreadContextLookup = {
@@ -61,7 +62,19 @@ export function getAdminIndexStub(env: AdminIndexEnv) {
   if (!appIndex) {
     throw new Error('APP_DB binding is not configured');
   }
-  return appIndex;
+  return new Proxy(appIndex as unknown as Record<string, unknown>, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') {
+        return value;
+      }
+
+      return async (...args: unknown[]) => {
+        await ensureAdminIndexReady(env);
+        return value.apply(appIndex, args);
+      };
+    },
+  });
 }
 
 export function getOrgStub(env: OrgEnv, orgId: string) {

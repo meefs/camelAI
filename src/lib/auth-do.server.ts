@@ -38,7 +38,11 @@ import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from "../../workers/main/src/workspace-container";
-import { getAppIndexDatabase, getAppIndexReadDatabase } from "../../workers/main/src/app-index-db";
+import {
+  getAppIndexDatabase,
+  getAppIndexReadDatabase,
+} from "../../workers/main/src/app-index-db";
+import { ensureAdminIndexReady } from "../../workers/main/src/admin-index-bootstrap";
 import {
   type BanRecord,
   type BanScope,
@@ -46,6 +50,8 @@ import {
   getUserBanById,
   putBanRecord,
 } from "../../workers/main/src/ban-list";
+
+export { ensureAdminIndexReady } from "../../workers/main/src/admin-index-bootstrap";
 
 // Helper: Collect all user IDs from KV
 async function collectAllUserIds(env: CloudflareEnv): Promise<string[]> {
@@ -363,14 +369,6 @@ function getAdminIndex(env: CloudflareEnv) {
     throw new Error("APP_DB binding is not configured");
   }
   return appIndex as any;
-}
-
-export async function ensureAdminIndexReady(env: CloudflareEnv): Promise<void> {
-  const appIndex = getAppIndexReadDatabase(env);
-  if (!appIndex) {
-    throw new Error("APP_DB binding is not configured");
-  }
-  await appIndex.ensureSchema();
 }
 
 export async function getAdminOverview(
