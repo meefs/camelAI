@@ -20,7 +20,7 @@ function createFetcher() {
   return {
     state: 'idle' as const,
     data: undefined as
-      | { thread?: { id: string }; error?: string; reloadRequired?: boolean }
+      | { thread?: { id: string }; error?: string }
       | undefined,
     formData: undefined,
     submit: vi.fn(),

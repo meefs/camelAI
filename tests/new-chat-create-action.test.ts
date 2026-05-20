@@ -178,6 +178,41 @@ describe('new chat create action', () => {
     });
   });
 
+  it('accepts stale client build ids for compatible create-and-start submissions', async () => {
+    const formData = makeCreateThreadFormData();
+    formData.set('clientBuildId', 'stale-build');
+    formData.set('intent', 'createThreadAndStart');
+    formData.set('firstMessage', 'Build from an old tab');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('Location')).toBe(
+      '/chat/thread_123?newThread=1&group=group_123',
+    );
+    expect(createThreadMock).toHaveBeenCalledWith(
+      {},
+      'ws_123',
+      undefined,
+      'user_123',
+      'Build from an old tab',
+      'sonnet',
+    );
+    expect(startInitialUserMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread_123',
+        message: 'Build from an old tab',
+      }),
+    );
+  });
+
   it('returns an error instead of redirecting when the initial turn cannot start', async () => {
     startInitialUserMessageMock.mockResolvedValueOnce({
       status: 'busy',

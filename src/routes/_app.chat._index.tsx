@@ -505,32 +505,24 @@ export async function action({ request, context }: Route.ActionArgs) {
           "client_build_validated",
           actionStartedAt,
           {
-            status: "client_build_mismatch",
-            statusCode: 409,
+            status: "client_build_mismatch_ignored",
             model: selectedTraceModel,
             size: firstMessage?.length ?? 0,
           },
         );
-        return Response.json(
+      } else {
+        recordChatCreateThreadStage(
+          env,
+          traceContext,
+          traceIds,
+          "client_build_validated",
+          actionStartedAt,
           {
-            error:
-              "camelAI was updated while this page was open. Please reload and send your message again.",
-            reloadRequired: true,
+            model: selectedTraceModel,
+            size: firstMessage?.length ?? 0,
           },
-          { status: 409 },
         );
       }
-      recordChatCreateThreadStage(
-        env,
-        traceContext,
-        traceIds,
-        "client_build_validated",
-        actionStartedAt,
-        {
-          model: selectedTraceModel,
-          size: firstMessage?.length ?? 0,
-        },
-      );
 
       const createThreadStartedAt = Date.now();
       const thread = await chatDO.createThread(
@@ -780,7 +772,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 export default function NewChatPage() {
   const actionData = useActionData() as
-    | { error?: string; reloadRequired?: boolean }
+    | { error?: string }
     | undefined;
   const {
     workspaceId,
