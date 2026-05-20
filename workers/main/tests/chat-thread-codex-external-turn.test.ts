@@ -1453,6 +1453,59 @@ describe('ChatThreadDO Codex external turn completion', () => {
     ]);
   });
 
+  it('does not broadcast Pi recovery continue prompts as visible SDK user events', () => {
+    const { fake, events } = createPiEventFake();
+
+    fake.suppressNextPiRecoveryPromptEvent = true;
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'text',
+          text: 'continue',
+        }],
+      },
+    });
+
+    expect(events).toEqual([]);
+
+    fake.suppressNextPiRecoveryPromptEvent = true;
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        content: 'continue',
+      },
+    });
+
+    expect(events).toEqual([]);
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        content: 'continue',
+      },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'sdk_event' });
+  });
+
+  it('does not broadcast internal recovery context SDK user events', () => {
+    const { fake, events } = createPiEventFake();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: 'recovery context',
+        visibility: 'hidden',
+        metadata: { purpose: 'pi_turn_recovery_context' },
+      },
+    });
+
+    expect(events).toEqual([]);
+  });
+
   it('builds a recovery user message from in-flight messages', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.serializePiMessageForSummary =
@@ -1485,6 +1538,10 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(content).toContain('[The previous turn was interrupted');
     expect(content).toContain('list files');
     expect(content).toContain('tool1');
+    expect(recovery).toMatchObject({
+      visibility: 'hidden',
+      metadata: { purpose: 'pi_turn_recovery_context' },
+    });
   });
 
   it('renders an empty in-flight buffer as a context-only marker', () => {
@@ -1499,6 +1556,10 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     expect(recovery.role).toBe('user');
     expect(recovery.content).toContain('(no recorded events before the interruption)');
+    expect(recovery).toMatchObject({
+      visibility: 'hidden',
+      metadata: { purpose: 'pi_turn_recovery_context' },
+    });
   });
 
   it('turn_end snapshots agent.state.messages past the baseline into main', () => {
@@ -1589,8 +1650,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       ChatThreadDO.prototype['piUserContentToChatContent'];
     fake.piAssistantContentToChatContent =
       ChatThreadDO.prototype['piAssistantContentToChatContent'];
-    fake.isInvisibleSystemOnlyUserContent =
-      ChatThreadDO.prototype['isInvisibleSystemOnlyUserContent'];
     fake.attachPiToolResultToParsedMessages =
       ChatThreadDO.prototype['attachPiToolResultToParsedMessages'];
     fake.piToolResultContentToChatContent =
@@ -1642,6 +1701,48 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.loadPiCoreMessages).toHaveBeenCalledTimes(1);
     expect(fake.loadPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
+
+  it('omits internal recovery context messages from the parsed chat view', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread1' };
+    fake.loadPiCoreMessages = vi.fn(() => [
+      { role: 'user', content: 'first turn', timestamp: 100 },
+      {
+        role: 'user',
+        content: 'recovery context that should not reach the client',
+        timestamp: 200,
+        visibility: 'hidden',
+        metadata: { purpose: 'pi_turn_recovery_context' },
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'recovered reply' }],
+        responseId: 'resp_recovered',
+        timestamp: 210,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ]);
+    fake.loadPiInFlightMessages = vi.fn(() => []);
+
+    const parsed = ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
+      fake,
+      'thread1',
+    );
+
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]).toMatchObject({ role: 'user', content: 'first turn' });
+    expect(parsed[1]).toMatchObject({ role: 'assistant', id: 'resp_recovered' });
+    expect(
+      parsed.some((message) =>
+        String(message.content).includes('recovery context'),
+      ),
+    ).toBe(false);
+  });
+
   it('sanitizes unsupported persisted Pi image tool results when loading history', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ensurePiCoreTables = vi.fn();
