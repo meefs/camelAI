@@ -58,6 +58,7 @@ function makeThreadSummary(
     membership: "open",
     last_active_at: updatedAt,
     latest_user_message: null,
+    latest_user_message_at: null,
     running_activity_text: null,
     running_activity_at: null,
     last_assistant_completed_at: null,
@@ -1515,7 +1516,11 @@ describe("applyLiveRunningStatuses", () => {
       new Map([
         [
           "thread_1",
-          { status: "running", latestUserMessage: "fresh prompt" },
+          {
+            status: "running",
+            latestUserMessage: "fresh prompt",
+            latestUserMessageAt: 20,
+          },
         ],
       ]),
     );
@@ -1523,6 +1528,7 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.status).toBe("running");
     expect(group.open_threads[0].status).toBe("running");
     expect(group.open_threads[0].latest_user_message).toBe("fresh prompt");
+    expect(group.open_threads[0].latest_user_message_at).toBe(20);
   });
 
   it("overlays live running activity metadata while running", () => {

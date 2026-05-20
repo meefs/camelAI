@@ -21,11 +21,22 @@ interface RowProps {
   isPending?: boolean;
 }
 
+function getInProgressUserMessageSortAt(thread: ChatGroupThreadSummary): number {
+  return (
+    thread.latest_user_message_at ??
+    thread.running_started_at ??
+    thread.updated_at
+  );
+}
+
 export function splitThreadsBySection(group: ChatGroupView) {
   const all = [...group.open_threads, ...group.closed_threads];
   const inProgress = all
     .filter((thread) => thread.status === "running")
-    .sort((a, b) => b.last_active_at - a.last_active_at);
+    .sort(
+      (a, b) =>
+        getInProgressUserMessageSortAt(b) - getInProgressUserMessageSortAt(a),
+    );
   const completed = all
     .filter((thread) => thread.status === "unread")
     .sort(

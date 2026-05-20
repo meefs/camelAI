@@ -19,6 +19,7 @@ function makeThread(
     membership: "open",
     last_active_at: updatedAt,
     latest_user_message: null,
+    latest_user_message_at: null,
     running_activity_text: null,
     running_activity_at: null,
     last_assistant_completed_at: null,
@@ -231,7 +232,25 @@ describe("ChatGroupHoverCard", () => {
     expect(screen.queryByText("build a screen saver")).toBeNull();
   });
 
-  it("omits empty sections and sorts each section newest first", () => {
+  it("omits empty sections and sorts sections by their stable timestamps", () => {
+    const olderRunningWithNewerActivity = makeThread({
+      id: "running_old",
+      title: "Older prompt, newer activity",
+      status: "running",
+      updated_at: 70,
+      last_active_at: 90,
+      latest_user_message_at: 10,
+      running_started_at: 10,
+    });
+    const newerRunningWithOlderActivity = makeThread({
+      id: "running_new",
+      title: "Newer prompt, older activity",
+      status: "running",
+      updated_at: 60,
+      last_active_at: 80,
+      latest_user_message_at: 20,
+      running_started_at: 20,
+    });
     const olderQuiet = makeThread({
       id: "quiet_old",
       title: "Older quiet",
@@ -257,11 +276,21 @@ describe("ChatGroupHoverCard", () => {
 
     const sections = splitThreadsBySection(
       makeGroup({
-        open_threads: [olderQuiet, newerQuiet, olderCompleted, newerCompleted],
+        open_threads: [
+          olderRunningWithNewerActivity,
+          newerRunningWithOlderActivity,
+          olderQuiet,
+          newerQuiet,
+          olderCompleted,
+          newerCompleted,
+        ],
       }),
     );
 
-    expect(sections.inProgress).toEqual([]);
+    expect(sections.inProgress.map((thread) => thread.id)).toEqual([
+      "running_new",
+      "running_old",
+    ]);
     expect(sections.quiet.map((thread) => thread.id)).toEqual([
       "quiet_new",
       "quiet_old",

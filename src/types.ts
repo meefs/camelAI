@@ -10,6 +10,7 @@ export interface Thread {
   user_message_count: number;
   first_user_message?: string | null;
   last_user_message?: string | null;
+  last_user_message_at?: number | null;
   last_assistant_completed_at?: number | null;
   last_assistant_summary?: string | null;
   last_assistant_summary_status?: ThreadCompletionSummaryStatus | null;
@@ -54,6 +55,7 @@ export interface ChatGroupThreadSummary {
   membership: "open" | "closed";
   last_active_at: number;
   latest_user_message: string | null;
+  latest_user_message_at: number | null;
   running_activity_text: string | null;
   running_activity_at: number | null;
   last_assistant_completed_at: number | null;

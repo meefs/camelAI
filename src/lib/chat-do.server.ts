@@ -104,6 +104,7 @@ function toThread(orgThread: OrgThread): Thread {
     user_message_count: orgThread.user_message_count ?? 0,
     first_user_message: orgThread.first_user_message ?? null,
     last_user_message: orgThread.last_user_message ?? null,
+    last_user_message_at: orgThread.last_user_message_at ?? null,
     last_assistant_completed_at: orgThread.last_assistant_completed_at ?? null,
     last_assistant_summary: orgThread.last_assistant_summary ?? null,
     last_assistant_summary_status:

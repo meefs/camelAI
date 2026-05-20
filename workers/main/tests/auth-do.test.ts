@@ -234,10 +234,12 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(thread.title).toBe('Working on my-todo-app');
       expect(thread.first_user_message).toBeNull();
       expect(thread.last_user_message).toBeNull();
+      expect(thread.last_user_message_at).toBeNull();
       expect(thread.model).toBe('sonnet');
       expect(stored?.title).toBe('Working on my-todo-app');
       expect(stored?.first_user_message).toBeNull();
       expect(stored?.last_user_message).toBeNull();
+      expect(stored?.last_user_message_at).toBeNull();
       expect(stored?.model).toBe('sonnet');
       expect(stored?.last_assistant_summary_status).toBeNull();
     });
@@ -263,12 +265,14 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(thread.model).toBe('gpt-5.4');
       expect(thread.first_user_message).toBe('hello');
       expect(thread.last_user_message).toBe('hello');
+      expect(thread.last_user_message_at).toEqual(expect.any(Number));
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.provider).toBe('codex');
       expect(stored?.model).toBe('gpt-5.4');
       expect(stored?.first_user_message).toBe('hello');
       expect(stored?.last_user_message).toBe('hello');
+      expect(stored?.last_user_message_at).toEqual(expect.any(Number));
       expect(stored?.last_assistant_completed_at).toBeNull();
       expect(stored?.last_assistant_summary).toBeNull();
       expect(stored?.last_assistant_summary_status).toBeNull();
@@ -290,11 +294,13 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(thread.title).toBe('New Chat');
       expect(thread.first_user_message).toBe('Please keep this first prompt');
       expect(thread.last_user_message).toBe('Please keep this first prompt');
+      expect(thread.last_user_message_at).toEqual(expect.any(Number));
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.title).toBe('New Chat');
       expect(stored?.first_user_message).toBe('Please keep this first prompt');
       expect(stored?.last_user_message).toBe('Please keep this first prompt');
+      expect(stored?.last_user_message_at).toEqual(expect.any(Number));
 
       await orgStub.setThreadFirstUserMessage(thread.id, 'Do not overwrite it');
       const afterBackfill = await orgStub.getThread(thread.id);
@@ -316,10 +322,12 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       expect(updated?.user_message_count).toBe(1);
       expect(updated?.last_user_message).toBe('Build the hover card');
+      expect(updated?.last_user_message_at).toEqual(expect.any(Number));
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.user_message_count).toBe(1);
       expect(stored?.last_user_message).toBe('Build the hover card');
+      expect(stored?.last_user_message_at).toEqual(expect.any(Number));
       expect(stored?.first_user_message).toBeNull();
     });
 
@@ -544,6 +552,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       await orgStub.touchThread(thread.id);
       const afterUserMessage = await orgStub.getThread(thread.id);
       expect(afterUserMessage?.user_message_count).toBe(1);
+      expect(afterUserMessage?.last_user_message_at).toEqual(expect.any(Number));
 
       await new Promise((resolve) => setTimeout(resolve, 1));
       await expect(orgStub.touchThreadActivity(thread.id)).resolves.toBe(true);
@@ -552,6 +561,9 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(afterAssistantActivity?.user_message_count).toBe(1);
       expect(afterAssistantActivity?.updated_at ?? 0).toBeGreaterThan(
         afterUserMessage?.updated_at ?? 0,
+      );
+      expect(afterAssistantActivity?.last_user_message_at).toBe(
+        afterUserMessage?.last_user_message_at,
       );
     });
 

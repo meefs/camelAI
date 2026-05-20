@@ -116,6 +116,11 @@ export async function hydrateChatGroups(
     const viewedAt = viewedAtByThreadId[threadId] ?? 0;
     const completedAt = thread.last_assistant_completed_at ?? null;
     const lastActiveAt = Math.max(thread.updated_at, completedAt ?? 0);
+    const latestUserMessageAt =
+      thread.last_user_message_at ??
+      (thread.last_user_message
+        ? runningThreadStatus?.startedAt ?? thread.updated_at
+        : null);
     const isUnread =
       !isRunning &&
       !isOptimisticNewThreadRunning &&
@@ -130,6 +135,7 @@ export async function hydrateChatGroups(
       membership,
       last_active_at: lastActiveAt,
       latest_user_message: thread.last_user_message ?? null,
+      latest_user_message_at: latestUserMessageAt,
       running_activity_text: runningThreadStatus?.latestActivityText ?? null,
       running_activity_at: runningThreadStatus?.latestActivityAt ?? null,
       last_assistant_completed_at: completedAt,

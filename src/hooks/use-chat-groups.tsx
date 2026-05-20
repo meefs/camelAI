@@ -36,6 +36,7 @@ export interface LiveThreadMetadata {
   summaryStatus?: ThreadCompletionSummaryStatus | null;
   summary?: string | null;
   latestUserMessage?: string | null;
+  latestUserMessageAt?: number | null;
   runningActivityText?: string | null;
   runningActivityAt?: number | null;
   runningStartedAt?: number | null;
@@ -426,6 +427,17 @@ export function applyLiveRunningStatuses(
         latestUserMessage !== undefined
           ? latestUserMessage
           : thread.latest_user_message;
+      const latestUserMessageAt =
+        typeof liveMetadata?.latestUserMessageAt === "number" &&
+        Number.isFinite(liveMetadata.latestUserMessageAt)
+          ? liveMetadata.latestUserMessageAt
+          : liveMetadata?.latestUserMessageAt === null
+            ? null
+            : undefined;
+      const nextLatestUserMessageAt =
+        latestUserMessageAt !== undefined
+          ? latestUserMessageAt
+          : thread.latest_user_message_at;
       const nextRunningActivityText =
         resolvedStatus === "running"
           ? runningActivityText !== undefined
@@ -457,6 +469,7 @@ export function applyLiveRunningStatuses(
         thread.last_assistant_summary === lastAssistantSummary &&
         thread.last_assistant_summary_status === lastAssistantSummaryStatus &&
         thread.latest_user_message === nextLatestUserMessage &&
+        thread.latest_user_message_at === nextLatestUserMessageAt &&
         thread.running_activity_text === nextRunningActivityText &&
         thread.running_activity_at === nextRunningActivityAt &&
         thread.running_started_at === nextRunningStartedAt
@@ -478,6 +491,7 @@ export function applyLiveRunningStatuses(
         last_assistant_summary: lastAssistantSummary,
         last_assistant_summary_status: lastAssistantSummaryStatus,
         latest_user_message: nextLatestUserMessage,
+        latest_user_message_at: nextLatestUserMessageAt,
         running_activity_text: nextRunningActivityText,
         running_activity_at: nextRunningActivityAt,
         running_started_at: nextRunningStartedAt,
@@ -623,6 +637,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         provider?: unknown;
         updatedAt?: unknown;
         latestUserMessage?: unknown;
+        latestUserMessageAt?: unknown;
         runningActivityText?: unknown;
         runningActivityAt?: unknown;
         runningStartedAt?: unknown;
@@ -674,6 +689,13 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
           : payload.latestUserMessage === null
             ? null
             : undefined;
+      const latestUserMessageAt =
+        typeof payload.latestUserMessageAt === "number" &&
+        Number.isFinite(payload.latestUserMessageAt)
+          ? payload.latestUserMessageAt
+          : payload.latestUserMessageAt === null
+            ? null
+            : undefined;
       const runningActivityText =
         typeof payload.runningActivityText === "string"
           ? payload.runningActivityText
@@ -709,6 +731,8 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
           existing?.status === status &&
           (latestUserMessage === undefined ||
             existing.latestUserMessage === latestUserMessage) &&
+          (latestUserMessageAt === undefined ||
+            existing.latestUserMessageAt === latestUserMessageAt) &&
           (runningActivityText === undefined ||
             existing.runningActivityText === runningActivityText) &&
           (runningActivityAt === undefined ||
@@ -724,6 +748,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
           mergeThreadMetadata(existing, {
             status,
             ...(latestUserMessage === undefined ? {} : { latestUserMessage }),
+            ...(latestUserMessageAt === undefined ? {} : { latestUserMessageAt }),
             ...(runningActivityText === undefined ? {} : { runningActivityText }),
             ...(runningActivityAt === undefined ? {} : { runningActivityAt }),
             ...(runningStartedAt === undefined ? {} : { runningStartedAt }),
