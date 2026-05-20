@@ -34,6 +34,12 @@ type PendingPromise = {
   reject: (error: Error) => void;
 };
 
+let activeWorkspaceSwitchController: AbortController | null = null;
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
 /**
  * Hook for switching the current workspace.
  * Explicitly revalidates loaders after the session cookie changes.
@@ -51,6 +57,9 @@ export function useSwitchWorkspace() {
       requestIdRef.current = requestId;
       setIsSwitching(true);
       setError(undefined);
+      activeWorkspaceSwitchController?.abort();
+      const controller = new AbortController();
+      activeWorkspaceSwitchController = controller;
 
       try {
         const response = await fetch('/api/auth/switch-workspace', {
@@ -61,6 +70,7 @@ export function useSwitchWorkspace() {
           },
           body: JSON.stringify({ workspaceId }),
           credentials: 'same-origin',
+          signal: controller.signal,
         });
         const contentType = response.headers.get('content-type') ?? '';
         const data = contentType.includes('application/json')
@@ -73,6 +83,10 @@ export function useSwitchWorkspace() {
 
         revalidator.revalidate();
       } catch (caught) {
+        if (isAbortError(caught)) {
+          return;
+        }
+
         const nextError =
           caught instanceof Error
             ? caught
@@ -82,6 +96,9 @@ export function useSwitchWorkspace() {
         }
         throw nextError;
       } finally {
+        if (activeWorkspaceSwitchController === controller) {
+          activeWorkspaceSwitchController = null;
+        }
         if (requestIdRef.current === requestId) {
           setIsSwitching(false);
         }
