@@ -1,38 +1,78 @@
 'use client';
 
-import { useEffect, useCallback, useRef, useState } from 'react';
-import { useFetcher, useNavigate, useRevalidator } from 'react-router';
+import { useCallback, useRef, useState } from 'react';
+import { useNavigate, useRevalidator } from 'react-router';
 import { clearWarmupCache } from './use-workspace-warmup';
+
+type AuthActionResponse = {
+  success?: boolean;
+  error?: string;
+  redirect?: string;
+};
+
+async function postJsonAction(
+  url: string,
+  body?: Record<string, unknown>,
+): Promise<AuthActionResponse> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (body) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin',
+  });
+  const contentType = response.headers.get('content-type') ?? '';
+  const data = contentType.includes('application/json')
+    ? ((await response.json()) as AuthActionResponse)
+    : {};
+
+  if (!response.ok || data.error) {
+    throw new Error(
+      data.error ?? `Request failed with status ${response.status}`,
+    );
+  }
+
+  return data;
+}
 
 /**
  * Hook for logging out the current user.
  * After logout, navigates to /login.
  */
 export function useLogout() {
-  const fetcher = useFetcher();
   const navigate = useNavigate();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [error, setError] = useState<string | undefined>();
 
-  useEffect(() => {
-    if (fetcher.state === 'idle' && fetcher.data?.success) {
+  const logout = useCallback(async () => {
+    setIsLoggingOut(true);
+    setError(undefined);
+    try {
+      await postJsonAction('/api/auth/logout');
       clearWarmupCache();
       navigate('/login');
+    } catch (caught) {
+      const nextError =
+        caught instanceof Error ? caught.message : 'Failed to log out';
+      setError(nextError);
+      console.error('Failed to log out:', caught);
+    } finally {
+      setIsLoggingOut(false);
     }
-  }, [fetcher.state, fetcher.data, navigate]);
-
-  const logout = useCallback(() => {
-    fetcher.submit(null, { method: 'post', action: '/api/auth/logout' });
-  }, [fetcher]);
+  }, [navigate]);
 
   return {
     logout,
-    isLoggingOut: fetcher.state !== 'idle',
+    isLoggingOut,
+    error,
   };
 }
-
-type PendingPromise = {
-  resolve: () => void;
-  reject: (error: Error) => void;
-};
 
 let activeWorkspaceSwitchController: AbortController | null = null;
 
@@ -129,45 +169,39 @@ export function useSwitchWorkspace() {
 
 /**
  * Hook for switching the current organization.
- * React Router will automatically revalidate loaders after the switch.
+ * Explicitly revalidates loaders after the session cookie changes.
  * Returns a Promise that resolves when the switch completes successfully.
  */
 export function useSwitchOrg() {
-  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const pendingRef = useRef<PendingPromise | null>(null);
-
-  // Resolve or reject the pending promise when the fetcher completes
-  useEffect(() => {
-    if (fetcher.state === 'idle' && pendingRef.current) {
-      const pending = pendingRef.current;
-      pendingRef.current = null;
-
-      if (fetcher.data?.error) {
-        pending.reject(new Error(fetcher.data.error));
-      } else {
-        pending.resolve();
-      }
-    }
-  }, [fetcher.state, fetcher.data]);
+  const revalidator = useRevalidator();
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [error, setError] = useState<string | undefined>();
 
   const switchOrg = useCallback(
-    (orgId: string): Promise<void> => {
-      return new Promise((resolve, reject) => {
-        pendingRef.current = { resolve, reject };
-        fetcher.submit(JSON.stringify({ orgId }), {
-          method: 'post',
-          action: '/api/auth/switch-org',
-          encType: 'application/json',
-        });
-      });
+    async (orgId: string): Promise<void> => {
+      setIsSwitching(true);
+      setError(undefined);
+      try {
+        await postJsonAction('/api/auth/switch-org', { orgId });
+        revalidator.revalidate();
+      } catch (caught) {
+        const nextError =
+          caught instanceof Error
+            ? caught
+            : new Error('Failed to switch organization');
+        setError(nextError.message);
+        throw nextError;
+      } finally {
+        setIsSwitching(false);
+      }
     },
-    [fetcher]
+    [revalidator]
   );
 
   return {
     switchOrg,
-    isSwitching: fetcher.state !== 'idle',
-    error: fetcher.data?.error as string | undefined,
+    isSwitching,
+    error,
   };
 }
 
@@ -176,29 +210,42 @@ export function useSwitchOrg() {
  * On success, navigates to the redirect URL or home page.
  */
 export function useLogin() {
-  const fetcher = useFetcher();
   const navigate = useNavigate();
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [error, setError] = useState<string | undefined>();
 
-  // Navigate on success
-  useEffect(() => {
-    if (fetcher.state === 'idle' && fetcher.data && !fetcher.data.error) {
-      // Get redirect from URL params or default to home
-      const params = new URLSearchParams(window.location.search);
-      const redirectTo = params.get('redirect') || '/';
-      navigate(redirectTo);
-    }
-  }, [fetcher.state, fetcher.data, navigate]);
+  const login = useCallback(
+    async (email: string, password: string): Promise<void> => {
+      setIsLoggingIn(true);
+      setError(undefined);
+      try {
+        const data = await postJsonAction('/api/auth/login', {
+          email,
+          password,
+        });
+        if (data.redirect) {
+          navigate(data.redirect);
+          return;
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const redirectTo = params.get('redirect') || '/';
+        navigate(redirectTo);
+      } catch (caught) {
+        const nextError =
+          caught instanceof Error ? caught.message : 'Failed to log in';
+        setError(nextError);
+      } finally {
+        setIsLoggingIn(false);
+      }
+    },
+    [navigate],
+  );
 
   return {
-    login: (email: string, password: string) => {
-      fetcher.submit(JSON.stringify({ email, password }), {
-        method: 'post',
-        action: '/api/auth/login',
-        encType: 'application/json',
-      });
-    },
-    isLoggingIn: fetcher.state !== 'idle',
-    error: fetcher.data?.error as string | undefined,
+    login,
+    isLoggingIn,
+    error,
   };
 }
 
@@ -207,43 +254,46 @@ export function useLogin() {
  * On success, navigates to the home page.
  */
 export function useSignup() {
-  const fetcher = useFetcher();
   const navigate = useNavigate();
+  const [isSigningUp, setIsSigningUp] = useState(false);
+  const [error, setError] = useState<string | undefined>();
 
-  // Navigate on success
-  useEffect(() => {
-    if (fetcher.state === 'idle' && fetcher.data && !fetcher.data.error) {
-      navigate('/');
-    }
-  }, [fetcher.state, fetcher.data, navigate]);
-
-  return {
-    signup: (
+  const signup = useCallback(
+    async (
       email: string,
       password: string,
       options?: {
         name?: string;
         redirectTo?: string;
         turnstileToken?: string;
-      }
-    ) => {
-      fetcher.submit(
-        JSON.stringify({
+      },
+    ): Promise<void> => {
+      setIsSigningUp(true);
+      setError(undefined);
+      try {
+        const data = await postJsonAction('/api/auth/signup', {
           email,
           password,
           name: options?.name,
           redirectTo: options?.redirectTo,
           turnstileToken: options?.turnstileToken,
-        }),
-        {
-          method: 'post',
-          action: '/api/auth/signup',
-          encType: 'application/json',
-        }
-      );
+        });
+        navigate(data.redirect ?? options?.redirectTo ?? '/');
+      } catch (caught) {
+        const nextError =
+          caught instanceof Error ? caught.message : 'Failed to sign up';
+        setError(nextError);
+      } finally {
+        setIsSigningUp(false);
+      }
     },
-    isSigningUp: fetcher.state !== 'idle',
-    error: fetcher.data?.error as string | undefined,
+    [navigate],
+  );
+
+  return {
+    signup,
+    isSigningUp,
+    error,
   };
 }
 

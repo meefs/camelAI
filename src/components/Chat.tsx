@@ -2740,34 +2740,6 @@ export default function Chat({
     connectionIdRef.current += 1;
   }, []);
 
-  // Track previous workspace to detect switches for navigation
-  const prevWorkspaceIdRef = useRef<string | undefined>(currentWorkspace?.id);
-
-  // Navigate to /chat when workspace switches while viewing a thread
-  // This ensures the user doesn't stay on a thread from a different workspace
-  useEffect(() => {
-    if (readOnly) return;
-
-    const prevWorkspaceId = prevWorkspaceIdRef.current;
-    const nextWorkspaceId = currentWorkspace?.id;
-
-    // Update ref for next comparison
-    prevWorkspaceIdRef.current = nextWorkspaceId;
-
-    // Only navigate if:
-    // 1. We had a previous workspace (not initial render)
-    // 2. Workspace actually changed
-    // 3. We're currently viewing a thread
-    if (
-      prevWorkspaceId &&
-      nextWorkspaceId &&
-      prevWorkspaceId !== nextWorkspaceId &&
-      threadId
-    ) {
-      navigate("/chat");
-    }
-  }, [currentWorkspace?.id, threadId, navigate, readOnly]);
-
   // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
   useEffect(() => {
     return () => {

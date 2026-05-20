@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useNavigation, useSearchParams, useRevalidator, useNavigate, useSubmit } from 'react-router';
 import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
@@ -69,14 +69,6 @@ export default function AppsClient({
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
   );
-
-  // Revalidate when org or workspace changes
-  useEffect(() => {
-    if (revalidator.state === 'idle') {
-      revalidator.revalidate();
-      setReferenceTime(Date.now());
-    }
-  }, [currentOrg?.id, currentWorkspace?.id]);
 
   const loading = revalidator.state === 'loading';
   const chatLoading =
