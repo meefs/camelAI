@@ -146,6 +146,29 @@ export function mergeLiveAndLocalThreadStatuses(
   return next;
 }
 
+export function hasPendingCompletionSummaries(
+  groups: readonly ChatGroupView[] | null | undefined,
+): boolean {
+  return Boolean(
+    groups?.some((group) =>
+      [...group.open_threads, ...group.closed_threads].some(
+        (thread) => thread.last_assistant_summary_status === "pending",
+      ),
+    ),
+  );
+}
+
+export function shouldRevalidateThreadStatusUpdate(
+  status: ThreadStatus,
+  isMetadataOnlyUpdate: boolean,
+  hasSummaryMetadataUpdate: boolean,
+): boolean {
+  return (
+    (status === "running" || status === "idle" || status === "unread") &&
+    (!isMetadataOnlyUpdate || hasSummaryMetadataUpdate)
+  );
+}
+
 export function shouldMarkActiveUnreadThreadViewed(
   status: ThreadStatus,
   threadId: string,
@@ -357,6 +380,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   >(() => new Map());
   const liveThreadStatusesRef = useRef(liveThreadStatuses);
   const localThreadStatusesRef = useRef(localThreadStatuses);
+  const hasPendingCompletionSummariesRef = useRef(false);
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
   const resolvedThreadStatuses = useMemo(
     () => mergeLiveAndLocalThreadStatuses(liveThreadStatuses, localThreadStatuses),
@@ -387,6 +411,12 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localThreadStatusesRef.current = localThreadStatuses;
   }, [localThreadStatuses]);
+
+  useEffect(() => {
+    hasPendingCompletionSummariesRef.current = hasPendingCompletionSummaries(
+      data?.chatGroups,
+    );
+  }, [data?.chatGroups]);
 
   useEffect(() => {
     if (!activeThreadId) return;
@@ -534,9 +564,20 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     let revalidateTimer: number | null = null;
     let closedByEffect = false;
 
-    const scheduleStatusRevalidate = (threadId: string) => {
+    const scheduleStatusRevalidate = (
+      threadId: string,
+      options: { includeActive?: boolean } = {},
+    ) => {
       if (!statusRevalidateEnabled) return;
-      if (threadId === activeThreadIdRef.current) return;
+      if (!options.includeActive && threadId === activeThreadIdRef.current) return;
+      if (revalidateTimer !== null) return;
+      revalidateTimer = window.setTimeout(() => {
+        revalidateTimer = null;
+        revalidateRef.current();
+      }, 750);
+    };
+    const scheduleStatusSnapshotRevalidate = () => {
+      if (!statusRevalidateEnabled) return;
       if (revalidateTimer !== null) return;
       revalidateTimer = window.setTimeout(() => {
         revalidateTimer = null;
@@ -677,6 +718,8 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
             );
             if (staleRunningThreadIds.length > 0) {
               scheduleStatusRevalidate(staleRunningThreadIds[0]);
+            } else if (hasPendingCompletionSummariesRef.current) {
+              scheduleStatusSnapshotRevalidate();
             }
           }
           if (
@@ -743,6 +786,8 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               runningActivityText !== undefined ||
               runningActivityAt !== undefined ||
               runningStartedAt !== undefined;
+            const hasSummaryMetadataUpdate =
+              summaryStatus !== undefined || summary !== undefined;
             const isMetadataOnlyUpdate =
               hasMetadataOnlyUpdate &&
               existingMetadata?.status === status &&
@@ -797,10 +842,15 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               return next;
             });
             if (
-              !isMetadataOnlyUpdate &&
-              (status === "running" || status === "idle" || status === "unread")
+              shouldRevalidateThreadStatusUpdate(
+                status,
+                isMetadataOnlyUpdate,
+                hasSummaryMetadataUpdate,
+              )
             ) {
-              scheduleStatusRevalidate(threadId);
+              scheduleStatusRevalidate(threadId, {
+                includeActive: hasSummaryMetadataUpdate,
+              });
             }
           }
         } catch {

@@ -19,11 +19,13 @@ import {
   getThreadIdsRequiringSnapshotRevalidation,
   getCloseGroupRedirect,
   getGroupLandingHref,
+  hasPendingCompletionSummaries,
   mergeLiveAndLocalThreadStatuses,
   mergeActiveChatGroup,
   reconcileLocalThreadStatusesWithSnapshot,
   shouldMarkActiveIdleThreadViewed,
   shouldMarkActiveUnreadThreadViewed,
+  shouldRevalidateThreadStatusUpdate,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import type { ChatGroup, ChatGroupThreadSummary, ChatGroupView } from "@/types";
@@ -838,6 +840,52 @@ describe("mergeActiveChatGroup", () => {
     const merged = mergeActiveChatGroup([groupView], activeGroup);
 
     expect(merged.map((group) => group.id)).toEqual(["group_new", "group_1"]);
+  });
+});
+
+describe("hasPendingCompletionSummaries", () => {
+  it("detects pending assistant summaries in open and closed threads", () => {
+    expect(
+      hasPendingCompletionSummaries([
+        {
+          ...groupView,
+          open_threads: [
+            makeThreadSummary({
+              id: "thread_pending_open",
+              title: "Pending open",
+              last_assistant_summary_status: "pending",
+            }),
+          ],
+        },
+      ]),
+    ).toBe(true);
+
+    expect(
+      hasPendingCompletionSummaries([
+        {
+          ...groupView,
+          open_threads: [],
+          closed_threads: [
+            makeThreadSummary({
+              id: "thread_pending_closed",
+              title: "Pending closed",
+              membership: "closed",
+              last_assistant_summary_status: "pending",
+            }),
+          ],
+        },
+      ]),
+    ).toBe(true);
+
+    expect(hasPendingCompletionSummaries([groupView])).toBe(false);
+  });
+});
+
+describe("shouldRevalidateThreadStatusUpdate", () => {
+  it("keeps summary metadata-only frames eligible for fallback revalidation", () => {
+    expect(shouldRevalidateThreadStatusUpdate("unread", true, true)).toBe(true);
+    expect(shouldRevalidateThreadStatusUpdate("idle", true, false)).toBe(false);
+    expect(shouldRevalidateThreadStatusUpdate("running", false, false)).toBe(true);
   });
 });
 

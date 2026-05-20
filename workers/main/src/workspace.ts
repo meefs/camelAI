@@ -343,6 +343,15 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   private pruneStaleStreamingRows(now = Date.now()): void {
+    const staleRows = this.sql
+      .exec<{ thread_id: string }>(
+        'SELECT thread_id FROM thread_streaming_status WHERE updated_at < ?',
+        now - THREAD_STREAMING_STATUS_TTL_MS,
+      )
+      .toArray();
+    for (const row of staleRows) {
+      this.lastThreadStatusBroadcasts.delete(row.thread_id);
+    }
     this.sql.exec(
       'DELETE FROM thread_streaming_status WHERE updated_at < ?',
       now - THREAD_STREAMING_STATUS_TTL_MS,
@@ -445,6 +454,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         'DELETE FROM thread_streaming_status WHERE thread_id = ?',
         normalizedThreadId,
       );
+      this.lastThreadStatusBroadcasts.delete(normalizedThreadId);
     }
     const runningActivity = isStreaming
       ? this.sql
@@ -527,7 +537,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (this.lastThreadStatusBroadcasts.get(threadId) === dedupeKey) {
       return;
     }
-    this.lastThreadStatusBroadcasts.set(threadId, dedupeKey);
+    if (status === 'running') {
+      this.lastThreadStatusBroadcasts.set(threadId, dedupeKey);
+    } else {
+      this.lastThreadStatusBroadcasts.delete(threadId);
+    }
     const payload = JSON.stringify({
       type: 'thread_status',
       threadId,
