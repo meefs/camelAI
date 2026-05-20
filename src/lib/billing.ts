@@ -95,7 +95,7 @@ export function getBillingStatusDescription(
 ): string {
   switch (org.billing_status) {
     case "trialing":
-      return "Your subscription trial is active with capped included credits.";
+      return "Your subscription is active with capped included credits.";
     case "active":
       return "Your subscription is active with included credits.";
     case "enterprise":

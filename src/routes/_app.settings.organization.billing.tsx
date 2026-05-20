@@ -22,7 +22,6 @@ import {
   getVerifiedLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
   getStripeSubscriptionSummary,
-  hasOrgUsedSubscriptionTrial,
   isStaleTrialingSubscriptionStatusError,
   isStripeBillingConfigured,
   listStripeInvoicesForOrg,
@@ -201,7 +200,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     paymentMethod,
     invoices: invoiceRows,
     subscription,
-    trialAvailable: !hasOrgUsedSubscriptionTrial(overview),
     byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
     legacyMigration: await getVerifiedLegacyStripeMigrationEligibility({
       env,
@@ -413,7 +411,7 @@ export async function action({ request, context }: Route.ActionArgs) {
             );
             return {
               error:
-                "We couldn't change your trial plan. Please try again in a moment.",
+                "We couldn't change your subscription plan. Please try again in a moment.",
             };
           }
         }
@@ -569,7 +567,6 @@ export default function BillingPage() {
     paymentMethod,
     invoices,
     subscription,
-    trialAvailable,
     byokProviderLabel,
     legacyMigration,
   } = useLoaderData<typeof loader>();
@@ -632,7 +629,6 @@ export default function BillingPage() {
       <ManagePlanView
         currentPlan={plan}
         stripeConfigured={stripeConfigured}
-        trialAvailable={trialAvailable}
         byokProviderLabel={byokProviderLabel}
         legacyMigration={legacyMigration}
         onBack={() => setView("overview")}
@@ -754,14 +750,12 @@ export default function BillingPage() {
 function ManagePlanView({
   currentPlan,
   stripeConfigured,
-  trialAvailable,
   byokProviderLabel,
   legacyMigration,
   onBack,
 }: {
   currentPlan: BillingPlan;
   stripeConfigured: boolean;
-  trialAvailable: boolean;
   byokProviderLabel: string | null;
   legacyMigration: LegacyMigrationDialogData | null;
   onBack: () => void;
@@ -872,7 +866,6 @@ function ManagePlanView({
         currentPlan={currentPlan}
         onSelectPlan={handleSelectPlan}
         pendingPlan={pendingPlan}
-        trialAvailable={trialAvailable}
         byokProviderLabel={byokProviderLabel}
         legacyMigration={legacyMigration}
         heading={
