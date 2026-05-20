@@ -12,6 +12,7 @@ import type { Route } from './+types/root';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import { NavigationProgress } from '@/components/ui/navigation-progress';
+import { reportClientError } from '@/lib/client-error-reporting';
 
 // Import global styles
 import './styles/globals.css';
@@ -115,6 +116,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let message = 'Oops!';
   let details = 'An unexpected error occurred.';
   let stack: string | undefined;
+  const statusCode = isRouteErrorResponse(error) ? error.status : undefined;
 
   if (isRouteErrorResponse(error)) {
     message = error.status === 404 ? '404' : 'Error';
@@ -126,6 +128,16 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     details = error.message;
     stack = error.stack;
   }
+
+  useEffect(() => {
+    if (statusCode && statusCode < 500) return;
+    reportClientError({
+      source: 'react_error_boundary',
+      error,
+      routeId: 'root',
+      statusCode,
+    });
+  }, [error, statusCode]);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
