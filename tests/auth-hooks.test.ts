@@ -1,8 +1,7 @@
 /**
  * Tests for auth action hooks.
  *
- * These hooks use useFetcher() to perform auth mutations.
- * React Router auto-revalidates loaders after fetcher actions complete.
+ * These hooks perform auth mutations and revalidate app loaders.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -80,115 +79,82 @@ describe('useLogout', () => {
 });
 
 describe('useSwitchWorkspace', () => {
+  const mockFetch = vi.fn();
+
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
   });
 
-  it('should submit switch request with JSON body', async () => {
-    const { useNavigate, useFetcher } = await import('react-router');
+  it('should post switch request with JSON body and revalidate on success', async () => {
     const { useSwitchWorkspace } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
     const { result } = renderHook(() => useSwitchWorkspace());
 
-    act(() => {
-      result.current.switchWorkspace('workspace-123');
+    await act(async () => {
+      await result.current.switchWorkspace('workspace-123');
     });
 
-    expect(mockSubmit).toHaveBeenCalledWith(
-      JSON.stringify({ workspaceId: 'workspace-123' }),
-      {
-        method: 'post',
-        action: '/api/auth/switch-workspace',
-        encType: 'application/json',
-      }
-    );
+    expect(mockFetch).toHaveBeenCalledWith('/api/auth/switch-workspace', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ workspaceId: 'workspace-123' }),
+      credentials: 'same-origin',
+      signal: expect.any(AbortSignal),
+    });
+    expect(mockRevalidate).toHaveBeenCalledTimes(1);
   });
 
   it('should return a Promise that resolves on success', async () => {
-    vi.resetModules();
-    const { useFetcher } = await import('react-router');
     const { useSwitchWorkspace } = await import('@/hooks/use-auth-actions');
-
-    // Start with submitting state
-    let mockState = 'submitting';
-    let mockData: { success?: boolean; error?: string } | null = null;
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ success: true }),
+    });
 
     const { result, rerender } = renderHook(() => useSwitchWorkspace());
 
     let resolved = false;
     let rejected = false;
-    act(() => {
-      result.current.switchWorkspace('workspace-123').then(
+    await act(async () => {
+      await result.current.switchWorkspace('workspace-123').then(
         () => { resolved = true; },
         () => { rejected = true; }
       );
     });
 
-    expect(resolved).toBe(false);
-    expect(rejected).toBe(false);
-
-    // Simulate fetcher completing successfully
-    mockState = 'idle';
-    mockData = { success: true };
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
     rerender();
-
-    // Wait for microtask to resolve promise
-    await new Promise(resolve => setTimeout(resolve, 0));
-
     expect(resolved).toBe(true);
     expect(rejected).toBe(false);
   });
 
   it('should return a Promise that rejects on error', async () => {
-    vi.resetModules();
-    const { useFetcher } = await import('react-router');
     const { useSwitchWorkspace } = await import('@/hooks/use-auth-actions');
+    mockFetch.mockResolvedValue({
+      ok: false,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'Workspace not found' }),
+    });
 
-    // Start with submitting state
-    let mockState = 'submitting';
-    let mockData: { success?: boolean; error?: string } | null = null;
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
-
-    const { result, rerender } = renderHook(() => useSwitchWorkspace());
+    const { result } = renderHook(() => useSwitchWorkspace());
 
     let resolved = false;
     let rejectedError: unknown = null;
-    act(() => {
-      result.current.switchWorkspace('workspace-123').then(
+    await act(async () => {
+      await result.current.switchWorkspace('workspace-123').then(
         () => { resolved = true; },
         (err) => { rejectedError = err; }
       );
     });
-
-    expect(resolved).toBe(false);
-    expect(rejectedError).toBe(null);
-
-    // Simulate fetcher completing with error
-    mockState = 'idle';
-    mockData = { error: 'Workspace not found' };
-    vi.mocked(useFetcher).mockImplementation(() => ({
-      submit: mockSubmit,
-      state: mockState,
-      data: mockData,
-    } as any));
-    rerender();
-
-    // Wait for microtask to resolve promise
-    await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(resolved).toBe(false);
     expect(rejectedError).toBeInstanceOf(Error);
@@ -196,31 +162,103 @@ describe('useSwitchWorkspace', () => {
   });
 
   it('should report isSwitching based on fetcher state', async () => {
-    const { useFetcher } = await import('react-router');
     const { useSwitchWorkspace } = await import('@/hooks/use-auth-actions');
-
-    vi.mocked(useFetcher).mockReturnValue({
-      submit: mockSubmit,
-      state: 'loading',
-      data: null,
-    } as any);
+    let resolveFetch: (value: unknown) => void = () => {};
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
 
     const { result } = renderHook(() => useSwitchWorkspace());
+    let promise: Promise<void>;
+    act(() => {
+      promise = result.current.switchWorkspace('workspace-123');
+    });
+
     expect(result.current.isSwitching).toBe(true);
+
+    await act(async () => {
+      resolveFetch({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ success: true }),
+      });
+      await promise!;
+    });
+    expect(result.current.isSwitching).toBe(false);
   });
 
-  it('should expose error from fetcher data', async () => {
-    const { useFetcher } = await import('react-router');
+  it('should expose error from failed response', async () => {
     const { useSwitchWorkspace } = await import('@/hooks/use-auth-actions');
-
-    vi.mocked(useFetcher).mockReturnValue({
-      submit: mockSubmit,
-      state: 'idle',
-      data: { error: 'Workspace not found' },
-    } as any);
+    mockFetch.mockResolvedValue({
+      ok: false,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'Workspace not found' }),
+    });
 
     const { result } = renderHook(() => useSwitchWorkspace());
+
+    await act(async () => {
+      await result.current.switchWorkspace('workspace-123').catch(() => {});
+    });
+
     expect(result.current.error).toBe('Workspace not found');
+  });
+
+  it('should reject a previous in-flight workspace switch as superseded', async () => {
+    const {
+      isWorkspaceSwitchSupersededError,
+      useSwitchWorkspace,
+    } = await import('@/hooks/use-auth-actions');
+    const pendingResponses: Array<{
+      signal: AbortSignal;
+      resolve: (value: unknown) => void;
+      reject: (reason?: unknown) => void;
+    }> = [];
+
+    mockFetch.mockImplementation((_url, init) => {
+      const signal = init?.signal as AbortSignal;
+      return new Promise((resolve, reject) => {
+        pendingResponses.push({ signal, resolve, reject });
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    });
+
+    const { result } = renderHook(() => useSwitchWorkspace());
+    let firstResolved = false;
+    let firstRejectedError: unknown = null;
+
+    act(() => {
+      void result.current.switchWorkspace('workspace-1').then(
+        () => { firstResolved = true; },
+        (error) => { firstRejectedError = error; },
+      );
+    });
+
+    expect(pendingResponses[0].signal.aborted).toBe(false);
+
+    let secondPromise: Promise<void>;
+    act(() => {
+      secondPromise = result.current.switchWorkspace('workspace-2');
+    });
+
+    expect(pendingResponses[0].signal.aborted).toBe(true);
+
+    await act(async () => {
+      pendingResponses[1].resolve({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ success: true }),
+      });
+      await secondPromise!;
+    });
+
+    expect(firstResolved).toBe(false);
+    expect(isWorkspaceSwitchSupersededError(firstRejectedError)).toBe(true);
+    expect(mockRevalidate).toHaveBeenCalledTimes(1);
   });
 });
 

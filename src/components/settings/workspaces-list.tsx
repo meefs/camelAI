@@ -32,7 +32,10 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { CreateWorkspaceDialog } from "@/components/settings/create-workspace-dialog"
-import { useSwitchWorkspace } from "@/hooks/use-auth-actions"
+import {
+  isWorkspaceSwitchSupersededError,
+  useSwitchWorkspace,
+} from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
 
 type ComputeTier = "standard" | "pro" | "enterprise"
@@ -93,9 +96,12 @@ export function WorkspacesList({
         if (archivedId === currentWorkspaceId) {
           const fallback = workspaces.find((ws) => ws.id !== archivedId)
           if (fallback) {
-            switchWorkspace(fallback.id)
+            void switchWorkspace(fallback.id).catch((error) => {
+              if (isWorkspaceSwitchSupersededError(error)) return
+              console.error("Failed to switch workspace:", error)
+              toast.error("Failed to switch workspace")
+            })
           }
-          // React Router will auto-revalidate after the fetcher action
         }
       } else if (fetcher.data.error) {
         pendingArchiveRef.current = null
@@ -105,8 +111,13 @@ export function WorkspacesList({
   }, [fetcher.state, fetcher.data, currentWorkspaceId, workspaces, switchWorkspace])
 
   const handleSwitch = (workspaceId: string) => {
-    switchWorkspace(workspaceId)
-    toast.success("Switching workspace...")
+    void switchWorkspace(workspaceId)
+      .then(() => toast.success("Switched workspace"))
+      .catch((error) => {
+        if (isWorkspaceSwitchSupersededError(error)) return
+        console.error("Failed to switch workspace:", error)
+        toast.error("Failed to switch workspace")
+      })
   }
 
   const handleArchive = (workspaceId: string) => {

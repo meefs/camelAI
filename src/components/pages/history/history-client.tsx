@@ -4,7 +4,10 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams, useRevalidator, useFetcher } from 'react-router';
 import type { Thread, ThreadCreator, WorkspaceWithAccess } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
-import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
+import {
+  isWorkspaceSwitchSupersededError,
+  useSwitchWorkspace,
+} from '@/hooks/use-auth-actions';
 import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
@@ -364,6 +367,7 @@ export default function HistoryClient({
       setContainerDialog({ open: true, workspace: targetWorkspace });
       await openHistoryThread(targetThreadId);
     } catch (error) {
+      if (isWorkspaceSwitchSupersededError(error)) return;
       console.error('Failed to switch workspace:', error);
     } finally {
       setSwitchingWorkspace(false);

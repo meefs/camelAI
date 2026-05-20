@@ -121,7 +121,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     return Response.json(
-      { success: true },
+      { success: true, workspaceId, orgId: workspace.org_id },
       {
         headers: {
           "Set-Cookie": createSessionCookieHeader(signedToken, request),
