@@ -408,4 +408,46 @@ describe("ChatThreadDO completion summaries", () => {
       summaryStatus: "failed",
     });
   });
+
+  it("reuses one WorkspaceDO stub for ordered status writes", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "resp_1",
+          object: "response",
+          status: "completed",
+          output: [
+            {
+              id: "msg_1",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "Generated hover summary.",
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const { fake, waitUntilPromises } = createFakeThread();
+
+    ChatThreadDO.prototype["publishRunningActivity"].call(fake, "Thinking", {
+      immediate: true,
+    });
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      completedAt: 100,
+      summarySource: "Raw final answer.",
+    });
+
+    await Promise.all(waitUntilPromises);
+
+    expect(fake.env.WORKSPACE.get).toHaveBeenCalledTimes(1);
+  });
 });

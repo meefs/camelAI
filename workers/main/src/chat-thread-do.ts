@@ -49,7 +49,7 @@ import {
   parseStoredLlmProviderConfig,
 } from "../../../src/lib/llm-provider-config";
 import { isOrgBanned } from "./ban-list";
-import { recordWorkspaceThreadStreaming } from "./thread-status";
+import type { WorkspaceThreadStreamingOptions } from "./thread-status";
 import { createSignedToken } from "./signed-tokens";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
 import {
@@ -1484,6 +1484,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private titleGenerationInFlight: boolean = false;
   private codexSessionId: string | null = null;
   private activeTurnUserId: string | null = null;
+  private workspaceStatusStubs = new Map<string, DurableObjectStub<WorkspaceDO>>();
   private runnerConnectPromise: Promise<void> | null = null;
   private lastRunnerSeq: number = 0;
   private runnerTransitionChain: Promise<void> = Promise.resolve();
@@ -4312,6 +4313,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.runningActivityLastSentAt = 0;
   }
 
+  private getWorkspaceStatusStub(workspaceId: string): DurableObjectStub<WorkspaceDO> {
+    const normalizedWorkspaceId = workspaceId.trim();
+    this.workspaceStatusStubs ??= new Map<string, DurableObjectStub<WorkspaceDO>>();
+    let stub = this.workspaceStatusStubs.get(normalizedWorkspaceId);
+    if (!stub) {
+      stub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(normalizedWorkspaceId),
+      ) as DurableObjectStub<WorkspaceDO>;
+      this.workspaceStatusStubs.set(normalizedWorkspaceId, stub);
+    }
+    return stub;
+  }
+
+  private recordWorkspaceThreadStreaming(
+    workspaceId: string | null | undefined,
+    threadId: string | null | undefined,
+    isStreaming: boolean,
+    options?: WorkspaceThreadStreamingOptions,
+  ): Promise<void> {
+    const normalizedWorkspaceId = workspaceId?.trim();
+    const normalizedThreadId = threadId?.trim();
+    if (!normalizedWorkspaceId || !normalizedThreadId) {
+      return Promise.resolve();
+    }
+    return this.getWorkspaceStatusStub(normalizedWorkspaceId).recordThreadStreaming(
+      normalizedThreadId,
+      isStreaming,
+      options,
+    );
+  }
+
   private normalizeRunningActivityText(text: string | null | undefined): string | null {
     const normalized = text?.replace(/\s+/g, " ").trim() ?? "";
     if (!normalized) return null;
@@ -4347,8 +4379,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.runningActivityLastText = activityText;
     this.runningActivityLastSentAt = now;
     this.ctx.waitUntil(
-      recordWorkspaceThreadStreaming(
-        this.env,
+      this.recordWorkspaceThreadStreaming(
         context.workspaceId,
         context.threadId,
         true,
@@ -4483,8 +4514,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         );
       } else if (statusChanged) {
         this.ctx.waitUntil(
-          recordWorkspaceThreadStreaming(
-            this.env,
+          this.recordWorkspaceThreadStreaming(
             context.workspaceId,
             context.threadId,
             value,
@@ -4515,8 +4545,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
     if (persistenceResult.status === "failed") {
-      await recordWorkspaceThreadStreaming(
-        this.env,
+      await this.recordWorkspaceThreadStreaming(
         context.workspaceId,
         context.threadId,
         false,
@@ -4526,8 +4555,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     const storedCompletedAt = persistenceResult.completedAt;
 
-    await recordWorkspaceThreadStreaming(
-      this.env,
+    await this.recordWorkspaceThreadStreaming(
       context.workspaceId,
       context.threadId,
       false,
@@ -4594,8 +4622,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       persistenceResult.status === "stored"
         ? persistenceResult.completedAt
         : completedAt;
-    await recordWorkspaceThreadStreaming(
-      this.env,
+    await this.recordWorkspaceThreadStreaming(
       context.workspaceId,
       context.threadId,
       false,
