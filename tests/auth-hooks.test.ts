@@ -206,8 +206,11 @@ describe('useSwitchWorkspace', () => {
     expect(result.current.error).toBe('Workspace not found');
   });
 
-  it('should abort a previous in-flight workspace switch', async () => {
-    const { useSwitchWorkspace } = await import('@/hooks/use-auth-actions');
+  it('should reject a previous in-flight workspace switch as superseded', async () => {
+    const {
+      isWorkspaceSwitchSupersededError,
+      useSwitchWorkspace,
+    } = await import('@/hooks/use-auth-actions');
     const pendingResponses: Array<{
       signal: AbortSignal;
       resolve: (value: unknown) => void;
@@ -226,12 +229,12 @@ describe('useSwitchWorkspace', () => {
 
     const { result } = renderHook(() => useSwitchWorkspace());
     let firstResolved = false;
-    let firstRejected = false;
+    let firstRejectedError: unknown = null;
 
     act(() => {
       void result.current.switchWorkspace('workspace-1').then(
         () => { firstResolved = true; },
-        () => { firstRejected = true; },
+        (error) => { firstRejectedError = error; },
       );
     });
 
@@ -253,8 +256,8 @@ describe('useSwitchWorkspace', () => {
       await secondPromise!;
     });
 
-    expect(firstResolved).toBe(true);
-    expect(firstRejected).toBe(false);
+    expect(firstResolved).toBe(false);
+    expect(isWorkspaceSwitchSupersededError(firstRejectedError)).toBe(true);
     expect(mockRevalidate).toHaveBeenCalledTimes(1);
   });
 });

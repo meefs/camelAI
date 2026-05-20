@@ -32,7 +32,10 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { CreateWorkspaceDialog } from "@/components/settings/create-workspace-dialog"
-import { useSwitchWorkspace } from "@/hooks/use-auth-actions"
+import {
+  isWorkspaceSwitchSupersededError,
+  useSwitchWorkspace,
+} from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
 
 type ComputeTier = "standard" | "pro" | "enterprise"
@@ -94,6 +97,7 @@ export function WorkspacesList({
           const fallback = workspaces.find((ws) => ws.id !== archivedId)
           if (fallback) {
             void switchWorkspace(fallback.id).catch((error) => {
+              if (isWorkspaceSwitchSupersededError(error)) return
               console.error("Failed to switch workspace:", error)
               toast.error("Failed to switch workspace")
             })
@@ -110,6 +114,7 @@ export function WorkspacesList({
     void switchWorkspace(workspaceId)
       .then(() => toast.success("Switched workspace"))
       .catch((error) => {
+        if (isWorkspaceSwitchSupersededError(error)) return
         console.error("Failed to switch workspace:", error)
         toast.error("Failed to switch workspace")
       })

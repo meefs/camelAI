@@ -4,7 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigation, useSearchParams, useRevalidator, useNavigate, useSubmit } from 'react-router';
 import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
-import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
+import {
+  isWorkspaceSwitchSupersededError,
+  useSwitchWorkspace,
+} from '@/hooks/use-auth-actions';
 import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
 import { APP_BUILD_ID } from '@/lib/app-build-id';
 import { getPreferredAppUrl } from '@/lib/app-url';
@@ -203,6 +206,7 @@ export default function AppsClient({
         navigate(`/computer/${targetApp.workspace_id}?file=${filePath}`);
       }
     } catch (error) {
+      if (isWorkspaceSwitchSupersededError(error)) return;
       toast.error('Failed to switch workspace');
       console.error('Failed to switch workspace:', error);
     } finally {

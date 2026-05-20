@@ -36,6 +36,19 @@ type PendingPromise = {
 
 let activeWorkspaceSwitchController: AbortController | null = null;
 
+export class WorkspaceSwitchSupersededError extends Error {
+  constructor() {
+    super('Workspace switch was superseded');
+    this.name = 'WorkspaceSwitchSupersededError';
+  }
+}
+
+export function isWorkspaceSwitchSupersededError(
+  error: unknown,
+): error is WorkspaceSwitchSupersededError {
+  return error instanceof WorkspaceSwitchSupersededError;
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
@@ -84,7 +97,7 @@ export function useSwitchWorkspace() {
         revalidator.revalidate();
       } catch (caught) {
         if (isAbortError(caught)) {
-          return;
+          throw new WorkspaceSwitchSupersededError();
         }
 
         const nextError =

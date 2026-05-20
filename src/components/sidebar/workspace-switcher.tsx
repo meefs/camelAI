@@ -20,7 +20,10 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useAuthData } from "@/hooks/use-auth-data"
-import { useSwitchWorkspace } from "@/hooks/use-auth-actions"
+import {
+  isWorkspaceSwitchSupersededError,
+  useSwitchWorkspace,
+} from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
 
 export function WorkspaceSwitcher() {
@@ -52,6 +55,7 @@ export function WorkspaceSwitcher() {
         navigate(`/computer/${workspaceId}`)
       }
     } catch (error) {
+      if (isWorkspaceSwitchSupersededError(error)) return
       console.error("Failed to switch workspace:", error)
       toast.error("Failed to switch workspace")
     } finally {
