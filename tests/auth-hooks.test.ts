@@ -52,6 +52,7 @@ describe('useLogout', () => {
       },
       body: undefined,
       credentials: 'same-origin',
+      signal: undefined,
     });
     expect(mockNavigate).toHaveBeenCalledWith('/login');
   });
@@ -297,6 +298,7 @@ describe('useSwitchOrg', () => {
       },
       body: JSON.stringify({ orgId: 'org-456' }),
       credentials: 'same-origin',
+      signal: expect.any(AbortSignal),
     });
     expect(mockRevalidate).toHaveBeenCalledTimes(1);
   });
@@ -347,6 +349,61 @@ describe('useSwitchOrg', () => {
     expect(rejectedError).toBeInstanceOf(Error);
     expect((rejectedError as Error).message).toBe('Org not found');
     expect(result.current.error).toBe('Org not found');
+  });
+
+  it('should reject a previous in-flight org switch as superseded', async () => {
+    const {
+      isOrgSwitchSupersededError,
+      useSwitchOrg,
+    } = await import('@/hooks/use-auth-actions');
+    const pendingResponses: Array<{
+      signal: AbortSignal;
+      resolve: (value: unknown) => void;
+      reject: (reason?: unknown) => void;
+    }> = [];
+
+    mockFetch.mockImplementation((_url, init) => {
+      const signal = init?.signal as AbortSignal;
+      return new Promise((resolve, reject) => {
+        pendingResponses.push({ signal, resolve, reject });
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    });
+
+    const { result } = renderHook(() => useSwitchOrg());
+    let firstResolved = false;
+    let firstRejectedError: unknown = null;
+
+    act(() => {
+      void result.current.switchOrg('org-1').then(
+        () => { firstResolved = true; },
+        (error) => { firstRejectedError = error; },
+      );
+    });
+
+    expect(pendingResponses[0].signal.aborted).toBe(false);
+
+    let secondPromise: Promise<void>;
+    act(() => {
+      secondPromise = result.current.switchOrg('org-2');
+    });
+
+    expect(pendingResponses[0].signal.aborted).toBe(true);
+
+    await act(async () => {
+      pendingResponses[1].resolve({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ success: true }),
+      });
+      await secondPromise!;
+    });
+
+    expect(firstResolved).toBe(false);
+    expect(isOrgSwitchSupersededError(firstRejectedError)).toBe(true);
+    expect(mockRevalidate).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -413,6 +470,7 @@ describe('useLogin', () => {
         password: 'password123',
       }),
       credentials: 'same-origin',
+      signal: undefined,
     });
     expect(mockNavigate).toHaveBeenCalledWith('/');
   });
@@ -474,6 +532,7 @@ describe('useSignup', () => {
         turnstileToken: 'turnstile-token',
       }),
       credentials: 'same-origin',
+      signal: undefined,
     });
     expect(mockNavigate).toHaveBeenCalledWith('/chat');
   });
@@ -506,6 +565,7 @@ describe('useSignup', () => {
         turnstileToken: undefined,
       }),
       credentials: 'same-origin',
+      signal: undefined,
     });
     expect(mockNavigate).toHaveBeenCalledWith('/');
   });

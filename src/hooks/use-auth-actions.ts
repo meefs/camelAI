@@ -13,6 +13,7 @@ type AuthActionResponse = {
 async function postJsonAction(
   url: string,
   body?: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<AuthActionResponse> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
@@ -26,6 +27,7 @@ async function postJsonAction(
     headers,
     body: body ? JSON.stringify(body) : undefined,
     credentials: 'same-origin',
+    signal,
   });
   const contentType = response.headers.get('content-type') ?? '';
   const data = contentType.includes('application/json')
@@ -75,6 +77,7 @@ export function useLogout() {
 }
 
 let activeWorkspaceSwitchController: AbortController | null = null;
+let activeOrgSwitchController: AbortController | null = null;
 
 export class WorkspaceSwitchSupersededError extends Error {
   constructor() {
@@ -87,6 +90,19 @@ export function isWorkspaceSwitchSupersededError(
   error: unknown,
 ): error is WorkspaceSwitchSupersededError {
   return error instanceof WorkspaceSwitchSupersededError;
+}
+
+export class OrgSwitchSupersededError extends Error {
+  constructor() {
+    super('Organization switch was superseded');
+    this.name = 'OrgSwitchSupersededError';
+  }
+}
+
+export function isOrgSwitchSupersededError(
+  error: unknown,
+): error is OrgSwitchSupersededError {
+  return error instanceof OrgSwitchSupersededError;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -174,25 +190,43 @@ export function useSwitchWorkspace() {
  */
 export function useSwitchOrg() {
   const revalidator = useRevalidator();
+  const requestIdRef = useRef(0);
   const [isSwitching, setIsSwitching] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
   const switchOrg = useCallback(
     async (orgId: string): Promise<void> => {
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
       setIsSwitching(true);
       setError(undefined);
+      activeOrgSwitchController?.abort();
+      const controller = new AbortController();
+      activeOrgSwitchController = controller;
+
       try {
-        await postJsonAction('/api/auth/switch-org', { orgId });
+        await postJsonAction('/api/auth/switch-org', { orgId }, controller.signal);
         revalidator.revalidate();
       } catch (caught) {
+        if (isAbortError(caught)) {
+          throw new OrgSwitchSupersededError();
+        }
+
         const nextError =
           caught instanceof Error
             ? caught
             : new Error('Failed to switch organization');
-        setError(nextError.message);
+        if (requestIdRef.current === requestId) {
+          setError(nextError.message);
+        }
         throw nextError;
       } finally {
-        setIsSwitching(false);
+        if (activeOrgSwitchController === controller) {
+          activeOrgSwitchController = null;
+        }
+        if (requestIdRef.current === requestId) {
+          setIsSwitching(false);
+        }
       }
     },
     [revalidator]
