@@ -1,4 +1,5 @@
 import type { WorkspaceDO } from "./workspace";
+import type { ThreadCompletionSummaryStatus } from "../../../src/types";
 
 export interface WorkspaceThreadStatusEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
@@ -6,6 +7,10 @@ export interface WorkspaceThreadStatusEnv {
 
 export interface WorkspaceThreadStreamingOptions {
   completedAt?: number;
+  summaryStatus?: ThreadCompletionSummaryStatus | null;
+  summary?: string | null;
+  activityText?: string | null;
+  activityAt?: number | null;
 }
 
 export function recordWorkspaceThreadStreaming(

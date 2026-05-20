@@ -5,6 +5,7 @@ const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
 const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 const MAX_FIRST_USER_MESSAGE_LENGTH = 500;
+const MAX_ASSISTANT_COMPLETION_SUMMARY_LENGTH = 240;
 
 function stripSystemMessageTags(text: string): string {
   return stripMentionAnnotations(text.replace(SYSTEM_MESSAGE_TAG_REGEX, '')).trim();
@@ -51,4 +52,23 @@ export function normalizeThreadPreviewUserMessage(content: string | ContentBlock
   }
 
   return withoutAuthor.slice(0, MAX_FIRST_USER_MESSAGE_LENGTH);
+}
+
+export function normalizeThreadCompletionSummary(content: string | null | undefined): string | null {
+  const raw = content?.replace(SYSTEM_MESSAGE_TAG_REGEX, ' ') ?? '';
+  const collapsed = stripMentionAnnotations(raw)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!collapsed) {
+    return null;
+  }
+
+  const withoutWrapper = collapsed
+    .replace(/^(assistant\s+)?(?:final\s+)?(?:answer|response|message|result|summary):\s*/i, '')
+    .trim();
+  if (!withoutWrapper) {
+    return null;
+  }
+
+  return withoutWrapper.slice(0, MAX_ASSISTANT_COMPLETION_SUMMARY_LENGTH);
 }

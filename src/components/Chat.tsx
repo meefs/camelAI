@@ -106,6 +106,7 @@ import {
 import { uploadWorkspaceFile } from "@/lib/workspace-upload.client";
 import { isManualCompactCommand } from "@/lib/slash-commands";
 import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
+import { normalizeThreadPreviewUserMessage } from "@/lib/thread-preview";
 import {
   getDefaultLlmModel,
   getProviderForModel,
@@ -229,11 +230,16 @@ function resolveSelectedThreadModel(args: {
 function dispatchLocalThreadStatus(
   threadId: string | null | undefined,
   status: "idle" | "running",
+  options: {
+    latestUserMessage?: string | null;
+    runningActivityText?: string | null;
+    runningActivityAt?: number | null;
+  } = {},
 ): void {
   if (typeof window === "undefined" || !threadId) return;
   window.dispatchEvent(
     new CustomEvent("camelai:thread-status", {
-      detail: { threadId, status },
+      detail: { threadId, status, ...options },
     }),
   );
 }
@@ -3888,7 +3894,12 @@ type SendOptions = {
     });
 
     // If WebSocket is connected and ready, send immediately
-    dispatchLocalThreadStatus(threadId, "running");
+    const previewUserMessage = normalizeThreadPreviewUserMessage(rawContent);
+    dispatchLocalThreadStatus(threadId, "running", {
+      latestUserMessage: previewUserMessage,
+      runningActivityText: previewUserMessage,
+      runningActivityAt: Date.now(),
+    });
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
       logRunnerClient("message_sent_immediate", {

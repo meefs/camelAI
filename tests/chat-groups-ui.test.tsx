@@ -19,13 +19,16 @@ import {
   getThreadIdsRequiringSnapshotRevalidation,
   getCloseGroupRedirect,
   getGroupLandingHref,
+  hasPendingCompletionSummaries,
+  mergeLiveAndLocalThreadStatuses,
   mergeActiveChatGroup,
   reconcileLocalThreadStatusesWithSnapshot,
   shouldMarkActiveIdleThreadViewed,
   shouldMarkActiveUnreadThreadViewed,
+  shouldRevalidateThreadStatusUpdate,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import type { ChatGroup, ChatGroupView } from "@/types";
+import type { ChatGroup, ChatGroupThreadSummary, ChatGroupView } from "@/types";
 
 const moveGroups: ChatGroup[] = [
   {
@@ -39,19 +42,40 @@ const moveGroups: ChatGroup[] = [
   },
 ];
 
+function makeThreadSummary(
+  overrides: Partial<ChatGroupThreadSummary> &
+    Pick<ChatGroupThreadSummary, "id" | "title">,
+): ChatGroupThreadSummary {
+  const updatedAt = overrides.updated_at ?? 1;
+  return {
+    model: "haiku",
+    provider: "claude",
+    updated_at: updatedAt,
+    status: "idle",
+    membership: "open",
+    last_active_at: updatedAt,
+    latest_user_message: null,
+    running_activity_text: null,
+    running_activity_at: null,
+    last_assistant_completed_at: null,
+    last_assistant_summary: null,
+    last_assistant_summary_status: null,
+    running_started_at: null,
+    ...overrides,
+  };
+}
+
 const groupView: ChatGroupView = {
   ...moveGroups[0],
   open_thread_ids: ["thread_1"],
   closed_thread_ids: [],
   open_threads: [
-    {
+    makeThreadSummary({
       id: "thread_1",
       title: "API plan",
-      model: "haiku",
-      provider: "claude",
       updated_at: 1,
       status: "idle",
-    },
+    }),
   ],
   closed_threads: [],
   member_count: 1,
@@ -64,14 +88,12 @@ const multiChatGroupView: ChatGroupView = {
   open_thread_ids: ["thread_1", "thread_2"],
   open_threads: [
     ...groupView.open_threads,
-    {
+    makeThreadSummary({
       id: "thread_2",
       title: "UI polish",
-      model: "haiku",
-      provider: "claude",
       updated_at: 2,
       status: "idle",
-    },
+    }),
   ],
   member_count: 2,
 };
@@ -404,6 +426,12 @@ describe("ChatGroupsList", () => {
     expect(screen.getByLabelText("3 open chats")).toBeInTheDocument();
     const rightSlot = screen.getByLabelText("3 open chats").parentElement;
     expect(rightSlot).not.toBeNull();
+    expect(screen.getByLabelText("3 open chats")).toHaveClass(
+      "group-hover/menu-item:opacity-0",
+    );
+    expect(screen.getByLabelText("3 open chats")).toHaveClass(
+      "group-has-[[data-state=open]]/menu-item:opacity-0",
+    );
     expect(rightSlot!).not.toHaveClass("group-hover/menu-item:opacity-0");
   });
 
@@ -417,14 +445,13 @@ describe("ChatGroupsList", () => {
               member_count: 2,
               closed_thread_ids: ["thread_2"],
               closed_threads: [
-                {
+                makeThreadSummary({
                   id: "thread_2",
                   title: "Dismissed",
-                  model: "haiku",
-                  provider: "claude",
                   updated_at: 1,
                   status: "idle",
-                },
+                  membership: "closed",
+                }),
               ],
             },
           ]}
@@ -436,6 +463,7 @@ describe("ChatGroupsList", () => {
     );
 
     expect(screen.getByLabelText("1 open chat")).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "Launch" })).toHaveClass("!pr-2");
     expect(screen.queryByLabelText("2 open chats")).not.toBeInTheDocument();
   });
 
@@ -741,14 +769,12 @@ describe("getCloseGroupRedirect", () => {
       last_active_thread_id: "thread_2",
       open_thread_ids: ["thread_2"],
       open_threads: [
-        {
+        makeThreadSummary({
           id: "thread_2",
           title: "Research notes",
-          model: "haiku",
-          provider: "claude",
           updated_at: 2,
           status: "idle",
-        },
+        }),
       ],
     };
 
@@ -783,14 +809,12 @@ describe("mergeActiveChatGroup", () => {
       open_thread_ids: ["thread_1", "thread_2"],
       open_threads: [
         ...groupView.open_threads,
-        {
+        makeThreadSummary({
           id: "thread_2",
           title: "New tab",
-          model: "haiku",
-          provider: "claude",
           updated_at: 2,
           status: "running",
-        },
+        }),
       ],
       member_count: 2,
       status: "running",
@@ -816,6 +840,52 @@ describe("mergeActiveChatGroup", () => {
     const merged = mergeActiveChatGroup([groupView], activeGroup);
 
     expect(merged.map((group) => group.id)).toEqual(["group_new", "group_1"]);
+  });
+});
+
+describe("hasPendingCompletionSummaries", () => {
+  it("detects pending assistant summaries in open and closed threads", () => {
+    expect(
+      hasPendingCompletionSummaries([
+        {
+          ...groupView,
+          open_threads: [
+            makeThreadSummary({
+              id: "thread_pending_open",
+              title: "Pending open",
+              last_assistant_summary_status: "pending",
+            }),
+          ],
+        },
+      ]),
+    ).toBe(true);
+
+    expect(
+      hasPendingCompletionSummaries([
+        {
+          ...groupView,
+          open_threads: [],
+          closed_threads: [
+            makeThreadSummary({
+              id: "thread_pending_closed",
+              title: "Pending closed",
+              membership: "closed",
+              last_assistant_summary_status: "pending",
+            }),
+          ],
+        },
+      ]),
+    ).toBe(true);
+
+    expect(hasPendingCompletionSummaries([groupView])).toBe(false);
+  });
+});
+
+describe("shouldRevalidateThreadStatusUpdate", () => {
+  it("keeps summary metadata-only frames eligible for fallback revalidation", () => {
+    expect(shouldRevalidateThreadStatusUpdate("unread", true, true)).toBe(true);
+    expect(shouldRevalidateThreadStatusUpdate("idle", true, false)).toBe(false);
+    expect(shouldRevalidateThreadStatusUpdate("running", false, false)).toBe(true);
   });
 });
 
@@ -845,6 +915,56 @@ describe("reconcileLocalThreadStatusesWithSnapshot", () => {
 
     expect(Array.from(next.entries())).toEqual([["thread_2", "unread"]]);
   });
+
+  it("clears stale local idle metadata when the snapshot says the thread is running", () => {
+    const current = new Map([
+      [
+        "thread_1",
+        {
+          status: "idle" as const,
+          latestUserMessage: "optimistic prompt",
+          runningActivityText: "optimistic prompt",
+        },
+      ],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(
+      current,
+      new Set(["thread_1"]),
+    );
+
+    expect(Array.from(next.entries())).toEqual([]);
+  });
+});
+
+describe("mergeLiveAndLocalThreadStatuses", () => {
+  it("keeps authoritative live running state over stale local idle overlays", () => {
+    const merged = mergeLiveAndLocalThreadStatuses(
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "running",
+            runningActivityText: "Running typecheck...",
+          },
+        ],
+      ]),
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "idle",
+            latestUserMessage: "local prompt",
+          },
+        ],
+      ]),
+    );
+
+    expect(merged.get("thread_1")).toEqual({
+      status: "running",
+      runningActivityText: "Running typecheck...",
+    });
+  });
 });
 
 describe("applyLiveRunningStatuses", () => {
@@ -855,15 +975,13 @@ describe("applyLiveRunningStatuses", () => {
           ...groupView,
           status: "running",
           open_threads: [
-            {
+            makeThreadSummary({
               id: "thread_1",
               title: "API plan",
-              model: "haiku",
-              provider: "claude",
               updated_at: 1,
               status: "running",
               is_unread: false,
-            },
+            }),
           ],
         },
       ],
@@ -882,15 +1000,13 @@ describe("applyLiveRunningStatuses", () => {
           ...groupView,
           status: "running",
           open_threads: [
-            {
+            makeThreadSummary({
               id: "thread_1",
               title: "API plan",
-              model: "haiku",
-              provider: "claude",
               updated_at: 2,
               status: "running",
               is_unread: true,
-            },
+            }),
           ],
         },
       ],
@@ -957,15 +1073,13 @@ describe("applyLiveRunningStatuses", () => {
           ...groupView,
           status: "running",
           open_threads: [
-            {
+            makeThreadSummary({
               id: "thread_1",
               title: "API plan",
-              model: "haiku",
-              provider: "claude",
               updated_at: 2,
               status: "running",
               is_unread: false,
-            },
+            }),
           ],
         },
       ],
@@ -986,15 +1100,13 @@ describe("applyLiveRunningStatuses", () => {
           ...groupView,
           status: "unread",
           open_threads: [
-            {
+            makeThreadSummary({
               id: "thread_1",
               title: "API plan",
-              model: "haiku",
-              provider: "claude",
               updated_at: 2,
               status: "unread",
               is_unread: true,
-            },
+            }),
           ],
         },
       ],
@@ -1016,24 +1128,20 @@ describe("applyLiveRunningStatuses", () => {
           ...groupView,
           open_thread_ids: ["thread_1", "thread_2"],
           open_threads: [
-            {
+            makeThreadSummary({
               id: "thread_1",
               title: "API plan",
-              model: "haiku",
-              provider: "claude",
               updated_at: 2,
               status: "running",
               is_unread: false,
-            },
-            {
+            }),
+            makeThreadSummary({
               id: "thread_2",
               title: "UI polish",
-              model: "haiku",
-              provider: "claude",
               updated_at: 2,
               status: "idle",
               is_unread: false,
-            },
+            }),
           ],
         },
       ],
@@ -1046,5 +1154,105 @@ describe("applyLiveRunningStatuses", () => {
     expect(group.status).toBe("unread");
     expect(group.open_threads[0].status).toBe("unread");
     expect(group.open_threads[1].status).toBe("idle");
+  });
+
+  it("overlays completion timestamps from live status metadata", () => {
+    const [group] = applyLiveRunningStatuses(
+      [
+        {
+          ...groupView,
+          open_threads: [
+            makeThreadSummary({
+              id: "thread_1",
+              title: "API plan",
+              updated_at: 10,
+              last_active_at: 10,
+              status: "running",
+              is_unread: false,
+            }),
+          ],
+        },
+      ],
+      new Set(),
+      true,
+      null,
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "unread",
+            completedAt: 20,
+            summaryStatus: "ready",
+            summary: "Generated summary",
+          },
+        ],
+      ]),
+    );
+
+    expect(group.status).toBe("unread");
+    expect(group.open_threads[0].last_assistant_completed_at).toBe(20);
+    expect(group.open_threads[0].last_assistant_summary).toBe("Generated summary");
+    expect(group.open_threads[0].last_assistant_summary_status).toBe("ready");
+    expect(group.open_threads[0].updated_at).toBe(20);
+    expect(group.open_threads[0].last_active_at).toBe(20);
+  });
+
+  it("overlays optimistic latest user messages while running", () => {
+    const [group] = applyLiveRunningStatuses(
+      [
+        {
+          ...groupView,
+          open_threads: [
+            makeThreadSummary({
+              id: "thread_1",
+              title: "API plan",
+              updated_at: 10,
+              last_active_at: 10,
+              status: "idle",
+              latest_user_message: "stale prompt",
+            }),
+          ],
+        },
+      ],
+      new Set(),
+      true,
+      null,
+      new Map([
+        [
+          "thread_1",
+          { status: "running", latestUserMessage: "fresh prompt" },
+        ],
+      ]),
+    );
+
+    expect(group.status).toBe("running");
+    expect(group.open_threads[0].status).toBe("running");
+    expect(group.open_threads[0].latest_user_message).toBe("fresh prompt");
+  });
+
+  it("overlays live running activity metadata while running", () => {
+    const [group] = applyLiveRunningStatuses(
+      [groupView],
+      new Set(),
+      true,
+      null,
+      new Map([
+        [
+          "thread_1",
+          {
+            status: "running",
+            runningActivityText: "Running typecheck...",
+            runningActivityAt: 40,
+            runningStartedAt: 30,
+          },
+        ],
+      ]),
+    );
+
+    expect(group.status).toBe("running");
+    expect(group.open_threads[0].running_activity_text).toBe("Running typecheck...");
+    expect(group.open_threads[0].running_activity_at).toBe(40);
+    expect(group.open_threads[0].running_started_at).toBe(30);
+    expect(group.open_threads[0].last_active_at).toBe(40);
   });
 });
