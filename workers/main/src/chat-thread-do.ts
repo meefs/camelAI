@@ -2361,7 +2361,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async setBrowserTurnStreaming(isStreaming: boolean): Promise<void> {
-    this.setChatIsStreaming(isStreaming);
+    if (isStreaming) {
+      this.setChatIsStreaming(true);
+      return;
+    }
+    this.setChatIsStreaming(
+      false,
+      this.chatIsStreaming
+        ? {
+            markUnread: true,
+            completedAt: Date.now(),
+            summarySource: null,
+          }
+        : {},
+    );
   }
 
   async completeTodoStateForTurnEnd(): Promise<void> {

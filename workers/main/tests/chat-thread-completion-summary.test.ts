@@ -386,4 +386,26 @@ describe("ChatThreadDO completion summaries", () => {
       summaryStatus: "failed",
     });
   });
+
+  it("marks browser runner turn completion as unread with failed summary status", async () => {
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+
+    await ChatThreadDO.prototype.setBrowserTurnStreaming.call(fake, false);
+    await Promise.all(waitUntilPromises);
+
+    expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
+      completedAt: expect.any(Number),
+      summaryStatus: "failed",
+    });
+    expect(recordThreadAssistantCompletion).toHaveBeenCalledWith("thread1", {
+      completedAt: expect.any(Number),
+      summary: null,
+      summaryStatus: "failed",
+    });
+  });
 });

@@ -127,4 +127,45 @@ describe("WorkspaceDO thread status", () => {
       }),
     ]);
   });
+
+  it("ignores stale completion status updates older than the current running row", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true, {
+      activityText: "Running newer turn",
+      activityAt: 100,
+    });
+    const [runningStatus] = await workspaceStub.listStreamingThreadStatuses();
+    const staleCompletedAt = runningStatus.startedAt - 1;
+
+    await workspaceStub.recordThreadStreaming(threadId, false, {
+      completedAt: staleCompletedAt,
+      summaryStatus: "ready",
+      summary: "Previous turn summary",
+    });
+
+    await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([
+      expect.objectContaining({
+        threadId,
+        startedAt: runningStatus.startedAt,
+        latestActivityText: "Running newer turn",
+      }),
+    ]);
+  });
+
+  it("clears running status for completions newer than the current running row", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    const [runningStatus] = await workspaceStub.listStreamingThreadStatuses();
+
+    await workspaceStub.recordThreadStreaming(threadId, false, {
+      completedAt: runningStatus.startedAt + 1,
+      summaryStatus: "failed",
+    });
+
+    await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([]);
+  });
 });

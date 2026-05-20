@@ -428,6 +428,19 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         );
       }
     } else {
+      const currentRunning = this.sql
+        .exec<{ started_at: number }>(
+          'SELECT started_at FROM thread_streaming_status WHERE thread_id = ?',
+          normalizedThreadId,
+        )
+        .toArray()[0] ?? null;
+      if (
+        completedAt !== null &&
+        currentRunning !== null &&
+        currentRunning.started_at > completedAt
+      ) {
+        return;
+      }
       this.sql.exec(
         'DELETE FROM thread_streaming_status WHERE thread_id = ?',
         normalizedThreadId,
