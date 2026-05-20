@@ -95,6 +95,14 @@ export function shouldMarkActiveUnreadThreadViewed(
   return status === "unread" && threadId === activeThreadId;
 }
 
+export function shouldMarkActiveIdleThreadViewed(
+  status: ThreadStatus,
+  threadId: string,
+  activeThreadId: string | null,
+): boolean {
+  return status === "idle" && threadId === activeThreadId;
+}
+
 export function getThreadIdsRequiringSnapshotRevalidation(
   liveStatuses: ReadonlyMap<string, ThreadStatus>,
   localStatuses: ReadonlyMap<string, ThreadStatus>,
@@ -282,6 +290,14 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       }
       const threadId = payload.threadId;
       const status = payload.status;
+      if (
+        markViewedEnabled &&
+        shouldMarkActiveIdleThreadViewed(status, threadId, activeThreadIdRef.current)
+      ) {
+        void fetch(`/api/threads/${encodeURIComponent(threadId)}/mark-viewed`, {
+          method: "POST",
+        }).catch(() => {});
+      }
 
       setLocalThreadStatuses((current) => {
         if (current.get(threadId) === status) return current;
@@ -295,7 +311,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     return () => {
       window.removeEventListener("camelai:thread-status", handleLocalThreadStatus);
     };
-  }, []);
+  }, [markViewedEnabled]);
 
   useEffect(() => {
     const workspaceId = currentWorkspace?.id;
