@@ -5073,6 +5073,87 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return merged;
   }
 
+  private piProviderErrorMetadata(message: string): {
+    status?: number;
+    errorType?: string;
+  } {
+    const trimmed = message.trim();
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(trimmed) as unknown;
+    } catch {
+      const start = trimmed.indexOf("{");
+      const end = trimmed.lastIndexOf("}");
+      if (start !== -1 && end > start) {
+        try {
+          parsed = JSON.parse(trimmed.slice(start, end + 1)) as unknown;
+        } catch {
+          parsed = null;
+        }
+      }
+    }
+
+    const root = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+    const nested = root?.error && typeof root.error === "object" && !Array.isArray(root.error)
+      ? root.error as Record<string, unknown>
+      : null;
+    const statusCandidate =
+      root?.status ??
+      root?.statusCode ??
+      root?.code ??
+      nested?.status ??
+      nested?.statusCode ??
+      nested?.code;
+    const parsedStatus =
+      typeof statusCandidate === "number" && Number.isFinite(statusCandidate)
+        ? Math.trunc(statusCandidate)
+        : typeof statusCandidate === "string" && /^\d{3}$/.test(statusCandidate.trim())
+          ? Number(statusCandidate.trim())
+          : /\b429\b/.test(trimmed)
+            ? 429
+            : undefined;
+    const errorTypeCandidate =
+      nested?.type ??
+      nested?.error_type ??
+      root?.type ??
+      root?.error_type;
+
+    return {
+      ...(parsedStatus ? { status: parsedStatus } : {}),
+      ...(typeof errorTypeCandidate === "string" && errorTypeCandidate.trim()
+        ? { errorType: errorTypeCandidate.trim() }
+        : {}),
+    };
+  }
+
+  private annotatePiProviderErrorMessages(messages: AgentMessage[]): AgentMessage[] {
+    let changed = false;
+    const next = messages.map((message) => {
+      const record = message as unknown as Record<string, unknown>;
+      const errorMessage = this.getPiAssistantErrorMessage(message);
+      if (!errorMessage) return message;
+
+      changed = true;
+      const billingSource =
+        record.billingSource === "byok" || record.billingSource === "hosted"
+          ? record.billingSource
+          : this.piCurrentBillingSource;
+      const provider =
+        this.piCurrentUsageProvider ||
+        (typeof record.provider === "string" ? record.provider : undefined);
+      return {
+        ...record,
+        billingSource,
+        ...(provider ? { provider } : {}),
+        ...this.piProviderErrorMetadata(errorMessage),
+      } as unknown as AgentMessage;
+    });
+
+    return changed ? next : messages;
+  }
+
   private getPiAssistantErrorMessage(message: AgentMessage): string {
     const record = message as unknown as Record<string, unknown>;
     if (record.role !== "assistant") return "";
@@ -5392,10 +5473,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       typeof message.errorMessage === "string" &&
       message.errorMessage.trim()
     ) {
+      const status = typeof message.status === "number" && Number.isFinite(message.status)
+        ? Math.trunc(message.status)
+        : undefined;
       return [{
         type: "error",
         title: "Assistant error",
         error: message.errorMessage.trim(),
+        ...(message.billingSource === "byok" || message.billingSource === "hosted"
+          ? { billingSource: message.billingSource }
+          : {}),
+        ...(typeof message.provider === "string" && message.provider.trim()
+          ? { provider: message.provider.trim() }
+          : {}),
+        ...(status ? { status } : {}),
+        ...(typeof message.errorType === "string" && message.errorType.trim()
+          ? { errorType: message.errorType.trim() }
+          : {}),
       }];
     }
     return blocks;
@@ -8386,7 +8480,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     if (event.type === "turn_end") {
       const snapshot = this.piSession?.state.messages ?? [];
-      const newMessages = snapshot.slice(this.piMainBaselineIndex);
+      const newMessages = this.annotatePiProviderErrorMessages(
+        snapshot.slice(this.piMainBaselineIndex),
+      );
       if (newMessages.length > 0) {
         this.appendPiCoreMessagesIfMissing(newMessages);
         this.piMainBaselineIndex = snapshot.length;
@@ -8520,7 +8616,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const buffered = isAssistant
           ? this.ensurePiAssistantTextMessage([event.message], text)
           : [event.message];
-        this.appendPiInFlightMessages(buffered);
+        this.appendPiInFlightMessages(
+          this.annotatePiProviderErrorMessages(buffered),
+        );
       }
       return;
     }
@@ -8579,9 +8677,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (event.type === "agent_end") {
-      const newMessages = this.ensurePiAssistantTextMessage(
-        event.messages,
-        this.piAssistantText,
+      const newMessages = this.annotatePiProviderErrorMessages(
+        this.ensurePiAssistantTextMessage(
+          event.messages,
+          this.piAssistantText,
+        ),
       );
       this.maybeSchedulePiPostTurnCompaction(newMessages);
       const droppedInFlight = this.loadPiInFlightMessages().length;
@@ -8595,20 +8695,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
-      let finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
-      if (!finalText) {
-        finalText = this.getLatestPiAssistantErrorMessage(newMessages);
-        if (finalText) {
-          this.pushPiRuntimeEvent("item/completed", {
-            threadId,
-            item: {
-              id: `pi_provider_error_${crypto.randomUUID()}`,
-              type: "agentMessage",
-              text: finalText,
-            },
-          });
-        }
-      }
+      const finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
+      const errorMessage = finalText
+        ? ""
+        : this.getLatestPiAssistantErrorMessage(newMessages);
       const forkEntryId = this.latestPiAssistantForkEntryId(newMessages);
       this.pushPiRuntimeEvent("turn/completed", {
         threadId,
@@ -8621,24 +8711,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         sessionId: threadId,
         completedAt,
       });
-      if (!finalText) {
-        const errorMessage = this.getLatestPiAssistantErrorMessage(newMessages);
-        if (errorMessage) {
-          this.pushChatEvent({
-            type: "error",
-            error: errorMessage,
-            source: "chat_thread_do_pi",
-          });
-        }
+      if (!finalText && errorMessage) {
+        this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
       }
       this.setChatIsStreaming(false, { markUnread: true, completedAt });
       this.setActiveTurnUserId(null);
       this.clearPiTurnRecovery();
       this.completeTodoStateForTurnEnd();
-      this.resolvePendingExternalTurn({
-        status: "result",
-        reply: finalText || undefined,
-      });
+      this.resolvePendingExternalTurn(
+        !finalText && errorMessage
+          ? { status: "error", error: errorMessage }
+          : { status: "result", reply: finalText || undefined },
+      );
       this.piActiveItemId = null;
       this.piActiveItemText = "";
       this.piReasoningItemId = null;
@@ -9115,16 +9199,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 });
                 this.clearPiTurnRecovery();
                 this.clearPiInFlightMessages();
-                this.pushChatEvent({
-                  type: "error",
-                  error: error instanceof Error ? error.message : String(error),
-                  source: "chat_thread_do_pi",
-                });
+                const errorMessage =
+                  error instanceof Error ? error.message : String(error);
+                this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
                 this.setChatIsStreaming(false);
                 this.setActiveTurnUserId(null);
                 this.resolvePendingExternalTurn({
                   status: "error",
-                  error: error instanceof Error ? error.message : "Pi prompt failed",
+                  error: errorMessage || "Pi prompt failed",
                 });
               }),
           );
@@ -9198,6 +9280,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private emitChatError(message: string): void {
     this.pushChatEvent({ type: "error", error: message });
+  }
+
+  private piProviderErrorEvent(message: string): Record<string, unknown> {
+    const metadata = this.piProviderErrorMetadata(message);
+    return {
+      type: "error",
+      error: message,
+      source: "chat_thread_do_pi",
+      billingSource: this.piCurrentBillingSource,
+      provider: this.piCurrentUsageProvider,
+      ...metadata,
+    };
   }
 
   private pushChatEvent(payload: Record<string, unknown>): void {

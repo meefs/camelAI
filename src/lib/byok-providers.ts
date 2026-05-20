@@ -12,6 +12,7 @@ export interface ByokProviderMeta {
   placeholder: string;
   getKeyUrl: string;
   getKeyLinkLabel: string;
+  settingsLinkLabel?: string;
   requiresRegion: boolean;
   description: string;
   steps?: string[];
@@ -31,6 +32,7 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       placeholder: "sk-or-v1...",
       getKeyUrl: "https://openrouter.ai/settings/keys",
       getKeyLinkLabel: "Get a key",
+      settingsLinkLabel: "Open OpenRouter API settings",
       requiresRegion: false,
       description:
         "OpenRouter gives you access to Claude, GPT, Gemini, Grok, and many open-source models through a single key.",
@@ -51,6 +53,7 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       placeholder: "sk-ant-...",
       getKeyUrl: "https://console.anthropic.com/settings/keys",
       getKeyLinkLabel: "Get a key",
+      settingsLinkLabel: "Open Anthropic API settings",
       requiresRegion: false,
       description:
         "Anthropic gives you direct access to the Claude family — Sonnet, Opus, and Haiku.",
@@ -71,6 +74,7 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       placeholder: "sk-...",
       getKeyUrl: "https://platform.openai.com/api-keys",
       getKeyLinkLabel: "Get a key",
+      settingsLinkLabel: "Open OpenAI API settings",
       requiresRegion: false,
       description:
         "OpenAI gives you direct access to GPT and Codex models from the makers of ChatGPT.",
@@ -91,6 +95,7 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       placeholder: "Enter your AWS Bedrock API key",
       getKeyUrl: "https://console.aws.amazon.com/bedrock/",
       getKeyLinkLabel: "Open the AWS Bedrock console",
+      settingsLinkLabel: "Open the AWS Bedrock console",
       requiresRegion: true,
       description:
         "Bedrock runs Claude models inside your own AWS account, billed through your existing AWS bill.",
@@ -117,6 +122,22 @@ export function getByokProviderLabel(
     return null;
   }
   return BYOK_PROVIDERS[provider as OnboardingByokProvider].label;
+}
+
+export function parseByokProvider(
+  provider: unknown,
+): OnboardingByokProvider | null {
+  if (typeof provider !== "string" || !(provider in BYOK_PROVIDERS)) {
+    return null;
+  }
+  return provider as OnboardingByokProvider;
+}
+
+export function getByokProviderMeta(
+  provider: string | null | undefined,
+): ByokProviderMeta | null {
+  const parsed = parseByokProvider(provider);
+  return parsed ? BYOK_PROVIDERS[parsed] : null;
 }
 
 export const AWS_REGIONS = [

@@ -1,12 +1,30 @@
 import { Link, useSearchParams } from 'react-router';
 import type { Route } from './+types/dev.chat-credit-states';
 import { BillingCreditNotice, ChatErrorNotice } from '@/components/Chat';
+import { ContentBlockRenderer } from '@/components/message-bubble';
 import { getDevBillingCreditStatus, getDevChatInitialError } from '@/lib/chat-credit-status';
+import { getChatApiErrorPresentation } from '@/lib/chat-api-errors';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import type { ChatHarness, LlmProvider } from '@/types';
 
-type PreviewState = 'low' | 'low-byok' | 'exhausted' | 'exhausted-byok' | 'send-error';
+type PreviewState =
+  | 'low'
+  | 'low-byok'
+  | 'exhausted'
+  | 'exhausted-byok'
+  | 'send-error'
+  | 'byok-anthropic-429'
+  | 'byok-openrouter-429'
+  | 'byok-openai-429'
+  | 'byok-bedrock-429'
+  | 'hosted-429'
+  | 'generic-error';
+
+const ANTHROPIC_2B_RATE_LIMIT =
+  '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}';
+const GENERIC_ERROR = 'The sandbox stopped responding while preparing the turn.';
 
 const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
   { value: 'low', label: 'Low credits' },
@@ -14,6 +32,12 @@ const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
   { value: 'exhausted', label: 'No credits' },
   { value: 'exhausted-byok', label: 'No credits + BYOK' },
   { value: 'send-error', label: 'Send failure' },
+  { value: 'byok-anthropic-429', label: 'Anthropic 429' },
+  { value: 'byok-openrouter-429', label: 'OpenRouter 429' },
+  { value: 'byok-openai-429', label: 'OpenAI 429' },
+  { value: 'byok-bedrock-429', label: 'Bedrock 429' },
+  { value: 'hosted-429', label: 'Hosted 429' },
+  { value: 'generic-error', label: 'Generic error' },
 ];
 
 function parseState(value: string | null): PreviewState {
@@ -32,6 +56,62 @@ function stateToSearch(state: PreviewState): string {
   return params.toString();
 }
 
+function errorContextForState(state: PreviewState): {
+  rawError: string;
+  llmProvider: LlmProvider | null;
+  threadProvider: ChatHarness;
+  billingSource?: 'byok' | 'hosted';
+} | null {
+  if (state === 'byok-anthropic-429') {
+    return {
+      rawError: ANTHROPIC_2B_RATE_LIMIT,
+      llmProvider: 'anthropic',
+      threadProvider: 'claude',
+      billingSource: 'byok',
+    };
+  }
+  if (state === 'byok-openrouter-429') {
+    return {
+      rawError: ANTHROPIC_2B_RATE_LIMIT,
+      llmProvider: 'openrouter',
+      threadProvider: 'claude',
+      billingSource: 'byok',
+    };
+  }
+  if (state === 'byok-openai-429') {
+    return {
+      rawError: ANTHROPIC_2B_RATE_LIMIT,
+      llmProvider: 'openai',
+      threadProvider: 'codex',
+      billingSource: 'byok',
+    };
+  }
+  if (state === 'byok-bedrock-429') {
+    return {
+      rawError: ANTHROPIC_2B_RATE_LIMIT,
+      llmProvider: 'bedrock',
+      threadProvider: 'claude',
+      billingSource: 'byok',
+    };
+  }
+  if (state === 'hosted-429') {
+    return {
+      rawError: ANTHROPIC_2B_RATE_LIMIT,
+      llmProvider: 'openai',
+      threadProvider: 'claude',
+      billingSource: 'hosted',
+    };
+  }
+  if (state === 'generic-error') {
+    return {
+      rawError: GENERIC_ERROR,
+      llmProvider: null,
+      threadProvider: 'claude',
+    };
+  }
+  return null;
+}
+
 export async function loader({ request }: Route.LoaderArgs) {
   void request;
   if (!import.meta.env.DEV) {
@@ -41,7 +121,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export function meta(_: Route.MetaArgs) {
-  return [{ title: 'Chat credit state preview - camelAI' }];
+  return [{ title: 'Chat error state preview - camelAI' }];
 }
 
 export default function DevChatCreditStatesRoute() {
@@ -49,7 +129,17 @@ export default function DevChatCreditStatesRoute() {
   const state = parseState(searchParams.get('state'));
   const effectiveSearchParams = new URLSearchParams(stateToSearch(state));
   const creditStatus = getDevBillingCreditStatus(effectiveSearchParams);
-  const error = getDevChatInitialError(effectiveSearchParams);
+  const errorContext = errorContextForState(state);
+  const devInitialError = getDevChatInitialError(effectiveSearchParams);
+  const error = errorContext
+    ? getChatApiErrorPresentation(errorContext.rawError, {
+        billingSource: errorContext.billingSource,
+        llmProvider: errorContext.llmProvider,
+        threadProvider: errorContext.threadProvider,
+      })
+    : devInitialError
+      ? getChatApiErrorPresentation(devInitialError)
+      : null;
 
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
@@ -59,10 +149,9 @@ export default function DevChatCreditStatesRoute() {
             <Badge variant="outline">Local preview</Badge>
             <Badge>{state}</Badge>
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight">Chat credit states</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Chat error states</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Preview the chat low-credit banner and the inline error shown after a hosted-model message is rejected for
-            exhausted credits.
+            Preview the chat low-credit banner, provider rate-limit messaging, and generic inline error surfaces.
           </p>
         </div>
         <Button asChild variant="outline">
@@ -94,6 +183,24 @@ export default function DevChatCreditStatesRoute() {
           <div className="mb-5 self-end rounded-3xl bg-primary px-4 py-3 text-sm text-primary-foreground">
             Can you update the landing page copy?
           </div>
+          {errorContext ? (
+            <div className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Transcript error block
+              </p>
+              <ContentBlockRenderer
+                content={[
+                  {
+                    type: 'error',
+                    title: 'Assistant error',
+                    error: errorContext.rawError,
+                  },
+                ]}
+                llmProvider={errorContext.llmProvider}
+                threadProvider={errorContext.threadProvider}
+              />
+            </div>
+          ) : null}
         </div>
 
         <div className="border-t p-4">

@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Copy, Check, GitFork } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration, ChatHarness, LlmProvider } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -20,7 +20,13 @@ import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
+import { ChatRateLimitNotice } from '@/components/chat-api-error-notice';
 import { isSupportedSlashCommand } from '@/lib/slash-commands';
+import {
+  getChatApiErrorPresentation,
+  isRateLimitChatApiErrorPresentation,
+} from '@/lib/chat-api-errors';
+import { parseByokProvider } from '@/lib/byok-providers';
 import {
   type AnnotatedMentionRef,
   stripMentionAnnotations,
@@ -325,6 +331,8 @@ interface ContentBlockRendererProps {
   workspaceId?: string;
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
+  llmProvider?: LlmProvider | null;
+  threadProvider?: ChatHarness | null;
 }
 
 export function ContentBlockRenderer({
@@ -334,6 +342,8 @@ export function ContentBlockRenderer({
   workspaceId,
   skillSheets,
   mentionSlugMap,
+  llmProvider,
+  threadProvider,
 }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
@@ -406,15 +416,31 @@ export function ContentBlockRenderer({
     }
 
     if (block.type === 'error') {
+      const blockProvider = parseByokProvider(block.provider);
+      const errorPayload =
+        typeof block.status === 'number' || typeof block.errorType === 'string'
+          ? {
+              error: block.error,
+              status: block.status,
+              type: block.errorType,
+            }
+          : block.error;
+      const presentation = getChatApiErrorPresentation(errorPayload, {
+        billingSource: block.billingSource,
+        llmProvider: blockProvider ?? llmProvider,
+        threadProvider,
+      });
       items.push({
         kind: 'other',
         key: `error-${index}`,
-        node: (
+        node: isRateLimitChatApiErrorPresentation(presentation) ? (
+          <ChatRateLimitNotice presentation={presentation} />
+        ) : (
           <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="min-w-0">
-              <div className="font-medium">{block.title || 'Error'}</div>
-              <div className="mt-1 break-words text-destructive/90">{block.error}</div>
+              <div className="font-medium">{block.title || presentation.title || 'Error'}</div>
+              <div className="mt-1 break-words text-destructive/90">{presentation.message}</div>
             </div>
           </div>
         ),
@@ -558,6 +584,8 @@ interface MessageBubbleProps {
   actionHoverClassName?: string;
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
+  llmProvider?: LlmProvider | null;
+  threadProvider?: ChatHarness | null;
 }
 
 function getMessageToolUseIds(message: Message): string[] {
@@ -591,6 +619,8 @@ function MessageBubbleBase({
   actionHoverClassName = "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100",
   skillSheets,
   mentionSlugMap,
+  llmProvider,
+  threadProvider,
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
@@ -710,6 +740,8 @@ function MessageBubbleBase({
                 workspaceId={workspaceId}
                 skillSheets={skillSheets}
                 mentionSlugMap={mentionSlugMap}
+                llmProvider={llmProvider}
+                threadProvider={threadProvider}
               />
             </CollapsibleUserMessage>
           </div>
@@ -764,6 +796,8 @@ function MessageBubbleBase({
             workspaceId={workspaceId}
             skillSheets={skillSheets}
             mentionSlugMap={mentionSlugMap}
+            llmProvider={llmProvider}
+            threadProvider={threadProvider}
           />
         </div>
       )}

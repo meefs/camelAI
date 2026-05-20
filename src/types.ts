@@ -144,6 +144,10 @@ export interface ErrorBlock {
   type: "error";
   error: string;
   title?: string;
+  billingSource?: "byok" | "hosted";
+  provider?: LlmProvider;
+  status?: number;
+  errorType?: string;
 }
 
 export type ContentBlock =
