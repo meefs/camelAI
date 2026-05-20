@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { parseChatDebugFlags } from "@/lib/chat-debug-flags";
 
 describe("parseChatDebugFlags", () => {
+  it("keeps status revalidation disabled by default", () => {
+    expect(parseChatDebugFlags(null).statusRevalidate).toBe(false);
+  });
+
   it("parses JSON flags with aliases", () => {
     const flags = parseChatDebugFlags(
       JSON.stringify({

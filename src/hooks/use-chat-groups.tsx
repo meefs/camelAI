@@ -52,6 +52,12 @@ interface ChatGroupsContextValue {
 }
 
 const ChatGroupsContext = createContext<ChatGroupsContextValue | null>(null);
+type ChatGroupThreadSummary = ChatGroupView["open_threads"][number];
+export type ThreadSummaryPatch = Partial<
+  Pick<ChatGroupThreadSummary, "title" | "model" | "provider">
+> & {
+  updatedAt: number;
+};
 
 function getActiveGroupIdFromMatches(matches: ReturnType<typeof useMatches>) {
   for (const match of matches) {
@@ -230,19 +236,112 @@ export function getCloseGroupRedirect(
   return nextGroup ? getGroupLandingHref(nextGroup) : "/chat";
 }
 
+function getThreadSummariesInGroups(
+  groups: ChatGroupView[] | undefined,
+): Map<string, ChatGroupThreadSummary> {
+  const threads = new Map<string, ChatGroupThreadSummary>();
+  for (const group of groups ?? []) {
+    for (const thread of group.open_threads) {
+      threads.set(thread.id, thread);
+    }
+    for (const thread of group.closed_threads) {
+      threads.set(thread.id, thread);
+    }
+  }
+  return threads;
+}
+
+export function reconcileThreadSummaryPatchesWithGroups(
+  patches: ReadonlyMap<string, ThreadSummaryPatch>,
+  groups: ChatGroupView[] | undefined,
+): Map<string, ThreadSummaryPatch> {
+  if (patches.size === 0) return patches as Map<string, ThreadSummaryPatch>;
+  if (!groups) return patches as Map<string, ThreadSummaryPatch>;
+  if (groups && groups.length === 0) return new Map();
+  const refreshedThreads = getThreadSummariesInGroups(groups);
+  if (refreshedThreads.size === 0) return new Map();
+
+  let next: Map<string, ThreadSummaryPatch> | null = null;
+  for (const [threadId, patch] of patches) {
+    const refreshedThread = refreshedThreads.get(threadId);
+    if (refreshedThread && refreshedThread.updated_at < patch.updatedAt) {
+      continue;
+    }
+    next ??= new Map(patches);
+    next.delete(threadId);
+  }
+
+  return next ?? (patches as Map<string, ThreadSummaryPatch>);
+}
+
+function getThreadSummaryPatchFromPayload(payload: unknown): ThreadSummaryPatch | null {
+  if (!payload || typeof payload !== "object") return null;
+  const thread = (payload as { thread?: unknown }).thread;
+  if (!thread || typeof thread !== "object") return null;
+  const record = thread as Record<string, unknown>;
+  if (
+    typeof record.title !== "string" ||
+    typeof record.model !== "string" ||
+    (record.provider !== "claude" && record.provider !== "codex") ||
+    typeof record.updated_at !== "number" ||
+    !Number.isFinite(record.updated_at)
+  ) {
+    return null;
+  }
+
+  return {
+    title: record.title,
+    model: record.model as ChatGroupThreadSummary["model"],
+    provider: record.provider,
+    updatedAt: record.updated_at,
+  };
+}
+
+function mergeThreadSummaryPatch(
+  current: ReadonlyMap<string, ThreadSummaryPatch>,
+  threadId: string,
+  patch: ThreadSummaryPatch,
+): Map<string, ThreadSummaryPatch> {
+  const currentPatch = current.get(threadId);
+  if (currentPatch && currentPatch.updatedAt > patch.updatedAt) {
+    return current as Map<string, ThreadSummaryPatch>;
+  }
+
+  const nextPatch: ThreadSummaryPatch = {
+    ...currentPatch,
+    ...patch,
+    updatedAt: Math.max(currentPatch?.updatedAt ?? 0, patch.updatedAt),
+  };
+  if (
+    currentPatch?.title === nextPatch.title &&
+    currentPatch?.model === nextPatch.model &&
+    currentPatch?.provider === nextPatch.provider &&
+    currentPatch?.updatedAt === nextPatch.updatedAt
+  ) {
+    return current as Map<string, ThreadSummaryPatch>;
+  }
+
+  const next = new Map(current);
+  next.set(threadId, nextPatch);
+  return next;
+}
+
 export function applyLiveRunningStatuses(
   source: ChatGroupView[],
   runningThreadIds: Set<string>,
   hasStatusSnapshot: boolean,
   activeThreadId: string | null = null,
   liveThreadStatuses: ReadonlyMap<string, ThreadStatusOverlay> = new Map(),
+  threadSummaryPatches: ReadonlyMap<string, ThreadSummaryPatch> = new Map(),
 ): ChatGroupView[] {
-  return source.map((group) => {
+  let changed = false;
+  const nextGroups = source.map((group) => {
     const resolveThread = (
-      thread: ChatGroupView["open_threads"][number],
-    ): ChatGroupView["open_threads"][number] => {
-      const liveMetadata = getOverlayMetadata(liveThreadStatuses.get(thread.id));
-      const liveStatus = getOverlayStatus(liveThreadStatuses.get(thread.id));
+      thread: ChatGroupThreadSummary,
+    ): ChatGroupThreadSummary => {
+      const liveOverlay = liveThreadStatuses.get(thread.id);
+      const liveMetadata = getOverlayMetadata(liveOverlay);
+      const liveStatus = getOverlayStatus(liveOverlay);
       const status =
         liveStatus === "running" ||
         liveStatus === "unread" ||
@@ -257,6 +356,10 @@ export function applyLiveRunningStatuses(
                 : thread.status;
       const resolvedStatus =
         thread.id === activeThreadId && status === "unread" ? "idle" : status;
+      const summaryPatch = threadSummaryPatches.get(thread.id);
+      const nextTitle = summaryPatch?.title ?? thread.title;
+      const nextModel = summaryPatch?.model ?? thread.model;
+      const nextProvider = summaryPatch?.provider ?? thread.provider;
       const completedAt =
         typeof liveMetadata?.completedAt === "number" &&
         Number.isFinite(liveMetadata.completedAt)
@@ -297,7 +400,9 @@ export function applyLiveRunningStatuses(
           ? liveMetadata.summary
           : thread.last_assistant_summary;
       const updatedAt =
-        completedAt !== null ? Math.max(thread.updated_at, completedAt) : thread.updated_at;
+        completedAt !== null
+          ? Math.max(thread.updated_at, completedAt, summaryPatch?.updatedAt ?? 0)
+          : Math.max(thread.updated_at, summaryPatch?.updatedAt ?? 0);
       const lastActiveAt = Math.max(
         thread.last_active_at,
         updatedAt,
@@ -309,51 +414,104 @@ export function applyLiveRunningStatuses(
           ? (runningStartedAt ?? thread.running_started_at ?? 0)
           : 0,
       );
+      const nextIsUnread = resolvedStatus === "unread";
+      const currentIsUnread = thread.is_unread ?? thread.status === "unread";
+      const nextLatestUserMessage =
+        latestUserMessage !== undefined
+          ? latestUserMessage
+          : thread.latest_user_message;
+      const nextRunningActivityText =
+        resolvedStatus === "running"
+          ? runningActivityText !== undefined
+            ? runningActivityText
+            : thread.running_activity_text
+          : null;
+      const nextRunningActivityAt =
+        resolvedStatus === "running"
+          ? runningActivityAt !== undefined
+            ? runningActivityAt
+            : thread.running_activity_at
+          : null;
+      const nextRunningStartedAt =
+        resolvedStatus === "running"
+          ? runningStartedAt !== undefined
+            ? runningStartedAt
+            : thread.running_started_at
+          : null;
+
+      if (
+        thread.status === resolvedStatus &&
+        currentIsUnread === nextIsUnread &&
+        thread.title === nextTitle &&
+        thread.model === nextModel &&
+        thread.provider === nextProvider &&
+        thread.updated_at === updatedAt &&
+        thread.last_active_at === lastActiveAt &&
+        thread.last_assistant_completed_at === lastAssistantCompletedAt &&
+        thread.last_assistant_summary === lastAssistantSummary &&
+        thread.last_assistant_summary_status === lastAssistantSummaryStatus &&
+        thread.latest_user_message === nextLatestUserMessage &&
+        thread.running_activity_text === nextRunningActivityText &&
+        thread.running_activity_at === nextRunningActivityAt &&
+        thread.running_started_at === nextRunningStartedAt
+      ) {
+        return thread;
+      }
+
+      changed = true;
       return {
         ...thread,
+        title: nextTitle,
+        model: nextModel,
+        provider: nextProvider,
         updated_at: updatedAt,
-        is_unread: resolvedStatus === "unread",
+        is_unread: nextIsUnread,
         status: resolvedStatus,
         last_active_at: lastActiveAt,
         last_assistant_completed_at: lastAssistantCompletedAt,
         last_assistant_summary: lastAssistantSummary,
         last_assistant_summary_status: lastAssistantSummaryStatus,
-        latest_user_message:
-          latestUserMessage !== undefined
-            ? latestUserMessage
-            : thread.latest_user_message,
-        running_activity_text:
-          resolvedStatus === "running"
-            ? runningActivityText !== undefined
-              ? runningActivityText
-              : thread.running_activity_text
-            : null,
-        running_activity_at:
-          resolvedStatus === "running"
-            ? runningActivityAt !== undefined
-              ? runningActivityAt
-              : thread.running_activity_at
-            : null,
-        running_started_at:
-          resolvedStatus === "running"
-            ? runningStartedAt !== undefined
-              ? runningStartedAt
-              : thread.running_started_at
-            : null,
+        latest_user_message: nextLatestUserMessage,
+        running_activity_text: nextRunningActivityText,
+        running_activity_at: nextRunningActivityAt,
+        running_started_at: nextRunningStartedAt,
       };
     };
-    const open_threads = group.open_threads.map(resolveThread);
-    const closed_threads = group.closed_threads.map(resolveThread);
+    let openThreadsChanged = false;
+    let closedThreadsChanged = false;
+    const open_threads = group.open_threads.map((thread) => {
+      const nextThread = resolveThread(thread);
+      if (nextThread !== thread) openThreadsChanged = true;
+      return nextThread;
+    });
+    const closed_threads = group.closed_threads.map((thread) => {
+      const nextThread = resolveThread(thread);
+      if (nextThread !== thread) closedThreadsChanged = true;
+      return nextThread;
+    });
+    const nextStatus = maxThreadStatus([
+      ...open_threads.map((thread) => thread.status),
+      ...closed_threads.map((thread) => thread.status),
+    ]);
+
+    if (
+      !openThreadsChanged &&
+      !closedThreadsChanged &&
+      group.status === nextStatus
+    ) {
+      return group;
+    }
+
+    changed = true;
     return {
       ...group,
-      open_threads,
-      closed_threads,
-      status: maxThreadStatus([
-        ...open_threads.map((thread) => thread.status),
-        ...closed_threads.map((thread) => thread.status),
-      ]),
+      open_threads: openThreadsChanged ? open_threads : group.open_threads,
+      closed_threads: closedThreadsChanged ? closed_threads : group.closed_threads,
+      status: nextStatus,
     };
   });
+
+  return changed ? nextGroups : source;
 }
 
 export function ChatGroupsProvider({ children }: { children: ReactNode }) {
@@ -377,6 +535,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   );
   const [localThreadStatuses, setLocalThreadStatuses] = useState<
     Map<string, LiveThreadMetadata>
+  >(() => new Map());
+  const [localThreadSummaryPatches, setLocalThreadSummaryPatches] = useState<
+    Map<string, ThreadSummaryPatch>
   >(() => new Map());
   const liveThreadStatusesRef = useRef(liveThreadStatuses);
   const localThreadStatusesRef = useRef(localThreadStatuses);
@@ -436,24 +597,31 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     });
   }, [activeThreadId]);
 
+  useEffect(() => {
+    setLocalThreadSummaryPatches((current) =>
+      reconcileThreadSummaryPatchesWithGroups(current, data?.chatGroups),
+    );
+  }, [data?.chatGroups]);
+
   const markThreadIdle = useCallback((threadId: string) => {
     const normalizedThreadId = threadId.trim();
     if (!normalizedThreadId) return;
     setLocalThreadStatuses((current) => {
       const currentStatus =
-        current.get(normalizedThreadId) ?? liveThreadStatuses.get(normalizedThreadId);
+        current.get(normalizedThreadId) ??
+        liveThreadStatusesRef.current.get(normalizedThreadId);
       const status = currentStatus?.status;
       if (status === "running" || status === "idle") {
         return current;
       }
       const next = new Map(current);
-      next.set(normalizedThreadId, {
-        ...(currentStatus ?? { status: "idle" as const }),
-        status: "idle",
-      });
+      next.set(
+        normalizedThreadId,
+        mergeThreadMetadata(currentStatus, { status: "idle" }),
+      );
       return next;
     });
-  }, [liveThreadStatuses]);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -464,6 +632,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       const payload = detail as {
         threadId?: unknown;
         status?: unknown;
+        title?: unknown;
+        model?: unknown;
+        provider?: unknown;
+        updatedAt?: unknown;
         latestUserMessage?: unknown;
         runningActivityText?: unknown;
         runningActivityAt?: unknown;
@@ -471,12 +643,45 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       };
       if (
         typeof payload.threadId !== "string" ||
-        (payload.status !== "idle" && payload.status !== "running")
+        (payload.status !== undefined &&
+          payload.status !== "idle" &&
+          payload.status !== "running")
       ) {
         return;
       }
       const threadId = payload.threadId;
-      const status = payload.status;
+      const status =
+        payload.status === "idle" || payload.status === "running"
+          ? payload.status
+          : null;
+      const title =
+        typeof payload.title === "string" ? payload.title.trim() : undefined;
+      const model = typeof payload.model === "string" ? payload.model : undefined;
+      const provider =
+        payload.provider === "codex" || payload.provider === "claude"
+          ? payload.provider
+          : undefined;
+      if (title || model || provider) {
+        setLocalThreadSummaryPatches((current) => {
+          const currentPatch = current.get(threadId);
+          const updatedAt =
+            typeof payload.updatedAt === "number" && Number.isFinite(payload.updatedAt)
+              ? payload.updatedAt
+              : Date.now();
+          if (currentPatch && currentPatch.updatedAt > updatedAt) {
+            return current;
+          }
+          return mergeThreadSummaryPatch(current, threadId, {
+            ...(title ? { title } : {}),
+            ...(model ? { model: model as ChatGroupThreadSummary["model"] } : {}),
+            ...(provider
+              ? { provider: provider as ChatGroupThreadSummary["provider"] }
+              : {}),
+            updatedAt,
+          });
+        });
+      }
+      if (!status) return;
       const latestUserMessage =
         typeof payload.latestUserMessage === "string"
           ? payload.latestUserMessage
@@ -553,6 +758,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     if (!statusSocketEnabled || !workspaceId || typeof window === "undefined") {
       setLiveThreadStatuses(new Map());
       setLocalThreadStatuses(new Map());
+      setLocalThreadSummaryPatches(new Map());
       setHasStatusSnapshot(false);
       return;
     }
@@ -562,6 +768,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
     let revalidateTimer: number | null = null;
+    const metadataRefreshTimers = new Map<string, number>();
     let closedByEffect = false;
 
     const scheduleStatusRevalidate = (
@@ -583,6 +790,28 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         revalidateTimer = null;
         revalidateRef.current();
       }, 750);
+    };
+    const refreshThreadSummary = async (threadId: string) => {
+      try {
+        const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`);
+        if (!response.ok || closedByEffect) return;
+        const patch = getThreadSummaryPatchFromPayload(await response.json());
+        if (!patch || closedByEffect) return;
+        setLocalThreadSummaryPatches((current) =>
+          mergeThreadSummaryPatch(current, threadId, patch),
+        );
+      } catch {
+        // The next loader refresh will catch up if this narrow metadata fetch fails.
+      }
+    };
+    const scheduleThreadSummaryRefresh = (threadId: string) => {
+      if (threadId === activeThreadIdRef.current) return;
+      if (metadataRefreshTimers.has(threadId)) return;
+      const timer = window.setTimeout(() => {
+        metadataRefreshTimers.delete(threadId);
+        void refreshThreadSummary(threadId);
+      }, 750);
+      metadataRefreshTimers.set(threadId, timer);
     };
     const markActiveThreadViewed = (threadId: string) => {
       if (!markViewedEnabled) return;
@@ -718,6 +947,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
             );
             if (staleRunningThreadIds.length > 0) {
               scheduleStatusRevalidate(staleRunningThreadIds[0]);
+              for (const threadId of staleRunningThreadIds) {
+                scheduleThreadSummaryRefresh(threadId);
+              }
             } else if (hasPendingCompletionSummariesRef.current) {
               scheduleStatusSnapshotRevalidate();
             }
@@ -795,10 +1027,25 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
                 existingMetadata.completedAt === completedAt);
             setHasStatusSnapshot(true);
             setLiveThreadStatuses((current) => {
+              const existing = current.get(threadId);
+              if (
+                existing?.status === status &&
+                (completedAt === undefined || existing.completedAt === completedAt) &&
+                (summaryStatus === undefined || existing.summaryStatus === summaryStatus) &&
+                (summary === undefined || existing.summary === summary) &&
+                (runningActivityText === undefined ||
+                  existing.runningActivityText === runningActivityText) &&
+                (runningActivityAt === undefined ||
+                  existing.runningActivityAt === runningActivityAt) &&
+                (runningStartedAt === undefined ||
+                  existing.runningStartedAt === runningStartedAt)
+              ) {
+                return current;
+              }
               const next = new Map(current);
               next.set(
                 threadId,
-                mergeThreadMetadata(current.get(threadId), {
+                mergeThreadMetadata(existing, {
                   status,
                   ...(completedAt === undefined ? {} : { completedAt }),
                   ...(summaryStatus === undefined ? {} : { summaryStatus }),
@@ -841,6 +1088,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               );
               return next;
             });
+            if (status === "idle" || status === "unread") {
+              scheduleThreadSummaryRefresh(threadId);
+            }
             if (
               shouldRevalidateThreadStatusUpdate(
                 status,
@@ -874,6 +1124,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       closedByEffect = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (revalidateTimer) window.clearTimeout(revalidateTimer);
+      for (const timer of metadataRefreshTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      metadataRefreshTimers.clear();
       socket?.close();
     };
   }, [
@@ -894,11 +1148,13 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       hasStatusSnapshot,
       activeThreadId,
       resolvedThreadStatuses,
+      localThreadSummaryPatches,
     );
   }, [
     activeThreadId,
     data?.chatGroups,
     hasStatusSnapshot,
+    localThreadSummaryPatches,
     matches,
     resolvedThreadStatuses,
     runningThreadIds,

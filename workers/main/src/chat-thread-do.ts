@@ -2287,12 +2287,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   // Set thread title and broadcast to connected chat clients
-  async setTitle(title: string): Promise<void> {
-    this.broadcastChat({ type: "title_updated", title });
+  async setTitle(title: string, updatedAt?: number): Promise<void> {
+    this.broadcastChat({ type: "title_updated", title, updatedAt });
   }
 
-  async setModel(model: LlmModel, provider?: 'claude' | 'codex'): Promise<void> {
-    this.broadcastChat({ type: 'thread_model_updated', model, provider });
+  async setModel(
+    model: LlmModel,
+    provider?: 'claude' | 'codex',
+    updatedAt?: number,
+  ): Promise<void> {
+    this.broadcastChat({ type: 'thread_model_updated', model, provider, updatedAt });
   }
 
   async setTodoState(todos: unknown[]): Promise<void> {
@@ -5081,8 +5085,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
-      await orgStub.updateThread(threadId, title);
-      await this.setTitle(title);
+      const updated = await orgStub.updateThread(threadId, title);
+      await this.setTitle(title, updated?.updated_at);
       if (context.userId) {
         const userStub = this.env.USER.get(this.env.USER.idFromName(context.userId));
         await userStub.renameEmptySingleThreadGroupForThread(threadId, title);

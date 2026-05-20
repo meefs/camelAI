@@ -12,7 +12,6 @@ import {
 } from "@/components/preview-panel/preview-toolbar";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
 
 export const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
   notebook: null,
@@ -244,58 +243,54 @@ export const PreviewPanelShell = memo(function PreviewPanelShell({
         }
       />
 
-      {tabRenderStates.map((state) => {
-        const isActive = state.tabId === activeTabId;
-        return (
-          <div
-            key={state.tabId}
-            className={cn(
-              "flex-1 min-h-0 overflow-hidden",
-              !isActive && "hidden",
-            )}
-          >
-            {state.target.kind === "app" ? (
-              state.isLoading ? (
-                <div className="flex h-full w-full items-center justify-center bg-muted/30">
-                  <div className="flex flex-col items-center gap-3">
-                    <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">
-                      Loading preview...
-                    </span>
-                  </div>
+      {activeTabState ? (
+        <div
+          key={activeTabState.tabId}
+          className="flex-1 min-h-0 overflow-hidden"
+        >
+          {activeTabState.target.kind === "app" ? (
+            activeTabState.isLoading ? (
+              <div className="flex h-full w-full items-center justify-center bg-muted/30">
+                <div className="flex flex-col items-center gap-3">
+                  <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+                  <span className="text-sm text-muted-foreground">
+                    Loading preview...
+                  </span>
                 </div>
-              ) : (
-                <iframe
-                  ref={isActive ? iframeRef : null}
-                  key={state.iframeKey}
-                  src={state.appPreviewUrl || "about:blank"}
-                  className="h-full w-full bg-white"
-                  title="Deployed App Preview"
-                />
-              )
-            ) : (
-              <div className="h-full">
-                <FilePreviewContent
-                  filename={state.previewFileName}
-                  previewUrl={state.filePreviewUrl}
-                  contentType={state.target.contentType}
-                  layout="panel"
-                  notebookViewMode={
-                    state.isNotebookPreview ? state.notebookViewMode : undefined
-                  }
-                  fileViewMode={state.fileViewMode}
-                  onNotebookStateChange={
-                    state.isNotebookPreview
-                      ? (nextState) =>
-                          onNotebookStateChange(state.tabId, nextState)
-                      : undefined
-                  }
-                />
               </div>
-            )}
-          </div>
-        );
-      })}
+            ) : (
+              <iframe
+                ref={iframeRef}
+                key={activeTabState.iframeKey}
+                src={activeTabState.appPreviewUrl || "about:blank"}
+                className="h-full w-full bg-white"
+                title="Deployed App Preview"
+              />
+            )
+          ) : (
+            <div className="h-full">
+              <FilePreviewContent
+                filename={activeTabState.previewFileName}
+                previewUrl={activeTabState.filePreviewUrl}
+                contentType={activeTabState.target.contentType}
+                layout="panel"
+                notebookViewMode={
+                  activeTabState.isNotebookPreview
+                    ? activeTabState.notebookViewMode
+                    : undefined
+                }
+                fileViewMode={activeTabState.fileViewMode}
+                onNotebookStateChange={
+                  activeTabState.isNotebookPreview
+                    ? (nextState) =>
+                        onNotebookStateChange(activeTabState.tabId, nextState)
+                    : undefined
+                }
+              />
+            </div>
+          )}
+        </div>
+      ) : null}
     </>
   );
 });

@@ -556,7 +556,7 @@ export async function generateThreadTitle(
 
     // Update title in OrgDO
     const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-    await orgStub.updateThread(threadId, title);
+    const updated = await orgStub.updateThread(threadId, title);
     if (userId) {
       await env.USER.get(env.USER.idFromName(userId))
         .renameEmptySingleThreadGroupForThread(threadId, title);
@@ -566,7 +566,7 @@ export async function generateThreadTitle(
     const threadStub = env.CHAT_THREAD.get(
       env.CHAT_THREAD.idFromName(threadId),
     );
-    await threadStub.setTitle(title);
+    await threadStub.setTitle(title, updated?.updated_at);
   } catch (e) {
     console.error("[generateThreadTitle] Error:", e);
   }

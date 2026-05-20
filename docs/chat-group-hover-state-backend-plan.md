@@ -1,6 +1,6 @@
 # Chat Group Hover State — Plan
 
-**Date:** 2026-05-19  
+**Date:** 2026-05-19
 **Scope:** end-to-end plan for the chat group hover popover. Backend sections (Backend Contract through Live Status Updates) define the data contract; the UI Implementation section defines the popover component, layout, behavior, and styling.
 
 ## Objective

@@ -349,6 +349,7 @@ describe('Chat draft persistence', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
     vi.stubGlobal(
@@ -359,6 +360,7 @@ describe('Chat draft persistence', () => {
         disconnect() {}
       },
     );
+    document.title = '';
   });
 
   it('restores a thread draft, keeps it during optimistic clear, restores on error, and clears on result', async () => {
@@ -733,5 +735,64 @@ describe('Chat draft persistence', () => {
     );
 
     expect(screen.getByLabelText('Thread prompt')).toHaveValue('Saved thread draft');
+  });
+
+  it('updates the browser title from title_updated without route revalidation', async () => {
+    document.title = 'Old title - camelAI';
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+      socket.emitMessage({ type: 'title_updated', title: 'Generated title' });
+    });
+
+    expect(document.title).toBe('Generated title - camelAI');
+    expect(mockRevalidate).not.toHaveBeenCalled();
+  });
+
+  it('does not revalidate the route or schedule delayed revalidations after completion frames', async () => {
+    vi.useFakeTimers();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />
+    );
+
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+    mockRevalidate.mockClear();
+
+    act(() => {
+      socket.emitMessage({
+        type: 'runtime_event',
+        event: { method: 'turn/completed' },
+      });
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'result' },
+      });
+      socket.emitMessage({ type: 'result' });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(3500);
+    });
+
+    expect(mockRevalidate).not.toHaveBeenCalled();
   });
 });

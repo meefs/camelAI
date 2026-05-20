@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   redirect,
   useLoaderData,
@@ -32,6 +32,7 @@ import {
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
+import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
@@ -63,6 +64,12 @@ export function meta({ data }: Route.MetaArgs) {
     { title: `${title} - camelAI` },
     { name: "description", content: "AI Chat" },
   ];
+}
+
+export function shouldRevalidate(
+  args: Parameters<typeof shouldRevalidateActiveChatRoute>[0],
+) {
+  return shouldRevalidateActiveChatRoute(args);
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
@@ -121,10 +128,14 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       const chatThread = env.CHAT_THREAD.get(
         env.CHAT_THREAD.idFromName(params.id),
       ) as unknown as {
-        setModel(model: LlmModel, provider?: ChatHarness): Promise<void>;
+        setModel(
+          model: LlmModel,
+          provider?: ChatHarness,
+          updatedAt?: number,
+        ): Promise<void>;
         refreshRunnerConfig(): Promise<void>;
       };
-      await chatThread.setModel(updated.model, updated.provider);
+      await chatThread.setModel(updated.model, updated.provider, updated.updated_at);
       await chatThread.refreshRunnerConfig();
     } catch (error) {
       console.error("Failed to broadcast thread model update:", error);
@@ -636,7 +647,6 @@ export default function ChatPage() {
   const chatDebugFlags = getChatDebugFlags();
   const markViewedEnabled = chatDebugFlags.markViewed;
   const markThreadIdleRef = useRef(markThreadIdle);
-  const revalidateRef = useRef(revalidator.revalidate);
   const liveActiveChatGroup =
     activeChatGroup && !readOnly
       ? liveChatGroups.find((group) => group.id === activeChatGroup.id) ??
@@ -732,10 +742,6 @@ export default function ChatPage() {
   }, [markThreadIdle]);
 
   useEffect(() => {
-    revalidateRef.current = revalidator.revalidate;
-  }, [revalidator.revalidate]);
-
-  useEffect(() => {
     if (!markViewedEnabled || readOnly || !workspaceId || !displayThreadId) return;
 
     markThreadIdleRef.current(displayThreadId);
@@ -744,9 +750,6 @@ export default function ChatPage() {
       `/api/threads/${encodeURIComponent(displayThreadId)}/mark-viewed`,
       { method: "POST", signal: controller.signal },
     )
-      .then((response) => {
-        if (response.ok) revalidateRef.current();
-      })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         console.warn("Failed to mark active chat viewed:", error);
@@ -826,11 +829,32 @@ export default function ChatPage() {
   };
 
   const renameTab = async (targetThreadId: string, name: string) => {
-    await fetch(`/api/threads/${encodeURIComponent(targetThreadId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: name }),
-    });
+    const response = await fetch(
+      `/api/threads/${encodeURIComponent(targetThreadId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: name }),
+      },
+    );
+    if (response.ok) {
+      const body = (await response.json().catch(() => null)) as
+        | { thread?: { updated_at?: unknown } }
+        | null;
+      const updatedAt =
+        typeof body?.thread?.updated_at === "number" &&
+        Number.isFinite(body.thread.updated_at)
+          ? body.thread.updated_at
+          : Date.now();
+      if (targetThreadId === displayThreadId) {
+        document.title = `${name || "Chat"} - camelAI`;
+      }
+      window.dispatchEvent(
+        new CustomEvent("camelai:thread-status", {
+          detail: { threadId: targetThreadId, title: name, updatedAt },
+        }),
+      );
+    }
     revalidator.revalidate();
   };
 
@@ -875,6 +899,14 @@ export default function ChatPage() {
   if (!workspaceId) {
     return <NoWorkspacesError />;
   }
+
+  const handleSnapshotChange = useCallback(
+    (snapshot: { messages: Message[]; todos: TodoItem[] }) => {
+      if (!displayThreadId) return;
+      setSnapshot(displayThreadId, snapshot);
+    },
+    [displayThreadId, setSnapshot],
+  );
 
   return (
     <>
@@ -922,10 +954,7 @@ export default function ChatPage() {
             hostname={hostname}
             orgSlug={orgSlug}
             connections={connections}
-            onSnapshotChange={(snapshot) => {
-              if (!displayThreadId) return;
-              setSnapshot(displayThreadId, snapshot);
-            }}
+            onSnapshotChange={handleSnapshotChange}
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}
             isLoadingMessages={false}

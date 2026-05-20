@@ -54,7 +54,7 @@ vi.mock('@/lib/chat-groups.server', () => ({
   listGroupsForMove: listGroupsForMoveMock,
 }));
 
-const { loader } = await import('@/routes/_app.chat.$id');
+const { loader, shouldRevalidate } = await import('@/routes/_app.chat.$id');
 
 describe('chat loader admin readonly mode', () => {
   beforeEach(() => {
@@ -97,6 +97,19 @@ describe('chat loader admin readonly mode', () => {
     ensureGroupForThreadMock.mockResolvedValue(null);
     getGroupForWorkspaceMock.mockResolvedValue(null);
     listGroupsForMoveMock.mockResolvedValue([]);
+  });
+
+  it('route shouldRevalidate preserves explicit same-thread same-URL revalidation', () => {
+    const shouldRunLoader = shouldRevalidate({
+      currentUrl: new URL('https://camelai.com/chat/thread_123?group=group_1'),
+      nextUrl: new URL('https://camelai.com/chat/thread_123?group=group_1'),
+      currentParams: { id: 'thread_123' },
+      nextParams: { id: 'thread_123' },
+      defaultShouldRevalidate: true,
+    });
+
+    expect(shouldRunLoader).toBe(true);
+    expect(readThreadMessagesMock).not.toHaveBeenCalled();
   });
 
   it('requires superuser for adminReadonly mode', async () => {
@@ -247,6 +260,73 @@ describe('chat loader workspace mismatch handling', () => {
       todos: [],
       previewTabs: [],
       activeTabId: null,
+    });
+  });
+
+  it('loads messages for explicit same-thread revalidation and thread navigation', async () => {
+    const context = {};
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockImplementation(async (_context, threadId: string) => ({
+      id: threadId,
+      workspace_id: 'ws_active',
+      title: `Thread ${threadId}`,
+    }));
+
+    await loader({
+      request: new Request('https://camelai.com/chat/thread_123'),
+      context,
+      params: { id: 'thread_123' },
+    } as never);
+    expect(readThreadMessagesMock).toHaveBeenCalledTimes(1);
+
+    readThreadMessagesMock.mockClear();
+    const sameThreadShouldRevalidate = shouldRevalidate({
+      currentUrl: new URL('https://camelai.com/chat/thread_123'),
+      nextUrl: new URL('https://camelai.com/chat/thread_123'),
+      currentParams: { id: 'thread_123' },
+      nextParams: { id: 'thread_123' },
+      defaultShouldRevalidate: true,
+    });
+    if (sameThreadShouldRevalidate) {
+      await loader({
+        request: new Request('https://camelai.com/chat/thread_123'),
+        context,
+        params: { id: 'thread_123' },
+      } as never);
+    }
+    expect(readThreadMessagesMock).toHaveBeenCalledTimes(1);
+    expect(readThreadMessagesMock).toHaveBeenCalledWith(context, {
+      workspaceId: 'ws_active',
+      orgId: 'org_active',
+      threadId: 'thread_123',
+      skipBanCheck: undefined,
+    });
+    readThreadMessagesMock.mockClear();
+
+    const threadChangeShouldRevalidate = shouldRevalidate({
+      currentUrl: new URL('https://camelai.com/chat/thread_123'),
+      nextUrl: new URL('https://camelai.com/chat/thread_456'),
+      currentParams: { id: 'thread_123' },
+      nextParams: { id: 'thread_456' },
+      defaultShouldRevalidate: false,
+    });
+    expect(threadChangeShouldRevalidate).toBe(true);
+
+    await loader({
+      request: new Request('https://camelai.com/chat/thread_456'),
+      context,
+      params: { id: 'thread_456' },
+    } as never);
+
+    expect(readThreadMessagesMock).toHaveBeenCalledWith(context, {
+      workspaceId: 'ws_active',
+      orgId: 'org_active',
+      threadId: 'thread_456',
+      skipBanCheck: undefined,
     });
   });
 

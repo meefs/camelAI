@@ -99,7 +99,7 @@ ASCII before/after:
 IN PROGRESS                         IN PROGRESS
   ● Title                3m 23s       ● Title                  3m 23s
     something user said             something user said
-                                    
+
 COMPLETED                           COMPLETED
   ● Title                12m ago      ● Title                  12m ago
     Found 3 patterns:               Found 3 patterns:

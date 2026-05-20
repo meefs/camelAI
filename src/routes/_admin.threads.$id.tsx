@@ -69,7 +69,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (model !== null && model !== existingThread.model) {
       return { error: THREAD_MODEL_LOCK_MESSAGE };
     }
-    await stub.adminUpdateThread(
+    const updated = await stub.adminUpdateThread(
       threadId,
       {
         title: title.trim(),
@@ -85,13 +85,17 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       const chatThread = env.CHAT_THREAD.get(
         env.CHAT_THREAD.idFromName(threadId)
       ) as unknown as {
-        setTitle(title: string): Promise<void>;
-        setModel(model: string): Promise<void>;
+        setTitle(title: string, updatedAt?: number): Promise<void>;
+        setModel(
+          model: string,
+          provider?: 'claude' | 'codex',
+          updatedAt?: number,
+        ): Promise<void>;
         refreshRunnerConfig(): Promise<void>;
       };
-      await chatThread.setTitle(title.trim());
+      await chatThread.setTitle(title.trim(), updated?.updated_at);
       if (model !== null) {
-        await chatThread.setModel(model);
+        await chatThread.setModel(model, undefined, updated?.updated_at);
         await chatThread.refreshRunnerConfig();
       }
     } catch (error) {
