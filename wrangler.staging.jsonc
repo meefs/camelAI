@@ -115,6 +115,6 @@
   },
   "migrations": [
     { "tag": "v27" },
-    { "tag": "v28", "deleted_classes": ["AdminIndexDO"] },
+    { "tag": "v28" },
   ],
 }
