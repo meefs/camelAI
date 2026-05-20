@@ -31,8 +31,6 @@ export interface TeamUpgradeDialogProps {
   onOpenChange: (open: boolean) => void
   /** User's current plan — used to render the explainer line ("Your Pro plan includes 1 seat..."). */
   currentPlan: "free" | "starter" | "pro"
-  /** Whether the org still has a 7-day trial available. Drives CTA label. */
-  trialAvailable: boolean
   /** Whether Stripe billing is configured in this environment. Disables the CTA when false. */
   stripeConfigured: boolean
   /** Legacy Stripe migration details, used to switch CTA copy and preserve migration guardrails. */
@@ -43,7 +41,6 @@ export function TeamUpgradeDialog({
   open,
   onOpenChange,
   currentPlan,
-  trialAvailable,
   stripeConfigured,
   legacyMigration = null,
 }: TeamUpgradeDialogProps) {
@@ -120,7 +117,6 @@ export function TeamUpgradeDialog({
       state={{ kind: "highlighted" }}
       pending={pending}
       disabled={disabled}
-      trialAvailable={trialAvailable}
       legacyMode={legacyMigrationEligible}
       onSelect={handleUpgrade}
     />

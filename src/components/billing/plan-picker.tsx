@@ -14,7 +14,7 @@ import {
 export type PlanPickerCta =
   | { kind: "byok" }
   | { kind: "payg"; plan: "payg" }
-  | { kind: "trial"; plan: "starter" | "pro" | "team" }
+  | { kind: "subscribe"; plan: "starter" | "pro" | "team" }
   | { kind: "migrate"; plan: "starter" | "pro" | "team" }
   | { kind: "contact" }
   | { kind: "downgrade"; plan: BillingPlan };
@@ -26,7 +26,6 @@ export interface PlanPickerProps {
   highlightedPlan?: BillingPlan | null;
   heading?: { title: string; subtitle?: string } | null;
   showFooter?: boolean;
-  trialAvailable?: boolean;
   byokProviderLabel?: string | null;
   legacyMigration?: LegacyMigrationDialogData | null;
   onSelectPlan: (cta: PlanPickerCta) => void;
@@ -87,12 +86,12 @@ function ctaForPlan(
   if (ctaKind === "byok") return { kind: "byok" };
   if (ctaKind === "payg") return { kind: "payg", plan: "payg" };
   if (ctaKind === "contact") return { kind: "contact" };
-  if (ctaKind === "trial") {
+  if (ctaKind === "subscribe") {
     if (isMigratePlan(plan)) {
       if (legacyMode) {
         return { kind: "migrate", plan };
       }
-      return { kind: "trial", plan };
+      return { kind: "subscribe", plan };
     }
   }
   return { kind: "downgrade", plan };
@@ -105,7 +104,6 @@ export function PlanPicker({
   highlightedPlan,
   heading = DEFAULT_HEADING,
   showFooter = true,
-  trialAvailable = true,
   byokProviderLabel = null,
   legacyMigration = null,
   onSelectPlan,
@@ -141,7 +139,7 @@ export function PlanPicker({
         const state = resolveCardState(plan, highlight, currentPlan);
         const cta = ctaForPlan(plan, state, legacyMode);
         const disabled =
-          (cta.kind === "trial" ||
+          (cta.kind === "subscribe" ||
             cta.kind === "migrate" ||
             cta.kind === "payg") &&
           (isDisabled || (pendingPlan !== null && pendingPlan !== plan));
@@ -152,7 +150,6 @@ export function PlanPicker({
             state={state}
             pending={pendingPlan === plan}
             disabled={disabled}
-            trialAvailable={trialAvailable}
             byokProviderLabel={byokProviderLabel}
             legacyMode={legacyMode}
             onSelect={() => onSelectPlan(cta)}
@@ -219,9 +216,7 @@ export function PlanPicker({
           <p className="text-center text-sm text-muted-foreground">
             {legacyMode
               ? LEGACY_FOOTER_COPY
-              : trialAvailable
-                ? "Subscription plans include one 7-day free trial per org."
-                : "Your free trial has already been used for this org."}
+              : "Subscription plans include monthly credits that renew each billing period."}
           </p>
           <p className="text-center text-sm text-muted-foreground">
             <a

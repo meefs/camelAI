@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:test";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
 import {
+  createSubscriptionCheckoutSession,
   getBillingAccessSnapshot,
   syncOrgSubscriptionFromStripe,
   type StripeBillingEnv,
@@ -135,6 +136,68 @@ describe("OrgDO billing grant idempotency", () => {
     expect(synced?.billing_plan).toBe("starter");
     expect(synced?.billing_subscription_id).toBe(subscription.id);
     expect(synced?.billing_subscription_status).toBe("paused");
+  });
+
+  it("creates paid subscription checkout without a free trial period", async () => {
+    const { userId: ownerId, user } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Paid Checkout Org", ownerId, {
+      billingPlan: "payg",
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const billingOrg = await orgStub.updateBillingState({
+      billing_customer_id: "cus_test",
+    });
+    expect(billingOrg).not.toBeNull();
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "cs_test",
+          mode: "subscription",
+          url: "https://checkout.stripe.test/session",
+        }),
+      );
+
+    try {
+      await expect(
+        createSubscriptionCheckoutSession({
+          env: {
+            ...stripeBillingEnv(),
+            STRIPE_MODE: "test",
+            STRIPE_SECRET_KEY: "sk_test_checkout",
+            STRIPE_STARTER_PRICE_ID: "price_starter_test",
+          },
+          org: billingOrg!,
+          customerEmail: user.email,
+          successUrl: "https://camelai.test/success",
+          cancelUrl: "https://camelai.test/cancel",
+          plan: "starter",
+          seatCount: 1,
+        }),
+      ).resolves.toBe("https://checkout.stripe.test/session");
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const body = new URLSearchParams(String(init.body));
+
+      expect(body.get("mode")).toBe("subscription");
+      expect(body.get("subscription_data[trial_period_days]")).toBeNull();
+      expect(body.get("metadata[trial_credit_cents]")).toBe("0");
+      expect(body.get("subscription_data[metadata][trial_credit_cents]")).toBe(
+        "0",
+      );
+      expect(body.get("metadata[initial_included_credit_cents]")).toBe("1000");
+      expect(
+        body.get("subscription_data[metadata][initial_included_credit_cents]"),
+      ).toBe("1000");
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it("continues granting first-trial credits when the Stripe trial is not canceling", async () => {

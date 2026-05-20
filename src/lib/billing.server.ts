@@ -14,7 +14,6 @@ import {
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
 const STRIPE_API_VERSION = "2026-02-25.clover";
-export const STRIPE_SUBSCRIPTION_TRIAL_DAYS = 7;
 const CREDIT_CHECKOUT_EVENT_PREFIX = "stripe_checkout_credits:";
 const INCLUDED_CREDIT_INVOICE_EVENT_PREFIX = "stripe_invoice_included_credit:";
 const LEGACY_MIGRATION_META_ORG_ID = "v2_mig_org";
@@ -1466,10 +1465,6 @@ export async function createSubscriptionCheckoutSession(args: {
     plan,
     args.seatCount ?? latestOrg.billing_seat_count ?? getMinimumSeats(plan),
   );
-  const trialEligible = !hasOrgUsedSubscriptionTrial(latestOrg);
-  const trialCreditCents = trialEligible
-    ? getTrialCreditCentsForPlan(env, plan, seatCount)
-    : 0;
   const subscriptionIncludedCreditCents =
     getSubscriptionIncludedCreditCentsForPlan(env, plan, seatCount);
 
@@ -1489,17 +1484,15 @@ export async function createSubscriptionCheckoutSession(args: {
   body.set("metadata[purchase_type]", "subscription");
   body.set("metadata[billing_plan]", plan);
   body.set("metadata[seat_count]", String(seatCount));
-  body.set("metadata[trial_credit_cents]", String(trialCreditCents));
+  body.set("metadata[trial_credit_cents]", "0");
   body.set(
     "metadata[subscription_included_credit_cents]",
     String(subscriptionIncludedCreditCents),
   );
-  if (!trialEligible) {
-    body.set(
-      "metadata[initial_included_credit_cents]",
-      String(subscriptionIncludedCreditCents),
-    );
-  }
+  body.set(
+    "metadata[initial_included_credit_cents]",
+    String(subscriptionIncludedCreditCents),
+  );
   body.set("line_items[0][price]", priceId);
   body.set("line_items[0][quantity]", String(seatCount));
   if (plan === "team") {
@@ -1513,29 +1506,18 @@ export async function createSubscriptionCheckoutSession(args: {
       String(STRIPE_CHECKOUT_MAX_ADJUSTABLE_QUANTITY),
     );
   }
-  if (trialEligible) {
-    body.set(
-      "subscription_data[trial_period_days]",
-      String(STRIPE_SUBSCRIPTION_TRIAL_DAYS),
-    );
-  }
   body.set("subscription_data[metadata][org_id]", org.id);
   body.set("subscription_data[metadata][billing_plan]", plan);
   body.set("subscription_data[metadata][seat_count]", String(seatCount));
-  body.set(
-    "subscription_data[metadata][trial_credit_cents]",
-    String(trialCreditCents),
-  );
+  body.set("subscription_data[metadata][trial_credit_cents]", "0");
   body.set(
     "subscription_data[metadata][subscription_included_credit_cents]",
     String(subscriptionIncludedCreditCents),
   );
-  if (!trialEligible) {
-    body.set(
-      "subscription_data[metadata][initial_included_credit_cents]",
-      String(subscriptionIncludedCreditCents),
-    );
-  }
+  body.set(
+    "subscription_data[metadata][initial_included_credit_cents]",
+    String(subscriptionIncludedCreditCents),
+  );
 
   const session = await stripeRequest<StripeCheckoutSession>(
     env,

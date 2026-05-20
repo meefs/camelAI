@@ -18,7 +18,6 @@ import {
   createSubscriptionCheckoutSession,
   fetchConfiguredCreditPacks,
   getBillableTeamSeatCountForOrg,
-  hasOrgUsedSubscriptionTrial,
   isStripeBillingConfigured,
 } from "@/lib/billing.server";
 import { isBillingPlan } from "@/lib/billing-plans";
@@ -61,17 +60,16 @@ interface WelcomeLoaderData {
   orgId: string;
   orgName: string;
   teamContext: TeamContext;
-  trialAvailable: boolean;
   byokProviderLabel: string | null;
   stripeConfigured: boolean;
   creditPacks: TopUpDialogPack[];
 }
 
 const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
-const TRIAL_PLANS = new Set(["starter", "pro", "team"]);
+const SUBSCRIPTION_PLANS = new Set(["starter", "pro", "team"]);
 
-function isTrialPlan(plan: string): plan is "starter" | "pro" | "team" {
-  return isBillingPlan(plan) && TRIAL_PLANS.has(plan);
+function isSubscriptionPlan(plan: string): plan is "starter" | "pro" | "team" {
+  return isBillingPlan(plan) && SUBSCRIPTION_PLANS.has(plan);
 }
 
 function formatPriceLabel(price: {
@@ -109,7 +107,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       ? fetchConfiguredCreditPacks(env).catch(() => [])
       : Promise.resolve([]),
   ]);
-  const trialAvailable = orgInfo ? !hasOrgUsedSubscriptionTrial(orgInfo) : true;
   const byokProviderLabel = getByokProviderLabel(llmProviderConfig?.provider);
   const formattedCreditPacks = creditPacks.map((pack) => ({
     id: pack.id,
@@ -121,7 +118,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     return {
       orgId,
       orgName: "camelAI",
-      trialAvailable,
       byokProviderLabel,
       stripeConfigured,
       creditPacks: formattedCreditPacks,
@@ -152,7 +148,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return {
     orgId,
     orgName,
-    trialAvailable,
     byokProviderLabel,
     stripeConfigured,
     creditPacks: formattedCreditPacks,
@@ -218,7 +213,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
   }
 
-  if (intent !== "startTrial") {
+  if (intent !== "startSubscription") {
     return Response.json(
       { error: "Unknown onboarding action" },
       { status: 400 },
@@ -226,9 +221,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const rawPlan = String(formData.get("plan") || "").trim();
-  if (!isTrialPlan(rawPlan)) {
+  if (!isSubscriptionPlan(rawPlan)) {
     return Response.json(
-      { error: "Choose Starter, Pro, or Team to start a trial." },
+      { error: "Choose Starter, Pro, or Team to start a subscription." },
       { status: 400 },
     );
   }
@@ -251,13 +246,13 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     return Response.json({ checkoutUrl });
   } catch (nextError) {
-    console.error("[onboarding] failed to create trial checkout", nextError);
+    console.error("[onboarding] failed to create subscription checkout", nextError);
     return Response.json(
       {
         error:
           nextError instanceof Error
             ? nextError.message
-            : "Failed to start trial checkout",
+            : "Failed to start subscription checkout",
       },
       { status: 503 },
     );
@@ -330,7 +325,6 @@ export default function OnboardingWelcomeRoute() {
     orgId,
     orgName,
     teamContext,
-    trialAvailable,
     byokProviderLabel,
     stripeConfigured = false,
     creditPacks = [],
@@ -357,7 +351,7 @@ export default function OnboardingWelcomeRoute() {
   const pendingCheckoutPlanValue = String(
     checkoutFetcher.formData?.get("plan") || "",
   );
-  const pendingCheckoutPlan = isTrialPlan(pendingCheckoutPlanValue)
+  const pendingCheckoutPlan = isSubscriptionPlan(pendingCheckoutPlanValue)
     ? pendingCheckoutPlanValue
     : pendingCheckoutPlanValue === "payg"
       ? "payg"
@@ -377,7 +371,7 @@ export default function OnboardingWelcomeRoute() {
   const pendingMigrationPlanValue = String(
     migrationFetcher.formData?.get("plan") || "",
   );
-  const pendingMigrationPlan = isTrialPlan(pendingMigrationPlanValue)
+  const pendingMigrationPlan = isSubscriptionPlan(pendingMigrationPlanValue)
     ? pendingMigrationPlanValue
     : null;
 
@@ -606,11 +600,8 @@ export default function OnboardingWelcomeRoute() {
                   ? "Pick a paid plan to switch over from your existing subscription, or bring your own API key to keep using camelAI on the free tier."
                   : byokProviderLabel
                     ? `Your ${byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
-                    : trialAvailable
-                      ? "Start a free trial, use prepaid hosted credits, or bring your own API key."
-                      : "Choose a plan, use prepaid hosted credits, or bring your own API key.",
+                    : "Choose a plan, use prepaid hosted credits, or bring your own API key.",
               }}
-              trialAvailable={trialAvailable}
               byokProviderLabel={byokProviderLabel}
               legacyMigration={context.legacyMigration}
               disabledReason={
@@ -646,12 +637,12 @@ export default function OnboardingWelcomeRoute() {
                   );
                   return;
                 }
-                if (cta.kind === "trial") {
+                if (cta.kind === "subscribe") {
                   if (isStartingCheckout) {
                     return;
                   }
                   checkoutFetcher.submit(
-                    { intent: "startTrial", plan: cta.plan },
+                    { intent: "startSubscription", plan: cta.plan },
                     { method: "post" },
                   );
                   return;

@@ -31,7 +31,6 @@ import type { BillingPlan } from "@/types";
 export interface PaywallTakeoverContext {
   currentOrgName: string;
   multiOrg: boolean;
-  trialAvailable: boolean;
   byokProviderLabel: string | null;
 }
 
@@ -51,10 +50,10 @@ interface PaywallTakeoverProps {
 }
 
 const BOOK_DEMO_URL = "https://book-demo--camelai-team-d9e.camelai.app/";
-const TRIAL_PLANS = new Set(["starter", "pro", "team"]);
+const SUBSCRIPTION_PLANS = new Set(["starter", "pro", "team"]);
 
-function isTrialPlan(plan: string): plan is "starter" | "pro" | "team" {
-  return isBillingPlan(plan) && TRIAL_PLANS.has(plan);
+function isSubscriptionPlan(plan: string): plan is "starter" | "pro" | "team" {
+  return isBillingPlan(plan) && SUBSCRIPTION_PLANS.has(plan);
 }
 
 function buildLegacyMigrationKey(
@@ -124,7 +123,7 @@ export function PaywallTakeover({
   const pendingCheckoutPlanValue = String(
     checkoutFetcher.formData?.get("plan") || "",
   );
-  const pendingCheckoutPlan = isTrialPlan(pendingCheckoutPlanValue)
+  const pendingCheckoutPlan = isSubscriptionPlan(pendingCheckoutPlanValue)
     ? pendingCheckoutPlanValue
     : pendingCheckoutPlanValue === "payg"
       ? "payg"
@@ -132,7 +131,7 @@ export function PaywallTakeover({
   const pendingMigrationPlanValue = String(
     migrationFetcher.formData?.get("plan") || "",
   );
-  const pendingMigrationPlan = isTrialPlan(pendingMigrationPlanValue)
+  const pendingMigrationPlan = isSubscriptionPlan(pendingMigrationPlanValue)
     ? pendingMigrationPlanValue
     : null;
   const isSavingProvider = providerFetcher.state !== "idle";
@@ -145,9 +144,7 @@ export function PaywallTakeover({
       ? `${paywallContext.currentOrgName} is on the Free plan with no API key set up. Pick a plan, or switch to an organization with an active plan using the sidebar.`
     : paywallContext.byokProviderLabel
         ? `Your ${paywallContext.byokProviderLabel} API key is connected. Continue on Free, use prepaid hosted credits, or start a subscription.`
-        : paywallContext.trialAvailable
-          ? "Start a free trial, use prepaid hosted credits, or bring your own API key."
-          : "Choose a plan, use prepaid hosted credits, or bring your own API key.";
+        : "Choose a plan, use prepaid hosted credits, or bring your own API key.";
 
   const disabledReason =
     planPickerOverrides?.disabledReason ??
@@ -299,7 +296,7 @@ export function PaywallTakeover({
       );
       return;
     }
-    if (cta.kind === "trial") {
+    if (cta.kind === "subscribe") {
       if (isStartingCheckout) {
         return;
       }
@@ -307,7 +304,7 @@ export function PaywallTakeover({
         { plan: cta.plan },
         {
           method: "post",
-          action: "/api/billing/start-trial",
+          action: "/api/billing/start-subscription",
         },
       );
       return;
@@ -371,7 +368,6 @@ export function PaywallTakeover({
               subtitle,
             }}
             highlightedPlan={planPickerOverrides?.highlightedPlan}
-            trialAvailable={paywallContext.trialAvailable}
             byokProviderLabel={paywallContext.byokProviderLabel}
             legacyMigration={legacyMigration}
             onLegacyWhyClick={() => setLegacyIntroOpen(true)}
