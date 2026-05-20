@@ -150,6 +150,7 @@ export default [
     "routes/api/billing.legacy-migration.ts",
   ),
   route("api/legacy-banner/dismiss", "routes/api/legacy-banner.dismiss.ts"),
+  route("api/client-errors", "routes/api/client-errors.ts"),
   route("api/help", "routes/api/help.ts"),
   route("api/history", "routes/api/history.tsx"),
   route("api/chat-groups/:id", "routes/api/chat-groups.$id.ts"),

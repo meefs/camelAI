@@ -6,12 +6,16 @@ import {
   ScrollRestoration,
   isRouteErrorResponse,
 } from 'react-router';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 import type { Route } from './+types/root';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import { NavigationProgress } from '@/components/ui/navigation-progress';
+import {
+  reportClientError,
+  scheduleClientErrorReload,
+} from '@/lib/client-error-reporting';
 
 // Import global styles
 import './styles/globals.css';
@@ -115,6 +119,8 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let message = 'Oops!';
   let details = 'An unexpected error occurred.';
   let stack: string | undefined;
+  const statusCode = isRouteErrorResponse(error) ? error.status : undefined;
+  const [isRecovering, setIsRecovering] = useState(false);
 
   if (isRouteErrorResponse(error)) {
     message = error.status === 404 ? '404' : 'Error';
@@ -125,6 +131,22 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;
+  }
+
+  useEffect(() => {
+    if (statusCode && statusCode < 500) return;
+    reportClientError({
+      source: 'react_error_boundary',
+      error,
+      routeId: 'root',
+      statusCode,
+    });
+    setIsRecovering(scheduleClientErrorReload({ error, statusCode }));
+  }, [error, statusCode]);
+
+  if (isRecovering) {
+    message = 'Reloading...';
+    details = 'Refreshing the app to recover from a temporary loading error.';
   }
 
   return (
