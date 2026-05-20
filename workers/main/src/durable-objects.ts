@@ -7008,7 +7008,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.piMainBaselineIndex = persistedMessages.length;
     const session = new Agent({
       initialState: {
-        systemPrompt: await this.createPiSystemPrompt(context),
+        systemPrompt: this.createPiSystemPrompt(context),
         model: modelConfig.model,
         tools: this.createPiToolDefinitions(context),
         messages: initialMessages,
@@ -7067,11 +7067,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return session;
   }
 
-  private async createPiSystemPrompt(context: ChatContextState): Promise<string> {
-    const workspaceContext = await this.readWorkspaceContextPrompt(context).catch((error) => {
-      console.warn("[ChatThreadDO] failed to read workspace context", error);
-      return "";
-    });
+  private createPiSystemPrompt(context: ChatContextState): string {
     const skillLines = PI_SKILL_NAMES.map(
       (name) => `- ${name}: ${PI_SKILLS_ROOT}/${name}/SKILL.md`,
     );
@@ -7081,8 +7077,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
-      "",
-      workspaceContext,
+      "Before relying on repository-specific conventions, read /home/claude/AGENTS.md, /home/claude/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
       "",
       "## Available Skills",
       "When a task matches a skill, read that skill file with the read tool and follow it. Built-in skills are available at:",
@@ -7092,23 +7087,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       `Workspace ID: ${context.workspaceId}`,
       `Organization ID: ${context.orgId}`,
     ].filter(Boolean).join("\n");
-  }
-
-  private async readWorkspaceContextPrompt(context: ChatContextState): Promise<string> {
-    const tools = this.scopedCodeModeTools(context);
-    const parts: string[] = [];
-    for (const filePath of ["/home/claude/AGENTS.md", "/home/claude/CLAUDE.md", "/AGENTS.md", "/CLAUDE.md"]) {
-      try {
-        const result = await tools.callTool("read", { path: filePath });
-        const content = this.extractToolText(result).trim();
-        if (content) {
-          parts.push(`## ${filePath}\n${content}`);
-        }
-      } catch {
-        // Optional context file.
-      }
-    }
-    return parts.join("\n\n");
   }
 
   private async compactPiContext(
@@ -8284,7 +8262,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     context: ChatContextState,
     isExplore: boolean,
   ): Promise<string> {
-    const base = await this.createPiSystemPrompt(context);
+    const base = this.createPiSystemPrompt(context);
     return [
       base,
       "",
