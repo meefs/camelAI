@@ -18,7 +18,6 @@ import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
-  hasOrgUsedSubscriptionTrial,
   isConfiguredEnterpriseOrg,
   isOrgBillingAccessReady,
   resolveOrgBillingAccess,
@@ -83,7 +82,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : {
         currentOrgName: currentOrg.name,
         multiOrg: authContext.orgs.length > 1,
-        trialAvailable: !hasOrgUsedSubscriptionTrial(currentOrg),
         byokProviderLabel: getByokProviderLabel(llmProviderConfig?.provider),
       };
 

@@ -14,7 +14,6 @@ const testState = vi.hoisted(() => ({
         appCount: 0,
         integrations: [],
       },
-      trialAvailable: true,
       byokProviderLabel: null,
       stripeConfigured: true,
       creditPacks: [

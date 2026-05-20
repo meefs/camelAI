@@ -22,9 +22,9 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
   };
 });
 
-const { action } = await import("@/routes/api/billing.start-trial");
+const { action } = await import("@/routes/api/billing.start-subscription");
 
-describe("billing start-trial route", () => {
+describe("billing start-subscription route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getEnvMock.mockReturnValue({ STRIPE_MODE: "test" });
@@ -49,10 +49,13 @@ describe("billing start-trial route", () => {
     formData.set("plan", "team");
 
     const response = await action({
-      request: new Request("https://camelai.test/api/billing/start-trial", {
-        method: "POST",
-        body: formData,
-      }),
+      request: new Request(
+        "https://camelai.test/api/billing/start-subscription",
+        {
+          method: "POST",
+          body: formData,
+        },
+      ),
       context: {},
     } as never);
 
@@ -75,21 +78,24 @@ describe("billing start-trial route", () => {
     );
   });
 
-  it("rejects non-trial plans", async () => {
+  it("rejects non-subscription plans", async () => {
     const formData = new FormData();
     formData.set("plan", "free");
 
     const response = await action({
-      request: new Request("https://camelai.test/api/billing/start-trial", {
-        method: "POST",
-        body: formData,
-      }),
+      request: new Request(
+        "https://camelai.test/api/billing/start-subscription",
+        {
+          method: "POST",
+          body: formData,
+        },
+      ),
       context: {},
     } as never);
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
-      error: "Choose Starter, Pro, or Team to start a trial.",
+      error: "Choose Starter, Pro, or Team to start a subscription.",
     });
     expect(createSubscriptionCheckoutSessionMock).not.toHaveBeenCalled();
   });

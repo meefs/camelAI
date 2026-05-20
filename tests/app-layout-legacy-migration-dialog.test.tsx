@@ -147,7 +147,6 @@ function makeLoaderData({
       : {
           currentOrgName: orgId,
           multiOrg: true,
-          trialAvailable: true,
           byokProviderLabel: null,
         },
   };

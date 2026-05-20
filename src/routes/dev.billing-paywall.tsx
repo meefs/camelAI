@@ -25,7 +25,6 @@ type PreviewState =
   | "default"
   | "legacy"
   | "legacy-multiple"
-  | "trial-used"
   | "byok-configured"
   | "current-starter"
   | "current-pro"
@@ -36,7 +35,6 @@ interface PreviewConfig {
   migration: LegacyMigrationDialogData | null;
   orgName: string;
   multiOrg: boolean;
-  trialAvailable: boolean;
   currentPlan: BillingPlan | null;
   defaultBillingMode: "individual" | "team";
   disabledReason: string | null;
@@ -47,7 +45,6 @@ const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
   { value: "default", label: "New paywall" },
   { value: "legacy", label: "Legacy migration" },
   { value: "legacy-multiple", label: "Manual migration" },
-  { value: "trial-used", label: "Trial used" },
   { value: "byok-configured", label: "BYOK connected" },
   { value: "current-starter", label: "Starter upgrade" },
   { value: "current-pro", label: "Pro downgrade" },
@@ -81,7 +78,6 @@ function getPreviewConfig(
     migration: null,
     orgName: "Org B",
     multiOrg: true,
-    trialAvailable: true,
     currentPlan: null,
     defaultBillingMode: "individual",
     disabledReason: null,
@@ -114,14 +110,6 @@ function getPreviewConfig(
         },
         disabledReason:
           "This account has multiple active subscriptions. Contact support@camelai.com to switch over without double billing.",
-      };
-    case "trial-used":
-      return {
-        ...base,
-        description:
-          "After the one org trial has been used, the CTA copy no longer promises another trial.",
-        multiOrg: false,
-        trialAvailable: false,
       };
     case "byok-configured":
       return {
@@ -167,7 +155,7 @@ function describeCta(cta: PlanPickerCta): string {
       return "BYOK selected";
     case "payg":
       return "Pay as you go selected";
-    case "trial":
+    case "subscribe":
       return `Start checkout for ${cta.plan}`;
     case "migrate":
       return `Legacy migration to ${cta.plan}`;
@@ -281,7 +269,6 @@ export default function DevBillingPaywallPreviewRoute() {
           paywallContext={{
             currentOrgName: config.orgName,
             multiOrg: config.multiOrg,
-            trialAvailable: config.trialAvailable,
             byokProviderLabel: config.byokProviderLabel,
           }}
           legacyMigration={config.migration}

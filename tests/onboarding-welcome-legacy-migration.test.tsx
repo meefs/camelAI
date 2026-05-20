@@ -37,7 +37,6 @@ describe("OnboardingWelcomeRoute legacy migration", () => {
         appCount: 0,
         integrations: [],
       },
-      trialAvailable: false,
     });
     useOutletContextMock.mockReturnValue({
       completeOnboarding: vi.fn(),

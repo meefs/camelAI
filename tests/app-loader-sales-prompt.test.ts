@@ -172,7 +172,6 @@ describe("_app loader onboarding redirect", () => {
       paywallContext: {
         currentOrgName: "Org B",
         multiOrg: true,
-        trialAvailable: true,
         byokProviderLabel: null,
       },
     });
