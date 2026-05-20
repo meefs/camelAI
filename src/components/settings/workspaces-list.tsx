@@ -93,9 +93,11 @@ export function WorkspacesList({
         if (archivedId === currentWorkspaceId) {
           const fallback = workspaces.find((ws) => ws.id !== archivedId)
           if (fallback) {
-            switchWorkspace(fallback.id)
+            void switchWorkspace(fallback.id).catch((error) => {
+              console.error("Failed to switch workspace:", error)
+              toast.error("Failed to switch workspace")
+            })
           }
-          // React Router will auto-revalidate after the fetcher action
         }
       } else if (fetcher.data.error) {
         pendingArchiveRef.current = null
@@ -105,8 +107,12 @@ export function WorkspacesList({
   }, [fetcher.state, fetcher.data, currentWorkspaceId, workspaces, switchWorkspace])
 
   const handleSwitch = (workspaceId: string) => {
-    switchWorkspace(workspaceId)
-    toast.success("Switching workspace...")
+    void switchWorkspace(workspaceId)
+      .then(() => toast.success("Switched workspace"))
+      .catch((error) => {
+        console.error("Failed to switch workspace:", error)
+        toast.error("Failed to switch workspace")
+      })
   }
 
   const handleArchive = (workspaceId: string) => {
