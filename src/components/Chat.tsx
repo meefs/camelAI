@@ -156,7 +156,7 @@ export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
 const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
-const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 20_000;
+const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
 
 interface ChatProps {
   threadId?: string;

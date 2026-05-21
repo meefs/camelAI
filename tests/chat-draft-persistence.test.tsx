@@ -507,7 +507,7 @@ describe('Chat draft persistence', () => {
     );
 
     act(() => {
-      vi.advanceTimersByTime(20_000);
+      vi.advanceTimersByTime(8_000);
     });
 
     expect(input).toHaveValue('Lost before ack');
