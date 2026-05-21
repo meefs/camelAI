@@ -729,6 +729,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       methods: vi.fn(),
       __invoke: vi.fn(),
     };
+    const aiBinding = { run: vi.fn() };
     let capturedWorkerCode: any;
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
@@ -748,6 +749,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       exports: {
         CodeModeToolsBinding: vi.fn(() => toolsBinding),
         ConnectionsService: vi.fn(() => connectionsBinding),
+        AIVirtualBinding: vi.fn(() => aiBinding),
       },
     };
 
@@ -775,15 +777,25 @@ describe('ChatThreadDO Codex external turn completion', () => {
         userId: 'user_1',
       },
     });
+    expect(fake.ctx.exports.AIVirtualBinding).toHaveBeenCalledWith({
+      props: {
+        orgId: 'org_1',
+        workspaceId: 'ws_1',
+        userId: 'user_1',
+      },
+    });
     expect(capturedWorkerCode.globalOutbound).toBeNull();
     expect(capturedWorkerCode.env.TOOLS).toBe(toolsBinding);
     expect(capturedWorkerCode.env.CONNECTIONS).toBe(connectionsBinding);
+    expect(capturedWorkerCode.env.AI).toBe(aiBinding);
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => binding.find(query)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$test") return (query) => binding.test(query)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createOutputConsole');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('globalThis.console = createOutputConsole(output)');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const AI = this.env.AI');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('parameters: tool.parameters');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('return methods;');
