@@ -3167,6 +3167,38 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return "";
   }
 
+  private getLatestPiAssistantMessageRecord(
+    messages: AgentMessage[],
+  ): Record<string, unknown> | null {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const record = messages[i] as unknown as Record<string, unknown>;
+      if (record.role === "assistant") return record;
+    }
+    return null;
+  }
+
+  private isPiUserAbortedTurn(messages: AgentMessage[]): boolean {
+    const record = this.getLatestPiAssistantMessageRecord(messages);
+    return record?.stopReason === "aborted";
+  }
+
+  private isPiAbortError(error: unknown): boolean {
+    if (error instanceof Error) {
+      if (error.name === "AbortError") return true;
+      const message = error.message.trim().toLowerCase();
+      if (!message) return false;
+      return (
+        message.includes("request was aborted") ||
+        message.includes("aborted by user") ||
+        message === "aborted"
+      );
+    }
+    if (typeof error === "string") {
+      return this.isPiAbortError(new Error(error));
+    }
+    return false;
+  }
+
   private piAgentLoopErrorDetails(error: unknown): {
     name: string;
     message: string;
@@ -3838,17 +3870,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     if (data.type === "stop") {
       await this.ensureRunnerConnected();
-      if (!this.sendRunnerCommand({ ...data, type: "stop", threadId: this.chatContext?.threadId })) {
-        this.sendDirect(ws, { type: "error", error: "Sandbox is not connected" });
-      }
+      this.sendRunnerCommand({
+        ...data,
+        type: "stop",
+        threadId: this.chatContext?.threadId,
+      });
       return;
     }
 
     if (data.type === "set_model") {
       await this.ensureRunnerConnected();
-      if (!this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId })) {
-        this.sendDirect(ws, { type: "error", error: "Sandbox is not connected" });
-      }
+      this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId });
       return;
     }
 
@@ -3861,9 +3893,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     await this.ensureRunnerConnected();
-    if (!this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId })) {
-      this.sendDirect(ws, { type: "error", error: "Sandbox is not connected" });
-    }
+    this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId });
   }
 
   private async handleRunnerClientInit(
@@ -3929,7 +3959,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (result.status !== "accepted") {
       this.sendDirect(ws, {
         type: "error",
-        error: result.error ?? "Failed to send message to sandbox",
+        error: result.error ?? "Failed to send message",
       });
       return;
     }
@@ -4052,7 +4082,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
       });
-      return { status: "error", error: "Failed to send message to sandbox" };
+      return { status: "error", error: "Failed to send message" };
     }
 
     this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
@@ -4114,16 +4144,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.markRunnerActivity("question_response");
     const answeringUserId =
       this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
-    if (
-      !this.sendRunnerCommand({
-        type: "question_response",
-        questionId: data.questionId,
-        answers: data.answers,
-        userId: answeringUserId ?? undefined,
-      })
-    ) {
-      this.emitChatError("Sandbox is not connected");
-    }
+    this.sendRunnerCommand({
+      type: "question_response",
+      questionId: data.questionId,
+      answers: data.answers,
+      userId: answeringUserId ?? undefined,
+    });
   }
 
   private async handleSetPreviewTarget(
@@ -4833,9 +4859,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ) {
       this.resolvePendingExternalTurn({
         status: "error",
-        error: "Failed to send message to sandbox",
+        error: "Failed to send message",
       });
-      return { status: "error", error: "Failed to send message to sandbox" };
+      return { status: "error", error: "Failed to send message" };
     }
 
     this.setChatIsStreaming(true);
@@ -6852,9 +6878,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
       const finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
-      const errorMessage = finalText
-        ? ""
-        : this.getLatestPiAssistantErrorMessage(newMessages);
+      const abortedByUser = this.isPiUserAbortedTurn(newMessages);
+      const errorMessage =
+        finalText || abortedByUser
+          ? ""
+          : this.getLatestPiAssistantErrorMessage(newMessages);
       const summarySource = extractThreadCompletionSummarySource(
         newMessages,
         finalText || errorMessage,
@@ -6990,6 +7018,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 await this.piSession.prompt(userMessage);
               }
             })().catch((error) => {
+                if (this.isPiAbortError(error)) {
+                  return;
+                }
                 console.error("[ChatThreadDO] Pi prompt failed", error);
                 this.persistPiAgentLoopErrorForDevelopers(error, {
                   source: "pi_prompt",

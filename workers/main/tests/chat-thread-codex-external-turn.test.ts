@@ -2079,6 +2079,33 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
   });
 
+  it('does not emit provider errors for user-aborted Pi turns', () => {
+    const { fake, events } = createPiEventFake();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [{
+        role: 'assistant',
+        content: [],
+        stopReason: 'aborted',
+        errorMessage: 'Request was aborted',
+        responseId: 'resp_aborted',
+        timestamp: 789,
+      }],
+    });
+
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'result',
+      result: '',
+    }));
+    expect(fake.resolvePendingExternalTurn).toHaveBeenCalledWith({
+      status: 'result',
+      reply: undefined,
+    });
+  });
+
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {
     const { fake, events } = createPiEventFake();
 
@@ -2302,7 +2329,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     expect(result).toEqual({
       status: 'error',
-      error: 'Failed to send message to sandbox',
+      error: 'Failed to send message',
     });
     expect(workspaceStub.getIntegrations).toHaveBeenCalledTimes(1);
     expect(sentCommands).toHaveLength(1);
