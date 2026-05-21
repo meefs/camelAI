@@ -3206,6 +3206,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       error?: unknown;
       provider?: string | null;
       model?: string | null;
+      sampleKey?: string | null;
       insertedCount?: number;
       updatedCount?: number;
     } = {},
@@ -3230,6 +3231,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         size: details.size,
         provider: details.provider,
         model: details.model,
+        sampleIndex: details.sampleKey,
         error: details.error,
       });
       return;
@@ -3249,6 +3251,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       durationMs: details.durationMs,
       count,
       size: details.size,
+      sampleIndex: details.sampleKey,
     });
   }
 
@@ -3908,14 +3911,61 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ws: WebSocket,
     data: ChatClientMessage,
   ): Promise<void> {
-    const result = await this.enqueueRunnerUserMessage(data);
+    const startedAt = Date.now();
+    const sendAttemptId = data.clientMessageId || crypto.randomUUID();
+    this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+      operation: "received",
+      status: "started",
+      count: data.clientMessageId ? 1 : 0,
+      sampleKey: sendAttemptId,
+    });
+
+    let result: InitialUserMessageResult;
+    try {
+      result = await this.enqueueRunnerUserMessage(data, {
+        sendAttemptId,
+        startedAt,
+      });
+    } catch (error) {
+      this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
+      console.error("[ChatThreadDO] failed to enqueue browser user message", error);
+      this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+        operation: "enqueue_runner_user_message",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        sampleKey: sendAttemptId,
+        error,
+      });
+      this.sendDirect(ws, {
+        type: "error",
+        error: "Failed to send message to sandbox",
+      });
+      return;
+    }
+
     if (result.status !== "accepted") {
+      this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+        operation: "enqueue_runner_user_message",
+        status: result.status,
+        severity: result.status === "busy" ? "warn" : "error",
+        durationMs: Date.now() - startedAt,
+        sampleKey: sendAttemptId,
+      });
       this.sendDirect(ws, {
         type: "error",
         error: result.error ?? "Failed to send message",
       });
       return;
     }
+
+    this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+      operation: "enqueue_runner_user_message",
+      status: "accepted",
+      durationMs: Date.now() - startedAt,
+      sampleKey: sendAttemptId,
+    });
 
     if (data.clientMessageId) {
       this.sendDirect(ws, {
@@ -3927,8 +3977,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async enqueueRunnerUserMessage(
     data: ChatClientMessage,
+    options: { sendAttemptId?: string; startedAt?: number } = {},
   ): Promise<InitialUserMessageResult> {
-    const startedAt = Date.now();
+    const startedAt = options.startedAt ?? Date.now();
+    const sampleKey = options.sendAttemptId;
     const context = this.chatContext;
     if (!context) {
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
@@ -3936,6 +3988,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         status: "error",
         severity: "warn",
         durationMs: Date.now() - startedAt,
+        sampleKey,
       });
       return { status: "error", error: "Missing chat context for thread" };
     }
@@ -3949,6 +4002,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "warn",
         durationMs: Date.now() - startedAt,
         size: 0,
+        sampleKey,
       });
       return { status: "error", error: "Empty message" };
     }
@@ -3961,6 +4015,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       operation: "org_ban_checked",
       durationMs: Date.now() - banCheckStartedAt,
       size: rawContent.length,
+      sampleKey,
     });
     if (orgBan) {
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
@@ -3969,31 +4024,61 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "warn",
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
+        sampleKey,
       });
       return { status: "error", error: "Organization is blocked" };
     }
 
     const runnerConnectStartedAt = Date.now();
-    await this.ensureRunnerConnected();
-    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-      operation: "ensure_runner_connected",
-      durationMs: Date.now() - runnerConnectStartedAt,
-      size: rawContent.length,
-    });
+    try {
+      await this.ensureRunnerConnected();
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
+        operation: "ensure_runner_connected",
+        durationMs: Date.now() - runnerConnectStartedAt,
+        size: rawContent.length,
+        sampleKey,
+      });
+    } catch (error) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "ensure_runner_connected",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        sampleKey,
+        error,
+      });
+      throw error;
+    }
 
     const messagePrepareStartedAt = Date.now();
-    const safeContent = injectFileSafetyMessage(rawContent);
-    const mentionAugmented =
-      await this.applyConnectionMentionsForTurn(safeContent);
-    const attributedContent = formatAttributedUserMessage(mentionAugmented, {
-      userName: context.userName,
-      userEmail: context.userEmail,
-    });
-    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-      operation: "message_prepared",
-      durationMs: Date.now() - messagePrepareStartedAt,
-      size: rawContent.length,
-    });
+    let attributedContent: string;
+    try {
+      const safeContent = injectFileSafetyMessage(rawContent);
+      const mentionAugmented =
+        await this.applyConnectionMentionsForTurn(safeContent);
+      attributedContent = formatAttributedUserMessage(mentionAugmented, {
+        userName: context.userName,
+        userEmail: context.userEmail,
+      });
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
+        operation: "message_prepared",
+        durationMs: Date.now() - messagePrepareStartedAt,
+        size: rawContent.length,
+        sampleKey,
+      });
+    } catch (error) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "message_prepared",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        sampleKey,
+        error,
+      });
+      throw error;
+    }
     if (!attributedContent) {
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
         operation: "message_prepared",
@@ -4001,30 +4086,54 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "warn",
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
+        sampleKey,
       });
       return { status: "error", error: "Empty message" };
     }
 
-    this.setActiveTurnUserId(context.userId);
-    this.setChatIsStreaming(true);
-    this.publishRunningUserMessageActivity(rawContent);
-    this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
-    this.ctx.waitUntil(
-      this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
-        console.error(
-          '[ChatThreadDO] failed to update thread metadata after browser user message',
-          err,
-        );
-      }),
-    );
+    let sent = false;
+    try {
+      this.setActiveTurnUserId(context.userId);
+      this.setChatIsStreaming(true);
+      this.publishRunningUserMessageActivity(rawContent);
+      this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
+      this.ctx.waitUntil(
+        this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
+          console.error(
+            '[ChatThreadDO] failed to update thread metadata after browser user message',
+            err,
+          );
+          this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+            operation: "update_thread_metadata",
+            status: "exception",
+            severity: "warn",
+            sampleKey,
+            error: err,
+          });
+        }),
+      );
 
-    const sent = this.sendRunnerCommand({
-      ...data,
-      type: "message",
-      content: attributedContent,
-      threadId: context.threadId,
-      userId: context.userId ?? undefined,
-    });
+      sent = this.sendRunnerCommand({
+        ...data,
+        type: "message",
+        content: attributedContent,
+        threadId: context.threadId,
+        userId: context.userId ?? undefined,
+      });
+    } catch (error) {
+      this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "send_runner_command",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        sampleKey,
+        error,
+      });
+      throw error;
+    }
     if (!sent) {
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
@@ -4034,6 +4143,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "error",
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
+        sampleKey,
       });
       return { status: "error", error: "Failed to send message" };
     }
@@ -4043,6 +4153,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       status: "accepted",
       durationMs: Date.now() - startedAt,
       size: rawContent.length,
+      sampleKey,
     });
     this.ctx.waitUntil(
       this.warmWorkspaceContainerForTurn(context).catch((error) => {

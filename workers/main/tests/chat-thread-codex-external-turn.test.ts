@@ -231,6 +231,128 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(sentCommands[0].content).toContain('please also add tests');
   });
 
+  it('records terminal browser message send observability for accepted messages', async () => {
+    const ws = { send: vi.fn() };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.enqueueRunnerUserMessage = vi.fn(async () => ({ status: 'accepted' }));
+    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+
+    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
+      type: 'message',
+      content: 'hello',
+      clientMessageId: 'client-msg-1',
+    });
+
+    expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ clientMessageId: 'client-msg-1' }),
+      expect.objectContaining({
+        sendAttemptId: 'client-msg-1',
+        startedAt: expect.any(Number),
+      }),
+    );
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'runner_user_message_send_attempt',
+      expect.objectContaining({
+        operation: 'received',
+        status: 'started',
+        sampleKey: 'client-msg-1',
+      }),
+    );
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'runner_user_message_send_attempt',
+      expect.objectContaining({
+        operation: 'enqueue_runner_user_message',
+        status: 'accepted',
+        sampleKey: 'client-msg-1',
+      }),
+    );
+    expect(ws.send).toHaveBeenCalledWith({
+      type: 'message_accepted',
+      clientMessageId: 'client-msg-1',
+    });
+  });
+
+  it('records thrown browser message send attempts and notifies the client', async () => {
+    const ws = { send: vi.fn() };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const error = new Error('connection dropped');
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.enqueueRunnerUserMessage = vi.fn(async () => {
+      throw error;
+    });
+    fake.setChatIsStreaming = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
+
+    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
+      type: 'message',
+      content: 'hello',
+      clientMessageId: 'client-msg-2',
+    });
+
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
+    expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'runner_user_message_send_attempt',
+      expect.objectContaining({
+        operation: 'enqueue_runner_user_message',
+        status: 'exception',
+        severity: 'error',
+        sampleKey: 'client-msg-2',
+        error,
+      }),
+    );
+    expect(ws.send).toHaveBeenCalledWith({
+      type: 'error',
+      error: 'Failed to send message to sandbox',
+    });
+  });
+
+  it('records enqueue stage exceptions before rethrowing', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const error = new Error('runner unavailable');
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      userName: 'User One',
+      userEmail: 'user@example.com',
+    };
+    fake.chatIsStreaming = false;
+    fake.env = {
+      APP_KV: { get: vi.fn().mockResolvedValue(null) },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.ensureRunnerConnected = vi.fn(async () => {
+      throw error;
+    });
+
+    await expect(
+      ChatThreadDO.prototype['enqueueRunnerUserMessage'].call(
+        fake,
+        {
+          type: 'message',
+          content: 'hello',
+          clientMessageId: 'client-msg-3',
+        },
+        { sendAttemptId: 'client-msg-3', startedAt: Date.now() },
+      ),
+    ).rejects.toThrow('runner unavailable');
+
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'runner_user_message_enqueue',
+      expect.objectContaining({
+        operation: 'ensure_runner_connected',
+        status: 'exception',
+        severity: 'error',
+        sampleKey: 'client-msg-3',
+        error,
+      }),
+    );
+  });
+
   it('keeps hosted OpenAI models on Responses while routing through OpenRouter AI Gateway', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
