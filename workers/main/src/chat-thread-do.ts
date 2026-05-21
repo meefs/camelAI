@@ -1031,7 +1031,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
     const dockerProxyBaseUrl =
       this.env.SANDBOX_DOCKER_PROXY_BASE_URL?.trim().replace(/\/+$/, "") ||
-      "http://172.17.0.1:8081";
+      "http://host.docker.internal:8081";
     const proxyPath =
       `/v1/workspaces/${encodeURIComponent(orgId)}` +
       `/${encodeURIComponent(workspaceId)}/client/v4`;

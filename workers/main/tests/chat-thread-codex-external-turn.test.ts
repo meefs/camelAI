@@ -904,7 +904,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
   it('builds Wrangler deploy proxy env through the sandbox host', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     fake.env = {
-      SANDBOX_DOCKER_PROXY_BASE_URL: 'http://172.17.0.1:8081/',
       CF_ACCOUNT_ID: 'acct_1',
     };
     fake.ctx = {
@@ -918,7 +917,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     const deployEnv = await CodeModeToolsBinding.prototype['createWranglerDeployEnv'].call(fake);
 
-    expect(deployEnv.CLOUDFLARE_API_BASE_URL).toBe('http://172.17.0.1:8081/v1/workspaces/org1/workspace1/client/v4');
+    expect(deployEnv.CLOUDFLARE_API_BASE_URL).toBe('http://host.docker.internal:8081/v1/workspaces/org1/workspace1/client/v4');
     expect(deployEnv.CLOUDFLARE_ACCOUNT_ID).toBe('acct_1');
     expect(deployEnv.CLOUDFLARE_API_TOKEN).toBe('chiridion-sandbox-proxy');
   });

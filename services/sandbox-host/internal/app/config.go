@@ -35,7 +35,7 @@ type DataProxyServiceConfig struct {
 
 func LoadConfig() Config {
 	controlPort := envInt("PORT", defaultByPlatform(80, 4400))
-	dockerProxyPort := envInt("SANDBOX_DOCKER_PROXY_PORT", defaultByPlatform(8081, 4401))
+	dockerProxyPort := envInt("SANDBOX_DOCKER_PROXY_PORT", 8081)
 	dataProxyPort := envInt("DATA_PROXY_PORT", defaultByPlatform(8090, 8090))
 	idleSecs := maxInt(10, envInt("SANDBOX_HOST_IDLE_TIMEOUT_SECS", 120))
 
