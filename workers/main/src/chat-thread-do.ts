@@ -3957,16 +3957,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return { status: "error", error: "Missing chat context for thread" };
     }
 
-    if (this.chatIsStreaming) {
-      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
-        operation: "validate_streaming_state",
-        status: "busy",
-        severity: "warn",
-        durationMs: Date.now() - startedAt,
-      });
-      return { status: "busy", error: "Thread is already streaming" };
-    }
-
     const rawContent =
       typeof data.content === "string" ? data.content.trim() : "";
     if (!rawContent) {
