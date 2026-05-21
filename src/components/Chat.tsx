@@ -136,6 +136,7 @@ import type { BillingCreditStatus } from "@/lib/chat-credit-status";
 import {
   loadDraft,
   removeDraft,
+  serializeAttachments,
   useDraftPersistence,
   writeDraft,
   type DraftData,
@@ -314,6 +315,42 @@ function isComposerVisiblyEmpty(
   attachments: Attachment[],
 ): boolean {
   return text.trim().length === 0 && attachments.length === 0;
+}
+
+function areDraftAttachmentsEqual(
+  left: Attachment[],
+  right: Attachment[],
+): boolean {
+  const leftSerialized = serializeAttachments(left);
+  const rightSerialized = serializeAttachments(right);
+
+  if (leftSerialized.length !== rightSerialized.length) {
+    return false;
+  }
+
+  return leftSerialized.every((attachment, index) => {
+    const other = rightSerialized[index];
+    return (
+      attachment.id === other.id &&
+      attachment.name === other.name &&
+      attachment.path === other.path &&
+      attachment.size === other.size &&
+      attachment.contentType === other.contentType &&
+      attachment.originalName === other.originalName
+    );
+  });
+}
+
+function isSubmittedDraftStillVisible(
+  currentText: string,
+  currentAttachments: Attachment[],
+  submittedText: string,
+  submittedAttachments: Attachment[],
+): boolean {
+  return (
+    currentText === submittedText &&
+    areDraftAttachmentsEqual(currentAttachments, submittedAttachments)
+  );
 }
 
 function getCompletedAttachments(attachments: Attachment[]): Attachment[] {
@@ -841,6 +878,8 @@ export default function Chat({
   const pendingDeliveryDraftRef = useRef<{
     workspaceId: string;
     threadId: string | null;
+    text: string;
+    attachments: Attachment[];
   } | null>(null);
   const pendingNewThreadSubmissionRef = useRef<{
     text: string;
@@ -848,7 +887,7 @@ export default function Chat({
   } | null>(null);
   const handledNewChatActionErrorRef = useRef<string | null>(null);
   const pendingDraftCountRef = useRef(0);
-  const { saveDraft, flushDraft } = useDraftPersistence(
+  const { saveDraft, flushDraft, clearDraft } = useDraftPersistence(
     resolvedWorkspaceId,
     threadId ?? null,
   );
@@ -1281,6 +1320,8 @@ export default function Chat({
       pendingDeliveryDraftRef.current = {
         workspaceId: resolvedWorkspaceId,
         threadId: draftThreadId,
+        text,
+        attachments: nextAttachments,
       };
       skipNextEmptyDraftSaveRef.current = true;
     },
@@ -1307,7 +1348,18 @@ export default function Chat({
 
     pendingDeliveryDraftRef.current = null;
 
-    if (!isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current)) {
+    const currentInput = inputRef.current;
+    const currentAttachments = attachmentsRef.current;
+    const canClearDraft =
+      isComposerVisiblyEmpty(currentInput, currentAttachments) ||
+      isSubmittedDraftStillVisible(
+        currentInput,
+        currentAttachments,
+        pendingDraft.text,
+        pendingDraft.attachments,
+      );
+
+    if (!canClearDraft) {
       return;
     }
 
@@ -2587,6 +2639,7 @@ export default function Chat({
           if (clientMessageId) {
             sentPendingMessageIdsRef.current.add(clientMessageId);
             clearQueuedSendReadyTimeout();
+            clearPendingDeliveryDraft();
           }
         } else if (data.type === "result") {
           if (id) {
@@ -3711,8 +3764,10 @@ export default function Chat({
       attachments: currentAttachments,
     };
     handledNewChatActionErrorRef.current = null;
+    welcomeInputRef.current = "";
+    attachmentsRef.current = [];
     setWelcomeInput("");
-    removeDraft(resolvedWorkspaceId, null);
+    clearDraft();
     skipNextEmptyDraftSaveRef.current = true;
 
     // Keep blob URLs alive until redirect/unmount so an action error can restore
@@ -3871,6 +3926,7 @@ type SendOptions = {
         currentInput,
         currentAttachments,
       );
+      inputRef.current = "";
       setInput("");
     }
 
@@ -3897,6 +3953,7 @@ type SendOptions = {
 
     if (shouldIncludeAttachmentRefs) {
       // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
+      attachmentsRef.current = [];
       setAttachments((prev) => {
         for (const a of prev) {
           revokeAttachmentPreviewUrl(a.previewUrl);

@@ -30,6 +30,27 @@ function DraftSaver({
   return null;
 }
 
+function DraftSaveThenClear({
+  workspaceId,
+  threadId,
+  text,
+  attachments,
+}: {
+  workspaceId: string;
+  threadId: string | null;
+  text: string;
+  attachments: Attachment[];
+}) {
+  const { saveDraft, clearDraft } = useDraftPersistence(workspaceId, threadId);
+
+  useEffect(() => {
+    saveDraft(text, attachments);
+    clearDraft();
+  }, [attachments, clearDraft, saveDraft, text]);
+
+  return null;
+}
+
 describe('use-draft-persistence', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -147,5 +168,24 @@ describe('use-draft-persistence', () => {
       attachments: [],
       savedAt: expect.any(Number),
     });
+  });
+
+  it('clearDraft cancels a pending debounced save so unmount does not restore it', () => {
+    const { unmount } = render(
+      <DraftSaveThenClear
+        workspaceId="ws-1"
+        threadId={null}
+        text="submitted prompt"
+        attachments={[]}
+      />,
+    );
+
+    expect(loadDraft('ws-1', null)).toBeNull();
+
+    act(() => {
+      unmount();
+    });
+
+    expect(loadDraft('ws-1', null)).toBeNull();
   });
 });

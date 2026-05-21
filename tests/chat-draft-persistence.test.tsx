@@ -417,6 +417,95 @@ describe('Chat draft persistence', () => {
     });
   });
 
+  it('clears a sent thread draft as soon as the server accepts the message', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const input = screen.getByLabelText('Thread prompt');
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.type(input, 'Accepted while agent runs');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(input).toHaveValue('');
+    expect(loadDraft('ws-1', 'thread-1')?.text).toBe('Accepted while agent runs');
+
+    const sentPayload = sentMessagePayloads(socket)[0];
+    expect(sentPayload.clientMessageId).toEqual(expect.any(String));
+
+    act(() => {
+      socket.emitMessage({
+        type: 'message_accepted',
+        clientMessageId: sentPayload.clientMessageId,
+      });
+    });
+
+    await waitFor(() => {
+      expect(loadDraft('ws-1', 'thread-1')).toBeNull();
+    });
+
+    unmount();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    expect(screen.getByLabelText('Thread prompt')).toHaveValue('');
+  });
+
+  it('does not delete a new unsent thread draft when an earlier send is accepted', async () => {
+    const user = userEvent.setup();
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const input = screen.getByLabelText('Thread prompt');
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.type(input, 'First message');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(input).toHaveValue('');
+
+    await user.type(input, 'New unsent draft');
+
+    const sentPayload = sentMessagePayloads(socket)[0];
+    act(() => {
+      socket.emitMessage({
+        type: 'message_accepted',
+        clientMessageId: sentPayload.clientMessageId,
+      });
+    });
+
+    await waitFor(
+      () => {
+        expect(loadDraft('ws-1', 'thread-1')?.text).toBe('New unsent draft');
+      },
+      { timeout: 1500 },
+    );
+  });
+
   it('clears the welcome-screen draft when the route action takes over', async () => {
     const user = userEvent.setup();
 
@@ -439,6 +528,42 @@ describe('Chat draft persistence', () => {
     );
     expect(loadDraft('ws-1', null)).toBeNull();
     expect(sessionStorage.getItem('pendingMessage:newThread')).toBeNull();
+  });
+
+  it('does not flush a submitted welcome prompt back into the new-chat draft on unmount', async () => {
+    const user = userEvent.setup();
+
+    const { unmount } = render(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    await user.type(screen.getByLabelText('Welcome prompt'), 'Start and clear me');
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(mockSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: 'createThreadAndStart',
+        firstMessage: 'Start and clear me',
+      }),
+      { method: 'post', action: '/chat' },
+    );
+    expect(loadDraft('ws-1', null)).toBeNull();
+
+    unmount();
+
+    expect(loadDraft('ws-1', null)).toBeNull();
+
+    render(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    expect(screen.getByLabelText('Welcome prompt')).toHaveValue('');
   });
 
   it('restores the welcome draft when create-thread action returns an error', async () => {
