@@ -1768,7 +1768,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         "index.js": { js: codeModeWorkerModule(code) },
       },
       env: { TOOLS: tools, CONNECTIONS: connections },
-      globalOutbound: null,
     };
     const worker = typeof loader.load === "function"
       ? loader.load(workerCode)
