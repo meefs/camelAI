@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
-import { loadDraft } from '@/hooks/use-draft-persistence';
+import { loadDeliveryDraft, loadDraft } from '@/hooks/use-draft-persistence';
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
@@ -453,6 +453,11 @@ describe('Chat draft persistence', () => {
     await waitFor(() => {
       expect(loadDraft('ws-1', 'thread-1')).toBeNull();
     });
+    expect(loadDeliveryDraft('ws-1', 'thread-1')).toMatchObject({
+      text: 'Accepted while agent runs',
+      clientMessageId: sentPayload.clientMessageId,
+      acceptedAt: expect.any(Number),
+    });
 
     unmount();
 
@@ -465,6 +470,68 @@ describe('Chat draft persistence', () => {
     );
 
     expect(screen.getByLabelText('Thread prompt')).toHaveValue('');
+  });
+
+  it('restores an accepted delivery backup when the turn later fails', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const input = screen.getByLabelText('Thread prompt');
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.type(input, 'Accepted then failed');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    const sentPayload = sentMessagePayloads(socket)[0];
+    act(() => {
+      socket.emitMessage({
+        type: 'message_accepted',
+        clientMessageId: sentPayload.clientMessageId,
+      });
+    });
+
+    await waitFor(() => {
+      expect(loadDraft('ws-1', 'thread-1')).toBeNull();
+    });
+    expect(loadDeliveryDraft('ws-1', 'thread-1')?.text).toBe(
+      'Accepted then failed',
+    );
+
+    unmount();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const remountedInput = screen.getByLabelText('Thread prompt');
+    expect(remountedInput).toHaveValue('');
+
+    const remountedSocket = getLatestMainSocket();
+    act(() => {
+      remountedSocket.emitOpen();
+      remountedSocket.emitMessage({ type: 'ready' });
+      remountedSocket.emitMessage({ type: 'error', error: 'provider failed' });
+    });
+
+    await waitFor(() => {
+      expect(remountedInput).toHaveValue('Accepted then failed');
+    });
+    expect(loadDraft('ws-1', 'thread-1')?.text).toBe('Accepted then failed');
+    expect(loadDeliveryDraft('ws-1', 'thread-1')).toBeNull();
   });
 
   it('does not delete a new unsent thread draft when an earlier send is accepted', async () => {

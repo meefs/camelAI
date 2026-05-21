@@ -3,10 +3,15 @@ import { act, render } from '@testing-library/react';
 import { useEffect } from 'react';
 import type { Attachment } from '@/components/attachment-list';
 import {
+  deliveryDraftKey,
   draftKey,
+  loadDeliveryDraft,
   loadDraft,
+  markDeliveryDraftAccepted,
+  removeDeliveryDraft,
   removeDraft,
   useDraftPersistence,
+  writeDeliveryDraft,
   writeDraft,
 } from '@/hooks/use-draft-persistence';
 
@@ -187,5 +192,26 @@ describe('use-draft-persistence', () => {
     });
 
     expect(loadDraft('ws-1', null)).toBeNull();
+  });
+
+  it('keeps delivery backups separate from normal drafts', () => {
+    writeDeliveryDraft('ws-1', 'thread-1', 'client-1', 'in flight', [], null);
+
+    expect(loadDraft('ws-1', 'thread-1')).toBeNull();
+    expect(loadDeliveryDraft('ws-1', 'thread-1')).toMatchObject({
+      text: 'in flight',
+      clientMessageId: 'client-1',
+      acceptedAt: null,
+    });
+
+    const accepted = markDeliveryDraftAccepted('ws-1', 'thread-1', 'client-1');
+    expect(accepted).toMatchObject({
+      text: 'in flight',
+      clientMessageId: 'client-1',
+      acceptedAt: expect.any(Number),
+    });
+
+    removeDeliveryDraft('ws-1', 'thread-1');
+    expect(localStorage.getItem(deliveryDraftKey('ws-1', 'thread-1'))).toBeNull();
   });
 });

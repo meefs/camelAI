@@ -134,11 +134,16 @@ import {
 } from "@/lib/recent-model";
 import type { BillingCreditStatus } from "@/lib/chat-credit-status";
 import {
+  loadDeliveryDraft,
   loadDraft,
+  markDeliveryDraftAccepted,
+  removeDeliveryDraft,
   removeDraft,
   serializeAttachments,
   useDraftPersistence,
+  writeDeliveryDraft,
   writeDraft,
+  type DeliveryDraftData,
   type DraftData,
 } from "@/hooks/use-draft-persistence";
 import { useBufferedState } from "@/hooks/use-buffered-state";
@@ -351,6 +356,30 @@ function isSubmittedDraftStillVisible(
     currentText === submittedText &&
     areDraftAttachmentsEqual(currentAttachments, submittedAttachments)
   );
+}
+
+interface PendingDeliveryDraft {
+  workspaceId: string;
+  threadId: string | null;
+  clientMessageId: string;
+  text: string;
+  attachments: Attachment[];
+  acceptedAt: number | null;
+}
+
+function pendingDeliveryDraftFromStored(
+  workspaceId: string,
+  threadId: string | null,
+  draft: DeliveryDraftData,
+): PendingDeliveryDraft {
+  return {
+    workspaceId,
+    threadId,
+    clientMessageId: draft.clientMessageId,
+    text: draft.text,
+    attachments: draft.attachments,
+    acceptedAt: draft.acceptedAt,
+  };
 }
 
 function getCompletedAttachments(attachments: Attachment[]): Attachment[] {
@@ -875,12 +904,7 @@ export default function Chat({
   attachmentsRef.current = attachments;
   const prevErrorRef = useRef<ChatApiErrorPresentation | null>(null);
   const skipNextEmptyDraftSaveRef = useRef(false);
-  const pendingDeliveryDraftRef = useRef<{
-    workspaceId: string;
-    threadId: string | null;
-    text: string;
-    attachments: Attachment[];
-  } | null>(null);
+  const pendingDeliveryDraftRef = useRef<PendingDeliveryDraft | null>(null);
   const pendingNewThreadSubmissionRef = useRef<{
     text: string;
     attachments: Attachment[];
@@ -1302,6 +1326,7 @@ export default function Chat({
 
   const preserveDraftBeforeOptimisticClear = useCallback(
     (
+      clientMessageId: string,
       draftThreadId: string | null,
       text: string,
       nextAttachments: Attachment[],
@@ -1320,54 +1345,139 @@ export default function Chat({
       pendingDeliveryDraftRef.current = {
         workspaceId: resolvedWorkspaceId,
         threadId: draftThreadId,
+        clientMessageId,
         text,
         attachments: nextAttachments,
+        acceptedAt: null,
       };
+      writeDeliveryDraft(
+        resolvedWorkspaceId,
+        draftThreadId,
+        clientMessageId,
+        text,
+        nextAttachments,
+      );
       skipNextEmptyDraftSaveRef.current = true;
     },
     [flushDraft, resolvedWorkspaceId, threadId],
   );
 
-  const clearPendingDeliveryDraft = useCallback(() => {
-    const pendingDraft = pendingDeliveryDraftRef.current;
+  const getStoredPendingDeliveryDraft = useCallback(() => {
+    const context = pendingThreadContextRef.current;
+    const workspaceId = context.workspaceId;
+    const deliveryThreadId = context.threadId ?? null;
+    if (!workspaceId) {
+      return null;
+    }
 
+    const storedDraft = loadDeliveryDraft(workspaceId, deliveryThreadId);
+    return storedDraft
+      ? pendingDeliveryDraftFromStored(workspaceId, deliveryThreadId, storedDraft)
+      : null;
+  }, []);
+
+  const syncNormalDraftAfterSubmitted = useCallback(
+    (pendingDraft: PendingDeliveryDraft) => {
+      const currentInput = inputRef.current;
+      const currentAttachments = attachmentsRef.current;
+      const canRemoveNormalDraft =
+        isComposerVisiblyEmpty(currentInput, currentAttachments) ||
+        isSubmittedDraftStillVisible(
+          currentInput,
+          currentAttachments,
+          pendingDraft.text,
+          pendingDraft.attachments,
+        );
+
+      if (canRemoveNormalDraft) {
+        removeDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+        return;
+      }
+
+      writeDraft(
+        pendingDraft.workspaceId,
+        pendingDraft.threadId,
+        currentInput,
+        currentAttachments,
+      );
+    },
+    [],
+  );
+
+  const markPendingDeliveryDraftAccepted = useCallback(
+    (clientMessageId: string) => {
+      const pendingDraft = pendingDeliveryDraftRef.current;
+
+      if (pendingDraft?.clientMessageId === clientMessageId) {
+        const acceptedAt = Date.now();
+        pendingDeliveryDraftRef.current = { ...pendingDraft, acceptedAt };
+        writeDeliveryDraft(
+          pendingDraft.workspaceId,
+          pendingDraft.threadId,
+          clientMessageId,
+          pendingDraft.text,
+          pendingDraft.attachments,
+          acceptedAt,
+        );
+        syncNormalDraftAfterSubmitted(pendingDraft);
+        return;
+      }
+
+      const context = pendingThreadContextRef.current;
+      const workspaceId = context.workspaceId;
+      const deliveryThreadId = context.threadId ?? null;
+      if (!workspaceId) {
+        return;
+      }
+
+      const storedDraft = markDeliveryDraftAccepted(
+        workspaceId,
+        deliveryThreadId,
+        clientMessageId,
+      );
+      if (!storedDraft) {
+        return;
+      }
+
+      syncNormalDraftAfterSubmitted(
+        pendingDeliveryDraftFromStored(
+          workspaceId,
+          deliveryThreadId,
+          storedDraft,
+        ),
+      );
+    },
+    [syncNormalDraftAfterSubmitted],
+  );
+
+  const clearPendingDeliveryDraft = useCallback(() => {
+    const pendingDraft =
+      pendingDeliveryDraftRef.current ?? getStoredPendingDeliveryDraft();
     if (!pendingDraft) {
       return;
     }
 
-    // If multiple sends are in flight (sentDuringStreaming), only clear the
-    // draft backup once the last turn completes — otherwise an earlier result
-    // would delete the backup that a later, still-in-flight turn needs.
-    pendingDraftCountRef.current = Math.max(
-      0,
-      pendingDraftCountRef.current - 1,
-    );
-    if (pendingDraftCountRef.current > 0) {
-      return;
+    if (pendingDeliveryDraftRef.current) {
+      // If multiple sends are in flight (sentDuringStreaming), only clear the
+      // draft backup once the last turn completes — otherwise an earlier result
+      // would delete the backup that a later, still-in-flight turn needs.
+      pendingDraftCountRef.current = Math.max(
+        0,
+        pendingDraftCountRef.current - 1,
+      );
+      if (pendingDraftCountRef.current > 0) {
+        return;
+      }
     }
 
     pendingDeliveryDraftRef.current = null;
-
-    const currentInput = inputRef.current;
-    const currentAttachments = attachmentsRef.current;
-    const canClearDraft =
-      isComposerVisiblyEmpty(currentInput, currentAttachments) ||
-      isSubmittedDraftStillVisible(
-        currentInput,
-        currentAttachments,
-        pendingDraft.text,
-        pendingDraft.attachments,
-      );
-
-    if (!canClearDraft) {
-      return;
-    }
-
-    removeDraft(pendingDraft.workspaceId, pendingDraft.threadId);
-  }, []);
+    syncNormalDraftAfterSubmitted(pendingDraft);
+    removeDeliveryDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+  }, [getStoredPendingDeliveryDraft, syncNormalDraftAfterSubmitted]);
 
   const restorePendingDeliveryDraft = useCallback(() => {
-    const pendingDraft = pendingDeliveryDraftRef.current;
+    const pendingDraft =
+      pendingDeliveryDraftRef.current ?? getStoredPendingDeliveryDraft();
     pendingDeliveryDraftRef.current = null;
     pendingDraftCountRef.current = 0;
 
@@ -1375,21 +1485,31 @@ export default function Chat({
       return;
     }
 
-    if (!isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current)) {
+    if (
+      !isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current) &&
+      !isSubmittedDraftStillVisible(
+        inputRef.current,
+        attachmentsRef.current,
+        pendingDraft.text,
+        pendingDraft.attachments,
+      )
+    ) {
+      removeDeliveryDraft(pendingDraft.workspaceId, pendingDraft.threadId);
       return;
     }
 
-    const savedDraft = loadDraft(
+    inputRef.current = pendingDraft.text;
+    attachmentsRef.current = pendingDraft.attachments;
+    setInput(pendingDraft.text);
+    setAttachments(pendingDraft.attachments);
+    writeDraft(
       pendingDraft.workspaceId,
       pendingDraft.threadId,
+      pendingDraft.text,
+      pendingDraft.attachments,
     );
-    if (!savedDraft) {
-      return;
-    }
-
-    setInput(savedDraft.text);
-    setAttachments(savedDraft.attachments);
-  }, []);
+    removeDeliveryDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+  }, [getStoredPendingDeliveryDraft]);
 
   const normalizeChatError = useCallback(
     (
@@ -2639,13 +2759,14 @@ export default function Chat({
           if (clientMessageId) {
             sentPendingMessageIdsRef.current.add(clientMessageId);
             clearQueuedSendReadyTimeout();
-            clearPendingDeliveryDraft();
+            markPendingDeliveryDraftAccepted(clientMessageId);
           }
         } else if (data.type === "result") {
           if (id) {
             flushDeferredMessagesRender();
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
+            clearPendingDeliveryDraft();
           }
         } else if (data.type === "error") {
           flushDeferredMessagesRender();
@@ -2771,6 +2892,7 @@ export default function Chat({
       failPendingMessageDelivery,
       isNewThread,
       logRunnerClient,
+      markPendingDeliveryDraftAccepted,
       persistSessionState,
       resolvedWorkspaceId,
       restorePendingDeliveryDraft,
@@ -3919,9 +4041,13 @@ type SendOptions = {
     }
 
     const wasSentDuringStreaming = assistantTurnActive;
+    const clientMessageId = `client_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
 
     if (!opts?.preserveDraft && !opts?.contentOverride) {
       preserveDraftBeforeOptimisticClear(
+        clientMessageId,
         threadId,
         currentInput,
         currentAttachments,
@@ -3943,9 +4069,6 @@ type SendOptions = {
     }
 
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
-    const clientMessageId = `client_${Date.now()}_${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
 
     if (shouldShowCompactingIndicator) {
       queueManualCompaction();
