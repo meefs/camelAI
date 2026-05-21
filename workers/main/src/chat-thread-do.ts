@@ -3153,6 +3153,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private getPiAssistantErrorMessage(message: AgentMessage): string {
     const record = message as unknown as Record<string, unknown>;
     if (record.role !== "assistant") return "";
+    if (record.stopReason === "aborted") return "";
     if (typeof record.errorMessage === "string" && record.errorMessage.trim()) {
       return record.errorMessage.trim();
     }
@@ -3165,38 +3166,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (errorMessage) return errorMessage;
     }
     return "";
-  }
-
-  private getLatestPiAssistantMessageRecord(
-    messages: AgentMessage[],
-  ): Record<string, unknown> | null {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const record = messages[i] as unknown as Record<string, unknown>;
-      if (record.role === "assistant") return record;
-    }
-    return null;
-  }
-
-  private isPiUserAbortedTurn(messages: AgentMessage[]): boolean {
-    const record = this.getLatestPiAssistantMessageRecord(messages);
-    return record?.stopReason === "aborted";
-  }
-
-  private isPiAbortError(error: unknown): boolean {
-    if (error instanceof Error) {
-      if (error.name === "AbortError") return true;
-      const message = error.message.trim().toLowerCase();
-      if (!message) return false;
-      return (
-        message.includes("request was aborted") ||
-        message.includes("aborted by user") ||
-        message === "aborted"
-      );
-    }
-    if (typeof error === "string") {
-      return this.isPiAbortError(new Error(error));
-    }
-    return false;
   }
 
   private piAgentLoopErrorDetails(error: unknown): {
@@ -3865,22 +3834,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     if (data.type === "message") {
       await this.handleRunnerClientUserMessage(ws, data as unknown as ChatClientMessage);
-      return;
-    }
-
-    if (data.type === "stop") {
-      await this.ensureRunnerConnected();
-      this.sendRunnerCommand({
-        ...data,
-        type: "stop",
-        threadId: this.chatContext?.threadId,
-      });
-      return;
-    }
-
-    if (data.type === "set_model") {
-      await this.ensureRunnerConnected();
-      this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId });
       return;
     }
 
@@ -6878,11 +6831,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const completedAt = Date.now();
       const threadId = this.chatContext?.threadId || "";
       const finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
-      const abortedByUser = this.isPiUserAbortedTurn(newMessages);
-      const errorMessage =
-        finalText || abortedByUser
-          ? ""
-          : this.getLatestPiAssistantErrorMessage(newMessages);
+      const errorMessage = finalText
+        ? ""
+        : this.getLatestPiAssistantErrorMessage(newMessages);
       const summarySource = extractThreadCompletionSummarySource(
         newMessages,
         finalText || errorMessage,
@@ -7018,7 +6969,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 await this.piSession.prompt(userMessage);
               }
             })().catch((error) => {
-                if (this.isPiAbortError(error)) {
+                if (
+                  error instanceof Error &&
+                  (error.name === "AbortError" || /aborted/i.test(error.message))
+                ) {
                   return;
                 }
                 console.error("[ChatThreadDO] Pi prompt failed", error);
