@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
@@ -470,6 +470,58 @@ describe('Chat draft persistence', () => {
     );
 
     expect(screen.getByLabelText('Thread prompt')).toHaveValue('');
+  });
+
+  it('restores the draft and idles thread status when a sent message is never accepted', async () => {
+    vi.useFakeTimers();
+    const statusEvents: Array<{ status?: string; threadId?: string }> = [];
+    const handleStatus = (event: Event) => {
+      statusEvents.push(
+        (event as CustomEvent<{ status?: string; threadId?: string }>).detail,
+      );
+    };
+    window.addEventListener('camelai:thread-status', handleStatus);
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const input = screen.getByLabelText('Thread prompt');
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    fireEvent.change(input, { target: { value: 'Lost before ack' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(input).toHaveValue('');
+    expect(screen.getByText('user:Lost before ack')).toBeInTheDocument();
+    expect(sentMessagePayloads(socket)[0]?.clientMessageId).toEqual(
+      expect.any(String),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(input).toHaveValue('Lost before ack');
+    expect(screen.queryByText('user:Lost before ack')).toBeNull();
+    expect(loadDraft('ws-1', 'thread-1')?.text).toBe('Lost before ack');
+    expect(loadDeliveryDraft('ws-1', 'thread-1')).toBeNull();
+    expect(statusEvents).toContainEqual(
+      expect.objectContaining({ threadId: 'thread-1', status: 'running' }),
+    );
+    expect(statusEvents.at(-1)).toEqual(
+      expect.objectContaining({ threadId: 'thread-1', status: 'idle' }),
+    );
+
+    window.removeEventListener('camelai:thread-status', handleStatus);
   });
 
   it('restores an accepted delivery backup when the turn later fails', async () => {
