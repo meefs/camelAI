@@ -844,6 +844,15 @@ const result = await env.AI.run("auto", {
 return result;
 ```
 
+Generate images the same way as in deployed workers:
+
+```javascript
+const { text, imageDataUrl } = await env.AI.generateImage(
+  "Flat vector robot mascot on a solid bright green background",
+);
+return { text, imageDataUrl };
+```
+
 ## Virtual AI Binding
 
 User workers can use a Cloudflare-style AI binding. Add this to `wrangler.jsonc`:
@@ -877,9 +886,9 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 |-------|---------|-------------|
 | `auto` | Text generation + tool calling | Default for all general-purpose AI features |
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
-| `auto_image` | Image generation from text prompts | App needs to create images: avatars, illustrations, thumbnails |
+| `auto_image` | Image generation (low-level route) | Prefer `env.AI.generateImage()` instead of `run(\"auto_image\")` |
 
-Default to `auto` unless the use case clearly requires search or image generation. Apps can use multiple routes for different features.
+Default to `auto` unless the use case clearly requires search or image generation. For images, call `env.AI.generateImage(prompt)` in deployed workers or `js_exec` — it returns parsed `{ text, imageDataUrl, images }`.
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
+  buildGenerateImageMessages,
   extractModelFromInput,
   isOpenRouterModel,
+  parseGenerateImageResponse,
   resolveGatewaySettings,
   resolveModel,
   resolveVirtualModel,
@@ -405,5 +407,87 @@ describe("runViaGatewayHTTP", () => {
 
     expect(combined).toContain('data: {"id":"evt_1"}');
     expect(combined).toContain("data: [DONE]");
+  });
+});
+
+describe("buildGenerateImageMessages", () => {
+  it("builds a text-only user message from a prompt string", () => {
+    expect(buildGenerateImageMessages("A watercolor mountain")).toEqual([
+      { role: "user", content: "A watercolor mountain" },
+    ]);
+  });
+
+  it("builds multimodal content when a reference image is provided", () => {
+    expect(
+      buildGenerateImageMessages({
+        prompt: "Same style, new subject",
+        referenceImageUrl: "data:image/png;base64,abc",
+      }),
+    ).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,abc" },
+          },
+          { type: "text", text: "Same style, new subject" },
+        ],
+      },
+    ]);
+  });
+
+  it("throws when the prompt is empty", () => {
+    expect(() => buildGenerateImageMessages("   ")).toThrow(
+      "generateImage requires a non-empty prompt",
+    );
+  });
+});
+
+describe("parseGenerateImageResponse", () => {
+  it("extracts text and image data URLs from gateway payloads", () => {
+    const result = parseGenerateImageResponse({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "Here is your image.",
+            images: [
+              {
+                type: "image_url",
+                image_url: { url: "data:image/png;base64,AAA" },
+                index: 1,
+              },
+              {
+                type: "image_url",
+                image_url: { url: "data:image/png;base64,BBB" },
+                index: 0,
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      text: "Here is your image.",
+      imageDataUrl: "data:image/png;base64,BBB",
+      images: [
+        { dataUrl: "data:image/png;base64,BBB", index: 0 },
+        { dataUrl: "data:image/png;base64,AAA", index: 1 },
+      ],
+    });
+  });
+
+  it("returns empty image fields when the model returns text only", () => {
+    expect(
+      parseGenerateImageResponse({
+        choices: [{ message: { role: "assistant", content: "No image." } }],
+      }),
+    ).toEqual({
+      text: "No image.",
+      imageDataUrl: null,
+      images: [],
+    });
   });
 });
