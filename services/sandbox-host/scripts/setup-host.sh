@@ -246,6 +246,7 @@ ExecStart=${host_binary_path}
 Restart=always
 RestartSec=5
 Environment=PORT=80
+Environment=SANDBOX_DOCKER_PROXY_PORT=8081
 Environment=WORKSPACES_ROOT=${SANDBOXES_DIR}
 Environment=SANDBOX_HOST_USAGE_DB_DIR=${SANDBOXES_DIR}/.sandbox-host/usage
 Environment=SANDBOX_IMAGE=${SANDBOX_IMAGE}

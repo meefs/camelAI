@@ -50,7 +50,6 @@ import {
 } from "../../../src/lib/llm-provider-config";
 import { isOrgBanned } from "./ban-list";
 import type { WorkspaceThreadStreamingOptions } from "./thread-status";
-import { createSignedToken } from "./signed-tokens";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
 import {
   findConnectionMethodEntry,
@@ -221,6 +220,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   R2_MOUNT_DIR?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
+  SANDBOX_DOCKER_PROXY_BASE_URL?: string;
   CODE_MODE_LOADER?: WorkerLoader;
   OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
@@ -1024,32 +1024,21 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async createWranglerDeployEnv(): Promise<Record<string, string>> {
-    const workerBaseUrl = this.env.WORKER_BASE_URL?.trim().replace(/\/+$/, "");
-    const tokenSecret = this.env.TOKEN_SIGNING_SECRET?.trim();
-    const { orgId, workspaceId, userId, threadId } = this.ctx.props;
-    if (!workerBaseUrl || !tokenSecret || !orgId || !workspaceId) {
+    const { orgId, workspaceId } = this.ctx.props;
+    if (!orgId || !workspaceId) {
       return {};
     }
 
-    const orgSlug = await this.getOrgSlug();
-    if (!orgSlug) {
-      return {};
-    }
-
-    const token = await createSignedToken(tokenSecret, {
-      org_id: orgId,
-      org_slug: orgSlug,
-      user_id: userId,
-      scopes: ["deploy"],
-      exp: Date.now() + 12 * 60 * 60 * 1000,
-      workspace_id: workspaceId,
-      thread_id: threadId,
-      name: `workspace-${workspaceId}-wrangler-deploy`,
-    });
+    const dockerProxyBaseUrl =
+      this.env.SANDBOX_DOCKER_PROXY_BASE_URL?.trim().replace(/\/+$/, "") ||
+      "http://172.17.0.1:8081";
+    const proxyPath =
+      `/v1/workspaces/${encodeURIComponent(orgId)}` +
+      `/${encodeURIComponent(workspaceId)}/client/v4`;
 
     return {
-      CLOUDFLARE_API_BASE_URL: `${workerBaseUrl}/client/v4`,
-      CLOUDFLARE_API_TOKEN: token,
+      CLOUDFLARE_API_BASE_URL: `${dockerProxyBaseUrl}${proxyPath}`,
+      CLOUDFLARE_API_TOKEN: "chiridion-sandbox-proxy",
       CLOUDFLARE_ACCOUNT_ID: this.env.CF_ACCOUNT_ID?.trim() || "chiridion",
     };
   }

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/chat-thread-do';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
-import { validateSignedToken } from '../src/signed-tokens';
 
 describe('ChatThreadDO Codex external turn completion', () => {
   function createPiEventFake() {
@@ -902,11 +901,10 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
   });
 
-  it('builds Wrangler deploy proxy env from DO scope', async () => {
+  it('builds Wrangler deploy proxy env through the sandbox host', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     fake.env = {
-      WORKER_BASE_URL: 'https://staging.camelai.dev/',
-      TOKEN_SIGNING_SECRET: 'secret-1',
+      SANDBOX_DOCKER_PROXY_BASE_URL: 'http://172.17.0.1:8081/',
       CF_ACCOUNT_ID: 'acct_1',
     };
     fake.ctx = {
@@ -917,21 +915,12 @@ describe('ChatThreadDO Codex external turn completion', () => {
         userId: 'user1',
       },
     };
-    fake.getOrgSlug = vi.fn(async () => 'acme');
 
     const deployEnv = await CodeModeToolsBinding.prototype['createWranglerDeployEnv'].call(fake);
 
-    expect(deployEnv.CLOUDFLARE_API_BASE_URL).toBe('https://staging.camelai.dev/client/v4');
+    expect(deployEnv.CLOUDFLARE_API_BASE_URL).toBe('http://172.17.0.1:8081/v1/workspaces/org1/workspace1/client/v4');
     expect(deployEnv.CLOUDFLARE_ACCOUNT_ID).toBe('acct_1');
-    const payload = await validateSignedToken('secret-1', deployEnv.CLOUDFLARE_API_TOKEN);
-    expect(payload).toMatchObject({
-      org_id: 'org1',
-      org_slug: 'acme',
-      user_id: 'user1',
-      workspace_id: 'workspace1',
-      thread_id: 'thread1',
-      scopes: ['deploy'],
-    });
+    expect(deployEnv.CLOUDFLARE_API_TOKEN).toBe('chiridion-sandbox-proxy');
   });
 
   it('merges base container command env with Wrangler deploy env', async () => {

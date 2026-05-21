@@ -9,15 +9,19 @@ import (
 )
 
 type Config struct {
-	Port                 int
-	ListenAddr           string
-	HostPiSessionRoot    string
-	UsageDBRoot          string
-	DataProxyUpstreamURL string
-	IdleTimeout          time.Duration
-	ReadHeaderTimeout    time.Duration
-	WriteTimeout         time.Duration
-	TraceSandboxHost     bool
+	Port                  int
+	ListenAddr            string
+	DockerProxyPort       int
+	DockerProxyListenAddr string
+	HostPiSessionRoot     string
+	UsageDBRoot           string
+	DataProxyUpstreamURL  string
+	WorkerBaseURL         string
+	SandboxProxySecret    string
+	IdleTimeout           time.Duration
+	ReadHeaderTimeout     time.Duration
+	WriteTimeout          time.Duration
+	TraceSandboxHost      bool
 }
 
 type DataProxyServiceConfig struct {
@@ -31,19 +35,24 @@ type DataProxyServiceConfig struct {
 
 func LoadConfig() Config {
 	controlPort := envInt("PORT", defaultByPlatform(80, 4400))
+	dockerProxyPort := envInt("SANDBOX_DOCKER_PROXY_PORT", defaultByPlatform(8081, 4401))
 	dataProxyPort := envInt("DATA_PROXY_PORT", defaultByPlatform(8090, 8090))
 	idleSecs := maxInt(10, envInt("SANDBOX_HOST_IDLE_TIMEOUT_SECS", 120))
 
 	return Config{
-		Port:                 controlPort,
-		ListenAddr:           ":" + strconv.Itoa(controlPort),
-		HostPiSessionRoot:    envString("HOST_PI_SESSION_ROOT", defaultHostPiSessionRoot()),
-		UsageDBRoot:          envString("SANDBOX_HOST_USAGE_DB_DIR", defaultUsageDBRoot()),
-		DataProxyUpstreamURL: envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
-		IdleTimeout:          time.Duration(idleSecs) * time.Second,
-		ReadHeaderTimeout:    15 * time.Second,
-		WriteTimeout:         0,
-		TraceSandboxHost:     envString("TRACE_SANDBOX_HOST", "") == "1",
+		Port:                  controlPort,
+		ListenAddr:            ":" + strconv.Itoa(controlPort),
+		DockerProxyPort:       dockerProxyPort,
+		DockerProxyListenAddr: ":" + strconv.Itoa(dockerProxyPort),
+		HostPiSessionRoot:     envString("HOST_PI_SESSION_ROOT", defaultHostPiSessionRoot()),
+		UsageDBRoot:           envString("SANDBOX_HOST_USAGE_DB_DIR", defaultUsageDBRoot()),
+		DataProxyUpstreamURL:  envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
+		WorkerBaseURL:         envString("WORKER_BASE_URL", ""),
+		SandboxProxySecret:    envString("SANDBOX_PROXY_SECRET", ""),
+		IdleTimeout:           time.Duration(idleSecs) * time.Second,
+		ReadHeaderTimeout:     15 * time.Second,
+		WriteTimeout:          0,
+		TraceSandboxHost:      envString("TRACE_SANDBOX_HOST", "") == "1",
 	}
 }
 

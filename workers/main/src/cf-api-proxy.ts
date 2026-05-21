@@ -402,6 +402,15 @@ function isUploadRequest(pathname: string, method: string): boolean {
   );
 }
 
+function stripInternalProxyHeaders(headers: Headers): void {
+  headers.delete("x-sandbox-secret");
+  headers.delete("x-chiridion-org-id");
+  headers.delete("x-chiridion-workspace-id");
+  headers.delete("x-chiridion-user-id");
+  headers.delete("x-chiridion-thread-id");
+  headers.delete(CHIRIDION_DEPLOY_TOKEN_HEADER);
+}
+
 // Patterns for requests that may contain bindings in JSON body
 const DISPATCH_SCRIPT_SETTINGS =
   /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
@@ -1140,6 +1149,7 @@ export async function proxyCloudflareApi(
     // Keep the original Authorization header (Cloudflare JWT)
     headers.delete("cookie");
     headers.delete("host");
+    stripInternalProxyHeaders(headers);
 
     const resp = await fetch(upstreamUrl, {
       method: "POST",
@@ -1453,6 +1463,7 @@ export async function proxyCloudflareApi(
   headers.set("Authorization", `Bearer ${upstreamApiToken}`);
   headers.delete("cookie");
   headers.delete("host");
+  stripInternalProxyHeaders(headers);
 
   const method = request.method.toUpperCase();
   let body: ArrayBuffer | undefined =

@@ -5,6 +5,7 @@ The sandbox host runs on the Azure VM and manages:
 - Docker + gVisor sandbox lifecycle
 - Per-sandbox host directories under `WORKSPACES_ROOT`
 - Control-plane proxying (`/health`, `/chat`)
+- Wrangler deploy proxying (`/v1/workspaces/{orgId}/{workspaceId}/client/v4/*`)
 - Data proxy forwarding (`/v1/workspaces/{orgId}/{workspaceId}/data-proxy/*`)
 
 Requires Go 1.24+.
@@ -12,6 +13,7 @@ Requires Go 1.24+.
 Runtime ports:
 
 - `PORT` (default `80` on Linux, `4400` on non-Linux): control/API listener used by Workers VPC binding
+- `SANDBOX_DOCKER_PROXY_PORT` (default `8081` on Linux, `4401` on non-Linux): docker-facing Wrangler deploy proxy listener
 - `DATA_PROXY_PORT` (default `8090`): localhost SQL data-proxy sidecar (not exposed publicly)
 
 Data proxy:
@@ -19,6 +21,12 @@ Data proxy:
 - Data proxy queries are handled by a dedicated Go sidecar process (`chiridion-data-proxy`) with tighter systemd resource limits.
 - sandbox-host forwards `/v1/workspaces/{orgId}/{workspaceId}/data-proxy/*` to the sidecar over localhost (`DATA_PROXY_UPSTREAM_URL`, default `http://127.0.0.1:8090`).
 - Query responses are JSON. The sidecar serializes row results incrementally to avoid materializing full recordsets in process memory.
+
+Wrangler deploy proxy:
+
+- Containers use `CLOUDFLARE_API_BASE_URL=http://172.17.0.1:8081/v1/workspaces/{orgId}/{workspaceId}/client/v4`.
+- sandbox-host forwards those requests to the main Worker (`WORKER_BASE_URL`) and adds `SANDBOX_PROXY_SECRET` plus org/workspace identity headers.
+- This avoids per-command signed deploy tokens in the sandbox; the main Worker still handles Cloudflare API allowlisting, binding validation, and deploy side effects.
 
 VM firewall rules block `docker0` traffic to `PORT`.
 
