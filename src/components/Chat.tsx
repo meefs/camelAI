@@ -83,7 +83,10 @@ import {
   arePreviewSessionsExactlyEqual,
   arePreviewSessionsSemanticallyEqual,
 } from "@/components/chat-preview/preview-session-compare";
-import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
+import {
+  getPreviewTabId,
+  shouldAutoRefreshFilePreview,
+} from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSlugMap } from "@/lib/connection-mentions";
 import { isFileDrag } from "@/lib/file-drag";
@@ -984,6 +987,10 @@ export default function Chat({
   const [tabFileViewModes, setTabFileViewModes] = useState<
     Record<string, "preview" | "source">
   >({});
+  const tabFileViewModesRef = useRef<Record<string, "preview" | "source">>(
+    tabFileViewModes,
+  );
+  tabFileViewModesRef.current = tabFileViewModes;
   const [tabNotebookStates, setTabNotebookStates] = useState<
     Record<string, NotebookPreviewLoadState>
   >({});
@@ -1978,7 +1985,11 @@ export default function Chat({
           nextSession.target.kind === "file" &&
           shouldRefreshActiveTab
         ) {
-          bumpFilePreviewKey(nextActiveId);
+          const fileViewMode =
+            tabFileViewModesRef.current[nextActiveId] ?? "preview";
+          if (shouldAutoRefreshFilePreview(nextSession.target, fileViewMode)) {
+            bumpFilePreviewKey(nextActiveId);
+          }
         }
 
         return;

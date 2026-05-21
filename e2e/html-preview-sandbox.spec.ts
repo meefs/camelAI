@@ -7,6 +7,8 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 declare global {
   interface Window {
     previewMessages?: Record<'active' | 'inactive', number>;
+    previewBoots?: Record<'active' | 'inactive', number>;
+    previewTicks?: Record<'active' | 'inactive', number>;
   }
 }
 
@@ -72,4 +74,45 @@ test('real HTML preview iframes run only while their tab is active', async ({ pa
   expect(await page.evaluate(() => window.previewMessages?.active ?? 0)).toBe(
     activeMessagesAfterUnmount,
   );
+});
+
+test('active HTML preview survives automatic refresh churn until manual refresh', async ({ page }) => {
+  await page.goto(`${baseURL}/e2e/fixtures/html-preview-harness.html`);
+
+  const activeFrame = page.locator('iframe[title="active.html"]');
+  await expect(activeFrame).toHaveCount(1);
+  await expect(activeFrame).toHaveAttribute(
+    'src',
+    /html-preview-active\.html\?v=0$/,
+  );
+
+  await expect
+    .poll(() => page.evaluate(() => window.previewBoots?.active ?? 0))
+    .toBe(1);
+
+  const tickBeforeChurn = await page.evaluate(
+    () => window.previewTicks?.active ?? 0,
+  );
+  for (let i = 0; i < 3; i += 1) {
+    await page.getByRole('button', { name: 'Simulate auto refresh' }).click();
+  }
+
+  await expect(activeFrame).toHaveAttribute(
+    'src',
+    /html-preview-active\.html\?v=0$/,
+  );
+  expect(await page.evaluate(() => window.previewBoots?.active ?? 0)).toBe(1);
+  await expect
+    .poll(() => page.evaluate(() => window.previewTicks?.active ?? 0))
+    .toBeGreaterThan(tickBeforeChurn);
+
+  await page.getByRole('button', { name: 'Manual refresh' }).click();
+
+  await expect(activeFrame).toHaveAttribute(
+    'src',
+    /html-preview-active\.html\?v=1$/,
+  );
+  await expect
+    .poll(() => page.evaluate(() => window.previewBoots?.active ?? 0))
+    .toBe(2);
 });
