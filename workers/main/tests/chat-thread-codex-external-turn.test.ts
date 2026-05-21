@@ -169,6 +169,68 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(sentCommands[0].content).toContain('hello');
   });
 
+  it('accepts follow-up user messages while the thread is already streaming', async () => {
+    const sentCommands: any[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      userName: 'Miguel',
+      userEmail: 'miguel@example.com',
+    };
+    fake.chatIsStreaming = true;
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: vi.fn() } },
+      waitUntil: vi.fn(),
+    };
+    fake.env = {
+      APP_KV: { get: vi.fn().mockResolvedValue(null) },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadStreaming: vi.fn(async () => {}) })),
+      },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.setActiveTurnUserId = vi.fn();
+    fake.setChatIsStreaming = vi.fn((value: boolean) => {
+      fake.chatIsStreaming = value;
+    });
+    fake.publishRunningUserMessageActivity = vi.fn();
+    fake.broadcastRunnerClients = vi.fn();
+    fake.ensureRunnerConnected = vi.fn(async () => undefined);
+    fake.applyConnectionMentionsForTurn = vi.fn(async (content: string) => content);
+    fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
+    fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
+    fake.sendRunnerCommand = vi.fn((command: any) => {
+      sentCommands.push(command);
+      return true;
+    });
+
+    const result = await ChatThreadDO.prototype['enqueueRunnerUserMessage'].call(fake, {
+      type: 'message',
+      content: 'please also add tests',
+      clientMessageId: 'client_followup_1',
+    });
+
+    expect(result).toEqual({ status: 'accepted' });
+    expect(fake.ensureRunnerConnected).toHaveBeenCalledTimes(1);
+    expect(fake.setChatIsStreaming).toHaveBeenCalledWith(true);
+    expect(fake.publishRunningUserMessageActivity).toHaveBeenCalledWith(
+      'please also add tests',
+    );
+    expect(sentCommands).toHaveLength(1);
+    expect(sentCommands[0]).toMatchObject({
+      type: 'message',
+      threadId: 'thread1',
+      userId: 'user1',
+      clientMessageId: 'client_followup_1',
+    });
+    expect(sentCommands[0].content).toContain('please also add tests');
+  });
+
   it('keeps hosted OpenAI models on Responses while routing through OpenRouter AI Gateway', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
