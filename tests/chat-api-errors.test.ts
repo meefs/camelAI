@@ -86,12 +86,12 @@ describe('chat API error classification', () => {
 
   it('preserves non-rate-limit generic errors', () => {
     const presentation = getChatApiErrorPresentation(
-      'Error: Sandbox is not connected',
+      'Error: Failed to send message',
     );
 
     expect(presentation).toEqual({
       kind: 'generic',
-      message: 'Sandbox is not connected',
+      message: 'Failed to send message',
     });
   });
 

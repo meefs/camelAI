@@ -273,13 +273,13 @@ describe('contentToString', () => {
           {
             type: 'error',
             title: 'Assistant error',
-            error: 'Sandbox is not connected',
+            error: 'Failed to send message',
           },
         ] satisfies ContentBlock[],
       }),
     );
 
     expect(screen.getByText('Assistant error')).toBeInTheDocument();
-    expect(screen.getByText('Sandbox is not connected')).toBeInTheDocument();
+    expect(screen.getByText('Failed to send message')).toBeInTheDocument();
   });
 });

@@ -3153,6 +3153,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private getPiAssistantErrorMessage(message: AgentMessage): string {
     const record = message as unknown as Record<string, unknown>;
     if (record.role !== "assistant") return "";
+    if (record.stopReason === "aborted") return "";
     if (typeof record.errorMessage === "string" && record.errorMessage.trim()) {
       return record.errorMessage.trim();
     }
@@ -3836,22 +3837,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    if (data.type === "stop") {
-      await this.ensureRunnerConnected();
-      if (!this.sendRunnerCommand({ ...data, type: "stop", threadId: this.chatContext?.threadId })) {
-        this.sendDirect(ws, { type: "error", error: "Sandbox is not connected" });
-      }
-      return;
-    }
-
-    if (data.type === "set_model") {
-      await this.ensureRunnerConnected();
-      if (!this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId })) {
-        this.sendDirect(ws, { type: "error", error: "Sandbox is not connected" });
-      }
-      return;
-    }
-
     if (data.type === "question_response") {
       await this.handleQuestionResponse(
         ws,
@@ -3861,9 +3846,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     await this.ensureRunnerConnected();
-    if (!this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId })) {
-      this.sendDirect(ws, { type: "error", error: "Sandbox is not connected" });
-    }
+    this.sendRunnerCommand({ ...data, threadId: this.chatContext?.threadId });
   }
 
   private async handleRunnerClientInit(
@@ -3929,7 +3912,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (result.status !== "accepted") {
       this.sendDirect(ws, {
         type: "error",
-        error: result.error ?? "Failed to send message to sandbox",
+        error: result.error ?? "Failed to send message",
       });
       return;
     }
@@ -4052,7 +4035,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
       });
-      return { status: "error", error: "Failed to send message to sandbox" };
+      return { status: "error", error: "Failed to send message" };
     }
 
     this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
@@ -4114,16 +4097,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.markRunnerActivity("question_response");
     const answeringUserId =
       this.getSocketChatContext(ws)?.userId ?? this.chatContext?.userId ?? null;
-    if (
-      !this.sendRunnerCommand({
-        type: "question_response",
-        questionId: data.questionId,
-        answers: data.answers,
-        userId: answeringUserId ?? undefined,
-      })
-    ) {
-      this.emitChatError("Sandbox is not connected");
-    }
+    this.sendRunnerCommand({
+      type: "question_response",
+      questionId: data.questionId,
+      answers: data.answers,
+      userId: answeringUserId ?? undefined,
+    });
   }
 
   private async handleSetPreviewTarget(
@@ -4833,9 +4812,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ) {
       this.resolvePendingExternalTurn({
         status: "error",
-        error: "Failed to send message to sandbox",
+        error: "Failed to send message",
       });
-      return { status: "error", error: "Failed to send message to sandbox" };
+      return { status: "error", error: "Failed to send message" };
     }
 
     this.setChatIsStreaming(true);
@@ -6990,6 +6969,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 await this.piSession.prompt(userMessage);
               }
             })().catch((error) => {
+                if (
+                  error instanceof Error &&
+                  (error.name === "AbortError" || /aborted/i.test(error.message))
+                ) {
+                  return;
+                }
                 console.error("[ChatThreadDO] Pi prompt failed", error);
                 this.persistPiAgentLoopErrorForDevelopers(error, {
                   source: "pi_prompt",
