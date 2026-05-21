@@ -72,6 +72,10 @@ func (s *Server) Handler() http.Handler {
 	return s
 }
 
+func (s *Server) DockerProxyHandler() http.Handler {
+	return http.HandlerFunc(s.serveDockerProxy)
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	sourceIP := requestSourceIP(req)
 	s.trace("request_start", map[string]any{
@@ -103,7 +107,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if s.rejectControlRouteFromSandboxCaller(w, req, route, sourceIP) {
+	if isCloudflareAPIProxyRoute(route.Subpath) {
+		if s.rejectCloudflareAPIProxyCaller(w, req, route, sourceIP) {
+			return
+		}
+	} else if s.rejectControlRouteFromSandboxCaller(w, req, route, sourceIP) {
 		return
 	}
 
@@ -117,6 +125,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"sourceIp": sourceIP,
 			"error":    err.Error(),
 		})
+		errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) serveDockerProxy(w http.ResponseWriter, req *http.Request) {
+	sourceIP := requestSourceIP(req)
+	route, ok := parseWorkspaceRoute(req.URL.Path)
+	if !ok || !isCloudflareAPIProxyRoute(route.Subpath) {
+		errorJSON(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	if s.rejectCloudflareAPIProxyCaller(w, req, route, sourceIP) {
+		return
+	}
+
+	s.containers.TouchContainer(route.Name, fmt.Sprintf("workspace_cf_api_proxy:%s:%s", req.Method, route.Subpath))
+	if err := s.forwardCloudflareAPIProxyRequest(w, req, route); err != nil {
+		log.Printf("[SandboxHost] docker proxy request error: %v", err)
 		errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
 	}
 }
@@ -158,6 +185,55 @@ func (s *Server) rejectControlRouteFromSandboxCaller(
 	})
 	errorJSON(w, "Sandbox containers cannot access sandbox-host control APIs", http.StatusForbidden)
 	return true
+}
+
+func (s *Server) rejectCloudflareAPIProxyCaller(
+	w http.ResponseWriter,
+	req *http.Request,
+	route WorkspaceRoute,
+	sourceIP string,
+) bool {
+	if strings.TrimSpace(sourceIP) == "" || isLoopbackSourceIP(sourceIP) {
+		return false
+	}
+	if s.containers == nil {
+		errorJSON(w, "Sandbox caller validation unavailable", http.StatusForbidden)
+		return true
+	}
+	caller, err := s.containers.ResolveContainerBySourceIP(sourceIP)
+	if err != nil {
+		s.trace("cf_api_proxy_caller_resolution_error", map[string]any{
+			"method":        req.Method,
+			"pathname":      req.URL.Path,
+			"sourceIp":      sourceIP,
+			"targetSandbox": route.Name,
+			"error":         err.Error(),
+		})
+		errorJSON(w, "Caller resolution failed", http.StatusInternalServerError)
+		return true
+	}
+	if caller == nil {
+		errorJSON(w, "Cloudflare API proxy is only available from the workspace sandbox", http.StatusForbidden)
+		return true
+	}
+
+	sameSandbox := caller.Name == route.Name
+	sameWorkspace := caller.WorkspaceID == "" || caller.WorkspaceID == route.WorkspaceID
+	sameOrg := caller.OrgID == "" || caller.OrgID == route.OrgID
+	if !sameSandbox || !sameWorkspace || !sameOrg {
+		s.trace("cf_api_proxy_rejected_container_source", map[string]any{
+			"method":          req.Method,
+			"pathname":        req.URL.Path,
+			"sourceIp":        sourceIP,
+			"targetSandbox":   route.Name,
+			"callerSandbox":   caller.Name,
+			"callerWorkspace": caller.WorkspaceID,
+			"targetWorkspace": route.WorkspaceID,
+		})
+		errorJSON(w, "Sandbox cannot proxy Cloudflare API requests for another workspace", http.StatusForbidden)
+		return true
+	}
+	return false
 }
 
 func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
@@ -212,6 +288,8 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleChatMessages(w, req, name)
 	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
 		return s.forwardDataProxyRequest(w, req, route)
+	case isCloudflareAPIProxyRoute(route.Subpath):
+		return s.forwardCloudflareAPIProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
 		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 			return err
@@ -351,6 +429,51 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		"success":  true,
 		"messages": []parsedChatMessage{},
 	})
+	return nil
+}
+
+func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
+	base := strings.TrimRight(strings.TrimSpace(s.cfg.WorkerBaseURL), "/")
+	if base == "" {
+		errorJSON(w, "Cloudflare API proxy upstream not configured", http.StatusServiceUnavailable)
+		return nil
+	}
+	secret := strings.TrimSpace(s.cfg.SandboxProxySecret)
+	if secret == "" {
+		errorJSON(w, "Cloudflare API proxy auth not configured", http.StatusServiceUnavailable)
+		return nil
+	}
+
+	targetURL := base + route.Subpath
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, req.Body)
+	if err != nil {
+		return err
+	}
+	copyHeaders(forwardReq.Header, req.Header)
+	forwardReq.Header.Set("X-Sandbox-Secret", secret)
+	forwardReq.Header.Set("X-Chiridion-Org-Id", route.OrgID)
+	forwardReq.Header.Set("X-Chiridion-Workspace-Id", route.WorkspaceID)
+
+	resp, err := s.httpClient.Do(forwardReq)
+	if err != nil {
+		errorJSON(w, "Cloudflare API proxy upstream unavailable", http.StatusServiceUnavailable)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+
+	if err := copyResponseBody(w, resp.Body); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 
@@ -646,6 +769,10 @@ func parseWorkspaceRoute(path string) (WorkspaceRoute, bool) {
 }
 
 var workspaceRouteRegex = regexp.MustCompile(`^/v1/workspaces/([^/]+)/([^/]+)(/.*)?$`)
+
+func isCloudflareAPIProxyRoute(subpath string) bool {
+	return subpath == "/client/v4" || strings.HasPrefix(subpath, "/client/v4/")
+}
 
 func sandboxName(workspaceID string) string {
 	replacer := regexp.MustCompile(`[^a-zA-Z0-9_-]`)

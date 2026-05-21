@@ -150,6 +150,54 @@ func TestForwardDataProxyRequest(t *testing.T) {
 	}
 }
 
+func TestForwardCloudflareAPIProxyRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/client/v4/accounts/acct/workers/dispatch/namespaces/ns/scripts/app" {
+			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
+		}
+		if req.Header.Get("X-Sandbox-Secret") != "shared-secret" {
+			t.Fatalf("missing sandbox secret header: %q", req.Header.Get("X-Sandbox-Secret"))
+		}
+		if req.Header.Get("X-Chiridion-Org-Id") != "org-1" {
+			t.Fatalf("missing org forwarding header: %q", req.Header.Get("X-Chiridion-Org-Id"))
+		}
+		if req.Header.Get("X-Chiridion-Workspace-Id") != "ws-1" {
+			t.Fatalf("missing workspace forwarding header: %q", req.Header.Get("X-Chiridion-Workspace-Id"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			WorkerBaseURL:      upstream.URL,
+			SandboxProxySecret: "shared-secret",
+		},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/org-1/ws-1/client/v4/accounts/acct/workers/dispatch/namespaces/ns/scripts/app", nil)
+	rec := httptest.NewRecorder()
+	route := WorkspaceRoute{
+		OrgID:       "org-1",
+		WorkspaceID: "ws-1",
+		Subpath:     "/client/v4/accounts/acct/workers/dispatch/namespaces/ns/scripts/app",
+	}
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != `{"success":true}` {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
 type chunkReader struct {
 	chunks [][]byte
 	index  int

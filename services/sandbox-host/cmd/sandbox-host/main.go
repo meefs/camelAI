@@ -44,6 +44,13 @@ func main() {
 		IdleTimeout:       cfg.IdleTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 	}
+	dockerProxyServer := &http.Server{
+		Addr:              cfg.DockerProxyListenAddr,
+		Handler:           server.DockerProxyHandler(),
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+	}
 
 	errCh := make(chan error, 1)
 	shutdownDone := make(chan struct{})
@@ -52,6 +59,12 @@ func main() {
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("control listener failed: %w", err)
+		}
+	}()
+	log.Printf("[SandboxHost] docker proxy listener on %s", cfg.DockerProxyListenAddr)
+	go func() {
+		if err := dockerProxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("docker proxy listener failed: %w", err)
 		}
 	}()
 
@@ -64,6 +77,9 @@ func main() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[SandboxHost] control listener shutdown failed: %v", err)
+		}
+		if err := dockerProxyServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[SandboxHost] docker proxy listener shutdown failed: %v", err)
 		}
 		cancelShutdown()
 		close(shutdownDone)
