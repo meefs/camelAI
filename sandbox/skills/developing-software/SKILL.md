@@ -773,6 +773,7 @@ Inside `js_exec`, these globals are available:
 - `env.CONNECTIONS` - the virtual Worker service binding.
 - `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
 - `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
+- `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding, matching deployed user workers.
 
 Connection credentials are intentionally hidden behind the virtual binding.
 
@@ -833,6 +834,15 @@ return { available, search, page };
 ```
 
 For web search and page retrieval, prefer `tools.WebSearch(...)` and `tools.WebFetch(...)` because they use the harness tooling and format results consistently. Global `fetch()` is also available in `js_exec` for direct HTTP calls to public APIs and other endpoints.
+
+Test hosted AI calls from `js_exec` with the same binding shape as deployed workers:
+
+```javascript
+const result = await env.AI.run("auto", {
+  messages: [{ role: "user", content: "Say hello in one sentence." }],
+});
+return result;
+```
 
 ## Virtual AI Binding
 
