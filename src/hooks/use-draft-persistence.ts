@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { Attachment } from '@/components/attachment-list';
 
 const DRAFT_PREFIX = 'draft:';
+const DELIVERY_DRAFT_PREFIX = 'delivery-draft:';
 const MAX_DRAFTS = 50;
 
 export interface SerializedAttachment {
@@ -22,6 +23,11 @@ export interface DraftData {
   savedAt: number;
 }
 
+export interface DeliveryDraftData extends DraftData {
+  clientMessageId: string;
+  acceptedAt: number | null;
+}
+
 function getStorage(): Storage | null {
   if (typeof window === 'undefined') {
     return null;
@@ -36,6 +42,10 @@ function getStorage(): Storage | null {
 
 export function draftKey(workspaceId: string, threadId: string | null): string {
   return `${DRAFT_PREFIX}${workspaceId}:${threadId ?? 'new'}`;
+}
+
+export function deliveryDraftKey(workspaceId: string, threadId: string | null): string {
+  return `${DELIVERY_DRAFT_PREFIX}${workspaceId}:${threadId ?? 'new'}`;
 }
 
 export function serializeAttachments(attachments: Attachment[]): SerializedAttachment[] {
@@ -104,6 +114,31 @@ function parseDraft(raw: string): DraftData | null {
   }
 
   return { text, attachments, savedAt };
+}
+
+function parseDeliveryDraft(raw: string): DeliveryDraftData | null {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== 'object') {
+    return null;
+  }
+
+  const draft = parseDraft(raw);
+  if (!draft) {
+    return null;
+  }
+
+  const clientMessageId =
+    typeof parsed.clientMessageId === 'string' ? parsed.clientMessageId : '';
+  if (!clientMessageId) {
+    return null;
+  }
+
+  const acceptedAt =
+    typeof parsed.acceptedAt === 'number' && Number.isFinite(parsed.acceptedAt)
+      ? parsed.acceptedAt
+      : null;
+
+  return { ...draft, clientMessageId, acceptedAt };
 }
 
 function evictOldDrafts(storage: Storage, maxDrafts: number) {
@@ -213,6 +248,105 @@ export function removeDraft(workspaceId: string | null | undefined, threadId: st
   }
 
   storage.removeItem(draftKey(workspaceId, threadId));
+}
+
+export function loadDeliveryDraft(
+  workspaceId: string | null | undefined,
+  threadId: string | null
+): DeliveryDraftData | null {
+  const storage = getStorage();
+  if (!storage || !workspaceId) {
+    return null;
+  }
+
+  const key = deliveryDraftKey(workspaceId, threadId);
+
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+
+    const draft = parseDeliveryDraft(raw);
+    if (!draft) {
+      storage.removeItem(key);
+      return null;
+    }
+
+    return draft;
+  } catch {
+    storage.removeItem(key);
+    return null;
+  }
+}
+
+export function writeDeliveryDraft(
+  workspaceId: string | null | undefined,
+  threadId: string | null,
+  clientMessageId: string,
+  text: string,
+  attachments: Attachment[],
+  acceptedAt: number | null = null
+): DeliveryDraftData | null {
+  const storage = getStorage();
+  if (!storage || !workspaceId || !clientMessageId) {
+    return null;
+  }
+
+  const key = deliveryDraftKey(workspaceId, threadId);
+  const serializedAttachments = serializeAttachments(attachments);
+  if (!text.trim() && serializedAttachments.length === 0) {
+    storage.removeItem(key);
+    return null;
+  }
+
+  const draft: DeliveryDraftData = {
+    text,
+    attachments: serializedAttachments,
+    savedAt: Date.now(),
+    clientMessageId,
+    acceptedAt,
+  };
+
+  try {
+    storage.setItem(key, JSON.stringify(draft));
+    return draft;
+  } catch (error) {
+    console.warn('Failed to persist delivery draft', error);
+    return null;
+  }
+}
+
+export function markDeliveryDraftAccepted(
+  workspaceId: string | null | undefined,
+  threadId: string | null,
+  clientMessageId: string
+): DeliveryDraftData | null {
+  const draft = loadDeliveryDraft(workspaceId, threadId);
+  if (!draft || draft.clientMessageId !== clientMessageId) {
+    return null;
+  }
+
+  return writeDeliveryDraft(
+    workspaceId,
+    threadId,
+    clientMessageId,
+    draft.text,
+    draft.attachments,
+    Date.now()
+  );
+}
+
+export function removeDeliveryDraft(
+  workspaceId: string | null | undefined,
+  threadId: string | null
+) {
+  const storage = getStorage();
+  if (!storage || !workspaceId) {
+    return;
+  }
+
+  storage.removeItem(deliveryDraftKey(workspaceId, threadId));
 }
 
 export function useDraftPersistence(workspaceId: string | undefined, threadId: string | null) {

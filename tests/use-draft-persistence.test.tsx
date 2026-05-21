@@ -3,10 +3,15 @@ import { act, render } from '@testing-library/react';
 import { useEffect } from 'react';
 import type { Attachment } from '@/components/attachment-list';
 import {
+  deliveryDraftKey,
   draftKey,
+  loadDeliveryDraft,
   loadDraft,
+  markDeliveryDraftAccepted,
+  removeDeliveryDraft,
   removeDraft,
   useDraftPersistence,
+  writeDeliveryDraft,
   writeDraft,
 } from '@/hooks/use-draft-persistence';
 
@@ -26,6 +31,27 @@ function DraftSaver({
   useEffect(() => {
     saveDraft(text, attachments);
   }, [attachments, saveDraft, text]);
+
+  return null;
+}
+
+function DraftSaveThenClear({
+  workspaceId,
+  threadId,
+  text,
+  attachments,
+}: {
+  workspaceId: string;
+  threadId: string | null;
+  text: string;
+  attachments: Attachment[];
+}) {
+  const { saveDraft, clearDraft } = useDraftPersistence(workspaceId, threadId);
+
+  useEffect(() => {
+    saveDraft(text, attachments);
+    clearDraft();
+  }, [attachments, clearDraft, saveDraft, text]);
 
   return null;
 }
@@ -147,5 +173,45 @@ describe('use-draft-persistence', () => {
       attachments: [],
       savedAt: expect.any(Number),
     });
+  });
+
+  it('clearDraft cancels a pending debounced save so unmount does not restore it', () => {
+    const { unmount } = render(
+      <DraftSaveThenClear
+        workspaceId="ws-1"
+        threadId={null}
+        text="submitted prompt"
+        attachments={[]}
+      />,
+    );
+
+    expect(loadDraft('ws-1', null)).toBeNull();
+
+    act(() => {
+      unmount();
+    });
+
+    expect(loadDraft('ws-1', null)).toBeNull();
+  });
+
+  it('keeps delivery backups separate from normal drafts', () => {
+    writeDeliveryDraft('ws-1', 'thread-1', 'client-1', 'in flight', [], null);
+
+    expect(loadDraft('ws-1', 'thread-1')).toBeNull();
+    expect(loadDeliveryDraft('ws-1', 'thread-1')).toMatchObject({
+      text: 'in flight',
+      clientMessageId: 'client-1',
+      acceptedAt: null,
+    });
+
+    const accepted = markDeliveryDraftAccepted('ws-1', 'thread-1', 'client-1');
+    expect(accepted).toMatchObject({
+      text: 'in flight',
+      clientMessageId: 'client-1',
+      acceptedAt: expect.any(Number),
+    });
+
+    removeDeliveryDraft('ws-1', 'thread-1');
+    expect(localStorage.getItem(deliveryDraftKey('ws-1', 'thread-1'))).toBeNull();
   });
 });
