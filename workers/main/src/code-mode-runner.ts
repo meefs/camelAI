@@ -178,7 +178,8 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const tools = Object.freeze(Object.fromEntries(allTools.map((tool) => [tool.name, (args = {}) => callTool(tool.name, args)])));
     const CONNECTIONS = this.env.CONNECTIONS;
     const connections = createConnectionsFacade(CONNECTIONS);
-    const env = Object.freeze({ CONNECTIONS });
+    const AI = this.env.AI;
+    const env = Object.freeze({ CONNECTIONS, AI });
     const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) });
     const text = (value) => {
       output.push(stringifyOutput(value));
