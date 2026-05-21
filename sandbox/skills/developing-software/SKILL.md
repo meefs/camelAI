@@ -833,7 +833,7 @@ const page = await tools.WebFetch({ url: search.results[0].url });
 return { available, search, page };
 ```
 
-Do not call `fetch()` directly for web search from `js_exec`; outbound network access is intentionally restricted. Prefer `tools.WebSearch(...)` and `tools.WebFetch(...)`.
+For web search and page retrieval, prefer `tools.WebSearch(...)` and `tools.WebFetch(...)` because they use the harness tooling and format results consistently. Global `fetch()` is also available in `js_exec` for direct HTTP calls to public APIs and other endpoints.
 
 Test hosted AI calls from `js_exec` with the same binding shape as deployed workers:
 

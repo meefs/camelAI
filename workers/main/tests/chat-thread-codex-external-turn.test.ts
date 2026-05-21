@@ -784,7 +784,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
         userId: 'user_1',
       },
     });
-    expect(capturedWorkerCode.globalOutbound).toBeNull();
+    expect(capturedWorkerCode.globalOutbound).toBeUndefined();
     expect(capturedWorkerCode.env.TOOLS).toBe(toolsBinding);
     expect(capturedWorkerCode.env.CONNECTIONS).toBe(connectionsBinding);
     expect(capturedWorkerCode.env.AI).toBe(aiBinding);

@@ -4,6 +4,7 @@
 	"main": "workers/main/src/index.ts",
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
