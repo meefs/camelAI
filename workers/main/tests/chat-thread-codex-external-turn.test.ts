@@ -831,6 +831,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       'set_preview',
       'list_apps',
       'list_scheduled_prompts',
+      'list_deterministic_automations',
       'list_integrations',
       'get_custom_domain',
       'Agent',
@@ -905,6 +906,87 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
     expect((listing as any).text).toContain('data-analysis');
     expect((listing as any).details.source).toBe('bundled_skill');
+    expect(containerTool).not.toHaveBeenCalled();
+  });
+
+  it('serves deterministic automation virtual files through js_exec file tools', async () => {
+    const source = 'import { WorkflowEntrypoint } from "cloudflare:workers";\nexport class AutomationWorkflow extends WorkflowEntrypoint {}\n';
+    const updatedSource = source.replace('WorkflowEntrypoint {}', 'WorkflowEntrypoint { async run() { return { ok: true }; } }');
+    const cronStub = {
+      listDeterministicAutomations: vi.fn(async () => [{
+        id: 'automation-1',
+        name: 'Automation',
+        description: null,
+        source,
+        source_version: 1,
+        cron_expression: '0 9 * * *',
+        enabled: true,
+        created_by: 'user1',
+        created_at: 1,
+        updated_at: 1,
+        next_run_at: null,
+        last_run_at: null,
+        last_run_status: null,
+        last_run_error: null,
+        last_instance_id: null,
+        run_count: 0,
+      }]),
+      getDeterministicAutomationSource: vi.fn(async () => ({
+        automation_id: 'automation-1',
+        workspace_id: 'workspace1',
+        source_version: 1,
+        source,
+        created_by: 'user1',
+      })),
+      updateDeterministicAutomation: vi.fn(async (_input) => ({
+        id: 'automation-1',
+        name: 'Automation',
+        description: null,
+        source: updatedSource,
+        source_version: 2,
+        cron_expression: '0 9 * * *',
+        enabled: true,
+        created_by: 'user1',
+        created_at: 1,
+        updated_at: 2,
+        next_run_at: null,
+        last_run_at: null,
+        last_run_status: null,
+        last_run_error: null,
+        last_instance_id: null,
+        run_count: 0,
+      })),
+    };
+    const containerTool = vi.fn(async () => {
+      throw new Error('workspace tool should not be called for automation virtual files');
+    });
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { workspaceId: 'workspace1' } };
+    Object.defineProperty(fake, 'cronStub', { value: cronStub });
+    Object.defineProperty(fake, 'piContainerTools', {
+      value: { callTool: containerTool },
+    });
+
+    const listing = await CodeModeToolsBinding.prototype.callTool.call(fake, 'ls', {
+      path: '/home/claude/.camelai/automations',
+    });
+    expect((listing as any).text).toContain('automation-1.js');
+
+    const read = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      path: '/home/claude/.camelai/automations/automation-1.js',
+    });
+    expect((read as any).text).toContain('AutomationWorkflow');
+
+    const edit = await CodeModeToolsBinding.prototype.callTool.call(fake, 'edit', {
+      path: '/home/claude/.camelai/automations/automation-1.js',
+      edits: [{ oldText: 'WorkflowEntrypoint {}', newText: 'WorkflowEntrypoint { async run() { return { ok: true }; } }' }],
+    });
+    expect((edit as any).text).toContain('source version 2');
+    expect(cronStub.updateDeterministicAutomation).toHaveBeenCalledWith({
+      workspaceId: 'workspace1',
+      id: 'automation-1',
+      source: updatedSource,
+    });
     expect(containerTool).not.toHaveBeenCalled();
   });
 
@@ -1062,6 +1144,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       'list_apps',
       'get_latest_logs',
       'list_scheduled_prompts',
+      'list_deterministic_automations',
       'list_integrations',
       'prompt_connection_setup',
       'get_custom_domain',

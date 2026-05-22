@@ -44,6 +44,13 @@
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" }
 		]
 	},
+	"workflows": [
+		{
+			"name": "chiridion-deterministic-automations-test",
+			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
+			"class_name": "DeterministicAutomationWorkflow"
+		}
+	],
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["UserDO", "OrgDO", "OrgSlugDO", "WorkspaceDO", "EmailHandleDO"] },
 		{ "tag": "v2", "new_sqlite_classes": ["AdminIndexDO"] },

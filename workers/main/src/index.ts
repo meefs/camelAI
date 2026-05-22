@@ -77,6 +77,10 @@ export { R2VirtualBucket } from './r2-virtual-bucket.js';
 export { DataProxyService } from './data-proxy-service.js';
 export { AIVirtualBinding } from './ai-virtual-binding.js';
 export { ConnectionsService } from './connections-service.js';
+export {
+  DeterministicAutomationWorkflow,
+  DynamicWorkflowBinding,
+} from './deterministic-automation-workflow.js';
 
 // Extend React Router's AppLoadContext
 declare module 'react-router' {
