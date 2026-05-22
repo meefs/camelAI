@@ -6,10 +6,8 @@
 	"scripts": {
 		"dev": "react-router dev",
 		"dev:local-auth": "LOCAL_AUTH_BYPASS=1 WORKER_BASE_URL=http://localhost:3001 react-router dev",
-		"build": "bun run generate:pi-skills && bun run build:cf && bun run check:pi-bedrock-build",
+		"build": "bun run build:cf && bun run check:pi-bedrock-build",
 		"build:cf": "react-router build",
-		"generate:pi-skills": "node scripts/generate-pi-skills-bundle.mjs",
-		"check:pi-skills": "node scripts/generate-pi-skills-bundle.mjs --check",
 		"check:pi-bedrock-build": "node scripts/check-pi-bedrock-build.mjs",
 		"start": "wrangler dev",
 		"lint": "eslint .",
