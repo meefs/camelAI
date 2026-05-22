@@ -234,15 +234,29 @@ describe('ChatThreadDO Codex external turn completion', () => {
   it('records terminal browser message send observability for accepted messages', async () => {
     const ws = { send: vi.fn() };
     const fake = Object.create(ChatThreadDO.prototype) as any;
+    let resolveEnqueue: (value: { status: 'accepted' }) => void = () => {};
+    const enqueuePromise = new Promise<{ status: 'accepted' }>((resolve) => {
+      resolveEnqueue = resolve;
+    });
     fake.recordChatThreadObservabilityEvent = vi.fn();
-    fake.enqueueRunnerUserMessage = vi.fn(async () => ({ status: 'accepted' }));
+    fake.enqueueRunnerUserMessage = vi.fn(() => enqueuePromise);
     fake.sendDirect = vi.fn((socket: any, message: any) => socket.send(message));
 
-    await ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
+    const handlePromise = ChatThreadDO.prototype['handleRunnerClientUserMessage'].call(fake, ws, {
       type: 'message',
       content: 'hello',
       clientMessageId: 'client-msg-1',
     });
+
+    await Promise.resolve();
+
+    expect(ws.send).toHaveBeenCalledWith({
+      type: 'message_accepted',
+      clientMessageId: 'client-msg-1',
+    });
+
+    resolveEnqueue({ status: 'accepted' });
+    await handlePromise;
 
     expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({ clientMessageId: 'client-msg-1' }),
@@ -267,6 +281,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
         sampleKey: 'client-msg-1',
       }),
     );
+    expect(ws.send).toHaveBeenCalledTimes(1);
     expect(ws.send).toHaveBeenCalledWith({
       type: 'message_accepted',
       clientMessageId: 'client-msg-1',
@@ -291,6 +306,10 @@ describe('ChatThreadDO Codex external turn completion', () => {
       clientMessageId: 'client-msg-2',
     });
 
+    expect(ws.send).toHaveBeenCalledWith({
+      type: 'message_accepted',
+      clientMessageId: 'client-msg-2',
+    });
     expect(fake.setChatIsStreaming).toHaveBeenCalledWith(false);
     expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
     expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(

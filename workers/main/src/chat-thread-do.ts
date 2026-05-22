@@ -3920,6 +3920,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       sampleKey: sendAttemptId,
     });
 
+    if (data.clientMessageId) {
+      this.sendDirect(ws, {
+        type: "message_accepted",
+        clientMessageId: data.clientMessageId,
+      });
+    }
+
     let result: InitialUserMessageResult;
     try {
       result = await this.enqueueRunnerUserMessage(data, {
@@ -3967,12 +3974,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       sampleKey: sendAttemptId,
     });
 
-    if (data.clientMessageId) {
-      this.sendDirect(ws, {
-        type: "message_accepted",
-        clientMessageId: data.clientMessageId,
-      });
-    }
   }
 
   private async enqueueRunnerUserMessage(

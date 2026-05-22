@@ -156,6 +156,8 @@ export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
 const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
+// The backend acknowledges receipt before slow runner enqueue work, so this
+// timeout only covers messages that never make it to ChatThreadDO.
 const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
 
 interface ChatProps {
@@ -1645,7 +1647,7 @@ export default function Chat({
 
         logRunnerClient("message_acceptance_timeout", { clientMessageId });
         failPendingMessageDelivery(
-          "The message did not reach the workspace. I restored it as a draft so you can try again.",
+          "The message did not reach the server. I restored it as a draft so you can try again.",
         );
       }, MESSAGE_ACCEPTANCE_TIMEOUT_MS);
       pendingMessageAcceptanceTimeoutsRef.current.set(clientMessageId, timeout);
