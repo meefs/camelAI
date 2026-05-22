@@ -9,6 +9,7 @@ const testState = vi.hoisted(() => ({
     data: undefined,
     submit: vi.fn(),
   },
+  revalidate: vi.fn(),
 }));
 
 vi.mock("react-router", () => ({
@@ -16,7 +17,17 @@ vi.mock("react-router", () => ({
   redirect: vi.fn(),
   useFetcher: () => testState.fetcher,
   useLoaderData: () => testState.loaderData.current,
+  useRevalidator: () => ({
+    state: "idle",
+    revalidate: testState.revalidate,
+  }),
   useSearchParams: () => [new URLSearchParams()],
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/auth.server", () => ({
@@ -84,6 +95,78 @@ describe("BillingPage overview", () => {
 
     expect(
       screen.getByRole("heading", { name: "Team plan - 4 seats" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows pending cancellation as its own plan summary line", () => {
+    testState.loaderData.current = {
+      ...makeLoaderData(),
+      org: {
+        ...makeLoaderData().org,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      overview: {
+        ...makeLoaderData().overview,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      subscription: {
+        id: "sub_pro",
+        status: "active",
+        current_period_end_ms: Date.UTC(2026, 4, 8, 12),
+        cancel_at_ms: null,
+        cancellation_date_ms: Date.UTC(2026, 4, 8, 12),
+        cancel_at_period_end: true,
+        is_canceling: true,
+        trial_end_ms: null,
+      },
+    };
+
+    render(<BillingPage />);
+
+    expect(
+      screen.getByRole("heading", { name: "Pro plan" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Cancels May 8, 2026")).toBeInTheDocument();
+    expect(
+      screen.getByText("$30/month in hosted credits."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Cancellation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows renewal copy and cancellation controls for non-canceling subscriptions", () => {
+    testState.loaderData.current = {
+      ...makeLoaderData(),
+      org: {
+        ...makeLoaderData().org,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      overview: {
+        ...makeLoaderData().overview,
+        billing_plan: "pro",
+        billing_seat_count: 1,
+      },
+      subscription: {
+        id: "sub_pro",
+        status: "active",
+        current_period_end_ms: Date.UTC(2026, 5, 8, 12),
+        cancel_at_ms: null,
+        cancellation_date_ms: null,
+        cancel_at_period_end: false,
+        is_canceling: false,
+        trial_end_ms: null,
+      },
+    };
+
+    render(<BillingPage />);
+
+    expect(screen.getByText("Renews Jun 8, 2026.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Cancellation" }),
     ).toBeInTheDocument();
   });
 });

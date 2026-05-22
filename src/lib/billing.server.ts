@@ -69,6 +69,8 @@ export interface StripeSubscription {
   trial_start?: number | null;
   trial_end?: number | null;
   current_period_end?: number | null;
+  cancel_at?: number | null;
+  canceled_at?: number | null;
   cancel_at_period_end?: boolean | null;
   items?: {
     data?: StripeSubscriptionItem[];
@@ -129,7 +131,10 @@ export interface StripeSubscriptionSummary {
   id: string;
   status: string;
   current_period_end_ms: number | null;
+  cancel_at_ms: number | null;
+  cancellation_date_ms: number | null;
   cancel_at_period_end: boolean;
+  is_canceling: boolean;
   trial_end_ms: number | null;
 }
 
@@ -462,13 +467,9 @@ function mapStripeSubscriptionStatus(
 }
 
 function mapStripeSubscriptionBillingStatus(
-  subscription: Pick<StripeSubscription, "status" | "cancel_at_period_end">,
+  subscription: Pick<StripeSubscription, "status">,
 ): BillingStatus {
-  const status = mapStripeSubscriptionStatus(subscription.status);
-  if (status === "trialing" && subscription.cancel_at_period_end === true) {
-    return "canceled";
-  }
-  return status;
+  return mapStripeSubscriptionStatus(subscription.status);
 }
 
 function isTerminalStripeSubscriptionStatus(
@@ -477,6 +478,35 @@ function isTerminalStripeSubscriptionStatus(
   return (
     status === "canceled" ||
     NON_RECOVERABLE_STRIPE_SUBSCRIPTION_STATUSES.has(status ?? "")
+  );
+}
+
+function stripeTimestampMs(seconds: number | null | undefined): number | null {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+    return null;
+  }
+  return seconds * 1000;
+}
+
+function getSubscriptionCancellationDateMs(
+  subscription: StripeSubscription,
+): number | null {
+  const seconds =
+    subscription.cancel_at ??
+    (subscription.cancel_at_period_end
+      ? (subscription.current_period_end ?? subscription.trial_end ?? null)
+      : null) ??
+    (subscription.status === "canceled"
+      ? (subscription.canceled_at ?? null)
+      : null);
+  return stripeTimestampMs(seconds);
+}
+
+function isSubscriptionCanceling(subscription: StripeSubscription): boolean {
+  return (
+    subscription.cancel_at_period_end === true ||
+    Boolean(subscription.cancel_at) ||
+    subscription.status === "canceled"
   );
 }
 
@@ -1679,6 +1709,144 @@ export async function createBillingPortalSession(args: {
   }
 
   return session.url;
+}
+
+export type StripeCancellationPortalResult =
+  | {
+      kind: "portal";
+      billingPortalUrl: string;
+    }
+  | {
+      kind: "already_scheduled";
+      cancellationDateMs: number | null;
+      subscriptionStatus: string;
+    };
+
+function stripeCancellationScheduledResult(
+  subscription: StripeSubscription,
+): StripeCancellationPortalResult {
+  return {
+    kind: "already_scheduled",
+    cancellationDateMs: getSubscriptionCancellationDateMs(subscription),
+    subscriptionStatus: subscription.status,
+  };
+}
+
+async function bestEffortSyncCancelingStripeSubscription(args: {
+  env: StripeBillingEnv;
+  subscription: StripeSubscription;
+}): Promise<void> {
+  await syncOrgSubscriptionFromStripe(args.env, args.subscription).catch(
+    (error) => {
+      console.error("[billing] failed to sync canceling Stripe subscription", {
+        subscriptionId: args.subscription.id,
+        stripeStatus: args.subscription.status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  );
+}
+
+export async function createSubscriptionCancellationPortalSession(args: {
+  env: StripeBillingEnv;
+  org: Organization;
+  customerEmail: string | null | undefined;
+  returnUrl: string;
+  afterCompletionReturnUrl?: string;
+}): Promise<StripeCancellationPortalResult> {
+  const { env, org, returnUrl } = args;
+  const latestOrg = await getLatestOrgInfo(env, org);
+  const subscriptionId = latestOrg.billing_subscription_id?.trim();
+  if (!subscriptionId) {
+    throw new Error("This organization does not have a Stripe subscription.");
+  }
+  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+    throw new Error("Enterprise organizations are billed outside Stripe.");
+  }
+
+  const subscription = await fetchStripeSubscription(env, subscriptionId);
+  if (isSubscriptionCanceling(subscription)) {
+    await bestEffortSyncCancelingStripeSubscription({ env, subscription });
+    return stripeCancellationScheduledResult(subscription);
+  }
+
+  const customerId = getStripeCustomerId(subscription.customer);
+  if (!customerId) {
+    throw new Error("Stripe subscription does not have a customer.");
+  }
+  if (latestOrg.billing_customer_id !== customerId) {
+    await getOrgStub(env, latestOrg.id)
+      .updateBillingState({ billing_customer_id: customerId })
+      .catch((error) => {
+        console.error("[billing] failed to sync subscription customer id", {
+          orgId: latestOrg.id,
+          subscriptionId,
+          customerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  const body = new URLSearchParams();
+  body.set("customer", customerId);
+  body.set("return_url", returnUrl);
+  body.set("flow_data[type]", "subscription_cancel");
+  body.set("flow_data[subscription_cancel][subscription]", subscriptionId);
+  body.set("flow_data[after_completion][type]", "redirect");
+  body.set(
+    "flow_data[after_completion][redirect][return_url]",
+    args.afterCompletionReturnUrl ?? returnUrl,
+  );
+  const portalConfigurationId =
+    env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
+  if (portalConfigurationId) {
+    body.set("configuration", portalConfigurationId);
+  }
+
+  try {
+    const session = await stripeRequest<{ url?: string | null }>(
+      env,
+      "/billing_portal/sessions",
+      {
+        method: "POST",
+        body,
+      },
+    );
+
+    if (!session.url) {
+      throw new Error("Stripe did not return a billing portal URL");
+    }
+
+    return { kind: "portal", billingPortalUrl: session.url };
+  } catch (error) {
+    const refreshedSubscription = await fetchStripeSubscription(
+      env,
+      subscriptionId,
+    ).catch((refreshError) => {
+      console.error(
+        "[billing] failed to refresh subscription after cancellation portal failure",
+        {
+          orgId: latestOrg.id,
+          subscriptionId,
+          error:
+            refreshError instanceof Error
+              ? refreshError.message
+              : String(refreshError),
+        },
+      );
+      return null;
+    });
+
+    if (refreshedSubscription && isSubscriptionCanceling(refreshedSubscription)) {
+      await bestEffortSyncCancelingStripeSubscription({
+        env,
+        subscription: refreshedSubscription,
+      });
+      return stripeCancellationScheduledResult(refreshedSubscription);
+    }
+
+    throw error;
+  }
 }
 
 async function createTeamSubscriptionUpdatePortalConfiguration(args: {
@@ -3170,10 +3338,11 @@ export async function getStripeSubscriptionSummary(
   return {
     id: subscription.id,
     status: subscription.status,
-    current_period_end_ms: subscription.current_period_end
-      ? subscription.current_period_end * 1000
-      : null,
+    current_period_end_ms: stripeTimestampMs(subscription.current_period_end),
+    cancel_at_ms: stripeTimestampMs(subscription.cancel_at),
+    cancellation_date_ms: getSubscriptionCancellationDateMs(subscription),
     cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
-    trial_end_ms: subscription.trial_end ? subscription.trial_end * 1000 : null,
+    is_canceling: isSubscriptionCanceling(subscription),
+    trial_end_ms: stripeTimestampMs(subscription.trial_end),
   };
 }
