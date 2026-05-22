@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { X } from "lucide-react";
 import type { ChatGroupThreadSummary, ChatGroupView, ThreadStatus } from "@/types";
+import { CamelLoader } from "@/components/camel-loader/camel-loader";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -80,14 +81,13 @@ export function ChatGroupRightSlot({
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs tabular-nums text-muted-foreground group-data-[collapsible=icon]:hidden">
       {status === "running" ? (
-        <Loader2
-          className="size-3 animate-spin text-blue-500 motion-reduce:animate-none"
-          aria-label="Agent is working"
-        />
+        <span className="text-muted-foreground">
+          <CamelLoader size={16} ariaLabel="Agent is working" />
+        </span>
       ) : status === "unread" ? (
         <span
           aria-label="Awaiting your review"
-          className="size-1.5 rounded-full bg-red-500"
+          className="size-2 rounded-full bg-amber-500 motion-safe:animate-pip-boing"
         />
       ) : null}
       <span
@@ -103,17 +103,16 @@ export function ChatGroupRightSlot({
 export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
   if (group.status === "running") {
     return (
-      <Loader2
-        className="hidden size-4 animate-spin text-blue-500 motion-reduce:animate-none group-data-[collapsible=icon]:block"
-        aria-label="Agent is working"
-      />
+      <span className="hidden text-muted-foreground group-data-[collapsible=icon]:block">
+        <CamelLoader size={16} ariaLabel="Agent is working" />
+      </span>
     );
   }
   if (group.status === "unread") {
     return (
       <span
         aria-label="Awaiting your review"
-        className="hidden size-2 rounded-full bg-red-500 group-data-[collapsible=icon]:block"
+        className="hidden size-2.5 rounded-full bg-amber-500 motion-safe:animate-pip-boing group-data-[collapsible=icon]:block"
       />
     );
   }

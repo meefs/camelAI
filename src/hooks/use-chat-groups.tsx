@@ -129,12 +129,15 @@ export function getGroupLandingHref(group: ChatGroupView): string {
 export function reconcileLocalThreadStatusesWithSnapshot<T extends ThreadStatusOverlay>(
   localStatuses: Map<string, T>,
   runningThreadIds: Set<string>,
+  activeThreadId: string | null = null,
 ): Map<string, T> {
   let next: Map<string, T> | null = null;
   for (const [threadId, overlay] of localStatuses) {
     const status = getOverlayStatus(overlay);
     if (
-      (status === "running" && !runningThreadIds.has(threadId)) ||
+      (status === "running" &&
+        threadId !== activeThreadId &&
+        !runningThreadIds.has(threadId)) ||
       (status !== "running" && runningThreadIds.has(threadId))
     ) {
       next ??= new Map(localStatuses);
@@ -954,6 +957,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
               reconcileLocalThreadStatusesWithSnapshot(
                 current,
                 nextRunningThreadIdSet,
+                activeThreadIdRef.current,
               ),
             );
             if (staleRunningThreadIds.length > 0) {
@@ -1192,4 +1196,8 @@ export function useChatGroups() {
     throw new Error("useChatGroups must be used within ChatGroupsProvider");
   }
   return context;
+}
+
+export function useOptionalChatGroups() {
+  return useContext(ChatGroupsContext);
 }

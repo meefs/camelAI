@@ -15,7 +15,7 @@ import { TeammateMessage } from '@/components/tool-call/teammate-message';
 import { TaskNotification } from '@/components/tool-call/task-notification';
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactSummaryCard } from '@/components/compact-summary-card';
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
@@ -34,27 +34,39 @@ import {
 } from '@/lib/connection-mentions';
 import { cn } from '@/lib/utils';
 
-const messageTimeCache = new Map<number, string>();
+const messageTimeCache = new Map<string, string>();
 const EMPTY_ANNOTATED_MENTIONS: AnnotatedMentionRef[] = [];
 
 // Format timestamp to readable time (e.g., "12:25 PM")
-function formatMessageTime(timestamp: number): string {
-  const cached = messageTimeCache.get(timestamp);
+function formatMessageTime(timestamp: number, timeZone?: string): string {
+  const cacheKey = `${timestamp}:${timeZone ?? 'local'}`;
+  const cached = messageTimeCache.get(cacheKey);
   if (cached) return cached;
 
   const formatted = new Date(timestamp).toLocaleTimeString([], {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
+    timeZone,
   });
-  messageTimeCache.set(timestamp, formatted);
+  messageTimeCache.set(cacheKey, formatted);
   if (messageTimeCache.size > 2000) {
     const firstKey = messageTimeCache.keys().next().value;
-    if (typeof firstKey === 'number') {
+    if (typeof firstKey === 'string') {
       messageTimeCache.delete(firstKey);
     }
   }
   return formatted;
+}
+
+function useHydratedMessageTime(timestamp: number): string {
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
+
+  return formatMessageTime(timestamp, isHydrated ? undefined : 'UTC');
 }
 
 // ── Special message detection ──
@@ -626,6 +638,7 @@ function MessageBubbleBase({
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
+  const messageTime = useHydratedMessageTime(message.created_at);
 
   if (message.isMeta || message.sourceToolUseID) {
     return null;
@@ -761,7 +774,7 @@ function MessageBubbleBase({
               </span>
             )}
             <span className="text-muted-foreground text-xs mr-1">
-              {formatMessageTime(message.created_at)}
+              {messageTime}
             </span>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -785,8 +798,6 @@ function MessageBubbleBase({
   }
 
   // Assistant message
-  const assistantTimestamp = message.created_at;
-
   return (
     <div className="flex flex-col gap-1">
       {hasContent && (
@@ -811,7 +822,7 @@ function MessageBubbleBase({
           aria-label="Message actions"
         >
           <span className="text-muted-foreground text-xs mr-1">
-            {formatMessageTime(assistantTimestamp)}
+            {messageTime}
           </span>
           {onFork && !isStreaming && (
             <Tooltip>

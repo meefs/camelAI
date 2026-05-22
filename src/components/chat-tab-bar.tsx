@@ -4,13 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   CircleFadingPlus,
-  Loader2,
   MoreHorizontal,
   Pencil,
   Plus,
   X,
 } from "lucide-react";
 import type { ChatGroup, LlmModel, ThreadStatus } from "@/types";
+import { CamelLoader } from "@/components/camel-loader/camel-loader";
 import { ModelLogo } from "@/components/model-logo";
 import { Button } from "@/components/ui/button";
 import {
@@ -97,17 +97,16 @@ export function TabRightSlot({
 }) {
   if (status === "running") {
     return (
-      <Loader2
-        className="size-3.5 animate-spin text-blue-500 motion-reduce:animate-none"
-        aria-label="Agent is working"
-      />
+      <span className="text-muted-foreground">
+        <CamelLoader size={16} ariaLabel="Agent is working" />
+      </span>
     );
   }
   if (status === "unread") {
     return (
       <span
         aria-label="Awaiting your review"
-        className="size-2 rounded-full bg-red-500"
+        className="size-2.5 rounded-full bg-amber-500 motion-safe:animate-pip-boing"
       />
     );
   }

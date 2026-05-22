@@ -317,10 +317,10 @@ describe("ChatTabBar", () => {
     expect(screen.getByAltText("claude")).toBeInTheDocument();
 
     rerender(<TabRightSlot status="running" model="haiku" />);
-    expect(screen.getByLabelText("Agent is working")).toHaveClass("animate-spin");
+    expect(screen.getByLabelText("Agent is working")).toHaveAttribute("width", "16");
 
     rerender(<TabRightSlot status="unread" model="haiku" />);
-    expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-red-500");
+    expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-amber-500");
   });
 
   it("allows spaces while renaming a chat tab", () => {
@@ -494,11 +494,11 @@ describe("ChatGroupsList", () => {
     expect(screen.queryByLabelText("Agent is working")).not.toBeInTheDocument();
 
     rerender(<ChatGroupRightSlot status="running" count={3} />);
-    expect(screen.getByLabelText("Agent is working")).toHaveClass("animate-spin");
+    expect(screen.getByLabelText("Agent is working")).toHaveAttribute("width", "16");
     expect(screen.getByLabelText("3 open chats")).toHaveClass("tabular-nums");
 
     rerender(<ChatGroupRightSlot status="unread" count={3} />);
-    expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-red-500");
+    expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-amber-500");
     expect(screen.getByLabelText("3 open chats")).toBeInTheDocument();
     const rightSlot = screen.getByLabelText("3 open chats").parentElement;
     expect(rightSlot).not.toBeNull();
@@ -976,6 +976,25 @@ describe("reconcileLocalThreadStatusesWithSnapshot", () => {
 
     expect(next).not.toBe(current);
     expect(Array.from(next.entries())).toEqual([["thread_2", "unread"]]);
+  });
+
+  it("preserves the active thread optimistic running status across lagging snapshots", () => {
+    const current = new Map<string, "idle" | "running" | "unread">([
+      ["thread_1", "running"],
+      ["thread_2", "unread"],
+    ]);
+
+    const next = reconcileLocalThreadStatusesWithSnapshot(
+      current,
+      new Set(),
+      "thread_1",
+    );
+
+    expect(next).toBe(current);
+    expect(Array.from(next.entries())).toEqual([
+      ["thread_1", "running"],
+      ["thread_2", "unread"],
+    ]);
   });
 
   it("lets snapshot running state win over stale local non-running statuses", () => {

@@ -33,8 +33,10 @@ import type {
   PreviewTarget,
   PreviewTab,
   OrganizationExperimentalSettings,
+  ChatGroupView,
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
+import { useOptionalChatGroups } from "@/hooks/use-chat-groups";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
 import {
@@ -163,6 +165,34 @@ const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
 // timeout only covers messages that never make it to ChatThreadDO.
 const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
 
+function getThreadRunningState(
+  groups: readonly ChatGroupView[] | undefined,
+  threadId: string | null,
+): { isRunning: boolean; startedAt: number | null } {
+  if (!threadId) return { isRunning: false, startedAt: null };
+
+  for (const group of groups ?? []) {
+    for (const thread of group.open_threads) {
+      if (thread.id === threadId) {
+        return {
+          isRunning: thread.status === "running",
+          startedAt: thread.running_started_at,
+        };
+      }
+    }
+    for (const thread of group.closed_threads) {
+      if (thread.id === threadId) {
+        return {
+          isRunning: thread.status === "running",
+          startedAt: thread.running_started_at,
+        };
+      }
+    }
+  }
+
+  return { isRunning: false, startedAt: null };
+}
+
 interface ChatProps {
   threadId?: string;
   workspaceId: string;
@@ -251,6 +281,7 @@ function dispatchLocalThreadStatus(
     latestUserMessageAt?: number | null;
     runningActivityText?: string | null;
     runningActivityAt?: number | null;
+    runningStartedAt?: number | null;
   } = {},
 ): void {
   if (typeof window === "undefined" || !threadId) return;
@@ -472,6 +503,7 @@ export default function Chat({
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const submit = useSubmit();
+  const chatGroupsContext = useOptionalChatGroups();
   const updateThreadModelFetcher = useFetcher<{
     thread?: {
       id: string;
@@ -797,11 +829,19 @@ export default function Chat({
 
     return null;
   }, [messages, streamingMessageId]);
+  const activeThreadRunningState = getThreadRunningState(
+    chatGroupsContext?.groups,
+    threadId ?? null,
+  );
   const assistantTurnActive =
-    loading || isStreaming || activeAssistantMessageId !== null;
-  const hasActiveAssistantMessage = activeAssistantMessageId !== null;
-  const showGlobalAssistantIndicator =
-    assistantTurnActive && !hasActiveAssistantMessage && !isCompacting;
+    loading ||
+    isStreaming ||
+    activeAssistantMessageId !== null ||
+    activeThreadRunningState.isRunning;
+  const showGlobalAssistantIndicator = assistantTurnActive && !isCompacting;
+  const runningStartedAt = activeThreadRunningState.isRunning
+    ? activeThreadRunningState.startedAt
+    : null;
   const skillSheetsByToolId = useMemo(() => {
     const map = new Map<string, string>();
     for (const message of messages) {
@@ -4251,6 +4291,7 @@ type SendOptions = {
       latestUserMessageAt: userMessageAt,
       runningActivityText: previewUserMessage,
       runningActivityAt: userMessageAt,
+      runningStartedAt: userMessageAt,
     });
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
@@ -4448,8 +4489,7 @@ type SendOptions = {
             copiedMessageId={copiedMessageId}
             forkMessage={readOnly ? undefined : forkMessage}
             forkingMessageId={forkingMessageId}
-            assistantTurnActive={assistantTurnActive}
-            activeAssistantMessageId={activeAssistantMessageId}
+            runningStartedAt={runningStartedAt}
             skillSheetsByToolId={skillSheetsByToolId}
             error={error}
             setError={setError}

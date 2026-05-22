@@ -2,8 +2,8 @@ import { memo, useMemo } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { ChatHarness, Integration, LlmProvider, Message } from "@/types";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
+import { ChatThreadWorkingIndicator } from "@/components/chat-thread-working-indicator";
 import { CompactingIndicator } from "@/components/compacting-indicator";
-import { LoadingDots } from "@/components/loading-dots";
 import {
   MessageBubble,
   isInterruptMessage,
@@ -43,8 +43,7 @@ interface ChatMessagesViewProps {
   copiedMessageId: string | null;
   forkMessage?: (messageId: string, renderedMessageId?: string) => void;
   forkingMessageId?: string | null;
-  assistantTurnActive: boolean;
-  activeAssistantMessageId: string | null;
+  runningStartedAt: number | null;
   skillSheetsByToolId: Map<string, string>;
   error: ChatApiErrorPresentation | null;
   setError: Dispatch<SetStateAction<ChatApiErrorPresentation | null>>;
@@ -73,8 +72,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   copiedMessageId,
   forkMessage,
   forkingMessageId,
-  assistantTurnActive,
-  activeAssistantMessageId,
+  runningStartedAt,
   skillSheetsByToolId,
   error,
   setError,
@@ -198,9 +196,6 @@ export const ChatMessagesView = memo(function ChatMessagesView({
                   copiedId={copiedMessageId}
                   onFork={forkMessage}
                   forkingId={forkingMessageId}
-                  showStreamingIndicator={
-                    assistantTurnActive && msg.id === activeAssistantMessageId
-                  }
                   suppressFinalizedState={
                     isCompacting && msg.id === compactingPriorMessageId
                   }
@@ -240,7 +235,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
 
       {showGlobalAssistantIndicator && !isCompacting && (
         <div ref={assistantPendingMeasureRef}>
-          <LoadingDots />
+          <ChatThreadWorkingIndicator startedAt={runningStartedAt} />
         </div>
       )}
       {shouldRenderSpacer ? (

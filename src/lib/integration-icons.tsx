@@ -18,7 +18,7 @@ function detectDarkMode(): boolean {
 }
 
 function useDarkMode(): boolean {
-  const [isDark, setIsDark] = useState(() => detectDarkMode());
+  const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;

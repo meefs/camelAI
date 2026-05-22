@@ -20,7 +20,7 @@ export function TodoStatusIcon({ status, className }: TodoStatusIconProps) {
     case 'in_progress':
       return (
         <Loader2
-          className={cn("h-4 w-4 text-blue-500 animate-spin", className)}
+          className={cn("h-4 w-4 text-foreground animate-spin", className)}
         />
       );
     case 'completed':
