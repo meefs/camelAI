@@ -179,7 +179,8 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const CONNECTIONS = this.env.CONNECTIONS;
     const connections = createConnectionsFacade(CONNECTIONS);
     const AI = this.env.AI;
-    const env = Object.freeze({ CONNECTIONS, AI });
+    const CAMELAI = this.env.CAMELAI;
+    const env = Object.freeze({ CONNECTIONS, AI, CAMELAI });
     const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) });
     const text = (value) => {
       output.push(stringifyOutput(value));
@@ -193,7 +194,17 @@ export class CodeModeRunner extends WorkerEntrypoint {
       store.set(key, value);
     };
 
-    const result = await runUserCode(tools, CONNECTIONS, connections, env, context, allTools, text, save, load);
+    const result = await runUserCode(
+      tools,
+      CONNECTIONS,
+      connections,
+      env,
+      context,
+      allTools,
+      text,
+      save,
+      load,
+    );
     if (result !== undefined) output.push(stringifyOutput(result));
     return { text: output.join("\n") };
   }

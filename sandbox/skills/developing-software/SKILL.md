@@ -484,7 +484,8 @@ The template creates this `wrangler.jsonc`:
   "worker_loaders": [{ "binding": "LOADER" }],
   "services": [
     { "binding": "DATA_PROXY", "service": "my-app", "entrypoint": "LocalDataProxyService" },
-    { "binding": "CONNECTIONS", "service": "my-app", "entrypoint": "LocalConnectionsService" }
+    { "binding": "CONNECTIONS", "service": "my-app", "entrypoint": "LocalConnectionsService" },
+    { "binding": "CAMELAI", "service": "my-app", "entrypoint": "LocalCamelAiService" }
   ]
 }
 ```
@@ -773,7 +774,8 @@ Inside `js_exec`, these globals are available:
 - `env.CONNECTIONS` - the virtual Worker service binding.
 - `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
 - `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
-- `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding, matching deployed user workers.
+- `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding (`run()` only), matching deployed user workers.
+- `env.CAMELAI` and `context.cloudflare.env.CAMELAI` - image generation service binding (`generateImage(prompt)`), same pattern as `CONNECTIONS`.
 
 Connection credentials are intentionally hidden behind the virtual binding.
 
@@ -844,6 +846,15 @@ const result = await env.AI.run("auto", {
 return result;
 ```
 
+Generate images the same way as in deployed workers:
+
+```javascript
+const { text, imageDataUrl } = await env.CAMELAI.generateImage(
+  "Flat vector robot mascot on a solid bright green background",
+);
+return { text, imageDataUrl };
+```
+
 ## Virtual AI Binding
 
 User workers can use a Cloudflare-style AI binding. Add this to `wrangler.jsonc`:
@@ -877,9 +888,21 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 |-------|---------|-------------|
 | `auto` | Text generation + tool calling | Default for all general-purpose AI features |
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
-| `auto_image` | Image generation from text prompts | App needs to create images: avatars, illustrations, thumbnails |
+| `auto_image` | Image generation (low-level route) | Prefer `env.CAMELAI.generateImage(prompt)` instead of `run(\"auto_image\")` |
 
-Default to `auto` unless the use case clearly requires search or image generation. Apps can use multiple routes for different features.
+Default to `auto` unless the use case clearly requires search or image generation. For images, use `env.CAMELAI.generateImage(prompt)` in `js_exec` or deployed workers (requires `CAMELAI` service binding in `wrangler.jsonc`). Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
+
+The starter template includes a local `CAMELAI` self-binding (typed via `bun wrangler types` as `Service<typeof LocalCamelAiService>`):
+
+```jsonc
+{
+  "services": [
+    { "binding": "CAMELAI", "service": "my-app", "entrypoint": "LocalCamelAiService" }
+  ]
+}
+```
+
+On camelAI deploys, the platform rewrites this binding to the internal `CamelAiService` entrypoint (same pattern as `CONNECTIONS`).
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 

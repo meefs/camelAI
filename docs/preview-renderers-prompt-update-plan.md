@@ -54,7 +54,7 @@ flowing through notebooks.
 
 ### Other skills
 
-`generating-images`, `sending-emails`, `testing-debugging`,
+`sending-emails`, `testing-debugging`,
 `custom-domain-troubleshooting` — no relevant mentions.
 
 ## Proposal

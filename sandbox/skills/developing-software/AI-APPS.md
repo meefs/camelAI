@@ -308,9 +308,9 @@ Three auto routes are available. Use them with `workersai(routeName, {})` in dep
 |-------|---------|-------------|
 | `auto` | Text generation + tool calling | Default for all general-purpose AI features |
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, live prices, recent events, fact-checking |
-| `auto_image` | Image generation from text prompts | App needs to create images: avatars, illustrations, thumbnails, creative content |
+| `auto_image` | Image generation (low-level route) | Prefer `env.CAMELAI.generateImage(prompt)` instead of `run("auto_image")` |
 
-**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. Auto routing automatically selects the best model for the task, optimizes for cost and latency, and requires no configuration. A single app can use multiple routes for different features (e.g., `auto` for chat, `auto_search` for a "research" mode, `auto_image` for an image creator).
+**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. For images, use `env.CAMELAI.generateImage(prompt)` (`CAMELAI` service binding in `wrangler.jsonc`, typed via `wrangler types`).
 
 ### Specific OpenRouter Models (Only When User Explicitly Requests)
 
@@ -359,18 +359,22 @@ const result = await generateText({
 
 ### Image Generation Example
 
-> **Important:** The `workers-ai-provider` does not surface the `images` array from the response. `generateText()` with `workersai("auto_image")` will only return the text portion. Use `env.AI.run()` directly instead.
-
-**See [../generating-images/SKILL.md](../generating-images/SKILL.md) for complete image generation patterns, response handling, and file-saving examples.**
-
-Quick example using `env.AI.run()` in a deployed worker:
+> **Important:** The `workers-ai-provider` does not surface the `images` array from the response. `generateText()` with `workersai("auto_image")` will only return the text portion. Use `env.CAMELAI.generateImage(...)`. The virtual `AI` binding only exposes `run()`.
 
 ```typescript
-const result = await env.AI.run("auto_image", {
-  messages: [{ role: "user", content: "Generate a watercolor mountain landscape" }],
+const { text, imageDataUrl, images } = await context.cloudflare.env.CAMELAI.generateImage(
+  "Generate a watercolor mountain landscape",
+);
+// imageDataUrl is "data:image/png;base64,..." when the model returns an image
+```
+
+Optional style reference:
+
+```typescript
+const result = await context.cloudflare.env.CAMELAI.generateImage({
+  prompt: "Generate a new image in the same visual style, different subject",
+  referenceImageUrl: existingDataUrl,
 });
-const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
-// imageDataUrl is "data:image/png;base64,..."
 ```
 
 ## Best Practices
