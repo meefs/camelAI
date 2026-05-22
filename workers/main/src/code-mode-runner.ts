@@ -228,7 +228,7 @@ function createConnectionsFacade(binding) {
   });
 }
 
-async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load, generateImage) {
+async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load) {
   "use strict";
 `}${executableUserCode}${String.raw`
 }
@@ -248,7 +248,10 @@ export class CodeModeRunner extends WorkerEntrypoint {
     const CONNECTIONS = this.env.CONNECTIONS;
     const connections = createConnectionsFacade(CONNECTIONS);
     const AI = this.env.AI;
-    const env = Object.freeze({ CONNECTIONS, AI });
+    const camelai = Object.freeze({
+      generateImage: (input) => generateImage(AI, input),
+    });
+    const env = Object.freeze({ CONNECTIONS, AI, camelai });
     const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) });
     const text = (value) => {
       output.push(stringifyOutput(value));
@@ -272,7 +275,6 @@ export class CodeModeRunner extends WorkerEntrypoint {
       text,
       save,
       load,
-      generateImage,
     );
     if (result !== undefined) output.push(stringifyOutput(result));
     return { text: output.join("\n") };

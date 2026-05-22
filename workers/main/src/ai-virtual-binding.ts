@@ -524,6 +524,7 @@ export {
   type GenerateImageOptions,
   type GenerateImageResult,
   buildGenerateImageMessages,
+  createCamelAi,
   generateImage,
   parseGenerateImageResponse,
 } from "./generate-image.js";

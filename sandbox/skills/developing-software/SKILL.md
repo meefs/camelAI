@@ -773,7 +773,8 @@ Inside `js_exec`, these globals are available:
 - `env.CONNECTIONS` - the virtual Worker service binding.
 - `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
 - `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
-- `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding, matching deployed user workers.
+- `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding (`run()` only), matching deployed user workers.
+- `env.camelai` and `context.cloudflare.env.camelai` - camelAI helpers (`generateImage(prompt)`), not on the `AI` binding type.
 
 Connection credentials are intentionally hidden behind the virtual binding.
 
@@ -847,8 +848,7 @@ return result;
 Generate images the same way as in deployed workers:
 
 ```javascript
-const { text, imageDataUrl } = await generateImage(
-  env.AI,
+const { text, imageDataUrl } = await env.camelai.generateImage(
   "Flat vector robot mascot on a solid bright green background",
 );
 return { text, imageDataUrl };
@@ -887,9 +887,9 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 |-------|---------|-------------|
 | `auto` | Text generation + tool calling | Default for all general-purpose AI features |
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
-| `auto_image` | Image generation (low-level route) | Prefer `generateImage(env.AI, prompt)` from `workers/camelai-ai.ts` instead of `run(\"auto_image\")` |
+| `auto_image` | Image generation (low-level route) | Prefer `env.camelai.generateImage(prompt)` / `createCamelAi(env.AI)` instead of `run(\"auto_image\")` |
 
-Default to `auto` unless the use case clearly requires search or image generation. For images, call `generateImage(env.AI, prompt)` — import from `workers/camelai-ai.ts` in deployed TypeScript or use the `generateImage` global in `js_exec`. Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
+Default to `auto` unless the use case clearly requires search or image generation. For images, use `env.camelai.generateImage(prompt)` in `js_exec` or `createCamelAi(context.cloudflare.env.AI).generateImage(prompt)` in deployed TypeScript (`workers/camelai-ai.ts`). Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 

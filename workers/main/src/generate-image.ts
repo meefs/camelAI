@@ -107,9 +107,9 @@ export function parseGenerateImageResponse(
 
 /**
  * Generate images via `auto_image` using only `ai.run()`.
- * Use this in deployed user workers (`workers/camelai-ai.ts`) and `js_exec`
- * (`generateImage(env.AI, prompt)` global). Do not add `generateImage` to the
- * virtual AI binding — keep the binding as Cloudflare-compatible `run()` only.
+ * Use via `env.camelai.generateImage(prompt)` in js_exec or
+ * `createCamelAi(env.AI).generateImage(prompt)` in deployed workers
+ * (`workers/camelai-ai.ts`). Keep the virtual AI binding as `run()` only.
  */
 export async function generateImage(
   ai: AiRunBinding,
@@ -121,6 +121,15 @@ export async function generateImage(
     throw new Error("generateImage does not support streaming responses");
   }
   return parseGenerateImageResponse(raw);
+}
+
+/** Env-style helper namespace — matches `env.camelai` in js_exec. */
+export function createCamelAi(ai: AiRunBinding): {
+  generateImage(input: string | GenerateImageOptions): Promise<GenerateImageResult>;
+} {
+  return {
+    generateImage: (input) => generateImage(ai, input),
+  };
 }
 
 function extractGeneratedImageDataUrl(item: unknown): string | null {

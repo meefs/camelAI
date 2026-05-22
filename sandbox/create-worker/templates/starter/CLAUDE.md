@@ -240,18 +240,18 @@ const result = await generateText({
 
 In camelAI deploys, this binding is virtualized and rewritten to an internal platform entrypoint through Cloudflare AI Gateway. Model routing is platform-controlled.
 
-For **image generation**, use `generateImage` from `workers/camelai-ai.ts` (the virtual `AI` binding only exposes `run()`):
+For **image generation**, use `createCamelAi` from `workers/camelai-ai.ts` (the virtual `AI` binding only exposes `run()`; helpers live on `env.camelai` in `js_exec`):
 
 ```typescript
-import { generateImage } from "../workers/camelai-ai";
+import { createCamelAi } from "../workers/camelai-ai";
 
-const { imageDataUrl } = await generateImage(
-  context.cloudflare.env.AI,
+const camelai = createCamelAi(context.cloudflare.env.AI);
+const { imageDataUrl } = await camelai.generateImage(
   "Flat vector robot mascot on a bright green background",
 );
 ```
 
-Do not use `workers-ai-provider` / `generateText()` with `auto_image` — images are dropped. Optional style reference: `generateImage(ai, { prompt, referenceImageUrl })`.
+Do not use `workers-ai-provider` / `generateText()` with `auto_image` — images are dropped. Optional style reference: `camelai.generateImage({ prompt, referenceImageUrl })`.
 
 ### AI Chat Agent
 
