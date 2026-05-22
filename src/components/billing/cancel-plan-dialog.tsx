@@ -1,5 +1,6 @@
-import { useFetcher } from "react-router";
 import { useEffect } from "react";
+import { useFetcher, useRevalidator } from "react-router";
+import { toast } from "sonner";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,6 +19,10 @@ interface CancelPlanDialogProps {
   periodEndLabel: string | null;
 }
 
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+});
+
 export function CancelPlanDialog({
   open,
   onOpenChange,
@@ -26,14 +31,15 @@ export function CancelPlanDialog({
 }: CancelPlanDialogProps) {
   const fetcher = useFetcher<{
     billingPortalUrl?: string;
+    cancellationScheduled?: boolean;
+    cancellationDateMs?: number | null;
     error?: string;
   }>();
+  const revalidator = useRevalidator();
   const isCancelling = fetcher.state !== "idle";
-  const succeeded =
-    fetcher.state === "idle" &&
-    fetcher.data &&
-    !fetcher.data.error &&
-    !fetcher.data.billingPortalUrl;
+  const cancellationScheduled = fetcher.data?.cancellationScheduled === true;
+  const errorMessage =
+    fetcher.data?.error && !cancellationScheduled ? fetcher.data.error : null;
 
   useEffect(() => {
     if (fetcher.state !== "idle") return;
@@ -41,10 +47,25 @@ export function CancelPlanDialog({
       window.location.assign(fetcher.data.billingPortalUrl);
       return;
     }
-    if (succeeded && open) {
+    if (cancellationScheduled && open) {
       onOpenChange(false);
+      revalidator.revalidate();
+      toast.success(
+        fetcher.data?.cancellationDateMs
+          ? `Plan cancels ${dateFormatter.format(
+              new Date(fetcher.data.cancellationDateMs),
+            )}.`
+          : "Plan cancellation is scheduled.",
+      );
     }
-  }, [fetcher.data, fetcher.state, succeeded, open, onOpenChange]);
+  }, [
+    cancellationScheduled,
+    fetcher.data,
+    fetcher.state,
+    open,
+    onOpenChange,
+    revalidator,
+  ]);
 
   return (
     <AlertDialog
@@ -63,10 +84,8 @@ export function CancelPlanDialog({
               ? `Your plan stays active until ${periodEndLabel} and then switches to Free.`
               : "Your plan stays active until the end of the current billing period and then switches to Free."}
           </AlertDialogDescription>
-          {fetcher.data?.error ? (
-            <p className="pt-2 text-sm text-destructive">
-              {fetcher.data.error}
-            </p>
+          {errorMessage ? (
+            <p className="pt-2 text-sm text-destructive">{errorMessage}</p>
           ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>
