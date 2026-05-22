@@ -1,3 +1,70 @@
+/** Inlined into dynamic js_exec workers — keep aligned with `generate-image.ts`. */
+const JS_EXEC_GENERATE_IMAGE_RUNTIME = String.raw`
+function buildGenerateImageMessages(input) {
+  const options = typeof input === "string" ? { prompt: input } : input;
+  const prompt = options.prompt?.trim();
+  if (!prompt) throw new Error("generateImage requires a non-empty prompt");
+  const referenceImageUrl = options.referenceImageUrl?.trim();
+  if (!referenceImageUrl) return [{ role: "user", content: prompt }];
+  return [{
+    role: "user",
+    content: [
+      { type: "image_url", image_url: { url: referenceImageUrl } },
+      { type: "text", text: prompt },
+    ],
+  }];
+}
+
+function extractGeneratedImageDataUrl(item) {
+  if (!item || typeof item !== "object") return null;
+  const imageUrl = item.image_url;
+  if (!imageUrl || typeof imageUrl !== "object") return null;
+  const url = imageUrl.url;
+  return typeof url === "string" && url.trim() ? url.trim() : null;
+}
+
+function parseGenerateImageResponse(payload) {
+  const empty = { text: null, imageDataUrl: null, images: [] };
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return empty;
+  const choices = payload.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return empty;
+  const firstChoice = choices[0];
+  if (!firstChoice || typeof firstChoice !== "object") return empty;
+  const message = firstChoice.message;
+  if (!message || typeof message !== "object") return empty;
+  const text = typeof message.content === "string" && message.content.trim()
+    ? message.content.trim()
+    : null;
+  const images = [];
+  const rawImages = message.images;
+  if (Array.isArray(rawImages)) {
+    for (const [fallbackIndex, item] of rawImages.entries()) {
+      const dataUrl = extractGeneratedImageDataUrl(item);
+      if (!dataUrl) continue;
+      const index = item && typeof item === "object" && typeof item.index === "number"
+        ? item.index
+        : fallbackIndex;
+      images.push({ dataUrl, index });
+    }
+  }
+  images.sort((a, b) => a.index - b.index);
+  return {
+    text,
+    imageDataUrl: images[0]?.dataUrl ?? null,
+    images,
+  };
+}
+
+async function generateImage(ai, input) {
+  const messages = buildGenerateImageMessages(input);
+  const raw = await ai.run("auto_image", { messages });
+  if (raw instanceof ReadableStream) {
+    throw new Error("generateImage does not support streaming responses");
+  }
+  return parseGenerateImageResponse(raw);
+}
+`;
+
 export function prepareCodeModeUserCode(userCode: string): string {
   if (!userCode.trim() || /\breturn\b/.test(userCode)) return userCode;
 
@@ -82,6 +149,8 @@ function hardenTimingSurface() {
   globalThis.Date = CoarseDate;
 }
 
+`}${JS_EXEC_GENERATE_IMAGE_RUNTIME}${String.raw`
+
 function createConnectionsFacade(binding) {
   function responseFromFetchPayload(payload) {
     if (!payload || typeof payload !== "object" || typeof payload.status !== "number") {
@@ -159,7 +228,7 @@ function createConnectionsFacade(binding) {
   });
 }
 
-async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load) {
+async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load, generateImage) {
   "use strict";
 `}${executableUserCode}${String.raw`
 }
@@ -193,7 +262,18 @@ export class CodeModeRunner extends WorkerEntrypoint {
       store.set(key, value);
     };
 
-    const result = await runUserCode(tools, CONNECTIONS, connections, env, context, allTools, text, save, load);
+    const result = await runUserCode(
+      tools,
+      CONNECTIONS,
+      connections,
+      env,
+      context,
+      allTools,
+      text,
+      save,
+      load,
+      generateImage,
+    );
     if (result !== undefined) output.push(stringifyOutput(result));
     return { text: output.join("\n") };
   }

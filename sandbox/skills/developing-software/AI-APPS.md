@@ -310,7 +310,7 @@ Three auto routes are available. Use them with `workersai(routeName, {})` in dep
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, live prices, recent events, fact-checking |
 | `auto_image` | Image generation (low-level route) | Prefer `generateImage(env.AI, prompt)` from `workers/camelai-ai.ts` instead of `run("auto_image")` |
 
-**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. For images in **deployed TypeScript**, import `generateImage` from `workers/camelai-ai.ts` and call `generateImage(env.AI, prompt)` (Wrangler's `Ai` type only declares `run()`). In **`js_exec`**, use `await env.AI.generateImage(prompt)` (runtime method, no TS types).
+**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. For images, call `generateImage(env.AI, prompt)` — import from `workers/camelai-ai.ts` in deployed TypeScript; use the `generateImage` global in `js_exec`.
 
 ### Specific OpenRouter Models (Only When User Explicitly Requests)
 
@@ -359,7 +359,7 @@ const result = await generateText({
 
 ### Image Generation Example
 
-> **Important:** The `workers-ai-provider` does not surface the `images` array from the response. `generateText()` with `workersai("auto_image")` will only return the text portion. Use `generateImage()` from `workers/camelai-ai.ts` in deployed workers (typechecks with standard `Env`). In `js_exec`, use `await env.AI.generateImage(...)`.
+> **Important:** The `workers-ai-provider` does not surface the `images` array from the response. `generateText()` with `workersai("auto_image")` will only return the text portion. Use `generateImage(env.AI, ...)` from `workers/camelai-ai.ts` (deployed) or the `generateImage` global (`js_exec`). The virtual `AI` binding only exposes `run()`.
 
 ```typescript
 import { generateImage } from "../workers/camelai-ai";

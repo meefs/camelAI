@@ -240,7 +240,7 @@ const result = await generateText({
 
 In camelAI deploys, this binding is virtualized and rewritten to an internal platform entrypoint through Cloudflare AI Gateway. Model routing is platform-controlled.
 
-For **image generation** in deployed TypeScript, use `generateImage` from `workers/camelai-ai.ts` (do not call `env.AI.generateImage` directly — Wrangler's `Ai` type only declares `run()`):
+For **image generation**, use `generateImage` from `workers/camelai-ai.ts` (the virtual `AI` binding only exposes `run()`):
 
 ```typescript
 import { generateImage } from "../workers/camelai-ai";

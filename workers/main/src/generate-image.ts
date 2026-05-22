@@ -1,11 +1,3 @@
-/**
- * Image generation helper for camelAI virtual AI bindings.
- *
- * The virtual `env.AI` binding only implements Cloudflare-compatible `run()`.
- * Call `generateImage(env.AI, prompt)` here instead of adding custom methods on
- * the binding. Copy this file into user-worker projects (included in the starter).
- */
-
 export interface GenerateImageOptions {
   prompt: string;
   /** Optional reference image (URL or `data:image/...` data URL) for style consistency. */
@@ -114,8 +106,10 @@ export function parseGenerateImageResponse(
 }
 
 /**
- * Generate images via `auto_image`. Prefer this over `workers-ai-provider` /
- * `generateText()` with `auto_image` — images are dropped there.
+ * Generate images via `auto_image` using only `ai.run()`.
+ * Use this in deployed user workers (`workers/camelai-ai.ts`) and `js_exec`
+ * (`generateImage(env.AI, prompt)` global). Do not add `generateImage` to the
+ * virtual AI binding — keep the binding as Cloudflare-compatible `run()` only.
  */
 export async function generateImage(
   ai: AiRunBinding,

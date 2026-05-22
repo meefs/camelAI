@@ -847,7 +847,8 @@ return result;
 Generate images the same way as in deployed workers:
 
 ```javascript
-const { text, imageDataUrl } = await env.AI.generateImage(
+const { text, imageDataUrl } = await generateImage(
+  env.AI,
   "Flat vector robot mascot on a solid bright green background",
 );
 return { text, imageDataUrl };
@@ -888,7 +889,7 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
 | `auto_image` | Image generation (low-level route) | Prefer `generateImage(env.AI, prompt)` from `workers/camelai-ai.ts` instead of `run(\"auto_image\")` |
 
-Default to `auto` unless the use case clearly requires search or image generation. For images in **deployed TypeScript**, import `generateImage` from `workers/camelai-ai.ts` and call `generateImage(env.AI, prompt)` (standard Wrangler `Ai` types only include `run()`). In **`js_exec`**, use `await env.AI.generateImage(prompt)` — returns parsed `{ text, imageDataUrl, images }`.
+Default to `auto` unless the use case clearly requires search or image generation. For images, call `generateImage(env.AI, prompt)` — import from `workers/camelai-ai.ts` in deployed TypeScript or use the `generateImage` global in `js_exec`. Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 

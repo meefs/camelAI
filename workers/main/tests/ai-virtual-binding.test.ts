@@ -1,9 +1,12 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   buildGenerateImageMessages,
+  generateImage,
+  parseGenerateImageResponse,
+} from "../src/generate-image.js";
+import {
   extractModelFromInput,
   isOpenRouterModel,
-  parseGenerateImageResponse,
   resolveGatewaySettings,
   resolveModel,
   resolveVirtualModel,
@@ -441,6 +444,37 @@ describe("buildGenerateImageMessages", () => {
     expect(() => buildGenerateImageMessages("   ")).toThrow(
       "generateImage requires a non-empty prompt",
     );
+  });
+});
+
+describe("generateImage", () => {
+  it("calls auto_image via run and parses the response", async () => {
+    const ai = {
+      run: async (model: string, input: unknown) => {
+        expect(model).toBe("auto_image");
+        expect(input).toEqual({
+          messages: [{ role: "user", content: "a star" }],
+        });
+        return {
+          choices: [
+            {
+              message: {
+                content: "done",
+                images: [
+                  {
+                    index: 0,
+                    image_url: { url: "data:image/png;base64,star" },
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    const result = await generateImage(ai, "a star");
+    expect(result.imageDataUrl).toBe("data:image/png;base64,star");
   });
 });
 
