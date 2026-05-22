@@ -1775,6 +1775,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         userId: request.userId,
       },
     });
+    const camelai = (this.ctx.exports as unknown as {
+      CamelAiService: (options: { props: AIVirtualBindingProps }) => unknown;
+    }).CamelAiService({
+      props: {
+        orgId: request.orgId,
+        workspaceId: request.workspaceId,
+        userId: request.userId,
+      },
+    });
 
     const workerCode: WorkerLoaderWorkerCode = {
       compatibilityDate: CODE_MODE_COMPATIBILITY_DATE,
@@ -1782,7 +1791,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       modules: {
         "index.js": { js: codeModeWorkerModule(code) },
       },
-      env: { TOOLS: tools, CONNECTIONS: connections, AI: ai },
+      env: { TOOLS: tools, CONNECTIONS: connections, AI: ai, CAMELAI: camelai },
     };
     const worker = typeof loader.load === "function"
       ? loader.load(workerCode)
@@ -5283,7 +5292,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
-      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model routes include `auto` and `auto_search`. For image generation, call `await env.camelai.generateImage(\"prompt\")` (same on `context.cloudflare.env.camelai`; in deployed user-worker TypeScript use `createCamelAi(env.AI)` from `workers/camelai-ai.ts`). Do not use `workers-ai-provider` / `generateText()` with `auto_image` because images are dropped.",
+      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model routes include `auto` and `auto_search`. For image generation, call `await env.CAMELAI.generateImage(\"prompt\")` (same on `context.cloudflare.env.CAMELAI`). Do not use `workers-ai-provider` / `generateText()` with `auto_image` because images are dropped.",
       "Before relying on repository-specific conventions, read /home/claude/AGENTS.md, /home/claude/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
       "",
       "## Available Skills",
@@ -6146,7 +6155,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
           "Connection credentials are intentionally hidden behind the binding. " +
-          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })` for text or `auto_search` for grounded search. For images, call `await env.camelai.generateImage(\"prompt\")` or `await env.camelai.generateImage({ prompt, referenceImageUrl })` (also on `context.cloudflare.env.camelai`; in deployed user-worker TypeScript use `createCamelAi(env.AI)` from `workers/camelai-ai.ts`). Returns `{ text, imageDataUrl, images }`. " +
+          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })` for text or `auto_search` for grounded search. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. " +
           "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({

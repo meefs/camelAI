@@ -18,9 +18,11 @@ import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
 
 const VIRTUAL_DATA_PROXY_BINDING_NAME = "DATA_PROXY";
 const VIRTUAL_CONNECTIONS_BINDING_NAME = "CONNECTIONS";
+const VIRTUAL_CAMELAI_BINDING_NAME = "CAMELAI";
 const ALLOWED_VIRTUAL_SERVICE_BINDINGS = new Set([
   VIRTUAL_DATA_PROXY_BINDING_NAME,
   VIRTUAL_CONNECTIONS_BINDING_NAME,
+  VIRTUAL_CAMELAI_BINDING_NAME,
 ]);
 
 // =============================================================================
@@ -578,11 +580,15 @@ function transformVirtualBindings(
     (b) => b.type === "service" && b.name === VIRTUAL_CONNECTIONS_BINDING_NAME,
   );
   const aiBindings = bindings.filter((b) => b.type === "ai");
+  const camelaiBindings = bindings.filter(
+    (b) => b.type === "service" && b.name === VIRTUAL_CAMELAI_BINDING_NAME,
+  );
   if (
     r2Bindings.length === 0 &&
     dataProxyBindings.length === 0 &&
     connectionsBindings.length === 0 &&
-    aiBindings.length === 0
+    aiBindings.length === 0 &&
+    camelaiBindings.length === 0
   )
     return body;
 
@@ -656,6 +662,7 @@ function transformVirtualBindings(
     dataProxyBindings: dataProxyBindings.map((b) => ({ name: b.name })),
     connectionsBindings: connectionsBindings.map((b) => ({ name: b.name })),
     aiBindings: aiBindings.map((b) => ({ name: b.name })),
+    camelaiBindings: camelaiBindings.map((b) => ({ name: b.name })),
     originalSize: body.byteLength,
     newSize: result.length,
   });
@@ -721,6 +728,23 @@ export function mapVirtualizedBindings(
         name: binding.name,
         service: workerServiceName,
         entrypoint: "AIVirtualBinding",
+        props,
+      };
+    }
+
+    if (
+      binding.type === "service" &&
+      binding.name === VIRTUAL_CAMELAI_BINDING_NAME
+    ) {
+      const props: Record<string, string> = { workspaceId, orgId };
+      if (userId) {
+        props.userId = userId;
+      }
+      return {
+        type: "service",
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: "CamelAiService",
         props,
       };
     }

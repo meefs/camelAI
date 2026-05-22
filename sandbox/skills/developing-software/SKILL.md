@@ -484,7 +484,8 @@ The template creates this `wrangler.jsonc`:
   "worker_loaders": [{ "binding": "LOADER" }],
   "services": [
     { "binding": "DATA_PROXY", "service": "my-app", "entrypoint": "LocalDataProxyService" },
-    { "binding": "CONNECTIONS", "service": "my-app", "entrypoint": "LocalConnectionsService" }
+    { "binding": "CONNECTIONS", "service": "my-app", "entrypoint": "LocalConnectionsService" },
+    { "binding": "CAMELAI", "service": "my-app", "entrypoint": "LocalCamelAiService" }
   ]
 }
 ```
@@ -774,7 +775,7 @@ Inside `js_exec`, these globals are available:
 - `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
 - `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
 - `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding (`run()` only), matching deployed user workers.
-- `env.camelai` and `context.cloudflare.env.camelai` - camelAI helpers (`generateImage(prompt)`), not on the `AI` binding type.
+- `env.CAMELAI` and `context.cloudflare.env.CAMELAI` - image generation service binding (`generateImage(prompt)`), same pattern as `CONNECTIONS`.
 
 Connection credentials are intentionally hidden behind the virtual binding.
 
@@ -848,7 +849,7 @@ return result;
 Generate images the same way as in deployed workers:
 
 ```javascript
-const { text, imageDataUrl } = await env.camelai.generateImage(
+const { text, imageDataUrl } = await env.CAMELAI.generateImage(
   "Flat vector robot mascot on a solid bright green background",
 );
 return { text, imageDataUrl };
@@ -887,9 +888,21 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 |-------|---------|-------------|
 | `auto` | Text generation + tool calling | Default for all general-purpose AI features |
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
-| `auto_image` | Image generation (low-level route) | Prefer `env.camelai.generateImage(prompt)` / `createCamelAi(env.AI)` instead of `run(\"auto_image\")` |
+| `auto_image` | Image generation (low-level route) | Prefer `env.CAMELAI.generateImage(prompt)` instead of `run(\"auto_image\")` |
 
-Default to `auto` unless the use case clearly requires search or image generation. For images, use `env.camelai.generateImage(prompt)` in `js_exec` or `createCamelAi(context.cloudflare.env.AI).generateImage(prompt)` in deployed TypeScript (`workers/camelai-ai.ts`). Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
+Default to `auto` unless the use case clearly requires search or image generation. For images, use `env.CAMELAI.generateImage(prompt)` in `js_exec` or deployed workers (requires `CAMELAI` service binding in `wrangler.jsonc`). Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
+
+The starter template includes a local `CAMELAI` self-binding (typed via `bun wrangler types` as `Service<typeof LocalCamelAiService>`):
+
+```jsonc
+{
+  "services": [
+    { "binding": "CAMELAI", "service": "my-app", "entrypoint": "LocalCamelAiService" }
+  ]
+}
+```
+
+On camelAI deploys, the platform rewrites this binding to the internal `CamelAiService` entrypoint (same pattern as `CONNECTIONS`).
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 

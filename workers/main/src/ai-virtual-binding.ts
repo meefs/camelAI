@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import type { OrgDO } from "./auth";
 import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 
-interface AIVirtualBindingEnv {
+export interface AIVirtualBindingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   SANDBOX_HOST?: Fetcher;
   CF_ACCOUNT_ID?: string;
@@ -12,10 +12,16 @@ interface AIVirtualBindingEnv {
   AI_VIRTUAL_MODEL?: string;
 }
 
-interface AIVirtualBindingProps {
+export interface AIVirtualBindingProps {
   orgId: string;
   workspaceId: string;
   userId?: string;
+}
+
+export interface VirtualAiRunScope {
+  env: AIVirtualBindingEnv;
+  props: AIVirtualBindingProps;
+  waitUntil: (promise: Promise<unknown>) => void;
 }
 
 const DEFAULT_VIRTUAL_MODEL = "google/gemini-3-flash-preview";
@@ -66,6 +72,133 @@ export function isOpenRouterModel(resolvedModel: string): boolean {
   return !resolvedModel.startsWith("dynamic/");
 }
 
+export async function executeVirtualAiRun(
+  scope: VirtualAiRunScope,
+  model: string,
+  input: unknown,
+  _options?: unknown,
+): Promise<unknown> {
+  const { model: inputModel, input: sanitizedInput } =
+    extractModelFromInput(input);
+  const envDefault = resolveVirtualModel(scope.env);
+
+  const picked = pickModel(model, inputModel, envDefault);
+  const resolvedModelName = resolveModel(picked);
+
+  const provider: GatewayProvider = isOpenRouterModel(resolvedModelName)
+    ? "openrouter"
+    : "compat";
+  const access = await checkHostedModelAccess(scope.env, scope.props);
+  const settings = resolveGatewaySettings(scope.env);
+  if (!settings) {
+    throw new Error("AI Gateway is not configured for virtual AI.");
+  }
+
+  const startedAt = Date.now();
+  const result = await runViaGatewayHTTP(
+    settings,
+    scope.props,
+    sanitizedInput,
+    resolvedModelName,
+    provider,
+  );
+  const record = (usage: ExtractedUsage) =>
+    recordVirtualAiUsage(
+      scope.env,
+      scope.props,
+      usage,
+      provider,
+      Date.now() - startedAt,
+      access.creditChargeable,
+    ).catch((error) => {
+      console.error("[AIVirtualBinding] failed to record usage", error);
+    });
+  if (result instanceof ReadableStream) {
+    const [clientStream, usageStream] = result.tee();
+    scope.waitUntil(
+      extractStreamingUsage(usageStream, resolvedModelName).then((usage) =>
+        usage ? record(usage) : undefined,
+      ),
+    );
+    return clientStream;
+  }
+  const usage = extractJsonUsage(result, resolvedModelName);
+  if (usage) {
+    scope.waitUntil(record(usage));
+  }
+  return result;
+}
+
+async function checkHostedModelAccess(
+  env: AIVirtualBindingEnv,
+  props: AIVirtualBindingProps,
+): Promise<{ creditChargeable: boolean }> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(props.orgId));
+  const org = await orgStub.getInfo();
+  if (!org) {
+    throw new Error("Organization not found");
+  }
+  const status = org.billing_status ?? "inactive";
+  const plan = org.billing_plan ?? "payg";
+  if (status === "enterprise") return { creditChargeable: false };
+  const isPayAsYouGo = plan === "payg";
+  if (status === "past_due") {
+    throw new Error(
+      "Your subscription is past due. Update payment details, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue.",
+    );
+  }
+  if (status === "canceled") {
+    throw new Error(
+      "Your subscription was canceled. Start a new subscription, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue.",
+    );
+  }
+  if (!isPayAsYouGo && status !== "trialing" && status !== "active") {
+    throw new Error(
+      "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider.",
+    );
+  }
+  await ensureLegacyHostUsageBackfilled(env, props.orgId);
+  const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
+  const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
+  const totalCreditsCents =
+    (org.billing_credit_purchase_total_cents ?? 0) +
+    (org.billing_credit_grant_total_cents ?? 0);
+  if (totalCreditsCents - spentCents <= 0) {
+    throw new Error(
+      `Hosted model credits are used up. You have used ${(spentCents / 100).toFixed(2)} of ${(totalCreditsCents / 100).toFixed(2)} credits.`,
+    );
+  }
+  return { creditChargeable: true };
+}
+
+async function recordVirtualAiUsage(
+  env: AIVirtualBindingEnv,
+  props: AIVirtualBindingProps,
+  usage: ExtractedUsage,
+  gatewayProvider: GatewayProvider,
+  durationMs: number,
+  creditChargeable: boolean,
+): Promise<void> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(props.orgId));
+  await orgStub.recordUsage({
+    workspace_id: props.workspaceId,
+    user_id: props.userId ?? "",
+    thread_id: "virtual-ai",
+    model: usage.model,
+    provider: gatewayProvider === "openrouter" ? "openrouter" : "openai",
+    billing_source: "hosted",
+    credit_chargeable: creditChargeable,
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    cache_creation_input_tokens: usage.cacheCreationInputTokens,
+    cache_read_input_tokens: usage.cacheReadInputTokens,
+    reported_cost_usd: usage.reportedCostUsd,
+    upstream_inference_cost_usd: usage.upstreamInferenceCostUsd,
+    duration_ms: durationMs,
+    created_at_ms: Date.now(),
+  });
+}
+
 /**
  * Virtual AI binding for user-uploaded workers.
  *
@@ -79,116 +212,18 @@ export class AIVirtualBinding extends WorkerEntrypoint<
   async run(
     model: string,
     input: unknown,
-    _options?: unknown,
+    options?: unknown,
   ): Promise<unknown> {
-    const { model: inputModel, input: sanitizedInput } =
-      extractModelFromInput(input);
-    const envDefault = resolveVirtualModel(this.env);
-
-    // Resolve model: caller param → input body model → env default — first non-empty wins
-    const picked = pickModel(model, inputModel, envDefault);
-    const resolvedModelName = resolveModel(picked);
-
-    const provider: GatewayProvider = isOpenRouterModel(resolvedModelName)
-      ? "openrouter"
-      : "compat";
-    const access = await this.checkHostedModelAccess();
-    const settings = resolveGatewaySettings(this.env);
-    if (!settings) {
-      throw new Error("AI Gateway is not configured for virtual AI.");
-    }
-
-    const startedAt = Date.now();
-    const result = await runViaGatewayHTTP(
-      settings,
-      this.ctx.props,
-      sanitizedInput,
-      resolvedModelName,
-      provider,
+    return executeVirtualAiRun(
+      {
+        env: this.env,
+        props: this.ctx.props,
+        waitUntil: (promise) => this.ctx.waitUntil(promise),
+      },
+      model,
+      input,
+      options,
     );
-    const record = (usage: ExtractedUsage) =>
-      this.recordUsage(usage, provider, Date.now() - startedAt, access.creditChargeable).catch((error) => {
-        console.error("[AIVirtualBinding] failed to record usage", error);
-      });
-    if (result instanceof ReadableStream) {
-      const [clientStream, usageStream] = result.tee();
-      this.ctx.waitUntil(
-        extractStreamingUsage(usageStream, resolvedModelName).then((usage) =>
-          usage ? record(usage) : undefined,
-        ),
-      );
-      return clientStream;
-    }
-    const usage = extractJsonUsage(result, resolvedModelName);
-    if (usage) {
-      this.ctx.waitUntil(record(usage));
-    }
-    return result;
-  }
-
-  private async checkHostedModelAccess(): Promise<{ creditChargeable: boolean }> {
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.ctx.props.orgId));
-    const org = await orgStub.getInfo();
-    if (!org) {
-      throw new Error("Organization not found");
-    }
-    const status = org.billing_status ?? "inactive";
-    const plan = org.billing_plan ?? "payg";
-    if (status === "enterprise") return { creditChargeable: false };
-    const isPayAsYouGo = plan === "payg";
-    if (status === "past_due") {
-      throw new Error(
-        "Your subscription is past due. Update payment details, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue.",
-      );
-    }
-    if (status === "canceled") {
-      throw new Error(
-        "Your subscription was canceled. Start a new subscription, switch to Pay as you go in Settings -> Billing, or add your own API key in Settings -> AI Provider to continue.",
-      );
-    }
-    if (!isPayAsYouGo && status !== "trialing" && status !== "active") {
-      throw new Error(
-        "Hosted models require billing access. Choose Pay as you go, start a subscription, or add your own API key in Settings -> AI Provider.",
-      );
-    }
-    await ensureLegacyHostUsageBackfilled(this.env, this.ctx.props.orgId);
-    const usage = await orgStub.getUsageLogSum(0, Date.now(), true);
-    const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
-    const totalCreditsCents =
-      (org.billing_credit_purchase_total_cents ?? 0) +
-      (org.billing_credit_grant_total_cents ?? 0);
-    if (totalCreditsCents - spentCents <= 0) {
-      throw new Error(
-        `Hosted model credits are used up. You have used ${(spentCents / 100).toFixed(2)} of ${(totalCreditsCents / 100).toFixed(2)} credits.`,
-      );
-    }
-    return { creditChargeable: true };
-  }
-
-  private async recordUsage(
-    usage: ExtractedUsage,
-    gatewayProvider: GatewayProvider,
-    durationMs: number,
-    creditChargeable: boolean,
-  ): Promise<void> {
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.ctx.props.orgId));
-    await orgStub.recordUsage({
-      workspace_id: this.ctx.props.workspaceId,
-      user_id: this.ctx.props.userId ?? "",
-      thread_id: "virtual-ai",
-      model: usage.model,
-      provider: gatewayProvider === "openrouter" ? "openrouter" : "openai",
-      billing_source: "hosted",
-      credit_chargeable: creditChargeable,
-      input_tokens: usage.inputTokens,
-      output_tokens: usage.outputTokens,
-      cache_creation_input_tokens: usage.cacheCreationInputTokens,
-      cache_read_input_tokens: usage.cacheReadInputTokens,
-      reported_cost_usd: usage.reportedCostUsd,
-      upstream_inference_cost_usd: usage.upstreamInferenceCostUsd,
-      duration_ms: durationMs,
-      created_at_ms: Date.now(),
-    });
   }
 }
 
@@ -524,7 +559,6 @@ export {
   type GenerateImageOptions,
   type GenerateImageResult,
   buildGenerateImageMessages,
-  createCamelAi,
   generateImage,
   parseGenerateImageResponse,
 } from "./generate-image.js";

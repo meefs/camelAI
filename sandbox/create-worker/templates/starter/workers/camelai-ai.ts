@@ -2,8 +2,8 @@
  * Image generation helper for camelAI virtual AI bindings.
  *
  * The virtual `env.AI` binding only implements Cloudflare-compatible `run()`.
- * Use `createCamelAi(env.AI).generateImage(prompt)` (same shape as `env.camelai`
- * in js_exec). Copy this file into user-worker projects (included in the starter).
+ * Call `env.CAMELAI.generateImage(prompt)` via the CAMELAI service binding
+ * (`workers/camelai-service.ts`). This module implements the local shim logic.
  */
 
 export interface GenerateImageOptions {
@@ -127,15 +127,6 @@ export async function generateImage(
     throw new Error("generateImage does not support streaming responses");
   }
   return parseGenerateImageResponse(raw);
-}
-
-/** Env-style helper namespace — matches `env.camelai` in js_exec. */
-export function createCamelAi(ai: AiRunBinding): {
-  generateImage(input: string | GenerateImageOptions): Promise<GenerateImageResult>;
-} {
-  return {
-    generateImage: (input) => generateImage(ai, input),
-  };
 }
 
 function extractGeneratedImageDataUrl(item: unknown): string | null {

@@ -389,7 +389,7 @@ describe('Worker Binding Validation', () => {
       ]);
     });
 
-    it('rewrites starter local DATA_PROXY and CONNECTIONS shim bindings to internal services', () => {
+    it('rewrites starter local DATA_PROXY, CONNECTIONS, and CAMELAI shim bindings to internal services', () => {
       const bindings: WorkerBinding[] = [
         {
           type: 'service',
@@ -402,6 +402,12 @@ describe('Worker Binding Validation', () => {
           name: 'CONNECTIONS',
           service: 'starter',
           entrypoint: 'LocalConnectionsService',
+        },
+        {
+          type: 'service',
+          name: 'CAMELAI',
+          service: 'starter',
+          entrypoint: 'LocalCamelAiService',
         },
       ];
 
@@ -420,6 +426,13 @@ describe('Worker Binding Validation', () => {
           name: 'CONNECTIONS',
           service: 'chiridion-app',
           entrypoint: 'ConnectionsService',
+          props: { workspaceId: 'ws_abc', orgId: 'org_xyz' },
+        },
+        {
+          type: 'service',
+          name: 'CAMELAI',
+          service: 'chiridion-app',
+          entrypoint: 'CamelAiService',
           props: { workspaceId: 'ws_abc', orgId: 'org_xyz' },
         },
       ]);

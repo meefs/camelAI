@@ -90,9 +90,11 @@
 	 * Service bindings
 	 * - DATA_PROXY: locally binds to LocalDataProxyService; virtualized on camelAI deploy
 	 * - CONNECTIONS: locally binds to LocalConnectionsService; virtualized on camelAI deploy
+	 * - CAMELAI: locally binds to LocalCamelAiService; virtualized on camelAI deploy
 	 */
 	"services": [
 		{ "binding": "DATA_PROXY", "service": "starter", "entrypoint": "LocalDataProxyService" },
-		{ "binding": "CONNECTIONS", "service": "starter", "entrypoint": "LocalConnectionsService" }
+		{ "binding": "CONNECTIONS", "service": "starter", "entrypoint": "LocalConnectionsService" },
+		{ "binding": "CAMELAI", "service": "starter", "entrypoint": "LocalCamelAiService" }
 	]
 }
