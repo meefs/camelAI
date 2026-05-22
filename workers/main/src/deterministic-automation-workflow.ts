@@ -4,10 +4,9 @@ import {
   type WorkflowRunner,
 } from "@cloudflare/dynamic-workflows";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import type { WorkspaceCronDO } from "./workspace-cron";
-import type { ConnectionsServiceProps } from "./connections-service";
 import type { AIVirtualBindingProps } from "./ai-virtual-binding";
 import type { CodeModeToolsProps } from "./chat-thread-do";
+import type { WorkspaceCronDO } from "./workspace-cron";
 
 const AUTOMATION_WORKFLOW_ENTRYPOINT = "AutomationWorkflow";
 const AUTOMATION_COMPATIBILITY_DATE = "2026-05-18";
@@ -23,6 +22,24 @@ interface DeterministicAutomationMetadata {
 interface DeterministicAutomationWorkflowEnv {
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   CODE_MODE_LOADER?: WorkerLoader;
+}
+
+interface ConnectionsServiceProps {
+  orgId: string;
+  workspaceId: string;
+  userId?: string;
+}
+
+interface WorkflowExecutionContextLike {
+  waitUntil?: (promise: Promise<unknown>) => void;
+  exports?: WorkerEntrypointFactories;
+}
+
+interface WorkerEntrypointFactories {
+  CodeModeToolsBinding?: (options: { props: CodeModeToolsProps }) => unknown;
+  ConnectionsService?: (options: { props: ConnectionsServiceProps }) => unknown;
+  AIVirtualBinding?: (options: { props: AIVirtualBindingProps }) => unknown;
+  CamelAiService?: (options: { props: AIVirtualBindingProps }) => unknown;
 }
 
 function requireMetadataString(
@@ -71,6 +88,45 @@ function loadAutomationWorker(input: {
     : loader.get(input.cacheKey, () => workerCode);
 }
 
+export function createDeterministicAutomationRuntimeBindings(input: {
+  ctx: WorkflowExecutionContextLike;
+  orgId: string;
+  workspaceId: string;
+  userId?: string;
+}): Record<string, unknown> {
+  const scopedProps = {
+    orgId: input.orgId,
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+  };
+  const exports = input.ctx.exports;
+  if (!exports) {
+    return {
+      AUTOMATION_CONTEXT: scopedProps,
+    };
+  }
+  const {
+    CodeModeToolsBinding,
+    ConnectionsService,
+    AIVirtualBinding,
+    CamelAiService,
+  } = exports;
+  if (
+    !CodeModeToolsBinding ||
+    !ConnectionsService ||
+    !AIVirtualBinding ||
+    !CamelAiService
+  ) {
+    throw new Error("Automation runtime bindings are not exported");
+  }
+  return {
+    TOOLS: CodeModeToolsBinding({ props: scopedProps }),
+    CONNECTIONS: ConnectionsService({ props: scopedProps }),
+    AI: AIVirtualBinding({ props: scopedProps }),
+    CAMELAI: CamelAiService({ props: scopedProps }),
+  };
+}
+
 export const DeterministicAutomationWorkflow =
   createDynamicWorkflowEntrypoint<DeterministicAutomationWorkflowEnv>(
     async ({ metadata, env, ctx }) => {
@@ -100,39 +156,16 @@ export const DeterministicAutomationWorkflow =
       const workspace = await cronStub.getWorkspaceInfoForAutomation(
         workspaceId,
       );
-      const exports = (ctx as unknown as { exports?: Record<string, unknown> })
-        .exports;
-      if (!exports) {
-        throw new Error("Worker exports are not available to workflow runner");
-      }
-
-      const toolsFactory = exports.CodeModeToolsBinding as
-        | ((options: { props: CodeModeToolsProps }) => unknown)
-        | undefined;
-      const connectionsFactory = exports.ConnectionsService as
-        | ((options: { props: ConnectionsServiceProps }) => unknown)
-        | undefined;
-      const aiFactory = exports.AIVirtualBinding as
-        | ((options: { props: AIVirtualBindingProps }) => unknown)
-        | undefined;
-      if (!toolsFactory || !connectionsFactory || !aiFactory) {
-        throw new Error("Automation runtime bindings are not exported");
-      }
-
-      const scopedProps = {
-        orgId: workspace.org_id,
-        workspaceId,
-        userId: snapshot.created_by,
-      };
       const worker = loadAutomationWorker({
         env,
         source: snapshot.source,
         cacheKey: `automation-${workspaceId}-${automationId}-${sourceVersion}`,
-        workflowEnv: {
-          TOOLS: toolsFactory({ props: scopedProps }),
-          CONNECTIONS: connectionsFactory({ props: scopedProps }),
-          AI: aiFactory({ props: scopedProps }),
-        },
+        workflowEnv: createDeterministicAutomationRuntimeBindings({
+          ctx,
+          orgId: workspace.org_id,
+          workspaceId,
+          userId: snapshot.created_by,
+        }),
       });
 
       return worker.getEntrypoint(
