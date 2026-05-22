@@ -102,6 +102,7 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 | `workers/data-proxy.ts` | Local `DATA_PROXY` service shim (virtualized on deploy) |
 | `workers/chat.ts` | Pre-configured AI chat agent (commented out) |
 | `workers/chat-sessions.ts` | Session index DO for chat history sidebar |
+| `workers/camelai-ai.ts` | Typed `generateImage(ai, prompt)` helper (uses `AI.run` only) |
 | `e2e/smoke.test.mjs` | Playwright E2E smoke tests (commented out) |
 | `app/routes/` | React Router routes with loaders/actions |
 | `app/schemas/` | Zod schemas shared between routes and DOs |
@@ -238,6 +239,19 @@ const result = await generateText({
 ```
 
 In camelAI deploys, this binding is virtualized and rewritten to an internal platform entrypoint through Cloudflare AI Gateway. Model routing is platform-controlled.
+
+For **image generation** in deployed TypeScript, use `generateImage` from `workers/camelai-ai.ts` (do not call `env.AI.generateImage` directly — Wrangler's `Ai` type only declares `run()`):
+
+```typescript
+import { generateImage } from "../workers/camelai-ai";
+
+const { imageDataUrl } = await generateImage(
+  context.cloudflare.env.AI,
+  "Flat vector robot mascot on a bright green background",
+);
+```
+
+Do not use `workers-ai-provider` / `generateText()` with `auto_image` — images are dropped. Optional style reference: `generateImage(ai, { prompt, referenceImageUrl })`.
 
 ### AI Chat Agent
 

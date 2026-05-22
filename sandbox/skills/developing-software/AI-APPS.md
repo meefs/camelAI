@@ -308,9 +308,9 @@ Three auto routes are available. Use them with `workersai(routeName, {})` in dep
 |-------|---------|-------------|
 | `auto` | Text generation + tool calling | Default for all general-purpose AI features |
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, live prices, recent events, fact-checking |
-| `auto_image` | Image generation (low-level route) | Prefer `env.AI.generateImage()` instead of `run("auto_image")` |
+| `auto_image` | Image generation (low-level route) | Prefer `generateImage(env.AI, prompt)` from `workers/camelai-ai.ts` instead of `run("auto_image")` |
 
-**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. For images, call `env.AI.generateImage(prompt)` in deployed workers or `js_exec`.
+**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. For images in **deployed TypeScript**, import `generateImage` from `workers/camelai-ai.ts` and call `generateImage(env.AI, prompt)` (Wrangler's `Ai` type only declares `run()`). In **`js_exec`**, use `await env.AI.generateImage(prompt)` (runtime method, no TS types).
 
 ### Specific OpenRouter Models (Only When User Explicitly Requests)
 
@@ -359,10 +359,13 @@ const result = await generateText({
 
 ### Image Generation Example
 
-> **Important:** The `workers-ai-provider` does not surface the `images` array from the response. `generateText()` with `workersai("auto_image")` will only return the text portion. Use `env.AI.generateImage()` instead (same API in deployed workers and `js_exec`).
+> **Important:** The `workers-ai-provider` does not surface the `images` array from the response. `generateText()` with `workersai("auto_image")` will only return the text portion. Use `generateImage()` from `workers/camelai-ai.ts` in deployed workers (typechecks with standard `Env`). In `js_exec`, use `await env.AI.generateImage(...)`.
 
 ```typescript
-const { text, imageDataUrl, images } = await env.AI.generateImage(
+import { generateImage } from "../workers/camelai-ai";
+
+const { text, imageDataUrl, images } = await generateImage(
+  context.cloudflare.env.AI,
   "Generate a watercolor mountain landscape",
 );
 // imageDataUrl is "data:image/png;base64,..." when the model returns an image
@@ -371,7 +374,7 @@ const { text, imageDataUrl, images } = await env.AI.generateImage(
 Optional style reference:
 
 ```typescript
-const result = await env.AI.generateImage({
+const result = await generateImage(context.cloudflare.env.AI, {
   prompt: "Generate a new image in the same visual style, different subject",
   referenceImageUrl: existingDataUrl,
 });

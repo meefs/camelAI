@@ -127,8 +127,10 @@ export class AIVirtualBinding extends WorkerEntrypoint<
   }
 
   /**
-   * Generate images from a text prompt. Works the same in deployed user workers
-   * (`env.AI.generateImage`) and `js_exec` (`await env.AI.generateImage(...)`).
+   * Generate images from a text prompt. Available at runtime on the virtual binding
+   * (`env.AI.generateImage` in `js_exec`). In deployed user-worker TypeScript, import
+   * `generateImage` from `workers/camelai-ai.ts` and call `generateImage(env.AI, ...)`
+   * so code typechecks with standard Wrangler `Ai` types (only `run()` is declared).
    *
    * Prefer this over `run("auto_image", ...)` — it returns parsed image data URLs
    * instead of the raw gateway payload. `workers-ai-provider` / `generateText()`

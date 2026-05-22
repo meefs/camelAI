@@ -886,9 +886,9 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 |-------|---------|-------------|
 | `auto` | Text generation + tool calling | Default for all general-purpose AI features |
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
-| `auto_image` | Image generation (low-level route) | Prefer `env.AI.generateImage()` instead of `run(\"auto_image\")` |
+| `auto_image` | Image generation (low-level route) | Prefer `generateImage(env.AI, prompt)` from `workers/camelai-ai.ts` instead of `run(\"auto_image\")` |
 
-Default to `auto` unless the use case clearly requires search or image generation. For images, call `env.AI.generateImage(prompt)` in deployed workers or `js_exec` — it returns parsed `{ text, imageDataUrl, images }`.
+Default to `auto` unless the use case clearly requires search or image generation. For images in **deployed TypeScript**, import `generateImage` from `workers/camelai-ai.ts` and call `generateImage(env.AI, prompt)` (standard Wrangler `Ai` types only include `run()`). In **`js_exec`**, use `await env.AI.generateImage(prompt)` — returns parsed `{ text, imageDataUrl, images }`.
 
 ### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 
