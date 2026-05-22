@@ -3,6 +3,7 @@ import type { PreviewTarget } from '@/types';
 import {
   getPreviewTabId,
   getToolbarFileType,
+  shouldAutoRefreshFilePreview,
   supportsPreviewSourceToggle,
 } from '@/components/preview-panel/preview-utils';
 
@@ -135,5 +136,26 @@ describe('preview-utils', () => {
     ]) {
       expect(supportsPreviewSourceToggle(target)).toBe(false);
     }
+  });
+
+  it('does not auto-refresh running HTML previews', () => {
+    const htmlTarget: Extract<PreviewTarget, { kind: 'file' }> = {
+      kind: 'file',
+      source: 'workspace',
+      workspaceId: 'ws_123',
+      path: '/tmp/game.html',
+      contentType: 'text/html',
+    };
+    const textTarget: Extract<PreviewTarget, { kind: 'file' }> = {
+      kind: 'file',
+      source: 'workspace',
+      workspaceId: 'ws_123',
+      path: '/tmp/notes.txt',
+      contentType: 'text/plain',
+    };
+
+    expect(shouldAutoRefreshFilePreview(htmlTarget, 'preview')).toBe(false);
+    expect(shouldAutoRefreshFilePreview(htmlTarget, 'source')).toBe(true);
+    expect(shouldAutoRefreshFilePreview(textTarget, 'preview')).toBe(true);
   });
 });

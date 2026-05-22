@@ -6,6 +6,7 @@ import { createRequestHandler } from "react-router";
 export { ExampleDO } from "./example-do";
 export { LocalDataProxyService } from "./data-proxy";
 export { LocalConnectionsService } from "./connections";
+export { LocalCamelAiService } from "./camelai-service";
 // export { ChatSessionsDO } from "./chat-sessions";
 // export { Chat } from "./chat";
 

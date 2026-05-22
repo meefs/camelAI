@@ -134,6 +134,53 @@ describe("ChatGroupHoverCard", () => {
     expect(viewport?.className).toContain("[&>div]:!w-full");
   });
 
+  it("shows only open chats and excludes closed chats from hover sections", () => {
+    const open = makeThread({
+      id: "open",
+      title: "Visible open chat",
+      status: "idle",
+      last_active_at: now - 10_000,
+    });
+    const closedRunning = makeThread({
+      id: "closed_running",
+      title: "Closed running chat",
+      status: "running",
+      membership: "closed",
+    });
+    const closedCompleted = makeThread({
+      id: "closed_completed",
+      title: "Closed completed chat",
+      status: "unread",
+      membership: "closed",
+      last_assistant_completed_at: now - 60_000,
+    });
+    const closedQuiet = makeThread({
+      id: "closed_quiet",
+      title: "Closed quiet chat",
+      status: "idle",
+      membership: "closed",
+      last_active_at: now - 120_000,
+    });
+    const group = makeGroup({
+      open_threads: [open],
+      closed_threads: [closedRunning, closedCompleted, closedQuiet],
+    });
+
+    const sections = splitThreadsBySection(group);
+
+    expect(sections.inProgress).toEqual([]);
+    expect(sections.completed).toEqual([]);
+    expect(sections.quiet.map((thread) => thread.id)).toEqual(["open"]);
+
+    render(<ChatGroupHoverCard group={group} onSelectThread={vi.fn()} />);
+
+    expect(screen.getByText("1 chat")).toBeInTheDocument();
+    expect(screen.getByText("Visible open chat")).toBeInTheDocument();
+    expect(screen.queryByText("Closed running chat")).not.toBeInTheDocument();
+    expect(screen.queryByText("Closed completed chat")).not.toBeInTheDocument();
+    expect(screen.queryByText("Closed quiet chat")).not.toBeInTheDocument();
+  });
+
   it("reserves completed-row summary space while generation is pending", () => {
     const { container } = render(
       <ChatGroupHoverCard

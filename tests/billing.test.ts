@@ -20,6 +20,7 @@ import {
   bestEffortSyncTeamSubscriptionSeatCount,
   createBillingPortalSession,
   createLegacyStripeMigrationPortalSession,
+  createSubscriptionCancellationPortalSession,
   createSubscriptionCheckoutSession,
   createSubscriptionUpdatePortalSession,
   getBillableTeamSeatCount,
@@ -28,6 +29,7 @@ import {
   getConfiguredSubscriptionPriceId,
   getLegacyStripeMigrationEligibility,
   getStripeDefaultPaymentMethodSummary,
+  getStripeSubscriptionSummary,
   getVerifiedLegacyStripeMigrationEligibility,
   isBillingSetupPath,
   isConfiguredEnterpriseOrg,
@@ -1270,6 +1272,350 @@ describe("billing helpers", () => {
     ).toBe("https://camelai.dev/settings/organization/billing");
   });
 
+  it("reports Stripe subscription cancellation summary metadata", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "sub_123",
+          status: "active",
+          current_period_end: 1_778_342_400,
+          cancel_at: 1_778_342_400,
+          cancel_at_period_end: true,
+          trial_end: 1_776_787_200,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "sub_123",
+          status: "active",
+          current_period_end: 1_781_020_800,
+          cancel_at: null,
+          cancel_at_period_end: true,
+          trial_end: null,
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = {
+      ORG: {} as never,
+      STRIPE_MODE: "test",
+      STRIPE_SECRET_KEY: "sk_test_123",
+    };
+    const org = {
+      id: "org_123",
+      billing_subscription_id: "sub_123",
+    } as never;
+
+    await expect(getStripeSubscriptionSummary(env, org)).resolves.toMatchObject(
+      {
+        cancel_at_ms: 1_778_342_400_000,
+        cancellation_date_ms: 1_778_342_400_000,
+        cancel_at_period_end: true,
+        is_canceling: true,
+      },
+    );
+
+    await expect(getStripeSubscriptionSummary(env, org)).resolves.toMatchObject(
+      {
+        cancel_at_ms: null,
+        cancellation_date_ms: 1_781_020_800_000,
+        cancel_at_period_end: true,
+        is_canceling: true,
+      },
+    );
+  });
+
+  it("returns already scheduled cancellation without creating a portal session", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_customer_id: "cus_local",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+    });
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_subscription",
+            current_period_end: 1_778_342_400,
+            cancel_at_period_end: true,
+            metadata: {
+              org_id: "org_team",
+              billing_plan: "pro",
+              seat_count: "1",
+              subscription_included_credit_cents: "3000",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_pro",
+                  quantity: 1,
+                  price: { id: "price_pro" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createSubscriptionCancellationPortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+      }),
+    ).resolves.toEqual({
+      kind: "already_scheduled",
+      cancellationDateMs: 1_778_342_400_000,
+      subscriptionStatus: "active",
+    });
+
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/billing_portal/sessions"),
+      ),
+    ).toBe(false);
+    expect(orgStub.syncSubscriptionBillingState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_subscription_id: "sub_team",
+      }),
+      3000,
+    );
+  });
+
+  it("treats portal creation failure as success when refresh shows cancellation", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_customer_id: "cus_subscription",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+    });
+
+    const activeSubscription = {
+      id: "sub_team",
+      status: "active",
+      customer: "cus_subscription",
+      current_period_end: 1_778_342_400,
+      cancel_at_period_end: false,
+      metadata: {
+        org_id: "org_team",
+        billing_plan: "pro",
+        seat_count: "1",
+        subscription_included_credit_cents: "3000",
+      },
+      items: {
+        data: [{ id: "si_pro", quantity: 1, price: { id: "price_pro" } }],
+      },
+    };
+    let subscriptionFetchCount = 0;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        subscriptionFetchCount += 1;
+        const subscription =
+          subscriptionFetchCount === 1
+            ? activeSubscription
+            : { ...activeSubscription, cancel_at_period_end: true };
+        return {
+          ok: true,
+          json: async () => subscription,
+        };
+      }
+      if (url.endsWith("/billing_portal/sessions")) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => "portal failed",
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createSubscriptionCancellationPortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+      }),
+    ).resolves.toEqual({
+      kind: "already_scheduled",
+      cancellationDateMs: 1_778_342_400_000,
+      subscriptionStatus: "active",
+    });
+  });
+
+  it("throws portal creation failures when refresh does not show cancellation", async () => {
+    const { env, org } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_customer_id: "cus_subscription",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+    });
+    const subscription = {
+      id: "sub_team",
+      status: "active",
+      customer: "cus_subscription",
+      current_period_end: 1_778_342_400,
+      cancel_at_period_end: false,
+      metadata: {
+        org_id: "org_team",
+        billing_plan: "pro",
+        seat_count: "1",
+        subscription_included_credit_cents: "3000",
+      },
+      items: {
+        data: [{ id: "si_pro", quantity: 1, price: { id: "price_pro" } }],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/subscriptions/sub_team")) {
+          return {
+            ok: true,
+            json: async () => subscription,
+          };
+        }
+        if (url.endsWith("/billing_portal/sessions")) {
+          return {
+            ok: false,
+            status: 400,
+            text: async () => "portal failed",
+          };
+        }
+        throw new Error(`Unexpected Stripe request: ${url}`);
+      }),
+    );
+
+    await expect(
+      createSubscriptionCancellationPortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+      }),
+    ).rejects.toThrow("Stripe /billing_portal/sessions returned 400");
+  });
+
+  it("uses the subscription customer for cancellation portal sessions", async () => {
+    const { env, org, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "pro",
+        billing_customer_id: "cus_stale",
+        billing_subscription_id: "sub_team",
+      },
+      memberCount: 1,
+    });
+    Object.assign(env, {
+      STRIPE_PRO_PRICE_ID: "price_pro",
+      STRIPE_BILLING_PORTAL_CONFIGURATION_ID: "bpc_v2",
+    });
+
+    let portalRequestBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/subscriptions/sub_team") && !init?.body) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "sub_team",
+            status: "active",
+            customer: "cus_subscription",
+            current_period_end: 1_778_342_400,
+            cancel_at_period_end: false,
+            metadata: {
+              org_id: "org_team",
+              billing_plan: "pro",
+              seat_count: "1",
+              subscription_included_credit_cents: "3000",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_pro",
+                  quantity: 1,
+                  price: { id: "price_pro" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/billing_portal/sessions")) {
+        portalRequestBody = init?.body as string;
+        return {
+          ok: true,
+          json: async () => ({ url: "https://billing.stripe.test/session" }),
+        };
+      }
+      throw new Error(`Unexpected Stripe request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createSubscriptionCancellationPortalSession({
+        env: env as never,
+        org,
+        customerEmail: "owner@example.com",
+        returnUrl: "https://camelai.dev/settings/organization/billing",
+        afterCompletionReturnUrl:
+          "https://camelai.dev/settings/organization/billing?cancelled=1",
+      }),
+    ).resolves.toEqual({
+      kind: "portal",
+      billingPortalUrl: "https://billing.stripe.test/session",
+    });
+
+    const portalParams = new URLSearchParams(portalRequestBody ?? "");
+    expect(portalParams.get("customer")).toBe("cus_subscription");
+    expect(portalParams.get("configuration")).toBe("bpc_v2");
+    expect(portalParams.get("flow_data[type]")).toBe("subscription_cancel");
+    expect(
+      portalParams.get("flow_data[subscription_cancel][subscription]"),
+    ).toBe("sub_team");
+    expect(
+      portalParams.get("flow_data[after_completion][redirect][return_url]"),
+    ).toBe("https://camelai.dev/settings/organization/billing?cancelled=1");
+    expect(orgStub.updateBillingState).toHaveBeenCalledWith({
+      billing_customer_id: "cus_subscription",
+    });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/customers")),
+    ).toBe(false);
+  });
+
   it("creates an interactive Stripe portal update session for Team plan changes", async () => {
     const { env, org } = makeBillingOrgEnv({
       org: {
@@ -1921,6 +2267,82 @@ describe("billing helpers", () => {
       expect.objectContaining({
         billing_plan: "team",
         billing_seat_count: 4,
+      }),
+      1000,
+    );
+  });
+
+  it("keeps pending-cancel active and trialing subscriptions non-terminal", async () => {
+    const { env, orgStub } = makeBillingOrgEnv({
+      org: {
+        billing_status: "active",
+        billing_plan: "team",
+        billing_seat_count: 3,
+      },
+      memberCount: 3,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({}),
+      })),
+    );
+
+    const baseSubscription = {
+      id: "sub_team",
+      customer: "cus_123",
+      cancel_at_period_end: true,
+      current_period_end: 1_778_342_400,
+      metadata: {
+        org_id: "org_team",
+        billing_plan: "team",
+        seat_count: "3",
+        subscription_included_credit_cents: "3000",
+      },
+      items: {
+        data: [
+          {
+            id: "si_team",
+            quantity: 3,
+            price: {
+              id: "price_team",
+              unit_amount: 5000,
+              currency: "usd",
+            },
+          },
+        ],
+      },
+    };
+
+    await expect(
+      syncOrgSubscriptionFromStripe(env as never, {
+        ...baseSubscription,
+        status: "trialing",
+      }),
+    ).resolves.toMatchObject({
+      billing_status: "trialing",
+      billing_plan: "team",
+      billing_subscription_id: "sub_team",
+      billing_subscription_status: "trialing",
+    });
+
+    await expect(
+      syncOrgSubscriptionFromStripe(env as never, {
+        ...baseSubscription,
+        status: "active",
+      }),
+    ).resolves.toMatchObject({
+      billing_status: "active",
+      billing_plan: "team",
+      billing_subscription_id: "sub_team",
+      billing_subscription_status: "active",
+    });
+
+    expect(orgStub.syncSubscriptionBillingState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        billing_status: "active",
+        billing_subscription_id: "sub_team",
       }),
       1000,
     );

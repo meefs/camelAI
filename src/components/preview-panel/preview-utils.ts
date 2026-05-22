@@ -153,6 +153,13 @@ export function supportsPreviewSourceToggle(target: PreviewTarget): boolean {
   return fileType === 'spreadsheet' && isDelimitedSpreadsheetTarget(target);
 }
 
+export function shouldAutoRefreshFilePreview(
+  target: Extract<PreviewTarget, { kind: 'file' }>,
+  fileViewMode: 'preview' | 'source',
+): boolean {
+  return fileViewMode !== 'preview' || getToolbarFileType(target) !== 'html';
+}
+
 export function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === 'app') return `app:${target.scriptName}`;
   return `file:${target.workspaceId}:${target.source}:${target.path}`;

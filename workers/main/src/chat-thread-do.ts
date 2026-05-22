@@ -1915,6 +1915,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         userId: request.userId,
       },
     });
+    const camelai = (this.ctx.exports as unknown as {
+      CamelAiService: (options: { props: AIVirtualBindingProps }) => unknown;
+    }).CamelAiService({
+      props: {
+        orgId: request.orgId,
+        workspaceId: request.workspaceId,
+        userId: request.userId,
+      },
+    });
 
     const workerCode: WorkerLoaderWorkerCode = {
       compatibilityDate: CODE_MODE_COMPATIBILITY_DATE,
@@ -1922,7 +1931,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       modules: {
         "index.js": { js: codeModeWorkerModule(code) },
       },
-      env: { TOOLS: tools, CONNECTIONS: connections, AI: ai },
+      env: { TOOLS: tools, CONNECTIONS: connections, AI: ai, CAMELAI: camelai },
     };
     const worker = typeof loader.load === "function"
       ? loader.load(workerCode)
@@ -3360,6 +3369,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       error?: unknown;
       provider?: string | null;
       model?: string | null;
+      sampleKey?: string | null;
       insertedCount?: number;
       updatedCount?: number;
     } = {},
@@ -3384,6 +3394,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         size: details.size,
         provider: details.provider,
         model: details.model,
+        sampleIndex: details.sampleKey,
         error: details.error,
       });
       return;
@@ -3403,6 +3414,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       durationMs: details.durationMs,
       count,
       size: details.size,
+      sampleIndex: details.sampleKey,
     });
   }
 
@@ -4062,14 +4074,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ws: WebSocket,
     data: ChatClientMessage,
   ): Promise<void> {
-    const result = await this.enqueueRunnerUserMessage(data);
-    if (result.status !== "accepted") {
-      this.sendDirect(ws, {
-        type: "error",
-        error: result.error ?? "Failed to send message",
-      });
-      return;
-    }
+    const startedAt = Date.now();
+    const sendAttemptId = data.clientMessageId || crypto.randomUUID();
+    this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+      operation: "received",
+      status: "started",
+      count: data.clientMessageId ? 1 : 0,
+      sampleKey: sendAttemptId,
+    });
 
     if (data.clientMessageId) {
       this.sendDirect(ws, {
@@ -4077,12 +4089,62 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         clientMessageId: data.clientMessageId,
       });
     }
+
+    let result: InitialUserMessageResult;
+    try {
+      result = await this.enqueueRunnerUserMessage(data, {
+        sendAttemptId,
+        startedAt,
+      });
+    } catch (error) {
+      this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
+      console.error("[ChatThreadDO] failed to enqueue browser user message", error);
+      this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+        operation: "enqueue_runner_user_message",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        sampleKey: sendAttemptId,
+        error,
+      });
+      this.sendDirect(ws, {
+        type: "error",
+        error: "Failed to send message to sandbox",
+      });
+      return;
+    }
+
+    if (result.status !== "accepted") {
+      this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+        operation: "enqueue_runner_user_message",
+        status: result.status,
+        severity: result.status === "busy" ? "warn" : "error",
+        durationMs: Date.now() - startedAt,
+        sampleKey: sendAttemptId,
+      });
+      this.sendDirect(ws, {
+        type: "error",
+        error: result.error ?? "Failed to send message",
+      });
+      return;
+    }
+
+    this.recordChatThreadObservabilityEvent("runner_user_message_send_attempt", {
+      operation: "enqueue_runner_user_message",
+      status: "accepted",
+      durationMs: Date.now() - startedAt,
+      sampleKey: sendAttemptId,
+    });
+
   }
 
   private async enqueueRunnerUserMessage(
     data: ChatClientMessage,
+    options: { sendAttemptId?: string; startedAt?: number } = {},
   ): Promise<InitialUserMessageResult> {
-    const startedAt = Date.now();
+    const startedAt = options.startedAt ?? Date.now();
+    const sampleKey = options.sendAttemptId;
     const context = this.chatContext;
     if (!context) {
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
@@ -4090,6 +4152,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         status: "error",
         severity: "warn",
         durationMs: Date.now() - startedAt,
+        sampleKey,
       });
       return { status: "error", error: "Missing chat context for thread" };
     }
@@ -4103,6 +4166,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "warn",
         durationMs: Date.now() - startedAt,
         size: 0,
+        sampleKey,
       });
       return { status: "error", error: "Empty message" };
     }
@@ -4115,6 +4179,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       operation: "org_ban_checked",
       durationMs: Date.now() - banCheckStartedAt,
       size: rawContent.length,
+      sampleKey,
     });
     if (orgBan) {
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
@@ -4123,31 +4188,61 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "warn",
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
+        sampleKey,
       });
       return { status: "error", error: "Organization is blocked" };
     }
 
     const runnerConnectStartedAt = Date.now();
-    await this.ensureRunnerConnected();
-    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-      operation: "ensure_runner_connected",
-      durationMs: Date.now() - runnerConnectStartedAt,
-      size: rawContent.length,
-    });
+    try {
+      await this.ensureRunnerConnected();
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
+        operation: "ensure_runner_connected",
+        durationMs: Date.now() - runnerConnectStartedAt,
+        size: rawContent.length,
+        sampleKey,
+      });
+    } catch (error) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "ensure_runner_connected",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        sampleKey,
+        error,
+      });
+      throw error;
+    }
 
     const messagePrepareStartedAt = Date.now();
-    const safeContent = injectFileSafetyMessage(rawContent);
-    const mentionAugmented =
-      await this.applyConnectionMentionsForTurn(safeContent);
-    const attributedContent = formatAttributedUserMessage(mentionAugmented, {
-      userName: context.userName,
-      userEmail: context.userEmail,
-    });
-    this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
-      operation: "message_prepared",
-      durationMs: Date.now() - messagePrepareStartedAt,
-      size: rawContent.length,
-    });
+    let attributedContent: string;
+    try {
+      const safeContent = injectFileSafetyMessage(rawContent);
+      const mentionAugmented =
+        await this.applyConnectionMentionsForTurn(safeContent);
+      attributedContent = formatAttributedUserMessage(mentionAugmented, {
+        userName: context.userName,
+        userEmail: context.userEmail,
+      });
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
+        operation: "message_prepared",
+        durationMs: Date.now() - messagePrepareStartedAt,
+        size: rawContent.length,
+        sampleKey,
+      });
+    } catch (error) {
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "message_prepared",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        sampleKey,
+        error,
+      });
+      throw error;
+    }
     if (!attributedContent) {
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
         operation: "message_prepared",
@@ -4155,30 +4250,54 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "warn",
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
+        sampleKey,
       });
       return { status: "error", error: "Empty message" };
     }
 
-    this.setActiveTurnUserId(context.userId);
-    this.setChatIsStreaming(true);
-    this.publishRunningUserMessageActivity(rawContent);
-    this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
-    this.ctx.waitUntil(
-      this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
-        console.error(
-          '[ChatThreadDO] failed to update thread metadata after browser user message',
-          err,
-        );
-      }),
-    );
+    let sent = false;
+    try {
+      this.setActiveTurnUserId(context.userId);
+      this.setChatIsStreaming(true);
+      this.publishRunningUserMessageActivity(rawContent);
+      this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
+      this.ctx.waitUntil(
+        this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
+          console.error(
+            '[ChatThreadDO] failed to update thread metadata after browser user message',
+            err,
+          );
+          this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+            operation: "update_thread_metadata",
+            status: "exception",
+            severity: "warn",
+            sampleKey,
+            error: err,
+          });
+        }),
+      );
 
-    const sent = this.sendRunnerCommand({
-      ...data,
-      type: "message",
-      content: attributedContent,
-      threadId: context.threadId,
-      userId: context.userId ?? undefined,
-    });
+      sent = this.sendRunnerCommand({
+        ...data,
+        type: "message",
+        content: attributedContent,
+        threadId: context.threadId,
+        userId: context.userId ?? undefined,
+      });
+    } catch (error) {
+      this.setChatIsStreaming(false);
+      this.setActiveTurnUserId(null);
+      this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
+        operation: "send_runner_command",
+        status: "exception",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+        size: rawContent.length,
+        sampleKey,
+        error,
+      });
+      throw error;
+    }
     if (!sent) {
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
@@ -4188,6 +4307,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         severity: "error",
         durationMs: Date.now() - startedAt,
         size: rawContent.length,
+        sampleKey,
       });
       return { status: "error", error: "Failed to send message" };
     }
@@ -4197,6 +4317,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       status: "accepted",
       durationMs: Date.now() - startedAt,
       size: rawContent.length,
+      sampleKey,
     });
     this.ctx.waitUntil(
       this.warmWorkspaceContainerForTurn(context).catch((error) => {
@@ -5423,7 +5544,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
-      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` the same way as deployed user workers, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model routes include `auto`, `auto_search`, and `auto_image`.",
+      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model routes include `auto` and `auto_search`. For image generation, call `await env.CAMELAI.generateImage(\"prompt\")` (same on `context.cloudflare.env.CAMELAI`). Do not use `workers-ai-provider` / `generateText()` with `auto_image` because images are dropped.",
       "Before relying on repository-specific conventions, read /home/claude/AGENTS.md, /home/claude/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
       "",
       "## Available Skills",
@@ -6286,7 +6407,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
           "Connection credentials are intentionally hidden behind the binding. " +
-          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the same virtual AI binding as deployed user workers. Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })` for text, `auto_search` for grounded search, or `auto_image` for image generation. " +
+          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })` for text or `auto_search` for grounded search. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. " +
           "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({

@@ -83,7 +83,10 @@ import {
   arePreviewSessionsExactlyEqual,
   arePreviewSessionsSemanticallyEqual,
 } from "@/components/chat-preview/preview-session-compare";
-import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
+import {
+  getPreviewTabId,
+  shouldAutoRefreshFilePreview,
+} from "@/components/preview-panel/preview-utils";
 import { cn } from "@/lib/utils";
 import { buildSlugMap } from "@/lib/connection-mentions";
 import { isFileDrag } from "@/lib/file-drag";
@@ -156,6 +159,9 @@ export { ChatErrorNotice } from "@/components/chat-error-notice";
 export { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
 
 const CHAT_PING_MESSAGE = JSON.stringify({ type: "ping" });
+// The backend acknowledges receipt before slow runner enqueue work, so this
+// timeout only covers messages that never make it to ChatThreadDO.
+const MESSAGE_ACCEPTANCE_TIMEOUT_MS = 8_000;
 
 interface ChatProps {
   threadId?: string;
@@ -707,6 +713,9 @@ export default function Chat({
   const lastCompletedAssistantMessageIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
   const sentPendingMessageIdsRef = useRef<Set<string>>(new Set());
+  const pendingMessageAcceptanceTimeoutsRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
   const pendingThreadContextRef = useRef({
     workspaceId: resolvedWorkspaceId,
     threadId,
@@ -984,6 +993,10 @@ export default function Chat({
   const [tabFileViewModes, setTabFileViewModes] = useState<
     Record<string, "preview" | "source">
   >({});
+  const tabFileViewModesRef = useRef<Record<string, "preview" | "source">>(
+    tabFileViewModes,
+  );
+  tabFileViewModesRef.current = tabFileViewModes;
   const [tabNotebookStates, setTabNotebookStates] = useState<
     Record<string, NotebookPreviewLoadState>
   >({});
@@ -1554,9 +1567,47 @@ export default function Chat({
     }
   }, []);
 
+  const clearPendingMessageAcceptanceTimeout = useCallback(
+    (clientMessageId: string) => {
+      const timeout = pendingMessageAcceptanceTimeoutsRef.current.get(
+        clientMessageId,
+      );
+      if (!timeout) {
+        return;
+      }
+      clearTimeout(timeout);
+      pendingMessageAcceptanceTimeoutsRef.current.delete(clientMessageId);
+    },
+    [],
+  );
+
+  const clearAllPendingMessageAcceptanceTimeouts = useCallback(() => {
+    for (const timeout of pendingMessageAcceptanceTimeoutsRef.current.values()) {
+      clearTimeout(timeout);
+    }
+    pendingMessageAcceptanceTimeoutsRef.current.clear();
+  }, []);
+
+  const isPendingMessageAccepted = useCallback((clientMessageId: string) => {
+    const pendingDraft = pendingDeliveryDraftRef.current;
+    if (
+      pendingDraft?.clientMessageId === clientMessageId &&
+      pendingDraft.acceptedAt
+    ) {
+      return true;
+    }
+
+    const storedDraft = getStoredPendingDeliveryDraft();
+    return Boolean(
+      storedDraft?.clientMessageId === clientMessageId &&
+        storedDraft.acceptedAt,
+    );
+  }, [getStoredPendingDeliveryDraft]);
+
   const failPendingMessageDelivery = useCallback(
     (message: string) => {
       logRunnerClient("pending_delivery_failed", { message });
+      clearAllPendingMessageAcceptanceTimeouts();
       const unsentIds = new Set(pendingMessagesRef.current.map((msg) => msg.id));
       if (unsentIds.size > 0) {
         setMessages((prev) => prev.filter((msg) => !unsentIds.has(msg.id)));
@@ -1567,10 +1618,12 @@ export default function Chat({
       setLoading(false);
       setReady(false);
       setStreamingMessageId(null);
+      dispatchLocalThreadStatus(pendingThreadContextRef.current.threadId, "idle");
       restorePendingDeliveryDraft();
       showChatError(message);
     },
     [
+      clearAllPendingMessageAcceptanceTimeouts,
       clearQueuedSendReadyTimeout,
       logRunnerClient,
       restorePendingDeliveryDraft,
@@ -1578,6 +1631,39 @@ export default function Chat({
       setMessages,
       setPendingMessages,
       setStreamingMessageId,
+    ],
+  );
+
+  const startPendingMessageAcceptanceTimeout = useCallback(
+    (clientMessageId: string) => {
+      clearPendingMessageAcceptanceTimeout(clientMessageId);
+      const timeout = setTimeout(() => {
+        pendingMessageAcceptanceTimeoutsRef.current.delete(clientMessageId);
+        if (isPendingMessageAccepted(clientMessageId)) {
+          return;
+        }
+
+        const stillPending = pendingMessagesRef.current.some(
+          (message) =>
+            message.id === clientMessageId ||
+            message.clientMessageId === clientMessageId,
+        );
+        if (!stillPending) {
+          return;
+        }
+
+        logRunnerClient("message_acceptance_timeout", { clientMessageId });
+        failPendingMessageDelivery(
+          "The message did not reach the server. I restored it as a draft so you can try again.",
+        );
+      }, MESSAGE_ACCEPTANCE_TIMEOUT_MS);
+      pendingMessageAcceptanceTimeoutsRef.current.set(clientMessageId, timeout);
+    },
+    [
+      clearPendingMessageAcceptanceTimeout,
+      failPendingMessageDelivery,
+      isPendingMessageAccepted,
+      logRunnerClient,
     ],
   );
 
@@ -1978,7 +2064,11 @@ export default function Chat({
           nextSession.target.kind === "file" &&
           shouldRefreshActiveTab
         ) {
-          bumpFilePreviewKey(nextActiveId);
+          const fileViewMode =
+            tabFileViewModesRef.current[nextActiveId] ?? "preview";
+          if (shouldAutoRefreshFilePreview(nextSession.target, fileViewMode)) {
+            bumpFilePreviewKey(nextActiveId);
+          }
         }
 
         return;
@@ -2202,12 +2292,14 @@ export default function Chat({
                 messageId: msg.id,
                 contentLength: content.length,
               });
-              sentPendingMessageIdsRef.current.add(msg.clientMessageId ?? msg.id);
+              const clientMessageId = msg.clientMessageId ?? msg.id;
+              sentPendingMessageIdsRef.current.add(clientMessageId);
+              startPendingMessageAcceptanceTimeout(clientMessageId);
               ws.send(
                 JSON.stringify({
                   type: "message",
                   content,
-                  clientMessageId: msg.clientMessageId ?? msg.id,
+                  clientMessageId,
                   sessionId: sessionIdRef.current,
                   threadId: id,
                 }),
@@ -2758,12 +2850,14 @@ export default function Chat({
             typeof data.clientMessageId === "string" ? data.clientMessageId : "";
           if (clientMessageId) {
             sentPendingMessageIdsRef.current.add(clientMessageId);
+            clearPendingMessageAcceptanceTimeout(clientMessageId);
             clearQueuedSendReadyTimeout();
             markPendingDeliveryDraftAccepted(clientMessageId);
           }
         } else if (data.type === "result") {
           if (id) {
             flushDeferredMessagesRender();
+            clearAllPendingMessageAcceptanceTimeouts();
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
@@ -2888,6 +2982,8 @@ export default function Chat({
     },
     [
       clearPendingDeliveryDraft,
+      clearPendingMessageAcceptanceTimeout,
+      clearAllPendingMessageAcceptanceTimeouts,
       clearQueuedSendReadyTimeout,
       failPendingMessageDelivery,
       isNewThread,
@@ -2901,6 +2997,7 @@ export default function Chat({
       setMessagesDeferred,
       setPendingMessages,
       setStreamingMessageId,
+      startPendingMessageAcceptanceTimeout,
       handleRealtimeSideChannelEvent,
       showChatError,
     ],
@@ -2944,9 +3041,14 @@ export default function Chat({
         pingIntervalRef.current = null;
       }
 
+      clearAllPendingMessageAcceptanceTimeouts();
       clearAllIframeRefreshTimeouts();
     };
-  }, [bumpConnectionId, clearAllIframeRefreshTimeouts]);
+  }, [
+    bumpConnectionId,
+    clearAllIframeRefreshTimeouts,
+    clearAllPendingMessageAcceptanceTimeouts,
+  ]);
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
@@ -4156,6 +4258,7 @@ type SendOptions = {
         contentLength: finalContent.length,
       });
       sentPendingMessageIdsRef.current.add(clientMessageId);
+      startPendingMessageAcceptanceTimeout(clientMessageId);
       wsRef.current.send(
         JSON.stringify({
           type: "message",

@@ -18,6 +18,7 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   mysql: 'themed',
   openai: 'themed',
   openrouter: 'themed',
+  remote_mcp: 'themed',
   typeform: 'themed',
   x: 'themed',
   // Single (works for both themes)
@@ -48,7 +49,6 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   posthog: 'single',
   postgres: 'single',
   redis: 'single',
-  remote_mcp: 'single',
   salesforce: 'single',
   segment: 'single',
   sendgrid: 'single',

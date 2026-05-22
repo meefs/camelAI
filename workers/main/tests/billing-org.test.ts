@@ -85,7 +85,7 @@ describe("OrgDO billing grant idempotency", () => {
     };
   }
 
-  it("moves canceled trial subscriptions to Pay as you go and preserves resumable Stripe linkage", async () => {
+  it("keeps pending-cancel trial subscriptions trialing until Stripe cancels them", async () => {
     const { userId: ownerId } = await createUser(
       testEnv,
       testEmail(),
@@ -102,17 +102,19 @@ describe("OrgDO billing grant idempotency", () => {
       subscription,
     );
 
-    expect(synced?.billing_status).toBe("inactive");
-    expect(synced?.billing_plan).toBe("payg");
+    expect(synced?.billing_status).toBe("trialing");
+    expect(synced?.billing_plan).toBe("starter");
     expect(synced?.billing_subscription_id).toBe(subscription.id);
     expect(synced?.billing_subscription_status).toBe("trialing");
-    expect(synced?.billing_credit_grant_total_cents).toBe(0);
-    expect(synced?.billing_trial_credit_grant_cents).toBe(0);
-    expect(synced?.billing_trial_credit_granted_at).toBeNull();
+    expect(synced?.billing_credit_grant_total_cents).toBe(1000);
+    expect(synced?.billing_trial_credit_grant_cents).toBe(1000);
+    expect(synced?.billing_trial_credit_granted_at).toEqual(
+      expect.any(Number),
+    );
 
     const snapshot = await getBillingAccessSnapshot(stripeBillingEnv(), org.id);
-    expect(snapshot?.billing_status).toBe("inactive");
-    expect(snapshot?.billing_plan).toBe("payg");
+    expect(snapshot?.billing_status).toBe("trialing");
+    expect(snapshot?.billing_plan).toBe("starter");
   });
 
   it("preserves paused Stripe subscriptions instead of converting them to Pay as you go", async () => {

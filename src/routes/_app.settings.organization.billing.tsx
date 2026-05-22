@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Form,
   redirect,
@@ -7,6 +7,7 @@ import {
   useSearchParams,
 } from "react-router";
 import { ArrowLeft, CreditCard } from "lucide-react";
+import { toast } from "sonner";
 import type { Route } from "./+types/_app.settings.organization.billing";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -14,6 +15,7 @@ import {
   activatePayAsYouGoPlan,
   createBillingPortalSession,
   createLegacyStripeMigrationPortalSession,
+  createSubscriptionCancellationPortalSession,
   createSubscriptionUpdatePortalSession,
   createSubscriptionCheckoutSession,
   getBillableTeamSeatCountForOrg,
@@ -529,14 +531,23 @@ export async function action({ request, context }: Route.ActionArgs) {
         };
       }
       try {
-        const url = await createBillingPortalSession({
+        const cancelledUrl = new URL(billingUrl.toString());
+        cancelledUrl.searchParams.set("cancelled", "1");
+        const result = await createSubscriptionCancellationPortalSession({
           env,
           org: billingOrg,
           customerEmail: authContext.user.email,
           returnUrl: billingUrl.toString(),
-          cancellationSubscriptionId: billingOrg.billing_subscription_id,
+          afterCompletionReturnUrl: cancelledUrl.toString(),
         });
-        return { billingPortalUrl: url };
+        if (result.kind === "already_scheduled") {
+          return {
+            cancellationScheduled: true,
+            cancellationDateMs: result.cancellationDateMs,
+            subscriptionStatus: result.subscriptionStatus,
+          };
+        }
+        return { billingPortalUrl: result.billingPortalUrl };
       } catch (error) {
         console.error(
           "[billing] failed to create cancellation portal session",
@@ -577,6 +588,7 @@ export default function BillingPage() {
     showPlansView ? "manage" : "overview",
   );
   const [cancelOpen, setCancelOpen] = useState(false);
+  const cancelledToastShownRef = useRef(false);
 
   const isEnterprise = overview.billing_status === "enterprise";
   const plan: BillingPlan = normalizeBillingPlan(
@@ -602,27 +614,52 @@ export default function BillingPage() {
   const renewalLabel = subscription?.current_period_end_ms
     ? dateFormatter.format(new Date(subscription.current_period_end_ms))
     : null;
-  const cancelAtPeriodEnd = subscription?.cancel_at_period_end ?? false;
+  const cancellationLabel = subscription?.cancellation_date_ms
+    ? dateFormatter.format(new Date(subscription.cancellation_date_ms))
+    : null;
+  const isCanceling = subscription?.is_canceling ?? false;
 
-  const planSummarySubtitle = (() => {
-    if (isEnterprise) {
-      return planSubtitle("enterprise");
-    }
-    const baseline = planSubtitle(plan);
-    if (cancelAtPeriodEnd && renewalLabel) {
-      return `${baseline} Cancels on ${renewalLabel}.`;
-    }
-    if (hasActiveSubscription && renewalLabel) {
-      return `${baseline} Renews ${renewalLabel}.`;
-    }
-    return baseline;
-  })();
+  const planSummaryLines: string[] = isEnterprise
+    ? [planSubtitle("enterprise")]
+    : [
+        isCanceling && cancellationLabel
+          ? `Cancels ${cancellationLabel}`
+          : null,
+        planSubtitle(plan),
+        !isCanceling && hasActiveSubscription && renewalLabel
+          ? `Renews ${renewalLabel}.`
+          : null,
+      ].filter((line): line is string => Boolean(line));
 
   useEffect(() => {
     if (showPlansView) {
       setView("manage");
     }
   }, [showPlansView]);
+
+  useEffect(() => {
+    if (
+      cancelledToastShownRef.current ||
+      searchParams.get("cancelled") !== "1"
+    ) {
+      return;
+    }
+    cancelledToastShownRef.current = true;
+    if (isCanceling) {
+      toast.success(
+        cancellationLabel
+          ? `Plan cancels ${cancellationLabel}.`
+          : "Plan cancellation is scheduled.",
+      );
+    }
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete("cancelled");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`,
+    );
+  }, [cancellationLabel, isCanceling, searchParams]);
 
   if (view === "manage") {
     return (
@@ -648,9 +685,11 @@ export default function BillingPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
             <h2 className="text-lg font-semibold">{planHeading}</h2>
-            <p className="text-sm text-muted-foreground">
-              {planSummarySubtitle}
-            </p>
+            <div className="space-y-0.5 text-sm text-muted-foreground">
+              {planSummaryLines.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
           </div>
           {isEnterprise ? null : (
             <Button variant="outline" onClick={() => setView("manage")}>
@@ -711,7 +750,7 @@ export default function BillingPage() {
             <InvoicesTable invoices={invoices} />
           </section>
 
-          {hasActiveSubscription && !cancelAtPeriodEnd ? (
+          {hasActiveSubscription && !isCanceling ? (
             <>
               <Separator />
               <section className="space-y-3">

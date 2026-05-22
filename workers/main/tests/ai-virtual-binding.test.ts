@@ -1,5 +1,10 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
+  buildGenerateImageMessages,
+  generateImage,
+  parseGenerateImageResponse,
+} from "../src/generate-image.js";
+import {
   extractModelFromInput,
   isOpenRouterModel,
   resolveGatewaySettings,
@@ -405,5 +410,118 @@ describe("runViaGatewayHTTP", () => {
 
     expect(combined).toContain('data: {"id":"evt_1"}');
     expect(combined).toContain("data: [DONE]");
+  });
+});
+
+describe("buildGenerateImageMessages", () => {
+  it("builds a text-only user message from a prompt string", () => {
+    expect(buildGenerateImageMessages("A watercolor mountain")).toEqual([
+      { role: "user", content: "A watercolor mountain" },
+    ]);
+  });
+
+  it("builds multimodal content when a reference image is provided", () => {
+    expect(
+      buildGenerateImageMessages({
+        prompt: "Same style, new subject",
+        referenceImageUrl: "data:image/png;base64,abc",
+      }),
+    ).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,abc" },
+          },
+          { type: "text", text: "Same style, new subject" },
+        ],
+      },
+    ]);
+  });
+
+  it("throws when the prompt is empty", () => {
+    expect(() => buildGenerateImageMessages("   ")).toThrow(
+      "generateImage requires a non-empty prompt",
+    );
+  });
+});
+
+describe("generateImage", () => {
+  it("calls auto_image via run and parses the response", async () => {
+    const ai = {
+      run: async (model: string, input: unknown) => {
+        expect(model).toBe("auto_image");
+        expect(input).toEqual({
+          messages: [{ role: "user", content: "a star" }],
+        });
+        return {
+          choices: [
+            {
+              message: {
+                content: "done",
+                images: [
+                  {
+                    index: 0,
+                    image_url: { url: "data:image/png;base64,star" },
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    const result = await generateImage(ai, "a star");
+    expect(result.imageDataUrl).toBe("data:image/png;base64,star");
+  });
+});
+
+describe("parseGenerateImageResponse", () => {
+  it("extracts text and image data URLs from gateway payloads", () => {
+    const result = parseGenerateImageResponse({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "Here is your image.",
+            images: [
+              {
+                type: "image_url",
+                image_url: { url: "data:image/png;base64,AAA" },
+                index: 1,
+              },
+              {
+                type: "image_url",
+                image_url: { url: "data:image/png;base64,BBB" },
+                index: 0,
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      text: "Here is your image.",
+      imageDataUrl: "data:image/png;base64,BBB",
+      images: [
+        { dataUrl: "data:image/png;base64,BBB", index: 0 },
+        { dataUrl: "data:image/png;base64,AAA", index: 1 },
+      ],
+    });
+  });
+
+  it("returns empty image fields when the model returns text only", () => {
+    expect(
+      parseGenerateImageResponse({
+        choices: [{ message: { role: "assistant", content: "No image." } }],
+      }),
+    ).toEqual({
+      text: "No image.",
+      imageDataUrl: null,
+      images: [],
+    });
   });
 });

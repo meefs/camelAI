@@ -81,6 +81,7 @@ export {
   DeterministicAutomationWorkflow,
   DynamicWorkflowBinding,
 } from './deterministic-automation-workflow.js';
+export { CamelAiService } from './camelai-service.js';
 
 // Extend React Router's AppLoadContext
 declare module 'react-router' {

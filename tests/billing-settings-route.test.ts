@@ -5,6 +5,7 @@ const requireOrgAdminMock = vi.fn();
 const getEnvMock = vi.fn();
 const createBillingPortalSessionMock = vi.fn();
 const createLegacyStripeMigrationPortalSessionMock = vi.fn();
+const createSubscriptionCancellationPortalSessionMock = vi.fn();
 const createSubscriptionUpdatePortalSessionMock = vi.fn();
 const createSubscriptionCheckoutSessionMock = vi.fn();
 const updateTrialingStripeSubscriptionPlanMock = vi.fn();
@@ -25,6 +26,8 @@ vi.mock("@/lib/billing.server", async (importOriginal) => {
     createBillingPortalSession: createBillingPortalSessionMock,
     createLegacyStripeMigrationPortalSession:
       createLegacyStripeMigrationPortalSessionMock,
+    createSubscriptionCancellationPortalSession:
+      createSubscriptionCancellationPortalSessionMock,
     createSubscriptionUpdatePortalSession:
       createSubscriptionUpdatePortalSessionMock,
     createSubscriptionCheckoutSession: createSubscriptionCheckoutSessionMock,
@@ -104,6 +107,10 @@ describe("billing settings plan changes", () => {
         newPlanProrationCents: 15000,
         includedCreditCents: 3000,
       },
+    });
+    createSubscriptionCancellationPortalSessionMock.mockResolvedValue({
+      kind: "portal",
+      billingPortalUrl: "https://billing.stripe.test/session",
     });
     updateTrialingStripeSubscriptionPlanMock.mockResolvedValue({});
   });
@@ -584,13 +591,82 @@ describe("billing settings plan changes", () => {
     expect(result).toEqual({
       billingPortalUrl: "https://billing.stripe.test/session",
     });
-    expect(createBillingPortalSessionMock).toHaveBeenCalledWith(
+    expect(createSubscriptionCancellationPortalSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         env,
         org,
         customerEmail: "owner@example.com",
-        cancellationSubscriptionId: "sub_123",
+        returnUrl: "https://camelai.test/settings/organization/billing",
+        afterCompletionReturnUrl:
+          "https://camelai.test/settings/organization/billing?cancelled=1",
       }),
     );
+    expect(createBillingPortalSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("returns scheduled cancellation success without an error", async () => {
+    const org = {
+      id: "org_123",
+      name: "Paid Org",
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_123",
+      billing_subscription_status: "active",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+    createSubscriptionCancellationPortalSessionMock.mockResolvedValueOnce({
+      kind: "already_scheduled",
+      cancellationDateMs: 1_778_342_400_000,
+      subscriptionStatus: "active",
+    });
+
+    const result = await action({
+      request: makeIntentRequest("cancelSubscription"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({
+      cancellationScheduled: true,
+      cancellationDateMs: 1_778_342_400_000,
+      subscriptionStatus: "active",
+    });
+    expect(result).not.toHaveProperty("error");
+  });
+
+  it("returns the cancellation error for unrecovered portal failures", async () => {
+    const org = {
+      id: "org_123",
+      name: "Paid Org",
+      billing_status: "active",
+      billing_plan: "pro",
+      billing_seat_count: 1,
+      billing_subscription_id: "sub_123",
+      billing_subscription_status: "active",
+    };
+    const env = makeEnv(org);
+    getEnvMock.mockReturnValue(env);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_123", email: "owner@example.com" },
+      currentOrg: org,
+    });
+    createSubscriptionCancellationPortalSessionMock.mockRejectedValueOnce(
+      new Error("portal failed"),
+    );
+
+    const result = await action({
+      request: makeIntentRequest("cancelSubscription"),
+      context: {},
+    } as never);
+
+    expect(result).toEqual({
+      error:
+        "We couldn't open your cancellation flow. Please try again in a moment.",
+    });
   });
 });

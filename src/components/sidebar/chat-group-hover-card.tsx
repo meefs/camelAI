@@ -30,7 +30,9 @@ function getInProgressUserMessageSortAt(thread: ChatGroupThreadSummary): number 
 }
 
 export function splitThreadsBySection(group: ChatGroupView) {
-  const all = [...group.open_threads, ...group.closed_threads];
+  const all = group.open_threads.filter(
+    (thread) => thread.membership === "open",
+  );
   const inProgress = all
     .filter((thread) => thread.status === "running")
     .sort(
@@ -57,7 +59,10 @@ export function ChatGroupHoverCard({
 }: ChatGroupHoverCardProps) {
   const sections = useMemo(() => splitThreadsBySection(group), [group]);
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
-  const total = group.member_count;
+  const total =
+    sections.inProgress.length +
+    sections.completed.length +
+    sections.quiet.length;
   const noun = total === 1 ? "chat" : "chats";
 
   const handleSelectThread = async (thread: ChatGroupThreadSummary) => {
@@ -122,7 +127,7 @@ export function ChatGroupHoverCard({
         )}
         {total === 0 && (
           <div className="px-2 py-3 text-xs text-muted-foreground">
-            No chats in this group yet.
+            No open chats in this group.
           </div>
         )}
       </ScrollArea>
