@@ -95,6 +95,13 @@
 			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 		]
 	},
+	"workflows": [
+		{
+			"name": "chiridion-deterministic-automations-dev-miguel",
+			"binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
+			"class_name": "DeterministicAutomationWorkflow"
+		}
+	],
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["ChatDurableObject"] },
 		{ "tag": "v2", "deleted_classes": ["ChatDurableObject"] },

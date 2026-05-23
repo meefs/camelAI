@@ -45,6 +45,7 @@ import {
   shouldRetryAppCustomDomainProvisioning,
 } from '../../../src/lib/custom-domain-state';
 import { parseFilePreviewPath } from './preview-paths';
+import { formatDeterministicAutomation } from './code-mode-deterministic-automations';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -763,6 +764,221 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
               thread_id: result.dispatch.thread_id,
               error: result.dispatch.error,
               reply: result.dispatch.reply,
+            },
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'list_deterministic_automations',
+      'List deterministic workflow automations for the current workspace. Cron expressions use 5 fields in UTC: minute hour day-of-month month day-of-week.',
+      {},
+      async () => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const automations = await schedulerStub.listDeterministicAutomations(workspaceId);
+          return this.textResponse({
+            success: true,
+            count: automations.length,
+            timezone: 'UTC',
+            automations: automations.map((automation) => formatDeterministicAutomation(automation)),
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'validate_deterministic_automation',
+      'Validate deterministic automation source without saving it.',
+      {
+        source: z.string().describe('JavaScript module source exporting AutomationWorkflow'),
+      },
+      async ({ source }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const result = await schedulerStub.validateDeterministicAutomationSource(source);
+          return this.textResponse({ success: result.valid, ...result });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            valid: false,
+            errors: [error instanceof Error ? error.message : String(error)],
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'create_deterministic_automation',
+      'Create deterministic workflow automation source in the current workspace.',
+      {
+        name: z.string().describe('Friendly name for the automation'),
+        source: z.string().describe('JavaScript module source exporting AutomationWorkflow'),
+        cron_expression: z
+          .string()
+          .describe('5-field cron expression in UTC: minute hour day-of-month month day-of-week'),
+        description: z.string().optional().describe('Optional description'),
+        enabled: z.boolean().optional().describe('Optional. Defaults to true.'),
+      },
+      async ({ name, source, cron_expression, description, enabled }) => {
+        const { userId, workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const created = await schedulerStub.createDeterministicAutomation({
+            workspaceId,
+            name,
+            source,
+            cronExpression: cron_expression,
+            createdBy: userId,
+            description,
+            enabled,
+          });
+          return this.textResponse({
+            success: true,
+            timezone: 'UTC',
+            automation: formatDeterministicAutomation(created, true),
+            message: `Created deterministic automation "${created.name}"`,
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'update_deterministic_automation',
+      'Update an existing deterministic workflow automation.',
+      {
+        automation_id: z.string().describe('ID of the deterministic automation to update'),
+        name: z.string().optional().describe('Optional new display name'),
+        source: z.string().optional().describe('Optional new source'),
+        cron_expression: z.string().optional().describe('Optional new 5-field UTC cron expression'),
+        description: z.string().nullable().optional().describe('Optional description, or null to clear'),
+        enabled: z.boolean().optional().describe('Optional enabled state'),
+      },
+      async ({ automation_id, name, source, cron_expression, description, enabled }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const updated = await schedulerStub.updateDeterministicAutomation({
+            workspaceId,
+            id: automation_id,
+            name,
+            source,
+            cronExpression: cron_expression,
+            description,
+            enabled,
+          });
+          if (!updated) {
+            return this.textResponse({
+              success: false,
+              error: `Deterministic automation "${automation_id}" not found`,
+            });
+          }
+          return this.textResponse({
+            success: true,
+            timezone: 'UTC',
+            automation: formatDeterministicAutomation(updated, true),
+            message: `Updated deterministic automation "${updated.name}"`,
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'delete_deterministic_automation',
+      'Delete a deterministic workflow automation from the current workspace.',
+      {
+        automation_id: z.string().describe('ID of the deterministic automation to delete'),
+      },
+      async ({ automation_id }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const deleted = await schedulerStub.deleteDeterministicAutomation(workspaceId, automation_id);
+          if (!deleted) {
+            return this.textResponse({
+              success: false,
+              error: `Deterministic automation "${automation_id}" not found`,
+            });
+          }
+          return this.textResponse({
+            success: true,
+            message: `Deleted deterministic automation "${automation_id}"`,
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'run_deterministic_automation_now',
+      'Start a deterministic workflow automation immediately without waiting for its next cron time.',
+      {
+        automation_id: z.string().describe('ID of the deterministic automation to run now'),
+      },
+      async ({ automation_id }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const result = await schedulerStub.runDeterministicAutomationNow(workspaceId, automation_id);
+          if (!result) {
+            return this.textResponse({
+              success: false,
+              error: `Deterministic automation "${automation_id}" not found`,
+            });
+          }
+          return this.textResponse({
+            success: true,
+            timezone: 'UTC',
+            automation: formatDeterministicAutomation(result.automation),
+            run: {
+              status: result.dispatch.status,
+              instance_id: result.dispatch.instance_id,
+              error: result.dispatch.error,
             },
           });
         } catch (error) {

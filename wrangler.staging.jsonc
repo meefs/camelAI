@@ -113,6 +113,13 @@
       { "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
     ],
   },
+  "workflows": [
+    {
+      "name": "chiridion-deterministic-automations-staging",
+      "binding": "DETERMINISTIC_AUTOMATION_WORKFLOWS",
+      "class_name": "DeterministicAutomationWorkflow"
+    }
+  ],
   "migrations": [
     { "tag": "v27" },
     { "tag": "v28" },
