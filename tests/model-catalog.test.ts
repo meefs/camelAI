@@ -185,7 +185,6 @@ describe('MODEL_CATALOG', () => {
           { id: 'deepseek-v4-flash', added_at: 10 },
         ],
       },
-      provider: 'codex',
       orgProvider: 'openai',
     });
 
@@ -210,7 +209,6 @@ describe('MODEL_CATALOG', () => {
           { id: 'kimi-k2.6', added_at: 50 },
         ],
       },
-      provider: 'codex',
       orgProvider: 'openrouter',
     });
 

@@ -55,7 +55,7 @@ interface ChatGroupsContextValue {
 const ChatGroupsContext = createContext<ChatGroupsContextValue | null>(null);
 type ChatGroupThreadSummary = ChatGroupView["open_threads"][number];
 export type ThreadSummaryPatch = Partial<
-  Pick<ChatGroupThreadSummary, "title" | "model" | "provider">
+  Pick<ChatGroupThreadSummary, "title" | "model">
 > & {
   updatedAt: number;
 };
@@ -289,7 +289,6 @@ function getThreadSummaryPatchFromPayload(payload: unknown): ThreadSummaryPatch 
   if (
     typeof record.title !== "string" ||
     typeof record.model !== "string" ||
-    (record.provider !== "claude" && record.provider !== "codex") ||
     typeof record.updated_at !== "number" ||
     !Number.isFinite(record.updated_at)
   ) {
@@ -299,7 +298,6 @@ function getThreadSummaryPatchFromPayload(payload: unknown): ThreadSummaryPatch 
   return {
     title: record.title,
     model: record.model as ChatGroupThreadSummary["model"],
-    provider: record.provider,
     updatedAt: record.updated_at,
   };
 }
@@ -322,7 +320,6 @@ function mergeThreadSummaryPatch(
   if (
     currentPatch?.title === nextPatch.title &&
     currentPatch?.model === nextPatch.model &&
-    currentPatch?.provider === nextPatch.provider &&
     currentPatch?.updatedAt === nextPatch.updatedAt
   ) {
     return current as Map<string, ThreadSummaryPatch>;
@@ -366,7 +363,6 @@ export function applyLiveRunningStatuses(
       const summaryPatch = threadSummaryPatches.get(thread.id);
       const nextTitle = summaryPatch?.title ?? thread.title;
       const nextModel = summaryPatch?.model ?? thread.model;
-      const nextProvider = summaryPatch?.provider ?? thread.provider;
       const completedAt =
         typeof liveMetadata?.completedAt === "number" &&
         Number.isFinite(liveMetadata.completedAt)
@@ -462,7 +458,6 @@ export function applyLiveRunningStatuses(
         currentIsUnread === nextIsUnread &&
         thread.title === nextTitle &&
         thread.model === nextModel &&
-        thread.provider === nextProvider &&
         thread.updated_at === updatedAt &&
         thread.last_active_at === lastActiveAt &&
         thread.last_assistant_completed_at === lastAssistantCompletedAt &&
@@ -482,7 +477,6 @@ export function applyLiveRunningStatuses(
         ...thread,
         title: nextTitle,
         model: nextModel,
-        provider: nextProvider,
         updated_at: updatedAt,
         is_unread: nextIsUnread,
         status: resolvedStatus,
@@ -634,7 +628,6 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
         status?: unknown;
         title?: unknown;
         model?: unknown;
-        provider?: unknown;
         updatedAt?: unknown;
         latestUserMessage?: unknown;
         latestUserMessageAt?: unknown;
@@ -658,11 +651,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
       const title =
         typeof payload.title === "string" ? payload.title.trim() : undefined;
       const model = typeof payload.model === "string" ? payload.model : undefined;
-      const provider =
-        payload.provider === "codex" || payload.provider === "claude"
-          ? payload.provider
-          : undefined;
-      if (title || model || provider) {
+      if (title || model) {
         setLocalThreadSummaryPatches((current) => {
           const currentPatch = current.get(threadId);
           const updatedAt =
@@ -675,9 +664,6 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
           return mergeThreadSummaryPatch(current, threadId, {
             ...(title ? { title } : {}),
             ...(model ? { model: model as ChatGroupThreadSummary["model"] } : {}),
-            ...(provider
-              ? { provider: provider as ChatGroupThreadSummary["provider"] }
-              : {}),
             updatedAt,
           });
         });

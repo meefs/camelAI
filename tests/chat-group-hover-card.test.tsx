@@ -13,7 +13,6 @@ function makeThread(
   const updatedAt = overrides.updated_at ?? 1;
   return {
     model: "haiku",
-    provider: "claude",
     updated_at: updatedAt,
     status: "idle",
     membership: "open",

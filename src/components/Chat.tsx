@@ -22,7 +22,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
-  ChatHarness,
   Message,
   LlmModel,
   LlmProvider,
@@ -116,7 +115,6 @@ import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
 import { normalizeThreadPreviewUserMessage } from "@/lib/thread-preview";
 import {
   getDefaultLlmModel,
-  getProviderForModel,
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
@@ -169,7 +167,6 @@ interface ChatProps {
   initialMessages?: Message[];
   initialTodos?: TodoItem[];
   threadModel?: LlmModel | null;
-  threadProvider?: ChatHarness | null;
   llmProvider?: LlmProvider | null;
   allowedThreadModels?: LlmModel[] | null;
   effectivePickerDefaultModel?: LlmModel | null;
@@ -212,7 +209,6 @@ function resolveSelectedThreadModel(args: {
   threadId?: string;
   threadModel?: LlmModel | null;
   allowedThreadModels?: LlmModel[] | null;
-  initialThreadProvider: ChatHarness;
   llmProvider?: LlmProvider | null;
   availableThreadModels: ReadonlyArray<ModelCatalogEntry>;
   effectivePickerDefaultModel: LlmModel | null;
@@ -228,10 +224,7 @@ function resolveSelectedThreadModel(args: {
       ? args.effectivePickerDefaultModel
       : null,
     recentModel: args.recentModel,
-    fallbackModel: getDefaultLlmModel(
-      args.initialThreadProvider,
-      args.llmProvider,
-    ),
+    fallbackModel: getDefaultLlmModel(args.llmProvider),
     visibleCatalog: args.availableThreadModels,
   });
 
@@ -239,7 +232,7 @@ function resolveSelectedThreadModel(args: {
     resolvedModel ??
     args.threadModel ??
     args.allowedThreadModels?.[0] ??
-    getDefaultLlmModel(args.initialThreadProvider, args.llmProvider)
+    getDefaultLlmModel(args.llmProvider)
   );
 }
 
@@ -266,7 +259,6 @@ function dispatchLocalThreadSummaryUpdate(
   patch: {
     title?: string;
     model?: LlmModel;
-    provider?: ChatHarness;
     updatedAt?: number;
   },
 ): void {
@@ -443,7 +435,6 @@ export default function Chat({
   initialMessages,
   initialTodos = [],
   threadModel,
-  threadProvider,
   llmProvider,
   allowedThreadModels,
   effectivePickerDefaultModel = null,
@@ -476,14 +467,12 @@ export default function Chat({
     thread?: {
       id: string;
       model: LlmModel;
-      provider: ChatHarness;
       updated_at: number;
     };
     error?: string;
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
-  const initialThreadProvider = threadProvider ?? "claude";
   const resolvedWorkspaceId = readOnly
     ? workspaceId
     : (currentWorkspace?.id ?? workspaceId);
@@ -825,15 +814,12 @@ export default function Chat({
     initialError
       ? getChatApiErrorPresentation(initialError, {
           llmProvider,
-          threadProvider: initialThreadProvider,
+          threadModel,
         })
       : null,
   );
   const [welcomeInput, setWelcomeInput] = useState(
     () => initialWelcomeInput ?? initialWelcomeDraft?.text ?? "",
-  );
-  const [activeThreadProvider, setActiveThreadProvider] = useState<ChatHarness>(
-    initialThreadProvider,
   );
   const appliedRecentModelScopeRef = useRef<string | null>(null);
   const optimisticThreadModelRef = useRef<{
@@ -846,14 +832,12 @@ export default function Chat({
     }
 
     const options = getVisibleLlmModelOptions(
-      activeThreadProvider,
       experimentalSettings,
-      threadModel ?? getDefaultLlmModel(activeThreadProvider, llmProvider),
-      { allowModelFamilySwitch: true, orgProvider: llmProvider },
+      threadModel ?? getDefaultLlmModel(llmProvider),
+      { orgProvider: llmProvider },
     );
     return modelCatalogEntriesForIds(options.map((option) => option.value));
   }, [
-    activeThreadProvider,
     allowedThreadModels,
     experimentalSettings,
     llmProvider,
@@ -882,7 +866,6 @@ export default function Chat({
       threadId,
       threadModel,
       allowedThreadModels,
-      initialThreadProvider,
       llmProvider,
       availableThreadModels,
       effectivePickerDefaultModel,
@@ -931,11 +914,11 @@ export default function Chat({
       initialError
         ? getChatApiErrorPresentation(initialError, {
             llmProvider,
-            threadProvider: initialThreadProvider,
+            threadModel,
           })
         : null,
     );
-  }, [initialError, initialThreadProvider, llmProvider]);
+  }, [initialError, llmProvider, threadModel]);
 
   useEffect(() => {
     if (
@@ -1284,13 +1267,11 @@ export default function Chat({
     }
     const recentModel =
       !threadId && modelRecentScope ? getRecentModel(modelRecentScope) : null;
-    setActiveThreadProvider(initialThreadProvider);
     setSelectedThreadModel(
       resolveSelectedThreadModel({
         threadId,
         threadModel,
         allowedThreadModels,
-        initialThreadProvider,
         llmProvider,
         availableThreadModels,
         effectivePickerDefaultModel,
@@ -1303,7 +1284,6 @@ export default function Chat({
     availableThreadModels,
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
-    initialThreadProvider,
     llmProvider,
     modelRecentScope,
     threadId,
@@ -1531,10 +1511,10 @@ export default function Chat({
     ): ChatApiErrorPresentation =>
       getChatApiErrorPresentation(value, {
         llmProvider,
-        threadProvider: activeThreadProvider,
+        threadModel: selectedThreadModel,
         ...context,
       }),
-    [activeThreadProvider, llmProvider],
+    [llmProvider, selectedThreadModel],
   );
 
   const showChatError = useCallback(
@@ -2094,15 +2074,9 @@ export default function Chat({
           typeof data.updatedAt === "number" && Number.isFinite(data.updatedAt)
             ? data.updatedAt
             : Date.now();
-        const nextProvider =
-          data.provider === "codex" || data.provider === "claude"
-            ? data.provider
-            : getProviderForModel(data.model, activeThreadProvider);
-        setActiveThreadProvider(nextProvider);
         setSelectedThreadModel(data.model);
         dispatchLocalThreadSummaryUpdate(threadId, {
           model: data.model,
-          provider: nextProvider,
           updatedAt,
         });
         return;
@@ -2147,7 +2121,6 @@ export default function Chat({
       return;
     },
     [
-      activeThreadProvider,
       threadId,
       setLocalPreviewSessionState,
       bumpIframeKey,
@@ -3729,13 +3702,11 @@ export default function Chat({
       return;
     if (updateThreadModelFetcher.data.error) {
       optimisticThreadModelRef.current = null;
-      setActiveThreadProvider(initialThreadProvider);
       setSelectedThreadModel(
         resolveSelectedThreadModel({
           threadId,
           threadModel,
           allowedThreadModels,
-          initialThreadProvider,
           llmProvider,
           availableThreadModels,
           effectivePickerDefaultModel,
@@ -3747,15 +3718,12 @@ export default function Chat({
     }
     if (updateThreadModelFetcher.data.thread?.model) {
       const nextModel = updateThreadModelFetcher.data.thread.model;
-      const nextProvider = updateThreadModelFetcher.data.thread.provider;
       const updatedAt = updateThreadModelFetcher.data.thread.updated_at;
-      const nextSelectionKey = `${nextProvider}/${nextModel}`;
+      const nextSelectionKey = nextModel;
       optimisticThreadModelRef.current = null;
-      setActiveThreadProvider(nextProvider);
       setSelectedThreadModel(nextModel);
       dispatchLocalThreadSummaryUpdate(threadId, {
         model: nextModel,
-        provider: nextProvider,
         updatedAt,
       });
       if (
@@ -3768,7 +3736,6 @@ export default function Chat({
           JSON.stringify({
             type: "set_model",
             model: nextModel,
-            provider: nextProvider,
             threadId,
             sessionId: sessionIdRef.current,
           }),
@@ -3776,7 +3743,6 @@ export default function Chat({
       }
     }
   }, [
-    initialThreadProvider,
     llmProvider,
     threadId,
     ready,
@@ -3793,9 +3759,6 @@ export default function Chat({
       }
       if (!threadId) {
         setSelectedThreadModel(nextModel);
-        setActiveThreadProvider(
-          getProviderForModel(nextModel, initialThreadProvider),
-        );
         return;
       }
       if (
@@ -3805,9 +3768,6 @@ export default function Chat({
         return;
       }
       setSelectedThreadModel(nextModel);
-      setActiveThreadProvider(
-        getProviderForModel(nextModel, activeThreadProvider),
-      );
       optimisticThreadModelRef.current = { threadId, model: nextModel };
       updateThreadModelFetcher.submit(
         { intent: "updateThreadModel", model: nextModel },
@@ -3815,9 +3775,7 @@ export default function Chat({
       );
     },
     [
-      activeThreadProvider,
       availableThreadModelIds,
-      initialThreadProvider,
       selectedThreadModel,
       threadId,
       updateThreadModelFetcher,
@@ -3839,20 +3797,15 @@ export default function Chat({
     const nextModel = resolveDefaultModelForChat({
       effectiveDefaultModel: null,
       recentModel,
-      fallbackModel: getDefaultLlmModel(initialThreadProvider, llmProvider),
+      fallbackModel: getDefaultLlmModel(llmProvider),
       visibleCatalog: availableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
       handleThreadModelChange(nextModel);
-    } else if (nextModel) {
-      setActiveThreadProvider(
-        getProviderForModel(nextModel, initialThreadProvider),
-      );
     }
   }, [
     availableThreadModels,
     handleThreadModelChange,
-    initialThreadProvider,
     llmProvider,
     modelRecentScope,
     noModelsMessage,
@@ -3878,7 +3831,7 @@ export default function Chat({
       effectiveDefaultModel: hasEffectivePickerDefault
         ? effectivePickerDefaultModel
         : null,
-      fallbackModel: getDefaultLlmModel(initialThreadProvider, llmProvider),
+      fallbackModel: getDefaultLlmModel(llmProvider),
       visibleCatalog: availableThreadModels,
     });
     if (nextModel && nextModel !== selectedThreadModel) {
@@ -3890,7 +3843,6 @@ export default function Chat({
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
     handleThreadModelChange,
-    initialThreadProvider,
     isStreaming,
     llmProvider,
     loading,
@@ -4203,26 +4155,21 @@ type SendOptions = {
 
     // If user sends mid-stream, keep current part streaming and split at next message_start.
     if (wasSentDuringStreaming) {
-      if (activeThreadProvider === "codex") {
-        const previousStreamingMessageId = streamingMessageIdRef.current;
-        const nextStreamingMessageId = `stream_steer_${Date.now()}`;
-        splitStreamingMessageOnNextPartRef.current = false;
-        runtimeStreamingMessageIdsRef.current[threadId] = nextStreamingMessageId;
-        setStreamingMessageId(nextStreamingMessageId);
-        setMessages((prev) =>
-          splitStreamingMessageForSteer(
-            prev,
-            threadId,
-            runtimeStreamingMessageIdsRef.current,
-            userMsg,
-            nextStreamingMessageId,
-            previousStreamingMessageId,
-          ),
-        );
-      } else {
-        splitStreamingMessageOnNextPartRef.current = true;
-        setMessages((prev) => [...prev, userMsg]);
-      }
+      const previousStreamingMessageId = streamingMessageIdRef.current;
+      const nextStreamingMessageId = `stream_steer_${Date.now()}`;
+      splitStreamingMessageOnNextPartRef.current = false;
+      runtimeStreamingMessageIdsRef.current[threadId] = nextStreamingMessageId;
+      setStreamingMessageId(nextStreamingMessageId);
+      setMessages((prev) =>
+        splitStreamingMessageForSteer(
+          prev,
+          threadId,
+          runtimeStreamingMessageIdsRef.current,
+          userMsg,
+          nextStreamingMessageId,
+          previousStreamingMessageId,
+        ),
+      );
     } else {
       lastCompletedAssistantMessageIdRef.current = null;
       // /compact is operational and can happen while users read older messages.
@@ -4454,7 +4401,7 @@ type SendOptions = {
             error={error}
             setError={setError}
             llmProvider={llmProvider}
-            threadProvider={activeThreadProvider}
+            threadModel={selectedThreadModel}
             isCompacting={isCompacting}
             compactingPriorMessageId={compactingPriorMessageId}
             isLoadingMessages={isLoadingMessages}

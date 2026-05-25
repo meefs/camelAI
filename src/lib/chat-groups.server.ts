@@ -129,7 +129,6 @@ export async function hydrateChatGroups(
       id: thread.id,
       title: thread.title,
       model: thread.model,
-      provider: thread.provider,
       updated_at: thread.updated_at,
       is_unread: isUnread,
       membership,

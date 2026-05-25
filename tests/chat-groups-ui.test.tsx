@@ -52,7 +52,6 @@ function makeThreadSummary(
   const updatedAt = overrides.updated_at ?? 1;
   return {
     model: "haiku",
-    provider: "claude",
     updated_at: updatedAt,
     status: "idle",
     membership: "open",
@@ -1163,7 +1162,6 @@ describe("ChatGroupsProvider summary patches", () => {
             id: "thread_2",
             title: "Generated UI polish",
             model: "sonnet",
-            provider: "claude",
             updated_at: 10,
           },
         }),

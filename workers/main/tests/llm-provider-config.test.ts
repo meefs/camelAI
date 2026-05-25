@@ -6,12 +6,7 @@ import {
   buildPublicLlmProviderConfig,
   DEFAULT_LLM_MODEL,
   getDefaultLlmModel,
-  getDefaultThreadProvider,
-  getAffectedChatHarnessesForLlmProviderChange,
-  getAllowedChatHarnessesForNewThread,
-  getChatHarnessesForLlmProvider,
   getLlmModelOptions,
-  getProviderForModel,
   getVisibleLlmModelOptions,
   isLlmModel,
   isLlmModelAllowedForNewThread,
@@ -52,67 +47,84 @@ const OPENROUTER_ONLY_MODELS = [
 describe("llm provider config helpers", () => {
   it("defaults missing thread model to sonnet", () => {
     expect(normalizeLlmModel(undefined)).toBe(DEFAULT_LLM_MODEL);
-    expect(normalizeLlmModel(undefined, "codex")).toBe(DEFAULT_CODEX_MODEL);
-    expect(normalizeLlmModel(undefined, "codex", "openrouter")).toBe(
-      DEFAULT_OPENROUTER_MODEL,
-    );
-    expect(getDefaultLlmModel("claude")).toBe(DEFAULT_LLM_MODEL);
-    expect(getDefaultLlmModel("codex")).toBe(DEFAULT_CODEX_MODEL);
-    expect(getDefaultLlmModel("codex", "openrouter")).toBe(
-      DEFAULT_OPENROUTER_MODEL,
-    );
+    expect(normalizeLlmModel(undefined, "openai")).toBe(DEFAULT_CODEX_MODEL);
+    expect(normalizeLlmModel(undefined, "openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
+    expect(getDefaultLlmModel("anthropic")).toBe(DEFAULT_LLM_MODEL);
+    expect(getDefaultLlmModel("openai")).toBe(DEFAULT_CODEX_MODEL);
+    expect(getDefaultLlmModel("openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
     expect(parseStoredLlmProviderConfig("{}")).toEqual({});
   });
 
   it("returns provider-specific model options", () => {
-    expect(getLlmModelOptions("claude").map((option) => option.value)).toEqual([
+    expect(getLlmModelOptions("anthropic").map((option) => option.value)).toEqual([
       ...CLAUDE_MODELS,
     ]);
-    expect(getLlmModelOptions("codex").map((option) => option.value)).toEqual(
-      CODEX_MODELS,
-    );
+    expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+    ]);
+    expect(getLlmModelOptions(null).map((option) => option.value)).toEqual([
+      ...CLAUDE_MODELS,
+      ...CODEX_MODELS,
+    ]);
     for (const model of CODEX_MODELS) {
-      expect(isLlmModel(model, "codex")).toBe(true);
+      expect(isLlmModel(model)).toBe(true);
     }
-    expect(isLlmModel("gemini-3.1-pro-preview", "codex")).toBe(false);
-    expect(normalizeLlmModel("gemini-3.1-pro-preview", "codex")).toBe(
+    expect(isLlmModel("gemini-3.1-pro-preview")).toBe(false);
+    expect(normalizeLlmModel("gemini-3.1-pro-preview")).toBe(
       "gemini-3.5-flash",
     );
   });
 
-  it("keeps BYOK provider-scoped and defaults proxy orgs to Claude", () => {
+  it("keeps BYOK provider-scoped and defaults hosted orgs to Claude", () => {
     expect(parseOrganizationExperimentalSettings(null)).toEqual({
       claude_proxy_models: false,
     });
     expect(
-      getDefaultThreadProvider("openai", { claude_proxy_models: false }),
-    ).toBe("codex");
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: "openai",
+      }).map((option) => option.value),
+    ).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
     expect(
-      getDefaultThreadProvider("openrouter", { claude_proxy_models: false }),
-    ).toBe("codex");
-    expect(getDefaultThreadProvider(null, { claude_proxy_models: false })).toBe(
-      "claude",
-    );
-    expect(
-      getDefaultThreadProvider("anthropic", { claude_proxy_models: false }),
-    ).toBe("claude");
-    expect(
-      getDefaultThreadProvider("bedrock", { claude_proxy_models: false }),
-    ).toBe("claude");
-    expect(
-      getVisibleLlmModelOptions("codex", { claude_proxy_models: false }).map(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }).map(
         (option) => option.value,
       ),
-    ).toEqual(CODEX_MODELS);
+    ).toEqual([...CLAUDE_MODELS, ...CODEX_MODELS]);
+    expect(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: "openrouter",
+      }).map((option) => option.value),
+    ).toEqual([
+      ...CLAUDE_MODELS,
+      ...CODEX_MODELS,
+    ]);
+    expect(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: "anthropic",
+      }).map((option) => option.value),
+    ).toEqual([...CLAUDE_MODELS]);
+    expect(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: "bedrock",
+      }).map((option) => option.value),
+    ).toEqual([...CLAUDE_MODELS]);
+    expect(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: null,
+      }).map((option) => option.value),
+    ).toEqual([
+      ...CLAUDE_MODELS,
+      ...CODEX_MODELS,
+    ]);
   });
 
   it("shows only policy-allowed model families for new chats", () => {
     expect(
       getVisibleLlmModelOptions(
-        "codex",
         { claude_proxy_models: true },
-        undefined,
-        { allowModelFamilySwitch: true, orgProvider: null },
+        null,
+        { orgProvider: null },
       ).map((option) => option.value),
     ).toEqual([
       ...CLAUDE_MODELS,
@@ -120,29 +132,26 @@ describe("llm provider config helpers", () => {
     ]);
     expect(
       getVisibleLlmModelOptions(
-        "codex",
         { claude_proxy_models: true },
-        undefined,
-        { allowModelFamilySwitch: true, orgProvider: "openai" },
+        null,
+        { orgProvider: "openai" },
       ).map((option) => option.value),
     ).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
     expect(
       getVisibleLlmModelOptions(
-        "codex",
         { claude_proxy_models: true },
-        undefined,
-        { allowModelFamilySwitch: true, orgProvider: "openrouter" },
+        null,
+        { orgProvider: "openrouter" },
       ).map((option) => option.value),
     ).toEqual([
-      ...CODEX_MODELS,
       ...CLAUDE_MODELS,
+      ...CODEX_MODELS,
     ]);
     expect(
       getVisibleLlmModelOptions(
-        "claude",
         { claude_proxy_models: false },
-        undefined,
-        { allowModelFamilySwitch: true, orgProvider: "anthropic" },
+        null,
+        { orgProvider: "anthropic" },
       ).map((option) => option.value),
     ).toEqual([...CLAUDE_MODELS]);
   });
@@ -150,27 +159,19 @@ describe("llm provider config helpers", () => {
   it("keeps the current model visible for existing locked threads regardless of new-chat policy", () => {
     expect(
       getVisibleLlmModelOptions(
-        "codex",
         { claude_proxy_models: false },
         "gpt-5.4-mini",
       ).map((option) => option.value),
-    ).toEqual(CODEX_MODELS);
+    ).toEqual([...CLAUDE_MODELS, ...CODEX_MODELS]);
     expect(
       getVisibleLlmModelOptions(
-        "claude",
         { claude_proxy_models: false },
         "sonnet",
       ).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS]);
+    ).toEqual([...CLAUDE_MODELS, ...CODEX_MODELS]);
   });
 
   it("validates new thread models against BYOK and proxy policy", () => {
-    expect(
-      getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: false }),
-    ).toEqual(["claude", "codex"]);
-    expect(
-      getAllowedChatHarnessesForNewThread(null, { claude_proxy_models: true }),
-    ).toEqual(["claude", "codex"]);
     expect(
       isLlmModelAllowedForNewThread("gpt-5.4", null, {
         claude_proxy_models: false,
@@ -228,47 +229,6 @@ describe("llm provider config helpers", () => {
         claude_proxy_models: true,
       }),
     ).toBe(true);
-  });
-
-  it("infers the thread provider from the selected model", () => {
-    expect(getProviderForModel("gpt-5.4", "claude")).toBe("codex");
-    expect(getProviderForModel("gpt-5.5", "claude")).toBe("codex");
-    expect(getProviderForModel("gpt-5.4-mini", "claude")).toBe("codex");
-    expect(getProviderForModel("kimi-k2.6", "claude")).toBe("codex");
-    expect(getProviderForModel("grok-4.3", "claude")).toBe("codex");
-    expect(getProviderForModel("gemini-3-flash-preview", "claude")).toBe(
-      "codex",
-    );
-    expect(getProviderForModel("gemini-3.5-flash", "claude")).toBe(
-      "codex",
-    );
-    expect(getProviderForModel("deepseek-v4-pro", "claude")).toBe("codex");
-    expect(getProviderForModel("deepseek-v4-flash", "claude")).toBe("codex");
-    expect(getProviderForModel("haiku", "codex")).toBe("claude");
-    expect(getProviderForModel("sonnet", "codex")).toBe("claude");
-    expect(getProviderForModel("opus-4.7", "codex")).toBe("claude");
-    expect(getProviderForModel(undefined, "claude")).toBe("claude");
-  });
-
-  it("maps org BYOK providers to the affected chat harnesses", () => {
-    expect(getChatHarnessesForLlmProvider("anthropic")).toEqual(["claude"]);
-    expect(getChatHarnessesForLlmProvider("bedrock")).toEqual(["claude"]);
-    expect(getChatHarnessesForLlmProvider("openai")).toEqual(["codex"]);
-    expect(getChatHarnessesForLlmProvider("openrouter")).toEqual([
-      "codex",
-      "claude",
-    ]);
-    expect(getChatHarnessesForLlmProvider(null)).toEqual([]);
-
-    expect(
-      getAffectedChatHarnessesForLlmProviderChange("openai", "anthropic"),
-    ).toEqual(["codex", "claude"]);
-    expect(
-      getAffectedChatHarnessesForLlmProviderChange("anthropic", "bedrock"),
-    ).toEqual(["claude"]);
-    expect(
-      getAffectedChatHarnessesForLlmProviderChange("openai", null),
-    ).toEqual(["codex"]);
   });
 
   it("round-trips explicit region values", () => {

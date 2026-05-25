@@ -53,7 +53,6 @@ describe('admin thread detail loader', () => {
       thread: {
         id: 'thread_123',
         title: 'Investigate authEnv',
-        provider: 'codex',
         model: 'gpt-5.2',
         created_by: 'user_123',
         created_at: 1_710_000_000_000,
@@ -91,7 +90,6 @@ describe('admin thread detail loader', () => {
     expect(getExperimentalSettingsMock).toHaveBeenCalledTimes(1);
     expect(result.thread).toMatchObject({
       id: 'thread_123',
-      provider: 'codex',
       model: 'gpt-5.2',
     });
     expect(result.experimentalSettings).toEqual({ claude_proxy_models: true });
@@ -130,7 +128,6 @@ describe('admin thread detail loader', () => {
       getThread: vi.fn().mockResolvedValue({
         id: 'thread_123',
         title: 'Old title',
-        provider: 'claude',
         model: 'sonnet',
       }),
       adminUpdateThread: adminUpdateThreadMock,

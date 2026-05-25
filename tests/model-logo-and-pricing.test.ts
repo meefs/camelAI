@@ -49,7 +49,7 @@ describe('model pricing coverage', () => {
     }
   });
 
-  it('registers new Pi models with the expected DO harness providers', () => {
+  it('registers new Pi models with the expected model providers', () => {
     const source = fs.readFileSync(
       path.join(root, 'workers/main/src/chat-thread-do.ts'),
       'utf8',
@@ -58,6 +58,6 @@ describe('model pricing coverage', () => {
     expect(source).toContain('case "gpt-5.5":');
     expect(source).toContain('return openAiReference(normalizedModelId);');
     expect(source).toContain('case "opus-4.7":');
-    expect(source).toContain('return reference("claude-opus-4-7");');
+    expect(source).toContain('return claudeReference("claude-opus-4-7");');
   });
 });

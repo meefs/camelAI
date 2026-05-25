@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
-import type { ChatHarness, Integration, LlmProvider, Message } from "@/types";
+import type { Integration, LlmModel, LlmProvider, Message } from "@/types";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { CompactingIndicator } from "@/components/compacting-indicator";
 import { LoadingDots } from "@/components/loading-dots";
@@ -49,7 +49,7 @@ interface ChatMessagesViewProps {
   error: ChatApiErrorPresentation | null;
   setError: Dispatch<SetStateAction<ChatApiErrorPresentation | null>>;
   llmProvider?: LlmProvider | null;
-  threadProvider: ChatHarness;
+  threadModel?: LlmModel | null;
   isCompacting: boolean;
   compactingPriorMessageId: string | null;
   isLoadingMessages: boolean;
@@ -79,7 +79,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   error,
   setError,
   llmProvider,
-  threadProvider,
+  threadModel,
   isCompacting,
   compactingPriorMessageId,
   isLoadingMessages,
@@ -220,7 +220,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
                   skillSheets={skillSheetsByToolId}
                   mentionSlugMap={mentionSlugMap}
                   llmProvider={llmProvider}
-                  threadProvider={threadProvider}
+                  threadModel={threadModel}
                 />
               </div>
             );

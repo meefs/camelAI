@@ -593,9 +593,9 @@ describe('Chat mid-stream follow-up ordering', () => {
 
     await waitFor(() => {
       expect(getTranscriptRows()).toEqual([
-        'assistant: TC one still running',
+        'assistant: TC one',
         'user: follow-up',
-        'assistant: TC two',
+        'assistant: still running TC two',
       ]);
     });
   });
@@ -634,7 +634,6 @@ describe('Chat mid-stream follow-up ordering', () => {
       <Chat
         threadId="thread-1"
         workspaceId="ws-1"
-        threadProvider="codex"
         initialMessages={[]}
       />
     );

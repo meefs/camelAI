@@ -45,7 +45,6 @@ import {
   resolveEffectivePickerConfig,
 } from "@/lib/model-picker-config";
 import {
-  getDefaultThreadProvider,
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
@@ -347,10 +346,8 @@ function getVisibleModelIdsForSettings(
   llmProvider: string | null | undefined,
   experimentalSettings: import("@/types").OrganizationExperimentalSettings,
 ): Set<LlmModel> {
-  const provider = getDefaultThreadProvider(llmProvider, experimentalSettings);
   return new Set(
-    getVisibleLlmModelOptions(provider, experimentalSettings, null, {
-      allowModelFamilySwitch: true,
+    getVisibleLlmModelOptions(experimentalSettings, null, {
       orgProvider: llmProvider,
     }).map((option) => option.value),
   );

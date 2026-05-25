@@ -53,10 +53,9 @@ describe('ChatThreadDO Codex external turn completion', () => {
     );
   }
 
-  it('resolves harness-prefixed Codex model ids before selecting the Pi model', () => {
+  it('resolves legacy-prefixed model ids before selecting the Pi model', () => {
     const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
       Object.create(ChatThreadDO.prototype),
-      'codex',
       'codex/kimi-k2.6',
     );
 
@@ -389,7 +388,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
       vi.fn(() => ({
         id: 'gpt-5.5',
@@ -425,7 +424,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_CODEX_MODEL: 'grok-4.3' },
       vi.fn(() => ({
         id: 'x-ai/grok-4.3',
@@ -464,7 +463,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       const getModel = vi.fn(() => undefined);
       const model = await ChatThreadDO.prototype['resolvePiModel'].call(
         fake,
-        { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
         { CHIRIDION_CODEX_MODEL: requestedModel },
         getModel,
       );
@@ -568,7 +567,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('fails loudly when Pi context provider is missing', async () => {
+  it('fails loudly when Pi model metadata is missing', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
     await expect(
@@ -578,14 +577,13 @@ describe('ChatThreadDO Codex external turn completion', () => {
         { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
         vi.fn(),
       ),
-    ).rejects.toThrow('Missing Pi provider for thread context thread1');
+    ).rejects.toThrow('Unsupported Pi model sonnet');
   });
 
-  it('uses the provider loaded from the thread record when initializing Pi', async () => {
+  it('loads the model from the thread record when initializing Pi', async () => {
     const orgStub = {
       getThread: vi.fn(async () => ({
         id: 'thread1',
-        provider: 'claude',
         model: 'sonnet',
         workspace_id: 'workspace1',
       })),
@@ -617,12 +615,57 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
 
-    expect(fake.chatContext.provider).toBe('claude');
     expect(fake.ensurePiSession).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'claude' }),
+      expect.objectContaining({ threadId: 'thread1' }),
       expect.objectContaining({
-        CHIRIDION_CHAT_PROVIDER: 'claude',
+        CHIRIDION_MODEL: 'sonnet',
         CHIRIDION_CLAUDE_MODEL: 'sonnet',
+        CHIRIDION_CODEX_MODEL: 'sonnet',
+      }),
+    );
+  });
+
+  it('preserves an existing thread model when org BYOK provider is incompatible', async () => {
+    const orgStub = {
+      getThread: vi.fn(async () => ({
+        id: 'thread1',
+        model: 'sonnet',
+        workspace_id: 'workspace1',
+      })),
+      getLlmProviderConfig: vi.fn(async () => ({ provider: 'openai' })),
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+    };
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+    };
+    fake.runnerConnectPromise = null;
+    fake.runnerTransitionChain = Promise.resolve();
+    fake.codexSessionId = null;
+    fake.lastRunnerSeq = 0;
+    fake.trace = vi.fn();
+    fake.getLegacyClaudeSessionId = vi.fn(() => null);
+    fake.ensurePiSession = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['ensureRunnerConnected'].call(fake);
+
+    expect(fake.ensurePiSession).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread1' }),
+      expect.objectContaining({
+        CHIRIDION_MODEL: 'sonnet',
+        CHIRIDION_CLAUDE_MODEL: 'sonnet',
+        CHIRIDION_CODEX_MODEL: 'sonnet',
       }),
     );
   });
@@ -640,7 +683,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'codex', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
       vi.fn(() => ({
         id: 'gpt-5.5',
@@ -849,7 +892,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
   ])('routes %s through OpenRouter chat completions', (model, routeModel) => {
     const result = ChatThreadDO.prototype['resolvePiModelReference'].call(
       Object.create(ChatThreadDO.prototype),
-      'codex',
       model,
     );
 

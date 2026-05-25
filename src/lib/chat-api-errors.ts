@@ -1,6 +1,6 @@
-import type { ChatHarness, LlmProvider } from "@/types";
+import type { LlmModel, LlmProvider } from "@/types";
 import { getByokProviderMeta } from "./byok-providers";
-import { getChatHarnessesForLlmProvider } from "./llm-provider-config";
+import { isLlmModelCoveredByByokProvider } from "./llm-provider-config";
 
 export const CREDIT_SEND_BLOCKED_MESSAGE =
   "Message not sent — top up credits or add an API key to continue.";
@@ -16,7 +16,7 @@ export interface ChatApiErrorDetails {
 export interface ChatApiErrorContext {
   billingSource?: "byok" | "hosted" | null;
   llmProvider?: LlmProvider | null;
-  threadProvider?: ChatHarness | null;
+  threadModel?: LlmModel | null;
 }
 
 export type ChatApiErrorPresentation =
@@ -218,9 +218,9 @@ function isBillingOrCreditError(lowerMessage: string): boolean {
 function isCurrentTurnByok(context: ChatApiErrorContext): boolean {
   if (context.billingSource === "hosted") return false;
   if (context.billingSource === "byok") return true;
-  if (!context.llmProvider || !context.threadProvider) return false;
-  return getChatHarnessesForLlmProvider(context.llmProvider).includes(
-    context.threadProvider,
+  return isLlmModelCoveredByByokProvider(
+    context.threadModel,
+    context.llmProvider,
   );
 }
 

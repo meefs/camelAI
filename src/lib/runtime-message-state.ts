@@ -1,4 +1,4 @@
-import type { ChatHarness, ContentBlock, Message, ToolResultBlock } from '../types';
+import type { ContentBlock, Message, ToolResultBlock } from '../types';
 import {
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
@@ -7,7 +7,7 @@ import {
   type SDKEvent,
 } from './streaming';
 
-type RuntimeProvider = ChatHarness | 'agentos';
+type RuntimeProvider = 'codex' | 'agentos';
 
 type RuntimeMessage = {
   id: string;
@@ -1776,15 +1776,6 @@ export function applyRuntimeEventToMessages(
   event: unknown,
   streamingMessageIds: Record<string, string | null>
 ): Message[] {
-  if (provider === 'claude' && isClaudeSdkEvent(event)) {
-    return applySdkEventToMessages(
-      currentMessages,
-      threadId,
-      event,
-      streamingMessageIds,
-    );
-  }
-
   if (provider === 'codex' && isCodexRuntimeEvent(event)) {
     return applyCodexRuntimeEvent(
       currentMessages,

@@ -1,5 +1,4 @@
 import type {
-  ChatHarness,
   LlmModel,
   LlmProvider,
   OrganizationExperimentalSettings,
@@ -10,9 +9,8 @@ import type { EffectiveModelPickerConfig } from "./model-picker-config";
 // Adding a new model - checklist
 //
 // 1. Add the canonical ID to the LlmModel union in src/types.ts.
-// 2. Add the harness-routing branches in src/lib/llm-provider-config.ts:
-//    getProviderForModel, isLlmModel, isLlmModelAllowedForOrgProvider, and
-//    CLAUDE_LLM_MODEL_OPTIONS or CODEX_LLM_MODEL_OPTIONS.
+// 2. Add model visibility/routing branches in src/lib/llm-provider-config.ts:
+//    isLlmModel, isLlmModelAllowedForOrgProvider, and the model option lists.
 // 3. Add per-token pricing in src/lib/usage-pricing.ts.
 // 4. Add a MODEL_CATALOG entry below with a version-qualified label, logo type,
 //    provider order, cost bucket, intelligence, and speed.
@@ -243,13 +241,11 @@ export function compareModelCatalogEntries(
 
 export function resolveModelPickerCatalog(args: {
   effectiveConfig: EffectiveModelPickerConfig;
-  provider: ChatHarness;
   experimentalSettings?: OrganizationExperimentalSettings | null;
   orgProvider?: LlmProvider | string | null;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
-    getVisibleLlmModelOptions(args.provider, args.experimentalSettings, null, {
-      allowModelFamilySwitch: true,
+    getVisibleLlmModelOptions(args.experimentalSettings, null, {
       orgProvider: args.orgProvider,
     }).map((option) => option.value),
   );

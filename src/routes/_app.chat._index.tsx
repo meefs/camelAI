@@ -24,7 +24,6 @@ import { getWorkerScript } from "@/lib/auth-do";
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
-  getDefaultThreadProvider,
   getVisibleLlmModelOptions,
 } from "@/lib/llm-provider-config";
 import * as chatDO from "@/lib/chat-do.server";
@@ -43,7 +42,6 @@ import { ChatTabBar } from "@/components/chat-tab-bar";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import type {
-  ChatHarness,
   Integration,
   LlmModel,
   Thread,
@@ -371,19 +369,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ((llmProviderConfig?.provider ?? null) as
       | import("@/types").LlmProvider
       | null);
-  const threadProvider: ChatHarness =
-    pickerState?.provider ??
-    getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
-  const fallbackThreadModel = getDefaultLlmModel(
-    threadProvider,
-    llmProviderConfig?.provider,
-  );
+  const fallbackThreadModel = getDefaultLlmModel(llmProviderConfig?.provider);
   const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
-    threadProvider,
     experimentalSettings,
     fallbackThreadModel,
     {
-      allowModelFamilySwitch: true,
       orgProvider: llmProviderConfig?.provider,
     },
   ).map((option) => option.value);
@@ -395,12 +385,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       })
     : null;
 
+  const threadModel =
+    pickerState?.defaultModel ??
+    (hasModelFallback ? fallbackThreadModel : null);
+
   return {
     workspaceId: workspaceId ?? null,
-    threadProvider,
-    threadModel:
-      pickerState?.defaultModel ??
-      (hasModelFallback ? fallbackThreadModel : null),
+    threadModel,
     allowedThreadModels:
       pickerState?.allowedThreadModels ??
       (hasModelFallback ? fallbackAllowedThreadModels : []),
@@ -409,7 +400,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     hasEffectivePickerDefault:
       pickerState?.hasEffectivePickerDefault ?? false,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
-      buildBillingCreditStatus(billingOverview, llmProvider, threadProvider),
+      buildBillingCreditStatus(billingOverview, llmProvider, threadModel),
       url.searchParams,
     ),
     initialChatError: getDevChatInitialError(url.searchParams),
@@ -540,7 +531,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         "thread_created",
         createThreadStartedAt,
         {
-          provider: thread.provider,
           model: thread.model,
           size: firstMessage?.length ?? 0,
         },
@@ -567,7 +557,6 @@ export async function action({ request, context }: Route.ActionArgs) {
           previewStartedAt,
           {
             count: previewApps.length,
-            provider: thread.provider,
             model: thread.model,
           },
         );
@@ -594,7 +583,6 @@ export async function action({ request, context }: Route.ActionArgs) {
           initialMessageStartedAt,
           {
             status: result.status,
-            provider: thread.provider,
             model: thread.model,
             size: firstMessage.length,
           },
@@ -636,7 +624,6 @@ export async function action({ request, context }: Route.ActionArgs) {
           "title_generation_scheduled",
           actionStartedAt,
           {
-            provider: thread.provider,
             model: thread.model,
             size: firstMessage.length,
           },
@@ -685,7 +672,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         groupStartedAt,
         {
           status: groupId ? "existing_group" : "new_group",
-          provider: thread.provider,
           model: thread.model,
           count: group.member_count,
         },
@@ -706,7 +692,6 @@ export async function action({ request, context }: Route.ActionArgs) {
           "redirect_ready",
           actionStartedAt,
           {
-            provider: thread.provider,
             model: thread.model,
             size: firstMessage?.length ?? 0,
             statusCode: 302,
@@ -722,7 +707,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         "json_response_ready",
         actionStartedAt,
         {
-          provider: thread.provider,
           model: thread.model,
           size: firstMessage?.length ?? 0,
           statusCode: 200,
@@ -774,7 +758,6 @@ export default function NewChatPage() {
     | undefined;
   const {
     workspaceId,
-    threadProvider,
     llmProvider,
     threadModel,
     allowedThreadModels,
@@ -917,7 +900,6 @@ export default function NewChatPage() {
       <div className="flex min-h-0 flex-1 flex-col">
         <Chat
           workspaceId={workspaceId}
-          threadProvider={threadProvider}
           hostname={hostname}
           chatGroupId={liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null}
           welcomeData={{

@@ -14,12 +14,12 @@ function buildContext(testEnv: TestEnv) {
   };
 }
 
-describe('web Codex provider wiring', () => {
+describe('web model provider wiring', () => {
   const testEnv = env as unknown as TestEnv;
 
   const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 
-  it('keeps new web threads on the Codex harness when the org provider is OpenAI', async () => {
+  it('defaults new web threads to an OpenAI model when the org provider is OpenAI', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Codex User');
     const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Codex Org', userId);
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
@@ -41,11 +41,10 @@ describe('web Codex provider wiring', () => {
       userId,
       'Reply with pong'
     );
-
-    expect(thread.provider).toBe('codex');
+    expect(thread.model).toBe('gpt-5.4');
   });
 
-  it('creates standard proxy web threads on Claude and still allows explicit Codex', async () => {
+  it('creates standard hosted web threads on Claude and still allows explicit OpenAI models', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Proxy Codex User');
     const { defaultWorkspaceId } = await createOrg(testEnv, 'Proxy Codex Org', userId);
 
@@ -56,8 +55,6 @@ describe('web Codex provider wiring', () => {
       userId,
       'Reply with pong'
     );
-
-    expect(thread.provider).toBe('claude');
     expect(thread.model).toBe('sonnet');
     const codexThread = await createThread(
       buildContext(testEnv) as never,
@@ -68,7 +65,6 @@ describe('web Codex provider wiring', () => {
       'gpt-5.5'
     );
 
-    expect(codexThread.provider).toBe('codex');
     expect(codexThread.model).toBe('gpt-5.5');
   });
 
@@ -85,8 +81,6 @@ describe('web Codex provider wiring', () => {
       userId,
       'Reply with pong'
     );
-
-    expect(thread.provider).toBe('claude');
     expect(thread.model).toBe('sonnet');
   });
 

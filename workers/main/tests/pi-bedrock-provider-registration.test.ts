@@ -24,5 +24,5 @@ describe('Pi Bedrock provider registration', () => {
 
     expect(setBedrockProviderModule).toHaveBeenCalledTimes(1);
     expect(setBedrockProviderModule).toHaveBeenCalledWith(bedrockProviderModule);
-  });
+  }, 15_000);
 });

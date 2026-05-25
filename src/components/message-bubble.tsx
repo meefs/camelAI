@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Copy, Check, GitFork } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration, ChatHarness, LlmProvider } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration, LlmModel, LlmProvider } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -334,7 +334,7 @@ interface ContentBlockRendererProps {
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
   llmProvider?: LlmProvider | null;
-  threadProvider?: ChatHarness | null;
+  threadModel?: LlmModel | null;
 }
 
 export function ContentBlockRenderer({
@@ -345,7 +345,7 @@ export function ContentBlockRenderer({
   skillSheets,
   mentionSlugMap,
   llmProvider,
-  threadProvider,
+  threadModel,
 }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
@@ -441,7 +441,7 @@ export function ContentBlockRenderer({
       const presentation = getChatApiErrorPresentation(errorPayload, {
         billingSource: block.billingSource,
         llmProvider: blockProvider ?? llmProvider,
-        threadProvider,
+        threadModel,
       });
       items.push({
         kind: 'other',
@@ -587,7 +587,7 @@ interface MessageBubbleProps {
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
   llmProvider?: LlmProvider | null;
-  threadProvider?: ChatHarness | null;
+  threadModel?: LlmModel | null;
 }
 
 function getMessageToolUseIds(message: Message): string[] {
@@ -622,7 +622,7 @@ function MessageBubbleBase({
   skillSheets,
   mentionSlugMap,
   llmProvider,
-  threadProvider,
+  threadModel,
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
@@ -743,7 +743,7 @@ function MessageBubbleBase({
                 skillSheets={skillSheets}
                 mentionSlugMap={mentionSlugMap}
                 llmProvider={llmProvider}
-                threadProvider={threadProvider}
+                threadModel={threadModel}
               />
             </CollapsibleUserMessage>
           </div>
@@ -799,7 +799,7 @@ function MessageBubbleBase({
             skillSheets={skillSheets}
             mentionSlugMap={mentionSlugMap}
             llmProvider={llmProvider}
-            threadProvider={threadProvider}
+            threadModel={threadModel}
           />
         </div>
       )}

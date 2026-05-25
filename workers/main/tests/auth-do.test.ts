@@ -257,18 +257,14 @@ describe('Auth flow (full-stack with DOs)', () => {
         'Recovered thread',
         userId,
         'hello',
-        'gpt-5.4',
-        'codex'
+        'gpt-5.4'
       );
-
-      expect(thread.provider).toBe('codex');
       expect(thread.model).toBe('gpt-5.4');
       expect(thread.first_user_message).toBe('hello');
       expect(thread.last_user_message).toBe('hello');
       expect(thread.last_user_message_at).toEqual(expect.any(Number));
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.provider).toBe('codex');
       expect(stored?.model).toBe('gpt-5.4');
       expect(stored?.first_user_message).toBe('hello');
       expect(stored?.last_user_message).toBe('hello');
@@ -531,15 +527,12 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus');
       expect(thread.model).toBe('opus');
-      expect(thread.provider).toBe('claude');
 
       const updated = await orgStub.updateThreadModel(thread.id, 'sonnet', userId);
       expect(updated?.model).toBe('sonnet');
-      expect(updated?.provider).toBe('claude');
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.model).toBe('sonnet');
-      expect(stored?.provider).toBe('claude');
     });
 
     it('touches assistant thread activity without incrementing user message count', async () => {
@@ -599,16 +592,14 @@ describe('Auth flow (full-stack with DOs)', () => {
       const updated = await orgStub.updateThreadModel(thread.id, 'gpt-5.4-mini', userId);
 
       expect(updated?.model).toBe('gpt-5.4-mini');
-      expect(updated?.provider).toBe('codex');
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.model).toBe('gpt-5.4-mini');
-      expect(stored?.provider).toBe('codex');
     });
   });
 
   describe('BYOK refresh fan-out', () => {
-    it('only targets recently active threads whose harness matches the affected provider', async () => {
+    it('targets all recently active threads when BYOK settings change', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'BYOK Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'BYOK Org', userId);
@@ -619,18 +610,16 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       try {
         dateNowSpy.mockReturnValue(now - 31 * 60 * 1000);
-        await orgStub.createThread(defaultWorkspaceId, 'stale codex', userId, undefined, 'gpt-5.4', 'codex');
+        await orgStub.createThread(defaultWorkspaceId, 'stale codex', userId, undefined, 'gpt-5.4');
 
         dateNowSpy.mockReturnValue(now);
-        await orgStub.createThread(defaultWorkspaceId, 'recent codex', userId, undefined, 'gpt-5.4', 'codex');
-        await orgStub.createThread(defaultWorkspaceId, 'recent claude', userId, undefined, 'sonnet', 'claude');
+        await orgStub.createThread(defaultWorkspaceId, 'recent codex', userId, undefined, 'gpt-5.4');
+        await orgStub.createThread(defaultWorkspaceId, 'recent claude', userId, undefined, 'sonnet');
       } finally {
         dateNowSpy.mockRestore();
       }
 
-      expect(await orgStub.getActiveThreadIdsForByokChange(['codex'])).toHaveLength(1);
-      expect(await orgStub.getActiveThreadIdsForByokChange(['claude'])).toHaveLength(1);
-      expect(await orgStub.getActiveThreadIdsForByokChange(['claude', 'codex'])).toHaveLength(2);
+      expect(await orgStub.getActiveThreadIdsForByokChange()).toHaveLength(2);
     });
 
     it('does not cap matching active threads at 100', async () => {
@@ -645,12 +634,11 @@ describe('Auth flow (full-stack with DOs)', () => {
           `codex thread ${index}`,
           userId,
           undefined,
-          'gpt-5.4',
-          'codex'
+          'gpt-5.4'
         );
       }
 
-      expect(await orgStub.getActiveThreadIdsForByokChange(['codex'])).toHaveLength(101);
+      expect(await orgStub.getActiveThreadIdsForByokChange()).toHaveLength(101);
     });
   });
 

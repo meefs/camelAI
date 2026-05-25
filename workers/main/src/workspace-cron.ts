@@ -14,8 +14,6 @@ import {
 import type { WorkspaceDO } from "./workspace";
 import {
   getDefaultLlmModel,
-  getDefaultThreadProvider,
-  getProviderForModel,
 } from "../../../src/lib/llm-provider-config";
 import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog";
 import {
@@ -533,7 +531,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
 
   private async resolveDefaultThreadModel(
     workspace: WorkspaceInfo,
-  ): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+  ): Promise<LlmModel> {
     const orgStub = this.getOrgStub(workspace.org_id);
     const workspaceStub = this.env.WORKSPACE.get(
       this.env.WORKSPACE.idFromName(workspace.id),
@@ -549,35 +547,24 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       getOrgModelPickerConfigCompat(orgStub),
       getWorkspaceModelPickerConfigCompat(workspaceStub),
     ]);
-    const baseProvider = getDefaultThreadProvider(
-      llmProviderConfig?.provider,
-      experimentalSettings,
-    );
     const effectiveConfig = resolveEffectivePickerConfig(
       orgPickerConfig,
       workspacePickerConfig,
     );
     const visibleCatalog = resolveModelPickerCatalog({
       effectiveConfig,
-      provider: baseProvider,
       experimentalSettings,
       orgProvider: llmProviderConfig?.provider,
     });
     const model = resolveDefaultModelForChat({
       effectiveDefaultModel: effectiveConfig.default_model,
-      fallbackModel: getDefaultLlmModel(
-        baseProvider,
-        llmProviderConfig?.provider,
-      ),
+      fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
       visibleCatalog,
     });
     if (!model) {
       throw new Error("No models are available");
     }
-    return {
-      model,
-      provider: getProviderForModel(model, baseProvider),
-    };
+    return model;
   }
 
   private async assertCronWithinBillingLimits(
@@ -662,14 +649,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     createdBy: string,
   ): Promise<string> {
     const orgStub = this.getOrgStub(workspace.org_id);
-    const { model, provider } = await this.resolveDefaultThreadModel(workspace);
+    const model = await this.resolveDefaultThreadModel(workspace);
     const created = (await orgStub.createThread(
       workspace.id,
       `Scheduled: ${name}`,
       createdBy || "system",
       prompt.slice(0, 500),
       model,
-      provider,
     )) as OrgThread;
     return created.id;
   }
@@ -686,14 +672,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       return prompt.thread_id;
     }
 
-    const { model, provider } = await this.resolveDefaultThreadModel(workspace);
+    const model = await this.resolveDefaultThreadModel(workspace);
     const created = (await orgStub.createThread(
       workspace.id,
       `Scheduled: ${prompt.name}`,
       "system",
       prompt.prompt.slice(0, 500),
       model,
-      provider,
     )) as OrgThread;
 
     this.sql.exec(

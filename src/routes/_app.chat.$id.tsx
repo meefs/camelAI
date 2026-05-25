@@ -25,7 +25,6 @@ import {
 import {
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
-  getDefaultThreadProvider,
   getVisibleLlmModelOptions,
   isLlmModel,
 } from "@/lib/llm-provider-config";
@@ -49,7 +48,6 @@ import { useChatGroups } from "@/hooks/use-chat-groups";
 import { useChatThreadSnapshots } from "@/hooks/use-chat-thread-snapshots";
 import type { TodoItem } from "@/components/floating-todo";
 import type {
-  ChatHarness,
   Integration,
   LlmProvider,
   LlmModel,
@@ -128,14 +126,10 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       const chatThread = env.CHAT_THREAD.get(
         env.CHAT_THREAD.idFromName(params.id),
       ) as unknown as {
-        setModel(
-          model: LlmModel,
-          provider?: ChatHarness,
-          updatedAt?: number,
-        ): Promise<void>;
+        setModel(model: LlmModel, updatedAt?: number): Promise<void>;
         refreshRunnerConfig(): Promise<void>;
       };
-      await chatThread.setModel(updated.model, updated.provider, updated.updated_at);
+      await chatThread.setModel(updated.model, updated.updated_at);
       await chatThread.refreshRunnerConfig();
     } catch (error) {
       console.error("Failed to broadcast thread model update:", error);
@@ -310,15 +304,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadModel:
         thread?.model ??
         (threadContext.model as LlmModel | undefined) ??
-        getDefaultLlmModel(
-          thread?.provider ??
-            (threadContext.provider as ChatHarness | undefined) ??
-            "claude",
-        ),
-      threadProvider:
-        thread?.provider ??
-        (threadContext.provider as ChatHarness | undefined) ??
-        "claude",
+        getDefaultLlmModel(),
       llmProvider: null as LlmProvider | null,
       allowedThreadModels: null,
       effectivePickerDefaultModel: null,
@@ -399,7 +385,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       chatData,
       threadTitle: thread.title ?? null,
       threadModel: thread.model,
-      threadProvider: thread.provider,
       llmProvider: null as LlmProvider | null,
       allowedThreadModels: [thread.model],
       effectivePickerDefaultModel: null,
@@ -428,8 +413,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       workspaceId: null,
       chatData: EMPTY_CHAT_DATA,
       threadTitle: null,
-      threadModel: getDefaultLlmModel("claude"),
-      threadProvider: "claude" as const,
+      threadModel: getDefaultLlmModel(),
       llmProvider: null as LlmProvider | null,
       allowedThreadModels: [],
       effectivePickerDefaultModel: null,
@@ -508,23 +492,18 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     throw redirect("/chat");
   }
   const pickerState = await chatDO
-    .getWorkspaceModelPickerState(context, workspaceId, thread?.provider)
+    .getWorkspaceModelPickerState(context, workspaceId)
     .catch((error) => {
       console.error("Failed to load model picker state:", error);
       return null;
     });
-  const fallbackThreadProvider =
-    thread?.provider ??
-    getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
   const fallbackThreadModel =
     thread?.model ??
-    getDefaultLlmModel(fallbackThreadProvider, llmProviderConfig?.provider);
+    getDefaultLlmModel(llmProviderConfig?.provider);
   const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
-    fallbackThreadProvider,
     experimentalSettings,
     fallbackThreadModel,
     {
-      allowModelFamilySwitch: true,
       orgProvider: llmProviderConfig?.provider,
     },
   ).map((option) => option.value);
@@ -565,16 +544,17 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return [] as Integration[];
     });
 
+  const resolvedThreadModel =
+    thread?.model ??
+    pickerState?.defaultModel ??
+    fallbackThreadModel;
+
   return {
     threadId: params.id,
     workspaceId,
     chatData,
     threadTitle: thread?.title ?? null,
-    threadModel:
-      thread?.model ??
-      pickerState?.defaultModel ??
-      fallbackThreadModel,
-    threadProvider: thread?.provider ?? pickerState?.provider ?? fallbackThreadProvider,
+    threadModel: resolvedThreadModel,
     llmProvider:
       pickerState?.llmProvider ??
       ((llmProviderConfig?.provider ?? null) as
@@ -592,7 +572,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       buildBillingCreditStatus(
         billingOverview,
         llmProviderConfig?.provider,
-        thread?.provider ?? pickerState?.provider ?? fallbackThreadProvider,
+        resolvedThreadModel,
       ),
       url.searchParams,
     ),
@@ -619,7 +599,6 @@ export default function ChatPage() {
     workspaceId,
     chatData,
     threadModel,
-    threadProvider,
     llmProvider,
     allowedThreadModels,
     effectivePickerDefaultModel,
@@ -699,17 +678,12 @@ export default function ChatPage() {
   const displayThreadModel = isDisplayingLoaderThread
     ? threadModel
     : (activeThreadSummary?.model ?? threadModel);
-  const displayThreadProvider = isDisplayingLoaderThread
-    ? threadProvider
-    : (activeThreadSummary?.provider ?? threadProvider);
   const displayAllowedThreadModels =
-    displayThreadModel && displayThreadProvider
+    displayThreadModel
       ? getVisibleLlmModelOptions(
-          displayThreadProvider,
           experimentalSettings,
           displayThreadModel,
           {
-            allowModelFamilySwitch: true,
             orgProvider: llmProvider,
           },
         ).map((option) => option.value)
@@ -940,7 +914,6 @@ export default function ChatPage() {
             initialMessages={displayChatData.messages}
             initialTodos={displayChatData.todos}
             threadModel={displayThreadModel}
-            threadProvider={displayThreadProvider}
             llmProvider={llmProvider}
             allowedThreadModels={displayAllowedThreadModels}
             effectivePickerDefaultModel={effectivePickerDefaultModel}

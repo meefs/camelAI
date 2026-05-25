@@ -62,8 +62,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!existingThread) {
       return { error: 'Thread not found' };
     }
-    const threadProvider = existingThread.provider ?? 'claude';
-    if (model !== null && !isLlmModel(model, threadProvider)) {
+    if (model !== null && !isLlmModel(model)) {
       return { error: 'Invalid thread model' };
     }
     if (model !== null && model !== existingThread.model) {
@@ -128,7 +127,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     id: thread.id,
     title: thread.title,
     created_by: thread.created_by,
-    provider: thread.provider ?? 'claude',
     model: thread.model,
     created_at: thread.created_at,
     updated_at: thread.updated_at,

@@ -1,5 +1,4 @@
 import type {
-  ChatHarness,
   LlmModel,
   LlmProvider,
   LlmProviderConfigPublic,
@@ -110,7 +109,7 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
-}> = CLAUDE_LLM_MODEL_OPTIONS;
+}> = [...CLAUDE_LLM_MODEL_OPTIONS, ...CODEX_LLM_MODEL_OPTIONS];
 
 const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "kimi-k2.6",
@@ -149,98 +148,36 @@ export function isClaudeProxyModelsEnabled(
   return Boolean(settings?.claude_proxy_models);
 }
 
-export function getAllowedChatHarnessesForNewThread(
-  orgProvider: string | null | undefined,
-  experimentalSettings?: OrganizationExperimentalSettings | null,
-): ChatHarness[] {
-  if (orgProvider === "anthropic" || orgProvider === "bedrock") {
-    return ["claude"];
-  }
-  if (orgProvider === "openrouter") {
-    return ["codex", "claude"];
-  }
-  if (orgProvider === "openai") {
-    return ["codex"];
-  }
-  return ["claude", "codex"];
+export function getDefaultLlmModel(orgProvider?: string | null): LlmModel {
+  if (orgProvider === "openai") return DEFAULT_CODEX_MODEL;
+  if (orgProvider === "openrouter") return DEFAULT_OPENROUTER_MODEL;
+  return DEFAULT_LLM_MODEL;
 }
 
-export function getDefaultThreadProvider(
-  orgProvider: string | null | undefined,
-  experimentalSettings?: OrganizationExperimentalSettings | null,
-): ChatHarness {
-  return (
-    getAllowedChatHarnessesForNewThread(orgProvider, experimentalSettings)[0] ??
-    "claude"
-  );
-}
-
-export function getDefaultLlmModel(
-  provider: ChatHarness,
+export function getLlmModelOptions(
   orgProvider?: string | null,
-): LlmModel {
-  if (provider === "codex" && orgProvider === "openrouter") {
-    return DEFAULT_OPENROUTER_MODEL;
-  }
-  return provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_LLM_MODEL;
-}
-
-export function getLlmModelOptions(provider: ChatHarness): ReadonlyArray<{
+): ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
 }> {
-  return provider === "codex"
-    ? CODEX_LLM_MODEL_OPTIONS
-    : CLAUDE_LLM_MODEL_OPTIONS;
-}
-
-export function getProviderForModel(
-  model: LlmModel | null | undefined,
-  fallbackProvider: ChatHarness = "claude",
-): ChatHarness {
-  if (CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === model)) {
-    return "codex";
-  }
-  if (CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === model)) {
-    return "claude";
-  }
-  return fallbackProvider;
-}
-
-export function getChatHarnessesForLlmProvider(
-  provider: string | null | undefined,
-): ChatHarness[] {
-  if (provider === "openrouter") {
-    return ["codex", "claude"];
-  }
-  if (provider === "openai") {
-    return ["codex"];
-  }
-  if (provider === "anthropic" || provider === "bedrock") {
-    return ["claude"];
-  }
-  return [];
-}
-
-export function getAffectedChatHarnessesForLlmProviderChange(
-  previousProvider: string | null | undefined,
-  nextProvider: string | null | undefined,
-): ChatHarness[] {
-  return Array.from(
-    new Set([
-      ...getChatHarnessesForLlmProvider(previousProvider),
-      ...getChatHarnessesForLlmProvider(nextProvider),
-    ]),
+  return LLM_MODEL_OPTIONS.filter((option) =>
+    isLlmModelAllowedForOrgProvider(option.value, orgProvider),
   );
 }
 
+export function isClaudeLlmModel(model: unknown): model is LlmModel {
+  return CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === model);
+}
+
+export function isCodexLlmModel(model: unknown): model is LlmModel {
+  return CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === model);
+}
+
 export function getVisibleLlmModelOptions(
-  provider: ChatHarness,
   experimentalSettings?: OrganizationExperimentalSettings | null,
   includeModel?: LlmModel | null,
   options?: {
-    allowModelFamilySwitch?: boolean;
     orgProvider?: string | null;
   },
 ): ReadonlyArray<{
@@ -248,21 +185,7 @@ export function getVisibleLlmModelOptions(
   label: string;
   description: string;
 }> {
-  const visibleHarnesses = options?.allowModelFamilySwitch
-    ? getAllowedChatHarnessesForNewThread(
-        options.orgProvider,
-        experimentalSettings,
-      )
-    : [provider];
-  const baseOptions = visibleHarnesses
-    .flatMap((visibleProvider) =>
-      visibleProvider === "codex"
-        ? CODEX_LLM_MODEL_OPTIONS
-        : CLAUDE_LLM_MODEL_OPTIONS,
-    )
-    .filter((option) =>
-      isLlmModelAllowedForOrgProvider(option.value, options?.orgProvider),
-    );
+  const baseOptions = getLlmModelOptions(options?.orgProvider);
 
   if (
     !includeModel ||
@@ -284,52 +207,54 @@ export function isLlmModelAllowedForNewThread(
   orgProvider: string | null | undefined,
   experimentalSettings?: OrganizationExperimentalSettings | null,
 ): value is LlmModel {
-  if (!isLlmModel(value)) return false;
-  const provider = getProviderForModel(value);
-  return (
-    getAllowedChatHarnessesForNewThread(
-      orgProvider,
-      experimentalSettings,
-    ).includes(provider) && isLlmModelAllowedForOrgProvider(value, orgProvider)
-  );
+  return isLlmModel(value) && isLlmModelAllowedForOrgProvider(value, orgProvider);
 }
 
-export function isLlmModel(
-  value: unknown,
-  provider?: ChatHarness,
-): value is LlmModel {
-  if (provider === "codex") {
-    return CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === value);
-  }
-  if (provider === "claude") {
-    return CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === value);
-  }
-  return (
-    CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === value) ||
-    CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === value)
-  );
+export function isLlmModel(value: unknown): value is LlmModel {
+  return isCodexLlmModel(value) || isClaudeLlmModel(value);
 }
 
 export function isLlmModelAllowedForOrgProvider(
   model: LlmModel,
   orgProvider?: string | null,
 ): boolean {
+  if (orgProvider === "openai") {
+    return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
+  }
+  if (orgProvider === "anthropic" || orgProvider === "bedrock") {
+    return isClaudeLlmModel(model);
+  }
   if (OPENROUTER_ONLY_CODEX_MODELS.has(model)) {
     return orgProvider !== "openai";
   }
   return true;
 }
 
+export function isLlmModelCoveredByByokProvider(
+  model: LlmModel | null | undefined,
+  provider: string | null | undefined,
+): boolean {
+  if (!provider) return false;
+  if (!model) return true;
+  if (provider === "openrouter") return true;
+  if (provider === "anthropic" || provider === "bedrock") {
+    return isClaudeLlmModel(model);
+  }
+  if (provider === "openai") {
+    return isCodexLlmModel(model) && !OPENROUTER_ONLY_CODEX_MODELS.has(model);
+  }
+  return false;
+}
+
 export function normalizeLlmModel(
   value: unknown,
-  provider: ChatHarness = "claude",
   orgProvider?: string | null,
 ): LlmModel {
   const normalizedValue = replaceLegacyLlmModel(value);
-  return isLlmModel(normalizedValue, provider) &&
+  return isLlmModel(normalizedValue) &&
     isLlmModelAllowedForOrgProvider(normalizedValue, orgProvider)
     ? normalizedValue
-    : getDefaultLlmModel(provider, orgProvider);
+    : getDefaultLlmModel(orgProvider);
 }
 
 export function parseStoredLlmProviderConfig(

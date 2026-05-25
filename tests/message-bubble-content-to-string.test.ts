@@ -183,7 +183,6 @@ describe('contentToString', () => {
           },
         ] satisfies ContentBlock[],
         llmProvider: 'anthropic',
-        threadProvider: 'claude',
       }),
     );
 
@@ -209,7 +208,6 @@ describe('contentToString', () => {
           },
         ] satisfies ContentBlock[],
         llmProvider: 'anthropic',
-        threadProvider: 'claude',
       }),
     );
 
@@ -234,7 +232,6 @@ describe('contentToString', () => {
           },
         ] satisfies ContentBlock[],
         llmProvider: 'anthropic',
-        threadProvider: 'claude',
       }),
     );
 

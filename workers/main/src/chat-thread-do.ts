@@ -43,7 +43,6 @@ import type {
 } from '../../../src/types';
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
-  DEFAULT_CODEX_MODEL,
   DEFAULT_LLM_MODEL,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
@@ -252,7 +251,6 @@ export interface ChatContextState {
   threadId: string;
   workspaceId: string;
   orgId: string;
-  provider?: 'claude' | 'codex';
   userId: string | null;
   userName: string | null;
   userEmail: string | null;
@@ -2443,12 +2441,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.broadcastChat({ type: "title_updated", title, updatedAt });
   }
 
-  async setModel(
-    model: LlmModel,
-    provider?: 'claude' | 'codex',
-    updatedAt?: number,
-  ): Promise<void> {
-    this.broadcastChat({ type: 'thread_model_updated', model, provider, updatedAt });
+  async setModel(model: LlmModel, updatedAt?: number): Promise<void> {
+    this.broadcastChat({ type: 'thread_model_updated', model, updatedAt });
   }
 
   async setTodoState(todos: unknown[]): Promise<void> {
@@ -5133,7 +5127,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       threadId,
       workspaceId,
       orgId,
-      provider: this.chatContext?.provider ?? 'claude',
       userId:
         typeof payload.userId === "string" && payload.userId.trim()
           ? payload.userId.trim()
@@ -5371,9 +5364,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         orgStub.getThread(baseContext.threadId),
         orgStub.getLlmProviderConfig(),
       ]);
-      const provider: NonNullable<ChatContextState["provider"]> =
-        thread?.provider === 'codex' ? 'codex' : 'claude';
-      const context: ChatContextState = { ...baseContext, provider };
+      const context: ChatContextState = { ...baseContext };
       this.chatContext = context;
       this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, context);
       const threadWorkspaceId =
@@ -5382,20 +5373,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           : null;
       const threadModel =
         thread && threadWorkspaceId === context.workspaceId
-          ? normalizeLlmModel(
-              (thread as { model?: unknown }).model,
-              provider,
-              llmProviderRecord?.provider,
-            )
-          : provider === "codex"
-            ? normalizeLlmModel(undefined, "codex", llmProviderRecord?.provider)
-            : DEFAULT_LLM_MODEL;
+          ? normalizeLlmModel((thread as { model?: unknown }).model)
+          : normalizeLlmModel(undefined, llmProviderRecord?.provider);
       const envVars = {
-        CHIRIDION_CLAUDE_MODEL:
-          provider === "claude" ? threadModel : DEFAULT_LLM_MODEL,
-        CHIRIDION_CODEX_MODEL:
-          provider === "codex" ? threadModel : DEFAULT_CODEX_MODEL,
-        CHIRIDION_CHAT_PROVIDER: provider,
+        CHIRIDION_MODEL: threadModel,
+        CHIRIDION_CLAUDE_MODEL: threadModel,
+        CHIRIDION_CODEX_MODEL: threadModel,
       };
       this.trace("ensure_runner_env_built", {
         envVarCount: Object.keys(envVars).length,
@@ -5811,17 +5794,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     envVars: Record<string, string>,
     getModelFn: (provider: never, modelId: never) => Model<any>,
   ): Promise<PiResolvedModelConfig> {
-    const provider = context.provider;
-    if (provider !== "claude" && provider !== "codex") {
-      throw new Error(
-        `Missing Pi provider for thread context ${context.threadId}`,
-      );
-    }
     const modelId =
-      provider === "claude"
-        ? envVars.CHIRIDION_CLAUDE_MODEL || "sonnet"
-        : envVars.CHIRIDION_CODEX_MODEL || "gpt-5.5";
-    const resolved = this.resolvePiModelReference(provider, modelId);
+      envVars.CHIRIDION_MODEL ||
+      envVars.CHIRIDION_CODEX_MODEL ||
+      envVars.CHIRIDION_CLAUDE_MODEL ||
+      DEFAULT_LLM_MODEL;
+    const resolved = this.resolvePiModelReference(modelId);
     const model =
       (getModelFn(
         resolved.provider as never,
@@ -5829,7 +5807,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       ) as Model<any> | null | undefined) ??
       resolvePiModelCatalogFallback(resolved);
     if (!model) {
-      throw new Error(`Unsupported Pi model ${provider}/${modelId}`);
+      throw new Error(`Unsupported Pi model ${modelId}`);
     }
 
     const configured = await this.resolvePiRequestConfig(resolved, context);
@@ -5874,31 +5852,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  private resolvePiModelReference(
-    provider: "claude" | "codex",
-    modelId: string,
-  ): PiResolvedModelReference {
-    const normalizedModelId = this.normalizePiModelId(provider, modelId);
-    if (provider === "claude") {
-      const reference = (resolvedModelId: string): PiResolvedModelReference => ({
-        provider: "anthropic",
-        modelId: resolvedModelId,
-        hostedGatewayProvider: "openrouter",
-        hostedModelId: this.openRouterNitroModel(this.openRouterClaudeModel(resolvedModelId)),
-      });
-      switch (normalizedModelId) {
-        case "haiku":
-          return reference("claude-haiku-4-5-20251001");
-        case "opus-4.7":
-          return reference("claude-opus-4-7");
-        case "opus":
-          return reference("claude-opus-4-6");
-        case "sonnet":
-        default:
-          return reference("claude-sonnet-4-6");
-      }
-    }
-
+  private resolvePiModelReference(modelId: string): PiResolvedModelReference {
+    const normalizedModelId = this.normalizePiModelId(modelId);
+    const claudeReference = (resolvedModelId: string): PiResolvedModelReference => ({
+      provider: "anthropic",
+      modelId: resolvedModelId,
+      hostedGatewayProvider: "openrouter",
+      hostedModelId: this.openRouterNitroModel(this.openRouterClaudeModel(resolvedModelId)),
+    });
     const openRouterReference = (resolvedModelId: string): PiResolvedModelReference => ({
       provider: "openrouter",
       modelId: resolvedModelId,
@@ -5916,6 +5877,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       hostedModelId: this.openRouterNitroModel(resolvedModelId),
     });
     switch (normalizedModelId) {
+      case "haiku":
+        return claudeReference("claude-haiku-4-5-20251001");
+      case "opus-4.7":
+        return claudeReference("claude-opus-4-7");
+      case "opus":
+        return claudeReference("claude-opus-4-6");
+      case "sonnet":
+        return claudeReference("claude-sonnet-4-6");
       case "gpt-5.4-mini":
       case "gpt-5.4":
       case "gpt-5.5":
@@ -5942,12 +5911,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private normalizePiModelId(provider: "claude" | "codex", modelId: string): string {
+  private normalizePiModelId(modelId: string): string {
     const trimmed = modelId.trim();
-    const providerPrefix = `${provider}/`;
-    return trimmed.startsWith(providerPrefix)
-      ? trimmed.slice(providerPrefix.length)
-      : trimmed;
+    return trimmed.replace(/^(claude|codex)\//, "");
   }
 
   private async resolvePiRequestConfig(
