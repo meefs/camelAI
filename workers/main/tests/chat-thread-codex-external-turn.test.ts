@@ -2271,6 +2271,8 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(runtimeEvents[1].event.params).toEqual({
       threadId: 'thread1',
       forkEntryId: 'resp1',
+      completedAtMs: expect.any(Number),
+      turnDurationMs: expect.any(Number),
     });
     expect(events).toContainEqual(expect.objectContaining({
       type: 'result',
@@ -2322,6 +2324,8 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(runtimeEvents[1].event.params).toEqual({
       threadId: 'thread1',
       forkEntryId: 'resp2',
+      completedAtMs: expect.any(Number),
+      turnDurationMs: expect.any(Number),
     });
     expect(events).toContainEqual(expect.objectContaining({
       type: 'result',
