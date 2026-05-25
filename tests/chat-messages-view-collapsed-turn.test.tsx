@@ -1,5 +1,6 @@
 import { createRef, type ComponentProps } from "react";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatMessagesView } from "@/components/chat-messages-view";
 import type { ContentBlock, Message } from "@/types";
@@ -7,6 +8,7 @@ import type { ContentBlock, Message } from "@/types";
 type MessageBubbleCall = {
   renderMode: string;
   message: Message;
+  suppressFinalizedState: boolean;
 };
 
 const bubbleHarness = vi.hoisted(() => ({
@@ -31,11 +33,17 @@ vi.mock("@/components/message-bubble", () => {
     MessageBubble: ({
       message,
       renderMode = "full",
+      suppressFinalizedState = false,
     }: {
       message: Message;
       renderMode?: string;
+      suppressFinalizedState?: boolean;
     }) => {
-      bubbleHarness.calls.push({ renderMode, message });
+      bubbleHarness.calls.push({
+        renderMode,
+        message,
+        suppressFinalizedState,
+      });
       return (
         <div data-testid={`message-bubble-${renderMode}`}>
           {textFromContent(message.content)}
@@ -158,6 +166,42 @@ describe("ChatMessagesView collapsed assistant turns", () => {
     expect(screen.getAllByTestId("message-bubble-full")[1]).toHaveTextContent("4");
   });
 
+  it("renders collapsed trace as one turn-wide message for split tool results", async () => {
+    const user = userEvent.setup();
+    const toolUse: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const toolResult: ContentBlock = {
+      type: "tool_result",
+      tool_use_id: "tool-1",
+      content: "ok",
+    };
+
+    renderView({
+      visibleMessages: [
+        message("u1", "user", "read package.json", 1_000),
+        message("a1", "assistant", [toolUse], 2_000),
+        message(
+          "a2",
+          "assistant",
+          [toolResult, { type: "text", text: "Done" }],
+          3_000,
+        ),
+      ],
+    });
+
+    expect(screen.getByText("1 step")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /show work/i }));
+    const traceCalls = bubbleHarness.calls.filter(
+      (call) => call.renderMode === "trace-only",
+    );
+    expect(traceCalls).toHaveLength(1);
+    expect(traceCalls[0]?.message.content).toEqual([toolUse, toolResult]);
+  });
+
   it("keeps the synthetic final output message stable across unrelated rerenders", () => {
     const visibleMessages = [
       message("u1", "user", "read package.json", 1_000),
@@ -185,5 +229,30 @@ describe("ChatMessagesView collapsed assistant turns", () => {
 
     expect(firstFinalOutputMessage).toBeDefined();
     expect(secondFinalOutputMessage).toBe(firstFinalOutputMessage);
+  });
+
+  it("suppresses finalized actions on collapsed final output while compacting", () => {
+    renderView({
+      visibleMessages: [
+        message("u1", "user", "read package.json", 1_000),
+        message(
+          "a1",
+          "assistant",
+          [
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+            { type: "text", text: "Done" },
+          ],
+          2_000,
+        ),
+      ],
+      isCompacting: true,
+      compactingPriorMessageId: "a1",
+    });
+
+    const finalOutputCall = bubbleHarness.calls.find(
+      (call) => call.renderMode === "final-text-only",
+    );
+    expect(finalOutputCall?.message.id).toBe("a1");
+    expect(finalOutputCall?.suppressFinalizedState).toBe(true);
   });
 });

@@ -30,61 +30,66 @@ describe('CompactSummaryCard', () => {
     CompactSummaryCard = mod.CompactSummaryCard;
   });
 
-  it('renders header and body text for string content', () => {
+  it('renders a compacted row and reveals string content on expand', async () => {
+    const user = userEvent.setup();
+
     render(<CompactSummaryCard content="Summary text" />);
-    expect(screen.getByText('Context compacted')).toBeInTheDocument();
+    expect(screen.getByText('Compacted conversation')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Show compacted context summary' }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Show compacted context summary' }),
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Hide compacted context summary' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Output')).toBeInTheDocument();
     expect(screen.getByText('Summary text')).toBeInTheDocument();
   });
 
-  it('renders content from ContentBlock array', () => {
+  it('renders content from ContentBlock array', async () => {
+    const user = userEvent.setup();
     const blocks = [
       { type: 'text' as const, text: 'Block one' },
       { type: 'text' as const, text: 'Block two' },
     ];
     render(<CompactSummaryCard content={blocks} />);
+    await user.click(
+      screen.getByRole('button', { name: 'Show compacted context summary' }),
+    );
     // The joined text is passed to MarkdownRenderer which renders it in a single div
     const markdown = screen.getByTestId('markdown');
     expect(markdown.textContent).toContain('Block one');
     expect(markdown.textContent).toContain('Block two');
   });
 
-  it('does not render Show more when content fits', () => {
+  it('does not render legacy overflow controls', () => {
     render(<CompactSummaryCard content="Short" />);
     expect(screen.queryByText('Show more')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show less')).not.toBeInTheDocument();
   });
 
-  it('toggles between Show more and Show less when content overflows', async () => {
+  it('toggles the compacted summary details', async () => {
     const user = userEvent.setup();
-
-    // Force scrollHeight > COLLAPSED_MAX_HEIGHT
-    const originalScrollHeight = Object.getOwnPropertyDescriptor(
-      HTMLElement.prototype,
-      'scrollHeight',
-    );
-    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
-      configurable: true,
-      get() {
-        return 500;
-      },
-    });
 
     render(<CompactSummaryCard content="Long content..." />);
 
-    // Wait for overflow detection effect
-    await waitFor(() => {
-      expect(screen.getByText('Show more')).toBeInTheDocument();
-    });
+    await user.click(
+      screen.getByRole('button', { name: 'Show compacted context summary' }),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Hide compacted context summary' }),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByText('Show more'));
-    expect(screen.getByText('Show less')).toBeInTheDocument();
-
-    await user.click(screen.getByText('Show less'));
-    expect(screen.getByText('Show more')).toBeInTheDocument();
-
-    // Restore
-    if (originalScrollHeight) {
-      Object.defineProperty(HTMLElement.prototype, 'scrollHeight', originalScrollHeight);
-    }
+    await user.click(
+      screen.getByRole('button', { name: 'Hide compacted context summary' }),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Show compacted context summary' }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -98,7 +103,7 @@ describe('CompactingIndicator', () => {
       CompactingIndicator: () => <div data-testid="compacting-indicator" />,
     }));
     render(<mod.CompactingIndicator />);
-    expect(screen.getByText('Compacting conversation...')).toBeInTheDocument();
+    expect(screen.getByText('Compacting conversation')).toBeInTheDocument();
   });
 });
 

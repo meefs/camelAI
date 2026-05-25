@@ -76,6 +76,7 @@ describe("MessageBubble tool continuation", () => {
       content: [
         { type: "tool_use", id: "tool_1", name: "Read", input: {} },
         { type: "text", text: "Done" },
+        { type: "error", error: "Failed" },
       ],
     };
 
@@ -91,6 +92,7 @@ describe("MessageBubble tool continuation", () => {
 
     expect(screen.getByTestId("tool-call")).toBeInTheDocument();
     expect(screen.queryByText("Done")).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
   });
 
   it("renders only final text and errors in final-text-only mode", () => {
@@ -102,6 +104,7 @@ describe("MessageBubble tool continuation", () => {
       content: [
         { type: "tool_use", id: "tool_1", name: "Read", input: {} },
         { type: "text", text: "Done" },
+        { type: "error", error: "Failed" },
       ],
     };
 
@@ -116,5 +119,6 @@ describe("MessageBubble tool continuation", () => {
 
     expect(screen.queryByTestId("tool-call")).not.toBeInTheDocument();
     expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
   });
 });

@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { ChatApiErrorPresentation } from "@/lib/chat-api-errors";
 import {
   buildFinalOutputMessageView,
+  buildTraceMessageView,
   countTurnSteps,
   type MessageRenderMode,
 } from "@/lib/turn-utils";
@@ -122,6 +123,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
       precedingUserMessageId?: string;
       stepCount: number;
       fallbackDurationMs: number;
+      traceMessage: Message | null;
       finalOutputMessage: Message | null;
     }> = [];
 
@@ -164,6 +166,9 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         isAssistantTurn && precedingUserMessage
           ? Math.max(0, actionMessage.created_at - precedingUserMessage.created_at)
           : 0;
+      const traceMessage = isAssistantTurn
+        ? buildTraceMessageView(messages, actionMessage.id)
+        : null;
       const finalOutputMessage = isAssistantTurn
         ? buildFinalOutputMessageView(messages, actionMessage.id)
         : null;
@@ -177,6 +182,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         precedingUserMessageId,
         stepCount,
         fallbackDurationMs,
+        traceMessage,
         finalOutputMessage,
       });
 
@@ -328,13 +334,13 @@ export const ChatMessagesView = memo(function ChatMessagesView({
                     onFreshlyCompletedTurnAnimationScheduled
                   }
                 >
-                  {messageGroup.messages.map((msg) =>
-                    renderMessage(msg, {
-                      renderMode: "trace-only",
-                      showActionRow: false,
-                      omitMessageAnchor: true,
-                    }),
-                  )}
+                  {messageGroup.traceMessage
+                    ? renderMessage(messageGroup.traceMessage, {
+                        renderMode: "trace-only",
+                        showActionRow: false,
+                        omitMessageAnchor: true,
+                      })
+                    : null}
                 </TurnSummaryBar>
               </div>
               {finalOutputMessage ? (
@@ -350,6 +356,10 @@ export const ChatMessagesView = memo(function ChatMessagesView({
                     copiedId={copiedMessageId}
                     onFork={forkMessage}
                     forkingId={forkingMessageId}
+                    suppressFinalizedState={
+                      isCompacting &&
+                      finalOutputMessage.id === compactingPriorMessageId
+                    }
                     showActionRow
                     actionCopyContent={messageGroup.copyContent || undefined}
                     actionHoverClassName="opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100 pointer-coarse:opacity-100"

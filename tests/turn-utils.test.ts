@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFinalOutputMessageView,
+  buildTraceMessageView,
   countTurnSteps,
+  filterContentForRenderMode,
   formatTurnDuration,
   formatTurnDurationForScreenReader,
   hasFinalOutput,
@@ -68,6 +70,19 @@ describe("turn utils", () => {
       ).toBe(1);
     });
 
+    it("does not count tool results attached to tool calls from another message in the turn", () => {
+      expect(
+        countTurnSteps([
+          assistantMessage("a1", [
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          ]),
+          assistantMessage("a2", [
+            { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+          ]),
+        ]),
+      ).toBe(1);
+    });
+
     it("counts standalone trace rows across messages", () => {
       expect(
         countTurnSteps([
@@ -90,6 +105,51 @@ describe("turn utils", () => {
           ]),
         ]),
       ).toBe(3);
+    });
+  });
+
+  describe("filterContentForRenderMode", () => {
+    it("keeps errors in final output but excludes them from trace-only output", () => {
+      const content: ContentBlock[] = [
+        { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+        { type: "text", text: "Final answer" },
+        { type: "error", error: "Failed" },
+      ];
+
+      expect(filterContentForRenderMode(content, "trace-only")).toEqual([
+        { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+      ]);
+      expect(filterContentForRenderMode(content, "final-text-only")).toEqual([
+        { type: "text", text: "Final answer" },
+        { type: "error", error: "Failed" },
+      ]);
+    });
+  });
+
+  describe("buildTraceMessageView", () => {
+    it("builds a synthetic trace message from multiple assistant messages", () => {
+      const trace = buildTraceMessageView(
+        [
+          assistantMessage("a1", [
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+            { type: "text", text: "Interim text" },
+          ], 100),
+          assistantMessage("a2", [
+            { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+            { type: "error", error: "Failed" },
+          ], 200),
+        ],
+        "a2",
+      );
+
+      expect(trace).toMatchObject({
+        id: "a2",
+        created_at: 200,
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+        ],
+      });
     });
   });
 

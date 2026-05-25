@@ -40,20 +40,25 @@ export function isVisibleThinkingBlock(block: ContentBlock): boolean {
 
 export function countTurnSteps(messages: Message[]): number {
   let count = 0;
+  const turnToolUseIds = new Set<string>();
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
-    const toolUseIds = new Set(
-      message.content
-        .filter((block): block is ContentBlock & { type: "tool_use" } => block.type === "tool_use")
-        .map((block) => block.id),
-    );
+    for (const block of message.content) {
+      if (block.type === "tool_use") {
+        turnToolUseIds.add(block.id);
+      }
+    }
+  }
+
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
 
     for (const block of message.content) {
       if (block.type === "tool_use") {
         count += 1;
       } else if (isVisibleThinkingBlock(block)) {
         count += 1;
-      } else if (block.type === "tool_result" && !toolUseIds.has(block.tool_use_id)) {
+      } else if (block.type === "tool_result" && !turnToolUseIds.has(block.tool_use_id)) {
         count += 1;
       } else if (
         block.type === "teammate_message" ||
@@ -64,6 +69,16 @@ export function countTurnSteps(messages: Message[]): number {
     }
   }
   return count;
+}
+
+function isTraceContentBlock(block: ContentBlock): boolean {
+  return (
+    block.type === "tool_use" ||
+    block.type === "tool_result" ||
+    isVisibleThinkingBlock(block) ||
+    block.type === "teammate_message" ||
+    block.type === "task_notification"
+  );
 }
 
 export function formatTurnDuration(ms: number): string {
@@ -96,7 +111,7 @@ export function filterContentForRenderMode(
   }
   return content.filter((block) => {
     if (renderMode === "trace-only") {
-      return block.type !== "text";
+      return isTraceContentBlock(block);
     }
     return block.type === "text" || block.type === "error";
   });
@@ -112,6 +127,38 @@ export function hasFinalOutput(messages: Message[]): boolean {
       return block.type === "text" && stripSystemMessageTags(block.text).length > 0;
     });
   });
+}
+
+export function buildTraceMessageView(
+  messages: Message[],
+  actionMessageId: string,
+): Message | null {
+  if (messages.length === 0) return null;
+
+  const traceBlocks: ContentBlock[] = [];
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (isTraceContentBlock(block)) {
+        traceBlocks.push(block);
+      }
+    }
+  }
+
+  if (traceBlocks.length === 0) return null;
+
+  const lastAssistantMessage = messages[messages.length - 1];
+  const actionMessage =
+    messages.find((message) => message.id === actionMessageId) ??
+    lastAssistantMessage;
+
+  return {
+    ...lastAssistantMessage,
+    id: actionMessageId,
+    forkEntryId: actionMessage.forkEntryId,
+    content: traceBlocks,
+    isStreaming: false,
+  };
 }
 
 export function buildFinalOutputMessageView(
