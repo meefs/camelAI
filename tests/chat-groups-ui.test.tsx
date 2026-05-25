@@ -978,23 +978,16 @@ describe("reconcileLocalThreadStatusesWithSnapshot", () => {
     expect(Array.from(next.entries())).toEqual([["thread_2", "unread"]]);
   });
 
-  it("preserves the active thread optimistic running status across lagging snapshots", () => {
+  it("clears stale active thread optimistic running status when the snapshot omits it", () => {
     const current = new Map<string, "idle" | "running" | "unread">([
       ["thread_1", "running"],
       ["thread_2", "unread"],
     ]);
 
-    const next = reconcileLocalThreadStatusesWithSnapshot(
-      current,
-      new Set(),
-      "thread_1",
-    );
+    const next = reconcileLocalThreadStatusesWithSnapshot(current, new Set());
 
-    expect(next).toBe(current);
-    expect(Array.from(next.entries())).toEqual([
-      ["thread_1", "running"],
-      ["thread_2", "unread"],
-    ]);
+    expect(next).not.toBe(current);
+    expect(Array.from(next.entries())).toEqual([["thread_2", "unread"]]);
   });
 
   it("lets snapshot running state win over stale local non-running statuses", () => {
