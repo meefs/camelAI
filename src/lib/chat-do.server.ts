@@ -90,6 +90,11 @@ function toThread(orgThread: OrgThread): Thread {
     last_assistant_summary: orgThread.last_assistant_summary ?? null,
     last_assistant_summary_status:
       orgThread.last_assistant_summary_status ?? null,
+    source: orgThread.source ?? "web",
+    channel_kind: orgThread.channel_kind ?? null,
+    channel_connection_id: orgThread.channel_connection_id ?? null,
+    channel_conversation_id: orgThread.channel_conversation_id ?? null,
+    channel_message_id: orgThread.channel_message_id ?? null,
   };
 }
 

@@ -7,6 +7,7 @@
  * - /api/auth/:provider → User OAuth (Google, GitHub)
  * - /api/integrations/slack/* → Slack OAuth
  * - /api/integrations/slack/events → Slack Events API webhook
+ * - /api/integrations/telegram/webhook → Telegram Bot API webhook
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
  * - /ws/:workspace → Chat side-channel WebSocket (ChatThreadDO)
@@ -32,6 +33,7 @@ import {
   handleSlackOAuthStart,
   handleSlackOAuthCallback,
   handleSlackEvents,
+  handleTelegramWebhook,
   handleNotionOAuthStart,
   handleNotionOAuthCallback,
   handleSalesforceOAuthStart,
@@ -55,7 +57,7 @@ import {
   handleInternalBillingAccess,
   handleStripeWebhook,
 } from './routes/billing.js';
-import { handleResendProxy } from './routes/resend-proxy.js';
+import { handleEmailSendProxy } from './routes/email-send-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import {
   createRequestObservabilityContext,
@@ -70,6 +72,10 @@ export { ChatThreadDO, CodeModeToolsBinding } from './chat-thread-do.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
 export { EmailHandleDO } from './email-handle-registry.js';
+export {
+  SlackTeamRegistryDO,
+  TelegramRegistryDO,
+} from './channel-registries.js';
 export { WorkspaceDO } from './workspace.js';
 export { WorkspaceCronDO } from './workspace-cron.js';
 export { WorkerLogsDO, EphemeralWorkerLogsDO } from './worker-logs-do.js';
@@ -184,8 +190,8 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/internal\/billing\/access$/, handler: handleInternalBillingAccess },
   { method: 'POST', path: /^\/api\/billing\/stripe\/webhook$/, handler: handleStripeWebhook },
 
-  // Resend email proxy (for sandbox containers)
-  { method: 'POST', path: /^\/api\/resend\/emails$/, handler: handleResendProxy },
+  // Email sending proxy (for sandbox containers)
+  { method: 'POST', path: /^\/api\/email\/send$/, handler: handleEmailSendProxy },
 
   // Connections proxy (for sandbox containers)
   { method: 'POST', path: /^\/api\/connections$/, handler: handleConnections },
@@ -214,6 +220,7 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/integrations\/slack\/oauth$/, handler: handleSlackOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/slack\/callback$/, handler: handleSlackOAuthCallback },
   { method: 'POST', path: /^\/api\/integrations\/slack\/events$/, handler: handleSlackEvents },
+  { method: 'POST', path: /^\/api\/integrations\/telegram\/webhook$/, handler: handleTelegramWebhook },
   { method: 'GET', path: /^\/api\/integrations\/notion\/oauth$/, handler: handleNotionOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/oauth$/, handler: handleSalesforceOAuthStart },

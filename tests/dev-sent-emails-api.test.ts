@@ -46,7 +46,7 @@ describe('dev sent emails api authorization', () => {
       textBody: 'Text',
       htmlBody: '<p>Text</p>',
       status: 'sent',
-      transport: 'resend',
+      transport: 'cloudflare_email',
     });
   });
 

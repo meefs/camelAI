@@ -13,6 +13,11 @@ export interface Thread {
   last_assistant_completed_at?: number | null;
   last_assistant_summary?: string | null;
   last_assistant_summary_status?: ThreadCompletionSummaryStatus | null;
+  source?: string | null;
+  channel_kind?: string | null;
+  channel_connection_id?: string | null;
+  channel_conversation_id?: string | null;
+  channel_message_id?: string | null;
   creator?: User;
 }
 

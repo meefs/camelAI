@@ -14,29 +14,25 @@ import {
   decryptCredentials,
   encryptCredentials,
 } from "../../../../src/lib/integration-crypto.js";
-import {
-  getDefaultLlmModel,
-} from "../../../../src/lib/llm-provider-config.js";
-import { resolveModelPickerCatalog } from "../../../../src/lib/model-catalog.js";
-import {
-  resolveDefaultModelForChat,
-  resolveEffectivePickerConfig,
-} from "../../../../src/lib/model-picker-config.js";
 import { requireSession } from "../helpers/auth.js";
-import type {
-  ConnectionSetupResponse,
-  ExternalTurnResult,
-} from "../chat-thread-do.js";
-import { runExternalMessageTurn } from "../helpers/external-turn.js";
+import type { ConnectionSetupResponse } from "../chat-thread-do.js";
 import { getWorkspaceStub, getOrgStub } from "../helpers/stubs.js";
-import {
-  getOrgModelPickerConfigCompat,
-  getWorkspaceModelPickerConfigCompat,
-} from "../model-picker-config-compat.js";
 import { redirect, text } from "../helpers/response.js";
 import type { SlackEventCallbackPayload } from "../slack-types.js";
 import { isOrgBanned } from "../ban-list.js";
-import type { LlmModel } from "../../../../src/types.js";
+import {
+  enqueueChannelMessage,
+  getChannelThreadMapKey,
+  getChannelDedupeKey,
+  getOrCreateChannelThread,
+} from "../channels.js";
+import { buildWorkspaceScopedR2Key } from "../../../../src/lib/workspace-r2-paths.js";
+import type { TelegramChatBinding } from "../../../../src/lib/telegram-channel.js";
+import {
+  getSlackTeamRegistryStub,
+  getTelegramRegistryStub,
+  type SlackTeamInstallationRecord,
+} from "../channel-registries.js";
 import {
   buildRemoteMcpAuthorizationUrl,
   createPkceChallenge,
@@ -53,76 +49,70 @@ interface ChatThreadConnectionSetupRpc {
   ): Promise<{ accepted: boolean }>;
 }
 
-async function resolveDefaultSlackThreadModel(
-  env: RouteContext["env"],
-  args: { orgId: string; workspaceId: string },
-): Promise<LlmModel> {
-  const orgStub = getOrgStub(env, args.orgId);
-  const workspaceStub = getWorkspaceStub(env, args.workspaceId);
-  const [
-    llmProviderConfig,
-    experimentalSettings,
-    orgPickerConfig,
-    workspacePickerConfig,
-  ] = await Promise.all([
-    orgStub.getLlmProviderConfig(),
-    orgStub.getExperimentalSettings(),
-    getOrgModelPickerConfigCompat(orgStub),
-    getWorkspaceModelPickerConfigCompat(workspaceStub),
-  ]);
-  const effectiveConfig = resolveEffectivePickerConfig(
-    orgPickerConfig,
-    workspacePickerConfig,
-  );
-  const visibleCatalog = resolveModelPickerCatalog({
-    effectiveConfig,
-    experimentalSettings,
-    orgProvider: llmProviderConfig?.provider,
-  });
-  const model = resolveDefaultModelForChat({
-    effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
-    visibleCatalog,
-  });
-  if (!model) {
-    throw new Error("No models are available");
-  }
-  return model;
-}
-
-interface SlackTeamInstallationRecord {
-  workspace_id: string;
-  org_id: string;
-  integration_id: string;
-  team_id: string;
-  bot_user_id?: string;
-  updated_at: number;
-}
-
 interface SlackCredentials {
   access_token?: string;
   bot_user_id?: string;
   team_id?: string;
 }
 
-type SlackExternalTurnResponse = ExternalTurnResult;
+interface SlackResolvedInstallation {
+  workspaceId: string;
+  orgId: string;
+  teamId: string;
+  integrationId: string;
+  botUserId?: string;
+  accessToken: string;
+}
 
-const SLACK_TEAM_INDEX_PREFIX = "slack_team:";
-const SLACK_THREAD_MAP_PREFIX = "slack_thread:";
 const SLACK_EVENT_DEDUPE_PREFIX = "slack_event:";
 const SLACK_MESSAGE_DEDUPE_PREFIX = "slack_message:";
 const SLACK_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
-function getSlackTeamIndexKey(teamId: string): string {
-  return `${SLACK_TEAM_INDEX_PREFIX}${teamId}`;
+const SLACK_EVENT_FILE_MAX_BYTES = 25 * 1024 * 1024;
+const TELEGRAM_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
+const TELEGRAM_FILE_MAX_BYTES = 25 * 1024 * 1024;
+
+export class SlackChannelBusyError extends Error {
+  constructor(message = "Slack channel thread is busy") {
+    super(message);
+    this.name = "SlackChannelBusyError";
+  }
 }
 
-function getSlackThreadMapKey(
-  workspaceId: string,
-  teamId: string,
-  channelId: string,
-  rootTs: string,
-): string {
-  return `${SLACK_THREAD_MAP_PREFIX}${workspaceId}:${teamId}:${channelId}:${rootTs}`;
+interface TelegramUpdatePayload {
+  update_id?: number;
+  message?: TelegramMessagePayload;
+}
+
+interface TelegramMessagePayload {
+  message_id?: number;
+  text?: string;
+  caption?: string;
+  chat?: {
+    id?: number | string;
+    type?: string;
+    title?: string;
+    username?: string;
+    first_name?: string;
+    last_name?: string;
+  };
+  from?: {
+    id?: number | string;
+    username?: string;
+    first_name?: string;
+    last_name?: string;
+  };
+  document?: {
+    file_id?: string;
+    file_name?: string;
+    mime_type?: string;
+    file_size?: number;
+  };
+  photo?: Array<{
+    file_id?: string;
+    file_size?: number;
+    width?: number;
+    height?: number;
+  }>;
 }
 
 function getSlackMappingRootTs(
@@ -133,12 +123,6 @@ function getSlackMappingRootTs(
   if (explicitThreadTs) return explicitThreadTs;
   if (isDm) return "dm";
   return (event.ts || "").trim();
-}
-
-function getSlackReplyThreadTs(
-  event: NonNullable<SlackEventCallbackPayload["event"]>,
-): string {
-  return (event.thread_ts || event.ts || "").trim();
 }
 
 function getSlackMessageDedupeKey(
@@ -214,47 +198,6 @@ function toSlackJsonResponse(
   });
 }
 
-async function loadSlackTeamInstallations(
-  kv: KVNamespace,
-  teamId: string,
-): Promise<SlackTeamInstallationRecord[]> {
-  const raw = await kv.get(getSlackTeamIndexKey(teamId));
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as SlackTeamInstallationRecord[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (record) =>
-        typeof record?.workspace_id === "string" &&
-        typeof record?.org_id === "string" &&
-        typeof record?.integration_id === "string" &&
-        typeof record?.team_id === "string",
-    );
-  } catch {
-    return [];
-  }
-}
-
-async function saveSlackTeamInstallations(
-  kv: KVNamespace,
-  teamId: string,
-  records: SlackTeamInstallationRecord[],
-): Promise<void> {
-  await kv.put(getSlackTeamIndexKey(teamId), JSON.stringify(records));
-}
-
-async function upsertSlackTeamInstallation(
-  kv: KVNamespace,
-  record: SlackTeamInstallationRecord,
-): Promise<void> {
-  const records = await loadSlackTeamInstallations(kv, record.team_id);
-  const deduped = records.filter(
-    (candidate) => candidate.integration_id !== record.integration_id,
-  );
-  deduped.unshift(record);
-  await saveSlackTeamInstallations(kv, record.team_id, deduped.slice(0, 20));
-}
-
 function chooseSlackInstallationCandidates(
   records: SlackTeamInstallationRecord[],
   authorizations: Array<{ user_id?: string }> | undefined,
@@ -287,39 +230,6 @@ function normalizeSlackMessageText(
     text = text.replace(mention, "").trim();
   }
   return text;
-}
-
-async function postSlackThreadMessage(
-  token: string,
-  channel: string,
-  threadTs: string,
-  text: string,
-): Promise<void> {
-  const safeText = text.trim().slice(0, 3500);
-  if (!safeText) return;
-  const response = await fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({
-      channel,
-      thread_ts: threadTs,
-      text: safeText,
-    }),
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`chat.postMessage failed (${response.status}): ${body}`);
-  }
-
-  const payload = (await response.json()) as { ok?: boolean; error?: string };
-  if (!payload.ok) {
-    throw new Error(
-      `chat.postMessage error: ${payload.error || "unknown_error"}`,
-    );
-  }
 }
 
 /**
@@ -782,7 +692,8 @@ export async function handleSlackOAuthCallback({
     }
 
     if (tokenData.team?.id) {
-      await upsertSlackTeamInstallation(env.APP_KV, {
+      const registry = getSlackTeamRegistryStub(env, tokenData.team.id);
+      await registry.upsertInstallation({
         workspace_id: stateData.workspace_id,
         org_id: wsInfo.org_id,
         integration_id: integrationId,
@@ -816,19 +727,14 @@ export async function handleSlackOAuthCallback({
 async function resolveSlackInstallationForEvent(
   env: RouteContext["env"],
   payload: SlackEventCallbackPayload,
-): Promise<{
-  workspaceId: string;
-  orgId: string;
-  teamId: string;
-  botUserId?: string;
-  token: string;
-}> {
+): Promise<SlackResolvedInstallation> {
   const teamId = payload.team_id?.trim();
   if (!teamId) {
     throw new Error("Missing Slack team ID");
   }
 
-  const stored = await loadSlackTeamInstallations(env.APP_KV, teamId);
+  const registry = getSlackTeamRegistryStub(env, teamId);
+  const stored = await registry.listInstallations();
   if (stored.length === 0) {
     throw new Error(`No Slack installation index found for team ${teamId}`);
   }
@@ -884,8 +790,9 @@ async function resolveSlackInstallationForEvent(
       workspaceId: candidate.workspace_id,
       orgId: candidate.org_id,
       teamId,
+      integrationId: candidate.integration_id,
       botUserId,
-      token,
+      accessToken: token,
     };
   }
 
@@ -893,7 +800,7 @@ async function resolveSlackInstallationForEvent(
     const filtered = stored.filter(
       (record) => !staleIntegrationIds.has(record.integration_id),
     );
-    await saveSlackTeamInstallations(env.APP_KV, teamId, filtered);
+    await registry.replaceInstallations(filtered);
   }
 
   throw new Error(`No active Slack installation found for team ${teamId}`);
@@ -904,71 +811,187 @@ async function getOrCreateSlackThreadId(
   args: {
     workspaceId: string;
     orgId: string;
+    integrationId: string;
     teamId: string;
     channelId: string;
     rootTs: string;
     initialText: string;
+    initialMessageId?: string | null;
   },
 ): Promise<string> {
-  const mappingKey = getSlackThreadMapKey(
-    args.workspaceId,
-    args.teamId,
-    args.channelId,
-    args.rootTs,
-  );
-
-  const existing = await env.APP_KV.get(mappingKey);
-  if (existing) {
-    return existing;
-  }
-
-  const orgStub = getOrgStub(env, args.orgId);
   const title = args.initialText.trim().slice(0, 100) || "Slack conversation";
-  const model = await resolveDefaultSlackThreadModel(env, args);
-  const thread = await orgStub.createThread(
-    args.workspaceId,
+  const thread = await getOrCreateChannelThread(env, {
+    kind: "slack",
+    workspaceId: args.workspaceId,
+    orgId: args.orgId,
+    connectionId: args.integrationId,
+    remoteConversationId: `${args.teamId}:${args.channelId}:${args.rootTs}`,
     title,
-    "slack",
-    args.initialText.trim().slice(0, 500) || undefined,
-    model,
-  );
+    createdBy: "slack",
+    firstUserMessage: args.initialText,
+    firstRemoteMessageId: args.initialMessageId || args.rootTs,
+  });
 
-  await env.APP_KV.put(mappingKey, thread.id);
-  return thread.id;
+  return thread.threadId;
 }
 
-async function dispatchSlackTurnOutcome(
-  token: string,
-  channel: string,
-  threadTs: string,
-  result: SlackExternalTurnResponse,
-): Promise<void> {
-  if (result.status === "result") {
-    const reply = result.reply?.trim();
-    if (reply) {
-      await postSlackThreadMessage(token, channel, threadTs, reply);
+async function getMappedSlackThreadId(
+  env: RouteContext["env"],
+  installation: SlackResolvedInstallation,
+  channelId: string,
+  rootTs: string,
+): Promise<string | null> {
+  const mappingKey = getChannelThreadMapKey({
+    kind: "slack",
+    workspaceId: installation.workspaceId,
+    orgId: installation.orgId,
+    connectionId: installation.integrationId,
+    remoteConversationId: `${installation.teamId}:${channelId}:${rootTs}`,
+  });
+  const mappedThreadId = await env.APP_KV.get(mappingKey);
+  return mappedThreadId || null;
+}
+
+function sanitizeSlackAttachmentName(
+  file: NonNullable<SlackEventCallbackPayload["event"]>["files"] extends Array<infer T>
+    ? T
+    : never,
+  index: number,
+): string {
+  const candidate =
+    (typeof file.name === "string" && file.name.trim()) ||
+    (typeof file.title === "string" && file.title.trim()) ||
+    (typeof file.id === "string" && file.id.trim()) ||
+    `slack-file-${index + 1}`;
+  const sanitized = candidate
+    .replace(/[\r\n"]/g, "_")
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .slice(0, 180);
+  return sanitized || `slack-file-${index + 1}`;
+}
+
+function uniqueSlackUploadFilename(base: string): string {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).slice(2, 8);
+  const dot = base.lastIndexOf(".");
+  const name = dot > 0 ? base.slice(0, dot) : base;
+  const ext = dot > 0 ? base.slice(dot) : "";
+  return `${name}-${timestamp}-${random}${ext}`;
+}
+
+function appendSlackUploadRefsToMessage(
+  content: string,
+  uploadPaths: string[],
+): string {
+  if (uploadPaths.length === 0) return content.trim();
+  const refs = uploadPaths
+    .map((path) => `(user uploaded file to ${path})`)
+    .join("\n");
+  const trimmed = content.trim();
+  return trimmed ? `${trimmed}\n\n${refs}` : refs;
+}
+
+function isOverFileSizeLimit(size: unknown, maxBytes: number): boolean {
+  return (
+    typeof size === "number" &&
+    Number.isFinite(size) &&
+    size > maxBytes
+  );
+}
+
+function parseContentLength(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+async function uploadSlackEventFiles(
+  env: RouteContext["env"],
+  installation: SlackResolvedInstallation,
+  files: NonNullable<SlackEventCallbackPayload["event"]>["files"],
+): Promise<string[]> {
+  if (!Array.isArray(files) || files.length === 0) return [];
+  const uploadPaths: string[] = [];
+
+  for (const [index, file] of files.entries()) {
+    const url =
+      (typeof file.url_private_download === "string" &&
+        file.url_private_download) ||
+      (typeof file.url_private === "string" && file.url_private) ||
+      "";
+    if (!url) continue;
+
+    try {
+      if (isOverFileSizeLimit(file.size, SLACK_EVENT_FILE_MAX_BYTES)) {
+        console.warn("[slack-events] skipping oversized Slack file", {
+          fileId: file.id || null,
+          size: file.size,
+          maxBytes: SLACK_EVENT_FILE_MAX_BYTES,
+        });
+        continue;
+      }
+
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${installation.accessToken}` },
+      });
+      if (!response.ok) {
+        console.warn("[slack-events] failed to download Slack file", {
+          fileId: file.id || null,
+          status: response.status,
+        });
+        continue;
+      }
+      const contentLength = parseContentLength(
+        response.headers.get("content-length"),
+      );
+      if (contentLength !== null && contentLength > SLACK_EVENT_FILE_MAX_BYTES) {
+        console.warn("[slack-events] skipping oversized Slack file response", {
+          fileId: file.id || null,
+          size: contentLength,
+          maxBytes: SLACK_EVENT_FILE_MAX_BYTES,
+        });
+        continue;
+      }
+      const body = await response.arrayBuffer();
+      if (body.byteLength === 0) continue;
+      if (body.byteLength > SLACK_EVENT_FILE_MAX_BYTES) {
+        console.warn("[slack-events] skipping oversized Slack file body", {
+          fileId: file.id || null,
+          size: body.byteLength,
+          maxBytes: SLACK_EVENT_FILE_MAX_BYTES,
+        });
+        continue;
+      }
+      const originalName = sanitizeSlackAttachmentName(file, index);
+      const storedFilename = uniqueSlackUploadFilename(originalName);
+      const contentType =
+        (typeof file.mimetype === "string" && file.mimetype.trim()) ||
+        response.headers.get("content-type") ||
+        "application/octet-stream";
+      const r2Key = buildWorkspaceScopedR2Key(
+        installation.orgId,
+        installation.workspaceId,
+        `user-uploads/${storedFilename}`,
+      );
+      await env.R2_BUCKET.put(r2Key, body, {
+        httpMetadata: { contentType },
+        customMetadata: {
+          originalName,
+          uploadedAt: new Date().toISOString(),
+          source: "slack-ingress",
+          slackFileId: typeof file.id === "string" ? file.id : "",
+        },
+      });
+      uploadPaths.push(`/mnt/user-uploads/${storedFilename}`);
+    } catch (error) {
+      console.error("[slack-events] failed to upload Slack file", {
+        fileId: file.id || null,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    return;
   }
 
-  if (result.status === "busy") {
-    await postSlackThreadMessage(
-      token,
-      channel,
-      threadTs,
-      "Claude is still processing the previous turn for this Slack thread. Please try again in a moment.",
-    );
-    return;
-  }
-
-  if (result.status === "error") {
-    await postSlackThreadMessage(
-      token,
-      channel,
-      threadTs,
-      result.error || "I could not process that message right now.",
-    );
-  }
+  return uploadPaths;
 }
 
 export async function processSlackEventCallback(
@@ -978,7 +1001,7 @@ export async function processSlackEventCallback(
   const event = payload.event;
   if (!event) return;
   if (event.type !== "message" && event.type !== "app_mention") return;
-  if (event.subtype) return;
+  if (event.subtype && event.subtype !== "file_share") return;
 
   const installation = await resolveSlackInstallationForEvent(env, payload);
   const orgBan = await isOrgBanned(env.APP_KV, { orgId: installation.orgId });
@@ -994,13 +1017,12 @@ export async function processSlackEventCallback(
   const rootTs = getSlackMappingRootTs(event, isDm);
   if (!rootTs) return;
 
-  const mappingKey = getSlackThreadMapKey(
-    installation.workspaceId,
-    installation.teamId,
+  const mappedThreadId = await getMappedSlackThreadId(
+    env,
+    installation,
     channelId,
     rootTs,
   );
-  const mappedThreadId = await env.APP_KV.get(mappingKey);
   const mentionsBot = installation.botUserId
     ? rawText.includes(`<@${installation.botUserId}>`)
     : false;
@@ -1015,37 +1037,499 @@ export async function processSlackEventCallback(
     rawText,
     installation.botUserId,
   );
-  if (!messageText) return;
+  const uploadedAttachmentPaths = await uploadSlackEventFiles(
+    env,
+    installation,
+    event.files,
+  );
+  const userMessage = appendSlackUploadRefsToMessage(
+    messageText,
+    uploadedAttachmentPaths,
+  );
+  if (!userMessage) return;
 
   const threadId =
     mappedThreadId ||
     (await getOrCreateSlackThreadId(env, {
       workspaceId: installation.workspaceId,
       orgId: installation.orgId,
+      integrationId: installation.integrationId,
       teamId: installation.teamId,
       channelId,
       rootTs,
-      initialText: messageText,
+      initialText: userMessage,
+      initialMessageId: event.ts || null,
     }));
 
-  const turnResult = await runExternalMessageTurn(env, {
+  const enqueueResult = await enqueueChannelMessage(env, {
+    channelKind: "slack",
     threadId,
     workspaceId: installation.workspaceId,
     orgId: installation.orgId,
     userName: `Slack ${userId}`,
     userEmail: null,
-    message: messageText,
+    message: userMessage,
   });
 
-  const replyThreadTs = getSlackReplyThreadTs(event);
-  if (!replyThreadTs) return;
+  if (enqueueResult.status === "busy") {
+    throw new SlackChannelBusyError(enqueueResult.error);
+  }
 
-  await dispatchSlackTurnOutcome(
-    installation.token,
-    channelId,
-    replyThreadTs,
-    turnResult,
+  if (enqueueResult.status !== "accepted") {
+    throw new Error(
+      enqueueResult.error ||
+        `Channel Slack message was not accepted (${enqueueResult.status})`,
+    );
+  }
+}
+
+function parseTelegramStartToken(textValue: string | undefined): string | null {
+  const text = (textValue || "").trim();
+  const match = text.match(/^\/start(?:@\w+)?(?:\s+([A-Za-z0-9_-]{1,64}))?$/);
+  return match?.[1] || null;
+}
+
+function telegramChatId(message: TelegramMessagePayload): string {
+  const value = message.chat?.id;
+  return value === undefined || value === null ? "" : String(value).trim();
+}
+
+function telegramSenderName(message: TelegramMessagePayload): string {
+  const from = message.from;
+  const parts = [from?.first_name, from?.last_name]
+    .map((part) => (part || "").trim())
+    .filter(Boolean);
+  if (parts.length > 0) return parts.join(" ");
+  if (from?.username) return `@${from.username}`;
+  return "Telegram user";
+}
+
+function telegramChatTitle(message: TelegramMessagePayload): string {
+  const chat = message.chat;
+  const title = (chat?.title || "").trim();
+  if (title) return title;
+  const parts = [chat?.first_name, chat?.last_name]
+    .map((part) => (part || "").trim())
+    .filter(Boolean);
+  if (parts.length > 0) return parts.join(" ");
+  if (chat?.username) return `@${chat.username}`;
+  return "Telegram chat";
+}
+
+function telegramUniqueUploadFilename(base: string): string {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).slice(2, 8);
+  const dot = base.lastIndexOf(".");
+  const name = dot > 0 ? base.slice(0, dot) : base;
+  const ext = dot > 0 ? base.slice(dot) : "";
+  return `${name}-${timestamp}-${random}${ext}`;
+}
+
+function sanitizeTelegramAttachmentName(
+  name: string | undefined,
+  fallback: string,
+): string {
+  const candidate = (name || fallback).trim();
+  const sanitized = candidate
+    .replace(/[\r\n"]/g, "_")
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .slice(0, 180);
+  return sanitized || fallback;
+}
+
+function appendTelegramUploadRefsToMessage(
+  content: string,
+  uploadPaths: string[],
+): string {
+  if (uploadPaths.length === 0) return content.trim();
+  const refs = uploadPaths
+    .map((path) => `(user uploaded file to ${path})`)
+    .join("\n");
+  const trimmed = content.trim();
+  return trimmed ? `${trimmed}\n\n${refs}` : refs;
+}
+
+async function sendTelegramText(
+  token: string,
+  chatId: string,
+  textValue: string,
+): Promise<void> {
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text: textValue }),
+  });
+  const responseJson = await response.json().catch(() => null) as {
+    ok?: boolean;
+    description?: string;
+  } | null;
+  if (!response.ok || responseJson?.ok !== true) {
+    throw new Error(
+      `Telegram send failed: ${responseJson?.description || response.statusText}`,
+    );
+  }
+}
+
+async function completeTelegramSetup(
+  env: RouteContext["env"],
+  token: string,
+  message: TelegramMessagePayload,
+  botToken: string,
+): Promise<void> {
+  const chatId = telegramChatId(message);
+  if (!chatId) return;
+
+  const registry = getTelegramRegistryStub(env);
+  const setup = await registry.consumeSetupToken(token);
+  if (!setup) {
+    await sendTelegramText(
+      botToken,
+      chatId,
+      "This Telegram setup link is expired or invalid. Create a new Telegram connection in camelAI.",
+    ).catch((error) => {
+      console.error("[telegram-events] failed to send invalid setup message", error);
+    });
+    return;
+  }
+
+  const workspaceStub = getWorkspaceStub(env, setup.workspaceId);
+  const integration = await workspaceStub.getIntegration(setup.integrationId);
+  if (!integration || integration.integration_type !== "telegram") {
+    return;
+  }
+
+  const existingConfig = JSON.parse(integration.config || "{}") as Record<string, unknown>;
+  const nextConfig = {
+    ...existingConfig,
+    status: "active",
+    chat_id: chatId,
+    chat_type: message.chat?.type || null,
+    chat_title: telegramChatTitle(message),
+    connected_at: Date.now(),
+    connected_by_telegram_user_id:
+      message.from?.id === undefined || message.from?.id === null
+        ? null
+        : String(message.from.id),
+  };
+  delete nextConfig.setup_token;
+  delete nextConfig.setup_expires_at;
+
+  await workspaceStub.updateIntegration(
+    setup.integrationId,
+    { config: JSON.stringify(nextConfig) },
+    setup.userId,
   );
+
+  const binding: TelegramChatBinding = {
+    workspaceId: setup.workspaceId,
+    orgId: setup.orgId,
+    integrationId: setup.integrationId,
+  };
+  await registry.bindChat(chatId, binding);
+
+  await sendTelegramText(
+    botToken,
+    chatId,
+    "Telegram is connected to this camelAI workspace.",
+  ).catch((error) => {
+    console.error("[telegram-events] failed to send setup confirmation", error);
+  });
+}
+
+async function resolveTelegramFile(
+  token: string,
+  fileId: string,
+): Promise<{ filePath: string; fileSize?: number } | null> {
+  const response = await fetch(`https://api.telegram.org/bot${token}/getFile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  const responseJson = await response.json().catch(() => null) as {
+    ok?: boolean;
+    description?: string;
+    result?: { file_path?: string; file_size?: number };
+  } | null;
+  if (!response.ok || responseJson?.ok !== true || !responseJson.result?.file_path) {
+    console.warn("[telegram-events] failed to resolve Telegram file", {
+      fileId,
+      error: responseJson?.description || response.statusText,
+    });
+    return null;
+  }
+  return {
+    filePath: responseJson.result.file_path,
+    fileSize: responseJson.result.file_size,
+  };
+}
+
+async function uploadTelegramFile(args: {
+  env: RouteContext["env"];
+  token: string;
+  binding: TelegramChatBinding;
+  fileId: string;
+  originalName: string;
+  contentType: string;
+  size?: number;
+}): Promise<string | null> {
+  if (isOverFileSizeLimit(args.size, TELEGRAM_FILE_MAX_BYTES)) {
+    console.warn("[telegram-events] skipping oversized Telegram file", {
+      fileId: args.fileId,
+      size: args.size,
+      maxBytes: TELEGRAM_FILE_MAX_BYTES,
+    });
+    return null;
+  }
+
+  const resolved = await resolveTelegramFile(args.token, args.fileId);
+  if (!resolved) return null;
+  if (isOverFileSizeLimit(resolved.fileSize, TELEGRAM_FILE_MAX_BYTES)) {
+    console.warn("[telegram-events] skipping oversized Telegram file", {
+      fileId: args.fileId,
+      size: resolved.fileSize,
+      maxBytes: TELEGRAM_FILE_MAX_BYTES,
+    });
+    return null;
+  }
+
+  const response = await fetch(
+    `https://api.telegram.org/file/bot${args.token}/${resolved.filePath}`,
+  );
+  if (!response.ok) {
+    console.warn("[telegram-events] failed to download Telegram file", {
+      fileId: args.fileId,
+      status: response.status,
+    });
+    return null;
+  }
+
+  const contentLength = parseContentLength(
+    response.headers.get("content-length"),
+  );
+  if (contentLength !== null && contentLength > TELEGRAM_FILE_MAX_BYTES) {
+    console.warn("[telegram-events] skipping oversized Telegram file response", {
+      fileId: args.fileId,
+      size: contentLength,
+      maxBytes: TELEGRAM_FILE_MAX_BYTES,
+    });
+    return null;
+  }
+
+  const body = await response.arrayBuffer();
+  if (body.byteLength === 0) return null;
+  if (body.byteLength > TELEGRAM_FILE_MAX_BYTES) {
+    console.warn("[telegram-events] skipping oversized Telegram file body", {
+      fileId: args.fileId,
+      size: body.byteLength,
+      maxBytes: TELEGRAM_FILE_MAX_BYTES,
+    });
+    return null;
+  }
+
+  const storedFilename = telegramUniqueUploadFilename(args.originalName);
+  const r2Key = buildWorkspaceScopedR2Key(
+    args.binding.orgId,
+    args.binding.workspaceId,
+    `user-uploads/${storedFilename}`,
+  );
+  await args.env.R2_BUCKET.put(r2Key, body, {
+    httpMetadata: {
+      contentType:
+        args.contentType ||
+        response.headers.get("content-type") ||
+        "application/octet-stream",
+    },
+    customMetadata: {
+      originalName: args.originalName,
+      uploadedAt: new Date().toISOString(),
+      source: "telegram-ingress",
+      telegramFileId: args.fileId,
+    },
+  });
+  return `/mnt/user-uploads/${storedFilename}`;
+}
+
+async function uploadTelegramMessageFiles(
+  env: RouteContext["env"],
+  token: string,
+  binding: TelegramChatBinding,
+  message: TelegramMessagePayload,
+): Promise<string[]> {
+  const uploads: string[] = [];
+
+  if (message.document?.file_id) {
+    const originalName = sanitizeTelegramAttachmentName(
+      message.document.file_name,
+      `telegram-document-${message.message_id || Date.now()}`,
+    );
+    const uploaded = await uploadTelegramFile({
+      env,
+      token,
+      binding,
+      fileId: message.document.file_id,
+      originalName,
+      contentType: message.document.mime_type || "application/octet-stream",
+      size: message.document.file_size,
+    });
+    if (uploaded) uploads.push(uploaded);
+  }
+
+  const largestPhoto = Array.isArray(message.photo) && message.photo.length > 0
+    ? [...message.photo].sort((a, b) => (b.file_size || 0) - (a.file_size || 0))[0]
+    : null;
+  if (largestPhoto?.file_id) {
+    const uploaded = await uploadTelegramFile({
+      env,
+      token,
+      binding,
+      fileId: largestPhoto.file_id,
+      originalName: sanitizeTelegramAttachmentName(
+        undefined,
+        `telegram-photo-${message.message_id || Date.now()}.jpg`,
+      ),
+      contentType: "image/jpeg",
+      size: largestPhoto.file_size,
+    });
+    if (uploaded) uploads.push(uploaded);
+  }
+
+  return uploads;
+}
+
+async function processTelegramMessage(
+  env: RouteContext["env"],
+  update: TelegramUpdatePayload,
+  message: TelegramMessagePayload,
+  botToken: string,
+): Promise<void> {
+  const chatId = telegramChatId(message);
+  if (!chatId) return;
+
+  const setupToken = parseTelegramStartToken(message.text);
+  if (setupToken) {
+    await completeTelegramSetup(env, setupToken, message, botToken);
+    return;
+  }
+
+  const binding = await getTelegramRegistryStub(env).getChatBinding(chatId);
+  if (!binding) return;
+  const workspaceStub = getWorkspaceStub(env, binding.workspaceId);
+  const [wsInfo, integration] = await Promise.all([
+    workspaceStub.getInfo(),
+    workspaceStub.getIntegration(binding.integrationId),
+  ]);
+  if (!wsInfo || wsInfo.archived) return;
+  if (!integration || integration.integration_type !== "telegram") return;
+  const config = JSON.parse(integration.config || "{}") as Record<string, unknown>;
+  const configuredChatId =
+    config.chat_id === undefined || config.chat_id === null
+      ? ""
+      : String(config.chat_id).trim();
+  if (configuredChatId !== chatId) return;
+  const orgBan = await isOrgBanned(env.APP_KV, { orgId: binding.orgId });
+  if (orgBan) return;
+
+  const remoteMessageId =
+    message.message_id === undefined || message.message_id === null
+      ? `update:${update.update_id || Date.now()}`
+      : `${chatId}:${message.message_id}`;
+  const dedupeKey = getChannelDedupeKey(
+    "telegram",
+    binding.workspaceId,
+    remoteMessageId,
+  );
+  if (await env.APP_KV.get(dedupeKey)) return;
+  await env.APP_KV.put(dedupeKey, "processing", {
+    expirationTtl: TELEGRAM_EVENT_DEDUPE_TTL_SECONDS,
+  });
+
+  let dedupeFinalized = false;
+  try {
+    const uploadedPaths = await uploadTelegramMessageFiles(
+      env,
+      botToken,
+      binding,
+      message,
+    );
+    const userMessage = appendTelegramUploadRefsToMessage(
+      message.text || message.caption || "",
+      uploadedPaths,
+    );
+    if (!userMessage) return;
+
+    const thread = await getOrCreateChannelThread(env, {
+      kind: "telegram",
+      workspaceId: binding.workspaceId,
+      orgId: binding.orgId,
+      connectionId: binding.integrationId,
+      remoteConversationId: chatId,
+      title: telegramChatTitle(message),
+      createdBy: "telegram",
+      firstUserMessage: userMessage,
+      firstRemoteMessageId: remoteMessageId,
+    });
+
+    const enqueueResult = await enqueueChannelMessage(env, {
+      channelKind: "telegram",
+      threadId: thread.threadId,
+      workspaceId: binding.workspaceId,
+      orgId: binding.orgId,
+      userName: telegramSenderName(message),
+      userEmail: null,
+      message: userMessage,
+    });
+
+    if (enqueueResult.status !== "accepted") {
+      throw new Error(
+        enqueueResult.error ||
+          `Channel Telegram message was not accepted (${enqueueResult.status})`,
+      );
+    }
+
+    await env.APP_KV.put(dedupeKey, "done", {
+      expirationTtl: TELEGRAM_EVENT_DEDUPE_TTL_SECONDS,
+    });
+    dedupeFinalized = true;
+  } finally {
+    if (!dedupeFinalized) {
+      await env.APP_KV.delete(dedupeKey).catch((error) => {
+        console.warn("[telegram-events] failed to clear dedupe marker", {
+          key: dedupeKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  }
+}
+
+export async function handleTelegramWebhook({
+  req,
+  env,
+}: RouteContext): Promise<Response> {
+  const webhookSecret = env.TELEGRAM_WEBHOOK_SECRET?.trim();
+  if (!webhookSecret) {
+    return text("Telegram webhook secret is not configured", 500);
+  }
+  if (req.headers.get("x-telegram-bot-api-secret-token") !== webhookSecret) {
+    return text("Invalid Telegram webhook secret", 401);
+  }
+  const botToken = env.TELEGRAM_BOT_TOKEN?.trim();
+  if (!botToken) {
+    return text("Telegram bot token is not configured", 500);
+  }
+
+  let update: TelegramUpdatePayload;
+  try {
+    update = await req.json() as TelegramUpdatePayload;
+  } catch {
+    return text("Invalid JSON payload", 400);
+  }
+
+  if (update.message) {
+    await processTelegramMessage(env, update, update.message, botToken);
+  }
+
+  return text("ok", 200);
 }
 
 export async function handleSlackEvents({

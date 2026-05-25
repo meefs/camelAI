@@ -1,5 +1,5 @@
 /**
- * Resend Email Proxy for sandbox containers.
+ * Cloudflare Email Sending proxy for sandbox containers.
  *
  * - Trusted only when forwarded through sandbox-host (x-sandbox-secret auth)
  * - Rate-limited per workspace (hourly + daily sliding windows via WorkspaceDO)
@@ -34,11 +34,11 @@ function errorResponse(message: string, status: number): Response {
   return jsonResponse({ error: message }, status);
 }
 
-interface ResendProxyRequest {
+interface EmailSendProxyRequest {
   to: string | string[];
   cc?: string | string[];
   bcc?: string | string[];
-  reply_to?: string | string[];
+  reply_to?: string;
   subject: string;
   text?: string;
   html?: string;
@@ -102,7 +102,7 @@ async function getWorkspaceMemberEmails(
   const members = await workspaceStub.listMembers();
   const activeMembers = members.filter((m) => m.access_level !== 'none');
 
-  console.log(`[ResendProxy] workspace=${workspaceId} members=${members.length} active=${activeMembers.length}`);
+  console.log(`[EmailSendProxy] workspace=${workspaceId} members=${members.length} active=${activeMembers.length}`);
 
   const emails = await Promise.all(
     activeMembers.map(async (member) => {
@@ -111,18 +111,18 @@ async function getWorkspaceMemberEmails(
         const profile = await userStub.getProfile();
         const email = profile?.email?.toLowerCase() ?? null;
         if (!email) {
-          console.warn(`[ResendProxy] user=${member.user_id} profile has no email (profile=${profile ? 'exists' : 'null'})`);
+          console.warn(`[EmailSendProxy] user=${member.user_id} profile has no email (profile=${profile ? 'exists' : 'null'})`);
         }
         return email;
       } catch (err) {
-        console.error(`[ResendProxy] failed to resolve email for user=${member.user_id}:`, err);
+        console.error(`[EmailSendProxy] failed to resolve email for user=${member.user_id}:`, err);
         return null;
       }
     })
   );
 
   const emailSet = new Set(emails.filter((e): e is string => e !== null));
-  console.log(`[ResendProxy] allowed emails: [${[...emailSet].join(', ')}]`);
+  console.log(`[EmailSendProxy] allowed emails: [${[...emailSet].join(', ')}]`);
   return emailSet;
 }
 
@@ -131,9 +131,9 @@ async function getWorkspaceMemberEmails(
 // ---------------------------------------------------------------------------
 
 /**
- * POST /api/resend/emails
+ * POST /api/email/send
  */
-export async function handleResendProxy({ req, env }: RouteContext): Promise<Response> {
+export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<Response> {
   if (req.method !== 'POST') {
     return errorResponse('Method not allowed', 405);
   }
@@ -155,15 +155,15 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
     return errorResponse('Workspace email inbox requires a Pro, Team, or Enterprise plan', 403);
   }
 
-  // 2. Require Resend API key
-  if (!env.RESEND_API_KEY) {
-    return errorResponse('Resend API key not configured', 503);
+  // 2. Require Cloudflare Email Sending binding
+  if (!env.EMAIL) {
+    return errorResponse('Cloudflare Email Sending binding EMAIL is not configured', 503);
   }
 
   // 3. Parse request body
-  let payload: ResendProxyRequest;
+  let payload: EmailSendProxyRequest;
   try {
-    payload = (await req.json()) as ResendProxyRequest;
+    payload = (await req.json()) as EmailSendProxyRequest;
   } catch {
     return errorResponse('Invalid JSON body', 400);
   }
@@ -178,6 +178,9 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
   const bccEmails = normalizeRecipients(payload.bcc);
   if (toEmails === null || ccEmails === null || bccEmails === null) {
     return errorResponse('Invalid recipient field: to, cc, and bcc must be strings or arrays of strings', 400);
+  }
+  if (payload.reply_to !== undefined && typeof payload.reply_to !== 'string') {
+    return errorResponse('Invalid reply_to field: reply_to must be a string', 400);
   }
   const allRecipients = [...toEmails, ...ccEmails, ...bccEmails];
 
@@ -196,11 +199,11 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
   const workspaceFromAddress = `${quoteDisplayName(workspaceInfo.name)} <${workspaceFromEmail}>`;
 
   // 6. Validate recipients against workspace member whitelist
-  console.log(`[ResendProxy] validating recipients: [${allRecipients.join(', ')}] workspace=${workspaceId}`);
+  console.log(`[EmailSendProxy] validating recipients: [${allRecipients.join(', ')}] workspace=${workspaceId}`);
   const allowedEmails = await getWorkspaceMemberEmails(env, workspaceId);
   const disallowed = allRecipients.filter((email) => !allowedEmails.has(email));
   if (disallowed.length > 0) {
-    console.warn(`[ResendProxy] rejected recipients: [${disallowed.join(', ')}] allowed: [${[...allowedEmails].join(', ')}]`);
+    console.warn(`[EmailSendProxy] rejected recipients: [${disallowed.join(', ')}] allowed: [${[...allowedEmails].join(', ')}]`);
     return errorResponse(
       `Recipients not in workspace: ${disallowed.join(', ')}. Only workspace members can be emailed.`,
       403
@@ -209,7 +212,7 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
 
   // 7. Rate limit check (atomic inside WorkspaceDO)
   const workspaceStub = getWorkspaceStub(env, workspaceId);
-  const rateCheck = await workspaceStub.checkAndRecordResendRateLimit(
+  const rateCheck = await workspaceStub.checkAndRecordEmailSendRateLimit(
     allRecipients.length,
     RATE_LIMIT_HOURLY,
     RATE_LIMIT_DAILY
@@ -218,30 +221,22 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
     return errorResponse(rateCheck.reason!, 429);
   }
 
-  // 8. Forward to Resend API (always send from workspace address)
+  // 8. Send through Cloudflare Email Sending (always from workspace address)
   try {
-    const resendResponse = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: workspaceFromAddress,
-        to: toEmails,
-        ...(ccEmails.length > 0 ? { cc: ccEmails } : {}),
-        ...(bccEmails.length > 0 ? { bcc: bccEmails } : {}),
-        ...(payload.reply_to ? { reply_to: payload.reply_to } : {}),
-        subject: payload.subject,
-        ...(payload.text ? { text: payload.text } : {}),
-        ...(payload.html ? { html: payload.html } : {}),
-      }),
+    const emailResult = await env.EMAIL.send({
+      from: workspaceFromAddress,
+      to: toEmails,
+      ...(ccEmails.length > 0 ? { cc: ccEmails } : {}),
+      ...(bccEmails.length > 0 ? { bcc: bccEmails } : {}),
+      ...(payload.reply_to ? { replyTo: payload.reply_to } : {}),
+      subject: payload.subject,
+      ...(payload.text ? { text: payload.text } : {}),
+      ...(payload.html ? { html: payload.html } : {}),
     });
 
-    const resendBody = await resendResponse.json() as Record<string, unknown>;
-    return jsonResponse({ ...resendBody, from: workspaceFromAddress }, resendResponse.status);
+    return jsonResponse({ id: emailResult.messageId, from: workspaceFromAddress }, 200);
   } catch (error) {
-    console.error('[resend-proxy] upstream error', {
+    console.error('[email-send-proxy] upstream error', {
       error: error instanceof Error ? error.message : String(error),
       orgId,
       workspaceId,

@@ -13,6 +13,14 @@ import {
   normalizeRemoteMcpUrl,
   validateRemoteMcpConnection,
 } from '@/lib/remote-mcp';
+import {
+  buildTelegramDeepLink,
+  generateTelegramSetupToken,
+  getTelegramRegistryName,
+  normalizeTelegramBotUsername,
+  TELEGRAM_SETUP_TTL_SECONDS,
+  type TelegramSetupRecord,
+} from '@/lib/telegram-channel';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
@@ -101,6 +109,61 @@ export async function action({ request, context }: Route.ActionArgs) {
           return { error: validationErrors.join(', ') };
         }
         config.server_url = normalizeRemoteMcpUrl(String(config.server_url));
+      }
+      if (integrationType === 'telegram') {
+        const botUsername = normalizeTelegramBotUsername(env.TELEGRAM_BOT_USERNAME);
+        if (!botUsername || !env.TELEGRAM_BOT_TOKEN?.trim()) {
+          return { error: 'Telegram bot is not configured' };
+        }
+        if (!env.TELEGRAM_REGISTRY) {
+          return { error: 'Telegram registry is not configured' };
+        }
+
+        const setupToken = generateTelegramSetupToken();
+        const integrationId = crypto.randomUUID();
+        const setupExpiresAt = Date.now() + TELEGRAM_SETUP_TTL_SECONDS * 1000;
+        const telegramConfig = {
+          ...config,
+          status: 'pending',
+          setup_token: setupToken,
+          setup_expires_at: setupExpiresAt,
+          bot_username: botUsername,
+        };
+        const credentialsEncrypted = await encryptCredentials(
+          { shared_bot: true },
+          env.INTEGRATION_SECRET_KEY,
+        );
+
+        await stub.createIntegration(
+          integrationId,
+          integrationType,
+          name,
+          definition.category,
+          definition.authMethod,
+          JSON.stringify(telegramConfig),
+          credentialsEncrypted,
+          authContext.user.id
+        );
+
+        const setupRecord: TelegramSetupRecord = {
+          workspaceId,
+          orgId: authContext.currentOrg.id,
+          integrationId,
+          userId: authContext.user.id,
+        };
+        const registry = env.TELEGRAM_REGISTRY.get(
+          env.TELEGRAM_REGISTRY.idFromName(getTelegramRegistryName(botUsername)),
+        );
+        await registry.putSetupToken(
+          setupToken,
+          setupRecord,
+          TELEGRAM_SETUP_TTL_SECONDS,
+        );
+
+        return {
+          success: true,
+          oauthUrl: buildTelegramDeepLink(botUsername, setupToken),
+        };
       }
       const shouldStoreCredentials =
         integrationType === 'remote_mcp'

@@ -18,7 +18,7 @@ vi.mock("@/lib/email-verification.server", () => ({
 
 const { action } = await import("@/routes/api/auth.verify-email.send");
 
-describe("auth verify-email resend route", () => {
+describe("auth verify-email send route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 

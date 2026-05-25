@@ -596,6 +596,25 @@ describe('Auth flow (full-stack with DOs)', () => {
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.model).toBe('gpt-5.4-mini');
     });
+
+    it('preserves Codex models when creating a thread without an explicit provider', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Codex model thread',
+        userId,
+        undefined,
+        'gpt-5.4',
+      );
+
+      expect(thread.model).toBe('gpt-5.4');
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.model).toBe('gpt-5.4');
+    });
   });
 
   describe('BYOK refresh fan-out', () => {

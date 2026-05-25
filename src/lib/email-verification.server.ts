@@ -13,8 +13,8 @@ export async function sendUserVerificationEmail(args: {
     CloudflareEnv,
     | "TOKEN_SIGNING_SECRET"
     | "WORKER_BASE_URL"
+    | "EMAIL"
     | "EMAIL_FROM_ADDRESS"
-    | "RESEND_API_KEY"
   >;
   requestUrl: URL;
   userId: string;

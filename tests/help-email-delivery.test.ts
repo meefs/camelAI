@@ -4,8 +4,9 @@ const sendEmailMock = vi.fn().mockResolvedValue({
   success: true,
   messageId: 'msg_123',
 });
+const emailBinding = { send: vi.fn() };
 
-vi.mock('@/lib/resend.server', () => ({
+vi.mock('@/lib/cloudflare-email.server', () => ({
   sendEmail: sendEmailMock,
 }));
 
@@ -15,7 +16,7 @@ const { sendHelpConfirmationEmail, sendHelpSupportEmail } = await import(
 
 const env = {
   EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com',
-  RESEND_API_KEY: 're_test_123',
+  EMAIL: emailBinding,
 };
 
 describe('help email delivery', () => {

@@ -14,6 +14,16 @@ export interface SlackEventCallbackPayload {
     bot_id?: string;
     ts?: string;
     thread_ts?: string;
+    files?: Array<{
+      id?: string;
+      name?: string;
+      title?: string;
+      mimetype?: string;
+      filetype?: string;
+      url_private_download?: string;
+      url_private?: string;
+      size?: number;
+    }>;
   };
 }
 

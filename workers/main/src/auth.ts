@@ -27,8 +27,11 @@ import type {
 import type { ChatThreadDO } from "./chat-thread-do";
 import { WorkspaceDO } from "./workspace";
 import {
+  DEFAULT_CODEX_MODEL,
   DEFAULT_LLM_MODEL,
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+  isClaudeLlmModel,
+  isCodexLlmModel,
   normalizeLlmModel,
   parseOrganizationExperimentalSettings,
 } from "../../../src/lib/llm-provider-config";
@@ -428,6 +431,19 @@ export interface OrgThread {
   last_assistant_completed_at: number | null;
   last_assistant_summary: string | null;
   last_assistant_summary_status: ThreadCompletionSummaryStatus | null;
+  source: string;
+  channel_kind: string | null;
+  channel_connection_id: string | null;
+  channel_conversation_id: string | null;
+  channel_message_id: string | null;
+}
+
+export interface CreateThreadOptions {
+  source?: "web" | "channel" | string | null;
+  channelKind?: string | null;
+  channelConnectionId?: string | null;
+  channelConversationId?: string | null;
+  channelMessageId?: string | null;
 }
 
 export type OrgChatThreadAccessResult =
@@ -2670,6 +2686,34 @@ export class OrgDO extends DurableObject<DOEnv> {
           this.sql.exec(
             `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`,
           );
+        } catch {}
+      }
+
+      if (!names.has("channel_kind")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN channel_kind TEXT");
+        } catch {}
+      }
+
+      if (!names.has("channel_connection_id")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN channel_connection_id TEXT",
+          );
+        } catch {}
+      }
+
+      if (!names.has("channel_conversation_id")) {
+        try {
+          this.sql.exec(
+            "ALTER TABLE threads ADD COLUMN channel_conversation_id TEXT",
+          );
+        } catch {}
+      }
+
+      if (!names.has("channel_message_id")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN channel_message_id TEXT");
         } catch {}
       }
     } catch (err) {
@@ -5121,6 +5165,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     createdBy?: string,
     firstUserMessage?: string,
     model?: LlmModel,
+    provider?: "claude" | "codex",
+    options: CreateThreadOptions = {},
   ): OrgThread {
     this.ensureThreadSchemaColumns();
     const id = crypto.randomUUID();
@@ -5132,9 +5178,40 @@ export class OrgDO extends DurableObject<DOEnv> {
       ? normalizeThreadPreviewUserMessage(firstUserMessage)
       : null;
     const lastUserMessageAt = lastUserMessage ? now : null;
-    const normalizedModel = normalizeLlmModel(model);
+    const normalizedModel =
+      provider === "claude"
+        ? isClaudeLlmModel(model)
+          ? model
+          : DEFAULT_LLM_MODEL
+        : provider === "codex"
+          ? isCodexLlmModel(model)
+            ? model
+            : DEFAULT_CODEX_MODEL
+          : normalizeLlmModel(model);
+    const source = options.source?.trim() || "web";
+    const channelKind = options.channelKind?.trim() || null;
+    const channelConnectionId = options.channelConnectionId?.trim() || null;
+    const channelConversationId = options.channelConversationId?.trim() || null;
+    const channelMessageId = options.channelMessageId?.trim() || null;
     this.sql.exec(
-      "INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message, last_user_message, last_user_message_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO threads (
+         id,
+         workspace_id,
+         title,
+         provider,
+         created_by,
+         model,
+         created_at,
+         updated_at,
+         source,
+         first_user_message,
+         last_user_message,
+         last_user_message_at,
+         channel_kind,
+         channel_connection_id,
+         channel_conversation_id,
+         channel_message_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       workspaceId,
       t,
@@ -5143,13 +5220,20 @@ export class OrgDO extends DurableObject<DOEnv> {
       normalizedModel,
       now,
       now,
+      source,
       msg,
       lastUserMessage,
       lastUserMessageAt,
+      channelKind,
+      channelConnectionId,
+      channelConversationId,
+      channelMessageId,
     );
     this.log("thread_created", creator, id, {
       workspace_id: workspaceId,
       title: t,
+      source,
+      channel_kind: channelKind,
     });
     const thread = {
       id,
@@ -5166,6 +5250,11 @@ export class OrgDO extends DurableObject<DOEnv> {
       last_assistant_completed_at: null,
       last_assistant_summary: null,
       last_assistant_summary_status: null,
+      source,
+      channel_kind: channelKind,
+      channel_connection_id: channelConnectionId,
+      channel_conversation_id: channelConversationId,
+      channel_message_id: channelMessageId,
     };
     this.getInfo().then((info) => {
       if (info)

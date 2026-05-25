@@ -1,33 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
-  mockRunExternalMessageTurn,
+  mockStartInitialUserMessage,
   mockGetWorkspaceStub,
   mockGetOrgStub,
   mockGetUserStub,
 } = vi.hoisted(() => ({
-  mockRunExternalMessageTurn: vi.fn(),
+  mockStartInitialUserMessage: vi.fn(),
   mockGetWorkspaceStub: vi.fn(),
   mockGetOrgStub: vi.fn(),
   mockGetUserStub: vi.fn(),
-}));
-
-vi.mock('cloudflare:email', () => ({
-  EmailMessage: class MockEmailMessage {
-    from: string;
-    to: string;
-    raw: string;
-
-    constructor(from: string, to: string, raw: string) {
-      this.from = from;
-      this.to = to;
-      this.raw = raw;
-    }
-  },
-}));
-
-vi.mock('../src/helpers/external-turn.js', () => ({
-  runExternalMessageTurn: mockRunExternalMessageTurn,
 }));
 
 vi.mock('../src/helpers/stubs.js', () => ({
@@ -105,14 +87,11 @@ function createMockKvWithSlug(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-describe('handleWorkspaceEmailIngress markdown email replies', () => {
+describe('handleWorkspaceEmailIngress channel enqueue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    mockRunExternalMessageTurn.mockResolvedValue({
-      status: 'result',
-      reply: '## Summary\n\n- item one\n- item two',
-    });
+    mockStartInitialUserMessage.mockResolvedValue({ status: 'accepted' });
 
     mockGetWorkspaceStub.mockReturnValue({
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
@@ -142,7 +121,7 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
     });
   });
 
-  it('sends multipart reply with markdown rendered HTML', async () => {
+  it('enqueues email content without sending an automatic reply', async () => {
     const message = createMessage({
       from: 'user@example.com',
       to: 'swift-falcon-ridge@mail.camelai.com',
@@ -162,22 +141,30 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
           getOwner: async () => handle === 'swift-falcon-ridge' ? 'workspace-1' : null,
         }),
       },
+      CHAT_THREAD: {
+        idFromName: (threadId: string) => threadId,
+        get: () => ({
+          startInitialUserMessage: mockStartInitialUserMessage,
+        }),
+      },
     } as never;
 
     await handleWorkspaceEmailIngress(message, env);
 
     expect(message.setReject).not.toHaveBeenCalled();
-    expect(message.reply).toHaveBeenCalledTimes(1);
-
-    const outbound = message.reply.mock.calls[0]?.[0] as { raw: string };
-    const raw = outbound.raw;
-
-    expect(raw).toContain('Content-Type: multipart/alternative; boundary="chiridion-');
-    expect(raw).toContain('Content-Type: text/plain; charset=utf-8');
-    expect(raw).toContain('Content-Type: text/html; charset=utf-8');
-
-    expect(raw).toContain('## Summary');
-    expect(raw).toContain('<h2>Summary</h2>');
-    expect(raw).toContain('<li>item one</li>');
+    expect(message.reply).not.toHaveBeenCalled();
+    expect(mockStartInitialUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-1',
+        workspaceId: 'workspace-1',
+        orgId: 'org-1',
+        userId: 'user-1',
+        userName: 'Miguel',
+        userEmail: 'user@example.com',
+        message: expect.stringContaining('Can you summarize this?'),
+      }),
+    );
+    expect(mockStartInitialUserMessage.mock.calls[0]?.[0].message).toContain('send_email');
+    expect(mockStartInitialUserMessage.mock.calls[0]?.[0].message).toContain('user@example.com');
   });
 });

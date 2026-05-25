@@ -3,6 +3,11 @@ import type { UserDO, OrgDO } from "../../workers/main/src/auth";
 import type { WorkspaceDO } from "../../workers/main/src/workspace";
 import type { ChatThreadDO } from "../../workers/main/src/chat-thread-do";
 import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
+import type {
+  SlackTeamRegistryDO,
+  TelegramRegistryDO,
+} from "../../workers/main/src/channel-registries";
+import type { CloudflareEmailSender } from "./cloudflare-email.server";
 
 /**
  * Cloudflare environment bindings available in React Router loaders/actions.
@@ -16,6 +21,8 @@ export interface CloudflareEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   MCP_OBJECT: DurableObjectNamespace;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
+  TELEGRAM_REGISTRY?: DurableObjectNamespace<TelegramRegistryDO>;
+  SLACK_TEAM_REGISTRY?: DurableObjectNamespace<SlackTeamRegistryDO>;
 
   // KV Namespaces
   EMAIL_TO_USER: KVNamespace;
@@ -33,6 +40,7 @@ export interface CloudflareEnv {
   IMAGES: unknown; // ImagesBinding
   AI: unknown; // AI binding
   BROWSER?: Fetcher;
+  EMAIL?: CloudflareEmailSender;
   OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_DB?: D1Database;
@@ -57,7 +65,9 @@ export interface CloudflareEnv {
   INTEGRATION_SECRET_KEY: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
-  RESEND_API_KEY?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_BOT_USERNAME?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   STRIPE_MODE?: string;

@@ -1,6 +1,6 @@
 import type { CloudflareEnv } from './cloudflare.server';
 import type { ReactElement } from 'react';
-import { sendEmail as sendResendEmail } from './resend.server';
+import { sendEmail as sendCloudflareEmail } from './cloudflare-email.server';
 import {
   recordDevEmailOutboxEntry,
   type DevEmailOutboxStatus,
@@ -14,7 +14,7 @@ export interface EmailDeliveryResult {
   reason?: string;
 }
 
-type EmailEnvBindings = Pick<CloudflareEnv, 'EMAIL_FROM_ADDRESS' | 'RESEND_API_KEY'> &
+type EmailEnvBindings = Pick<CloudflareEnv, 'EMAIL' | 'EMAIL_FROM_ADDRESS'> &
   Partial<Pick<CloudflareEnv, 'APP_KV' | 'NEXTJS_ENV'>>;
 
 interface OrgInvitationEmailArgs {
@@ -203,14 +203,13 @@ async function deliverEmail({
     htmlBody,
   };
 
-  const resendApiKey = env.RESEND_API_KEY?.trim();
-  if (!resendApiKey) {
+  if (!env.EMAIL) {
     return finalizeEmailDelivery(
       env,
       emailContent,
       {
         status: 'skipped',
-        reason: 'RESEND_API_KEY is not configured',
+        reason: 'Cloudflare Email Sending binding EMAIL is not configured',
       },
       'none'
     );
@@ -229,9 +228,9 @@ async function deliverEmail({
     );
   }
 
-  const result = await sendResendEmail(
+  const result = await sendCloudflareEmail(
     {
-      apiKey: resendApiKey,
+      email: env.EMAIL,
       fromAddress: sanitizeHeaderValue(from),
     },
     {
@@ -244,13 +243,13 @@ async function deliverEmail({
     }
   );
   if (result.success) {
-    return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'resend');
+    return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'cloudflare_email');
   }
   return finalizeEmailDelivery(
     env,
     emailContent,
     { status: 'failed', reason: result.error },
-    'resend'
+    'cloudflare_email'
   );
 }
 

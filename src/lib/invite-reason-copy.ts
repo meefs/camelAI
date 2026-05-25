@@ -5,7 +5,7 @@ const INVITE_REASON_LABELS: Record<string, string> = {
   email_delivery_failed: "couldn't deliver email",
   failed: "couldn't deliver email",
   skipped: "email delivery is not configured",
-  "RESEND_API_KEY is not configured": "email delivery is not configured",
+  "Cloudflare Email Sending binding EMAIL is not configured": "email delivery is not configured",
   "EMAIL_FROM_ADDRESS is not configured": "email delivery is not configured",
 };
 

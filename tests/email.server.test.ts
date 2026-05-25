@@ -41,7 +41,7 @@ describe('email.server', () => {
 
   it('skips invite email when binding is not configured', async () => {
     const result = await sendOrgInvitationEmail({
-      env: { EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com', RESEND_API_KEY: undefined },
+      env: { EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com', EMAIL: undefined },
       to: 'invitee@example.com',
       orgName: 'Acme',
       inviterName: 'Owner',
@@ -52,7 +52,7 @@ describe('email.server', () => {
 
     expect(result).toEqual({
       status: 'skipped',
-      reason: 'RESEND_API_KEY is not configured',
+      reason: 'Cloudflare Email Sending binding EMAIL is not configured',
     });
   });
 
@@ -60,7 +60,7 @@ describe('email.server', () => {
     const result = await sendOrgInvitationEmail({
       env: {
         EMAIL_FROM_ADDRESS: undefined,
-        RESEND_API_KEY: 're_test_123',
+        EMAIL: { send: async () => ({ messageId: 'msg_1' }) },
       },
       to: 'invitee@example.com',
       orgName: 'Acme',

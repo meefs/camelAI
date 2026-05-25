@@ -1,0 +1,288 @@
+import type {
+  InitialUserMessageRequest,
+  InitialUserMessageResult,
+} from "./chat-thread-do.js";
+import { getOrgStub, getWorkspaceStub } from "./helpers/stubs.js";
+import {
+  getDefaultLlmModel,
+  isCodexLlmModel,
+} from "../../../src/lib/llm-provider-config.js";
+import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
+import {
+  resolveDefaultModelForChat,
+  resolveEffectivePickerConfig,
+} from "../../../src/lib/model-picker-config.js";
+import type { LlmModel } from "../../../src/types.js";
+import type { Env } from "./types.js";
+import {
+  getOrgModelPickerConfigCompat,
+  getWorkspaceModelPickerConfigCompat,
+} from "./model-picker-config-compat.js";
+
+export type ChannelKind = "email" | "slack" | "telegram" | (string & {});
+
+export interface ChannelAddress {
+  kind: ChannelKind;
+  workspaceId: string;
+  orgId: string;
+  remoteConversationId: string;
+  connectionId?: string | null;
+}
+
+export interface ChannelAttachment {
+  path: string;
+  filename: string;
+  contentType: string;
+  size?: number;
+  source: ChannelKind;
+  remoteId?: string | null;
+}
+
+export interface ChannelThreadInput extends ChannelAddress {
+  title: string;
+  createdBy?: string | null;
+  firstUserMessage?: string | null;
+  firstRemoteMessageId?: string | null;
+  mapTtlSeconds?: number;
+}
+
+export interface ChannelThreadResolution {
+  threadId: string;
+  title: string;
+  created: boolean;
+}
+
+const CHANNEL_THREAD_MAP_PREFIX = "channel_thread:";
+const EMAIL_REPLY_REFERENCE_PREFIX = "email_reply_ref:";
+export const EMAIL_REPLY_REFERENCE_TTL_SECONDS = 180 * 24 * 60 * 60;
+const CHANNEL_REPLY_TOOLS: Record<string, string> = {
+  email: "send_email",
+  slack: "send_slack_message",
+  telegram: "send_telegram_message",
+};
+const MAX_CHANNEL_KEY_PART_LENGTH = 96;
+
+function hashChannelKeyPart(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function safeChannelKeyPart(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:@/-]/g, "_");
+  if (normalized.length <= MAX_CHANNEL_KEY_PART_LENGTH) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 80)}.${hashChannelKeyPart(normalized)}`;
+}
+
+export function getChannelThreadMapKey(address: ChannelAddress): string {
+  const kind = safeChannelKeyPart(address.kind) || "unknown";
+  const workspaceId = safeChannelKeyPart(address.workspaceId) || "workspace";
+  const connectionId =
+    safeChannelKeyPart(address.connectionId || "") || "connection";
+  const remoteId =
+    safeChannelKeyPart(address.remoteConversationId) || "conversation";
+  return `${CHANNEL_THREAD_MAP_PREFIX}${kind}:${workspaceId}:${connectionId}:${remoteId}`;
+}
+
+export function getChannelDedupeKey(
+  kind: ChannelKind,
+  workspaceId: string,
+  remoteMessageId: string,
+): string {
+  const safeKind = safeChannelKeyPart(kind) || "unknown";
+  const safeWorkspace = safeChannelKeyPart(workspaceId) || "workspace";
+  const safeMessage = safeChannelKeyPart(remoteMessageId) || "message";
+  return `channel_event:${safeKind}:${safeWorkspace}:${safeMessage}`;
+}
+
+export function normalizeEmailReplyMessageId(messageId: string): string | null {
+  const trimmed = messageId.trim();
+  if (!trimmed) return null;
+  const bracketed = trimmed.match(/^<([^>]+)>$/);
+  return (bracketed ? bracketed[1] : trimmed).trim() || null;
+}
+
+export function getEmailReplyReferenceKey(
+  workspaceId: string,
+  messageId: string,
+): string {
+  const normalizedMessageId = normalizeEmailReplyMessageId(messageId) ?? messageId;
+  const safeWorkspaceId = safeChannelKeyPart(workspaceId) || "workspace";
+  const safeMessageId = safeChannelKeyPart(normalizedMessageId) || "message";
+  return `${EMAIL_REPLY_REFERENCE_PREFIX}${safeWorkspaceId}:${safeMessageId}`;
+}
+
+export function getChannelReplyToolName(kind: ChannelKind): string | null {
+  return CHANNEL_REPLY_TOOLS[safeChannelKeyPart(kind)] ?? null;
+}
+
+export function buildChannelReplySystemMessage(
+  kind: ChannelKind,
+  request: Pick<InitialUserMessageRequest, "userEmail">,
+): string {
+  const safeKind = safeChannelKeyPart(kind) || "unknown";
+  const toolName = getChannelReplyToolName(kind);
+  const emailHint =
+    safeKind === "email" && request.userEmail?.trim()
+      ? ` The sender email is ${request.userEmail.trim()}; use it as the to value if replying to the sender.`
+      : "";
+  const routingHint =
+    safeKind === "slack" || safeKind === "telegram"
+      ? " The tool is already scoped to the originating conversation."
+      : "";
+  const replyInstruction = toolName
+    ? `To reply externally, call the ${toolName} tool.${emailHint}${routingHint}`
+    : "No outbound tool is configured for this channel yet; do not claim you replied externally unless you call a provider-specific send tool.";
+
+  return [
+    "<camelai system message>",
+    `This user message came from the ${safeKind} channel. Final assistant text is internal and will not be sent to the external channel automatically. ${replyInstruction}`,
+    "</camelai system message>",
+  ].join("");
+}
+
+export async function resolveDefaultChannelThreadModel(
+  env: Env,
+  args: { orgId: string; workspaceId: string },
+): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+  const orgStub = getOrgStub(env, args.orgId);
+  const workspaceStub = getWorkspaceStub(env, args.workspaceId);
+  const [
+    llmProviderConfig,
+    experimentalSettings,
+    orgPickerConfig,
+    workspacePickerConfig,
+  ] = await Promise.all([
+    orgStub.getLlmProviderConfig(),
+    orgStub.getExperimentalSettings(),
+    getOrgModelPickerConfigCompat(orgStub),
+    getWorkspaceModelPickerConfigCompat(workspaceStub),
+  ]);
+  const effectiveConfig = resolveEffectivePickerConfig(
+    orgPickerConfig,
+    workspacePickerConfig,
+  );
+  const visibleCatalog = resolveModelPickerCatalog({
+    effectiveConfig,
+    experimentalSettings,
+    orgProvider: llmProviderConfig?.provider,
+  });
+  const model = resolveDefaultModelForChat({
+    effectiveDefaultModel: effectiveConfig.default_model,
+    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
+    visibleCatalog,
+  });
+  if (!model) {
+    throw new Error("No models are available");
+  }
+  return {
+    model,
+    provider: isCodexLlmModel(model) ? "codex" : "claude",
+  };
+}
+
+export async function getOrCreateChannelThread(
+  env: Env,
+  input: ChannelThreadInput,
+): Promise<ChannelThreadResolution> {
+  const mapKey = getChannelThreadMapKey(input);
+
+  const existingThreadId = await env.APP_KV.get(mapKey);
+  if (existingThreadId) {
+    const thread = await getOrgStub(env, input.orgId).getThread(
+      existingThreadId,
+    );
+    if (thread) {
+      return {
+        threadId: existingThreadId,
+        title: thread.title || input.title || "Conversation",
+        created: false,
+      };
+    }
+    await env.APP_KV.delete(mapKey);
+  }
+
+  const { model, provider } = await resolveDefaultChannelThreadModel(env, input);
+  const thread = await getOrgStub(env, input.orgId).createThread(
+    input.workspaceId,
+    input.title.trim().slice(0, 100) || "Conversation",
+    input.createdBy?.trim() || input.kind,
+    input.firstUserMessage?.trim().slice(0, 500) || undefined,
+    model,
+    provider,
+    {
+      source: "channel",
+      channelKind: input.kind,
+      channelConnectionId: input.connectionId,
+      channelConversationId: input.remoteConversationId,
+      channelMessageId: input.firstRemoteMessageId,
+    },
+  );
+
+  await Promise.all([
+    env.APP_KV.put(mapKey, thread.id, ttlOptions(input.mapTtlSeconds)),
+  ]);
+
+  return {
+    threadId: thread.id,
+    title: thread.title,
+    created: true,
+  };
+}
+
+function ttlOptions(
+  ttlSeconds: number | undefined,
+): KVNamespacePutOptions | undefined {
+  return ttlSeconds ? { expirationTtl: ttlSeconds } : undefined;
+}
+
+type InitialUserMessageRpc = {
+  startInitialUserMessage: (
+    body: InitialUserMessageRequest,
+  ) => Promise<InitialUserMessageResult>;
+};
+
+type ChannelInitialUserMessageRequest = InitialUserMessageRequest & {
+  threadId: string;
+  channelKind: ChannelKind;
+};
+
+export async function enqueueChannelMessage(
+  env: Pick<Env, "CHAT_THREAD">,
+  request: ChannelInitialUserMessageRequest,
+): Promise<InitialUserMessageResult> {
+  const { channelKind, ...messageRequest } = request;
+  const stub = env.CHAT_THREAD.get(
+    env.CHAT_THREAD.idFromName(request.threadId),
+  ) as unknown as InitialUserMessageRpc;
+  const systemMessage = buildChannelReplySystemMessage(channelKind, request);
+
+  try {
+    const result = await stub.startInitialUserMessage({
+      ...messageRequest,
+      message: `${systemMessage}\n\n${request.message}`,
+    });
+    if (
+      result.status === "accepted" ||
+      result.status === "busy" ||
+      result.status === "error"
+    ) {
+      return result;
+    }
+    return { status: "error", error: "Invalid response from chat thread" };
+  } catch (error) {
+    return {
+      status: "error",
+      error:
+        error instanceof Error ? error.message : "Chat thread rejected message",
+    };
+  }
+}

@@ -3,8 +3,8 @@ import { wrapWorkflowBinding } from "@cloudflare/dynamic-workflows";
 import type { OrgDO, OrgThread } from "./auth";
 import type {
   ChatThreadDO,
-  ExternalMessageRequest,
-  ExternalTurnResult,
+  InitialUserMessageRequest,
+  InitialUserMessageResult,
 } from "./chat-thread-do";
 import {
   getCronMinimumIntervalMs,
@@ -27,7 +27,6 @@ import {
   getWorkspaceModelPickerConfigCompat,
 } from "./model-picker-config-compat";
 
-const DEFAULT_EXTERNAL_MESSAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_DUE_JOBS_PER_ALARM = 20;
 const WORKSPACE_ID_KEY = "workspaceId";
 const AUTOMATION_WORKFLOW_BINDING = "DETERMINISTIC_AUTOMATION_WORKFLOWS";
@@ -108,21 +107,20 @@ export interface WorkspaceAutomationInfo {
 interface DispatchResult {
   status: RunStatus;
   error?: string;
-  reply?: string;
   threadId: string;
 }
+
+type InitialUserMessageRpc = {
+  startInitialUserMessage: (
+    body: InitialUserMessageRequest,
+  ) => Promise<InitialUserMessageResult>;
+};
 
 interface DeterministicAutomationDispatchResult {
   status: DeterministicAutomationRunStatus;
   instanceId?: string;
   error?: string;
 }
-
-type ExternalMessageRpc = {
-  externalMessage: (
-    body: ExternalMessageRequest,
-  ) => Promise<ExternalTurnResult>;
-};
 
 export interface WorkspaceScheduledPrompt {
   id: string;
@@ -206,8 +204,7 @@ export interface RunScheduledPromptNowResult {
     status: RunStatus;
     thread_id: string;
     error?: string;
-    reply?: string;
-  };
+      };
 }
 
 export interface RunDeterministicAutomationNowResult {
@@ -710,23 +707,20 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     const threadId = await this.ensureRunnableThread(prompt, workspace);
     const chatThreadStub = this.env.CHAT_THREAD.get(
       this.env.CHAT_THREAD.idFromName(threadId),
-    ) as unknown as ExternalMessageRpc;
+    ) as unknown as InitialUserMessageRpc;
 
     try {
-      const payload = await chatThreadStub.externalMessage({
+      const payload = await chatThreadStub.startInitialUserMessage({
         threadId,
         workspaceId: workspace.id,
         orgId: workspace.org_id,
         userName: "Scheduler",
         message: this.buildScheduledMessage(prompt, scheduledForMs),
-        timeoutMs: DEFAULT_EXTERNAL_MESSAGE_TIMEOUT_MS,
       });
       switch (payload.status) {
-        case "result":
+        case "accepted":
           return {
             status: "success",
-            reply:
-              typeof payload.reply === "string" ? payload.reply : undefined,
             threadId,
           };
         case "busy":
@@ -1310,7 +1304,6 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         status: dispatch.status,
         thread_id: dispatch.threadId,
         error: dispatch.error,
-        reply: dispatch.reply,
       },
     };
   }

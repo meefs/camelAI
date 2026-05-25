@@ -1,8 +1,25 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/chat-thread-do';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
+import { encryptCredentials } from '../../../src/lib/integration-crypto';
 
-describe('ChatThreadDO Codex external turn completion', () => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function r2Object(content: string, contentType: string) {
+  const bytes = new TextEncoder().encode(content);
+  return {
+    size: bytes.byteLength,
+    httpMetadata: { contentType },
+    arrayBuffer: async () => bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ),
+  };
+}
+
+describe('ChatThreadDO Codex turn handling', () => {
   function createPiEventFake() {
     const events: any[] = [];
     const activityRecords: any[] = [];
@@ -40,7 +57,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
     fake.setActiveTurnUserId = vi.fn();
     fake.clearPiTurnRecovery = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn();
-    fake.resolvePendingExternalTurn = vi.fn();
     fake.pushChatEvent = vi.fn((event: any) => events.push(event));
     return { fake, events, activityRecords, workspaceStub };
   }
@@ -1076,6 +1092,119 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(skill.details.details.source).toBe('bundled_skill');
     expect(bindingFactory).toHaveBeenCalled();
     expect(containerTool).not.toHaveBeenCalled();
+  });
+
+  it('registers provider-specific channel send tools', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({
+          piContainerTools: { callTool: vi.fn() },
+        })),
+      },
+    };
+    fake.sendChannelEmailTool = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'Email sent.' }],
+      details: { status: 'sent' },
+    }));
+    fake.sendChannelSlackMessageTool = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'Slack message sent.' }],
+      details: { status: 'sent' },
+    }));
+    fake.sendChannelTelegramMessageTool = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'Telegram message sent.' }],
+      details: { status: 'sent' },
+    }));
+    const context = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+      userName: null,
+      userEmail: null,
+    };
+
+    const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    const sendEmail = tools.find((tool: any) => tool.name === 'send_email');
+    const sendSlack = tools.find((tool: any) => tool.name === 'send_slack_message');
+    const sendTelegram = tools.find((tool: any) => tool.name === 'send_telegram_message');
+
+    expect(sendEmail?.executionMode).toBe('sequential');
+    expect(sendSlack?.executionMode).toBe('sequential');
+    expect(sendTelegram?.executionMode).toBe('sequential');
+
+    await sendEmail.execute('email1', { to: 'a@example.com', subject: 'Hi', text: 'Hello' });
+    await sendSlack.execute('slack1', { text: 'Hello' });
+    await sendTelegram.execute('telegram1', { text: 'Hello' });
+
+    expect(fake.sendChannelEmailTool).toHaveBeenCalledWith(context, {
+      to: 'a@example.com',
+      subject: 'Hi',
+      text: 'Hello',
+    });
+    expect(fake.sendChannelSlackMessageTool).toHaveBeenCalledWith(context, {
+      text: 'Hello',
+    });
+    expect(fake.sendChannelTelegramMessageTool).toHaveBeenCalledWith(context, {
+      text: 'Hello',
+    });
+  });
+
+  it('sends email only from email channel threads', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'email_1' }));
+    const kvPutMock = vi.fn(async () => undefined);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      EMAIL_FROM_ADDRESS: 'noreply@camelai.test',
+      APP_KV: { put: kvPutMock },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getThread: vi.fn(async () => ({
+            id: 'thread1',
+            source: 'channel',
+            channel_kind: 'email',
+            channel_connection_id: 'workspace@mail.camelai.test',
+          })),
+        })),
+      },
+    };
+    const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      fake,
+      {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        userName: null,
+        userEmail: null,
+      },
+      {
+        to: 'alice@example.com',
+        subject: 'Done',
+        text: 'Finished.',
+      },
+    );
+
+    expect(sendEmailMock).toHaveBeenCalledWith({
+      from: 'noreply@camelai.test',
+      to: 'alice@example.com',
+      subject: 'Done',
+      text: 'Finished.',
+      replyTo: 'workspace@mail.camelai.test',
+    });
+    expect(result.content[0].text).toBe('Email sent.');
+    expect(result.details).toMatchObject({
+      provider: 'cloudflare_email',
+      messageId: 'email_1',
+    });
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_reply_ref:workspace1:email_1',
+      'thread1',
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
   });
 
   it('serves bundled skills through js_exec tools.read and tools.ls', async () => {
@@ -2268,7 +2397,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       threadId: 'thread1',
       delta: 'Hello',
     });
-    expect(runtimeEvents[1].event.params).toEqual({
+    expect(runtimeEvents[1].event.params).toMatchObject({
       threadId: 'thread1',
       forkEntryId: 'resp1',
       completedAtMs: expect.any(Number),
@@ -2280,10 +2409,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       result: 'Hello',
       sessionId: 'thread1',
     }));
-    expect(fake.resolvePendingExternalTurn).toHaveBeenCalledWith({
-      status: 'result',
-      reply: 'Hello',
-    });
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
@@ -2321,7 +2446,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
       },
     });
     expect(runtimeEvents[0].event.params.item.id).toMatch(/^pi_agent_/);
-    expect(runtimeEvents[1].event.params).toEqual({
+    expect(runtimeEvents[1].event.params).toMatchObject({
       threadId: 'thread1',
       forkEntryId: 'resp2',
       completedAtMs: expect.any(Number),
@@ -2340,7 +2465,7 @@ describe('ChatThreadDO Codex external turn completion', () => {
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
-  it('resolves Pi agent_end provider errors as failed external turns', () => {
+  it('emits Pi agent_end provider errors', () => {
     const { fake, events } = createPiEventFake();
     const errorMessage =
       '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}';
@@ -2364,10 +2489,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       status: 429,
       errorType: 'rate_limit_error',
     }));
-    expect(fake.resolvePendingExternalTurn).toHaveBeenCalledWith({
-      status: 'error',
-      error: errorMessage,
-    });
   });
 
   it('does not emit provider errors for user-aborted Pi turns', () => {
@@ -2391,10 +2512,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
       type: 'result',
       result: '',
     }));
-    expect(fake.resolvePendingExternalTurn).toHaveBeenCalledWith({
-      status: 'result',
-      reply: undefined,
-    });
   });
 
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {
@@ -2567,73 +2684,6 @@ describe('ChatThreadDO Codex external turn completion', () => {
     });
   });
 
-  it('applies connection mention context before sending external turns', async () => {
-    const workspaceStub = {
-      getIntegrations: vi.fn().mockResolvedValue([
-        {
-          id: 'conn1',
-          integration_type: 'postgres',
-          name: 'Sales DB',
-          created_at: 1,
-          config: '{}',
-        },
-      ]),
-    };
-    const sentCommands: any[] = [];
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-
-    fake.chatContext = null;
-    fake.chatIsStreaming = false;
-    fake.pendingExternalTurn = null;
-    fake.browserPrompts = {
-      getOldestPendingQuestion: vi.fn(() => null),
-    };
-    fake.ctx = {
-      storage: { kv: { put: vi.fn() } },
-      waitUntil: vi.fn(),
-    };
-    fake.env = {
-      APP_KV: { get: vi.fn().mockResolvedValue(null) },
-      WORKSPACE: {
-        idFromName: vi.fn((name: string) => name),
-        get: vi.fn(() => workspaceStub),
-      },
-    };
-    fake.trace = vi.fn();
-    fake.ensureRunnerConnected = vi.fn().mockResolvedValue(undefined);
-    fake.sendRunnerCommand = vi.fn((command: any) => {
-      sentCommands.push(command);
-      return false;
-    });
-    fake.createPendingExternalTurn = ChatThreadDO.prototype['createPendingExternalTurn'];
-    fake.resolvePendingExternalTurn = ChatThreadDO.prototype['resolvePendingExternalTurn'];
-    fake.waitForPendingExternalTurn = ChatThreadDO.prototype['waitForPendingExternalTurn'];
-
-    const result = await ChatThreadDO.prototype.externalMessage.call(fake, {
-      threadId: 'thread1',
-      workspaceId: 'workspace1',
-      orgId: 'org1',
-      userName: 'Ada',
-      message: 'Use @sales_db',
-      timeoutMs: 5_000,
-    });
-
-    expect(result).toEqual({
-      status: 'error',
-      error: 'Failed to send message',
-    });
-    expect(workspaceStub.getIntegrations).toHaveBeenCalledTimes(1);
-    expect(sentCommands).toHaveLength(1);
-    expect(sentCommands[0].content).toContain('<camelai system message>');
-    expect(sentCommands[0].content).toContain('Available connections');
-    expect(sentCommands[0].content).toContain(
-      '@sales_db ⟦ref: postgres "Sales DB" id=conn1⟧',
-    );
-    expect(sentCommands[0].content).toContain(
-      '[Ada]: Use @sales_db ⟦ref: postgres "Sales DB" id=conn1⟧',
-    );
-  });
-
   it('selects raw Durable Object Pi messages for a fork target', () => {
     const sourceMessages = [
       { role: 'user', content: 'Build it', timestamp: 100 },
@@ -2685,6 +2735,218 @@ describe('ChatThreadDO Codex external turn completion', () => {
       code: 'TARGET_NOT_FOUND',
       error: 'Fork target not found in Durable Object Pi messages',
     });
+  });
+
+  it('sends channel email attachments from mounted workspace output paths', async () => {
+    const send = vi.fn(async () => ({ messageId: 'email-1' }));
+    const kvPutMock = vi.fn(async () => undefined);
+    const get = vi.fn(async (key: string) =>
+      key === 'org1/workspace1/user-outputs/report.pdf'
+        ? r2Object('pdf bytes', 'application/pdf')
+        : null
+    );
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.requireChannelThread = vi.fn(async () => ({
+      source: 'channel',
+      channel_kind: 'email',
+      channel_connection_id: 'sender@example.com',
+    }));
+    fake.env = {
+      EMAIL: { send },
+      EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com',
+      APP_KV: { put: kvPutMock },
+      R2_BUCKET: { get },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      {
+        to: 'sender@example.com',
+        subject: 'Report',
+        text: 'Attached.',
+        attachments: [{ path: '/mnt/user-outputs/report.pdf' }],
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      provider: 'cloudflare_email',
+      attachmentCount: 1,
+    });
+    expect(get).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.pdf');
+    expect(send).toHaveBeenCalledTimes(1);
+    const message = send.mock.calls[0][0];
+    expect(message.attachments).toHaveLength(1);
+    expect(message.attachments[0]).toMatchObject({
+      filename: 'report.pdf',
+      type: 'application/pdf',
+      disposition: 'attachment',
+    });
+    expect(message.attachments[0].content).toBeInstanceOf(ArrayBuffer);
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_reply_ref:workspace1:email-1',
+      'thread1',
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('rejects oversized channel attachments before buffering R2 object content', async () => {
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0));
+    const get = vi.fn(async (key: string) =>
+      key === 'org1/workspace1/user-outputs/large.bin'
+        ? {
+            size: 26 * 1024 * 1024,
+            httpMetadata: { contentType: 'application/octet-stream' },
+            arrayBuffer,
+          }
+        : null
+    );
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = { R2_BUCKET: { get } };
+
+    await expect(
+      ChatThreadDO.prototype['resolveChannelOutboundAttachments'].call(
+        fake,
+        { orgId: 'org1', workspaceId: 'workspace1' },
+        { attachments: [{ path: '/mnt/user-outputs/large.bin' }] },
+      ),
+    ).rejects.toThrow('Attachment size must be 25 MB or less');
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('uploads Slack channel attachments through the external file upload flow', async () => {
+    const encrypted = await encryptCredentials(
+      { access_token: 'xoxb-token' },
+      'secret',
+    );
+    const get = vi.fn(async (key: string) =>
+      key === 'org1/workspace1/user-outputs/chart.png'
+        ? r2Object('png bytes', 'image/png')
+        : null
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/files.getUploadURLExternal')) {
+        return Response.json({
+          ok: true,
+          upload_url: 'https://files.slack.com/upload/v1/abc',
+          file_id: 'F123',
+        });
+      }
+      if (url === 'https://files.slack.com/upload/v1/abc') {
+        expect(init?.body).toBeInstanceOf(ArrayBuffer);
+        return new Response('OK - 9');
+      }
+      if (url.endsWith('/files.completeUploadExternal')) {
+        const payload = JSON.parse(String(init?.body));
+        expect(payload).toMatchObject({
+          channel_id: 'C1',
+          thread_ts: '1700000000.000100',
+          initial_comment: 'Attached.',
+          files: [{ id: 'F123', title: 'chart.png' }],
+        });
+        return Response.json({
+          ok: true,
+          ts: '1700000001.000200',
+          files: [{ id: 'F123' }],
+        });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.requireChannelThread = vi.fn(async () => ({
+      source: 'channel',
+      channel_kind: 'slack',
+      channel_connection_id: 'slack-int',
+      channel_conversation_id: 'T1:C1:1700000000.000100',
+    }));
+    fake.env = {
+      INTEGRATION_SECRET_KEY: 'secret',
+      R2_BUCKET: { get },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegration: vi.fn(async () => ({
+            integration_type: 'slack',
+            credentials_encrypted: encrypted,
+          })),
+        })),
+      },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelSlackMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      {
+        text: 'Attached.',
+        attachments: [{ path: '/mnt/user-outputs/chart.png' }],
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'slack',
+      attachmentCount: 1,
+      fileIds: ['F123'],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('sends Telegram channel attachments as documents', async () => {
+    const get = vi.fn(async (key: string) =>
+      key === 'org1/workspace1/user-outputs/report.csv'
+        ? r2Object('a,b\n1,2\n', 'text/csv')
+        : null
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/sendMessage')) {
+        const payload = JSON.parse(String(init?.body));
+        expect(payload).toMatchObject({ chat_id: '12345', text: 'Attached.' });
+        return Response.json({ ok: true, result: { message_id: 10 } });
+      }
+      if (url.endsWith('/sendDocument')) {
+        expect(init?.body).toBeInstanceOf(FormData);
+        const form = init?.body as FormData;
+        expect(form.get('chat_id')).toBe('12345');
+        expect(form.get('caption')).toBe('CSV');
+        expect(form.get('document')).toBeInstanceOf(File);
+        return Response.json({ ok: true, result: { message_id: 11 } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.requireChannelThread = vi.fn(async () => ({
+      source: 'channel',
+      channel_kind: 'telegram',
+      channel_conversation_id: '12345',
+    }));
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      {
+        text: 'Attached.',
+        attachments: [{ path: '/mnt/user-outputs/report.csv', caption: 'CSV' }],
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'telegram',
+      attachmentCount: 1,
+      messageIds: [10, 11],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
 });

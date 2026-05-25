@@ -50,6 +50,12 @@
 	"worker_loaders": [
 		{ "binding": "CODE_MODE_LOADER" }
 	],
+	"send_email": [
+		{
+			"name": "EMAIL",
+			"remote": true
+		}
+	],
 	"analytics_engine_datasets": [
 		{
 			"binding": "ERROR_ANALYTICS",
@@ -132,6 +138,8 @@
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
+			{ "name": "TELEGRAM_REGISTRY", "class_name": "TelegramRegistryDO" },
+			{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
@@ -169,7 +177,8 @@
 		{ "tag": "v21", "new_sqlite_classes": ["ExternalMcpDO"] },
 		{ "tag": "v22", "deleted_classes": ["ExternalMcpDO"] },
 		{ "tag": "v23", "new_classes": ["EphemeralWorkerLogsDO"] },
-		{ "tag": "v24", "deleted_classes": ["AdminIndexDO"] }
+		{ "tag": "v24", "deleted_classes": ["AdminIndexDO"] },
+		{ "tag": "v25", "new_sqlite_classes": ["TelegramRegistryDO", "SlackTeamRegistryDO"] }
 	],
 	"env": {
 		"prod": {
@@ -289,6 +298,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
+			{ "name": "TELEGRAM_REGISTRY", "class_name": "TelegramRegistryDO" },
+			{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 					{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
@@ -415,6 +426,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
+			{ "name": "TELEGRAM_REGISTRY", "class_name": "TelegramRegistryDO" },
+			{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 					{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
@@ -542,6 +555,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
+			{ "name": "TELEGRAM_REGISTRY", "class_name": "TelegramRegistryDO" },
+			{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 					{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
@@ -669,6 +684,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "EMAIL_HANDLE", "class_name": "EmailHandleDO" },
+			{ "name": "TELEGRAM_REGISTRY", "class_name": "TelegramRegistryDO" },
+			{ "name": "SLACK_TEAM_REGISTRY", "class_name": "SlackTeamRegistryDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 					{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },

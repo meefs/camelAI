@@ -1,8 +1,12 @@
 import type { Env } from './types.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
-import { processSlackEventCallback } from './routes/integrations.js';
+import {
+  processSlackEventCallback,
+  SlackChannelBusyError,
+} from './routes/integrations.js';
 
 const MAX_SLACK_EVENT_RETRIES = 5;
+const SLACK_BUSY_RETRY_DELAY_SECONDS = 30;
 
 function isValidSlackQueueMessage(body: unknown): body is SlackEventQueueMessage {
   if (!body || typeof body !== 'object') return false;
@@ -28,6 +32,14 @@ export async function handleSlackEventsQueue(
       await processSlackEventCallback(env, message.body.payload);
       message.ack();
     } catch (error) {
+      if (error instanceof SlackChannelBusyError) {
+        console.warn('[slack-events-queue] channel thread busy; retrying later', {
+          attempt,
+        });
+        message.retry({ delaySeconds: SLACK_BUSY_RETRY_DELAY_SECONDS });
+        continue;
+      }
+
       console.error('[slack-events-queue] failed to process message', {
         error: String(error),
         attempt,

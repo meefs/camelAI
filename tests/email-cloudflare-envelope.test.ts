@@ -1,24 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const resendSendMock = vi.fn().mockResolvedValue({
+const cloudflareEmailSendMock = vi.fn().mockResolvedValue({
   success: true,
   messageId: 'msg_456',
 });
+const emailBinding = { send: vi.fn() };
 
-vi.mock('@/lib/resend.server', () => ({
-  sendEmail: resendSendMock,
+vi.mock('@/lib/cloudflare-email.server', () => ({
+  sendEmail: cloudflareEmailSendMock,
 }));
 
 const { sendHelpConfirmationEmail } = await import('@/lib/email.server');
 
 const env = {
   EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com',
-  RESEND_API_KEY: 're_test_123',
+  EMAIL: emailBinding,
 };
 
-describe('Resend email delivery payload', () => {
+describe('Cloudflare email delivery payload', () => {
   beforeEach(() => {
-    resendSendMock.mockClear();
+    cloudflareEmailSendMock.mockClear();
   });
 
   it('sends to normalized recipient with cc and reply-to', async () => {
@@ -36,11 +37,11 @@ describe('Resend email delivery payload', () => {
     });
 
     expect(result).toEqual({ status: 'sent' });
-    expect(resendSendMock).toHaveBeenCalledTimes(1);
+    expect(cloudflareEmailSendMock).toHaveBeenCalledTimes(1);
 
-    const [config, payload] = resendSendMock.mock.calls[0];
+    const [config, payload] = cloudflareEmailSendMock.mock.calls[0];
     expect(config).toEqual({
-      apiKey: 're_test_123',
+      email: emailBinding,
       fromAddress: 'no-reply@mail.camelai.com',
     });
     expect(payload.to).toBe('user@example.com');

@@ -13,7 +13,7 @@ import {
   withBedrockModelMetadata,
 } from "./pi-bedrock-provider";
 import type { Model } from "@mariozechner/pi-ai";
-import type { OrgDO, UserDO, WorkerScript } from "./auth";
+import type { OrgDO, OrgThread, UserDO, WorkerScript } from "./auth";
 import type { WorkspaceDO } from "./workspace";
 import type { WorkspaceCronDO } from "./workspace-cron";
 import type { WorkerLogsDO } from "./worker-logs-do";
@@ -87,6 +87,11 @@ import {
   type LastMessageStartUsage,
 } from "./chat-context-usage";
 import { CodeModeWebSearch } from "./code-mode-web-search";
+import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
+import {
+  EMAIL_REPLY_REFERENCE_TTL_SECONDS,
+  getEmailReplyReferenceKey,
+} from "./channels";
 import { codeModeWorkerModule } from "./code-mode-runner";
 import { CodeModeCustomDomains } from "./code-mode-custom-domains";
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
@@ -204,6 +209,44 @@ interface PiToolDefinitionOptions {
   includeSubagents?: boolean;
 }
 
+interface CloudflareEmailSender {
+  send(message: {
+    to: string | string[];
+    from: string | { email: string; name: string };
+    subject: string;
+    html?: string;
+    text?: string;
+    cc?: string | string[];
+    bcc?: string | string[];
+    replyTo?: string | { email: string; name: string };
+    attachments?: Array<{
+      content: string | ArrayBuffer;
+      filename: string;
+      type: string;
+      disposition: "attachment" | "inline";
+      contentId?: string;
+    }>;
+  }): Promise<{ messageId?: string }>;
+}
+
+interface ChannelToolAttachmentInput {
+  path: string;
+  filename?: string;
+  content_type?: string;
+  caption?: string;
+}
+
+interface ResolvedChannelAttachment {
+  path: string;
+  filename: string;
+  contentType: string;
+  content: ArrayBuffer;
+  size: number;
+  caption?: string;
+}
+
+const MAX_CHANNEL_OUTBOUND_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
 export interface ChatEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   ORG: DurableObjectNamespace<OrgDO>;
@@ -236,6 +279,9 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   CF_API_TOKEN?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
   CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
+  EMAIL_FROM_ADDRESS?: string;
+  EMAIL?: CloudflareEmailSender;
+  TELEGRAM_BOT_TOKEN?: string;
   NEXTJS_ENV?: string;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_BASE_URL?: string;
@@ -407,23 +453,6 @@ interface ChatClientSetPreviewTabsState {
   activeTabId?: string | null;
 }
 
-export interface ExternalMessageRequest {
-  threadId?: string;
-  workspaceId?: string;
-  orgId?: string;
-  userId?: string | null;
-  userName?: string | null;
-  userEmail?: string | null;
-  message?: string;
-  timeoutMs?: number | null;
-}
-
-export interface ExternalTurnResult {
-  status: "result" | "busy" | "error";
-  reply?: string;
-  error?: string;
-}
-
 export interface InitialUserMessageRequest {
   threadId?: string;
   workspaceId?: string;
@@ -438,12 +467,6 @@ export interface InitialUserMessageRequest {
 export interface InitialUserMessageResult {
   status: "accepted" | "busy" | "error";
   error?: string;
-}
-
-interface PendingExternalTurn {
-  resolve: (result: ExternalTurnResult) => void;
-  streamingText: string;
-  latestAssistantText: string;
 }
 
 interface CodeModeJavascriptRequest {
@@ -1557,7 +1580,7 @@ const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 
 const MAX_CHAT_EVENT_BUFFER = 500;
-const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
+const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
 
 interface PiTurnRecoveryRow {
   turn_id: string;
@@ -1579,7 +1602,7 @@ const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
 
 /**
  * ChatThreadDO - One per thread, holds preview state, prompts, browser runner
- * traffic, and external turns. Sandbox-host remains the backend for workspace
+ * traffic, and agent turns. Sandbox-host remains the backend for workspace
  * file/shell/container operations.
  */
 export class ChatThreadDO extends DurableObject<ChatEnv> {
@@ -1609,11 +1632,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     broadcast: (message) => this.broadcastChat(message),
     sendDirect: (ws, message) => this.sendDirect(ws, message),
     askUserQuestionUnavailableMessage:
-      DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
+      ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
     questionTimeoutMs: 30 * 60 * 1000,
     connectionSetupTimeoutMs: ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS,
   });
-  private pendingExternalTurn: PendingExternalTurn | null = null;
   private titleGenerationInFlight: boolean = false;
   private codexSessionId: string | null = null;
   private activeTurnUserId: string | null = null;
@@ -2173,7 +2195,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.markRunnerActivity("chat_socket_closed_question_unavailable");
         this.ctx.waitUntil(
           this.autoAnswerAllPendingQuestionsAsUnavailable(
-            DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
+            ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
           ),
         );
       }
@@ -2770,7 +2792,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     this.chatIsStreaming = false;
     this.browserPrompts.clearQuestions();
-    this.pendingExternalTurn = null;
     this.titleGenerationInFlight = false;
     this.activeTurnUserId = null;
     this.ctx.storage.kv.delete(CHAT_ACTIVE_TURN_USER_ID_KEY);
@@ -5002,103 +5023,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  async externalMessage(
-    body: ExternalMessageRequest,
-  ): Promise<ExternalTurnResult> {
-    const contextError = this.updateExternalChatContext(body);
-    if (contextError) {
-      return { status: "error", error: contextError };
-    }
-
-    const rawMessage =
-      typeof body.message === "string" ? body.message.trim() : "";
-    if (!rawMessage) {
-      return { status: "error", error: "Missing message" };
-    }
-
-    if (this.pendingExternalTurn) {
-      return { status: "busy" };
-    }
-
-    const existingPendingQuestion = this.browserPrompts.getOldestPendingQuestion();
-    if (existingPendingQuestion) {
-      if (this.hasAvailableBrowserUser()) {
-        return { status: "busy" };
-      }
-
-      this.markRunnerActivity("external_question_unavailable_existing");
-      const answered = await this.autoAnswerPendingQuestionAsUnavailable(
-        existingPendingQuestion.questionId,
-        DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE,
-      );
-      if (!answered) {
-        return {
-          status: "error",
-          error:
-            "ask_user_question is unavailable in this channel and could not be auto-answered.",
-        };
-      }
-      return { status: "busy" };
-    }
-
-    if (this.chatIsStreaming) {
-      return { status: "busy" };
-    }
-
-    const orgBan = await isOrgBanned(this.env.APP_KV, {
-      orgId: this.chatContext?.orgId ?? body.orgId ?? null,
-    });
-    if (orgBan) {
-      return { status: "error", error: "Organization is blocked" };
-    }
-
-    this.markRunnerActivity("external_message");
-    await this.ensureRunnerConnected();
-
-    const safeRawMessage = injectFileSafetyMessage(rawMessage);
-    const mentionAugmented = await this.applyConnectionMentionsForTurn(safeRawMessage);
-    const attributedContent = formatAttributedUserMessage(mentionAugmented, {
-      userName: typeof body.userName === 'string' && body.userName.trim()
-        ? body.userName.trim()
-        : null,
-      userEmail: typeof body.userEmail === 'string' && body.userEmail.trim()
-        ? body.userEmail.trim()
-        : null,
-    });
-    if (!attributedContent) {
-      return { status: "error", error: "Empty message" };
-    }
-
-    const pendingResult = this.createPendingExternalTurn();
-    if (
-      !this.sendRunnerCommand({
-        type: "message",
-        content: attributedContent,
-        userId:
-          typeof body.userId === "string" && body.userId.trim()
-            ? body.userId.trim()
-            : undefined,
-      })
-    ) {
-      this.resolvePendingExternalTurn({
-        status: "error",
-        error: "Failed to send message",
-      });
-      return { status: "error", error: "Failed to send message" };
-    }
-
-    this.setChatIsStreaming(true);
-    this.publishRunningUserMessageActivity(rawMessage);
-    this.ctx.waitUntil(
-      this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
-        console.error('[ChatThreadDO] failed to update thread metadata after external user message', err);
-      })
-    );
-
-    const timeoutMs = this.getExternalTurnTimeout(body.timeoutMs);
-    return await this.waitForPendingExternalTurn(pendingResult, timeoutMs);
-  }
-
   private hasAvailableBrowserUser(): boolean {
     return this.getChatSockets().length > 0;
   }
@@ -5145,25 +5069,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return null;
   }
 
-  private getExternalTurnTimeout(timeoutMs: unknown): number {
-    // When no timeout is specified (Slack/email ingress), use a generous
-    // fallback so turns aren't capped at 2 min but still can't hang forever
-    // if the runner socket drops without resolving pendingExternalTurn.
-    const FALLBACK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-    if (timeoutMs == null) {
-      return FALLBACK_TIMEOUT_MS;
-    }
-    if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
-      return FALLBACK_TIMEOUT_MS;
-    }
-    const rounded = Math.floor(timeoutMs);
-    if (rounded <= 0) {
-      return FALLBACK_TIMEOUT_MS;
-    }
-    // setTimeout max delay on JS runtimes is 2^31-1 ms.
-    return Math.min(2_147_483_647, Math.max(5_000, rounded));
-  }
-
   private async autoAnswerPendingQuestionAsUnavailable(
     questionId: string,
     unavailableMessage: string,
@@ -5201,63 +5106,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         );
       }
     }
-  }
-
-  private createPendingExternalTurn(): Promise<ExternalTurnResult> {
-    return new Promise<ExternalTurnResult>((resolve) => {
-      this.pendingExternalTurn = {
-        resolve,
-        streamingText: "",
-        latestAssistantText: "",
-      };
-    });
-  }
-
-  private resolvePendingExternalTurn(result: ExternalTurnResult): void {
-    const pending = this.pendingExternalTurn;
-    if (!pending) return;
-
-    this.pendingExternalTurn = null;
-
-    if (result.status === "result") {
-      const fallback = pending.latestAssistantText || pending.streamingText;
-      pending.resolve({
-        status: "result",
-        reply: (result.reply || fallback || "").trim(),
-      });
-      return;
-    }
-
-    pending.resolve(result);
-  }
-
-  private async waitForPendingExternalTurn(
-    pendingResult: Promise<ExternalTurnResult>,
-    timeoutMs: number,
-  ): Promise<ExternalTurnResult> {
-    let timeoutHandle: number | null = null;
-    const timeoutPromise = new Promise<ExternalTurnResult>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        resolve({
-          status: "error",
-          error: "Timed out waiting for Claude response",
-        });
-      }, timeoutMs) as unknown as number;
-    });
-
-    const result = await Promise.race([pendingResult, timeoutPromise]);
-    if (timeoutHandle !== null) {
-      clearTimeout(timeoutHandle);
-    }
-
-    if (
-      result.status === "error" &&
-      result.error === "Timed out waiting for Claude response"
-    ) {
-      this.pendingExternalTurn = null;
-    }
-
-    return result;
   }
 
   private async updateThreadMetadataForUserMessage(messageContent: string): Promise<void> {
@@ -5526,6 +5374,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
       "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
+      "For channel-originated conversations, final assistant text is not sent to the external provider. Use provider-specific tools such as `send_email`, `send_slack_message`, or `send_telegram_message` only when you intentionally need to send an external message.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
       "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model routes include `auto` and `auto_search`. For image generation, call `await env.CAMELAI.generateImage(\"prompt\")` (same on `context.cloudflare.env.CAMELAI`). Do not use `workers-ai-provider` / `generateText()` with `auto_image` because images are dropped.",
@@ -5539,6 +5388,599 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       `Workspace ID: ${context.workspaceId}`,
       `Organization ID: ${context.orgId}`,
     ].filter(Boolean).join("\n");
+  }
+
+  private async getCurrentThreadRecord(
+    context: ChatContextState,
+  ): Promise<OrgThread> {
+    const orgStub = this.env.ORG.get(
+      this.env.ORG.idFromName(context.orgId),
+    ) as unknown as OrgDO;
+    const thread = await orgStub.getThread(context.threadId);
+    if (!thread) {
+      throw new Error("Thread not found");
+    }
+    return thread;
+  }
+
+  private async requireChannelThread(
+    context: ChatContextState,
+    kind: "email" | "slack" | "telegram",
+  ): Promise<OrgThread> {
+    const thread = await this.getCurrentThreadRecord(context);
+    const source = thread.source?.trim();
+    const matchingChannelKind = thread.channel_kind === kind;
+    if (source !== "channel") {
+      throw new Error(`${kind} messages can only be sent from a channel thread`);
+    }
+    if (!matchingChannelKind) {
+      throw new Error(
+        `This thread started from ${thread.channel_kind || "unknown"}, not ${kind}`,
+      );
+    }
+    return thread;
+  }
+
+  private readChannelAttachmentInputs(
+    raw: Record<string, unknown>,
+  ): ChannelToolAttachmentInput[] {
+    const value = raw.attachments;
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) {
+      throw new Error("attachments must be an array");
+    }
+    if (value.length > 10) {
+      throw new Error("At most 10 attachments can be sent at once");
+    }
+    return value.map((entry, index) => {
+      if (!entry || typeof entry !== "object") {
+        throw new Error(`attachments[${index}] must be an object`);
+      }
+      const candidate = entry as Record<string, unknown>;
+      const path =
+        typeof candidate.path === "string" ? candidate.path.trim() : "";
+      if (!path) {
+        throw new Error(`attachments[${index}].path is required`);
+      }
+      return {
+        path,
+        filename:
+          typeof candidate.filename === "string" &&
+          candidate.filename.trim()
+            ? candidate.filename.trim()
+            : undefined,
+        content_type:
+          typeof candidate.content_type === "string" &&
+          candidate.content_type.trim()
+            ? candidate.content_type.trim()
+            : undefined,
+        caption:
+          typeof candidate.caption === "string" && candidate.caption.trim()
+            ? candidate.caption.trim()
+            : undefined,
+      };
+    });
+  }
+
+  private async resolveChannelOutboundAttachments(
+    context: ChatContextState,
+    raw: Record<string, unknown>,
+  ): Promise<ResolvedChannelAttachment[]> {
+    const inputs = this.readChannelAttachmentInputs(raw);
+    const attachments: ResolvedChannelAttachment[] = [];
+    let totalBytes = 0;
+
+    for (const input of inputs) {
+      const attachment = await this.resolveChannelOutboundAttachment(
+        context,
+        input,
+      );
+      totalBytes += attachment.size;
+      if (totalBytes > MAX_CHANNEL_OUTBOUND_ATTACHMENT_BYTES) {
+        throw new Error("Total attachment size must be 25 MB or less");
+      }
+      attachments.push(attachment);
+    }
+
+    return attachments;
+  }
+
+  private async resolveChannelOutboundAttachment(
+    context: ChatContextState,
+    input: ChannelToolAttachmentInput,
+  ): Promise<ResolvedChannelAttachment> {
+    const resolved = this.resolveMountedAttachmentPath(input.path);
+    if (!resolved) {
+      throw new Error(
+        "attachments[].path must be under /mnt/user-uploads/ or /mnt/user-outputs/",
+      );
+    }
+
+    const key = buildWorkspaceScopedR2Key(
+      context.orgId,
+      context.workspaceId,
+      `${resolved.bucketDir}/${resolved.relativePath}`,
+    );
+    const object = await this.env.R2_BUCKET.get(key);
+    if (!object) {
+      throw new Error(`Attachment not found: ${input.path}`);
+    }
+    if (
+      typeof object.size === "number" &&
+      object.size > MAX_CHANNEL_OUTBOUND_ATTACHMENT_BYTES
+    ) {
+      throw new Error("Attachment size must be 25 MB or less");
+    }
+
+    const content = await object.arrayBuffer();
+    if (content.byteLength > MAX_CHANNEL_OUTBOUND_ATTACHMENT_BYTES) {
+      throw new Error("Attachment size must be 25 MB or less");
+    }
+    const filename =
+      input.filename ||
+      resolved.relativePath.split("/").filter(Boolean).pop() ||
+      "attachment";
+    const contentType =
+      input.content_type ||
+      object.httpMetadata?.contentType ||
+      this.inferContentType(filename);
+
+    return {
+      path: input.path,
+      filename: this.sanitizeAttachmentFilename(filename),
+      contentType,
+      content,
+      size: object.size || content.byteLength,
+      caption: input.caption,
+    };
+  }
+
+  private resolveMountedAttachmentPath(path: string): {
+    bucketDir: "user-uploads" | "user-outputs";
+    relativePath: string;
+  } | null {
+    const normalized = path.trim().replace(/\\/g, "/");
+    const prefixes: Array<{
+      prefix: string;
+      bucketDir: "user-uploads" | "user-outputs";
+    }> = [
+      { prefix: "/mnt/user-uploads/", bucketDir: "user-uploads" },
+      { prefix: "/mnt/user-outputs/", bucketDir: "user-outputs" },
+    ];
+    for (const { prefix, bucketDir } of prefixes) {
+      if (!normalized.startsWith(prefix)) continue;
+      const relativePath = normalized.slice(prefix.length);
+      if (
+        !relativePath ||
+        relativePath.startsWith("/") ||
+        relativePath.split("/").some((part) => part === ".." || part === "")
+      ) {
+        return null;
+      }
+      return { bucketDir, relativePath };
+    }
+    return null;
+  }
+
+  private sanitizeAttachmentFilename(filename: string): string {
+    const base = filename.split(/[\\/]/).filter(Boolean).pop() || "attachment";
+    const sanitized = base.replace(/[\r\n"]/g, "_").slice(0, 180).trim();
+    return sanitized || "attachment";
+  }
+
+  private inferContentType(filename: string): string {
+    const ext = filename.toLowerCase().split(".").pop() || "";
+    const map: Record<string, string> = {
+      csv: "text/csv",
+      gif: "image/gif",
+      html: "text/html",
+      jpeg: "image/jpeg",
+      jpg: "image/jpeg",
+      json: "application/json",
+      md: "text/markdown",
+      pdf: "application/pdf",
+      png: "image/png",
+      txt: "text/plain",
+      webp: "image/webp",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      zip: "application/zip",
+    };
+    return map[ext] || "application/octet-stream";
+  }
+
+  private async sendChannelEmailTool(
+    context: ChatContextState,
+    params: unknown,
+  ): Promise<AgentToolResult<unknown>> {
+    const thread = await this.requireChannelThread(context, "email");
+    const raw = this.readToolObjectParams(params);
+    const to = this.requiredToolString(raw, "to");
+    const subject = this.requiredToolString(raw, "subject");
+    const text = this.optionalToolString(raw, "text");
+    const html = this.optionalToolString(raw, "html");
+    const attachments = await this.resolveChannelOutboundAttachments(
+      context,
+      raw,
+    );
+    if (!text && !html && attachments.length === 0) {
+      throw new Error("send_email requires text, html, or attachments");
+    }
+
+    if (!this.env.EMAIL) {
+      throw new Error("Cloudflare Email Sending binding EMAIL is not configured");
+    }
+    const from = this.env.EMAIL_FROM_ADDRESS?.trim();
+    if (!from) {
+      throw new Error("EMAIL_FROM_ADDRESS is not configured");
+    }
+
+    const explicitReplyTo = this.optionalToolString(raw, "reply_to");
+    const replyTo = explicitReplyTo || thread.channel_connection_id || undefined;
+    const body: Parameters<CloudflareEmailSender["send"]>[0] = {
+      from,
+      to,
+      subject,
+    };
+    if (text) body.text = text;
+    if (html) body.html = html;
+    if (replyTo) body.replyTo = replyTo;
+    if (attachments.length > 0) {
+      body.attachments = attachments.map((attachment) => ({
+        content: attachment.content,
+        filename: attachment.filename,
+        type: attachment.contentType,
+        disposition: "attachment",
+      }));
+    }
+    const response = await this.env.EMAIL.send(body);
+    if (response.messageId) {
+      await this.env.APP_KV.put(
+        getEmailReplyReferenceKey(context.workspaceId, response.messageId),
+        context.threadId,
+        { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+      );
+    }
+
+    return {
+      content: [{ type: "text", text: "Email sent." }],
+      details: {
+        status: "sent",
+        channel: "email",
+        provider: "cloudflare_email",
+        messageId: response.messageId,
+        attachmentCount: attachments.length,
+      },
+    };
+  }
+
+  private async sendChannelSlackMessageTool(
+    context: ChatContextState,
+    params: unknown,
+  ): Promise<AgentToolResult<unknown>> {
+    const thread = await this.requireChannelThread(context, "slack");
+    const integrationId = thread.channel_connection_id?.trim();
+    if (!integrationId) {
+      throw new Error("Slack thread is missing its integration id");
+    }
+    const conversation = this.parseSlackChannelConversation(
+      thread.channel_conversation_id,
+    );
+    const raw = this.readToolObjectParams(params);
+    const text = this.optionalToolString(raw, "text");
+    const attachments = await this.resolveChannelOutboundAttachments(
+      context,
+      raw,
+    );
+    if (!text && attachments.length === 0) {
+      throw new Error("send_slack_message requires text or attachments");
+    }
+
+    const wsStub = this.env.WORKSPACE.get(
+      this.env.WORKSPACE.idFromName(context.workspaceId),
+    ) as unknown as WorkspaceDO;
+    const integration = await wsStub.getIntegration(integrationId);
+    if (!integration || integration.integration_type !== "slack") {
+      throw new Error("Slack integration is no longer available");
+    }
+    const credentials = await decryptCredentials<Record<string, unknown>>(
+      integration.credentials_encrypted,
+      this.env.INTEGRATION_SECRET_KEY,
+    );
+    const token =
+      typeof credentials.access_token === "string"
+        ? credentials.access_token.trim()
+        : "";
+    if (!token) {
+      throw new Error("Slack access token is not configured");
+    }
+
+    let responseJson: {
+      ok?: boolean;
+      error?: string;
+      ts?: string;
+      files?: Array<{ id?: string }>;
+    } | null;
+    if (attachments.length > 0) {
+      responseJson = await this.uploadSlackAttachments({
+        token,
+        channelId: conversation.channelId,
+        threadTs: conversation.rootTs === "dm" ? undefined : conversation.rootTs,
+        text,
+        attachments,
+      });
+    } else {
+      const response = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify({
+          channel: conversation.channelId,
+          thread_ts: conversation.rootTs === "dm" ? undefined : conversation.rootTs,
+          text,
+        }),
+      });
+      responseJson = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        ts?: string;
+      } | null;
+      if (!response.ok || responseJson?.ok !== true) {
+        throw new Error(
+          `Slack send failed: ${responseJson?.error || response.statusText}`,
+        );
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: "Slack message sent." }],
+      details: {
+        status: "sent",
+        channel: "slack",
+        teamId: conversation.teamId,
+        channelId: conversation.channelId,
+        ts: responseJson.ts,
+        attachmentCount: attachments.length,
+        fileIds: responseJson.files?.map((file) => file.id).filter(Boolean),
+      },
+    };
+  }
+
+  private async sendChannelTelegramMessageTool(
+    context: ChatContextState,
+    params: unknown,
+  ): Promise<AgentToolResult<unknown>> {
+    const thread = await this.requireChannelThread(context, "telegram");
+    const token = this.env.TELEGRAM_BOT_TOKEN?.trim();
+    if (!token) {
+      throw new Error("Telegram channel is not configured");
+    }
+    const raw = this.readToolObjectParams(params);
+    const text = this.optionalToolString(raw, "text");
+    const attachments = await this.resolveChannelOutboundAttachments(
+      context,
+      raw,
+    );
+    if (!text && attachments.length === 0) {
+      throw new Error("send_telegram_message requires text or attachments");
+    }
+    const chatId =
+      this.optionalToolString(raw, "chat_id") ||
+      thread.channel_conversation_id?.trim();
+    if (!chatId) {
+      throw new Error("Telegram chat id is required");
+    }
+
+    const sentMessageIds: Array<number | undefined> = [];
+    if (text) {
+      const response = await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+          }),
+        },
+      );
+      const responseJson = await response.json().catch(() => null) as {
+        ok?: boolean;
+        description?: string;
+        result?: { message_id?: number };
+      } | null;
+      if (!response.ok || responseJson?.ok !== true) {
+        throw new Error(
+          `Telegram send failed: ${responseJson?.description || response.statusText}`,
+        );
+      }
+      sentMessageIds.push(responseJson.result?.message_id);
+    }
+
+    for (const attachment of attachments) {
+      const responseJson = await this.sendTelegramDocument({
+        token,
+        chatId,
+        attachment,
+      });
+      sentMessageIds.push(responseJson.result?.message_id);
+    }
+
+    return {
+      content: [{ type: "text", text: "Telegram message sent." }],
+      details: {
+        status: "sent",
+        channel: "telegram",
+        chatId,
+        messageId: sentMessageIds[0],
+        messageIds: sentMessageIds,
+        attachmentCount: attachments.length,
+      },
+    };
+  }
+
+  private async uploadSlackAttachments(args: {
+    token: string;
+    channelId: string;
+    threadTs?: string;
+    text: string | null;
+    attachments: ResolvedChannelAttachment[];
+  }): Promise<{ ts?: string; files?: Array<{ id?: string }> }> {
+    const files: Array<{ id: string; title: string }> = [];
+    for (const attachment of args.attachments) {
+      const uploadUrlResponse = await fetch(
+        "https://slack.com/api/files.getUploadURLExternal",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${args.token}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({
+            filename: attachment.filename,
+            length: attachment.size,
+          }),
+        },
+      );
+      const uploadUrlJson = await uploadUrlResponse.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        upload_url?: string;
+        file_id?: string;
+      } | null;
+      if (
+        !uploadUrlResponse.ok ||
+        uploadUrlJson?.ok !== true ||
+        !uploadUrlJson.upload_url ||
+        !uploadUrlJson.file_id
+      ) {
+        throw new Error(
+          `Slack file upload URL failed: ${uploadUrlJson?.error || uploadUrlResponse.statusText}`,
+        );
+      }
+
+      const uploadResponse = await fetch(uploadUrlJson.upload_url, {
+        method: "POST",
+        headers: { "Content-Type": attachment.contentType },
+        body: attachment.content,
+      });
+      if (!uploadResponse.ok) {
+        throw new Error(
+          `Slack file upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`,
+        );
+      }
+      files.push({
+        id: uploadUrlJson.file_id,
+        title: attachment.filename,
+      });
+    }
+
+    const completeResponse = await fetch(
+      "https://slack.com/api/files.completeUploadExternal",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${args.token}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify({
+          files,
+          channel_id: args.channelId,
+          ...(args.threadTs ? { thread_ts: args.threadTs } : {}),
+          ...(args.text ? { initial_comment: args.text } : {}),
+        }),
+      },
+    );
+    const completeJson = await completeResponse.json().catch(() => null) as {
+      ok?: boolean;
+      error?: string;
+      ts?: string;
+      files?: Array<{ id?: string }>;
+    } | null;
+    if (!completeResponse.ok || completeJson?.ok !== true) {
+      throw new Error(
+        `Slack file upload completion failed: ${completeJson?.error || completeResponse.statusText}`,
+      );
+    }
+    return completeJson;
+  }
+
+  private async sendTelegramDocument(args: {
+    token: string;
+    chatId: string;
+    attachment: ResolvedChannelAttachment;
+  }): Promise<{ result?: { message_id?: number } }> {
+    const formData = new FormData();
+    formData.set("chat_id", args.chatId);
+    if (args.attachment.caption) {
+      formData.set("caption", args.attachment.caption.slice(0, 1024));
+    }
+    formData.set(
+      "document",
+      new Blob([args.attachment.content], {
+        type: args.attachment.contentType,
+      }),
+      args.attachment.filename,
+    );
+
+    const response = await fetch(
+      `https://api.telegram.org/bot${args.token}/sendDocument`,
+      {
+        method: "POST",
+        body: formData,
+      },
+    );
+    const responseJson = await response.json().catch(() => null) as {
+      ok?: boolean;
+      description?: string;
+      result?: { message_id?: number };
+    } | null;
+    if (!response.ok || responseJson?.ok !== true) {
+      throw new Error(
+        `Telegram document send failed: ${responseJson?.description || response.statusText}`,
+      );
+    }
+    return responseJson;
+  }
+
+  private readToolObjectParams(params: unknown): Record<string, unknown> {
+    return params && typeof params === "object"
+      ? params as Record<string, unknown>
+      : {};
+  }
+
+  private requiredToolString(
+    params: Record<string, unknown>,
+    key: string,
+  ): string {
+    const value = this.optionalToolString(params, key);
+    if (!value) {
+      throw new Error(`${key} is required`);
+    }
+    return value;
+  }
+
+  private optionalToolString(
+    params: Record<string, unknown>,
+    key: string,
+  ): string | null {
+    const value = params[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private parseSlackChannelConversation(value: string | null): {
+    teamId: string;
+    channelId: string;
+    rootTs: string;
+  } {
+    const parts = value?.split(":") ?? [];
+    const [teamId, channelId, ...rest] = parts;
+    const rootTs = rest.join(":");
+    if (!teamId || !channelId || !rootTs) {
+      throw new Error("Slack thread is missing channel routing metadata");
+    }
+    return { teamId, channelId, rootTs };
   }
 
   private async compactPiContext(
@@ -6409,6 +6851,68 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       },
     ];
 
+    definitions.push(
+      {
+        name: "send_email",
+        label: "Send email",
+        description:
+          "Send an email response from the current email channel thread. Use this only when the user should receive an external email; final assistant text is not emailed automatically.",
+        parameters: Type.Object({
+          to: Type.String(),
+          subject: Type.String(),
+          text: Type.Optional(Type.String()),
+          html: Type.Optional(Type.String()),
+          reply_to: Type.Optional(Type.String()),
+          attachments: Type.Optional(Type.Array(Type.Object({
+            path: Type.String(),
+            filename: Type.Optional(Type.String()),
+            content_type: Type.Optional(Type.String()),
+            caption: Type.Optional(Type.String()),
+          }))),
+        }),
+        execute: async (_id, params) =>
+          this.sendChannelEmailTool(context, params),
+        executionMode: "sequential",
+      },
+      {
+        name: "send_slack_message",
+        label: "Send Slack message",
+        description:
+          "Send a message to the Slack conversation that started the current Slack channel thread. Use this only when the user should receive an external Slack message; final assistant text is not posted automatically.",
+        parameters: Type.Object({
+          text: Type.Optional(Type.String()),
+          attachments: Type.Optional(Type.Array(Type.Object({
+            path: Type.String(),
+            filename: Type.Optional(Type.String()),
+            content_type: Type.Optional(Type.String()),
+            caption: Type.Optional(Type.String()),
+          }))),
+        }),
+        execute: async (_id, params) =>
+          this.sendChannelSlackMessageTool(context, params),
+        executionMode: "sequential",
+      },
+      {
+        name: "send_telegram_message",
+        label: "Send Telegram message",
+        description:
+          "Send a Telegram message from the current Telegram channel thread. The current thread chat id is used unless chat_id is provided. Use this only when the user should receive an external Telegram message; final assistant text is not sent automatically.",
+        parameters: Type.Object({
+          text: Type.Optional(Type.String()),
+          chat_id: Type.Optional(Type.String()),
+          attachments: Type.Optional(Type.Array(Type.Object({
+            path: Type.String(),
+            filename: Type.Optional(Type.String()),
+            content_type: Type.Optional(Type.String()),
+            caption: Type.Optional(Type.String()),
+          }))),
+        }),
+        execute: async (_id, params) =>
+          this.sendChannelTelegramMessageTool(context, params),
+        executionMode: "sequential",
+      },
+    );
+
     for (const definition of CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS) {
       const { name } = definition;
       definitions.push({
@@ -7113,11 +7617,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.setActiveTurnUserId(null);
       this.clearPiTurnRecovery();
       this.completeTodoStateForTurnEnd();
-      this.resolvePendingExternalTurn(
-        !finalText && errorMessage
-          ? { status: "error", error: errorMessage }
-          : { status: "result", reply: finalText || undefined },
-      );
       this.piActiveItemId = null;
       this.piActiveItemText = "";
       this.piReasoningItemId = null;
@@ -7238,10 +7737,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
                 this.setChatIsStreaming(false);
                 this.setActiveTurnUserId(null);
-                this.resolvePendingExternalTurn({
-                  status: "error",
-                  error: errorMessage || "Pi prompt failed",
-                });
               }),
           );
           return true;

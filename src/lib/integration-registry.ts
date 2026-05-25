@@ -281,6 +281,16 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     },
   },
 
+  telegram: {
+    type: 'telegram',
+    displayName: 'Telegram',
+    description: 'Connect a Telegram chat through the camelAI bot',
+    category: 'communication',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [],
+  },
+
   openai: {
     type: 'openai',
     displayName: 'OpenAI',

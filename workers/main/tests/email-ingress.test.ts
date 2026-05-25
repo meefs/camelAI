@@ -1,18 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
-  runExternalMessageTurnMock,
+  startInitialUserMessageMock,
   getWorkspaceStubMock,
   getOrgStubMock,
   getUserStubMock,
 } = vi.hoisted(() => ({
-  runExternalMessageTurnMock: vi.fn(),
+  startInitialUserMessageMock: vi.fn(),
   getWorkspaceStubMock: vi.fn(),
   getOrgStubMock: vi.fn(),
   getUserStubMock: vi.fn(),
-}));
-
-vi.mock('../src/helpers/external-turn.js', () => ({
-  runExternalMessageTurn: runExternalMessageTurnMock,
 }));
 
 vi.mock('../src/helpers/stubs.js', () => ({
@@ -21,7 +17,10 @@ vi.mock('../src/helpers/stubs.js', () => ({
   getUserStub: getUserStubMock,
 }));
 
-import { handleWorkspaceEmailIngress } from '../src/email-ingress.js';
+import {
+  handleWorkspaceEmailIngress,
+  toAttachmentPayload,
+} from '../src/email-ingress.js';
 
 function streamFromString(text: string): ReadableStream<Uint8Array> {
   const bytes = new TextEncoder().encode(text);
@@ -105,6 +104,12 @@ function createMockEnv(overrides?: Partial<Record<string, unknown>>): any {
     R2_BUCKET: {
       put: vi.fn().mockResolvedValue({}),
     },
+    CHAT_THREAD: {
+      idFromName: (threadId: string) => threadId,
+      get: () => ({
+        startInitialUserMessage: startInitialUserMessageMock,
+      }),
+    },
     _emailToUserStore: emailToUser,
     _appKvStore: appKv,
     ...overrides,
@@ -114,6 +119,20 @@ function createMockEnv(overrides?: Partial<Record<string, unknown>>): any {
 describe('handleWorkspaceEmailIngress', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    startInitialUserMessageMock.mockResolvedValue({ status: 'accepted' });
+  });
+
+  it('converts Uint8Array attachment content for upload', () => {
+    const payload = toAttachmentPayload({
+      filename: 'binary.dat',
+      mimeType: 'application/octet-stream',
+      disposition: 'attachment',
+      content: new Uint8Array([1, 2, 3, 4]) as unknown as ArrayBuffer,
+    });
+
+    expect(payload?.body).toBeInstanceOf(Uint8Array);
+    expect(payload?.size).toBe(4);
+    expect(Array.from(payload?.body as Uint8Array)).toEqual([1, 2, 3, 4]);
   });
 
   it('uploads email attachments and appends upload refs to the forwarded message', async () => {
@@ -137,7 +156,6 @@ describe('handleWorkspaceEmailIngress', () => {
     getWorkspaceStubMock.mockReturnValue(workspaceStub);
     getOrgStubMock.mockReturnValue(orgStub);
     getUserStubMock.mockReturnValue(userStub);
-    runExternalMessageTurnMock.mockResolvedValue({ status: 'result', reply: 'Looks good.' });
 
     const env = createMockEnv();
     env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
@@ -176,20 +194,21 @@ describe('handleWorkspaceEmailIngress', () => {
 
     expect(message.setReject).not.toHaveBeenCalled();
     expect(env.R2_BUCKET.put).toHaveBeenCalledTimes(1);
-    expect(runExternalMessageTurnMock).toHaveBeenCalledTimes(1);
-    expect(message.reply).toHaveBeenCalledTimes(1);
+    expect(startInitialUserMessageMock).toHaveBeenCalledTimes(1);
+    expect(message.reply).not.toHaveBeenCalled();
 
     const [r2Key] = env.R2_BUCKET.put.mock.calls[0] as [string];
     const storedFilename = r2Key.split('/').pop() || '';
 
     expect(r2Key).toMatch(/^org-1\/workspace-1\/user-uploads\/report_2026-\d+-[a-z0-9]{6}\.txt$/);
-    expect(runExternalMessageTurnMock).toHaveBeenCalledWith(
-      env,
+    expect(startInitialUserMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: 'thread-1',
-        message: `Here is the report.\n\n(user uploaded file to /mnt/user-uploads/${storedFilename})`,
+        message: expect.stringContaining(`Here is the report.\n\n(user uploaded file to /mnt/user-uploads/${storedFilename})`),
       })
     );
+    expect(startInitialUserMessageMock.mock.calls[0]?.[0].message).toContain('send_email');
+    expect(startInitialUserMessageMock.mock.calls[0]?.[0].message).toContain('user@example.com');
   });
 
   it('falls back to default picker configs when model picker RPC methods are missing', async () => {
@@ -223,7 +242,6 @@ describe('handleWorkspaceEmailIngress', () => {
     getWorkspaceStubMock.mockReturnValue(workspaceStub);
     getOrgStubMock.mockReturnValue(orgStub);
     getUserStubMock.mockReturnValue(userStub);
-    runExternalMessageTurnMock.mockResolvedValue({ status: 'result', reply: 'Looks good.' });
 
     const env = createMockEnv();
     env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
@@ -244,8 +262,21 @@ describe('handleWorkspaceEmailIngress', () => {
       'user-1',
       'Please help',
       'sonnet',
+      'claude',
+      expect.objectContaining({
+        source: 'channel',
+        channelKind: 'email',
+        channelConnectionId: 'swift-falcon-ridge@mail.camelai.com',
+        channelConversationId: 'message:msg-1@example.com',
+        channelMessageId: 'msg-1@example.com',
+      }),
     );
-    expect(runExternalMessageTurnMock).toHaveBeenCalledTimes(1);
+    expect(env.APP_KV.put).toHaveBeenCalledWith(
+      'channel_thread:email:workspace-1:swift-falcon-ridge@mail.camelai.com:message:msg-1@example.com',
+      'thread-1',
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+    expect(startInitialUserMessageMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects unknown workspace mailbox format', async () => {
@@ -283,7 +314,7 @@ describe('handleWorkspaceEmailIngress', () => {
     expect(message.reply).not.toHaveBeenCalled();
   });
 
-  it('does not retry forever when Cloudflare refuses to reply to the original email', async () => {
+  it('marks email dedupe complete after enqueueing without sending an automatic reply', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
@@ -304,7 +335,6 @@ describe('handleWorkspaceEmailIngress', () => {
     getWorkspaceStubMock.mockReturnValue(workspaceStub);
     getOrgStubMock.mockReturnValue(orgStub);
     getUserStubMock.mockReturnValue(userStub);
-    runExternalMessageTurnMock.mockResolvedValue({ status: 'result', reply: 'Looks good.' });
 
     const env = createMockEnv();
     env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
@@ -315,29 +345,14 @@ describe('handleWorkspaceEmailIngress', () => {
       subject: 'Need help',
       rawBody: 'Please reply',
     });
-    message.reply.mockRejectedValueOnce(
-      new Error('original email is not repliable or exceeds reply limit')
-    );
-
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
     await expect(handleWorkspaceEmailIngress(message, env)).resolves.toBeUndefined();
 
-    expect(runExternalMessageTurnMock).toHaveBeenCalledTimes(1);
-    expect(message.reply).toHaveBeenCalledTimes(1);
+    expect(startInitialUserMessageMock).toHaveBeenCalledTimes(1);
+    expect(message.reply).not.toHaveBeenCalled();
     expect(env.APP_KV.put).toHaveBeenCalledWith(
-      expect.stringMatching(/^email_event:/),
+      expect.stringMatching(/^channel_event:email:/),
       'done',
       expect.objectContaining({ expirationTtl: 600 })
     );
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[email-ingress] reply skipped by Cloudflare',
-      expect.objectContaining({
-        error: 'original email is not repliable or exceeds reply limit',
-        threadId: 'thread-1',
-      })
-    );
-
-    warnSpy.mockRestore();
   });
 });

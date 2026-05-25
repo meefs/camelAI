@@ -918,14 +918,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     ).toArray() as unknown as Array<{ user_id: string; access_level: WorkspaceAccessLevel }>;
   }
 
-  // Rate limit for resend email proxy (atomic check + record in single DO call)
-  checkAndRecordResendRateLimit(
+  // Rate limit for sandbox email sending proxy (atomic check + record in single DO call)
+  checkAndRecordEmailSendRateLimit(
     count: number,
     hourlyLimit: number,
     dailyLimit: number
   ): { allowed: boolean; reason?: string } {
     const now = Date.now();
-    const key = 'resend_proxy_rate_limit';
+    const key = 'email_send_proxy_rate_limit';
     const ONE_HOUR_MS = 60 * 60 * 1000;
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 

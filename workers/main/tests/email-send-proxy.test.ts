@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { handleResendProxy } from '../src/routes/resend-proxy.js';
+import { handleEmailSendProxy } from '../src/routes/email-send-proxy.js';
 
 // ---------------------------------------------------------------------------
 // Stub helpers
@@ -31,7 +31,7 @@ function makeWorkspaceStub(
       compute_tier: 'standard',
     })),
     listMembers: vi.fn(async () => allMembers),
-    checkAndRecordResendRateLimit: vi.fn(() => rateAllowed
+    checkAndRecordEmailSendRateLimit: vi.fn(() => rateAllowed
       ? { allowed: true }
       : { allowed: false, reason: 'Hourly email limit exceeded (50/hour)' }
     ),
@@ -62,7 +62,7 @@ const SANDBOX_HEADERS = {
 };
 
 function makeRequest(body: Record<string, unknown>) {
-  return new Request('https://camelai.dev/api/resend/emails', {
+  return new Request('https://camelai.dev/api/email/send', {
     method: 'POST',
     headers: SANDBOX_HEADERS,
     body: JSON.stringify(body),
@@ -74,6 +74,8 @@ const MEMBERS = [
   { user_id: 'u1', email: 'alice@example.com' },
   { user_id: 'u2', email: 'bob@example.com' },
 ];
+
+let emailSendMock: ReturnType<typeof vi.fn>;
 
 function buildEnv(overrides: {
   rateAllowed?: boolean;
@@ -92,7 +94,7 @@ function buildEnv(overrides: {
 
   return {
     SANDBOX_PROXY_SECRET: 'test-secret',
-    RESEND_API_KEY: 'test-resend-key',
+    EMAIL: { send: emailSendMock },
     WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
     WORKSPACE: {
       idFromName: vi.fn((id: string) => id),
@@ -121,39 +123,31 @@ function buildEnv(overrides: {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('resend-proxy route', () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
-
+describe('email-send-proxy route', () => {
   beforeEach(() => {
-    fetchSpy = vi.fn(async () =>
-      new Response(JSON.stringify({ id: 'msg-123' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    );
-    vi.stubGlobal('fetch', fetchSpy);
+    emailSendMock = vi.fn(async () => ({ messageId: 'msg-123' }));
   });
 
   it('rejects without sandbox proxy auth', async () => {
-    const req = new Request('https://camelai.dev/api/resend/emails', {
+    const req = new Request('https://camelai.dev/api/email/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ to: 'alice@example.com', subject: 'Hi' }),
     });
 
-    const res = await handleResendProxy(buildRouteContext(req, buildEnv()));
+    const res = await handleEmailSendProxy(buildRouteContext(req, buildEnv()));
     expect(res.status).toBe(401);
   });
 
-  it('rejects when RESEND_API_KEY is not set', async () => {
-    const res = await handleResendProxy(
-      buildRouteContext(makeRequest({ to: 'alice@example.com', subject: 'Hi' }), buildEnv({ RESEND_API_KEY: undefined }))
+  it('rejects when EMAIL is not set', async () => {
+    const res = await handleEmailSendProxy(
+      buildRouteContext(makeRequest({ to: 'alice@example.com', subject: 'Hi' }), buildEnv({ EMAIL: undefined }))
     );
     expect(res.status).toBe(503);
   });
 
   it('rejects malformed recipient types', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({ to: 123 as any, subject: 'Hi' }),
         buildEnv()
@@ -165,7 +159,7 @@ describe('resend-proxy route', () => {
   });
 
   it('rejects array with non-string elements', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({ to: ['alice@example.com', 42] as any, subject: 'Hi' }),
         buildEnv()
@@ -175,17 +169,17 @@ describe('resend-proxy route', () => {
   });
 
   it('rejects invalid JSON body', async () => {
-    const req = new Request('https://camelai.dev/api/resend/emails', {
+    const req = new Request('https://camelai.dev/api/email/send', {
       method: 'POST',
       headers: { ...SANDBOX_HEADERS },
       body: 'not json',
     });
-    const res = await handleResendProxy(buildRouteContext(req, buildEnv()));
+    const res = await handleEmailSendProxy(buildRouteContext(req, buildEnv()));
     expect(res.status).toBe(400);
   });
 
   it('rejects missing required fields', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(makeRequest({}), buildEnv())
     );
     expect(res.status).toBe(400);
@@ -193,7 +187,7 @@ describe('resend-proxy route', () => {
   });
 
   it('rejects recipients not in workspace', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({ to: 'outsider@evil.com', subject: 'Hi' }),
         buildEnv()
@@ -206,7 +200,7 @@ describe('resend-proxy route', () => {
   });
 
   it('rejects when cc/bcc contains non-member', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'alice@example.com',
@@ -219,8 +213,27 @@ describe('resend-proxy route', () => {
     expect(res.status).toBe(403);
   });
 
+  it('rejects array reply_to because Cloudflare Email Sending accepts a single reply-to address', async () => {
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: 'alice@example.com',
+          subject: 'Hi',
+          reply_to: ['alice@example.com'],
+          text: 'Hello!',
+        }),
+        buildEnv()
+      )
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toContain('reply_to must be a string');
+    expect(emailSendMock).not.toHaveBeenCalled();
+  });
+
   it('rejects when rate limited', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({ to: 'alice@example.com', subject: 'Hi' }),
         buildEnv({ rateAllowed: false })
@@ -231,9 +244,9 @@ describe('resend-proxy route', () => {
     expect(body.error).toContain('limit exceeded');
   });
 
-  it('forwards valid request to Resend API with workspace from address', async () => {
+  it('forwards valid request to Cloudflare Email Sending with workspace from address', async () => {
     const env = buildEnv();
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'alice@example.com',
@@ -247,12 +260,8 @@ describe('resend-proxy route', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: 'msg-123', from: 'Test Workspace <swift-tiger-moon@camelai.dev>' });
 
-    // Verify Resend was called correctly
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://api.resend.com/emails');
-    expect(init.headers.Authorization).toBe('Bearer test-resend-key');
-    const sentBody = JSON.parse(init.body);
+    expect(emailSendMock).toHaveBeenCalledTimes(1);
+    const sentBody = emailSendMock.mock.calls[0]?.[0];
     expect(sentBody.to).toEqual(['alice@example.com']);
     expect(sentBody.subject).toBe('Hello Alice');
     // from is always the workspace address, not caller-supplied
@@ -261,7 +270,7 @@ describe('resend-proxy route', () => {
 
   it('ignores caller-supplied from and uses workspace address', async () => {
     const env = buildEnv();
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'alice@example.com',
@@ -274,13 +283,12 @@ describe('resend-proxy route', () => {
     );
 
     expect(res.status).toBe(200);
-    const [, init] = fetchSpy.mock.calls[0];
-    const sentBody = JSON.parse(init.body);
+    const sentBody = emailSendMock.mock.calls[0]?.[0];
     expect(sentBody.from).toBe('Test Workspace <swift-tiger-moon@camelai.dev>');
   });
 
   it('allows sending to multiple workspace members', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: ['alice@example.com', 'bob@example.com'],
@@ -295,7 +303,7 @@ describe('resend-proxy route', () => {
   });
 
   it('is case-insensitive for email matching', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'Alice@Example.COM',
@@ -309,7 +317,7 @@ describe('resend-proxy route', () => {
   });
 
   it('extracts email from "Name <email>" formatted recipients', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'Alice Smith <alice@example.com>',
@@ -323,7 +331,7 @@ describe('resend-proxy route', () => {
   });
 
   it('extracts email from formatted recipients in arrays', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: ['Alice <alice@example.com>', 'Bob <bob@example.com>'],
@@ -337,7 +345,7 @@ describe('resend-proxy route', () => {
   });
 
   it('rejects formatted recipient with non-member email', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'Outsider <outsider@evil.com>',
@@ -359,7 +367,7 @@ describe('resend-proxy route', () => {
       ],
     });
 
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({ to: 'bob@example.com', subject: 'Hi' }),
         env
@@ -371,7 +379,7 @@ describe('resend-proxy route', () => {
   });
 
   it('rejects comma-separated address smuggling in a single string', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'Alice <alice@example.com>, outsider@evil.com',
@@ -387,7 +395,7 @@ describe('resend-proxy route', () => {
   });
 
   it('rejects multiple angle-bracket address smuggling', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: '<alice@example.com> <outsider@evil.com>',
@@ -400,9 +408,9 @@ describe('resend-proxy route', () => {
     expect(res.status).toBe(400);
   });
 
-  it('forwards sanitized emails to Resend (not raw payload)', async () => {
+  it('forwards sanitized emails to Cloudflare Email Sending (not raw payload)', async () => {
     const env = buildEnv();
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: 'Alice Smith <Alice@Example.com>',
@@ -414,8 +422,7 @@ describe('resend-proxy route', () => {
     );
 
     expect(res.status).toBe(200);
-    const [, init] = fetchSpy.mock.calls[0];
-    const sentBody = JSON.parse(init.body);
+    const sentBody = emailSendMock.mock.calls[0]?.[0];
     // Should be sanitized bare email, not the raw "Alice Smith <Alice@Example.com>"
     expect(sentBody.to).toEqual(['alice@example.com']);
   });
@@ -424,7 +431,7 @@ describe('resend-proxy route', () => {
     // No workspace restrictions — both org members should be allowed
     const env = buildEnv();
 
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({
           to: ['alice@example.com', 'bob@example.com'],
@@ -451,7 +458,7 @@ describe('resend-proxy route', () => {
       compute_tier: 'standard',
     });
 
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({ to: 'alice@example.com', subject: 'Hi', text: 'Hello' }),
         env
@@ -459,13 +466,12 @@ describe('resend-proxy route', () => {
     );
 
     expect(res.status).toBe(200);
-    const [, init] = fetchSpy.mock.calls[0];
-    const sentBody = JSON.parse(init.body);
+    const sentBody = emailSendMock.mock.calls[0]?.[0];
     expect(sentBody.from).toBe('"Acme, Inc" <swift-tiger-moon@camelai.dev>');
   });
 
   it('returns 503 when workspace email is not configured', async () => {
-    const res = await handleResendProxy(
+    const res = await handleEmailSendProxy(
       buildRouteContext(
         makeRequest({ to: 'alice@example.com', subject: 'Hi' }),
         buildEnv({ WORKSPACE_EMAIL_DOMAIN: undefined })

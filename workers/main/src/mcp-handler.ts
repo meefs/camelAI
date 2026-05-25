@@ -763,7 +763,6 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
               status: result.dispatch.status,
               thread_id: result.dispatch.thread_id,
               error: result.dispatch.error,
-              reply: result.dispatch.reply,
             },
           });
         } catch (error) {

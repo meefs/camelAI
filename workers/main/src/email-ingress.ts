@@ -1,8 +1,5 @@
-import { EmailMessage } from "cloudflare:email";
 import PostalMime from "postal-mime";
 import type { Env } from "./types.js";
-import type { ExternalTurnResult } from "./chat-thread-do.js";
-import { runExternalMessageTurn } from "./helpers/external-turn.js";
 import { getOrgStub, getUserStub, getWorkspaceStub } from "./helpers/stubs.js";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths.js";
 import {
@@ -10,22 +7,16 @@ import {
   parseMailboxAddress,
   parseWorkspaceEmailAddress,
 } from "../../../src/lib/workspace-email.js";
-import {
-  getDefaultLlmModel,
-} from "../../../src/lib/llm-provider-config.js";
-import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
-import {
-  resolveDefaultModelForChat,
-  resolveEffectivePickerConfig,
-} from "../../../src/lib/model-picker-config.js";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
-import type { LlmModel } from "../../../src/types.js";
 import type { Attachment as PostalMimeAttachment } from "postal-mime";
 import { isOrgBanned } from "./ban-list.js";
 import {
-  getOrgModelPickerConfigCompat,
-  getWorkspaceModelPickerConfigCompat,
-} from "./model-picker-config-compat.js";
+  enqueueChannelMessage,
+  EMAIL_REPLY_REFERENCE_TTL_SECONDS,
+  getChannelDedupeKey,
+  getEmailReplyReferenceKey,
+  getOrCreateChannelThread,
+} from "./channels.js";
 
 interface AuthorizedSender {
   userId: string;
@@ -40,60 +31,18 @@ interface EmailThreadResolution {
   title: string;
 }
 
-async function resolveDefaultEmailThreadModel(
-  env: Env,
-  args: { orgId: string; workspaceId: string },
-): Promise<LlmModel> {
-  const orgStub = getOrgStub(env, args.orgId);
-  const workspaceStub = getWorkspaceStub(env, args.workspaceId);
-  const [
-    llmProviderConfig,
-    experimentalSettings,
-    orgPickerConfig,
-    workspacePickerConfig,
-  ] = await Promise.all([
-    orgStub.getLlmProviderConfig(),
-    orgStub.getExperimentalSettings(),
-    getOrgModelPickerConfigCompat(orgStub),
-    getWorkspaceModelPickerConfigCompat(workspaceStub),
-  ]);
-  const effectiveConfig = resolveEffectivePickerConfig(
-    orgPickerConfig,
-    workspacePickerConfig,
-  );
-  const visibleCatalog = resolveModelPickerCatalog({
-    effectiveConfig,
-    experimentalSettings,
-    orgProvider: llmProviderConfig?.provider,
-  });
-  const model = resolveDefaultModelForChat({
-    effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
-    visibleCatalog,
-  });
-  if (!model) {
-    throw new Error("No models are available");
-  }
-  return model;
-}
-
 interface ParsedEmailContent {
   text: string;
   attachments: PostalMimeAttachment[];
 }
 
-const EMAIL_EVENT_DEDUPE_PREFIX = "email_event:";
 const EMAIL_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
 const EMAIL_EVENT_DEDUPE_PROCESSING_TTL_SECONDS = 5 * 60;
 const EMAIL_EVENT_DEDUPE_PROCESSING_MAX_AGE_MS =
   EMAIL_EVENT_DEDUPE_PROCESSING_TTL_SECONDS * 1000;
 const EMAIL_EVENT_DEDUPE_DONE_VALUE = "done";
 const EMAIL_EVENT_DEDUPE_LEGACY_DONE_VALUE = "1";
-const EMAIL_REPLY_REFERENCE_PREFIX = "email_reply_ref:";
-const EMAIL_REPLY_REFERENCE_TTL_SECONDS = 180 * 24 * 60 * 60;
 const MAX_EMAIL_RAW_SIZE_BYTES = 2 * 1024 * 1024;
-const MAX_EMAIL_REPLY_BODY_CHARS = 50_000;
-const STRICT_MESSAGE_ID_PATTERN = /^[^\s<>@]+@(?:[^\s<>@]+|\[[^\]\r\n]+\])$/;
 const DEFAULT_ATTACHMENT_BASENAME = "attachment";
 const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
 const MIME_EXTENSION_MAP: Record<string, string> = {
@@ -132,56 +81,6 @@ function sanitizeHeaderValue(value: string, maxLength = 200): string {
     .slice(0, maxLength);
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function isNonRetriableReplyError(error: unknown): boolean {
-  const normalized = getErrorMessage(error).toLowerCase();
-  return (
-    normalized.includes("original email is not repliable") ||
-    normalized.includes("exceeds reply limit")
-  );
-}
-
-function extractAuthResultStatus(
-  authResultsHeader: string,
-  label: "spf" | "dkim" | "dmarc",
-): string | null {
-  const match = authResultsHeader.match(
-    new RegExp(`(?:^|\\s|;)${label}=([a-z_+-]+)`, "i"),
-  );
-  return match?.[1]?.toLowerCase() || null;
-}
-
-function summarizeAuthResults(headers: Headers): {
-  spf: string | null;
-  dkim: string | null;
-  dmarc: string | null;
-  header: string | null;
-} {
-  const authResultsHeader = sanitizeHeaderValue(
-    headers.get("authentication-results") || "",
-    500,
-  );
-  if (!authResultsHeader) {
-    return {
-      spf: null,
-      dkim: null,
-      dmarc: null,
-      header: null,
-    };
-  }
-
-  return {
-    spf: extractAuthResultStatus(authResultsHeader, "spf"),
-    dkim: extractAuthResultStatus(authResultsHeader, "dkim"),
-    dmarc: extractAuthResultStatus(authResultsHeader, "dmarc"),
-    header: authResultsHeader,
-  };
-}
-
 function normalizeMessageId(rawValue: string | null): string | null {
   if (!rawValue) return null;
   const sanitized = sanitizeHeaderValue(rawValue, 512)
@@ -191,25 +90,8 @@ function normalizeMessageId(rawValue: string | null): string | null {
   return sanitized || null;
 }
 
-function normalizeMessageIdForHeader(rawValue: string | null): string | null {
-  const normalized = normalizeMessageId(rawValue);
-  if (!normalized) return null;
-  const safe = normalized.replace(/[<>\s]/g, "");
-  if (!safe || !STRICT_MESSAGE_ID_PATTERN.test(safe)) return null;
-  return `<${safe}>`;
-}
-
-function toDedupeFragment(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .slice(0, 160);
-}
-
 function getEmailDedupeKey(workspaceId: string, messageId: string): string {
-  const workspacePart = toDedupeFragment(workspaceId) || "ws";
-  const messagePart = toDedupeFragment(messageId) || "msg";
-  return `${EMAIL_EVENT_DEDUPE_PREFIX}${workspacePart}:${messagePart}`;
+  return getChannelDedupeKey("email", workspaceId, messageId);
 }
 
 function buildEmailProcessingDedupeValue(
@@ -249,17 +131,6 @@ function parseEmailDedupeValue(rawValue: string | null): {
     token,
     startedAt,
   };
-}
-
-function getEmailReplyReferenceKey(
-  workspaceId: string,
-  messageId: string,
-): string {
-  const safeMessageId = messageId
-    .toLowerCase()
-    .replace(/[^a-z0-9@._-]/g, "_")
-    .slice(0, 400);
-  return `${EMAIL_REPLY_REFERENCE_PREFIX}${workspaceId}:${safeMessageId}`;
 }
 
 function stripSubjectPrefixes(subject: string): string {
@@ -353,22 +224,33 @@ function decodeBase64Content(content: string): Uint8Array | null {
   }
 }
 
-function toAttachmentPayload(
+export function toAttachmentPayload(
   attachment: PostalMimeAttachment,
 ): { body: ArrayBuffer | Uint8Array; size: number } | null {
-  if (attachment.content instanceof ArrayBuffer) {
-    return { body: attachment.content, size: attachment.content.byteLength };
+  const content = attachment.content as unknown;
+
+  if (content instanceof ArrayBuffer) {
+    return { body: content, size: content.byteLength };
   }
 
-  if (typeof attachment.content !== "string") return null;
+  if (ArrayBuffer.isView(content)) {
+    const body = new Uint8Array(
+      content.buffer,
+      content.byteOffset,
+      content.byteLength,
+    );
+    return { body, size: body.byteLength };
+  }
+
+  if (typeof content !== "string") return null;
 
   if (attachment.encoding === "base64") {
-    const decoded = decodeBase64Content(attachment.content);
+    const decoded = decodeBase64Content(content);
     if (!decoded) return null;
     return { body: decoded, size: decoded.byteLength };
   }
 
-  const encoded = new TextEncoder().encode(attachment.content);
+  const encoded = new TextEncoder().encode(content);
   return { body: encoded, size: encoded.byteLength };
 }
 
@@ -498,125 +380,6 @@ function stripQuotedReplyContent(text: string): string {
   return kept.join("\n").trim();
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-async function renderMarkdownEmailHtml(markdown: string): Promise<string> {
-  const content = markdown.trim() || "Done.";
-
-  try {
-    const [
-      { createElement },
-      { renderToStaticMarkup },
-      { default: ReactMarkdown },
-      { default: remarkGfm },
-    ] = await Promise.all([
-      import("react"),
-      import("react-dom/server"),
-      import("react-markdown"),
-      import("remark-gfm"),
-    ]);
-    const renderedMarkdown = renderToStaticMarkup(
-      createElement(
-        "div",
-        { className: "markdown-body" },
-        createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, content),
-      ),
-    );
-
-    return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      body {
-        margin: 0;
-        padding: 0;
-        background: #f4f4f5;
-        color: #18181b;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      }
-      .container {
-        max-width: 680px;
-        margin: 0 auto;
-        background: #ffffff;
-        padding: 24px;
-      }
-      .markdown-body {
-        font-size: 15px;
-        line-height: 1.6;
-      }
-      .markdown-body p { margin: 0 0 14px; }
-      .markdown-body h1,
-      .markdown-body h2,
-      .markdown-body h3,
-      .markdown-body h4 { margin: 20px 0 12px; line-height: 1.3; }
-      .markdown-body ul,
-      .markdown-body ol { margin: 0 0 14px 20px; padding: 0; }
-      .markdown-body li { margin: 0 0 6px; }
-      .markdown-body code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        background: #f4f4f5;
-        border-radius: 4px;
-        padding: 0.15em 0.3em;
-      }
-      .markdown-body pre {
-        margin: 0 0 14px;
-        padding: 12px;
-        border-radius: 8px;
-        overflow-x: auto;
-        background: #f4f4f5;
-      }
-      .markdown-body pre code {
-        background: transparent;
-        padding: 0;
-      }
-      .markdown-body a { color: #0f766e; text-decoration: underline; }
-      .markdown-body blockquote {
-        margin: 0 0 14px;
-        padding: 0 0 0 12px;
-        border-left: 3px solid #d4d4d8;
-        color: #52525b;
-      }
-      .markdown-body table {
-        border-collapse: collapse;
-        margin: 0 0 14px;
-      }
-      .markdown-body th,
-      .markdown-body td {
-        border: 1px solid #e4e4e7;
-        padding: 8px;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">${renderedMarkdown}</div>
-  </body>
-</html>`;
-  } catch (error) {
-    console.error(
-      "[email-ingress] Failed to render markdown email body",
-      error,
-    );
-    return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-  </head>
-  <body style="margin:0;padding:24px;background:#ffffff;color:#18181b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-    <pre style="white-space:pre-wrap;font-size:15px;line-height:1.5;margin:0;">${escapeHtml(content)}</pre>
-  </body>
-</html>`;
-  }
-}
-
 async function resolveWorkspaceFromEmailHandle(
   env: Env,
   emailHandle: string,
@@ -740,6 +503,8 @@ async function resolveThreadForEmail(
     subject: string;
     message: string;
     userId: string;
+    messageId: string | null;
+    recipientAddress: string;
   },
 ): Promise<EmailThreadResolution> {
   const fromReplyHeaders = await resolveThreadFromReplyHeaders(env, {
@@ -749,112 +514,26 @@ async function resolveThreadForEmail(
   });
   if (fromReplyHeaders) return fromReplyHeaders;
 
-  const orgStub = getOrgStub(env, args.orgId);
   const title = titleFromEmail(args.subject, args.message);
-  const model = await resolveDefaultEmailThreadModel(env, args);
-  const created = await orgStub.createThread(
-    args.workspaceId,
+  const created = await getOrCreateChannelThread(env, {
+    kind: "email",
+    workspaceId: args.workspaceId,
+    orgId: args.orgId,
+    remoteConversationId: args.messageId
+      ? `message:${args.messageId}`
+      : `message:${crypto.randomUUID()}`,
+    connectionId: args.recipientAddress,
     title,
-    args.userId,
-    args.message.slice(0, 500),
-    model,
-  );
+    createdBy: args.userId,
+    firstUserMessage: args.message,
+    firstRemoteMessageId: args.messageId,
+    mapTtlSeconds: EMAIL_REPLY_REFERENCE_TTL_SECONDS,
+  });
 
   return {
-    threadId: created.id,
+    threadId: created.threadId,
     title: created.title,
   };
-}
-
-function formatReplySubject(inboundSubject: string, fallback: string): string {
-  const cleanInbound = sanitizeHeaderValue(inboundSubject, 180);
-  if (cleanInbound) {
-    return /^re:/i.test(cleanInbound) ? cleanInbound : `Re: ${cleanInbound}`;
-  }
-
-  const cleanFallback =
-    sanitizeHeaderValue(fallback, 160) || "camelAI conversation";
-  return `Re: ${cleanFallback}`;
-}
-
-function createReplyMessageId(threadId: string, domain: string): string {
-  const safeThreadId =
-    threadId.replace(/[^a-z0-9-]/gi, "").slice(0, 64) || "thread";
-  const safeDomain = domain.toLowerCase().replace(/[^a-z0-9.-]/g, "");
-  return `chiridion.${safeThreadId}.${crypto.randomUUID()}@${safeDomain}`;
-}
-
-async function sendReply(
-  inbound: ForwardableEmailMessage,
-  args: {
-    fromAddress: string;
-    toAddress: string;
-    replyToAddress: string;
-    subject: string;
-    body: string;
-    messageId: string;
-  },
-): Promise<string | null> {
-  const subject = sanitizeHeaderValue(args.subject, 240) || "Re: camelAI";
-  const fromAddress = sanitizeHeaderValue(args.fromAddress, 320);
-  const toAddress = sanitizeHeaderValue(args.toAddress, 320);
-  const replyToAddress = sanitizeHeaderValue(args.replyToAddress, 320);
-  const bodyText = args.body
-    .replace(/\r\n/g, "\n")
-    .trim()
-    .slice(0, MAX_EMAIL_REPLY_BODY_CHARS);
-  const bodyHtml = await renderMarkdownEmailHtml(bodyText);
-  const boundary = `chiridion-${crypto.randomUUID()}`;
-
-  const headers: string[] = [
-    `From: camelAI <${fromAddress}>`,
-    `To: ${toAddress}`,
-    `Subject: ${subject}`,
-    "MIME-Version: 1.0",
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
-    `Reply-To: ${replyToAddress}`,
-  ];
-
-  const replyMessageIdHeader = normalizeMessageIdForHeader(args.messageId);
-  if (replyMessageIdHeader) {
-    headers.push(`Message-ID: ${replyMessageIdHeader}`);
-  }
-
-  const inReplyTo = normalizeMessageIdForHeader(
-    inbound.headers.get("message-id"),
-  );
-  if (inReplyTo) {
-    headers.push(`In-Reply-To: ${inReplyTo}`);
-  }
-
-  const multipartBody = [
-    `--${boundary}`,
-    "Content-Type: text/plain; charset=utf-8",
-    "Content-Transfer-Encoding: 8bit",
-    "",
-    bodyText || "Done.",
-    `--${boundary}`,
-    "Content-Type: text/html; charset=utf-8",
-    "Content-Transfer-Encoding: 8bit",
-    "",
-    bodyHtml,
-    `--${boundary}--`,
-    "",
-  ].join("\r\n");
-
-  const raw = `${headers.join("\r\n")}\r\n\r\n${multipartBody}`;
-  await inbound.reply(new EmailMessage(fromAddress, toAddress, raw));
-  return normalizeMessageId(args.messageId);
-}
-
-function outcomeToReplyText(result: ExternalTurnResult): string {
-  if (result.status === "result") return result.reply?.trim() || "Done.";
-  if (result.status === "busy") {
-    return "camelAI is still processing the previous email for this thread. Please try again in a moment.";
-  }
-  if (result.status === "error")
-    return result.error || "I could not process that email right now.";
-  return "I could not process that email right now.";
 }
 
 export async function handleWorkspaceEmailIngress(
@@ -997,9 +676,12 @@ export async function handleWorkspaceEmailIngress(
       subject,
       message: userMessage,
       userId: authorizedSender.userId,
+      messageId: normalizedMessageId,
+      recipientAddress,
     });
 
-    const turnResult = await runExternalMessageTurn(env, {
+    const enqueueResult = await enqueueChannelMessage(env, {
+      channelKind: "email",
       threadId: thread.threadId,
       workspaceId: authorizedSender.workspaceId,
       orgId: authorizedSender.orgId,
@@ -1009,50 +691,11 @@ export async function handleWorkspaceEmailIngress(
       message: userMessage,
     });
 
-    const replyText = outcomeToReplyText(turnResult);
-    const replyDomain = recipientMailbox.domain;
-    const outboundMessageId = createReplyMessageId(
-      thread.threadId,
-      replyDomain,
-    );
-    try {
-      const sentMessageId = await sendReply(message, {
-        fromAddress: recipientAddress,
-        toAddress: senderEmail,
-        replyToAddress: recipientAddress,
-        subject: formatReplySubject(subject, thread.title),
-        body: replyText,
-        messageId: outboundMessageId,
-      });
-
-      if (sentMessageId) {
-        await env.APP_KV.put(
-          getEmailReplyReferenceKey(resolved.workspaceId, sentMessageId),
-          thread.threadId,
-          { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
-        );
-      }
-    } catch (error) {
-      if (!isNonRetriableReplyError(error)) {
-        throw error;
-      }
-
-      const authResults = summarizeAuthResults(message.headers);
-      console.warn("[email-ingress] reply skipped by Cloudflare", {
-        workspaceId: resolved.workspaceId,
-        orgId: resolved.orgId,
-        threadId: thread.threadId,
-        senderEmail,
-        recipientAddress,
-        inboundMessageId: normalizeMessageId(message.headers.get("message-id")),
-        outboundMessageId,
-        referencesCount: extractMessageIdsFromHeaderValue(
-          message.headers.get("references"),
-        ).length,
-        hasInReplyTo: Boolean(message.headers.get("in-reply-to")),
-        authResults,
-        error: getErrorMessage(error),
-      });
+    if (enqueueResult.status !== "accepted") {
+      throw new Error(
+        enqueueResult.error ||
+          `Channel email message was not accepted (${enqueueResult.status})`,
+      );
     }
 
     dedupeHandled = true;

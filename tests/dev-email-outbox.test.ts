@@ -65,7 +65,7 @@ describe('dev-email-outbox', () => {
       textBody: 'hello text',
       htmlBody: '<p>hello html</p>',
       status: 'sent',
-      transport: 'resend',
+      transport: 'cloudflare_email',
     });
 
     expect(id).toBeTruthy();
@@ -75,7 +75,7 @@ describe('dev-email-outbox', () => {
     expect(entry?.subject).toBe('Test subject');
     expect(entry?.to).toBe('jane@example.com');
     expect(entry?.status).toBe('sent');
-    expect(entry?.transport).toBe('resend');
+    expect(entry?.transport).toBe('cloudflare_email');
   });
 
   it('lists newest entries first', async () => {
@@ -91,7 +91,7 @@ describe('dev-email-outbox', () => {
       textBody: 'first text',
       htmlBody: '<p>first html</p>',
       status: 'sent',
-      transport: 'resend',
+      transport: 'cloudflare_email',
     });
     vi.setSystemTime(new Date('2026-02-19T10:00:01.000Z'));
     await recordDevEmailOutboxEntry(env, {
@@ -101,7 +101,7 @@ describe('dev-email-outbox', () => {
       htmlBody: '<p>second html</p>',
       status: 'failed',
       reason: 'smtp rejected',
-      transport: 'resend',
+      transport: 'cloudflare_email',
     });
 
     const list = await listDevEmailOutboxEntries(env, { limit: 10 });

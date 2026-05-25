@@ -239,7 +239,7 @@ describe("InviteMemberDialog", () => {
       skipped: [],
       failed: [
         { email: "ana@example.com", reason: "email_delivery_failed" },
-        { email: "ben@example.com", reason: "RESEND_API_KEY is not configured" },
+        { email: "ben@example.com", reason: "Cloudflare Email Sending binding EMAIL is not configured" },
       ],
     }
 
