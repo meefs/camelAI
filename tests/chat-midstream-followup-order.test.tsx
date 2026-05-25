@@ -539,8 +539,8 @@ describe('Chat mid-stream follow-up ordering', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByTestId('global-loading-dots')).toBeNull();
-      expect(screen.getByTestId('inline-loading-dots')).toBeTruthy();
+      expect(screen.getByLabelText('Agent is working')).toBeTruthy();
+      expect(screen.queryByTestId('inline-loading-dots')).toBeNull();
     });
 
     await user.type(screen.getByLabelText('Prompt'), 'follow-up');
@@ -579,8 +579,8 @@ describe('Chat mid-stream follow-up ordering', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByTestId('global-loading-dots')).toBeNull();
-      expect(screen.getByTestId('inline-loading-dots')).toBeTruthy();
+      expect(screen.getByLabelText('Agent is working')).toBeTruthy();
+      expect(screen.queryByTestId('inline-loading-dots')).toBeNull();
     });
 
     await user.type(screen.getByLabelText('Prompt'), 'follow-up');
@@ -647,8 +647,8 @@ describe('Chat mid-stream follow-up ordering', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByTestId('global-loading-dots')).toBeNull();
-      expect(screen.getByTestId('inline-loading-dots')).toBeTruthy();
+      expect(screen.getByLabelText('Agent is working')).toBeTruthy();
+      expect(screen.queryByTestId('inline-loading-dots')).toBeNull();
     });
 
     await user.type(screen.getByLabelText('Prompt'), 'continue');

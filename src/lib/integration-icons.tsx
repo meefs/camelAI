@@ -1,53 +1,7 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { Settings } from 'lucide-react';
 import { logoRegistry } from '@/lib/integration-logo-registry';
 import { cn } from '@/lib/utils';
-
-function detectDarkMode(): boolean {
-  if (typeof document === 'undefined') return false;
-
-  const root = document.documentElement;
-  if (root.classList.contains('dark')) return true;
-  if (root.classList.contains('light')) return false;
-
-  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
-  }
-
-  return false;
-}
-
-function useDarkMode(): boolean {
-  const [isDark, setIsDark] = useState(() => detectDarkMode());
-
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-
-    const update = () => setIsDark(detectDarkMode());
-    update();
-
-    const observer = new MutationObserver(update);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
-
-    let cleanupMedia: (() => void) | undefined;
-    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-      const media = window.matchMedia('(prefers-color-scheme: dark)');
-      const listener = () => update();
-      media.addEventListener('change', listener);
-      cleanupMedia = () => media.removeEventListener('change', listener);
-    }
-
-    return () => {
-      observer.disconnect();
-      cleanupMedia?.();
-    };
-  }, []);
-
-  return isDark;
-}
 
 interface IntegrationIconProps {
   type: string;
@@ -68,8 +22,6 @@ export function IntegrationIcon({
   className,
   size = 20,
 }: IntegrationIconProps): ReactNode {
-  const isDark = useDarkMode();
-
   const variant = logoRegistry[type];
 
   if (!variant) {
@@ -77,11 +29,28 @@ export function IntegrationIcon({
     return <Settings className={cn('size-5', className)} />;
   }
 
-  // Build the image path
-  const src =
-    variant === 'themed'
-      ? `/logos/${type}_${isDark ? 'dark' : 'light'}.svg`
-      : `/logos/${type}.svg`;
+  if (variant === 'themed') {
+    const style = {
+      width: size,
+      height: size,
+      '--integration-icon-light': `url(/logos/${type}_light.svg)`,
+      '--integration-icon-dark': `url(/logos/${type}_dark.svg)`,
+    } as CSSProperties;
+
+    return (
+      <span
+        role="img"
+        aria-label={type}
+        style={style}
+        className={cn(
+          'inline-block shrink-0 bg-contain bg-center bg-no-repeat [background-image:var(--integration-icon-light)] dark:[background-image:var(--integration-icon-dark)]',
+          className,
+        )}
+      />
+    );
+  }
+
+  const src = `/logos/${type}.svg`;
 
   return (
     <img

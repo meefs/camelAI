@@ -1179,3 +1179,7 @@ export function useChatGroups() {
   }
   return context;
 }
+
+export function useOptionalChatGroups() {
+  return useContext(ChatGroupsContext);
+}

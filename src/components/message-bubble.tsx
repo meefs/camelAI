@@ -39,23 +39,25 @@ import {
   type MessageRenderMode,
 } from '@/lib/turn-utils';
 
-const messageTimeCache = new Map<number, string>();
+const messageTimeCache = new Map<string, string>();
 const EMPTY_ANNOTATED_MENTIONS: AnnotatedMentionRef[] = [];
 
 // Format timestamp to readable time (e.g., "12:25 PM")
-function formatMessageTime(timestamp: number): string {
-  const cached = messageTimeCache.get(timestamp);
+function formatMessageTime(timestamp: number, timeZone?: string): string {
+  const cacheKey = `${timestamp}:${timeZone ?? 'local'}`;
+  const cached = messageTimeCache.get(cacheKey);
   if (cached) return cached;
 
   const formatted = new Date(timestamp).toLocaleTimeString([], {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
+    timeZone,
   });
-  messageTimeCache.set(timestamp, formatted);
+  messageTimeCache.set(cacheKey, formatted);
   if (messageTimeCache.size > 2000) {
     const firstKey = messageTimeCache.keys().next().value;
-    if (typeof firstKey === 'number') {
+    if (typeof firstKey === 'string') {
       messageTimeCache.delete(firstKey);
     }
   }
@@ -580,6 +582,7 @@ interface MessageBubbleProps {
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
   llmProvider?: LlmProvider | null;
+  messageTimeZone?: string;
   threadModel?: LlmModel | null;
 }
 
@@ -616,10 +619,12 @@ function MessageBubbleBase({
   skillSheets,
   mentionSlugMap,
   llmProvider,
+  messageTimeZone,
   threadModel,
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
+  const messageTime = formatMessageTime(message.created_at, messageTimeZone);
 
   if (message.isMeta || message.sourceToolUseID) {
     return null;
@@ -757,7 +762,7 @@ function MessageBubbleBase({
               </span>
             )}
             <span className="text-muted-foreground text-xs mr-1">
-              {formatMessageTime(message.created_at)}
+              {messageTime}
             </span>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -781,8 +786,6 @@ function MessageBubbleBase({
   }
 
   // Assistant message
-  const assistantTimestamp = message.created_at;
-
   return (
     <div className="flex flex-col gap-1">
       {hasContent && (
@@ -807,7 +810,7 @@ function MessageBubbleBase({
           aria-label="Message actions"
         >
           <span className="text-muted-foreground text-xs mr-1">
-            {formatMessageTime(assistantTimestamp)}
+            {messageTime}
           </span>
           {onFork && !isStreaming && (
             <Tooltip>
@@ -870,6 +873,7 @@ export const MessageBubble = memo(MessageBubbleBase, (prev, next) => {
     prev.showActionRow === next.showActionRow &&
     prev.actionCopyContent === next.actionCopyContent &&
     prev.actionHoverClassName === next.actionHoverClassName &&
+    prev.messageTimeZone === next.messageTimeZone &&
     prev.renderMode === next.renderMode &&
     prev.mentionSlugMap === next.mentionSlugMap &&
     prev.llmProvider === next.llmProvider &&
