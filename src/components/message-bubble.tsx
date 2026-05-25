@@ -15,7 +15,7 @@ import { TeammateMessage } from '@/components/tool-call/teammate-message';
 import { TaskNotification } from '@/components/tool-call/task-notification';
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactSummaryCard } from '@/components/compact-summary-card';
-import { memo, useEffect, useState } from 'react';
+import { memo } from 'react';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
@@ -57,16 +57,6 @@ function formatMessageTime(timestamp: number, timeZone?: string): string {
     }
   }
   return formatted;
-}
-
-function useHydratedMessageTime(timestamp: number): string {
-  const [isHydrated, setIsHydrated] = useState(false);
-
-  useEffect(() => {
-    setIsHydrated(true);
-  }, []);
-
-  return formatMessageTime(timestamp, isHydrated ? undefined : 'UTC');
 }
 
 // ── Special message detection ──
@@ -600,6 +590,7 @@ interface MessageBubbleProps {
   mentionSlugMap?: Map<string, Integration>;
   llmProvider?: LlmProvider | null;
   threadProvider?: ChatHarness | null;
+  messageTimeZone?: string;
 }
 
 function getMessageToolUseIds(message: Message): string[] {
@@ -635,10 +626,11 @@ function MessageBubbleBase({
   mentionSlugMap,
   llmProvider,
   threadProvider,
+  messageTimeZone,
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
-  const messageTime = useHydratedMessageTime(message.created_at);
+  const messageTime = formatMessageTime(message.created_at, messageTimeZone);
 
   if (message.isMeta || message.sourceToolUseID) {
     return null;
@@ -885,6 +877,7 @@ export const MessageBubble = memo(MessageBubbleBase, (prev, next) => {
     prev.showActionRow === next.showActionRow &&
     prev.actionCopyContent === next.actionCopyContent &&
     prev.actionHoverClassName === next.actionHoverClassName &&
+    prev.messageTimeZone === next.messageTimeZone &&
     prev.mentionSlugMap === next.mentionSlugMap &&
     messageSkillSheetsEqual(prev.message, prev.skillSheets, next.skillSheets)
   );

@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { ChatHarness, Integration, LlmProvider, Message } from "@/types";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
@@ -90,6 +90,14 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   messagesEndRef,
   mentionSlugMap,
 }: ChatMessagesViewProps) {
+  const [messageTimeZone, setMessageTimeZone] = useState<string | undefined>(
+    "UTC",
+  );
+
+  useEffect(() => {
+    setMessageTimeZone(undefined);
+  }, []);
+
   const messageGroups = useMemo(() => {
     const groups: Array<{
       key: string;
@@ -216,6 +224,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
                   mentionSlugMap={mentionSlugMap}
                   llmProvider={llmProvider}
                   threadProvider={threadProvider}
+                  messageTimeZone={messageTimeZone}
                 />
               </div>
             );
