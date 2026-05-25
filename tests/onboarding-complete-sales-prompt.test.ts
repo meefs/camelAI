@@ -126,7 +126,6 @@ describe('onboarding complete sales prompt flow', () => {
     });
     createThreadMock.mockResolvedValue({
       id: 'thread_123',
-      provider: 'claude',
     });
     generateThreadTitleMock.mockResolvedValue(undefined);
     getThreadsPaginatedMock.mockResolvedValue({ items: [] });

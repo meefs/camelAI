@@ -17,7 +17,6 @@ import type {
   Organization,
   OrganizationExperimentalSettings,
   Workspace,
-  ChatHarness,
   LlmModel,
   OrgModelPickerConfig,
   OnboardingPreferences,
@@ -30,7 +29,6 @@ import { WorkspaceDO } from "./workspace";
 import {
   DEFAULT_LLM_MODEL,
   DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
-  getProviderForModel,
   normalizeLlmModel,
   parseOrganizationExperimentalSettings,
 } from "../../../src/lib/llm-provider-config";
@@ -419,7 +417,6 @@ export interface OrgThread {
   id: string;
   workspace_id: string;
   title: string;
-  provider: "claude" | "codex";
   created_by: string;
   model: LlmModel;
   created_at: number;
@@ -5124,7 +5121,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     createdBy?: string,
     firstUserMessage?: string,
     model?: LlmModel,
-    provider: "claude" | "codex" = "claude",
   ): OrgThread {
     this.ensureThreadSchemaColumns();
     const id = crypto.randomUUID();
@@ -5136,13 +5132,13 @@ export class OrgDO extends DurableObject<DOEnv> {
       ? normalizeThreadPreviewUserMessage(firstUserMessage)
       : null;
     const lastUserMessageAt = lastUserMessage ? now : null;
-    const normalizedModel = normalizeLlmModel(model, provider);
+    const normalizedModel = normalizeLlmModel(model);
     this.sql.exec(
       "INSERT INTO threads (id, workspace_id, title, provider, created_by, model, created_at, updated_at, first_user_message, last_user_message, last_user_message_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       id,
       workspaceId,
       t,
-      provider,
+      "model",
       creator,
       normalizedModel,
       now,
@@ -5159,7 +5155,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       id,
       workspace_id: workspaceId,
       title: t,
-      provider,
       created_by: creator,
       model: normalizedModel,
       created_at: now,
@@ -5298,36 +5293,27 @@ export class OrgDO extends DurableObject<DOEnv> {
     id: string,
     model: LlmModel,
     actorId?: string,
-    provider: "claude" | "codex" = getProviderForModel(model),
   ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
-    const normalizedProvider: "claude" | "codex" =
-      provider === "codex" ? "codex" : "claude";
-    const normalizedModel = normalizeLlmModel(model, normalizedProvider);
-    if (
-      normalizedModel === existing.model &&
-      normalizedProvider === (existing.provider ?? "claude")
-    ) {
+    const normalizedModel = normalizeLlmModel(model);
+    if (normalizedModel === existing.model) {
       return existing;
     }
     const now = Date.now();
     this.sql.exec(
-      "UPDATE threads SET provider = ?, model = ?, updated_at = ? WHERE id = ?",
-      normalizedProvider,
+      "UPDATE threads SET model = ?, updated_at = ? WHERE id = ?",
       normalizedModel,
       now,
       id,
     );
     if (actorId) {
       this.log("thread_model_updated", actorId, id, {
-        provider: normalizedProvider,
         model: normalizedModel,
       });
     }
     const updated: OrgThread = {
       ...existing,
-      provider: normalizedProvider,
       model: normalizedModel,
       updated_at: now,
     };
@@ -5382,7 +5368,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return null;
     const normalizedModel =
       updates.model !== undefined
-        ? normalizeLlmModel(updates.model, existing.provider ?? "claude")
+        ? normalizeLlmModel(updates.model)
         : undefined;
     const persistedModel =
       normalizedModel === existing.model ? normalizedModel : undefined;
@@ -5745,34 +5731,21 @@ export class OrgDO extends DurableObject<DOEnv> {
     return true;
   }
 
-  getActiveThreadIdsForByokChange(targetProviders: ChatHarness[]): string[] {
+  getActiveThreadIdsForByokChange(): string[] {
     this.ensureThreadSchemaColumns();
-    const normalizedProviders = Array.from(
-      new Set(
-        targetProviders.filter(
-          (provider): provider is ChatHarness =>
-            provider === "claude" || provider === "codex",
-        ),
-      ),
-    );
-    if (normalizedProviders.length === 0) {
-      return [];
-    }
 
     const activeSince = Date.now() - 30 * 60 * 1000;
-    const placeholders = normalizedProviders.map(() => "?").join(",");
     return this.sql
       .exec<{ id: string }>(
-        `SELECT id FROM threads WHERE updated_at > ? AND provider IN (${placeholders}) ORDER BY updated_at DESC`,
+        "SELECT id FROM threads WHERE updated_at > ? ORDER BY updated_at DESC",
         activeSince,
-        ...normalizedProviders,
       )
       .toArray()
       .flatMap((row) => (row.id ? [row.id] : []));
   }
 
-  async notifyByokChanged(targetProviders: ChatHarness[]): Promise<number> {
-    const threadIds = this.getActiveThreadIdsForByokChange(targetProviders);
+  async notifyByokChanged(): Promise<number> {
+    const threadIds = this.getActiveThreadIdsForByokChange();
 
     for (let index = 0; index < threadIds.length; index += 50) {
       const batch = threadIds.slice(index, index + 50);

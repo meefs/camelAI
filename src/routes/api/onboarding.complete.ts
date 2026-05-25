@@ -8,7 +8,7 @@ import {
   isConfiguredEnterpriseOrg,
   resolveOrgBillingAccess,
 } from '@/lib/billing.server';
-import type { ChatHarness, LlmModel } from '@/types';
+import type { LlmModel } from '@/types';
 
 type OnboardingAccessChoice = 'byok' | 'existing' | null;
 
@@ -23,12 +23,8 @@ type InitialUserMessageRpc = {
   }): Promise<{ status: 'accepted' | 'busy' | 'error'; error?: string }>;
 };
 
-function getQuestionToolName(provider: ChatHarness): string {
-  return provider === 'codex' ? 'ask_user_question' : 'AskUserQuestion';
-}
-
-function getDefaultOnboardingSystemMessage(provider: ChatHarness): string {
-  const questionToolName = getQuestionToolName(provider);
+function getDefaultOnboardingSystemMessage(): string {
+  const questionToolName = 'ask_user_question';
   return `This user just signed up and landed in their first chat. This is their very
 first interaction with camelAI.
 
@@ -79,9 +75,8 @@ Do not use AskUserQuestion or ask_user_question for onboarding in this case.`;
 
 function getOnboardingSystemMessage(
   salesPrompt: string | null,
-  provider: ChatHarness,
 ): string {
-  return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : getDefaultOnboardingSystemMessage(provider);
+  return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : getDefaultOnboardingSystemMessage();
 }
 
 function buildOnboardingInitialMessage(
@@ -287,10 +282,7 @@ export async function action({ request, context }: Route.ActionArgs) {
           chatDO.generateThreadTitle(context, existingThread.id, workspaceId, salesPrompt)
         );
       }
-      const onboardingSystemMessage = getOnboardingSystemMessage(
-        salesPrompt,
-        existingThread.provider ?? 'claude',
-      );
+      const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
       const onboardingInitialMessage = buildOnboardingInitialMessage(
         onboardingSystemMessage,
         salesPrompt,
@@ -327,10 +319,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         chatDO.generateThreadTitle(context, recoveryThread.id, workspaceId, salesPrompt)
       );
     }
-    const onboardingSystemMessage = getOnboardingSystemMessage(
-      salesPrompt,
-      recoveryThread.provider ?? 'claude',
-    );
+    const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
     const onboardingInitialMessage = buildOnboardingInitialMessage(
       onboardingSystemMessage,
       salesPrompt,
@@ -370,10 +359,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       chatDO.generateThreadTitle(context, thread.id, workspaceId, salesPrompt)
     );
   }
-  const onboardingSystemMessage = getOnboardingSystemMessage(
-    salesPrompt,
-    thread.provider ?? 'claude',
-  );
+  const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
   const onboardingInitialMessage = buildOnboardingInitialMessage(
     onboardingSystemMessage,
     salesPrompt,

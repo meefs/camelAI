@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Copy, Check, GitFork } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration, ChatHarness, LlmProvider } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock, Integration, LlmModel, LlmProvider } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -33,6 +33,11 @@ import {
   stripMentionAnnotationsWithMetadata,
 } from '@/lib/connection-mentions';
 import { cn } from '@/lib/utils';
+import {
+  filterContentForRenderMode,
+  isRedactedThinkingBlock,
+  type MessageRenderMode,
+} from '@/lib/turn-utils';
 
 const messageTimeCache = new Map<string, string>();
 const EMPTY_ANNOTATED_MENTIONS: AnnotatedMentionRef[] = [];
@@ -228,20 +233,6 @@ function safeJsonStringify(value: unknown): string {
   }
 }
 
-function isRedactedThinkingBlock(block: ContentBlock): boolean {
-  if (block.type === 'redacted_thinking') return true;
-  if (block.type !== 'thinking') return false;
-
-  const rawBlock = block as ContentBlock & {
-    redacted?: boolean;
-    thinkingSignature?: string;
-  };
-  return rawBlock.redacted === true
-    || rawBlock.thinkingSignature?.startsWith('openrouter.reasoning:') === true
-    || block.signature?.startsWith('openrouter.reasoning:') === true
-    || block.thinking.trim() === '[Reasoning redacted]';
-}
-
 function normalizeToolResultContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -336,7 +327,7 @@ interface ContentBlockRendererProps {
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
   llmProvider?: LlmProvider | null;
-  threadProvider?: ChatHarness | null;
+  threadModel?: LlmModel | null;
 }
 
 export function ContentBlockRenderer({
@@ -347,7 +338,7 @@ export function ContentBlockRenderer({
   skillSheets,
   mentionSlugMap,
   llmProvider,
-  threadProvider,
+  threadModel,
 }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
@@ -443,7 +434,7 @@ export function ContentBlockRenderer({
       const presentation = getChatApiErrorPresentation(errorPayload, {
         billingSource: block.billingSource,
         llmProvider: blockProvider ?? llmProvider,
-        threadProvider,
+        threadModel,
       });
       items.push({
         kind: 'other',
@@ -586,11 +577,13 @@ interface MessageBubbleProps {
   actionCopyContent?: string;
   /** Optional hover/focus classes supplied by a parent turn group. */
   actionHoverClassName?: string;
+  /** Which subset of a message's content blocks should be rendered. */
+  renderMode?: MessageRenderMode;
   skillSheets?: Map<string, string>;
   mentionSlugMap?: Map<string, Integration>;
   llmProvider?: LlmProvider | null;
-  threadProvider?: ChatHarness | null;
   messageTimeZone?: string;
+  threadModel?: LlmModel | null;
 }
 
 function getMessageToolUseIds(message: Message): string[] {
@@ -622,11 +615,12 @@ function MessageBubbleBase({
   showActionRow = true,
   actionCopyContent,
   actionHoverClassName = "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100",
+  renderMode = "full",
   skillSheets,
   mentionSlugMap,
   llmProvider,
-  threadProvider,
   messageTimeZone,
+  threadModel,
 }: MessageBubbleProps) {
   const { currentWorkspace } = useAuthData();
   const workspaceId = currentWorkspace?.id;
@@ -641,11 +635,13 @@ function MessageBubbleBase({
     return <CompactSummaryCard content={message.content} workspaceId={workspaceId} />;
   }
 
+  const displayContent = filterContentForRenderMode(message.content, renderMode);
+
   // ── Special user-role messages with distinct rendering ──
 
   if (message.role === 'user') {
     // "[Request interrupted by user]" → grey italic "Stopped by User"
-    if (isInterruptMessage(message.content)) {
+    if (isInterruptMessage(displayContent)) {
       return (
         <div className="flex justify-end">
           <span className="text-muted-foreground text-sm italic">Stopped by User</span>
@@ -654,7 +650,7 @@ function MessageBubbleBase({
     }
 
     // Slash commands (e.g. /compact) → monospaced, outside bubble
-    const slashCmd = parseSlashCommand(message.content);
+    const slashCmd = parseSlashCommand(displayContent);
     if (slashCmd) {
       return (
         <div className="flex justify-end">
@@ -664,7 +660,7 @@ function MessageBubbleBase({
     }
 
     // <local-command-stdout> → assistant-side grey italic text
-    const localStdout = parseLocalCommandStdout(message.content);
+    const localStdout = parseLocalCommandStdout(displayContent);
     if (localStdout) {
       return (
         <div className="flex justify-start">
@@ -677,7 +673,7 @@ function MessageBubbleBase({
   // Hide messages that are entirely system messages (no visible content after stripping)
   // For assistant streaming turns, allow an empty-content bubble to render
   // so loading dots stay visible before the first content block arrives.
-  if (!hasVisibleContent(message.content) && !(message.role === 'assistant' && showStreamingIndicator)) {
+  if (!hasVisibleContent(displayContent) && !(message.role === 'assistant' && showStreamingIndicator)) {
     return null;
   }
 
@@ -689,28 +685,28 @@ function MessageBubbleBase({
     "transition-opacity",
     actionHoverClassName,
   );
-  const hasContent = typeof message.content === 'string'
-    ? message.content.length > 0
-    : message.content.length > 0;
+  const hasContent = typeof displayContent === 'string'
+    ? displayContent.length > 0
+    : displayContent.length > 0;
 
   if (message.role === 'user') {
     // Parse author attribution from content and strip prefix for display
     let author: ParsedAuthor | null = null;
-    let displayContent: string | ContentBlock[];
+    let userDisplayContent: string | ContentBlock[];
 
-    if (typeof message.content === 'string') {
-      const parsed = parseMessageAuthor(message.content);
+    if (typeof displayContent === 'string') {
+      const parsed = parseMessageAuthor(displayContent);
       author = parsed.author;
-      displayContent = parsed.content;
+      userDisplayContent = parsed.content;
     } else {
-      const stripped = stripAuthorFromBlocks(message.content);
+      const stripped = stripAuthorFromBlocks(displayContent);
       author = stripped.author;
-      displayContent = stripped.blocks;
+      userDisplayContent = stripped.blocks;
     }
 
-    const uploadInfo = typeof displayContent === 'string'
-      ? parseUploadRefs(displayContent)
-      : { refs: [] as ReturnType<typeof parseUploadRefs>['refs'], cleanContent: displayContent };
+    const uploadInfo = typeof userDisplayContent === 'string'
+      ? parseUploadRefs(userDisplayContent)
+      : { refs: [] as ReturnType<typeof parseUploadRefs>['refs'], cleanContent: userDisplayContent };
 
     const previewRefs = uploadInfo.refs;
     const cleanedContent = uploadInfo.cleanContent;
@@ -748,7 +744,7 @@ function MessageBubbleBase({
                 skillSheets={skillSheets}
                 mentionSlugMap={mentionSlugMap}
                 llmProvider={llmProvider}
-                threadProvider={threadProvider}
+                threadModel={threadModel}
               />
             </CollapsibleUserMessage>
           </div>
@@ -795,14 +791,14 @@ function MessageBubbleBase({
       {hasContent && (
         <div className="max-w-none space-y-4">
           <ContentBlockRenderer
-            content={message.content}
+            content={displayContent}
             messageId={message.id}
             isStreaming={isStreaming}
             workspaceId={workspaceId}
             skillSheets={skillSheets}
             mentionSlugMap={mentionSlugMap}
             llmProvider={llmProvider}
-            threadProvider={threadProvider}
+            threadModel={threadModel}
           />
         </div>
       )}
@@ -840,7 +836,7 @@ function MessageBubbleBase({
                 variant="ghost"
                 size="icon-sm"
                 className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
-                onClick={() => onCopy(message.id, actionCopyContent ?? contentToString(message.content))}
+                onClick={() => onCopy(message.id, actionCopyContent ?? contentToString(displayContent))}
               >
                 {isCopied ? <Check /> : <Copy />}
               </Button>
@@ -878,7 +874,10 @@ export const MessageBubble = memo(MessageBubbleBase, (prev, next) => {
     prev.actionCopyContent === next.actionCopyContent &&
     prev.actionHoverClassName === next.actionHoverClassName &&
     prev.messageTimeZone === next.messageTimeZone &&
+    prev.renderMode === next.renderMode &&
     prev.mentionSlugMap === next.mentionSlugMap &&
+    prev.llmProvider === next.llmProvider &&
+    prev.threadModel === next.threadModel &&
     messageSkillSheetsEqual(prev.message, prev.skillSheets, next.skillSheets)
   );
 });

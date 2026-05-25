@@ -8,13 +8,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getVisibleLlmModelOptions, THREAD_MODEL_LOCK_MESSAGE } from '@/lib/llm-provider-config';
-import type { ChatHarness, LlmModel, OrganizationExperimentalSettings } from '@/types';
+import type { LlmModel, OrganizationExperimentalSettings } from '@/types';
 
 interface Thread {
   id: string;
   title: string;
   created_by: string;
-  provider: ChatHarness;
   model: LlmModel;
   created_at: number;
   updated_at: number;
@@ -49,7 +48,7 @@ export function ThreadEditForm({ thread, orgId, experimentalSettings }: ThreadEd
     }
   }, [fetcher.state, fetcher.data]);
 
-  const modelOptions = getVisibleLlmModelOptions(thread.provider, experimentalSettings, thread.model);
+  const modelOptions = getVisibleLlmModelOptions(experimentalSettings, thread.model);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

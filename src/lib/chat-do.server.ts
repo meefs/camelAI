@@ -5,7 +5,6 @@ import type {
   Message,
   PaginatedResult,
   PaginationParams,
-  ChatHarness,
   LlmProvider,
   LlmModel,
   OrgModelPickerConfig,
@@ -24,8 +23,6 @@ import {
 import {
   getDefaultLlmModel,
   isLlmModelAllowedForNewThread,
-  getDefaultThreadProvider,
-  getProviderForModel,
   isLlmModel,
   normalizeLlmModel,
   replaceLegacyLlmModel,
@@ -67,36 +64,20 @@ export interface RawThreadCreator {
 
 export function normalizeStoredThreadModel(
   rawModel: unknown,
-  rawProvider?: ChatHarness | null,
-): { model: LlmModel; provider: ChatHarness } {
+): { model: LlmModel } {
   const replacement = replaceLegacyLlmModel(rawModel);
-  const isLegacyReplacement = replacement !== rawModel;
-  if (isLegacyReplacement && isLlmModel(replacement)) {
-    return {
-      provider: getProviderForModel(replacement, rawProvider ?? "claude"),
-      model: replacement,
-    };
-  }
-  const provider =
-    rawProvider ??
-    (isLlmModel(replacement) ? getProviderForModel(replacement) : "claude");
   return {
-    provider,
-    model: normalizeLlmModel(rawModel, provider),
+    model: isLlmModel(replacement) ? replacement : normalizeLlmModel(rawModel),
   };
 }
 
 // Helper to convert OrgThread to Thread
 function toThread(orgThread: OrgThread): Thread {
-  const { model, provider } = normalizeStoredThreadModel(
-    orgThread.model,
-    orgThread.provider,
-  );
+  const { model } = normalizeStoredThreadModel(orgThread.model);
   return {
     id: orgThread.id,
     workspace_id: orgThread.workspace_id,
     title: orgThread.title,
-    provider,
     created_by: orgThread.created_by,
     model,
     created_at: orgThread.created_at,
@@ -129,7 +110,6 @@ async function getWorkspaceInfo(
 
 export interface WorkspaceModelPickerState {
   orgId: string;
-  provider: ChatHarness;
   llmProvider: LlmProvider | null;
   experimentalSettings: import("@/types").OrganizationExperimentalSettings;
   allowedThreadModels: LlmModel[];
@@ -189,7 +169,6 @@ function isMissingModelPickerConfigRpcError(error: unknown): boolean {
 export async function getWorkspaceModelPickerState(
   context: AppLoadContext,
   workspaceId: string,
-  preferredProvider?: ChatHarness | null,
 ): Promise<WorkspaceModelPickerState | null> {
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
@@ -207,31 +186,23 @@ export async function getWorkspaceModelPickerState(
     getOrgModelPickerConfigCompat(orgStub, llmProviderConfig?.provider),
     getWorkspaceModelPickerConfigCompat(wsStub),
   ]);
-  const baseProvider =
-    preferredProvider ??
-    getDefaultThreadProvider(llmProviderConfig?.provider, experimentalSettings);
   const effectiveConfig = resolveEffectivePickerConfig(
     orgPickerConfig,
     workspacePickerConfig,
   );
   const visibleCatalog = resolveModelPickerCatalog({
     effectiveConfig,
-    provider: baseProvider,
     experimentalSettings,
     orgProvider: llmProviderConfig?.provider,
   });
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(baseProvider, llmProviderConfig?.provider),
+    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
     visibleCatalog,
   });
-  const provider = defaultModel
-    ? getProviderForModel(defaultModel, baseProvider)
-    : baseProvider;
 
   return {
     orgId: wsInfo.org_id,
-    provider,
     llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     experimentalSettings,
     allowedThreadModels: visibleCatalog.map((entry) => entry.id),
@@ -375,14 +346,12 @@ export async function createThread(
   ) {
     throw new Error("Invalid thread model");
   }
-  const provider = getProviderForModel(selectedModel, pickerState.provider);
   const thread = await orgStub.createThread(
     workspaceId,
     title,
     createdBy,
     firstUserMessage,
     selectedModel,
-    provider,
   );
   return toThread(thread);
 }
@@ -476,11 +445,7 @@ export async function updateThreadModel(
   if (!existing || existing.workspace_id !== workspaceId) return null;
   const llmProviderConfig = await orgStub.getLlmProviderConfig();
   const experimentalSettings = await orgStub.getExperimentalSettings();
-  const pickerState = await getWorkspaceModelPickerState(
-    context,
-    workspaceId,
-    existing.provider ?? "claude",
-  );
+  const pickerState = await getWorkspaceModelPickerState(context, workspaceId);
   if (
     !isLlmModelAllowedForNewThread(
       model,
@@ -491,13 +456,7 @@ export async function updateThreadModel(
   ) {
     throw new Error("Invalid thread model");
   }
-  const provider = getProviderForModel(model, existing.provider ?? "claude");
-  const updated = await orgStub.updateThreadModel(
-    id,
-    model,
-    undefined,
-    provider,
-  );
+  const updated = await orgStub.updateThreadModel(id, model);
   return updated ? toThread(updated) : null;
 }
 

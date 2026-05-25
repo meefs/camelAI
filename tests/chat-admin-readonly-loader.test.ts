@@ -84,7 +84,6 @@ describe('chat loader admin readonly mode', () => {
     });
     getTodoStateMock.mockResolvedValue([]);
     getWorkspaceModelPickerStateMock.mockResolvedValue({
-      provider: 'claude',
       llmProvider: null,
       experimentalSettings: { claude_proxy_models: false },
       allowedThreadModels: ['sonnet'],
@@ -194,7 +193,6 @@ describe('chat loader workspace mismatch handling', () => {
       access: 'full',
     });
     getWorkspaceModelPickerStateMock.mockResolvedValue({
-      provider: 'claude',
       llmProvider: null,
       experimentalSettings: { claude_proxy_models: false },
       allowedThreadModels: ['sonnet'],
@@ -371,7 +369,6 @@ describe('chat loader workspace mismatch handling', () => {
       id: 'thread_123',
       workspace_id: 'ws_active',
       title: 'Workspace Thread',
-      provider: 'claude',
       model: 'opus',
     });
     getWorkspaceModelPickerStateMock.mockRejectedValue(
@@ -406,7 +403,6 @@ describe('chat loader workspace mismatch handling', () => {
             id: 'thread_123',
             workspace_id: 'ws_active',
             title: 'Workspace Thread',
-            provider: 'claude',
             model: 'opus',
             user_message_count: 0,
           }),
@@ -462,7 +458,6 @@ describe('chat loader workspace mismatch handling', () => {
             id: 'thread_123',
             workspace_id: 'ws_active',
             title: 'Workspace Thread',
-            provider: 'claude',
             model: 'opus',
             user_message_count: 0,
           }),
@@ -498,7 +493,6 @@ describe('chat loader workspace mismatch handling', () => {
             id: 'thread_123',
             workspace_id: 'ws_active',
             title: 'Workspace Thread',
-            provider: 'codex',
             model: 'gpt-5.4-mini',
             user_message_count: 0,
           }),
@@ -514,7 +508,6 @@ describe('chat loader workspace mismatch handling', () => {
     } as never);
 
     expect(result.isNewThread).toBe(true);
-    expect(result.threadProvider).toBe('codex');
     expect(result.threadModel).toBe('gpt-5.4-mini');
     expect(result.llmProvider).toBe(null);
     expect(result.allowedThreadModels).toEqual(['gpt-5.4-mini']);

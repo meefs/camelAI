@@ -20,7 +20,6 @@ describe('chat API error classification', () => {
       const presentation = getChatApiErrorPresentation(ANTHROPIC_2B_RATE_LIMIT, {
         billingSource: 'byok',
         llmProvider: provider,
-        threadProvider: provider === 'openai' ? 'codex' : 'claude',
       });
 
       if (presentation.kind !== 'byok_rate_limit') {
@@ -39,7 +38,6 @@ describe('chat API error classification', () => {
     const presentation = getChatApiErrorPresentation(ANTHROPIC_2B_RATE_LIMIT, {
       billingSource: 'byok',
       llmProvider: 'anthropic',
-      threadProvider: 'claude',
     });
 
     expect(presentation.kind).toBe('byok_rate_limit');
@@ -53,7 +51,6 @@ describe('chat API error classification', () => {
     const presentation = getChatApiErrorPresentation(ANTHROPIC_2B_RATE_LIMIT, {
       billingSource: 'hosted',
       llmProvider: 'anthropic',
-      threadProvider: 'claude',
     });
 
     expect(presentation).toEqual({
@@ -65,23 +62,33 @@ describe('chat API error classification', () => {
     expect('providerUrl' in presentation).toBe(false);
   });
 
-  it('falls back to BYOK when the configured provider supports the thread harness', () => {
+  it('falls back to BYOK when a provider is configured', () => {
     const presentation = getChatApiErrorPresentation(ANTHROPIC_2B_RATE_LIMIT, {
       llmProvider: 'anthropic',
-      threadProvider: 'claude',
+      threadModel: 'sonnet',
     });
 
     expect(presentation.kind).toBe('byok_rate_limit');
     expect(presentation.title).toBe('Your Anthropic API key is rate limited');
   });
 
-  it('falls back to hosted when the configured provider does not support the thread harness', () => {
+  it('falls back to hosted when the configured provider cannot serve the thread model', () => {
     const presentation = getChatApiErrorPresentation(ANTHROPIC_2B_RATE_LIMIT, {
       llmProvider: 'openai',
-      threadProvider: 'claude',
+      threadModel: 'sonnet',
     });
 
     expect(presentation.kind).toBe('hosted_rate_limit');
+  });
+
+  it('falls back to BYOK when the configured provider can serve the thread model', () => {
+    const presentation = getChatApiErrorPresentation(ANTHROPIC_2B_RATE_LIMIT, {
+      llmProvider: 'openai',
+      threadModel: 'gpt-5.4',
+    });
+
+    expect(presentation.kind).toBe('byok_rate_limit');
+    expect(presentation.title).toBe('Your OpenAI API key is rate limited');
   });
 
   it('preserves non-rate-limit generic errors', () => {

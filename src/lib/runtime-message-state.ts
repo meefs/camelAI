@@ -1,4 +1,4 @@
-import type { ChatHarness, ContentBlock, Message, ToolResultBlock } from '../types';
+import type { ContentBlock, Message, ToolResultBlock } from '../types';
 import {
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
@@ -7,7 +7,7 @@ import {
   type SDKEvent,
 } from './streaming';
 
-type RuntimeProvider = ChatHarness | 'agentos';
+type RuntimeProvider = 'codex' | 'agentos';
 
 type RuntimeMessage = {
   id: string;
@@ -1242,6 +1242,18 @@ function canonicalizeDynamicToolName(tool: unknown): string {
       return 'DeleteScheduledPrompt';
     case 'run_scheduled_prompt_now':
       return 'RunScheduledPrompt';
+    case 'list_deterministic_automations':
+      return 'ListDeterministicAutomations';
+    case 'validate_deterministic_automation':
+      return 'ValidateDeterministicAutomation';
+    case 'create_deterministic_automation':
+      return 'CreateDeterministicAutomation';
+    case 'update_deterministic_automation':
+      return 'UpdateDeterministicAutomation';
+    case 'delete_deterministic_automation':
+      return 'DeleteDeterministicAutomation';
+    case 'run_deterministic_automation_now':
+      return 'RunDeterministicAutomation';
     case 'list_integrations':
       return 'ListConnections';
     case 'list_integration_types':
@@ -1764,15 +1776,6 @@ export function applyRuntimeEventToMessages(
   event: unknown,
   streamingMessageIds: Record<string, string | null>
 ): Message[] {
-  if (provider === 'claude' && isClaudeSdkEvent(event)) {
-    return applySdkEventToMessages(
-      currentMessages,
-      threadId,
-      event,
-      streamingMessageIds,
-    );
-  }
-
   if (provider === 'codex' && isCodexRuntimeEvent(event)) {
     return applyCodexRuntimeEvent(
       currentMessages,

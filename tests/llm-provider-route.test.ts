@@ -13,4 +13,14 @@ describe('LLM provider API route', () => {
     expect(source).toContain('model: ANTHROPIC_API_KEY_VALIDATION_MODEL');
     expect(source).not.toContain("model: 'claude-sonnet-4-20250514'");
   });
+
+  it('notifies active threads after same-provider BYOK updates', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/routes/api/orgs.$id.llm-provider.ts'),
+      'utf8',
+    );
+
+    expect(source).toContain('orgStub.notifyByokChanged()');
+    expect(source).not.toContain('existing?.provider === provider');
+  });
 });

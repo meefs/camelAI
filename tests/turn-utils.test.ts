@@ -1,0 +1,198 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildFinalOutputMessageView,
+  countTurnSteps,
+  formatTurnDuration,
+  formatTurnDurationForScreenReader,
+  hasFinalOutput,
+} from "@/lib/turn-utils";
+import type { ContentBlock, Message } from "@/types";
+
+function assistantMessage(
+  id: string,
+  content: string | ContentBlock[],
+  createdAt = 1,
+): Message {
+  return {
+    id,
+    thread_id: "thread-1",
+    role: "assistant",
+    content,
+    created_at: createdAt,
+  };
+}
+
+describe("turn utils", () => {
+  describe("countTurnSteps", () => {
+    it("returns 0 for empty turns", () => {
+      expect(countTurnSteps([])).toBe(0);
+    });
+
+    it("counts tool calls", () => {
+      expect(
+        countTurnSteps([
+          assistantMessage("a1", [
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+            { type: "tool_use", id: "tool-2", name: "Write", input: {} },
+          ]),
+        ]),
+      ).toBe(2);
+    });
+
+    it("counts visible thinking but ignores redacted and empty thinking", () => {
+      expect(
+        countTurnSteps([
+          assistantMessage("a1", [
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+            { type: "thinking", thinking: "Checking files" },
+            { type: "thinking", thinking: "" },
+            { type: "redacted_thinking" },
+            {
+              type: "thinking",
+              thinking: "[Reasoning redacted]",
+              redacted: true,
+            } as ContentBlock,
+          ]),
+        ]),
+      ).toBe(2);
+    });
+
+    it("does not count tool results attached to visible tool calls", () => {
+      expect(
+        countTurnSteps([
+          assistantMessage("a1", [
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+            { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+          ]),
+        ]),
+      ).toBe(1);
+    });
+
+    it("counts standalone trace rows across messages", () => {
+      expect(
+        countTurnSteps([
+          assistantMessage("a1", [
+            { type: "tool_result", tool_use_id: "orphan", content: "ok" },
+          ]),
+          assistantMessage("a2", [
+            {
+              type: "teammate_message",
+              teammateId: "alice",
+              content: "Done",
+            },
+            {
+              type: "task_notification",
+              taskId: "task-1",
+              outputFile: "/tmp/report.md",
+              status: "completed",
+              summary: "Finished",
+            },
+          ]),
+        ]),
+      ).toBe(3);
+    });
+  });
+
+  describe("formatTurnDuration", () => {
+    it.each([
+      [0, "0:00"],
+      [14_000, "0:14"],
+      [138_000, "2:18"],
+      [3_600_000, "1:00:00"],
+      [3_725_000, "1:02:05"],
+    ])("formats %i ms as %s", (ms, expected) => {
+      expect(formatTurnDuration(ms)).toBe(expected);
+    });
+  });
+
+  describe("formatTurnDurationForScreenReader", () => {
+    it.each([
+      [0, "0 seconds"],
+      [60_000, "1 minute"],
+      [138_000, "2 minutes 18 seconds"],
+    ])("formats %i ms as %s", (ms, expected) => {
+      expect(formatTurnDurationForScreenReader(ms)).toBe(expected);
+    });
+  });
+
+  describe("final output helpers", () => {
+    it("detects visible text and error output", () => {
+      expect(hasFinalOutput([assistantMessage("a1", [])])).toBe(false);
+      expect(
+        hasFinalOutput([
+          assistantMessage("a1", [{ type: "text", text: "Answer" }]),
+        ]),
+      ).toBe(true);
+      expect(
+        hasFinalOutput([
+          assistantMessage("a1", [
+            {
+              type: "text",
+              text: "<camelai system message>hidden</camelai system message>",
+            },
+          ]),
+        ]),
+      ).toBe(false);
+      expect(
+        hasFinalOutput([
+          assistantMessage("a1", [{ type: "error", error: "Failed" }]),
+        ]),
+      ).toBe(true);
+    });
+
+    it("builds a synthetic final output message from multiple assistant messages", () => {
+      const final = buildFinalOutputMessageView(
+        [
+          assistantMessage("a1", [
+            { type: "text", text: "First" },
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          ], 100),
+          {
+            ...assistantMessage("a2", [
+              { type: "text", text: "Second" },
+              { type: "error", error: "Failed" },
+            ], 200),
+            forkEntryId: "fork-1",
+          },
+        ],
+        "a2",
+      );
+
+      expect(final).toMatchObject({
+        id: "a2",
+        forkEntryId: "fork-1",
+        created_at: 200,
+        content: [
+          { type: "text", text: "First" },
+          { type: "text", text: "Second" },
+          { type: "error", error: "Failed" },
+        ],
+      });
+    });
+
+    it("preserves mention annotations for the message renderer", () => {
+      const annotated =
+        'Check @camel ⟦ref: other "Camel" id=conn_123⟧ please';
+      const final = buildFinalOutputMessageView(
+        [
+          assistantMessage("a1", [
+            { type: "text", text: annotated },
+          ]),
+          assistantMessage(
+            "a2",
+            `${annotated}\n<camelai system message>hidden</camelai system message>`,
+          ),
+        ],
+        "a2",
+      );
+
+      expect(final?.content).toEqual([
+        { type: "text", text: annotated },
+        {
+          type: "text",
+          text: `${annotated}\n<camelai system message>hidden</camelai system message>`,
+        },
+      ]);
+    });
+  });
+});

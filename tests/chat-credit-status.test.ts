@@ -74,23 +74,48 @@ describe('chat credit status', () => {
           available_credits_cents: 0,
         }),
         'anthropic',
-        'claude',
+        'sonnet',
       ),
     ).toBeNull();
-  });
 
-  it('shows hosted credit status for threads not covered by BYOK', () => {
     expect(
       buildBillingCreditStatus(
         makeOverview({
           chargeable_usage_cents: 1000,
           available_credits_cents: 0,
         }),
-        'anthropic',
-        'codex',
+        'openai',
+        'gpt-5.4',
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps hosted credit status for threads not covered by configured BYOK', () => {
+    expect(
+      buildBillingCreditStatus(
+        makeOverview({
+          chargeable_usage_cents: 1000,
+          available_credits_cents: 0,
+        }),
+        'openai',
+        'sonnet',
       ),
     ).toMatchObject({
       isExhausted: true,
+      hasByokProvider: true,
+    });
+
+    expect(
+      buildBillingCreditStatus(
+        makeOverview({
+          chargeable_usage_cents: 820,
+          available_credits_cents: 180,
+        }),
+        'anthropic',
+        'gpt-5.4',
+      ),
+    ).toMatchObject({
+      isLow: true,
       hasByokProvider: true,
     });
   });

@@ -7,7 +7,7 @@ import { getChatApiErrorPresentation } from '@/lib/chat-api-errors';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import type { ChatHarness, LlmProvider } from '@/types';
+import type { LlmProvider } from '@/types';
 
 type PreviewState =
   | 'low'
@@ -59,14 +59,12 @@ function stateToSearch(state: PreviewState): string {
 function errorContextForState(state: PreviewState): {
   rawError: string;
   llmProvider: LlmProvider | null;
-  threadProvider: ChatHarness;
   billingSource?: 'byok' | 'hosted';
 } | null {
   if (state === 'byok-anthropic-429') {
     return {
       rawError: ANTHROPIC_2B_RATE_LIMIT,
       llmProvider: 'anthropic',
-      threadProvider: 'claude',
       billingSource: 'byok',
     };
   }
@@ -74,7 +72,6 @@ function errorContextForState(state: PreviewState): {
     return {
       rawError: ANTHROPIC_2B_RATE_LIMIT,
       llmProvider: 'openrouter',
-      threadProvider: 'claude',
       billingSource: 'byok',
     };
   }
@@ -82,7 +79,6 @@ function errorContextForState(state: PreviewState): {
     return {
       rawError: ANTHROPIC_2B_RATE_LIMIT,
       llmProvider: 'openai',
-      threadProvider: 'codex',
       billingSource: 'byok',
     };
   }
@@ -90,7 +86,6 @@ function errorContextForState(state: PreviewState): {
     return {
       rawError: ANTHROPIC_2B_RATE_LIMIT,
       llmProvider: 'bedrock',
-      threadProvider: 'claude',
       billingSource: 'byok',
     };
   }
@@ -98,7 +93,6 @@ function errorContextForState(state: PreviewState): {
     return {
       rawError: ANTHROPIC_2B_RATE_LIMIT,
       llmProvider: 'openai',
-      threadProvider: 'claude',
       billingSource: 'hosted',
     };
   }
@@ -106,7 +100,6 @@ function errorContextForState(state: PreviewState): {
     return {
       rawError: GENERIC_ERROR,
       llmProvider: null,
-      threadProvider: 'claude',
     };
   }
   return null;
@@ -135,7 +128,6 @@ export default function DevChatCreditStatesRoute() {
     ? getChatApiErrorPresentation(errorContext.rawError, {
         billingSource: errorContext.billingSource,
         llmProvider: errorContext.llmProvider,
-        threadProvider: errorContext.threadProvider,
       })
     : devInitialError
       ? getChatApiErrorPresentation(devInitialError)
@@ -197,7 +189,6 @@ export default function DevChatCreditStatesRoute() {
                   },
                 ]}
                 llmProvider={errorContext.llmProvider}
-                threadProvider={errorContext.threadProvider}
               />
             </div>
           ) : null}

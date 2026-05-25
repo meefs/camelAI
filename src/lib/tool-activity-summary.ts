@@ -89,6 +89,18 @@ function canonicalizeToolSummaryName(name: string): string {
       return 'DeleteScheduledPrompt';
     case 'run_scheduled_prompt_now':
       return 'RunScheduledPrompt';
+    case 'list_deterministic_automations':
+      return 'ListDeterministicAutomations';
+    case 'validate_deterministic_automation':
+      return 'ValidateDeterministicAutomation';
+    case 'create_deterministic_automation':
+      return 'CreateDeterministicAutomation';
+    case 'update_deterministic_automation':
+      return 'UpdateDeterministicAutomation';
+    case 'delete_deterministic_automation':
+      return 'DeleteDeterministicAutomation';
+    case 'run_deterministic_automation_now':
+      return 'RunDeterministicAutomation';
     case 'list_integrations':
     case 'connections_list':
       return 'ListConnections';
@@ -533,6 +545,30 @@ export function getToolSummaryParts(
       if (isRunning) return { action: 'Running scheduled prompt...' };
       if (isError) return { action: 'Could not run scheduled prompt' };
       return { action: 'Ran scheduled prompt' };
+    case 'ListDeterministicAutomations':
+      if (isRunning) return { action: 'Checking automations...' };
+      if (isError) return { action: 'Could not check automations' };
+      return { action: 'Checked automations' };
+    case 'ValidateDeterministicAutomation':
+      if (isRunning) return { action: 'Validating automation...' };
+      if (isError) return { action: 'Could not validate automation' };
+      return { action: 'Validated automation' };
+    case 'CreateDeterministicAutomation':
+      if (isRunning) return { action: 'Creating automation...' };
+      if (isError) return { action: 'Could not create automation' };
+      return { action: 'Created automation' };
+    case 'UpdateDeterministicAutomation':
+      if (isRunning) return { action: 'Updating automation...' };
+      if (isError) return { action: 'Could not update automation' };
+      return { action: 'Updated automation' };
+    case 'DeleteDeterministicAutomation':
+      if (isRunning) return { action: 'Deleting automation...' };
+      if (isError) return { action: 'Could not delete automation' };
+      return { action: 'Deleted automation' };
+    case 'RunDeterministicAutomation':
+      if (isRunning) return { action: 'Starting automation...' };
+      if (isError) return { action: 'Could not start automation' };
+      return { action: 'Started automation' };
     case 'ListConnections':
       if (isRunning) return { action: 'Checking connections...' };
       if (isError) return { action: 'Could not check connections' };

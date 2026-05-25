@@ -393,11 +393,8 @@ export async function adminGetAllThreads(
 function normalizeAdminThreadModel<T extends AdminThreadWithContext>(
   thread: T,
 ): T {
-  const { model, provider } = normalizeStoredThreadModel(
-    thread.model,
-    thread.provider,
-  );
-  return { ...thread, model, provider } as T;
+  const { model } = normalizeStoredThreadModel(thread.model);
+  return { ...thread, model } as T;
 }
 
 function normalizeAdminThreadPage(
@@ -678,7 +675,6 @@ export async function adminGetThreadWithMessages(
   thread: {
     id: string;
     title: string;
-    provider: Thread['provider'];
     model: Thread['model'];
     created_by: string;
     created_at: number;
@@ -703,10 +699,7 @@ export async function adminGetThreadWithMessages(
   if (!thread || thread.workspace_id !== threadContext.workspace_id) {
     return null;
   }
-  const { model, provider } = normalizeStoredThreadModel(
-    thread.model,
-    thread.provider,
-  );
+  const { model } = normalizeStoredThreadModel(thread.model);
 
   const [messages, preview_target] = await Promise.all([
     getThreadMessages(context, threadId, thread.workspace_id, {
@@ -719,7 +712,6 @@ export async function adminGetThreadWithMessages(
     thread: {
       id: thread.id,
       title: thread.title || 'Untitled',
-      provider,
       model,
       created_by: thread.created_by,
       created_at: thread.created_at,
@@ -762,7 +754,6 @@ export async function adminGetWorkspaceDetail(
       id: t.id,
       workspace_id: t.workspace_id,
       title: t.title,
-      provider: t.provider ?? 'claude',
       model: t.model,
       created_by: t.created_by,
       created_at: t.created_at,

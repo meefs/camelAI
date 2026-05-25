@@ -353,7 +353,6 @@ describe("Chat AskUserQuestion composer focus", () => {
         workspaceId="ws-1"
         initialMessages={[]}
         llmProvider="anthropic"
-        threadProvider="claude"
       />,
     );
 

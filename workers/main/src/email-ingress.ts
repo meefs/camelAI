@@ -12,8 +12,6 @@ import {
 } from "../../../src/lib/workspace-email.js";
 import {
   getDefaultLlmModel,
-  getDefaultThreadProvider,
-  getProviderForModel,
 } from "../../../src/lib/llm-provider-config.js";
 import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
 import {
@@ -45,7 +43,7 @@ interface EmailThreadResolution {
 async function resolveDefaultEmailThreadModel(
   env: Env,
   args: { orgId: string; workspaceId: string },
-): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+): Promise<LlmModel> {
   const orgStub = getOrgStub(env, args.orgId);
   const workspaceStub = getWorkspaceStub(env, args.workspaceId);
   const [
@@ -59,32 +57,24 @@ async function resolveDefaultEmailThreadModel(
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(workspaceStub),
   ]);
-  const baseProvider = getDefaultThreadProvider(
-    llmProviderConfig?.provider,
-    experimentalSettings,
-  );
   const effectiveConfig = resolveEffectivePickerConfig(
     orgPickerConfig,
     workspacePickerConfig,
   );
   const visibleCatalog = resolveModelPickerCatalog({
     effectiveConfig,
-    provider: baseProvider,
     experimentalSettings,
     orgProvider: llmProviderConfig?.provider,
   });
   const model = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(baseProvider, llmProviderConfig?.provider),
+    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
     visibleCatalog,
   });
   if (!model) {
     throw new Error("No models are available");
   }
-  return {
-    model,
-    provider: getProviderForModel(model, baseProvider),
-  };
+  return model;
 }
 
 interface ParsedEmailContent {
@@ -761,14 +751,13 @@ async function resolveThreadForEmail(
 
   const orgStub = getOrgStub(env, args.orgId);
   const title = titleFromEmail(args.subject, args.message);
-  const { model, provider } = await resolveDefaultEmailThreadModel(env, args);
+  const model = await resolveDefaultEmailThreadModel(env, args);
   const created = await orgStub.createThread(
     args.workspaceId,
     title,
     args.userId,
     args.message.slice(0, 500),
     model,
-    provider,
   );
 
   return {

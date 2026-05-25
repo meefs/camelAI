@@ -82,7 +82,6 @@ describe('chat fork route', () => {
       title: 'Legacy Opus thread',
       first_user_message: 'Build the prototype',
       model: 'opus',
-      provider: 'claude',
     });
     createThreadMock.mockResolvedValue({
       id: 'thread_fork',
@@ -90,7 +89,6 @@ describe('chat fork route', () => {
       title: 'Fork: Legacy Opus thread',
       first_user_message: 'Build the prototype',
       model: 'opus',
-      provider: 'claude',
     });
     getPiCoreForkMessagesMock.mockResolvedValue({
       success: true,
@@ -148,7 +146,6 @@ describe('chat fork route', () => {
         title: 'Fork: Legacy Opus thread',
         first_user_message: 'Build the prototype',
         model: 'sonnet',
-        provider: 'claude',
       });
 
     const response = await action({

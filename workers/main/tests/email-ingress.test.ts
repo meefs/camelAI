@@ -244,7 +244,6 @@ describe('handleWorkspaceEmailIngress', () => {
       'user-1',
       'Please help',
       'sonnet',
-      'claude',
     );
     expect(runExternalMessageTurnMock).toHaveBeenCalledTimes(1);
   });

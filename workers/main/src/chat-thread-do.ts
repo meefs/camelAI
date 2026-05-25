@@ -43,7 +43,6 @@ import type {
 } from '../../../src/types';
 import { decryptCredentials } from "../../../src/lib/integration-crypto";
 import {
-  DEFAULT_CODEX_MODEL,
   DEFAULT_LLM_MODEL,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
@@ -91,7 +90,15 @@ import { CodeModeWebSearch } from "./code-mode-web-search";
 import { codeModeWorkerModule } from "./code-mode-runner";
 import { CodeModeCustomDomains } from "./code-mode-custom-domains";
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
+import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
+import {
+  editAutomationVirtualFile,
+  listAutomationVirtualFiles,
+  normalizeAutomationVirtualPath,
+  readAutomationVirtualFile,
+  writeAutomationVirtualFile,
+} from "./deterministic-automation-virtual-files";
 import type {
   DynamicIntegrationSchema,
 } from "../../../src/lib/integration-registry";
@@ -203,6 +210,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   USER: DurableObjectNamespace<UserDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
+  DETERMINISTIC_AUTOMATION_WORKFLOWS?: Workflow;
   WORKER_LOGS?: DurableObjectNamespace<WorkerLogsDO>;
   MCP_OBJECT: DurableObjectNamespace;
   APP_KV: KVNamespace;
@@ -243,7 +251,6 @@ export interface ChatContextState {
   threadId: string;
   workspaceId: string;
   orgId: string;
-  provider?: 'claude' | 'codex';
   userId: string | null;
   userName: string | null;
   userEmail: string | null;
@@ -453,7 +460,7 @@ interface CodeModeJavascriptResult {
   text: string;
 }
 
-interface CodeModeToolsProps {
+export interface CodeModeToolsProps {
   orgId: string;
   workspaceId: string;
   threadId?: string;
@@ -809,6 +816,48 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     Type.Object({ prompt_id: Type.String() }),
   ),
   codeModePassthroughTool(
+    "list_deterministic_automations",
+    "List deterministic workflow automations for the current workspace.",
+  ),
+  codeModePassthroughTool(
+    "validate_deterministic_automation",
+    "Validate deterministic automation source without saving it. Arguments: { source }.",
+    Type.Object({ source: Type.String() }),
+  ),
+  codeModePassthroughTool(
+    "create_deterministic_automation",
+    "Create a deterministic workflow automation. Arguments: { name, source, cron_expression, description?, enabled? }.",
+    Type.Object({
+      name: Type.String(),
+      source: Type.String(),
+      cron_expression: Type.String(),
+      description: Type.Optional(Type.String()),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+  ),
+  codeModePassthroughTool(
+    "update_deterministic_automation",
+    "Update a deterministic workflow automation. Arguments: { automation_id, name?, source?, cron_expression?, description?, enabled? }.",
+    Type.Object({
+      automation_id: Type.String(),
+      name: Type.Optional(Type.String()),
+      source: Type.Optional(Type.String()),
+      cron_expression: Type.Optional(Type.String()),
+      description: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+  ),
+  codeModePassthroughTool(
+    "delete_deterministic_automation",
+    "Delete a deterministic workflow automation. Arguments: { automation_id }.",
+    Type.Object({ automation_id: Type.String() }),
+  ),
+  codeModePassthroughTool(
+    "run_deterministic_automation_now",
+    "Start a deterministic workflow automation immediately. Arguments: { automation_id }.",
+    Type.Object({ automation_id: Type.String() }),
+  ),
+  codeModePassthroughTool(
     "list_integrations",
     "List configured integrations for the current workspace. Arguments: { category? }.",
     Type.Object({ category: Type.Optional(Type.String()) }),
@@ -934,6 +983,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     update_scheduled_prompt: (binding, args) => binding.updateScheduledPrompt(args),
     delete_scheduled_prompt: (binding, args) => binding.deleteScheduledPrompt(args),
     run_scheduled_prompt_now: (binding, args) => binding.runScheduledPromptNow(args),
+    list_deterministic_automations: (binding) => binding.listDeterministicAutomations(),
+    validate_deterministic_automation: (binding, args) => binding.validateDeterministicAutomation(args),
+    create_deterministic_automation: (binding, args) => binding.createDeterministicAutomation(args),
+    update_deterministic_automation: (binding, args) => binding.updateDeterministicAutomation(args),
+    delete_deterministic_automation: (binding, args) => binding.deleteDeterministicAutomation(args),
+    run_deterministic_automation_now: (binding, args) => binding.runDeterministicAutomationNow(args),
     list_integrations: (binding, args) => binding.listIntegrations(args),
     list_integration_types: (binding, args) => binding.listIntegrationTypes(args),
     create_integration: (binding, args) => binding.createIntegration(args),
@@ -1089,6 +1144,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       case "read":
         {
           const path = typeof args.path === "string" ? args.path : "";
+          if (normalizeAutomationVirtualPath(path) !== null) {
+            const automationFile = await readAutomationVirtualFile({
+              cronStub: this.cronStub,
+              workspaceId: this.ctx.props.workspaceId,
+              path,
+            });
+            if (automationFile) return automationFile;
+          }
           const skill = readPiBundledSkillFile(path);
           if (skill) {
             return {
@@ -1106,11 +1169,32 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("read", args);
 
       case "write":
+        {
+          const path = typeof args.path === "string" ? args.path : "";
+          const content = typeof args.content === "string" ? args.content : "";
+          if (normalizeAutomationVirtualPath(path) !== null) {
+            const automationFile = await writeAutomationVirtualFile({
+              cronStub: this.cronStub,
+              workspaceId: this.ctx.props.workspaceId,
+              path,
+              content,
+            });
+            if (automationFile) return automationFile;
+          }
+        }
         return this.piContainerTools.callTool("write", args);
 
       case "ls":
         {
           if (typeof args.path === "string") {
+            if (normalizeAutomationVirtualPath(args.path) !== null) {
+              const automationListing = await listAutomationVirtualFiles({
+                cronStub: this.cronStub,
+                workspaceId: this.ctx.props.workspaceId,
+                path: args.path,
+              });
+              if (automationListing) return automationListing;
+            }
             const listing = listPiBundledSkillFiles(args.path);
             if (listing) {
               return {
@@ -1128,6 +1212,28 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return this.piContainerTools.callTool("ls", args);
 
       case "edit":
+        {
+          const path = typeof args.path === "string" ? args.path : "";
+          const edits = Array.isArray(args.edits)
+            ? args.edits.flatMap((entry) => {
+                if (!entry || typeof entry !== "object") return [];
+                const raw = entry as Record<string, unknown>;
+                return [{
+                  oldText: String(raw.oldText ?? raw.old_string ?? ""),
+                  newText: String(raw.newText ?? raw.new_string ?? ""),
+                }];
+              })
+            : [];
+          if (normalizeAutomationVirtualPath(path) !== null) {
+            const automationFile = await editAutomationVirtualFile({
+              cronStub: this.cronStub,
+              workspaceId: this.ctx.props.workspaceId,
+              path,
+              edits,
+            });
+            if (automationFile) return automationFile;
+          }
+        }
         return this.piContainerTools.callTool("edit", args);
 
       case "grep":
@@ -1307,6 +1413,14 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     });
   }
 
+  private get deterministicAutomations(): CodeModeDeterministicAutomations {
+    return new CodeModeDeterministicAutomations({
+      cronStub: this.cronStub,
+      workspaceId: this.ctx.props.workspaceId,
+      userId: this.ctx.props.userId,
+    });
+  }
+
   private async listScheduledPrompts(): Promise<unknown> {
     return this.scheduledPrompts.list();
   }
@@ -1325,6 +1439,30 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async runScheduledPromptNow(args: Record<string, unknown>): Promise<unknown> {
     return this.scheduledPrompts.runNow(args);
+  }
+
+  private async listDeterministicAutomations(): Promise<unknown> {
+    return this.deterministicAutomations.list();
+  }
+
+  private async validateDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.validate(args);
+  }
+
+  private async createDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.create(args);
+  }
+
+  private async updateDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.update(args);
+  }
+
+  private async deleteDeterministicAutomation(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.delete(args);
+  }
+
+  private async runDeterministicAutomationNow(args: Record<string, unknown>): Promise<unknown> {
+    return this.deterministicAutomations.runNow(args);
   }
 
   private get integrations(): CodeModeIntegrations {
@@ -1496,6 +1634,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runningActivityLastText: string | null = null;
   private runningActivityLastSentAt = 0;
   private piTurnStartedAtMs: number = 0;
+  private piAgentStartedAtMs: number = 0;
   private suppressNextPiRecoveryPromptEvent = false;
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
@@ -2303,12 +2442,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.broadcastChat({ type: "title_updated", title, updatedAt });
   }
 
-  async setModel(
-    model: LlmModel,
-    provider?: 'claude' | 'codex',
-    updatedAt?: number,
-  ): Promise<void> {
-    this.broadcastChat({ type: 'thread_model_updated', model, provider, updatedAt });
+  async setModel(model: LlmModel, updatedAt?: number): Promise<void> {
+    this.broadcastChat({ type: 'thread_model_updated', model, updatedAt });
   }
 
   async setTodoState(todos: unknown[]): Promise<void> {
@@ -4993,7 +5128,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       threadId,
       workspaceId,
       orgId,
-      provider: this.chatContext?.provider ?? 'claude',
       userId:
         typeof payload.userId === "string" && payload.userId.trim()
           ? payload.userId.trim()
@@ -5231,9 +5365,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         orgStub.getThread(baseContext.threadId),
         orgStub.getLlmProviderConfig(),
       ]);
-      const provider: NonNullable<ChatContextState["provider"]> =
-        thread?.provider === 'codex' ? 'codex' : 'claude';
-      const context: ChatContextState = { ...baseContext, provider };
+      const context: ChatContextState = { ...baseContext };
       this.chatContext = context;
       this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, context);
       const threadWorkspaceId =
@@ -5242,20 +5374,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           : null;
       const threadModel =
         thread && threadWorkspaceId === context.workspaceId
-          ? normalizeLlmModel(
-              (thread as { model?: unknown }).model,
-              provider,
-              llmProviderRecord?.provider,
-            )
-          : provider === "codex"
-            ? normalizeLlmModel(undefined, "codex", llmProviderRecord?.provider)
-            : DEFAULT_LLM_MODEL;
+          ? normalizeLlmModel((thread as { model?: unknown }).model)
+          : normalizeLlmModel(undefined, llmProviderRecord?.provider);
       const envVars = {
-        CHIRIDION_CLAUDE_MODEL:
-          provider === "claude" ? threadModel : DEFAULT_LLM_MODEL,
-        CHIRIDION_CODEX_MODEL:
-          provider === "codex" ? threadModel : DEFAULT_CODEX_MODEL,
-        CHIRIDION_CHAT_PROVIDER: provider,
+        CHIRIDION_MODEL: threadModel,
+        CHIRIDION_CLAUDE_MODEL: threadModel,
+        CHIRIDION_CODEX_MODEL: threadModel,
       };
       this.trace("ensure_runner_env_built", {
         envVarCount: Object.keys(envVars).length,
@@ -5671,17 +5795,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     envVars: Record<string, string>,
     getModelFn: (provider: never, modelId: never) => Model<any>,
   ): Promise<PiResolvedModelConfig> {
-    const provider = context.provider;
-    if (provider !== "claude" && provider !== "codex") {
-      throw new Error(
-        `Missing Pi provider for thread context ${context.threadId}`,
-      );
-    }
     const modelId =
-      provider === "claude"
-        ? envVars.CHIRIDION_CLAUDE_MODEL || "sonnet"
-        : envVars.CHIRIDION_CODEX_MODEL || "gpt-5.5";
-    const resolved = this.resolvePiModelReference(provider, modelId);
+      envVars.CHIRIDION_MODEL ||
+      envVars.CHIRIDION_CODEX_MODEL ||
+      envVars.CHIRIDION_CLAUDE_MODEL ||
+      DEFAULT_LLM_MODEL;
+    const resolved = this.resolvePiModelReference(modelId);
     const model =
       (getModelFn(
         resolved.provider as never,
@@ -5689,7 +5808,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       ) as Model<any> | null | undefined) ??
       resolvePiModelCatalogFallback(resolved);
     if (!model) {
-      throw new Error(`Unsupported Pi model ${provider}/${modelId}`);
+      throw new Error(`Unsupported Pi model ${modelId}`);
     }
 
     const configured = await this.resolvePiRequestConfig(resolved, context);
@@ -5734,31 +5853,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  private resolvePiModelReference(
-    provider: "claude" | "codex",
-    modelId: string,
-  ): PiResolvedModelReference {
-    const normalizedModelId = this.normalizePiModelId(provider, modelId);
-    if (provider === "claude") {
-      const reference = (resolvedModelId: string): PiResolvedModelReference => ({
-        provider: "anthropic",
-        modelId: resolvedModelId,
-        hostedGatewayProvider: "openrouter",
-        hostedModelId: this.openRouterNitroModel(this.openRouterClaudeModel(resolvedModelId)),
-      });
-      switch (normalizedModelId) {
-        case "haiku":
-          return reference("claude-haiku-4-5-20251001");
-        case "opus-4.7":
-          return reference("claude-opus-4-7");
-        case "opus":
-          return reference("claude-opus-4-6");
-        case "sonnet":
-        default:
-          return reference("claude-sonnet-4-6");
-      }
-    }
-
+  private resolvePiModelReference(modelId: string): PiResolvedModelReference {
+    const normalizedModelId = this.normalizePiModelId(modelId);
+    const claudeReference = (resolvedModelId: string): PiResolvedModelReference => ({
+      provider: "anthropic",
+      modelId: resolvedModelId,
+      hostedGatewayProvider: "openrouter",
+      hostedModelId: this.openRouterNitroModel(this.openRouterClaudeModel(resolvedModelId)),
+    });
     const openRouterReference = (resolvedModelId: string): PiResolvedModelReference => ({
       provider: "openrouter",
       modelId: resolvedModelId,
@@ -5776,6 +5878,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       hostedModelId: this.openRouterNitroModel(resolvedModelId),
     });
     switch (normalizedModelId) {
+      case "haiku":
+        return claudeReference("claude-haiku-4-5-20251001");
+      case "opus-4.7":
+        return claudeReference("claude-opus-4-7");
+      case "opus":
+        return claudeReference("claude-opus-4-6");
+      case "sonnet":
+        return claudeReference("claude-sonnet-4-6");
       case "gpt-5.4-mini":
       case "gpt-5.4":
       case "gpt-5.5":
@@ -5802,12 +5912,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private normalizePiModelId(provider: "claude" | "codex", modelId: string): string {
+  private normalizePiModelId(modelId: string): string {
     const trimmed = modelId.trim();
-    const providerPrefix = `${provider}/`;
-    return trimmed.startsWith(providerPrefix)
-      ? trimmed.slice(providerPrefix.length)
-      : trimmed;
+    return trimmed.replace(/^(claude|codex)\//, "");
   }
 
   private async resolvePiRequestConfig(
@@ -6727,6 +6834,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piActiveItemId = null;
       this.piReasoningItemId = null;
       this.piToolArgs = new Map();
+      this.piAgentStartedAtMs = Date.now();
       this.piTurnStartedAtMs = Date.now();
       this.resetRunningActivityState();
       this.touchPiTurnRecovery("running");
@@ -6966,7 +7074,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           count: droppedInFlight,
         });
       }
-      const completedAt = Date.now();
+      const completedAtMs = Date.now();
+      const turnStartedAtMs =
+        this.piAgentStartedAtMs || this.piTurnStartedAtMs || completedAtMs;
+      const turnDurationMs = Math.max(0, completedAtMs - turnStartedAtMs);
+      this.piAgentStartedAtMs = 0;
       const threadId = this.chatContext?.threadId || "";
       const finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
       const errorMessage = finalText
@@ -6980,20 +7092,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.pushPiRuntimeEvent("turn/completed", {
         threadId,
         ...(forkEntryId ? { forkEntryId } : {}),
+        completedAtMs,
+        turnDurationMs,
       });
       this.pushChatEvent({
         type: "result",
         threadId,
         result: finalText,
         sessionId: threadId,
-        completedAt,
+        completedAt: completedAtMs,
       });
       if (!finalText && errorMessage) {
         this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
       }
       this.setChatIsStreaming(false, {
         markUnread: true,
-        completedAt,
+        completedAt: completedAtMs,
         summarySource,
       });
       this.setActiveTurnUserId(null);

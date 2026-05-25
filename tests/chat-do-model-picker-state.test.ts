@@ -56,7 +56,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     expect(state).toMatchObject({
       orgId: 'org_123',
-      provider: 'claude',
       llmProvider: null,
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
@@ -101,7 +100,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     );
   });
 
-  it('normalizes legacy stored thread models before returning them to React', async () => {
+  it('normalizes legacy stored thread models and ignores legacy providers before returning them to React', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
     };
@@ -110,8 +109,8 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         id: 'thread_123',
         workspace_id: 'ws_123',
         title: 'Legacy Gemini thread',
-        provider: 'codex',
         created_by: 'user_123',
+        provider: 'claude',
         model: 'gemini-3.1-pro-preview',
         created_at: 1,
         updated_at: 2,
@@ -134,6 +133,5 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const thread = await getThread({}, 'thread_123', 'ws_123');
 
     expect(thread?.model).toBe('gemini-3.5-flash');
-    expect(thread?.provider).toBe('codex');
   });
 });

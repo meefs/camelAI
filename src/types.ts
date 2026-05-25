@@ -2,7 +2,6 @@ export interface Thread {
   id: string;
   workspace_id: string;
   title: string;
-  provider: ChatHarness;
   created_by: string;
   model: LlmModel;
   created_at: number;
@@ -48,7 +47,6 @@ export interface ChatGroupThreadSummary {
   id: string;
   title: string;
   model: LlmModel;
-  provider: ChatHarness;
   updated_at: number;
   is_unread?: boolean;
   status: ThreadStatus;
@@ -576,7 +574,6 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 }
 
 // LLM Provider BYOK types
-export type ChatHarness = "claude" | "codex";
 export type LlmProvider = "anthropic" | "bedrock" | "openai" | "openrouter";
 export type LlmModel =
   | "haiku"

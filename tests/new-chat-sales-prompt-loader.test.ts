@@ -68,7 +68,6 @@ describe('new chat loader sales prompt handling', () => {
     });
     getRecentThreadsMock.mockResolvedValue([]);
     getWorkspaceModelPickerStateMock.mockResolvedValue({
-      provider: 'claude',
       llmProvider: null,
       experimentalSettings: { claude_proxy_models: false },
       allowedThreadModels: ['sonnet'],
@@ -168,8 +167,6 @@ describe('new chat loader sales prompt handling', () => {
       request: new Request('https://camelai.dev/chat'),
       context: {},
     } as never);
-
-    expect(result.threadProvider).toBe('codex');
     expect(result.threadModel).toBe('gpt-5.4');
     expect(result.llmProvider).toBe('openai');
     expect(result.allowedThreadModels).toEqual([

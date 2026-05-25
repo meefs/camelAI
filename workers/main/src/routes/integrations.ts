@@ -16,8 +16,6 @@ import {
 } from "../../../../src/lib/integration-crypto.js";
 import {
   getDefaultLlmModel,
-  getDefaultThreadProvider,
-  getProviderForModel,
 } from "../../../../src/lib/llm-provider-config.js";
 import { resolveModelPickerCatalog } from "../../../../src/lib/model-catalog.js";
 import {
@@ -58,7 +56,7 @@ interface ChatThreadConnectionSetupRpc {
 async function resolveDefaultSlackThreadModel(
   env: RouteContext["env"],
   args: { orgId: string; workspaceId: string },
-): Promise<{ model: LlmModel; provider: "claude" | "codex" }> {
+): Promise<LlmModel> {
   const orgStub = getOrgStub(env, args.orgId);
   const workspaceStub = getWorkspaceStub(env, args.workspaceId);
   const [
@@ -72,32 +70,24 @@ async function resolveDefaultSlackThreadModel(
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(workspaceStub),
   ]);
-  const baseProvider = getDefaultThreadProvider(
-    llmProviderConfig?.provider,
-    experimentalSettings,
-  );
   const effectiveConfig = resolveEffectivePickerConfig(
     orgPickerConfig,
     workspacePickerConfig,
   );
   const visibleCatalog = resolveModelPickerCatalog({
     effectiveConfig,
-    provider: baseProvider,
     experimentalSettings,
     orgProvider: llmProviderConfig?.provider,
   });
   const model = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,
-    fallbackModel: getDefaultLlmModel(baseProvider, llmProviderConfig?.provider),
+    fallbackModel: getDefaultLlmModel(llmProviderConfig?.provider),
     visibleCatalog,
   });
   if (!model) {
     throw new Error("No models are available");
   }
-  return {
-    model,
-    provider: getProviderForModel(model, baseProvider),
-  };
+  return model;
 }
 
 interface SlackTeamInstallationRecord {
@@ -934,14 +924,13 @@ async function getOrCreateSlackThreadId(
 
   const orgStub = getOrgStub(env, args.orgId);
   const title = args.initialText.trim().slice(0, 100) || "Slack conversation";
-  const { model, provider } = await resolveDefaultSlackThreadModel(env, args);
+  const model = await resolveDefaultSlackThreadModel(env, args);
   const thread = await orgStub.createThread(
     args.workspaceId,
     title,
     "slack",
     args.initialText.trim().slice(0, 500) || undefined,
     model,
-    provider,
   );
 
   await env.APP_KV.put(mappingKey, thread.id);
