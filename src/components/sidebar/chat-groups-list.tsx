@@ -81,7 +81,7 @@ export function ChatGroupRightSlot({
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs tabular-nums text-muted-foreground group-data-[collapsible=icon]:hidden">
       {status === "running" ? (
-        <span className="text-foreground">
+        <span className="text-muted-foreground">
           <CamelLoader size={16} ariaLabel="Agent is working" />
         </span>
       ) : status === "unread" ? (
@@ -103,7 +103,7 @@ export function ChatGroupRightSlot({
 export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
   if (group.status === "running") {
     return (
-      <span className="hidden text-foreground group-data-[collapsible=icon]:block">
+      <span className="hidden text-muted-foreground group-data-[collapsible=icon]:block">
         <CamelLoader size={16} ariaLabel="Agent is working" />
       </span>
     );
