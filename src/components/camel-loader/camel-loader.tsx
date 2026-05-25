@@ -212,14 +212,6 @@ function normalizeDuration(duration: number): number {
   return Number.isFinite(duration) && duration > 0 ? duration : DEFAULT_DURATION;
 }
 
-if (
-  typeof window !== "undefined" &&
-  typeof window.requestAnimationFrame === "function" &&
-  !prefersReducedMotion()
-) {
-  void loadInterpolators();
-}
-
 /**
  * Animated camelAI loading indicator. Renders an SVG that geometrically morphs
  * through 5 keyframes and loops continuously. Uses `currentColor` for fill, so

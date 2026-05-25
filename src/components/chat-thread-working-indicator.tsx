@@ -20,7 +20,11 @@ export function ChatThreadWorkingIndicator({
 
   return (
     <div className="flex items-center gap-3 py-2 text-muted-foreground">
-      <CamelLoader size={24} ariaLabel="Agent is working" />
+      <CamelLoader
+        size={24}
+        ariaLabel="Agent is working"
+        className="text-foreground"
+      />
       {startedAt !== null && (
         <span className="text-sm tabular-nums">
           {formatRunningElapsed(startedAt, now)}

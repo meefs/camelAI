@@ -81,13 +81,13 @@ export function ChatGroupRightSlot({
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs tabular-nums text-muted-foreground group-data-[collapsible=icon]:hidden">
       {status === "running" ? (
-        <span className="text-muted-foreground">
+        <span className="text-foreground">
           <CamelLoader size={16} ariaLabel="Agent is working" />
         </span>
       ) : status === "unread" ? (
         <span
           aria-label="Awaiting your review"
-          className="size-2 rounded-full bg-amber-500 motion-safe:animate-pip-boing"
+          className="size-2 rounded-full bg-amber-500"
         />
       ) : null}
       <span
@@ -103,7 +103,7 @@ export function ChatGroupRightSlot({
 export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
   if (group.status === "running") {
     return (
-      <span className="hidden text-muted-foreground group-data-[collapsible=icon]:block">
+      <span className="hidden text-foreground group-data-[collapsible=icon]:block">
         <CamelLoader size={16} ariaLabel="Agent is working" />
       </span>
     );
@@ -112,7 +112,7 @@ export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
     return (
       <span
         aria-label="Awaiting your review"
-        className="hidden size-2.5 rounded-full bg-amber-500 motion-safe:animate-pip-boing group-data-[collapsible=icon]:block"
+        className="hidden size-2.5 rounded-full bg-amber-500 group-data-[collapsible=icon]:block"
       />
     );
   }

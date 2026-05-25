@@ -276,7 +276,7 @@ function StatusDot({ status }: { status: "running" | "unread" }) {
   return (
     <span
       aria-label="Awaiting your review"
-      className="size-1.5 shrink-0 rounded-full bg-amber-500 motion-safe:animate-pip-boing"
+      className="size-1.5 shrink-0 rounded-full bg-amber-500"
     />
   );
 }

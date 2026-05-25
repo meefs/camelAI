@@ -97,7 +97,7 @@ export function TabRightSlot({
 }) {
   if (status === "running") {
     return (
-      <span className="text-muted-foreground">
+      <span className="text-foreground">
         <CamelLoader size={16} ariaLabel="Agent is working" />
       </span>
     );
@@ -106,7 +106,7 @@ export function TabRightSlot({
     return (
       <span
         aria-label="Awaiting your review"
-        className="size-2.5 rounded-full bg-amber-500 motion-safe:animate-pip-boing"
+        className="size-2.5 rounded-full bg-amber-500"
       />
     );
   }

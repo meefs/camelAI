@@ -829,9 +829,9 @@ export default function Chat({
 
     return null;
   }, [messages, streamingMessageId]);
-  const activeThreadRunningState = getThreadRunningState(
-    chatGroupsContext?.groups,
-    threadId ?? null,
+  const activeThreadRunningState = useMemo(
+    () => getThreadRunningState(chatGroupsContext?.groups, threadId ?? null),
+    [chatGroupsContext?.groups, threadId],
   );
   const assistantTurnActive =
     loading ||
