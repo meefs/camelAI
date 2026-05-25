@@ -66,4 +66,55 @@ describe("MessageBubble tool continuation", () => {
       ),
     ).toEqual(["true", "true"]);
   });
+
+  it("renders only trace blocks in trace-only mode", () => {
+    const message: Message = {
+      id: "assistant-message",
+      thread_id: "thread-1",
+      role: "assistant",
+      created_at: Date.now(),
+      content: [
+        { type: "tool_use", id: "tool_1", name: "Read", input: {} },
+        { type: "text", text: "Done" },
+      ],
+    };
+
+    render(
+      <MessageBubble
+        message={message}
+        onCopy={vi.fn()}
+        copiedId={null}
+        renderMode="trace-only"
+        showActionRow={false}
+      />,
+    );
+
+    expect(screen.getByTestId("tool-call")).toBeInTheDocument();
+    expect(screen.queryByText("Done")).not.toBeInTheDocument();
+  });
+
+  it("renders only final text and errors in final-text-only mode", () => {
+    const message: Message = {
+      id: "assistant-message",
+      thread_id: "thread-1",
+      role: "assistant",
+      created_at: Date.now(),
+      content: [
+        { type: "tool_use", id: "tool_1", name: "Read", input: {} },
+        { type: "text", text: "Done" },
+      ],
+    };
+
+    render(
+      <MessageBubble
+        message={message}
+        onCopy={vi.fn()}
+        copiedId={null}
+        renderMode="final-text-only"
+      />,
+    );
+
+    expect(screen.queryByTestId("tool-call")).not.toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+  });
 });

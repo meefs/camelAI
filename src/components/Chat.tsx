@@ -205,6 +205,11 @@ interface ChatProps {
   };
 }
 
+type CompletedTurnMetadata = {
+  durationMs: number;
+  completedAtMs: number;
+};
+
 function resolveSelectedThreadModel(args: {
   threadId?: string;
   threadModel?: LlmModel | null;
@@ -532,6 +537,12 @@ export default function Chat({
   const [streamingMessageId, setStreamingMessageIdState] = useState<
     string | null
   >(null);
+  const [completedTurns, setCompletedTurns] = useState<
+    Map<string, CompletedTurnMetadata>
+  >(() => new Map());
+  const [freshlyCompletedTurnId, setFreshlyCompletedTurnId] = useState<
+    string | null
+  >(null);
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
@@ -700,6 +711,9 @@ export default function Chat({
     {},
   );
   const lastCompletedAssistantMessageIdRef = useRef<string | null>(null);
+  const completedTurnsRef = useRef<Map<string, CompletedTurnMetadata>>(
+    new Map(),
+  );
   const pendingMessagesRef = useRef(pendingMessages);
   const sentPendingMessageIdsRef = useRef<Set<string>>(new Set());
   const pendingMessageAcceptanceTimeoutsRef = useRef<
@@ -1051,6 +1065,9 @@ export default function Chat({
     setPendingQuestion(null);
     setContextUsedPercent(null);
     lastCompletedAssistantMessageIdRef.current = null;
+    completedTurnsRef.current = new Map();
+    setCompletedTurns(new Map());
+    setFreshlyCompletedTurnId(null);
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
   }, [threadId]);
@@ -2297,6 +2314,27 @@ export default function Chat({
             return;
           }
           const runtimeEvent = data.event;
+          const isTurnCompleted =
+            runtimeEvent &&
+            typeof runtimeEvent === "object" &&
+            (runtimeEvent as { method?: unknown }).method === "turn/completed";
+          const completedParams: {
+            forkEntryId?: unknown;
+            completedAtMs?: unknown;
+            turnDurationMs?: unknown;
+          } = isTurnCompleted
+            ? ((runtimeEvent as {
+                params?: {
+                  forkEntryId?: unknown;
+                  completedAtMs?: unknown;
+                  turnDurationMs?: unknown;
+                };
+              }).params ?? {})
+            : {};
+          const completingStreamingId = isTurnCompleted
+            ? runtimeStreamingMessageIdsRef.current[id] ??
+              streamingMessageIdRef.current
+            : null;
           setMessagesDeferred((prev) => {
             const next = applyRuntimeEventToMessages(
               prev,
@@ -2311,13 +2349,34 @@ export default function Chat({
             runtimeStreamingMessageIdsRef.current[id] ?? null;
           setStreamingMessageId(nextStreamingId);
 
-          if (
-            runtimeEvent &&
-            typeof runtimeEvent === "object" &&
-            (runtimeEvent as { method?: unknown }).method === "turn/completed"
-          ) {
+          if (isTurnCompleted) {
+            const forkEntryId =
+              typeof completedParams.forkEntryId === "string" &&
+              completedParams.forkEntryId.trim()
+                ? completedParams.forkEntryId.trim()
+                : null;
+            const completedTurnId = forkEntryId || completingStreamingId;
+            const completedAtMs =
+              typeof completedParams.completedAtMs === "number" &&
+              Number.isFinite(completedParams.completedAtMs)
+                ? completedParams.completedAtMs
+                : Date.now();
+            const durationMs =
+              typeof completedParams.turnDurationMs === "number" &&
+              Number.isFinite(completedParams.turnDurationMs)
+                ? Math.max(0, completedParams.turnDurationMs)
+                : 0;
+            if (completedTurnId) {
+              completedTurnsRef.current.set(completedTurnId, {
+                durationMs,
+                completedAtMs,
+              });
+              setCompletedTurns(new Map(completedTurnsRef.current));
+              setFreshlyCompletedTurnId(completedTurnId);
+            }
             flushDeferredMessagesRender();
-            lastCompletedAssistantMessageIdRef.current = nextStreamingId;
+            lastCompletedAssistantMessageIdRef.current =
+              completedTurnId ?? nextStreamingId;
             setStreamingMessageId(null);
             setLoading(false);
             setPendingMessages([]);
@@ -3045,6 +3104,9 @@ export default function Chat({
     !lastUserMessage?.sentDuringStreaming &&
     !error &&
     (isAwaitingAssistant || isLastMessageAssistantLike);
+  const handleFreshlyCompletedTurnAnimationScheduled = useCallback(() => {
+    setFreshlyCompletedTurnId(null);
+  }, []);
 
   // Connect when threadId changes
   useEffect(() => {
@@ -4397,6 +4459,12 @@ type SendOptions = {
             forkingMessageId={forkingMessageId}
             assistantTurnActive={assistantTurnActive}
             activeAssistantMessageId={activeAssistantMessageId}
+            activeTurnActionMessageId={activeAssistantMessageId}
+            completedTurns={completedTurns}
+            freshlyCompletedTurnId={freshlyCompletedTurnId}
+            onFreshlyCompletedTurnAnimationScheduled={
+              handleFreshlyCompletedTurnAnimationScheduled
+            }
             skillSheetsByToolId={skillSheetsByToolId}
             error={error}
             setError={setError}

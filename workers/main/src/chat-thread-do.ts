@@ -1634,6 +1634,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runningActivityLastText: string | null = null;
   private runningActivityLastSentAt = 0;
   private piTurnStartedAtMs: number = 0;
+  private piAgentStartedAtMs: number = 0;
   private suppressNextPiRecoveryPromptEvent = false;
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
@@ -6833,6 +6834,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piActiveItemId = null;
       this.piReasoningItemId = null;
       this.piToolArgs = new Map();
+      this.piAgentStartedAtMs = Date.now();
       this.piTurnStartedAtMs = Date.now();
       this.resetRunningActivityState();
       this.touchPiTurnRecovery("running");
@@ -7072,7 +7074,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           count: droppedInFlight,
         });
       }
-      const completedAt = Date.now();
+      const completedAtMs = Date.now();
+      const turnStartedAtMs =
+        this.piAgentStartedAtMs || this.piTurnStartedAtMs || completedAtMs;
+      const turnDurationMs = Math.max(0, completedAtMs - turnStartedAtMs);
+      this.piAgentStartedAtMs = 0;
       const threadId = this.chatContext?.threadId || "";
       const finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
       const errorMessage = finalText
@@ -7086,20 +7092,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.pushPiRuntimeEvent("turn/completed", {
         threadId,
         ...(forkEntryId ? { forkEntryId } : {}),
+        completedAtMs,
+        turnDurationMs,
       });
       this.pushChatEvent({
         type: "result",
         threadId,
         result: finalText,
         sessionId: threadId,
-        completedAt,
+        completedAt: completedAtMs,
       });
       if (!finalText && errorMessage) {
         this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
       }
       this.setChatIsStreaming(false, {
         markUnread: true,
-        completedAt,
+        completedAt: completedAtMs,
         summarySource,
       });
       this.setActiveTurnUserId(null);
