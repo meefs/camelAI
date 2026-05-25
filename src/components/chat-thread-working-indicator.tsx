@@ -10,20 +10,26 @@ interface ChatThreadWorkingIndicatorProps {
 export function ChatThreadWorkingIndicator({
   startedAt,
 }: ChatThreadWorkingIndicatorProps) {
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState<number | null>(null);
+  const displayNow = now ?? startedAt;
 
   useEffect(() => {
-    if (startedAt === null) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    if (startedAt === null) {
+      setNow(null);
+      return;
+    }
+    const updateNow = () => setNow(Date.now());
+    updateNow();
+    const id = window.setInterval(updateNow, 1000);
     return () => window.clearInterval(id);
   }, [startedAt]);
 
   return (
     <div className="flex items-center gap-3 py-2 text-muted-foreground">
       <CamelLoader size={24} ariaLabel="Agent is working" />
-      {startedAt !== null && (
+      {startedAt !== null && displayNow !== null && (
         <span className="text-sm tabular-nums">
-          {formatRunningElapsed(startedAt, now)}
+          {formatRunningElapsed(startedAt, displayNow)}
         </span>
       )}
     </div>
