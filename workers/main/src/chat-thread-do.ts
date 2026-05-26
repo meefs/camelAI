@@ -7,7 +7,7 @@ import type {
   AgentTool,
   AgentToolResult,
 } from "@mariozechner/pi-agent-core";
-import { setBedrockProviderModule } from "@mariozechner/pi-ai";
+import { isContextOverflow, setBedrockProviderModule } from "@mariozechner/pi-ai";
 import {
   bedrockProviderModule,
   withBedrockModelMetadata,
@@ -3810,6 +3810,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
+  private clearPiCoreCompaction(): void {
+    this.ensurePiCoreTables();
+    this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
+  }
+
   private async handleConnectionSetupResponse(
     response: ConnectionSetupResponse,
   ): Promise<{ accepted: boolean }> {
@@ -5991,10 +5996,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     signal?: AbortSignal,
     force = false,
   ): Promise<AgentMessage[]> {
-    const contextWindow = typeof model.contextWindow === "number" && model.contextWindow > 0
-      ? model.contextWindow
-      : 128_000;
-    const reserveTokens = this.piCompactionReserveTokens(contextWindow);
+    const contextWindow = this.piModelContextWindow(model);
+    const reserveTokens = this.piCompactionReserveTokens(model);
     const keepRecentTokens = 20_000;
     const tokens = this.estimatePiCompactionTokens(messages);
     if (!force && tokens < contextWindow - reserveTokens) {
@@ -6036,8 +6039,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private piCompactionReserveTokens(contextWindow: number): number {
-    return Math.max(16_384, Math.ceil(contextWindow * 0.1));
+  private piModelContextWindow(model: Model<any> | null | undefined): number {
+    return typeof model?.contextWindow === "number" && model.contextWindow > 0
+      ? model.contextWindow
+      : 128_000;
+  }
+
+  private piEffectiveMaxOutputTokens(model: Model<any> | null | undefined): number {
+    const maxTokens = Math.floor(Number(model?.maxTokens ?? 0));
+    return Number.isFinite(maxTokens) && maxTokens > 0
+      ? Math.min(maxTokens, 32_000)
+      : 0;
+  }
+
+  private piCompactionReserveTokens(model: Model<any> | null | undefined): number {
+    const contextWindow = this.piModelContextWindow(model);
+    const outputReserveTokens = this.piEffectiveMaxOutputTokens(model);
+    return Math.max(16_384, Math.ceil(contextWindow * 0.1), outputReserveTokens);
   }
 
   private estimatePiCompactionTokens(messages: AgentMessage[]): number {
@@ -6045,17 +6063,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private piAssistantContextTokens(message: AgentMessage): number | null {
-    if (message.role !== "assistant") return null;
-    const usage = (message as AgentMessage & {
+    const record = message as unknown as {
+      role?: unknown;
       usage?: {
-        input?: number;
-        output?: number;
-        cacheRead?: number;
-        cacheWrite?: number;
-        totalTokens?: number;
+        input?: unknown;
+        output?: unknown;
+        cacheRead?: unknown;
+        cacheWrite?: unknown;
+        totalTokens?: unknown;
       };
-    }).usage;
-    if (!usage) return null;
+    };
+    if (record.role !== "assistant") return null;
+    const usage = record.usage;
+    if (!usage || typeof usage !== "object") return null;
     const totalTokens = Number(usage.totalTokens);
     if (Number.isFinite(totalTokens) && totalTokens > 0) {
       return Math.floor(totalTokens);
@@ -6072,12 +6092,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     message: AgentMessage,
     model: Model<any> | null | undefined,
   ): boolean {
+    const contextWindow = this.piModelContextWindow(model);
+    if (this.isPiContextOverflowMessage(message, contextWindow)) return true;
     const contextTokens = this.piAssistantContextTokens(message);
     if (contextTokens === null) return false;
-    const contextWindow = typeof model?.contextWindow === "number" && model.contextWindow > 0
-      ? model.contextWindow
-      : 128_000;
-    return contextTokens >= contextWindow - this.piCompactionReserveTokens(contextWindow);
+    return contextTokens >= contextWindow - this.piCompactionReserveTokens(model);
+  }
+
+  private isPiContextOverflowMessage(message: AgentMessage, contextWindow: number): boolean {
+    const record = message as unknown as {
+      role?: unknown;
+      stopReason?: unknown;
+      errorMessage?: unknown;
+      usage?: unknown;
+      content?: unknown;
+      timestamp?: unknown;
+    };
+    if (record.role !== "assistant") return false;
+    return isContextOverflow(record as Parameters<typeof isContextOverflow>[0], contextWindow);
   }
 
   private maybeSchedulePiPostTurnCompaction(messages: AgentMessage[]): void {
@@ -6098,16 +6130,29 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
+  private async loadPiCompleteSimple(): Promise<typeof import("@mariozechner/pi-ai").completeSimple> {
+    const { completeSimple } = await import("@mariozechner/pi-ai");
+    return completeSimple;
+  }
+
   private async compactPiContextAfterTurn(triggerMessage: AgentMessage): Promise<void> {
     const resolver = this.piModelResolver;
     const session = this.piSession;
-    if (!resolver || !session || !this.shouldCompactPiAfterAssistantUsage(triggerMessage, session.state.model)) {
+    if (
+      !resolver ||
+      !session ||
+      session.state.isStreaming ||
+      !this.shouldCompactPiAfterAssistantUsage(triggerMessage, session.state.model)
+    ) {
       return;
     }
 
-    const { completeSimple } = await import("@mariozechner/pi-ai");
+    const completeSimple = await this.loadPiCompleteSimple();
     const current = await resolver();
-    if (!this.shouldCompactPiAfterAssistantUsage(triggerMessage, current.model)) {
+    if (
+      session.state.isStreaming ||
+      !this.shouldCompactPiAfterAssistantUsage(triggerMessage, current.model)
+    ) {
       return;
     }
 
@@ -6120,26 +6165,100 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       undefined,
       true,
     );
-    if (compacted !== before) {
-      session.state.messages = compacted;
-      this.piMainBaselineIndex = compacted.length;
-      this.recordChatThreadObservabilityEvent("pi_post_turn_compacted", {
-        operation: "post_turn_compaction",
-        status: "ok",
-        count: before.length,
-        size: compacted.length,
-        provider: current.usageProvider || current.provider,
-        model: current.model.id || current.modelId,
-      });
+    if (compacted === before || session.state.isStreaming || session.state.messages !== before) {
+      return;
     }
+
+    session.state.messages = compacted;
+    this.replacePiCoreMessages(compacted);
+    this.clearPiCoreCompaction();
+    this.piMainBaselineIndex = compacted.length;
+    this.recordChatThreadObservabilityEvent("pi_post_turn_compacted", {
+      operation: "post_turn_compaction",
+      status: "ok",
+      count: before.length,
+      size: compacted.length,
+      provider: current.usageProvider || current.provider,
+      model: current.model.id || current.modelId,
+    });
   }
 
   private estimatePiContextTokens(messages: AgentMessage[]): number {
-    let chars = 0;
-    for (const message of messages) {
-      chars += JSON.stringify(message).length;
+    return messages.reduce(
+      (sum, message) => sum + this.estimatePiMessageTokens(message),
+      0,
+    );
+  }
+
+  private estimatePiMessageTokens(message: AgentMessage): number {
+    const record = message as unknown as { role?: unknown; content?: unknown };
+    let text = "";
+    if (record.role === "user") {
+      text = this.stringifyPiUserContentForCompaction(record.content);
+    } else if (record.role === "assistant") {
+      text = this.stringifyPiAssistantContentForCompaction(record.content);
+    } else if (record.role === "toolResult") {
+      text = this.stringifyPiToolResultContentForCompaction(record.content);
+    } else {
+      try {
+        text = JSON.stringify(message);
+      } catch {
+        text = String(message);
+      }
     }
-    return Math.ceil(chars / 4);
+    return Math.ceil(text.length / 4);
+  }
+
+  private stringifyPiUserContentForCompaction(content: unknown): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const record = part as { type?: unknown; text?: unknown; mimeType?: unknown };
+        if (record.type === "text") return typeof record.text === "string" ? record.text : "";
+        if (record.type === "image") return `[image:${String(record.mimeType || "unknown")}]`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  private stringifyPiAssistantContentForCompaction(content: unknown): string {
+    if (!Array.isArray(content)) return typeof content === "string" ? content : "";
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const record = part as {
+          type?: unknown;
+          text?: unknown;
+          thinking?: unknown;
+          name?: unknown;
+          arguments?: unknown;
+        };
+        if (record.type === "text") return typeof record.text === "string" ? record.text : "";
+        if (record.type === "thinking") return typeof record.thinking === "string" ? record.thinking : "";
+        if (record.type === "toolCall") {
+          return `Tool call: ${String(record.name || "unknown")} ${JSON.stringify(record.arguments ?? {})}`;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  private stringifyPiToolResultContentForCompaction(content: unknown): string {
+    if (!Array.isArray(content)) return typeof content === "string" ? content : "";
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const record = part as { type?: unknown; text?: unknown; mimeType?: unknown };
+        if (record.type === "text") return typeof record.text === "string" ? record.text : "";
+        if (record.type === "image") return `[image:${String(record.mimeType || "unknown")}]`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
   }
 
   private findPiCompactionCutIndex(messages: AgentMessage[], keepRecentTokens: number): number {
@@ -6167,6 +6286,77 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     signal?: AbortSignal,
     previousSummary?: string,
   ): Promise<string> {
+    const summaryMaxTokens = this.piSummaryMaxTokens(model);
+    const inputTokenBudget = this.piSummaryInputTokenBudget(model, summaryMaxTokens);
+    const chunks = this.chunkPiMessagesForSummary(messages, inputTokenBudget);
+    if (chunks.length === 0) {
+      throw new Error("Nothing to compact");
+    }
+
+    let summary: string | undefined = previousSummary;
+    for (const chunk of chunks) {
+      summary = await this.summarizePiMessageChunk(
+        chunk,
+        model,
+        apiKey,
+        completeSimple,
+        summaryMaxTokens,
+        inputTokenBudget,
+        signal,
+        summary,
+      );
+    }
+    return summary ?? "";
+  }
+
+  private piSummaryMaxTokens(model: Model<any>): number {
+    const contextWindow = this.piModelContextWindow(model);
+    const reserveTokens = this.piCompactionReserveTokens(model);
+    const modelOutputTokens = this.piEffectiveMaxOutputTokens(model) || reserveTokens;
+    return Math.max(
+      512,
+      Math.min(
+        Math.floor(reserveTokens * 0.8),
+        modelOutputTokens,
+        Math.max(512, Math.floor(contextWindow * 0.25)),
+      ),
+    );
+  }
+
+  private piSummaryInputTokenBudget(model: Model<any>, summaryMaxTokens: number): number {
+    const contextWindow = this.piModelContextWindow(model);
+    const budget = Math.floor((contextWindow - summaryMaxTokens - 2048) * 0.85);
+    return Math.max(2048, budget);
+  }
+
+  private chunkPiMessagesForSummary(messages: AgentMessage[], inputTokenBudget: number): AgentMessage[][] {
+    const chunks: AgentMessage[][] = [];
+    let chunk: AgentMessage[] = [];
+    let chunkTokens = 0;
+    for (const message of messages) {
+      const messageTokens = Math.max(1, this.estimatePiMessageTokens(message));
+      if (chunk.length > 0 && chunkTokens + messageTokens > inputTokenBudget) {
+        chunks.push(chunk);
+        chunk = [];
+        chunkTokens = 0;
+      }
+      chunk.push(message);
+      chunkTokens += messageTokens;
+    }
+    if (chunk.length > 0) chunks.push(chunk);
+    return chunks;
+  }
+
+  private async summarizePiMessageChunk(
+    messages: AgentMessage[],
+    model: Model<any>,
+    apiKey: string,
+    completeSimple: typeof import("@mariozechner/pi-ai").completeSimple,
+    summaryMaxTokens: number,
+    inputTokenBudget: number,
+    signal?: AbortSignal,
+    previousSummary?: string,
+  ): Promise<string> {
     const serialized = messages
       .map((message) => this.serializePiMessageForSummary(message))
       .filter(Boolean)
@@ -6174,7 +6364,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const previous = previousSummary
       ? `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`
       : "";
-    const prompt = `${previous}<conversation>\n${serialized}\n</conversation>\n\nSummarize this coding-agent conversation for future continuation. Preserve exact file paths, commands, tool results that changed decisions, completed work, current goal, constraints, and next steps. Do not answer the conversation.`;
+    const maxConversationCharacters = Math.max(
+      4000,
+      (inputTokenBudget * 4) - previous.length - 2000,
+    );
+    const boundedSerialized = serialized.length > maxConversationCharacters
+      ? `${serialized.slice(0, maxConversationCharacters)}\n\n[...truncated oversized compaction chunk...]`
+      : serialized;
+    const prompt = `${previous}<conversation>\n${boundedSerialized}\n</conversation>\n\nSummarize this coding-agent conversation for future continuation. Preserve exact file paths, commands, tool results that changed decisions, completed work, current goal, constraints, and next steps. Do not answer the conversation.`;
     const summaryContext = {
       systemPrompt: "You produce compact continuation summaries for coding-agent conversations.",
       messages: [{ role: "user" as const, content: prompt, timestamp: Date.now() }],
@@ -6182,7 +6379,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const summaryOptions = {
       apiKey,
       signal,
-      maxTokens: 4096,
+      maxTokens: summaryMaxTokens,
+      ...(model.reasoning ? { reasoning: "high" as const } : {}),
     } as Parameters<typeof completeSimple>[2];
     const response =
       model.api === "bedrock-converse-stream"
@@ -6198,6 +6396,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             summaryContext,
             summaryOptions,
           );
+    if ((response as { stopReason?: unknown }).stopReason === "error") {
+      const errorMessage = typeof (response as { errorMessage?: unknown }).errorMessage === "string"
+        ? (response as { errorMessage: string }).errorMessage
+        : "Compaction summary generation failed";
+      throw new Error(errorMessage);
+    }
+    if ((response as { stopReason?: unknown }).stopReason === "aborted") {
+      throw new Error("Compaction summary generation was aborted");
+    }
     const text = response.content
       .filter((part): part is { type: "text"; text: string } => part.type === "text")
       .map((part) => part.text)

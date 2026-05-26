@@ -1,10 +1,8 @@
 package app
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,44 +19,39 @@ func readHostPiSessionMessages(sessionRoot, threadID string) ([]parsedChatMessag
 		return nil, fmt.Errorf("invalid thread id")
 	}
 
-	sessionDir := filepath.Join(sessionRoot, threadID)
-	entries, err := os.ReadDir(sessionDir)
+	files, err := piSessionJSONLFiles(filepath.Join(sessionRoot, threadID))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 
-	files := make([]fs.DirEntry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		files = append(files, entry)
-	}
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Name() < files[j].Name()
-	})
-
-	messages := make([]parsedChatMessage, 0)
+	messageEntries := make([]hostPiSessionMessageEntry, 0)
 	seen := make(map[string]bool)
-	for _, entry := range files {
-		content, err := os.ReadFile(filepath.Join(sessionDir, entry.Name()))
+	var latestCompaction *hostPiSessionCompactionEntry
+	for _, file := range files {
+		contentBytes, err := os.ReadFile(file)
 		if err != nil {
 			return nil, err
 		}
-		for _, message := range parsePiJSONLMessages(string(content), threadID) {
+		content := string(contentBytes)
+		for _, compaction := range parsePiJSONLCompactions(content) {
+			current := compaction
+			latestCompaction = &current
+		}
+
+		for _, message := range parsePiJSONLMessages(content, threadID) {
 			if message.ID != "" {
 				if seen[message.ID] {
 					continue
 				}
 				seen[message.ID] = true
 			}
-			messages = append(messages, message)
+			messageEntries = append(messageEntries, hostPiSessionMessageEntry{
+				ID:      message.ID,
+				Message: message,
+			})
 		}
 	}
-	return messages, nil
+	return compactHostPiSessionMessages(messageEntries, latestCompaction, threadID), nil
 }
 
 func piSessionJSONLFiles(sessionDir string) ([]string, error) {
@@ -80,41 +73,91 @@ func piSessionJSONLFiles(sessionDir string) ([]string, error) {
 	return files, nil
 }
 
-func readPiSessionJSONLFile(path string) (map[string]any, []map[string]any, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer file.Close()
+type hostPiSessionMessageEntry struct {
+	ID      string
+	Message parsedChatMessage
+}
 
-	var session map[string]any
-	entries := make([]map[string]any, 0)
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+type hostPiSessionCompactionEntry struct {
+	Summary          string
+	FirstKeptEntryID string
+	Timestamp        int64
+}
+
+func parsePiJSONLCompactions(fileContent string) []hostPiSessionCompactionEntry {
+	lines := strings.Split(fileContent, "\n")
+	compactions := make([]hostPiSessionCompactionEntry, 0)
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
 		}
 		var entry map[string]any
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			return nil, nil, err
-		}
-		switch firstString(entry, "type") {
-		case "session":
-			if session == nil {
-				session = entry
-			}
-		case "label":
 			continue
-		default:
-			entries = append(entries, entry)
+		}
+		if firstString(entry, "type") != "compaction" {
+			continue
+		}
+		summary := strings.TrimSpace(firstString(entry, "summary"))
+		firstKeptEntryID := strings.TrimSpace(firstString(entry, "firstKeptEntryId", "first_kept_entry_id"))
+		if summary == "" || firstKeptEntryID == "" {
+			continue
+		}
+		compactions = append(compactions, hostPiSessionCompactionEntry{
+			Summary:          summary,
+			FirstKeptEntryID: firstKeptEntryID,
+			Timestamp:        piCreatedAt(entry, map[string]any{}),
+		})
+	}
+	return compactions
+}
+
+func compactHostPiSessionMessages(
+	entries []hostPiSessionMessageEntry,
+	compaction *hostPiSessionCompactionEntry,
+	threadID string,
+) []parsedChatMessage {
+	if len(entries) == 0 {
+		return []parsedChatMessage{}
+	}
+
+	startIndex := 0
+	if compaction != nil && compaction.Summary != "" && compaction.FirstKeptEntryID != "" {
+		found := false
+		for index, entry := range entries {
+			if entry.ID == compaction.FirstKeptEntryID {
+				startIndex = index
+				found = true
+				break
+			}
+		}
+		if found {
+			timestamp := compaction.Timestamp
+			if timestamp <= 0 {
+				timestamp = nowMillis()
+			}
+			messages := make([]parsedChatMessage, 0, len(entries)-startIndex+1)
+			messages = append(messages, parsedChatMessage{
+				ID:               "pi_compaction_summary",
+				ThreadID:         threadID,
+				Role:             "user",
+				Content:          []any{map[string]any{"type": "text", "text": fmt.Sprintf("[Context Summary]\n\n%s", compaction.Summary)}},
+				CreatedAt:        timestamp,
+				IsCompactSummary: true,
+			})
+			for _, entry := range entries[startIndex:] {
+				messages = append(messages, entry.Message)
+			}
+			return messages
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+
+	messages := make([]parsedChatMessage, 0, len(entries))
+	for _, entry := range entries {
+		messages = append(messages, entry.Message)
 	}
-	return session, entries, nil
+	return messages
 }
 
 func parsePiJSONLMessages(fileContent string, threadID string) []parsedChatMessage {

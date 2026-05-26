@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -166,5 +167,76 @@ func TestReadHostPiSessionMessagesCombinesJSONLFiles(t *testing.T) {
 	}
 	if messages[0].ID != "u1" || messages[1].ID != "u2" {
 		t.Fatalf("messages not read in filename order: %#v", messages)
+	}
+}
+
+func TestReadHostPiSessionMessagesAppliesLatestCompaction(t *testing.T) {
+	root := t.TempDir()
+	threadID := "thread-1"
+	sessionDir := filepath.Join(root, threadID)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Join([]string{
+		`{"type":"message","id":"u1","timestamp":"2026-01-02T03:04:05.000Z","message":{"role":"user","content":[{"type":"text","text":"old"}]}}`,
+		`{"type":"message","id":"u2","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"user","content":[{"type":"text","text":"kept"}]}}`,
+		`{"type":"message","id":"a1","timestamp":"2026-01-02T03:04:07.000Z","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}`,
+		`{"type":"compaction","timestamp":"2026-01-02T03:04:08.000Z","summary":"old summary","firstKeptEntryId":"u2"}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(sessionDir, "2026-01-02T03-04-05Z_a.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	messages, err := readHostPiSessionMessages(root, threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected summary plus kept tail, got %d messages: %#v", len(messages), messages)
+	}
+	if !messages[0].IsCompactSummary || messages[0].Role != "user" {
+		t.Fatalf("expected synthetic compaction summary user message, got %#v", messages[0])
+	}
+	blocks, ok := asSlice(messages[0].Content)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("unexpected summary content: %#v", messages[0].Content)
+	}
+	block, _ := asMap(blocks[0])
+	if text := firstString(block, "text"); !strings.Contains(text, "[Context Summary]\n\nold summary") {
+		t.Fatalf("unexpected summary text: %q", text)
+	}
+	if messages[1].ID != "u2" || messages[2].ID != "a1" {
+		t.Fatalf("expected kept tail to start at u2, got %#v", messages)
+	}
+}
+
+func TestReadHostPiSessionMessagesSkipsMalformedJSONLLines(t *testing.T) {
+	root := t.TempDir()
+	threadID := "thread-1"
+	sessionDir := filepath.Join(root, threadID)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Join([]string{
+		`{"type":"message","id":"u1","timestamp":"2026-01-02T03:04:05.000Z","message":{"role":"user","content":[{"type":"text","text":"old"}]}}`,
+		`{"type":"compaction","timestamp":"2026-01-02T03:04:06.000Z","summary":"old summary","firstKeptEntryId":"u2"}`,
+		`{"type":"message","id":"broken","timestamp":"2026-01-02T03:04:06.500Z","message":`,
+		`{"type":"message","id":"u2","timestamp":"2026-01-02T03:04:07.000Z","message":{"role":"user","content":[{"type":"text","text":"kept"}]}}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(sessionDir, "2026-01-02T03-04-05Z_a.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	messages, err := readHostPiSessionMessages(root, threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected summary plus kept message, got %d messages: %#v", len(messages), messages)
+	}
+	if !messages[0].IsCompactSummary || messages[1].ID != "u2" {
+		t.Fatalf("malformed line should be skipped without losing compaction: %#v", messages)
 	}
 }

@@ -877,11 +877,15 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.piSession = {
       state: {
+        isStreaming: false,
         model: { contextWindow: 1_000_000 },
         messages: beforeMessages,
       },
     };
+    fake.loadPiCompleteSimple = vi.fn(async () => vi.fn());
     fake.compactPiContext = vi.fn(async () => compactedMessages);
+    fake.replacePiCoreMessages = vi.fn();
+    fake.clearPiCoreCompaction = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.piMainBaselineIndex = beforeMessages.length;
 
@@ -891,6 +895,8 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
 
     expect(fake.piSession.state.messages).toBe(compactedMessages);
+    expect(fake.replacePiCoreMessages).toHaveBeenCalledWith(compactedMessages);
+    expect(fake.clearPiCoreCompaction).toHaveBeenCalled();
     expect(fake.piMainBaselineIndex).toBe(compactedMessages.length);
     expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
       'pi_post_turn_compacted',
@@ -899,6 +905,279 @@ describe('ChatThreadDO Codex turn handling', () => {
         size: compactedMessages.length,
       }),
     );
+  });
+
+  it('uses Pi effective output token cap as reserve for post-turn compaction triggers', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = { waitUntil: vi.fn() };
+    fake.piSession = {
+      state: {
+        model: { id: 'gpt-test', contextWindow: 128_000, maxTokens: 40_000 },
+      },
+    };
+    fake.compactPiContextAfterTurn = vi.fn(async () => undefined);
+
+    ChatThreadDO.prototype['maybeSchedulePiPostTurnCompaction'].call(fake, [
+      { role: 'user', content: 'request', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'answer' }],
+        usage: { totalTokens: 98_000 },
+        timestamp: 2,
+      },
+    ]);
+
+    expect(fake.compactPiContextAfterTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'assistant' }),
+    );
+    expect(fake.ctx.waitUntil).toHaveBeenCalledWith(expect.any(Promise));
+  });
+
+  it('treats Pi provider context overflow messages as post-turn compaction triggers', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = { waitUntil: vi.fn() };
+    fake.piSession = {
+      state: {
+        model: { id: 'gpt-test', contextWindow: 128_000, maxTokens: 4096 },
+      },
+    };
+    fake.compactPiContextAfterTurn = vi.fn(async () => undefined);
+
+    ChatThreadDO.prototype['maybeSchedulePiPostTurnCompaction'].call(fake, [
+      { role: 'user', content: 'request', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: '' }],
+        stopReason: 'error',
+        errorMessage: 'Your input exceeds the context window of this model',
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+        timestamp: 2,
+      },
+    ]);
+
+    expect(fake.compactPiContextAfterTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'assistant' }),
+    );
+    expect(fake.ctx.waitUntil).toHaveBeenCalledWith(expect.any(Promise));
+  });
+
+  it('uses Pi compaction reserve to size summary generation output', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'summary' }],
+    }));
+    const model = {
+      id: 'gpt-test',
+      api: 'openai-responses',
+      provider: 'openai',
+      contextWindow: 128_000,
+      maxTokens: 40_000,
+      reasoning: true,
+    };
+
+    const summary = await ChatThreadDO.prototype['summarizePiMessages'].call(
+      fake,
+      [{ role: 'user', content: 'older context', timestamp: 1 }],
+      model,
+      'test-key',
+      completeSimple,
+    );
+
+    expect(summary).toBe('summary');
+    expect(completeSimple).toHaveBeenCalledWith(
+      model,
+      expect.any(Object),
+      expect.objectContaining({
+        apiKey: 'test-key',
+        maxTokens: 25_600,
+        reasoning: 'high',
+      }),
+    );
+  });
+
+  it('chunks oversized Pi compaction summary input so already-large context can be summarized', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    let summaryIndex = 0;
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: `summary ${++summaryIndex}` }],
+    }));
+    const model = {
+      id: 'gpt-test',
+      api: 'openai-responses',
+      provider: 'openai',
+      contextWindow: 12_000,
+      maxTokens: 1000,
+      reasoning: false,
+    };
+    const messages = Array.from({ length: 4 }, (_, index) => ({
+      role: 'user',
+      content: `message ${index} ${'x'.repeat(16_000)}`,
+      timestamp: index,
+    }));
+
+    const summary = await ChatThreadDO.prototype['summarizePiMessages'].call(
+      fake,
+      messages,
+      model,
+      'test-key',
+      completeSimple,
+    );
+
+    expect(summary).toBe(`summary ${summaryIndex}`);
+    expect(completeSimple.mock.calls.length).toBeGreaterThan(1);
+    expect(completeSimple).toHaveBeenLastCalledWith(
+      model,
+      expect.objectContaining({
+        messages: [
+          expect.objectContaining({
+            content: expect.stringContaining('<previous-summary>'),
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        maxTokens: 1000,
+      }),
+    );
+  });
+
+  it('repairs an already oversized Pi transcript by chunking compaction before replay', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiCoreCompaction = vi.fn(() => null);
+    fake.persistPiCoreCompaction = vi.fn();
+    let summaryIndex = 0;
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: `summary ${++summaryIndex}` }],
+    }));
+    const model = {
+      id: 'gpt-test',
+      api: 'openai-responses',
+      provider: 'openai',
+      contextWindow: 30_000,
+      maxTokens: 4000,
+      reasoning: false,
+    };
+    const messages = Array.from({ length: 12 }, (_, index) => ({
+      role: 'user',
+      content: `message ${index} ${'x'.repeat(16_000)}`,
+      timestamp: index,
+    }));
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      model,
+      'test-key',
+      completeSimple,
+      undefined,
+      true,
+    );
+
+    expect(compacted).not.toBe(messages);
+    expect(compacted.length).toBeLessThan(messages.length);
+    expect((compacted[0] as { content?: string }).content).toContain('[Context Summary]');
+    expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith(
+      `summary ${summaryIndex}`,
+      expect.any(Number),
+    );
+    expect(completeSimple.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('does not overwrite Pi state when post-turn compaction finishes after another run starts', async () => {
+    const before = [
+      { role: 'user', content: 'old request', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'old answer' }],
+        usage: { totalTokens: 112_000 },
+        timestamp: 2,
+      },
+    ];
+    const compacted = [
+      { role: 'user', content: '[Context Summary]\n\nsummary', timestamp: 3 },
+    ];
+    const model = { id: 'gpt-test', contextWindow: 128_000 };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piSession = {
+      state: {
+        isStreaming: false,
+        model,
+        messages: before,
+      },
+    };
+    fake.piModelResolver = vi.fn(async () => ({
+      model,
+      apiKey: 'test-key',
+      provider: 'openai',
+      modelId: 'gpt-test',
+      billingSource: 'hosted',
+      creditChargeable: true,
+      usageProvider: 'openai',
+    }));
+    fake.loadPiCompleteSimple = vi.fn(async () => vi.fn());
+    fake.compactPiContext = vi.fn(async () => {
+      fake.piSession.state.isStreaming = true;
+      return compacted;
+    });
+    fake.replacePiCoreMessages = vi.fn();
+    fake.clearPiCoreCompaction = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    await ChatThreadDO.prototype['compactPiContextAfterTurn'].call(fake, before[1]);
+
+    expect(fake.piSession.state.messages).toBe(before);
+    expect(fake.replacePiCoreMessages).not.toHaveBeenCalled();
+    expect(fake.clearPiCoreCompaction).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite Pi state when messages changed while post-turn compaction was running', async () => {
+    const before = [
+      { role: 'user', content: 'old request', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'old answer' }],
+        usage: { totalTokens: 112_000 },
+        timestamp: 2,
+      },
+    ];
+    const currentMessages = [
+      ...before,
+      { role: 'user', content: 'new request', timestamp: 3 },
+    ];
+    const compacted = [
+      { role: 'user', content: '[Context Summary]\n\nsummary', timestamp: 4 },
+    ];
+    const model = { id: 'gpt-test', contextWindow: 128_000 };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piSession = {
+      state: {
+        isStreaming: false,
+        model,
+        messages: before,
+      },
+    };
+    fake.piModelResolver = vi.fn(async () => ({
+      model,
+      apiKey: 'test-key',
+      provider: 'openai',
+      modelId: 'gpt-test',
+      billingSource: 'hosted',
+      creditChargeable: true,
+      usageProvider: 'openai',
+    }));
+    fake.loadPiCompleteSimple = vi.fn(async () => vi.fn());
+    fake.compactPiContext = vi.fn(async () => {
+      fake.piSession.state.messages = currentMessages;
+      return compacted;
+    });
+    fake.replacePiCoreMessages = vi.fn();
+    fake.clearPiCoreCompaction = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    await ChatThreadDO.prototype['compactPiContextAfterTurn'].call(fake, before[1]);
+
+    expect(fake.piSession.state.messages).toBe(currentMessages);
+    expect(fake.replacePiCoreMessages).not.toHaveBeenCalled();
+    expect(fake.clearPiCoreCompaction).not.toHaveBeenCalled();
   });
 
   it.each([
