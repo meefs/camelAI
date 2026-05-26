@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/chat-thread-do';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
+import { CamelAiService } from '../src/camelai-service';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 
 afterEach(() => {
@@ -1300,6 +1301,33 @@ describe('ChatThreadDO Codex turn handling', () => {
       .toBe('return await connections.clickhouse.query({ query: "SELECT 1" });');
     expect(prepareCodeModeUserCode('const catalog = await env.CONNECTIONS.methods();'))
       .toBe('const catalog = await env.CONNECTIONS.methods();');
+  });
+
+  it('transcribes mounted audio files through the CAMELAI service binding', async () => {
+    const aiRun = vi.fn(async () => ({ text: 'audio transcript' }));
+    const r2Get = vi.fn(async () => r2Object('audio bytes', 'audio/ogg'));
+    const fake = Object.create(CamelAiService.prototype) as any;
+    fake.env = {
+      AI: { run: aiRun },
+      R2_BUCKET: { get: r2Get },
+    };
+    fake.ctx = {
+      props: {
+        orgId: 'org-1',
+        workspaceId: 'workspace-1',
+        userId: 'user-1',
+      },
+    };
+
+    const result = await CamelAiService.prototype.transcribeAudio.call(fake, {
+      path: '/mnt/user-uploads/note.ogg',
+    });
+
+    expect(r2Get).toHaveBeenCalledWith('org-1/workspace-1/user-uploads/note.ogg');
+    expect(aiRun).toHaveBeenCalledWith('@cf/openai/whisper-large-v3-turbo', {
+      audio: 'YXVkaW8gYnl0ZXM=',
+    });
+    expect(result).toEqual({ text: 'audio transcript' });
   });
 
   it('advertises restored legacy tools to js_exec through CodeModeToolsBinding', async () => {

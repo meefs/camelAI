@@ -462,4 +462,195 @@ describe('handleTelegramWebhook', () => {
     expect(enqueued.message).toContain('see report');
     expect(enqueued.message).toContain('(user uploaded file to /mnt/user-uploads/report-');
   });
+
+  it('transcribes and uploads Telegram voice messages before enqueueing', async () => {
+    const binding: TelegramChatBinding = {
+      workspaceId: 'ws-1',
+      orgId: 'org-1',
+      integrationId: 'telegram-int',
+    };
+    const kv = createMockKV({
+      'channel_thread:telegram:ws-1:telegram-int:12345': 'thread-1',
+    });
+    const registry = createTelegramRegistryStub({ binding });
+    const r2Put = vi.fn(async () => undefined);
+    const aiRun = vi.fn(async () => ({ text: 'please summarize the attached voice note' }));
+    const startInitialUserMessage = vi.fn(async () => ({ status: 'accepted' }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/getFile')) {
+        return Response.json({
+          ok: true,
+          result: { file_path: 'voice/file_1.oga', file_size: 4 },
+        });
+      }
+      if (url === 'https://api.telegram.org/file/botbot-token/voice/file_1.oga') {
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: {
+            'content-type': 'audio/ogg',
+            'content-length': '4',
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await handleTelegramWebhook({
+      req: telegramRequest({
+        update_id: 4,
+        message: {
+          message_id: 103,
+          chat: { id: 12345, type: 'private', first_name: 'Ada' },
+          from: { id: 777, first_name: 'Ada' },
+          voice: {
+            file_id: 'VOICE123',
+            mime_type: 'audio/ogg',
+            file_size: 4,
+            duration: 2,
+          },
+        },
+      }),
+      env: {
+        APP_KV: kv,
+        AI: { run: aiRun },
+        TELEGRAM_BOT_TOKEN: 'bot-token',
+        TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
+        TELEGRAM_REGISTRY: registry.namespace,
+        R2_BUCKET: { put: r2Put },
+        WORKSPACE: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({
+            getInfo: vi.fn(async () => ({ id: 'ws-1', org_id: 'org-1', archived: false })),
+            getIntegration: vi.fn(async () => ({
+              id: 'telegram-int',
+              integration_type: 'telegram',
+              config: JSON.stringify({ status: 'active', chat_id: '12345' }),
+            })),
+          })),
+        },
+        ORG: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({
+            getThread: vi.fn(async () => ({ id: 'thread-1', title: 'Ada' })),
+          })),
+        },
+        CHAT_THREAD: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({ startInitialUserMessage })),
+        },
+      } as never,
+      ctx: {} as never,
+      url: new URL('https://camelai.dev/api/integrations/telegram/webhook'),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response.status).toBe(200);
+    expect(r2Put).toHaveBeenCalledTimes(1);
+    expect(r2Put.mock.calls[0][0]).toMatch(/^org-1\/ws-1\/user-uploads\/telegram-voice-103-\d+-[a-z0-9]+\.ogg$/);
+    expect(aiRun).toHaveBeenCalledWith('@cf/openai/whisper-large-v3-turbo', {
+      audio: 'AQIDBA==',
+    });
+    expect(startInitialUserMessage).toHaveBeenCalledTimes(1);
+    const enqueued = startInitialUserMessage.mock.calls[0][0];
+    expect(enqueued.message).toContain('<camelai system message>');
+    expect(enqueued.message).toContain('already transcribed automatically');
+    expect(enqueued.message).toContain('do not transcribe the attached audio file again');
+    expect(enqueued.message).toContain('Voice message transcript:\nplease summarize the attached voice note');
+    expect(enqueued.message).toContain('(user uploaded file to /mnt/user-uploads/telegram-voice-103-');
+  });
+
+  it('uploads Telegram videos before enqueueing channel messages', async () => {
+    const binding: TelegramChatBinding = {
+      workspaceId: 'ws-1',
+      orgId: 'org-1',
+      integrationId: 'telegram-int',
+    };
+    const kv = createMockKV({
+      'channel_thread:telegram:ws-1:telegram-int:12345': 'thread-1',
+    });
+    const registry = createTelegramRegistryStub({ binding });
+    const r2Put = vi.fn(async () => undefined);
+    const aiRun = vi.fn();
+    const startInitialUserMessage = vi.fn(async () => ({ status: 'accepted' }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/getFile')) {
+        return Response.json({
+          ok: true,
+          result: { file_path: 'videos/demo.mp4', file_size: 5 },
+        });
+      }
+      if (url === 'https://api.telegram.org/file/botbot-token/videos/demo.mp4') {
+        return new Response(new Uint8Array([1, 2, 3, 4, 5]), {
+          headers: {
+            'content-type': 'video/mp4',
+            'content-length': '5',
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await handleTelegramWebhook({
+      req: telegramRequest({
+        update_id: 5,
+        message: {
+          message_id: 104,
+          caption: 'demo clip',
+          chat: { id: 12345, type: 'private', first_name: 'Ada' },
+          from: { id: 777, first_name: 'Ada' },
+          video: {
+            file_id: 'VIDEO123',
+            file_name: 'demo.mp4',
+            mime_type: 'video/mp4',
+            file_size: 5,
+            duration: 3,
+          },
+        },
+      }),
+      env: {
+        APP_KV: kv,
+        AI: { run: aiRun },
+        TELEGRAM_BOT_TOKEN: 'bot-token',
+        TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
+        TELEGRAM_REGISTRY: registry.namespace,
+        R2_BUCKET: { put: r2Put },
+        WORKSPACE: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({
+            getInfo: vi.fn(async () => ({ id: 'ws-1', org_id: 'org-1', archived: false })),
+            getIntegration: vi.fn(async () => ({
+              id: 'telegram-int',
+              integration_type: 'telegram',
+              config: JSON.stringify({ status: 'active', chat_id: '12345' }),
+            })),
+          })),
+        },
+        ORG: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({
+            getThread: vi.fn(async () => ({ id: 'thread-1', title: 'Ada' })),
+          })),
+        },
+        CHAT_THREAD: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({ startInitialUserMessage })),
+        },
+      } as never,
+      ctx: {} as never,
+      url: new URL('https://camelai.dev/api/integrations/telegram/webhook'),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response.status).toBe(200);
+    expect(r2Put).toHaveBeenCalledTimes(1);
+    expect(r2Put.mock.calls[0][0]).toMatch(/^org-1\/ws-1\/user-uploads\/demo-\d+-[a-z0-9]+\.mp4$/);
+    expect(aiRun).not.toHaveBeenCalled();
+    expect(startInitialUserMessage).toHaveBeenCalledTimes(1);
+    const enqueued = startInitialUserMessage.mock.calls[0][0];
+    expect(enqueued.message).toContain('demo clip');
+    expect(enqueued.message).toContain('(user uploaded file to /mnt/user-uploads/demo-');
+  });
 });

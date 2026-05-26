@@ -4,6 +4,8 @@ import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
 
 export interface AIVirtualBindingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
+  AI?: Ai;
+  R2_BUCKET?: R2Bucket;
   SANDBOX_HOST?: Fetcher;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;

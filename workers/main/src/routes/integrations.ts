@@ -28,6 +28,7 @@ import {
 } from "../channels.js";
 import { buildWorkspaceScopedR2Key } from "../../../../src/lib/workspace-r2-paths.js";
 import type { TelegramChatBinding } from "../../../../src/lib/telegram-channel.js";
+import { transcribeAudioBytes } from "../audio-transcription.js";
 import {
   getSlackTeamRegistryStub,
   getTelegramRegistryStub,
@@ -113,6 +114,36 @@ interface TelegramMessagePayload {
     width?: number;
     height?: number;
   }>;
+  voice?: {
+    file_id?: string;
+    duration?: number;
+    mime_type?: string;
+    file_size?: number;
+  };
+  audio?: {
+    file_id?: string;
+    duration?: number;
+    performer?: string;
+    title?: string;
+    file_name?: string;
+    mime_type?: string;
+    file_size?: number;
+  };
+  video?: {
+    file_id?: string;
+    width?: number;
+    height?: number;
+    duration?: number;
+    file_name?: string;
+    mime_type?: string;
+    file_size?: number;
+  };
+  video_note?: {
+    file_id?: string;
+    length?: number;
+    duration?: number;
+    file_size?: number;
+  };
 }
 
 function getSlackMappingRootTs(
@@ -1149,6 +1180,26 @@ function appendTelegramUploadRefsToMessage(
   return trimmed ? `${trimmed}\n\n${refs}` : refs;
 }
 
+function appendTelegramTranscriptsToMessage(
+  content: string,
+  transcripts: Array<{ label: string; text: string }>,
+): string {
+  const transcriptText = transcripts
+    .map(({ label, text: transcript }) => `${label} transcript:\n${transcript}`)
+    .join("\n\n");
+  const trimmed = content.trim();
+  if (!transcriptText) return trimmed;
+  const systemMessage = [
+    "<camelai system message>",
+    "The Telegram message included audio that camelAI already transcribed automatically. Treat the transcript below as the user's spoken message and do not transcribe the attached audio file again unless the user explicitly asks or the transcript is insufficient.",
+    "</camelai system message>",
+  ].join("");
+  const contentWithTranscript = trimmed
+    ? `${trimmed}\n\n${transcriptText}`
+    : transcriptText;
+  return `${systemMessage}\n\n${contentWithTranscript}`;
+}
+
 async function sendTelegramText(
   token: string,
   chatId: string,
@@ -1271,7 +1322,12 @@ async function uploadTelegramFile(args: {
   originalName: string;
   contentType: string;
   size?: number;
-}): Promise<string | null> {
+}): Promise<{
+  path: string;
+  filename: string;
+  contentType: string;
+  content: ArrayBuffer;
+} | null> {
   if (isOverFileSizeLimit(args.size, TELEGRAM_FILE_MAX_BYTES)) {
     console.warn("[telegram-events] skipping oversized Telegram file", {
       fileId: args.fileId,
@@ -1332,12 +1388,13 @@ async function uploadTelegramFile(args: {
     args.binding.workspaceId,
     `user-uploads/${storedFilename}`,
   );
+  const contentType =
+    args.contentType ||
+    response.headers.get("content-type") ||
+    "application/octet-stream";
   await args.env.R2_BUCKET.put(r2Key, body, {
     httpMetadata: {
-      contentType:
-        args.contentType ||
-        response.headers.get("content-type") ||
-        "application/octet-stream",
+      contentType,
     },
     customMetadata: {
       originalName: args.originalName,
@@ -1346,7 +1403,12 @@ async function uploadTelegramFile(args: {
       telegramFileId: args.fileId,
     },
   });
-  return `/mnt/user-uploads/${storedFilename}`;
+  return {
+    path: `/mnt/user-uploads/${storedFilename}`,
+    filename: storedFilename,
+    contentType,
+    content: body,
+  };
 }
 
 async function uploadTelegramMessageFiles(
@@ -1354,8 +1416,44 @@ async function uploadTelegramMessageFiles(
   token: string,
   binding: TelegramChatBinding,
   message: TelegramMessagePayload,
-): Promise<string[]> {
+): Promise<{
+  uploadPaths: string[];
+  transcripts: Array<{ label: string; text: string }>;
+}> {
   const uploads: string[] = [];
+  const transcripts: Array<{ label: string; text: string }> = [];
+
+  const uploadAudioWithTranscript = async (args: {
+    fileId: string;
+    originalName: string;
+    contentType: string;
+    size?: number;
+    label: string;
+  }) => {
+    const uploaded = await uploadTelegramFile({
+      env,
+      token,
+      binding,
+      fileId: args.fileId,
+      originalName: args.originalName,
+      contentType: args.contentType,
+      size: args.size,
+    });
+    if (!uploaded) return;
+    uploads.push(uploaded.path);
+    try {
+      const transcript = await transcribeAudioBytes(env.AI, uploaded.content);
+      if (transcript.text) {
+        transcripts.push({ label: args.label, text: transcript.text });
+      }
+    } catch (error) {
+      console.warn("[telegram-events] failed to transcribe Telegram audio", {
+        fileId: args.fileId,
+        label: args.label,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
 
   if (message.document?.file_id) {
     const originalName = sanitizeTelegramAttachmentName(
@@ -1371,7 +1469,7 @@ async function uploadTelegramMessageFiles(
       contentType: message.document.mime_type || "application/octet-stream",
       size: message.document.file_size,
     });
-    if (uploaded) uploads.push(uploaded);
+    if (uploaded) uploads.push(uploaded.path);
   }
 
   const largestPhoto = Array.isArray(message.photo) && message.photo.length > 0
@@ -1390,10 +1488,68 @@ async function uploadTelegramMessageFiles(
       contentType: "image/jpeg",
       size: largestPhoto.file_size,
     });
-    if (uploaded) uploads.push(uploaded);
+    if (uploaded) uploads.push(uploaded.path);
   }
 
-  return uploads;
+  if (message.voice?.file_id) {
+    await uploadAudioWithTranscript({
+      fileId: message.voice.file_id,
+      originalName: sanitizeTelegramAttachmentName(
+        undefined,
+        `telegram-voice-${message.message_id || Date.now()}.ogg`,
+      ),
+      contentType: message.voice.mime_type || "audio/ogg",
+      size: message.voice.file_size,
+      label: "Voice message",
+    });
+  }
+
+  if (message.audio?.file_id) {
+    await uploadAudioWithTranscript({
+      fileId: message.audio.file_id,
+      originalName: sanitizeTelegramAttachmentName(
+        message.audio.file_name,
+        `telegram-audio-${message.message_id || Date.now()}.mp3`,
+      ),
+      contentType: message.audio.mime_type || "audio/mpeg",
+      size: message.audio.file_size,
+      label: "Audio message",
+    });
+  }
+
+  if (message.video?.file_id) {
+    const uploaded = await uploadTelegramFile({
+      env,
+      token,
+      binding,
+      fileId: message.video.file_id,
+      originalName: sanitizeTelegramAttachmentName(
+        message.video.file_name,
+        `telegram-video-${message.message_id || Date.now()}.mp4`,
+      ),
+      contentType: message.video.mime_type || "video/mp4",
+      size: message.video.file_size,
+    });
+    if (uploaded) uploads.push(uploaded.path);
+  }
+
+  if (message.video_note?.file_id) {
+    const uploaded = await uploadTelegramFile({
+      env,
+      token,
+      binding,
+      fileId: message.video_note.file_id,
+      originalName: sanitizeTelegramAttachmentName(
+        undefined,
+        `telegram-video-note-${message.message_id || Date.now()}.mp4`,
+      ),
+      contentType: "video/mp4",
+      size: message.video_note.file_size,
+    });
+    if (uploaded) uploads.push(uploaded.path);
+  }
+
+  return { uploadPaths: uploads, transcripts };
 }
 
 async function processTelegramMessage(
@@ -1445,15 +1601,19 @@ async function processTelegramMessage(
 
   let dedupeFinalized = false;
   try {
-    const uploadedPaths = await uploadTelegramMessageFiles(
+    const { uploadPaths, transcripts } = await uploadTelegramMessageFiles(
       env,
       botToken,
       binding,
       message,
     );
-    const userMessage = appendTelegramUploadRefsToMessage(
+    const contentWithTranscripts = appendTelegramTranscriptsToMessage(
       message.text || message.caption || "",
-      uploadedPaths,
+      transcripts,
+    );
+    const userMessage = appendTelegramUploadRefsToMessage(
+      contentWithTranscripts,
+      uploadPaths,
     );
     if (!userMessage) return;
 
