@@ -106,6 +106,43 @@ describe("turn utils", () => {
         ]),
       ).toBe(3);
     });
+
+    it("counts visible text before later work as a trace row", () => {
+      expect(
+        countTurnSteps([
+          assistantMessage("a1", [
+            { type: "text", text: "I'll inspect the files first." },
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          ]),
+          assistantMessage("a2", [
+            { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+            { type: "text", text: "Done." },
+          ]),
+        ]),
+      ).toBe(2);
+    });
+
+    it("does not count final text before later status rows as trace work", () => {
+      expect(
+        countTurnSteps([
+          assistantMessage("a1", [
+            { type: "text", text: "Done. I updated the tests." },
+            {
+              type: "task_notification",
+              taskId: "task-1",
+              outputFile: "/tmp/report.md",
+              status: "completed",
+              summary: "Task finished.",
+            },
+            {
+              type: "teammate_message",
+              teammateId: "alice",
+              content: "I fixed the failing test.",
+            },
+          ]),
+        ]),
+      ).toBe(2);
+    });
   });
 
   describe("filterContentForRenderMode", () => {
@@ -147,9 +184,67 @@ describe("turn utils", () => {
         created_at: 200,
         content: [
           { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          { type: "text", text: "Interim text" },
           { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
         ],
       });
+    });
+
+    it("collapses interim text into the trace and leaves final text out", () => {
+      const trace = buildTraceMessageView(
+        [
+          assistantMessage("a1", [
+            { type: "text", text: "I'll inspect the files first." },
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          ], 100),
+          assistantMessage("a2", [
+            { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+            { type: "text", text: "Done." },
+          ], 200),
+        ],
+        "a2",
+      );
+
+      expect(trace?.content).toEqual([
+        { type: "text", text: "I'll inspect the files first." },
+        { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+        { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+      ]);
+    });
+
+    it("keeps task and teammate status rows in the trace without absorbing prior final text", () => {
+      const finalText: ContentBlock = {
+        type: "text",
+        text: "Done. I updated the tests.",
+      };
+      const taskNotification: ContentBlock = {
+        type: "task_notification",
+        taskId: "task-1",
+        outputFile: "/tmp/report.md",
+        status: "completed",
+        summary: "Task finished.",
+      };
+      const teammateMessage: ContentBlock = {
+        type: "teammate_message",
+        teammateId: "alice",
+        content: "I fixed the failing test.",
+      };
+
+      const trace = buildTraceMessageView(
+        [
+          assistantMessage("a1", [
+            finalText,
+            taskNotification,
+            teammateMessage,
+          ], 100),
+        ],
+        "a1",
+      );
+
+      expect(trace?.content).toEqual([
+        taskNotification,
+        teammateMessage,
+      ]);
     });
   });
 
@@ -198,6 +293,14 @@ describe("turn utils", () => {
           assistantMessage("a1", [{ type: "error", error: "Failed" }]),
         ]),
       ).toBe(true);
+      expect(
+        hasFinalOutput([
+          assistantMessage("a1", [
+            { type: "text", text: "I'll inspect first." },
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          ]),
+        ]),
+      ).toBe(false);
     });
 
     it("builds a synthetic final output message from multiple assistant messages", () => {
@@ -223,11 +326,64 @@ describe("turn utils", () => {
         forkEntryId: "fork-1",
         created_at: 200,
         content: [
-          { type: "text", text: "First" },
           { type: "text", text: "Second" },
           { type: "error", error: "Failed" },
         ],
       });
+    });
+
+    it("keeps only text after the final work block in final output", () => {
+      const final = buildFinalOutputMessageView(
+        [
+          assistantMessage("a1", [
+            { type: "text", text: "I'll inspect the files first." },
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          ], 100),
+          assistantMessage("a2", [
+            { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+            { type: "text", text: "Done." },
+          ], 200),
+        ],
+        "a2",
+      );
+
+      expect(final?.content).toEqual([
+        { type: "text", text: "Done." },
+      ]);
+    });
+
+    it("keeps prior final text visible when status rows arrive after it", () => {
+      const finalText: ContentBlock = {
+        type: "text",
+        text: "Done. I updated the tests.",
+      };
+      const taskNotification: ContentBlock = {
+        type: "task_notification",
+        taskId: "task-1",
+        outputFile: "/tmp/report.md",
+        status: "completed",
+        summary: "Task finished.",
+      };
+      const teammateMessage: ContentBlock = {
+        type: "teammate_message",
+        teammateId: "alice",
+        content: "I fixed the failing test.",
+      };
+
+      const final = buildFinalOutputMessageView(
+        [
+          assistantMessage("a1", [
+            finalText,
+            taskNotification,
+            teammateMessage,
+          ], 100),
+        ],
+        "a1",
+      );
+
+      expect(final?.content).toEqual([
+        finalText,
+      ]);
     });
 
     it("preserves mention annotations for the message renderer", () => {

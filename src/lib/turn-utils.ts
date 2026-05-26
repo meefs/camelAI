@@ -38,40 +38,11 @@ export function isVisibleThinkingBlock(block: ContentBlock): boolean {
     : false;
 }
 
-export function countTurnSteps(messages: Message[]): number {
-  let count = 0;
-  const turnToolUseIds = new Set<string>();
-  for (const message of messages) {
-    if (!Array.isArray(message.content)) continue;
-    for (const block of message.content) {
-      if (block.type === "tool_use") {
-        turnToolUseIds.add(block.id);
-      }
-    }
-  }
-
-  for (const message of messages) {
-    if (!Array.isArray(message.content)) continue;
-
-    for (const block of message.content) {
-      if (block.type === "tool_use") {
-        count += 1;
-      } else if (isVisibleThinkingBlock(block)) {
-        count += 1;
-      } else if (block.type === "tool_result" && !turnToolUseIds.has(block.tool_use_id)) {
-        count += 1;
-      } else if (
-        block.type === "teammate_message" ||
-        block.type === "task_notification"
-      ) {
-        count += 1;
-      }
-    }
-  }
-  return count;
+function isVisibleTextBlock(block: ContentBlock): boolean {
+  return block.type === "text" && stripSystemMessageTags(block.text).length > 0;
 }
 
-function isTraceContentBlock(block: ContentBlock): boolean {
+function isTraceWorkBlock(block: ContentBlock): boolean {
   return (
     block.type === "tool_use" ||
     block.type === "tool_result" ||
@@ -79,6 +50,85 @@ function isTraceContentBlock(block: ContentBlock): boolean {
     block.type === "teammate_message" ||
     block.type === "task_notification"
   );
+}
+
+function isTraceTextBoundaryBlock(block: ContentBlock): boolean {
+  return (
+    block.type === "tool_use" ||
+    block.type === "tool_result" ||
+    isVisibleThinkingBlock(block)
+  );
+}
+
+function isTraceTextBlock(
+  block: ContentBlock,
+  blockIndex: number,
+  lastTraceTextBoundaryBlockIndex: number,
+): boolean {
+  return (
+    blockIndex < lastTraceTextBoundaryBlockIndex &&
+    isVisibleTextBlock(block)
+  );
+}
+
+function toTextBlock(text: string): ContentBlock {
+  return { type: "text", text };
+}
+
+function getTurnContentBlocks(messages: Message[]): ContentBlock[] {
+  const blocks: ContentBlock[] = [];
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      blocks.push(toTextBlock(message.content));
+      continue;
+    }
+    blocks.push(...message.content);
+  }
+  return blocks;
+}
+
+function getLastTraceTextBoundaryBlockIndex(blocks: ContentBlock[]): number {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (isTraceTextBoundaryBlock(blocks[index])) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+export function countTurnSteps(messages: Message[]): number {
+  let count = 0;
+  const blocks = getTurnContentBlocks(messages);
+  const lastTraceTextBoundaryBlockIndex = getLastTraceTextBoundaryBlockIndex(blocks);
+  const turnToolUseIds = new Set<string>();
+
+  for (const block of blocks) {
+    if (block.type === "tool_use") {
+      turnToolUseIds.add(block.id);
+    }
+  }
+
+  for (const [index, block] of blocks.entries()) {
+    if (block.type === "tool_use") {
+      count += 1;
+    } else if (isVisibleThinkingBlock(block)) {
+      count += 1;
+    } else if (isTraceTextBlock(block, index, lastTraceTextBoundaryBlockIndex)) {
+      count += 1;
+    } else if (block.type === "tool_result" && !turnToolUseIds.has(block.tool_use_id)) {
+      count += 1;
+    } else if (
+      block.type === "teammate_message" ||
+      block.type === "task_notification"
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function isTraceContentBlock(block: ContentBlock): boolean {
+  return isTraceWorkBlock(block);
 }
 
 export function formatTurnDuration(ms: number): string {
@@ -118,15 +168,9 @@ export function filterContentForRenderMode(
 }
 
 export function hasFinalOutput(messages: Message[]): boolean {
-  return messages.some((message) => {
-    if (typeof message.content === "string") {
-      return stripSystemMessageTags(message.content).length > 0;
-    }
-    return message.content.some((block) => {
-      if (block.type === "error") return true;
-      return block.type === "text" && stripSystemMessageTags(block.text).length > 0;
-    });
-  });
+  const actionMessage = messages[messages.length - 1];
+  if (!actionMessage) return false;
+  return buildFinalOutputMessageView(messages, actionMessage.id) !== null;
 }
 
 export function buildTraceMessageView(
@@ -136,12 +180,14 @@ export function buildTraceMessageView(
   if (messages.length === 0) return null;
 
   const traceBlocks: ContentBlock[] = [];
-  for (const message of messages) {
-    if (!Array.isArray(message.content)) continue;
-    for (const block of message.content) {
-      if (isTraceContentBlock(block)) {
-        traceBlocks.push(block);
-      }
+  const blocks = getTurnContentBlocks(messages);
+  const lastTraceTextBoundaryBlockIndex = getLastTraceTextBoundaryBlockIndex(blocks);
+  for (const [index, block] of blocks.entries()) {
+    if (
+      isTraceWorkBlock(block) ||
+      isTraceTextBlock(block, index, lastTraceTextBoundaryBlockIndex)
+    ) {
+      traceBlocks.push(block);
     }
   }
 
@@ -168,24 +214,18 @@ export function buildFinalOutputMessageView(
   if (messages.length === 0) return null;
 
   const outputBlocks: ContentBlock[] = [];
-  for (const message of messages) {
-    if (typeof message.content === "string") {
-      const visibleText = stripSystemMessageTags(message.content);
-      if (visibleText) {
-        outputBlocks.push({ type: "text", text: message.content });
+  const blocks = getTurnContentBlocks(messages);
+  const lastTraceTextBoundaryBlockIndex = getLastTraceTextBoundaryBlockIndex(blocks);
+  for (const [index, block] of blocks.entries()) {
+    if (block.type === "text") {
+      if (!isTraceTextBlock(block, index, lastTraceTextBoundaryBlockIndex) && isVisibleTextBlock(block)) {
+        outputBlocks.push(block);
       }
       continue;
     }
 
-    for (const block of message.content) {
-      if (block.type === "text") {
-        const visibleText = stripSystemMessageTags(block.text);
-        if (visibleText) {
-          outputBlocks.push(block);
-        }
-      } else if (block.type === "error") {
-        outputBlocks.push(block);
-      }
+    if (block.type === "error") {
+      outputBlocks.push(block);
     }
   }
 

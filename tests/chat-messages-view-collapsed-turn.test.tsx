@@ -9,6 +9,8 @@ type MessageBubbleCall = {
   renderMode: string;
   message: Message;
   suppressFinalizedState: boolean;
+  actionCopyContent?: string;
+  copyFallbackContent: string;
 };
 
 const bubbleHarness = vi.hoisted(() => ({
@@ -34,15 +36,19 @@ vi.mock("@/components/message-bubble", () => {
       message,
       renderMode = "full",
       suppressFinalizedState = false,
+      actionCopyContent,
     }: {
       message: Message;
       renderMode?: string;
       suppressFinalizedState?: boolean;
+      actionCopyContent?: string;
     }) => {
       bubbleHarness.calls.push({
         renderMode,
         message,
         suppressFinalizedState,
+        actionCopyContent,
+        copyFallbackContent: textFromContent(message.content),
       });
       return (
         <div data-testid={`message-bubble-${renderMode}`}>
@@ -117,6 +123,21 @@ function latestFinalOutputMessage(): Message | undefined {
   return bubbleHarness.calls
     .filter((call) => call.renderMode === "final-text-only")
     .at(-1)?.message;
+}
+
+function latestFinalOutputCall(): MessageBubbleCall | undefined {
+  return bubbleHarness.calls
+    .filter((call) => call.renderMode === "final-text-only")
+    .at(-1);
+}
+
+function traceMessageWithContent(content: ContentBlock[]): Message | undefined {
+  return bubbleHarness.calls.find((call) => {
+    if (call.renderMode !== "full" || !Array.isArray(call.message.content)) {
+      return false;
+    }
+    return JSON.stringify(call.message.content) === JSON.stringify(content);
+  })?.message;
 }
 
 describe("ChatMessagesView collapsed assistant turns", () => {
@@ -195,11 +216,97 @@ describe("ChatMessagesView collapsed assistant turns", () => {
 
     expect(screen.getByText("1 step")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /show work/i }));
-    const traceCalls = bubbleHarness.calls.filter(
-      (call) => call.renderMode === "trace-only",
-    );
-    expect(traceCalls).toHaveLength(1);
-    expect(traceCalls[0]?.message.content).toEqual([toolUse, toolResult]);
+    expect(traceMessageWithContent([toolUse, toolResult])?.content).toEqual([
+      toolUse,
+      toolResult,
+    ]);
+  });
+
+  it("collapses interim assistant text into the work trace", async () => {
+    const user = userEvent.setup();
+    const narration: ContentBlock = {
+      type: "text",
+      text: "I'll inspect the files first.",
+    };
+    const toolUse: ContentBlock = {
+      type: "tool_use",
+      id: "tool-1",
+      name: "Read",
+      input: {},
+    };
+    const toolResult: ContentBlock = {
+      type: "tool_result",
+      tool_use_id: "tool-1",
+      content: "ok",
+    };
+
+    renderView({
+      visibleMessages: [
+        message("u1", "user", "read package.json", 1_000),
+        message("a1", "assistant", [narration, toolUse], 2_000),
+        message(
+          "a2",
+          "assistant",
+          [toolResult, { type: "text", text: "Done" }],
+          3_000,
+        ),
+      ],
+    });
+
+    expect(screen.getByText("2 steps")).toBeInTheDocument();
+    expect(latestFinalOutputMessage()?.content).toEqual([
+      { type: "text", text: "Done" },
+    ]);
+    const finalOutputCall = latestFinalOutputCall();
+    expect(
+      finalOutputCall?.actionCopyContent ??
+        finalOutputCall?.copyFallbackContent,
+    ).toBe("Done");
+    await user.click(screen.getByRole("button", { name: /show work/i }));
+    expect(traceMessageWithContent([narration, toolUse, toolResult])?.content).toEqual([
+      narration,
+      toolUse,
+      toolResult,
+    ]);
+  });
+
+  it("keeps final text visible when status rows arrive after it", async () => {
+    const user = userEvent.setup();
+    const finalText: ContentBlock = {
+      type: "text",
+      text: "Done. I updated the tests.",
+    };
+    const taskNotification: ContentBlock = {
+      type: "task_notification",
+      taskId: "task-1",
+      outputFile: "/tmp/report.md",
+      status: "completed",
+      summary: "Task finished.",
+    };
+    const teammateMessage: ContentBlock = {
+      type: "teammate_message",
+      teammateId: "alice",
+      content: "I fixed the failing test.",
+    };
+
+    renderView({
+      visibleMessages: [
+        message("u1", "user", "finish the tests", 1_000),
+        message(
+          "a1",
+          "assistant",
+          [finalText, taskNotification, teammateMessage],
+          2_000,
+        ),
+      ],
+    });
+
+    expect(screen.getByText("2 steps")).toBeInTheDocument();
+    expect(latestFinalOutputMessage()?.content).toEqual([finalText]);
+    await user.click(screen.getByRole("button", { name: /show work/i }));
+    expect(
+      traceMessageWithContent([taskNotification, teammateMessage])?.content,
+    ).toEqual([taskNotification, teammateMessage]);
   });
 
   it("keeps the synthetic final output message stable across unrelated rerenders", () => {

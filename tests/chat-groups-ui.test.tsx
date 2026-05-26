@@ -1105,6 +1105,7 @@ describe("reconcileThreadSummaryPatchesWithGroups", () => {
 describe("ChatGroupsProvider summary patches", () => {
   it("keeps newer local title patches over older loader group data", async () => {
     let loaderState = authLoaderState([groupViewWithThreadRevision("API plan", 1)]);
+    const addEventListenerSpy = vi.spyOn(window, "addEventListener");
     const router = createMemoryRouter(
       [
         {
@@ -1121,48 +1122,59 @@ describe("ChatGroupsProvider summary patches", () => {
       { initialEntries: ["/"] },
     );
 
-    render(<RouterProvider router={router} />);
+    try {
+      render(<RouterProvider router={router} />);
 
-    expect(await screen.findByTestId("thread-title")).toHaveTextContent(
-      "API plan",
-    );
-
-    act(() => {
-      window.dispatchEvent(
-        new CustomEvent("camelai:thread-status", {
-          detail: {
-            threadId: "thread_1",
-            title: "Optimistic title",
-            updatedAt: 5,
-          },
-        }),
+      expect(await screen.findByTestId("thread-title")).toHaveTextContent(
+        "API plan",
       );
-    });
-    await waitFor(() => {
+
+      await waitFor(() => {
+        expect(addEventListenerSpy).toHaveBeenCalledWith(
+          "camelai:thread-status",
+          expect.any(Function),
+        );
+      });
+
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("camelai:thread-status", {
+            detail: {
+              threadId: "thread_1",
+              title: "Optimistic title",
+              updatedAt: 5,
+            },
+          }),
+        );
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("thread-title")).toHaveTextContent(
+          "Optimistic title",
+        );
+      });
+
+      loaderState = authLoaderState([groupViewWithThreadRevision("Old title", 1)]);
+      await act(async () => {
+        await router.revalidate();
+      });
+
       expect(screen.getByTestId("thread-title")).toHaveTextContent(
         "Optimistic title",
       );
-    });
 
-    loaderState = authLoaderState([groupViewWithThreadRevision("Old title", 1)]);
-    await act(async () => {
-      await router.revalidate();
-    });
+      loaderState = authLoaderState([groupViewWithThreadRevision("Server title", 6)]);
+      await act(async () => {
+        await router.revalidate();
+      });
 
-    expect(screen.getByTestId("thread-title")).toHaveTextContent(
-      "Optimistic title",
-    );
-
-    loaderState = authLoaderState([groupViewWithThreadRevision("Server title", 6)]);
-    await act(async () => {
-      await router.revalidate();
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("thread-title")).toHaveTextContent(
-        "Server title",
-      );
-    });
+      await waitFor(() => {
+        expect(screen.getByTestId("thread-title")).toHaveTextContent(
+          "Server title",
+        );
+      });
+    } finally {
+      addEventListenerSpy.mockRestore();
+    }
   });
 
   it("refreshes inactive thread metadata from status completions without broad revalidation", async () => {

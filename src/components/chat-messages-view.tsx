@@ -336,7 +336,7 @@ export const ChatMessagesView = memo(function ChatMessagesView({
                 >
                   {messageGroup.traceMessage
                     ? renderMessage(messageGroup.traceMessage, {
-                        renderMode: "trace-only",
+                        renderMode: "full",
                         showActionRow: false,
                         omitMessageAnchor: true,
                       })
@@ -361,7 +361,6 @@ export const ChatMessagesView = memo(function ChatMessagesView({
                       finalOutputMessage.id === compactingPriorMessageId
                     }
                     showActionRow
-                    actionCopyContent={messageGroup.copyContent || undefined}
                     actionHoverClassName="opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100 pointer-coarse:opacity-100"
                     renderMode="final-text-only"
                     skillSheets={skillSheetsByToolId}
