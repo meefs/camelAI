@@ -373,17 +373,33 @@ export function ContentBlockRenderer({
     }
   });
   const agentContinuedAfterIndex = new Map<number, boolean>();
-  let hasAgentContinuationAfterCurrentBlock = false;
+  const thinkingContinuedAfterIndex = new Map<number, boolean>();
+  let hasToolContinuationAfterCurrentBlock = false;
+  let hasThinkingContinuationAfterCurrentBlock = false;
   for (let index = content.length - 1; index >= 0; index -= 1) {
     const block = content[index];
     if (block.type === 'tool_use') {
-      agentContinuedAfterIndex.set(index, hasAgentContinuationAfterCurrentBlock);
+      agentContinuedAfterIndex.set(index, hasToolContinuationAfterCurrentBlock);
+    }
+    if (block.type === 'thinking') {
+      thinkingContinuedAfterIndex.set(index, hasThinkingContinuationAfterCurrentBlock);
     }
     if (block.type === 'text' || block.type === 'tool_result') {
-      hasAgentContinuationAfterCurrentBlock = true;
+      hasToolContinuationAfterCurrentBlock = true;
+    }
+    if (
+      block.type === 'text' ||
+      block.type === 'tool_use' ||
+      block.type === 'tool_result' ||
+      block.type === 'teammate_message' ||
+      block.type === 'task_notification' ||
+      block.type === 'error' ||
+      (block.type === 'thinking' && !isRedactedThinkingBlock(block))
+    ) {
+      hasThinkingContinuationAfterCurrentBlock = true;
     }
   }
-  const items: Array<{ kind: 'tool' | 'other'; node: ReactNode; key: string }> = [];
+  const items: Array<{ kind: 'trace' | 'other'; node: ReactNode; key: string }> = [];
 
   content.forEach((block, index) => {
     if (block.type === 'text') {
@@ -413,10 +429,19 @@ export function ContentBlockRenderer({
     }
 
     if (block.type === 'thinking') {
+      const thinkingContinued = thinkingContinuedAfterIndex.get(index) ?? false;
+      const blockIsStreaming = isStreaming && !thinkingContinued;
       items.push({
-        kind: 'other',
+        kind: 'trace',
         key: `thinking-${index}`,
-        node: <ThinkingBlock thinking={block.thinking} label={block.label} summaries={block.summaries} />,
+        node: (
+          <ThinkingBlock
+            thinking={block.thinking}
+            label={block.label}
+            summaries={block.summaries}
+            isStreaming={blockIsStreaming}
+          />
+        ),
       });
       return;
     }
@@ -461,7 +486,7 @@ export function ContentBlockRenderer({
       const skillSheet = skillSheets?.get(block.id);
       const agentContinued = agentContinuedAfterIndex.get(index) ?? false;
       items.push({
-        kind: 'tool',
+        kind: 'trace',
         key: `tool-${block.id || index}`,
         node: (
           <ToolCall
@@ -482,7 +507,7 @@ export function ContentBlockRenderer({
     if (block.type === 'tool_result') {
       if (toolUseIds.has(block.tool_use_id)) return;
       items.push({
-        kind: 'tool',
+        kind: 'trace',
         key: `result-${block.tool_use_id || index}`,
         node: (
           <ToolCall
@@ -497,7 +522,7 @@ export function ContentBlockRenderer({
 
     if (block.type === 'teammate_message') {
       items.push({
-        kind: 'tool',
+        kind: 'trace',
         key: `teammate-${index}`,
         node: (
           <TeammateMessage
@@ -511,7 +536,7 @@ export function ContentBlockRenderer({
 
     if (block.type === 'task_notification') {
       items.push({
-        kind: 'tool',
+        kind: 'trace',
         key: `task-notification-${index}`,
         node: (
           <TaskNotification
@@ -526,34 +551,34 @@ export function ContentBlockRenderer({
   });
 
   const sections: ReactNode[] = [];
-  let toolGroup: ReactNode[] = [];
-  let toolGroupKey = '';
+  let traceGroup: ReactNode[] = [];
+  let traceGroupKey = '';
 
   items.forEach((item, index) => {
-    if (item.kind === 'tool') {
-      if (!toolGroup.length) toolGroupKey = `tools-${item.key}-${index}`;
-      toolGroup.push(<div key={item.key}>{item.node}</div>);
+    if (item.kind === 'trace') {
+      if (!traceGroup.length) traceGroupKey = `trace-${item.key}-${index}`;
+      traceGroup.push(<div key={item.key}>{item.node}</div>);
       return;
     }
 
-    if (toolGroup.length) {
+    if (traceGroup.length) {
       sections.push(
-        <div key={toolGroupKey} className="space-y-1">
-          {toolGroup}
+        <div key={traceGroupKey} className="space-y-1">
+          {traceGroup}
         </div>
       );
-      toolGroup = [];
+      traceGroup = [];
     }
 
     sections.push(
-      <div key={item.key}>{item.node}</div>
+      <div key={item.key} className="py-2">{item.node}</div>
     );
   });
 
-  if (toolGroup.length) {
+  if (traceGroup.length) {
     sections.push(
-      <div key={toolGroupKey || 'tools-final'} className="space-y-1">
-        {toolGroup}
+      <div key={traceGroupKey || 'trace-final'} className="space-y-1">
+        {traceGroup}
       </div>
     );
   }
