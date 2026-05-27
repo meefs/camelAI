@@ -37,10 +37,13 @@ interface PendingQuestionWaiter {
 
 interface PendingConnectionSetupPromptInfo {
   createdAt: number;
+  integrationId?: string;
   integrationType: string;
   suggestedName?: string;
   message?: string;
   instructions?: string;
+  initialConfig?: Record<string, unknown>;
+  initialCredentials?: Record<string, unknown>;
   dynamicSchema?: DynamicIntegrationSchema;
 }
 
@@ -215,10 +218,13 @@ export class BrowserPromptCoordinator {
   }
 
   promptConnectionSetup(input: {
+    integrationId?: string;
     integrationType: string;
     suggestedName?: string;
     message?: string;
     instructions?: string;
+    initialConfig?: Record<string, unknown>;
+    initialCredentials?: Record<string, unknown>;
     dynamicSchema?: DynamicIntegrationSchema;
   }): Promise<ConnectionSetupResponse> {
     const integrationType = input.integrationType?.trim();
@@ -231,10 +237,13 @@ export class BrowserPromptCoordinator {
     const requestId = crypto.randomUUID();
     const info: PendingConnectionSetupPromptInfo = {
       createdAt: Date.now(),
+      integrationId: input.integrationId,
       integrationType,
       suggestedName: input.suggestedName,
       message: input.message,
       instructions: input.instructions,
+      initialConfig: input.initialConfig,
+      initialCredentials: input.initialCredentials,
       dynamicSchema: input.dynamicSchema,
     };
     const pendingResponse = new Promise<ConnectionSetupResponse>((resolve, reject) => {
@@ -256,10 +265,13 @@ export class BrowserPromptCoordinator {
     this.options.broadcast({
       type: "connection_setup_prompt",
       requestId,
+      integrationId: input.integrationId,
       integrationType,
       suggestedName: input.suggestedName,
       message: input.message,
       instructions: input.instructions,
+      initialConfig: input.initialConfig,
+      initialCredentials: input.initialCredentials,
       dynamicSchema: input.dynamicSchema,
     });
     return pendingResponse;
@@ -288,10 +300,13 @@ export class BrowserPromptCoordinator {
       this.options.sendDirect(ws, {
         type: "connection_setup_prompt",
         requestId,
+        integrationId: info.integrationId,
         integrationType: info.integrationType,
         suggestedName: info.suggestedName,
         message: info.message,
         instructions: info.instructions,
+        initialConfig: info.initialConfig,
+        initialCredentials: info.initialCredentials,
         dynamicSchema: info.dynamicSchema,
       });
     }

@@ -887,12 +887,12 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "list_integration_types",
-    "List available integration types. Arguments: { category? }.",
+    "List available integration types. Arguments: { category? }. For a native remote MCP server, use integration_type `remote_mcp`; the returned type metadata includes setup hints and MCP capability flags.",
     Type.Object({ category: Type.Optional(Type.String()) }),
   ),
   codeModePassthroughTool(
     "create_integration",
-    "Create an integration. Arguments: { integration_type, name, config?, credentials? }.",
+    "Create an integration. Arguments: { integration_type, name, config?, credentials? }. Use integration_type `remote_mcp` for native remote MCP servers; set config.server_url, config.auth_type, and credentials.token when token auth is required.",
     Type.Object({
       integration_type: Type.String(),
       name: Type.String(),
@@ -902,11 +902,15 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "prompt_connection_setup",
-    "Prompt the user to set up a connection in the chat UI and wait for completion. Use this as a top-level tool, not from js_exec. Arguments: { integration_type, suggested_name?, message?, display_name?, description?, instructions?, fields? }.",
+    "Prompt the user to set up or reauthorize a connection in the chat UI and wait for completion. Use this as a top-level tool, not from js_exec. Use integration_type `remote_mcp` for native remote MCP servers. Pass integration_id or connection_id to update an existing connection during reauth. You may pass config and credentials to pre-populate known form fields. Arguments: { integration_type, integration_id?, connection_id?, suggested_name?, message?, config?, credentials?, display_name?, description?, instructions?, fields? }.",
     Type.Object({
       integration_type: Type.String(),
+      integration_id: Type.Optional(Type.String()),
+      connection_id: Type.Optional(Type.String()),
       suggested_name: Type.Optional(Type.String()),
       message: Type.Optional(Type.String()),
+      config: Type.Optional(Type.Object({}, { additionalProperties: true })),
+      credentials: Type.Optional(Type.Object({}, { additionalProperties: true })),
       display_name: Type.Optional(Type.String()),
       description: Type.Optional(Type.String()),
       instructions: Type.Optional(Type.String()),
@@ -1496,10 +1500,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       promptConnectionSetup: (input) =>
         (this.chatThreadStub as unknown as {
           promptConnectionSetup(input: {
+            integrationId?: string;
             integrationType: string;
             suggestedName?: string;
             message?: string;
             instructions?: string;
+            initialConfig?: Record<string, unknown>;
+            initialCredentials?: Record<string, unknown>;
             dynamicSchema?: DynamicIntegrationSchema;
           }): Promise<ConnectionSetupResponse>;
         }).promptConnectionSetup(input),
@@ -2500,10 +2507,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async promptConnectionSetup(input: {
+    integrationId?: string;
     integrationType: string;
     suggestedName?: string;
     message?: string;
     instructions?: string;
+    initialConfig?: Record<string, unknown>;
+    initialCredentials?: Record<string, unknown>;
     dynamicSchema?: DynamicIntegrationSchema;
   }): Promise<ConnectionSetupResponse> {
     return this.browserPrompts.promptConnectionSetup(input);

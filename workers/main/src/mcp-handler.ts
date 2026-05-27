@@ -22,6 +22,7 @@ import {
   validateCredentials,
 } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
+import { getProviderMcpDefinition } from '../../../src/lib/provider-mcp-registry';
 import { normalizeRemoteMcpUrl, validateRemoteMcpConnection } from '../../../src/lib/remote-mcp';
 import { validateSandboxProxy } from './sandbox-auth';
 import {
@@ -1065,7 +1066,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     // List available integration types
     this.server.tool(
       'list_integration_types',
-      'List all available integration types that can be configured (Stripe, Notion, PostgreSQL, etc.). Returns the registry of supported integrations with their configuration schemas.',
+      'List all available integration types that can be configured (Stripe, Notion, PostgreSQL, etc.). Returns schemas and MCP capability hints. Use integration_type "remote_mcp" for a native remote MCP server.',
       {
         category: z
           .enum(['databases', 'saas', 'ai_services', 'cloud_providers', 'communication'])
@@ -1076,6 +1077,12 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         const integrations = category ? getIntegrationsByCategory(category) : getAllIntegrations();
 
         const types = integrations.map((def) => ({
+          connection_kind:
+            def.type === 'remote_mcp'
+              ? 'native_remote_mcp'
+              : getProviderMcpDefinition(def.type)
+                ? 'brokered_mcp'
+                : 'api',
           type: def.type,
           display_name: def.displayName,
           description: def.description,
@@ -1095,6 +1102,12 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
             description: f.description,
           })),
           supports_proxy: false,
+          supports_native_mcp_connection: def.type === 'remote_mcp',
+          supports_brokered_mcp_tools: def.type === 'remote_mcp' || Boolean(getProviderMcpDefinition(def.type)),
+          setup_hint:
+            def.type === 'remote_mcp'
+              ? 'Use this type for native remote MCP servers. Provide config.server_url and config.auth_type; use auth_type oauth for MCP OAuth/DCR servers, bearer/custom_header with credentials.token for token auth, or none for public servers.'
+              : undefined,
         }));
 
         // Group by category for easier reading
@@ -1116,7 +1129,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     // Create a new integration
     this.server.tool(
       'create_integration',
-      'Create a new integration/connection for the current workspace. Use list_integration_types to see available types and their required config/credential fields.',
+      'Create a new integration/connection for the current workspace. Use list_integration_types to see available types and their required config/credential fields. Use integration_type "remote_mcp" for native remote MCP servers.',
       {
         integration_type: z.string().describe('The type of integration (e.g., "stripe", "notion", "postgres", "other")'),
         name: z.string().describe('A friendly name for this connection (e.g., "Production Stripe", "My Notion Workspace")'),
@@ -1220,7 +1233,18 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
                 connection_id: integrationId,
               },
             },
-            message: `Integration '${name}' created successfully.`,
+            ...(integration_type === 'remote_mcp' && finalConfig.auth_type === 'oauth'
+              ? {
+                  oauth_url: `/api/integrations/remote_mcp/oauth?${new URLSearchParams({
+                    integration_id: integrationId,
+                    redirect: '/connections',
+                  }).toString()}`,
+                }
+              : {}),
+            message:
+              integration_type === 'remote_mcp' && finalConfig.auth_type === 'oauth'
+                ? `Integration '${name}' created successfully. OAuth authorization is still required before MCP tools can be used.`
+                : `Integration '${name}' created successfully.`,
           });
         } catch (err) {
           return this.textResponse({

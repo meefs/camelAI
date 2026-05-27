@@ -425,6 +425,8 @@ export async function handleRemoteMcpOAuthStart({
     const redirectTo = sanitizeRedirectPath(
       url.searchParams.get("redirect") || "/connections",
     );
+    const chatRequestId = url.searchParams.get("chat_request_id");
+    const chatThreadId = url.searchParams.get("chat_thread_id");
     const callbackUrl = `${url.origin}/api/integrations/remote_mcp/callback`;
     const discovery = await discoverRemoteMcpOAuth(config.server_url);
     const client = await registerRemoteMcpOAuthClient(discovery, callbackUrl);
@@ -446,6 +448,12 @@ export async function handleRemoteMcpOAuthStart({
         oauth_authorization_server: discovery.authorizationServer,
         oauth_resource: discovery.resource,
         oauth_scope: discovery.scope,
+        ...(chatRequestId && chatThreadId
+          ? {
+              chat_request_id: chatRequestId,
+              chat_thread_id: chatThreadId,
+            }
+          : {}),
       },
     );
 
@@ -549,6 +557,16 @@ export async function handleRemoteMcpOAuthCallback({
       },
       stateData.user_id,
     );
+
+    if (hasConnectionSetupPromptContext(stateData)) {
+      await completeConnectionSetupPrompt(
+        env,
+        stateData,
+        integrationId,
+        "remote_mcp",
+        integration.name,
+      );
+    }
 
     const safePath = sanitizeRedirectPath(stateData.redirect_url);
     const redirectUrl = new URL(safePath, url.origin);

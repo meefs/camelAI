@@ -12,6 +12,11 @@ import {
   type DynamicField,
   type DynamicIntegrationSchema,
 } from "../../../src/lib/integration-registry";
+import { getProviderMcpDefinition } from "../../../src/lib/provider-mcp-registry";
+import {
+  normalizeRemoteMcpUrl,
+  validateRemoteMcpConnection,
+} from "../../../src/lib/remote-mcp";
 
 interface CodeModeIntegrationsEnv {
   INTEGRATION_SECRET_KEY: string;
@@ -22,12 +27,22 @@ interface CodeModeIntegrationsOptions {
   workspaceStub: DurableObjectStub<WorkspaceDO>;
   userId?: string;
   promptConnectionSetup: (input: {
+    integrationId?: string;
     integrationType: string;
     suggestedName?: string;
     message?: string;
     instructions?: string;
+    initialConfig?: Record<string, unknown>;
+    initialCredentials?: Record<string, unknown>;
     dynamicSchema?: DynamicIntegrationSchema;
   }) => Promise<ConnectionSetupResponse>;
+}
+
+function hasNonEmptyCredentialValue(credentials: Record<string, unknown>): boolean {
+  return Object.values(credentials).some((value) => {
+    if (value === null || value === undefined) return false;
+    return String(value).trim().length > 0;
+  });
 }
 
 function recommendedAccess(integrationId: string): Record<string, unknown> {
@@ -37,6 +52,17 @@ function recommendedAccess(integrationId: string): Record<string, unknown> {
     call_pattern: "await connections.<alias>.<method>({ ...input })",
     connection_id: integrationId,
   };
+}
+
+function parseConfig(config: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(config || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 export class CodeModeIntegrations {
@@ -98,6 +124,12 @@ export class CodeModeIntegrations {
         : "";
     const definitions = validCategory ? getIntegrationsByCategory(validCategory) : getAllIntegrations();
     const types = definitions.map((definition) => ({
+      connection_kind:
+        definition.type === "remote_mcp"
+          ? "native_remote_mcp"
+          : getProviderMcpDefinition(definition.type)
+            ? "brokered_mcp"
+            : "api",
       type: definition.type,
       display_name: definition.displayName,
       description: definition.description,
@@ -117,6 +149,12 @@ export class CodeModeIntegrations {
         description: field.description,
       })),
       supports_proxy: false,
+      supports_native_mcp_connection: definition.type === "remote_mcp",
+      supports_brokered_mcp_tools: definition.type === "remote_mcp" || Boolean(getProviderMcpDefinition(definition.type)),
+      setup_hint:
+        definition.type === "remote_mcp"
+          ? "Use this type for native remote MCP servers. Provide config.server_url and config.auth_type; use auth_type oauth for MCP OAuth/DCR servers, bearer/custom_header with credentials.token for token auth, or none for public servers."
+          : undefined,
     }));
     const byCategory: Record<string, typeof types> = {};
     for (const type of types) {
@@ -129,7 +167,7 @@ export class CodeModeIntegrations {
   async create(args: Record<string, unknown>): Promise<unknown> {
     const integrationType = typeof args.integration_type === "string" ? args.integration_type.trim() : "";
     const name = typeof args.name === "string" ? args.name.trim() : "";
-    const config = args.config && typeof args.config === "object" ? args.config as Record<string, unknown> : {};
+    let config = args.config && typeof args.config === "object" ? args.config as Record<string, unknown> : {};
     const credentials = args.credentials && typeof args.credentials === "object" ? args.credentials as Record<string, unknown> : {};
     if (!integrationType) throw new Error("integration_type is required");
     if (!name) throw new Error("name is required");
@@ -148,7 +186,21 @@ export class CodeModeIntegrations {
     if (credentialErrors.length > 0) {
       return { success: false, error: "Invalid credentials", validation_errors: credentialErrors };
     }
-    const credentialsEncrypted = shouldStoreIntegrationCredentials(integrationType, credentials)
+    if (integrationType === "remote_mcp") {
+      const validationErrors = validateRemoteMcpConnection(config, credentials);
+      if (validationErrors.length > 0) {
+        return { success: false, error: "Invalid remote MCP connection", validation_errors: validationErrors };
+      }
+      config = {
+        ...config,
+        server_url: normalizeRemoteMcpUrl(String(config.server_url)),
+      };
+    }
+    const shouldStoreCredentials =
+      integrationType === "remote_mcp"
+        ? hasNonEmptyCredentialValue(credentials)
+        : shouldStoreIntegrationCredentials(integrationType, credentials);
+    const credentialsEncrypted = shouldStoreCredentials
       ? await encryptCredentials(credentials, this.options.env.INTEGRATION_SECRET_KEY)
       : "";
     const integrationId = crypto.randomUUID();
@@ -171,12 +223,134 @@ export class CodeModeIntegrations {
         category: definition.category,
         recommended_access: recommendedAccess(integrationId),
       },
-      message: `Integration '${name}' created successfully.`,
+      ...(integrationType === "remote_mcp" && config.auth_type === "oauth"
+        ? {
+            oauth_url: `/api/integrations/remote_mcp/oauth?${new URLSearchParams({
+              integration_id: integrationId,
+              redirect: "/connections",
+            }).toString()}`,
+          }
+        : {}),
+      message:
+        integrationType === "remote_mcp" && config.auth_type === "oauth"
+          ? `Integration '${name}' created successfully. OAuth authorization is still required before MCP tools can be used.`
+          : `Integration '${name}' created successfully.`,
+    };
+  }
+
+  private async updateExistingIntegration(
+    integrationId: string,
+    args: {
+      type: string;
+      name: string;
+      config: Record<string, unknown>;
+      credentials: Record<string, unknown>;
+    },
+  ): Promise<unknown> {
+    const existing = await this.options.workspaceStub.getIntegration(integrationId);
+    if (!existing) {
+      return { success: false, error: `Connection not found: ${integrationId}` };
+    }
+    if (existing.integration_type !== args.type) {
+      return {
+        success: false,
+        error: `Connection ${integrationId} is ${existing.integration_type}, not ${args.type}.`,
+      };
+    }
+
+    const definition = getIntegrationDefinition(args.type);
+    if (!definition) {
+      return { success: false, error: `Unknown integration type from user response: ${args.type}` };
+    }
+
+    let config = args.config;
+    const configErrors = validateConfig(args.type, config);
+    if (configErrors.length > 0) {
+      return { success: false, error: "Invalid configuration", validation_errors: configErrors };
+    }
+    const shouldReplaceCredentials = hasNonEmptyCredentialValue(args.credentials);
+    const credentialErrors = shouldReplaceCredentials
+      ? validateCredentials(args.type, args.credentials)
+      : [];
+    if (credentialErrors.length > 0) {
+      return { success: false, error: "Invalid credentials", validation_errors: credentialErrors };
+    }
+    if (args.type === "remote_mcp") {
+      const validationErrors = shouldReplaceCredentials
+        ? validateRemoteMcpConnection(config, args.credentials)
+        : validateConfig(args.type, config);
+      if (validationErrors.length > 0) {
+        return { success: false, error: "Invalid remote MCP connection", validation_errors: validationErrors };
+      }
+      config = {
+        ...config,
+        server_url: normalizeRemoteMcpUrl(String(config.server_url)),
+      };
+    }
+
+    const updates: {
+      name?: string;
+      config?: string;
+      credentialsEncrypted?: string;
+    } = {
+      name: args.name,
+      config: JSON.stringify(config),
+    };
+    if (shouldReplaceCredentials) {
+      updates.credentialsEncrypted = (
+        args.type === "remote_mcp" || shouldStoreIntegrationCredentials(args.type, args.credentials)
+      )
+        ? await encryptCredentials(args.credentials, this.options.env.INTEGRATION_SECRET_KEY)
+        : "";
+    }
+
+    await this.options.workspaceStub.updateIntegration(
+      integrationId,
+      updates,
+      this.options.userId || "system",
+    );
+
+    return {
+      success: true,
+      integration: {
+        id: integrationId,
+        type: args.type,
+        name: args.name,
+        category: definition.category,
+        recommended_access: recommendedAccess(integrationId),
+      },
+      ...(args.type === "remote_mcp" && config.auth_type === "oauth"
+        ? {
+            oauth_url: `/api/integrations/remote_mcp/oauth?${new URLSearchParams({
+              integration_id: integrationId,
+              redirect: "/connections",
+            }).toString()}`,
+          }
+        : {}),
+      message:
+        args.type === "remote_mcp" && config.auth_type === "oauth"
+          ? `Integration '${args.name}' updated successfully. OAuth authorization is still required before MCP tools can be used.`
+          : `Integration '${args.name}' updated successfully.`,
     };
   }
 
   async promptConnectionSetup(args: Record<string, unknown>): Promise<unknown> {
-    const integrationType = typeof args.integration_type === "string" ? args.integration_type.trim() : "";
+    const integrationId = typeof args.integration_id === "string" && args.integration_id.trim()
+      ? args.integration_id.trim()
+      : typeof args.connection_id === "string" && args.connection_id.trim()
+        ? args.connection_id.trim()
+        : "";
+    const existing = integrationId
+      ? await this.options.workspaceStub.getIntegration(integrationId)
+      : null;
+    if (integrationId && !existing) {
+      return { success: false, error: `Connection not found: ${integrationId}` };
+    }
+
+    const integrationType =
+      typeof args.integration_type === "string" && args.integration_type.trim()
+        ? args.integration_type.trim()
+        : existing?.integration_type ?? "";
     if (!integrationType) throw new Error("integration_type is required");
     const definition = getIntegrationDefinition(integrationType);
     if (!definition) {
@@ -198,14 +372,25 @@ export class CodeModeIntegrations {
           fields: args.fields as DynamicField[],
         }
       : undefined;
+    const initialConfig = args.config && typeof args.config === "object"
+      ? args.config as Record<string, unknown>
+      : existing
+        ? parseConfig(existing.config)
+        : undefined;
+    const initialCredentials = args.credentials && typeof args.credentials === "object"
+      ? args.credentials as Record<string, unknown>
+      : undefined;
     const response = await this.options.promptConnectionSetup({
+      integrationId: integrationId || undefined,
       integrationType,
       suggestedName:
         typeof args.suggested_name === "string" && args.suggested_name.trim()
           ? args.suggested_name.trim()
-          : dynamicSchema?.displayName ?? definition.displayName,
+          : existing?.name ?? dynamicSchema?.displayName ?? definition.displayName,
       message: typeof args.message === "string" ? args.message : undefined,
       instructions: typeof args.instructions === "string" ? args.instructions : undefined,
+      initialConfig,
+      initialCredentials,
       dynamicSchema,
     });
     if (response.cancelled) {
@@ -241,6 +426,14 @@ export class CodeModeIntegrations {
             dynamic_fields: dynamicSchema.fields,
           }
         : config;
+    if (integrationId) {
+      return this.updateExistingIntegration(integrationId, {
+        type,
+        name,
+        config: finalConfig,
+        credentials,
+      });
+    }
     return this.create({
       integration_type: type,
       name,

@@ -2146,10 +2146,15 @@ export default function Chat({
       ) {
         setConnectionSetupPrompt({
           requestId: data.requestId as string,
+          integrationId: data.integrationId as string | undefined,
           integrationType: data.integrationType as string,
           suggestedName: data.suggestedName as string | undefined,
           message: data.message as string | undefined,
           instructions: data.instructions as string | undefined,
+          initialConfig:
+            data.initialConfig as ConnectionSetupPromptData["initialConfig"],
+          initialCredentials:
+            data.initialCredentials as ConnectionSetupPromptData["initialCredentials"],
           dynamicSchema:
             data.dynamicSchema as ConnectionSetupPromptData["dynamicSchema"],
         });

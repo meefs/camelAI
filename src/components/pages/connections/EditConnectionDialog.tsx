@@ -32,6 +32,7 @@ interface EditConnectionDialogProps {
   connection: Integration;
   connectionTypes: IntegrationDefinition[];
   orgId: string;
+  forceCredentialUpdate?: boolean;
   onSuccess: () => void;
 }
 
@@ -90,6 +91,7 @@ export function EditConnectionDialog({
   connection,
   connectionTypes,
   orgId,
+  forceCredentialUpdate = false,
   onSuccess,
 }: EditConnectionDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
@@ -107,9 +109,9 @@ export function EditConnectionDialog({
     setName(connection.name);
     setConfig(typeDef ? applyDefaults(typeDef.configSchema, connection.config) : connection.config);
     setCredentials({});
-    setShouldUpdateCredentials(false);
+    setShouldUpdateCredentials(forceCredentialUpdate);
     setError(null);
-  }, [connection, typeDef]);
+  }, [connection, typeDef, forceCredentialUpdate]);
 
   useEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
@@ -347,7 +349,7 @@ export function EditConnectionDialog({
                 }}
               >
                 <ExternalLink className="mr-2 size-4" />
-                Connect OAuth
+                {connection.has_credentials ? 'Reauthorize OAuth' : 'Connect OAuth'}
               </Button>
             )}
           </DialogFooter>

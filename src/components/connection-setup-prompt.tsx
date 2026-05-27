@@ -1,7 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { INTEGRATION_REGISTRY, type DynamicField, type DynamicIntegrationSchema } from '@/lib/integration-registry';
+import {
+  INTEGRATION_REGISTRY,
+  type DynamicField,
+  type DynamicIntegrationSchema,
+  type IntegrationDefinition,
+} from '@/lib/integration-registry';
+import { validateRemoteMcpConnection } from '@/lib/remote-mcp';
 import {
   Dialog,
   DialogContent,
@@ -28,10 +34,13 @@ import { SandboxIpNotice } from '@/components/connections/sandbox-ip-notice';
 
 export interface ConnectionSetupPromptData {
   requestId: string;
+  integrationId?: string;
   integrationType: string;
   suggestedName?: string;
   message?: string;
   instructions?: string;
+  initialConfig?: Record<string, unknown>;
+  initialCredentials?: Record<string, unknown>;
   dynamicSchema?: DynamicIntegrationSchema;
 }
 
@@ -55,8 +64,57 @@ interface ConnectionSetupPromptProps {
 const integrationTypes = Object.values(INTEGRATION_REGISTRY);
 
 // OAuth integration types that have worker routes for OAuth flow
-const OAUTH_INTEGRATIONS = ['slack', 'notion'] as const;
+const OAUTH_INTEGRATIONS = ['slack', 'notion', 'salesforce'] as const;
 type OAuthIntegrationType = (typeof OAUTH_INTEGRATIONS)[number];
+
+const applyDefaults = (
+  schema: IntegrationDefinition['configSchema'],
+  current: Record<string, unknown>
+) => {
+  const next = { ...current };
+  for (const field of schema) {
+    if (field.default === undefined) continue;
+    const value = next[field.name];
+    if (value === undefined || value === null || value === '') {
+      next[field.name] = field.default;
+    }
+  }
+  return next;
+};
+
+function shouldShowConfigField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'auth_header') {
+    return config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function shouldShowCredentialField(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return true;
+}
+
+function isCredentialFieldRequired(
+  connectionType: string,
+  fieldName: string,
+  config: Record<string, unknown>,
+  schemaRequired: boolean
+): boolean {
+  if (connectionType === 'remote_mcp' && fieldName === 'token') {
+    return config.auth_type === 'bearer' || config.auth_type === 'custom_header';
+  }
+  return schemaRequired;
+}
 
 export function ConnectionSetupPrompt({
   data,
@@ -64,8 +122,8 @@ export function ConnectionSetupPrompt({
   onCancel,
 }: ConnectionSetupPromptProps) {
   const [name, setName] = useState(data.suggestedName || '');
-  const [config, setConfig] = useState<Record<string, unknown>>({});
-  const [credentials, setCredentials] = useState<Record<string, unknown>>({});
+  const [config, setConfig] = useState<Record<string, unknown>>(data.initialConfig ?? {});
+  const [credentials, setCredentials] = useState<Record<string, unknown>>(data.initialCredentials ?? {});
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -76,8 +134,12 @@ export function ConnectionSetupPrompt({
   const dynamicSchema = data.dynamicSchema;
 
   // Check if this is an OAuth integration with a supported flow
-  const isOAuthWithFlow = typeDef?.authMethod === 'oauth2' &&
-    OAUTH_INTEGRATIONS.includes(data.integrationType as OAuthIntegrationType);
+  const isRemoteMcpOAuth =
+    data.integrationType === 'remote_mcp' && config.auth_type === 'oauth';
+  const isOAuthWithFlow =
+    (typeDef?.authMethod === 'oauth2' &&
+      OAUTH_INTEGRATIONS.includes(data.integrationType as OAuthIntegrationType)) ||
+    (isRemoteMcpOAuth && Boolean(data.integrationId));
 
   // Handle OAuth flow redirect
   const handleOAuthConnect = useCallback(() => {
@@ -91,22 +153,24 @@ export function ConnectionSetupPrompt({
         params.set('chat_thread_id', decodeURIComponent(match[1]));
       }
     }
+    if (data.integrationId) {
+      params.set('integration_id', data.integrationId);
+    }
     // Redirect to OAuth flow - this will complete the MCP request via callback
     window.location.href = `/api/integrations/${data.integrationType}/oauth?${params.toString()}`;
-  }, [data.integrationType, data.requestId]);
+  }, [data.integrationId, data.integrationType, data.requestId]);
 
   // Set defaults from config schema on mount
   useEffect(() => {
     if (typeDef && !isDynamic) {
-      const defaultConfig: Record<string, unknown> = {};
-      for (const field of typeDef.configSchema) {
-        if (field.default !== undefined) {
-          defaultConfig[field.name] = field.default;
-        }
-      }
-      setConfig(defaultConfig);
+      setConfig(applyDefaults(typeDef.configSchema, data.initialConfig ?? {}));
+      setCredentials(data.initialCredentials ?? {});
+      setName(data.suggestedName || '');
+    } else if (isDynamic) {
+      setCredentials(data.initialCredentials ?? {});
+      setName(data.suggestedName || '');
     }
-  }, [typeDef, isDynamic]);
+  }, [typeDef, isDynamic, data.initialConfig, data.initialCredentials, data.suggestedName]);
 
   const handleCancel = () => {
     void onSubmit({
@@ -164,9 +228,11 @@ export function ConnectionSetupPrompt({
           setIsSubmitting(false);
         }
       } else if (typeDef) {
+        const nextConfig = applyDefaults(typeDef.configSchema, config);
         // Validate required fields for static integrations
         for (const field of typeDef.configSchema) {
-          const value = config[field.name];
+          if (!shouldShowConfigField(data.integrationType, field.name, nextConfig)) continue;
+          const value = nextConfig[field.name];
           // Check for undefined, null, or empty string, but allow 0
           if (field.required && (value == null || value === '')) {
             setError(`${field.label} is required`);
@@ -176,10 +242,26 @@ export function ConnectionSetupPrompt({
         }
 
         for (const field of typeDef.credentialSchema) {
+          if (!shouldShowCredentialField(data.integrationType, field.name, nextConfig)) continue;
           const value = credentials[field.name];
+          const required = isCredentialFieldRequired(
+            data.integrationType,
+            field.name,
+            nextConfig,
+            field.required
+          );
           // Check for undefined, null, or empty string, but allow 0
-          if (field.required && (value == null || value === '')) {
+          if (required && (value == null || value === '')) {
             setError(`${field.label} is required`);
+            setIsSubmitting(false);
+            return;
+          }
+        }
+
+        if (data.integrationType === 'remote_mcp') {
+          const validationErrors = validateRemoteMcpConnection(nextConfig, credentials);
+          if (validationErrors.length > 0) {
+            setError(validationErrors.join(', '));
             setIsSubmitting(false);
             return;
           }
@@ -192,7 +274,7 @@ export function ConnectionSetupPrompt({
             integration: {
               type: data.integrationType,
               name: name.trim(),
-              config,
+              config: nextConfig,
               credentials,
             },
           });
@@ -332,7 +414,9 @@ export function ConnectionSetupPrompt({
               )}
 
               {/* Static config fields (non-dynamic mode) */}
-              {!isDynamic && typeDef && typeDef.configSchema.map((field) => (
+              {!isDynamic && typeDef && typeDef.configSchema
+                .filter((field) => shouldShowConfigField(data.integrationType, field.name, config))
+                .map((field) => (
                 <div key={field.name} className="grid gap-1.5">
                   <Label htmlFor={field.name}>
                     {field.label}
@@ -374,7 +458,9 @@ export function ConnectionSetupPrompt({
               {!isDynamic && typeDef?.requiresOutboundIpAllowlist && <SandboxIpNotice />}
 
               {/* Static credential fields (non-dynamic mode, non-OAuth with flow) */}
-              {!isDynamic && !isOAuthWithFlow && typeDef && typeDef.credentialSchema.length > 0 && (
+              {!isDynamic && !isOAuthWithFlow && typeDef && typeDef.credentialSchema
+                .filter((field) => shouldShowCredentialField(data.integrationType, field.name, config))
+                .length > 0 && (
                 <>
                   <div className="mt-2 border-t pt-4">
                     <p className="mb-3 text-sm font-medium">Credentials</p>
@@ -389,21 +475,32 @@ export function ConnectionSetupPrompt({
                   )}
 
                   {/* Show credential fields for non-Snowflake integrations */}
-                  {data.integrationType !== 'snowflake' && typeDef.credentialSchema.map((field) => (
-                    <div key={field.name} className="grid gap-1.5">
-                      <Label htmlFor={`cred-${field.name}`}>
-                        {field.label}
-                        {field.required && <span className="ml-1 text-red-400">*</span>}
-                      </Label>
-                      <Input
-                        id={`cred-${field.name}`}
-                        type={field.type === 'password' ? 'password' : 'text'}
-                        value={(credentials[field.name] as string) || ''}
-                        onChange={(e) => updateCredentials(field.name, e.target.value)}
-                        placeholder={field.placeholder}
-                      />
-                    </div>
-                  ))}
+                  {data.integrationType !== 'snowflake' && typeDef.credentialSchema
+                    .filter((field) => shouldShowCredentialField(data.integrationType, field.name, config))
+                    .map((field) => {
+                      const required = isCredentialFieldRequired(
+                        data.integrationType,
+                        field.name,
+                        config,
+                        field.required
+                      );
+                      return (
+                        <div key={field.name} className="grid gap-1.5">
+                          <Label htmlFor={`cred-${field.name}`}>
+                            {field.label}
+                            {required && <span className="ml-1 text-red-400">*</span>}
+                          </Label>
+                          <Input
+                            id={`cred-${field.name}`}
+                            type={field.type === 'password' ? 'password' : 'text'}
+                            value={(credentials[field.name] as string) || ''}
+                            onChange={(e) => updateCredentials(field.name, e.target.value)}
+                            placeholder={field.placeholder}
+                            required={required}
+                          />
+                        </div>
+                      );
+                    })}
                 </>
               )}
 
@@ -411,8 +508,8 @@ export function ConnectionSetupPrompt({
               {isOAuthWithFlow && (
                 <Alert>
                   <AlertDescription>
-                    Click the button below to connect your {typeDef?.displayName} account.
-                    You&apos;ll be redirected to authorize access.
+                    Click the button below to authorize access.
+                    You&apos;ll return to this chat when it completes.
                   </AlertDescription>
                 </Alert>
               )}
@@ -437,7 +534,7 @@ export function ConnectionSetupPrompt({
             {isOAuthWithFlow ? (
               <Button type="button" onClick={handleOAuthConnect}>
                 <ExternalLink className="mr-2 size-4" />
-                Connect {typeDef?.displayName}
+                {data.integrationId ? 'Reauthorize' : `Connect ${typeDef?.displayName}`}
               </Button>
             ) : (
               <Button

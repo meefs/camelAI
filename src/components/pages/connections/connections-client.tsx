@@ -107,7 +107,7 @@ const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
 };
 
 const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
-  '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to.</camelai system message>';
+  '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to. If the service provides a remote MCP endpoint, use the native Remote MCP Server connection type (`remote_mcp`) instead of a generic HTTP API connection.</camelai system message>';
 
 function connectionAuthLabel(type: IntegrationDefinition): string {
   if (type.type === 'remote_mcp' || hasBrokeredProviderMcp(type.type)) return 'MCP';
@@ -136,6 +136,7 @@ export default function ConnectionsClient({
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState<Integration | null>(null);
+  const [forceCredentialUpdate, setForceCredentialUpdate] = useState(false);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
   const [copyTarget, setCopyTarget] = useState<Integration | null>(null);
@@ -247,6 +248,37 @@ export default function ConnectionsClient({
     }
   }, [activeCategories, categoryFilter]);
 
+  useEffect(() => {
+    const connectionId = searchParams.get('connection');
+    const shouldReauth = searchParams.get('reauth') === '1';
+    if (!connectionId || !shouldReauth) return;
+
+    const connection = connections.find((item) => item.id === connectionId);
+    if (!connection) return;
+
+    const typeDef = typeDefinitionsByType.get(connection.integration_type);
+    const isRemoteMcpOAuth =
+      connection.integration_type === 'remote_mcp' &&
+      (connection.config as Record<string, unknown>)?.auth_type === 'oauth';
+    if (typeDef?.authMethod === 'oauth2' || isRemoteMcpOAuth) {
+      window.location.href = `/api/integrations/${encodeURIComponent(connection.integration_type)}/oauth?${new URLSearchParams({
+        workspace_id: currentWorkspace?.id ?? '',
+        integration_id: connection.id,
+        redirect: '/connections',
+      }).toString()}`;
+      return;
+    }
+
+    setSelectedConnection(connection);
+    setForceCredentialUpdate(true);
+    setEditDialogOpen(true);
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('connection');
+    nextParams.delete('reauth');
+    setSearchParams(nextParams, { replace: true });
+  }, [connections, currentWorkspace?.id, searchParams, setSearchParams, typeDefinitionsByType]);
+
   // Handle fetcher responses
   useEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
@@ -332,6 +364,7 @@ export default function ConnectionsClient({
   };
 
   const handleEditClick = (connection: Integration) => {
+    setForceCredentialUpdate(false);
     setSelectedConnection(connection);
     setEditDialogOpen(true);
   };
@@ -357,6 +390,7 @@ export default function ConnectionsClient({
   const handleEditSuccess = () => {
     setEditDialogOpen(false);
     setSelectedConnection(null);
+    setForceCredentialUpdate(false);
     if (revalidator.state === 'idle') {
       revalidator.revalidate();
     }
@@ -373,6 +407,7 @@ export default function ConnectionsClient({
     setEditDialogOpen(open);
     if (!open) {
       setSelectedConnection(null);
+      setForceCredentialUpdate(false);
     }
   };
 
@@ -790,6 +825,7 @@ export default function ConnectionsClient({
           connection={selectedConnection}
           connectionTypes={connectionTypes}
           orgId={orgId}
+          forceCredentialUpdate={forceCredentialUpdate}
           onSuccess={handleEditSuccess}
         />
       )}
