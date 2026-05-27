@@ -30,4 +30,12 @@ describe("IntegrationIcon", () => {
     expect(icon.tagName).toBe("IMG");
     expect(icon).toHaveAttribute("src", "/logos/claude.svg");
   });
+
+  it("uses the Telegram logo as a single-variant image", () => {
+    render(<IntegrationIcon type="telegram" size={16} />);
+
+    const icon = screen.getByRole("img", { name: "telegram" });
+    expect(icon.tagName).toBe("IMG");
+    expect(icon).toHaveAttribute("src", "/logos/telegram.svg");
+  });
 });

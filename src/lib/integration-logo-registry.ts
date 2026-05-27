@@ -60,6 +60,7 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   stripe: 'single',
   supabase: 'single',
   teams: 'single',
+  telegram: 'single',
   turso: 'single',
   twilio: 'single',
   vercel: 'single',

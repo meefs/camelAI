@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-import { hasBrokeredProviderMcp } from '@/lib/provider-mcp-registry';
+import { getIntegrationAuthLabel } from '@/lib/integration-auth-label';
 import { ConnectionChip } from './connection-chip';
 import {
   useConnectionFilter,
@@ -27,9 +27,7 @@ interface ConnectionPickerProps {
 }
 
 function connectionAuthLabel(integration: FilterableIntegration & { authMethod?: string }): string | undefined {
-  if (integration.type === 'remote_mcp' || hasBrokeredProviderMcp(integration.type)) return 'MCP';
-  if (!integration.authMethod) return undefined;
-  return integration.authMethod === 'oauth2' ? 'OAuth' : 'API Key';
+  return getIntegrationAuthLabel(integration);
 }
 
 export function ConnectionPicker({

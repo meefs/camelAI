@@ -42,6 +42,7 @@ These are the integration types from the registry that have logos:
 | `stripe`    | Stripe              |                          |
 | `notion`    | Notion              |                          |
 | `slack`     | Slack               |                          |
+| `telegram`  | Telegram            |                          |
 | `openai`    | OpenAI              |                          |
 | `anthropic` | Anthropic           |                          |
 | `claude`    | Claude              | Product logo for models  |
