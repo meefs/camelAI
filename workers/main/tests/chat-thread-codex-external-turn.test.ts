@@ -1740,10 +1740,13 @@ describe('ChatThreadDO Codex turn handling', () => {
     const jsExec = tools.find((tool: any) => tool.name === 'js_exec');
 
     const result = await jsExec.execute('tool3', {
+      description: 'run a short code-mode script',
       code: 'text("hello")',
       timeoutMs: 1234,
       maxOutputCharacters: 4321,
     });
+
+    expect(jsExec.parameters.required).toContain('description');
 
     expect(fake.runCodeModeJavascript).toHaveBeenCalledWith({
       code: 'text("hello")',

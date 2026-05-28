@@ -207,7 +207,10 @@ describe('Codex todo state integration', () => {
             id: 'tool-js-exec',
             type: 'dynamicToolCall',
             tool: 'js_exec',
-            arguments: { code: 'return 1;' },
+            arguments: {
+              description: 'evaluate a quick expression',
+              code: 'return 1;',
+            },
             status: 'running',
           },
         },
@@ -296,6 +299,7 @@ describe('Codex todo state integration', () => {
 
     const jsExec = findToolUse(messages, 'tool-js-exec');
     expect(jsExec?.name).toBe('JavaScript');
+    expect(jsExec?.input.description).toBe('evaluate a quick expression');
     expect(jsExec?.input.code).toBe('return 1;');
     expect(jsExec?.input.rawToolName).toBe('js_exec');
 

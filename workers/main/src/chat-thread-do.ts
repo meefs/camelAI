@@ -7722,6 +7722,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({
+          description: Type.String({
+            description:
+              "Required concise description of what this JavaScript will do. This is shown in the chat UI.",
+          }),
           code: Type.String(),
           timeoutMs: Type.Optional(Type.Number()),
           maxOutputCharacters: Type.Optional(Type.Number()),

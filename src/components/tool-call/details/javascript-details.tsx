@@ -84,6 +84,7 @@ function ResultTablePreview({ preview }: { preview: TablePreview }) {
 
 export function JavaScriptDetails({ tool, result }: JavaScriptDetailsProps) {
   const input = tool?.input ?? {};
+  const description = typeof input.description === 'string' ? input.description : '';
   const code = typeof input.code === 'string' ? input.code : '';
   const timeoutMs = typeof input.timeoutMs === 'number' ? input.timeoutMs : undefined;
   const maxOutputCharacters =
@@ -94,6 +95,7 @@ export function JavaScriptDetails({ tool, result }: JavaScriptDetailsProps) {
   return (
     <div className="space-y-1">
       <DetailRow label="Runtime:" value="JavaScript code mode" />
+      {description ? <DetailRow label="Description:" value={description} /> : null}
       {timeoutMs !== undefined ? <DetailRow label="Timeout:" value={`${timeoutMs}ms`} /> : null}
       {maxOutputCharacters !== undefined ? (
         <DetailRow label="Output limit:" value={`${maxOutputCharacters} chars`} />

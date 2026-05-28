@@ -510,9 +510,13 @@ export function getToolSummaryParts(
       if (isError) return { action: 'Failed to search web' };
       return { action: 'Searched web' };
     case 'JavaScript':
-      if (isRunning) return { action: 'Running JavaScript...' };
-      if (isError) return { action: 'JavaScript failed' };
-      return { action: 'Ran JavaScript' };
+      {
+        const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
+        const label = description || 'JavaScript';
+        if (isRunning) return { action: `Running ${label}...` };
+        if (isError) return { action: `${label} failed` };
+        return { action: `Ran ${label}` };
+      }
     case 'ListApps':
       if (isRunning) return { action: 'Checking apps...' };
       if (isError) return { action: 'Could not check apps' };

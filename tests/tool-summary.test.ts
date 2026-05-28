@@ -230,6 +230,28 @@ describe('getToolSummaryParts JavaScript', () => {
       'JavaScript failed'
     );
   });
+
+  it('uses the JavaScript tool description when present', () => {
+    const tool: ToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool_js_exec',
+      name: 'JavaScript',
+      input: {
+        description: 'checking database connection',
+        code: 'return await env.CONNECTIONS.test("postgres");',
+      },
+    };
+
+    expect(getToolSummaryParts(tool, undefined, true, 'running').action).toBe(
+      'Running checking database connection...'
+    );
+    expect(getToolSummaryParts(tool, undefined, false, 'complete').action).toBe(
+      'Ran checking database connection'
+    );
+    expect(getToolSummaryParts(tool, undefined, false, 'error').action).toBe(
+      'checking database connection failed'
+    );
+  });
 });
 
 describe('getToolSummaryParts friendly dynamic tool labels', () => {
