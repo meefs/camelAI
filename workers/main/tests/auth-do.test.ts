@@ -525,8 +525,8 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
-      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus');
-      expect(thread.model).toBe('opus');
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-4.8');
+      expect(thread.model).toBe('opus-4.8');
 
       const updated = await orgStub.updateThreadModel(thread.id, 'sonnet', userId);
       expect(updated?.model).toBe('sonnet');
@@ -588,7 +588,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
-      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus');
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-4.8');
       const updated = await orgStub.updateThreadModel(thread.id, 'gpt-5.4-mini', userId);
 
       expect(updated?.model).toBe('gpt-5.4-mini');

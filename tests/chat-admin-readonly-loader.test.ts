@@ -369,7 +369,7 @@ describe('chat loader workspace mismatch handling', () => {
       id: 'thread_123',
       workspace_id: 'ws_active',
       title: 'Workspace Thread',
-      model: 'opus',
+      model: 'opus-4.8',
     });
     getWorkspaceModelPickerStateMock.mockRejectedValue(
       new Error('transient picker failure'),
@@ -384,11 +384,11 @@ describe('chat loader workspace mismatch handling', () => {
       params: { id: 'thread_123' },
     } as never);
 
-    expect(result.threadModel).toBe('opus');
+    expect(result.threadModel).toBe('opus-4.8');
     if (!Array.isArray(result.allowedThreadModels)) {
       throw new Error('Expected fallback allowedThreadModels to be an array');
     }
-    expect(result.allowedThreadModels).toContain('opus');
+    expect(result.allowedThreadModels).toContain('opus-4.8');
     expect(result.allowedThreadModels).toContain('sonnet');
     expect(result.allowedThreadModels.length).toBeGreaterThan(0);
     consoleErrorSpy.mockRestore();
@@ -403,7 +403,7 @@ describe('chat loader workspace mismatch handling', () => {
             id: 'thread_123',
             workspace_id: 'ws_active',
             title: 'Workspace Thread',
-            model: 'opus',
+            model: 'opus-4.8',
             user_message_count: 0,
           }),
           getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
@@ -419,8 +419,8 @@ describe('chat loader workspace mismatch handling', () => {
 
     expect(result.readOnly).toBe(false);
     expect(result.isNewThread).toBe(true);
-    expect(result.threadModel).toBe('opus');
-    expect(result.allowedThreadModels).toEqual(['opus']);
+    expect(result.threadModel).toBe('opus-4.8');
+    expect(result.allowedThreadModels).toEqual(['opus-4.8']);
     expect(result.isOrgAdmin).toBe(false);
     expect(result.recentModelScope).toEqual({
       orgId: 'org_active',
@@ -458,7 +458,7 @@ describe('chat loader workspace mismatch handling', () => {
             id: 'thread_123',
             workspace_id: 'ws_active',
             title: 'Workspace Thread',
-            model: 'opus',
+            model: 'opus-4.8',
             user_message_count: 0,
           }),
           getInfo: async () => ({ id: 'org_active', slug: 'acme' }),
@@ -512,7 +512,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.llmProvider).toBe(null);
     expect(result.allowedThreadModels).toEqual(['gpt-5.4-mini']);
     expect(result.allowedThreadModels).not.toContain('sonnet');
-    expect(result.allowedThreadModels).not.toContain('opus');
+    expect(result.allowedThreadModels).not.toContain('opus-4.8');
     expect(result.effectivePickerDefaultModel).toBe(null);
     expect(result.hasEffectivePickerDefault).toBe(false);
     expect(result.isOrgAdmin).toBe(false);

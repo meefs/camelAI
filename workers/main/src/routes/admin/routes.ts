@@ -16,8 +16,10 @@ import { Hono } from "hono";
 import { openApi } from "hono-zod-openapi";
 import { z } from "zod";
 import type { Env } from "../../types.js";
+import type { LlmModel } from "../../../../../src/types.js";
 import {
   buildPublicLlmProviderConfig,
+  normalizeLlmModel,
   THREAD_MODEL_LOCK_MESSAGE,
 } from "../../../../../src/lib/llm-provider-config.js";
 import type {
@@ -193,6 +195,40 @@ type DashboardMetricsLookup = {
   ): Promise<DashboardRetentionResponse>;
 };
 
+function normalizeAdminThreadResponse<T extends { model: unknown }>(thread: T) {
+  return {
+    ...thread,
+    model: normalizeLlmModel(thread.model),
+  };
+}
+
+function normalizeAdminThreadPage<T extends { model: unknown }>(page: {
+  items: T[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}) {
+  return {
+    ...page,
+    items: page.items.map(normalizeAdminThreadResponse),
+  };
+}
+
+function normalizeAdminDashboardSummary(
+  summary: DashboardSummaryResponse,
+): DashboardSummaryResponse {
+  return {
+    ...summary,
+    selected_day: {
+      ...summary.selected_day,
+      latest_threads: summary.selected_day.latest_threads.map(
+        normalizeAdminThreadResponse,
+      ),
+    },
+  };
+}
+
 function enrichOrgListItems(
   orgs: AdminOrgDirectoryRow[],
   usageByOrgId: Map<string, OrgUsageAnalyticsItem>,
@@ -289,14 +325,7 @@ async function notifyThreadMetadataChange(
   threadId: string,
   updates: {
     title?: string;
-    model?:
-      | "haiku"
-      | "sonnet"
-      | "opus"
-      | "gpt-5.4"
-      | "gpt-5.4-mini"
-      | "kimi-k2.6"
-      | "grok-4.3";
+    model?: LlmModel;
   },
   updatedAt?: number,
 ): Promise<void> {
@@ -314,14 +343,7 @@ async function notifyThreadMetadataChange(
     ) as unknown as {
       setTitle(title: string): Promise<void>;
       setModel(
-        model:
-          | "haiku"
-          | "sonnet"
-          | "opus"
-          | "gpt-5.4"
-          | "gpt-5.4-mini"
-          | "kimi-k2.6"
-          | "grok-4.3",
+        model: LlmModel,
         provider?: "claude" | "codex",
         updatedAt?: number,
       ): Promise<void>;
@@ -1015,7 +1037,7 @@ routes.get(
       workspace_count: orgInfo.workspace_count ?? 0,
       has_llm_provider: Boolean(llmProvider),
       llm_provider: llmProvider,
-      threads: activity.threads,
+      threads: activity.threads.map(normalizeAdminThreadResponse),
       apps: activity.apps,
       threadCount: activity.threadCount,
       appCount: activity.appCount,
@@ -1310,7 +1332,7 @@ routes.get(
       search,
       filters,
     );
-    return c.json(result);
+    return c.json(normalizeAdminThreadPage(result));
   },
 );
 
@@ -1370,7 +1392,10 @@ routes.patch(
     if (threadContext) {
       const orgStub = getOrgStub(env, threadContext.org_id);
       const existingThread = await orgStub.getThread(threadId);
-      if (body.model && existingThread && body.model !== existingThread.model) {
+      const existingModel = existingThread
+        ? normalizeLlmModel(existingThread.model)
+        : null;
+      if (body.model && existingModel && body.model !== existingModel) {
         return c.json({ error: THREAD_MODEL_LOCK_MESSAGE }, 400);
       }
       let result;
@@ -1385,7 +1410,7 @@ routes.patch(
       }
       if (result) {
         await notifyThreadMetadataChange(env, threadId, body, result.updated_at);
-        return c.json(result);
+        return c.json(normalizeAdminThreadResponse(result));
       }
     }
 
@@ -1394,7 +1419,10 @@ routes.patch(
     for (const org of orgsResult.items) {
       const orgStub = getOrgStub(env, org.id);
       const existingThread = await orgStub.getThread(threadId);
-      if (body.model && existingThread && body.model !== existingThread.model) {
+      const existingModel = existingThread
+        ? normalizeLlmModel(existingThread.model)
+        : null;
+      if (body.model && existingModel && body.model !== existingModel) {
         return c.json({ error: THREAD_MODEL_LOCK_MESSAGE }, 400);
       }
       let result;
@@ -1409,7 +1437,7 @@ routes.patch(
       }
       if (result) {
         await notifyThreadMetadataChange(env, threadId, body, result.updated_at);
-        return c.json(result);
+        return c.json(normalizeAdminThreadResponse(result));
       }
     }
 
@@ -1720,7 +1748,7 @@ routes.get(
         spamOrgIds,
         internalDomains,
       });
-      return c.json(summary);
+      return c.json(normalizeAdminDashboardSummary(summary));
     } catch (error) {
       return c.json(
         {
@@ -1858,7 +1886,7 @@ routes.get(
         // The spam tab is investigative: include any user attached to a spam
         // org, even if that user also belongs to non-spam orgs elsewhere.
         users,
-        threads,
+        threads: threads.map(normalizeAdminThreadResponse),
         apps,
         orgs: orgs.map((org) => ({
           id: org.id,

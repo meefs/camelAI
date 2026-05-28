@@ -583,8 +583,7 @@ export type LlmProvider = "anthropic" | "bedrock" | "openai" | "openrouter";
 export type LlmModel =
   | "haiku"
   | "sonnet"
-  | "opus"
-  | "opus-4.7"
+  | "opus-4.8"
   | "gpt-5.5"
   | "gpt-5.4"
   | "gpt-5.4-mini"

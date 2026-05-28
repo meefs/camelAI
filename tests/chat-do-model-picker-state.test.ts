@@ -10,7 +10,7 @@ vi.mock('@/lib/thread-title-generation.server', () => ({
   generateThreadTitleWithOpenAI: vi.fn(),
 }));
 
-const { getThread, getWorkspaceModelPickerState } = await import(
+const { createThread, getThread, getWorkspaceModelPickerState } = await import(
   '@/lib/chat-do.server'
 );
 
@@ -97,6 +97,60 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     await expect(getWorkspaceModelPickerState({}, 'ws_123')).rejects.toThrow(
       storageError,
+    );
+  });
+
+  it('treats a null requested model as the picker default when creating a thread', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        models: [{ id: 'sonnet', added_at: 1 }],
+        default_model: 'sonnet',
+      }),
+      createThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'New Chat',
+        created_by: 'user_123',
+        model: 'sonnet',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    await expect(
+      createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, null),
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'sonnet' });
+    expect(orgStub.createThread).toHaveBeenCalledWith(
+      'ws_123',
+      'New Chat',
+      'user_123',
+      undefined,
+      'sonnet',
     );
   });
 

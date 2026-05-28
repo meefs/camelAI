@@ -763,6 +763,42 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
+  it('uses the local Bedrock fallback model for BYOK Opus 4.8 when Pi catalog lags', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {};
+    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
+      provider: 'bedrock',
+      apiKey: 'bedrock-token',
+      awsRegion: 'us-west-2',
+    }));
+    fake.checkHostedPiModelAccess = vi.fn(async () => {
+      throw new Error('hosted billing should not be checked for BYOK');
+    });
+    const getModel = vi.fn(() => undefined);
+
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+      fake,
+      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_CLAUDE_MODEL: 'opus-4.8' },
+      getModel,
+    );
+
+    expect(getModel).toHaveBeenCalledWith('amazon-bedrock', 'us.anthropic.claude-opus-4-8');
+    expect(model.model).toMatchObject({
+      id: 'us.anthropic.claude-opus-4-8',
+      provider: 'amazon-bedrock',
+      api: 'bedrock-converse-stream',
+      baseUrl: 'https://bedrock-runtime.us-west-2.amazonaws.com',
+      name: 'Claude Opus 4.8 (US)',
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
+    expect(model.apiKey).toBe('bedrock-token');
+    expect(model.billingSource).toBe('byok');
+    expect(model.usageProvider).toBe('bedrock');
+    expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
   it('passes Bedrock bearer tokens through the Pi stream function', () => {
     const streamSimple = vi.fn(() => ({ [Symbol.asyncIterator]: vi.fn() }));
     const streamBedrock = vi.fn(() => ({ [Symbol.asyncIterator]: vi.fn() }));

@@ -1,4 +1,4 @@
-import { isLlmModel } from "./llm-provider-config";
+import { isLlmModel, replaceLegacyLlmModel } from "./llm-provider-config";
 import type { LlmModel } from "../types";
 
 const PREFIX = "camelai.recentModel";
@@ -26,7 +26,8 @@ export function getRecentModel(scope: RecentModelScope): LlmModel | null {
   if (!storage) return null;
   try {
     const raw = storage.getItem(keyFor(scope));
-    return isLlmModel(raw) ? raw : null;
+    const normalized = replaceLegacyLlmModel(raw);
+    return isLlmModel(normalized) ? normalized : null;
   } catch {
     return null;
   }

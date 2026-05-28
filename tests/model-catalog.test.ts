@@ -80,10 +80,10 @@ const NEW_FRONTIER_MODELS: Array<{
     cost: '$$$',
   },
   {
-    id: 'opus-4.7',
-    label: 'Opus 4.7',
+    id: 'opus-4.8',
+    label: 'Opus 4.8',
     providerLogo: 'claude',
-    pricingKey: 'claude-opus-4-7',
+    pricingKey: 'claude-opus-4-8',
     cost: '$$$',
   },
 ];
@@ -115,8 +115,7 @@ describe('MODEL_CATALOG', () => {
   });
 
   it('uses Claude product logos for Anthropic-family models', () => {
-    expect(MODEL_CATALOG.opus.providerLogo).toBe('claude');
-    expect(MODEL_CATALOG['opus-4.7'].providerLogo).toBe('claude');
+    expect(MODEL_CATALOG['opus-4.8'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG.sonnet.providerLogo).toBe('claude');
     expect(MODEL_CATALOG.haiku.providerLogo).toBe('claude');
   });
@@ -151,7 +150,7 @@ describe('MODEL_CATALOG', () => {
     }
   });
 
-  it('adds GPT-5.5 and Opus 4.7 as distinct priced models', () => {
+  it('adds GPT-5.5 and Opus 4.8 as distinct priced models', () => {
     for (const expected of NEW_FRONTIER_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
         id: expected.id,
@@ -161,8 +160,10 @@ describe('MODEL_CATALOG', () => {
       });
       expect(LLM_MODEL_TO_PRICING_KEY[expected.id]).toBe(expected.pricingKey);
     }
-    expect(MODEL_CATALOG.opus.label).toBe('Opus 4.6');
-    expect(LLM_MODEL_TO_PRICING_KEY.opus).toBe('claude-opus-4-6');
+    expect(MODEL_CATALOG).not.toHaveProperty('opus');
+    expect(MODEL_CATALOG).not.toHaveProperty('opus-4.7');
+    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus');
+    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus-4.7');
   });
 
   it('hides Claude and OpenRouter-only models for OpenAI BYOK orgs', () => {
@@ -172,8 +173,7 @@ describe('MODEL_CATALOG', () => {
         default_model: null,
         models: [
           { id: 'sonnet', added_at: 1 },
-          { id: 'opus', added_at: 2 },
-          { id: 'opus-4.7', added_at: 11 },
+          { id: 'opus-4.8', added_at: 11 },
           { id: 'gpt-5.5', added_at: 12 },
           { id: 'gpt-5.4', added_at: 3 },
           { id: 'gpt-5.4-mini', added_at: 4 },

@@ -29,8 +29,7 @@ const CODEX_MODELS = [
 ] as const;
 
 const CLAUDE_MODELS = [
-  "opus-4.7",
-  "opus",
+  "opus-4.8",
   "sonnet",
   "haiku",
 ] as const;
@@ -75,6 +74,8 @@ describe("llm provider config helpers", () => {
     expect(normalizeLlmModel("gemini-3.1-pro-preview")).toBe(
       "gemini-3.5-flash",
     );
+    expect(normalizeLlmModel("opus")).toBe("opus-4.8");
+    expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
   });
 
   it("keeps BYOK provider-scoped and defaults hosted orgs to Claude", () => {

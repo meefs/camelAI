@@ -4,6 +4,10 @@ import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import * as chatDO from '@/lib/chat-do.server';
 import { addThreadToExistingGroup } from '@/lib/chat-groups.server';
+import {
+  isLlmModel,
+  replaceLegacyLlmModel,
+} from '@/lib/llm-provider-config';
 import type { ChatThreadPiCoreForkResult } from '../../../workers/main/src/chat-thread-do';
 
 function forkThreadTitle(title: string | null | undefined): string {
@@ -80,6 +84,10 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   if (!sourceThread || sourceThread.workspace_id !== workspaceId) {
     return Response.json({ error: 'Thread not found' }, { status: 404 });
   }
+  const replacedSourceModel = replaceLegacyLlmModel(sourceThread.model);
+  const sourceModel = isLlmModel(replacedSourceModel)
+    ? replacedSourceModel
+    : sourceThread.model;
 
   let targetGroupId: string | null = null;
   if (groupId) {
@@ -118,7 +126,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         forkThreadTitle(sourceThread.title),
         userId,
         sourceThread.first_user_message ?? undefined,
-        sourceThread.model,
+        sourceModel,
       );
     } catch (error) {
       const message =

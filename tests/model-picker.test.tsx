@@ -69,9 +69,9 @@ function getModelItem(label: string): HTMLElement {
 function renderPicker() {
   render(
     <ModelPicker
-      value="opus"
+      value="opus-4.8"
       onValueChange={vi.fn()}
-      options={[MODEL_CATALOG.opus, MODEL_CATALOG.sonnet]}
+      options={[MODEL_CATALOG['opus-4.8'], MODEL_CATALOG.sonnet]}
       isOrgAdmin={false}
     />,
   );
@@ -89,10 +89,10 @@ describe('ModelPicker metadata card state', () => {
   it('renders a single metadata card as keyboard focus moves between models', () => {
     renderPicker();
 
-    fireEvent.focus(getModelItem('Opus 4.6'));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.6');
+    fireEvent.focus(getModelItem('Opus 4.8'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.8');
     expect(
-      screen.getByLabelText('Intelligence rating: 4.5 out of 5'),
+      screen.getByLabelText('Intelligence rating: 5 out of 5'),
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText('Speed rating: 2 out of 5'),
@@ -115,7 +115,7 @@ describe('ModelPicker metadata card state', () => {
   it('delays pointer metadata and cancels pending opens on leave', () => {
     renderPicker();
 
-    const opusItem = getModelItem('Opus 4.6');
+    const opusItem = getModelItem('Opus 4.8');
     fireEvent.pointerEnter(opusItem);
     act(() => vi.advanceTimersByTime(149));
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
@@ -126,7 +126,7 @@ describe('ModelPicker metadata card state', () => {
 
     fireEvent.pointerEnter(opusItem);
     act(() => vi.advanceTimersByTime(150));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.6');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 4.8');
 
     fireEvent.pointerEnter(getModelItem('Sonnet 4.6'));
     act(() => vi.advanceTimersByTime(150));

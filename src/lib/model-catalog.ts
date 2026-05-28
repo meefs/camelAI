@@ -52,10 +52,9 @@ export interface ModelCatalogEntry {
 }
 
 export const ALL_LLM_MODELS: readonly LlmModel[] = [
-  "opus-4.7",
-  "opus",
-  "haiku",
+  "opus-4.8",
   "sonnet",
+  "haiku",
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
@@ -68,8 +67,7 @@ export const ALL_LLM_MODELS: readonly LlmModel[] = [
 ];
 
 export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
-  "opus-4.7": "claude-opus-4-7",
-  opus: "claude-opus-4-6",
+  "opus-4.8": "claude-opus-4-8",
   sonnet: "claude-sonnet-4-6",
   haiku: "claude-haiku-4-5-20251001",
   "gpt-5.5": "gpt-5.5",
@@ -92,24 +90,14 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
 //   $$  = input $2-4 AND output $10-20
 //   $$$ = input >= $5 OR output >= $20
 export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
-  "opus-4.7": {
-    id: "opus-4.7",
-    label: "Opus 4.7",
+  "opus-4.8": {
+    id: "opus-4.8",
+    label: "Opus 4.8",
     providerLogo: "claude",
     providerOrder: 0,
     modelOrder: 0,
     cost: "$$$",
     intelligence: 5,
-    speed: 1.5,
-  },
-  opus: {
-    id: "opus",
-    label: "Opus 4.6",
-    providerLogo: "claude",
-    providerOrder: 0,
-    modelOrder: 1,
-    cost: "$$$",
-    intelligence: 4.5,
     speed: 2,
   },
   sonnet: {
@@ -117,7 +105,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     label: "Sonnet 4.6",
     providerLogo: "claude",
     providerOrder: 0,
-    modelOrder: 2,
+    modelOrder: 1,
     cost: "$$",
     intelligence: 4,
     speed: 3.5,
@@ -127,7 +115,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     label: "Haiku 4.5",
     providerLogo: "claude",
     providerOrder: 0,
-    modelOrder: 3,
+    modelOrder: 2,
     cost: "$",
     intelligence: 2.5,
     speed: 5,

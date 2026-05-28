@@ -5455,12 +5455,14 @@ export class OrgDO extends DurableObject<DOEnv> {
   ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
+    const existingModel = normalizeLlmModel(existing.model);
     const normalizedModel =
       updates.model !== undefined
         ? normalizeLlmModel(updates.model)
         : undefined;
     const persistedModel =
-      normalizedModel === existing.model ? normalizedModel : undefined;
+      normalizedModel === existingModel ? normalizedModel : undefined;
+    const shouldPersistExistingModel = existing.model !== existingModel;
     const now = Date.now();
 
     const setClauses: string[] = ["updated_at = ?"];
@@ -5477,6 +5479,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (persistedModel !== undefined) {
       setClauses.push("model = ?");
       params.push(persistedModel);
+    } else if (shouldPersistExistingModel) {
+      setClauses.push("model = ?");
+      params.push(existingModel);
     }
 
     params.push(id);
@@ -5493,7 +5498,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       ...existing,
       title: updates.title ?? existing.title,
       created_by: updates.created_by ?? existing.created_by,
-      model: persistedModel ?? existing.model,
+      model: persistedModel ?? existingModel,
       updated_at: now,
     };
     this.getInfo()
@@ -5508,6 +5513,14 @@ export class OrgDO extends DurableObject<DOEnv> {
         console.error("Failed to sync admin thread update to AdminIndex", err);
       });
     return updated;
+  }
+
+  // Test helper RPC: simulate a historical thread row with a removed model id.
+  setThreadModelForTest(id: string, model: string): OrgThread | null {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+    this.sql.exec("UPDATE threads SET model = ? WHERE id = ?", model, id);
+    return this.getThread(id);
   }
 
   /**

@@ -112,7 +112,9 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
     expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-5.5");
     expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.6");
     expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k2.6");
-    expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-4.7");
+    expect(normalizeLegacyModel("opus")).toBe("anthropic/claude-opus-4.8");
+    expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-4.8");
+    expect(normalizeLegacyModel("opus-4.8")).toBe("anthropic/claude-opus-4.8");
     expect(normalizeLegacyModel("grok-4.3")).toBe("x-ai/grok-4.3");
     expect(normalizeLegacyModel("grok-latest")).toBe("x-ai/grok-4.3");
     expect(normalizeLegacyModel("gemini-3.5-flash")).toBe("google/gemini-3.5-flash");
@@ -156,6 +158,61 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("bedrock");
+    expect(routing.awsRegion).toBe("us-east-1");
+  });
+
+  it("routes Anthropic BYOK smart tier to Opus 4.8", async () => {
+    const encrypted = await encryptCredentials({ api_key: "anthropic-token" }, "secret");
+    const routing = await resolveRouting(
+      {
+        env: {
+          INTEGRATION_SECRET_KEY: "secret",
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => ({
+                provider: "anthropic",
+                config: JSON.stringify({}),
+                credentials_encrypted: encrypted,
+              })),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "smart",
+    );
+
+    expect(routing.provider).toBe("anthropic");
+    expect(routing.model).toBe("anthropic/claude-opus-4-8");
+  });
+
+  it("routes Bedrock BYOK smart tier to Opus 4.8", async () => {
+    const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
+    const routing = await resolveRouting(
+      {
+        env: {
+          INTEGRATION_SECRET_KEY: "secret",
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => ({
+                provider: "bedrock",
+                config: JSON.stringify({ aws_region: "us-east-1" }),
+                credentials_encrypted: encrypted,
+              })),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "smart",
+    );
+
+    expect(routing.provider).toBe("bedrock");
+    expect(routing.model).toBe("us.anthropic.claude-opus-4-8");
     expect(routing.awsRegion).toBe("us-east-1");
   });
 });

@@ -191,19 +191,9 @@ const BEDROCK_CLAUDE_MODEL_METADATA: Record<string, BedrockClaudeModelMetadata> 
     contextWindow: 200_000,
     maxTokens: 32_000,
   },
-  'global.anthropic.claude-opus-4-6-v1': {
-    id: 'global.anthropic.claude-opus-4-6-v1',
-    name: 'Claude Opus 4.6 (Global)',
-    reasoning: true,
-    thinkingLevelMap: { xhigh: 'max' },
-    input: ['text', 'image'],
-    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-  },
-  'global.anthropic.claude-opus-4-7': {
-    id: 'global.anthropic.claude-opus-4-7',
-    name: 'Claude Opus 4.7 (Global)',
+  'us.anthropic.claude-opus-4-8': {
+    id: 'us.anthropic.claude-opus-4-8',
+    name: 'Claude Opus 4.8 (US)',
     reasoning: true,
     thinkingLevelMap: { xhigh: 'xhigh' },
     input: ['text', 'image'],
@@ -367,9 +357,31 @@ export const bedrockProviderModule = {
 
 export const __testing = {
   buildBedrockInvokeBody,
+  resolveBedrockModelFallback,
   withBedrockModelMetadata,
   normalizeAnthropicToolResultAdjacency,
 };
+
+export function resolveBedrockModelFallback(
+  modelId: string,
+): Model<'bedrock-converse-stream'> | null {
+  const metadata = BEDROCK_CLAUDE_MODEL_METADATA[mapToBedrockModelId(modelId)];
+  if (!metadata) return null;
+
+  return {
+    id: metadata.id,
+    name: metadata.name,
+    api: 'bedrock-converse-stream',
+    provider: 'amazon-bedrock',
+    baseUrl: `https://bedrock-runtime.${DEFAULT_BEDROCK_REGION}.amazonaws.com`,
+    reasoning: metadata.reasoning,
+    thinkingLevelMap: metadata.thinkingLevelMap,
+    input: metadata.input,
+    cost: metadata.cost,
+    contextWindow: metadata.contextWindow,
+    maxTokens: metadata.maxTokens,
+  };
+}
 
 export function withBedrockModelMetadata<TApi extends Api>(model: Model<TApi>): Model<TApi> {
   const metadata = BEDROCK_CLAUDE_MODEL_METADATA[mapToBedrockModelId(model.id)];
@@ -458,18 +470,22 @@ function buildBedrockInvokeUrl(
 }
 
 function mapToBedrockModelId(modelId: string): string {
-  if (modelId.includes('.anthropic.') || modelId.startsWith('anthropic.')) {
-    return modelId;
-  }
   const normalized = modelId.toLowerCase();
   if (normalized.includes('sonnet-4-6') || normalized.includes('sonnet-4.6')) {
     return 'global.anthropic.claude-sonnet-4-6';
   }
-  if (normalized.includes('opus-4-6') || normalized.includes('opus-4.6')) {
-    return 'global.anthropic.claude-opus-4-6-v1';
+  if (
+    normalized.includes('opus-4-8') ||
+    normalized.includes('opus-4.8') ||
+    normalized.includes('opus-4-7') ||
+    normalized.includes('opus-4.7') ||
+    normalized.includes('opus-4-6') ||
+    normalized.includes('opus-4.6')
+  ) {
+    return 'us.anthropic.claude-opus-4-8';
   }
-  if (normalized.includes('opus-4-7') || normalized.includes('opus-4.7')) {
-    return 'global.anthropic.claude-opus-4-7';
+  if (modelId.includes('.anthropic.') || modelId.startsWith('anthropic.')) {
+    return modelId;
   }
   return `global.anthropic.${modelId}-v1:0`;
 }
@@ -802,7 +818,7 @@ function supportsPromptCaching(modelId: string): boolean {
   const id = modelId.toLowerCase();
   if (!id.includes('claude')) return false;
   return (
-    id.includes('-4-')     || // Claude 4.x (opus-4-7, sonnet-4-6, haiku-4-5, …)
+    id.includes('-4-')     || // Claude 4.x (opus-4-8, sonnet-4-6, haiku-4-5, ...)
     id.includes('-4.')     || // alternate dot notation
     id.includes('-3-7-')   || // Claude 3.7 Sonnet
     id.includes('-3.7-')
@@ -869,6 +885,8 @@ function supportsAdaptiveThinking(modelId: string): boolean {
     normalized.includes('opus-4.6') ||
     normalized.includes('opus-4-7') ||
     normalized.includes('opus-4.7') ||
+    normalized.includes('opus-4-8') ||
+    normalized.includes('opus-4.8') ||
     normalized.includes('sonnet-4-6') ||
     normalized.includes('sonnet-4.6')
   );

@@ -14,6 +14,8 @@ export const THREAD_MODEL_LOCK_MESSAGE =
 
 const LEGACY_LLM_MODEL_REPLACEMENTS = {
   "gemini-3.1-pro-preview": "gemini-3.5-flash",
+  opus: "opus-4.8",
+  "opus-4.7": "opus-4.8",
 } as const satisfies Record<string, LlmModel>;
 
 type LegacyLlmModel = keyof typeof LEGACY_LLM_MODEL_REPLACEMENTS;
@@ -36,14 +38,9 @@ export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
-    value: "opus-4.7",
-    label: "Opus 4.7",
+    value: "opus-4.8",
+    label: "Opus 4.8",
     description: "Smartest Claude model",
-  },
-  {
-    value: "opus",
-    label: "Opus 4.6",
-    description: "Smarter, but slower and more expensive",
   },
   {
     value: "sonnet",

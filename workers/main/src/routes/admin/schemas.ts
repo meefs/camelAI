@@ -136,11 +136,16 @@ export const UpdateThreadBodySchema = z.object({
     .enum([
       "haiku",
       "sonnet",
-      "opus",
+      "opus-4.8",
+      "gpt-5.5",
       "gpt-5.4",
       "gpt-5.4-mini",
       "kimi-k2.6",
       "grok-4.3",
+      "gemini-3.5-flash",
+      "gemini-3-flash-preview",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash",
     ])
     .optional(),
 });
@@ -218,11 +223,16 @@ export const OrgSchema = z.object({
 export const LlmModelSchema = z.enum([
   "haiku",
   "sonnet",
-  "opus",
+  "opus-4.8",
+  "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
   "kimi-k2.6",
   "grok-4.3",
+  "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
 ]);
 
 export const LlmProviderConfigSchema = z.object({

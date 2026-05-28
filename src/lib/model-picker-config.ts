@@ -18,7 +18,7 @@ export interface ModelIdEntry {
 }
 
 const HOSTED_OR_OPENROUTER_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
-  "opus-4.7",
+  "opus-4.8",
   "sonnet",
   "gpt-5.5",
   "gpt-5.4-mini",
@@ -37,8 +37,7 @@ const OPENAI_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
 ];
 
 const CLAUDE_DEFAULT_MODEL_ORDER: readonly LlmModel[] = [
-  "opus-4.7",
-  "opus",
+  "opus-4.8",
   "sonnet",
   "haiku",
 ];

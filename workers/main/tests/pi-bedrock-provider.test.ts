@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Context, Model } from '@mariozechner/pi-ai';
 
 import { __testing } from '../src/pi-bedrock-provider';
@@ -44,9 +44,9 @@ describe('Pi Bedrock provider message conversion', () => {
     });
   });
 
-  it('uses upstream Opus 4.7 limits for Bedrock aliases before compaction decisions', () => {
+  it('uses upstream Opus 4.8 limits for Bedrock aliases before compaction decisions', () => {
     const sparse = {
-      id: 'claude-opus-4-7',
+      id: 'claude-opus-4-8',
       api: 'bedrock-converse-stream',
       provider: 'amazon-bedrock',
       baseUrl: 'https://bedrock-runtime.us-west-2.amazonaws.com',
@@ -59,11 +59,17 @@ describe('Pi Bedrock provider message conversion', () => {
     } as Model<'bedrock-converse-stream'>;
 
     expect(__testing.withBedrockModelMetadata(sparse)).toMatchObject({
-      name: 'Claude Opus 4.7 (Global)',
+      name: 'Claude Opus 4.8 (US)',
       reasoning: true,
       thinkingLevelMap: { xhigh: 'xhigh' },
       contextWindow: 1_000_000,
       maxTokens: 128_000,
+    });
+    expect(__testing.resolveBedrockModelFallback('anthropic/claude-opus-4.8')).toMatchObject({
+      id: 'us.anthropic.claude-opus-4-8',
+      name: 'Claude Opus 4.8 (US)',
+      api: 'bedrock-converse-stream',
+      provider: 'amazon-bedrock',
     });
   });
 
@@ -263,12 +269,60 @@ describe('Standalone Bedrock provider model metadata', () => {
           max_tokens: 64_000,
         }),
         expect.objectContaining({
-          id: 'claude-opus-4-7',
+          id: 'claude-opus-4-8',
+          bedrockModelId: 'us.anthropic.claude-opus-4-8',
           contextWindow: 1_000_000,
           maxTokens: 128_000,
           thinkingLevelMap: { xhigh: 'xhigh' },
         }),
       ]),
     );
+  });
+
+  it('aliases stale Opus 4.6 and 4.7 requests to Opus 4.8', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      for (const model of [
+        'claude-opus-4-6',
+        'claude-opus-4-7',
+        'anthropic.claude-opus-4-8',
+        'anthropic/claude-opus-4.8',
+      ]) {
+        const response = await bedrockProviderWorker.fetch(
+          new Request('https://bedrock-provider.test/v1/messages', {
+            method: 'POST',
+            headers: {
+              authorization: 'Bearer test-token',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: 1,
+              messages: [{ role: 'user', content: 'hello' }],
+            }),
+          }),
+          {},
+        );
+
+        expect(response.status).toBe(200);
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      for (const call of fetchMock.mock.calls) {
+        const upstreamUrl = String(call[0]);
+        expect(upstreamUrl).toContain('https://bedrock-runtime.us-east-1.amazonaws.com/');
+        expect(decodeURIComponent(upstreamUrl)).toContain(
+          '/model/us.anthropic.claude-opus-4-8/invoke',
+        );
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -10,6 +10,7 @@ import type {
 import { isContextOverflow, setBedrockProviderModule } from "@mariozechner/pi-ai";
 import {
   bedrockProviderModule,
+  resolveBedrockModelFallback,
   withBedrockModelMetadata,
 } from "./pi-bedrock-provider";
 import type { Model } from "@mariozechner/pi-ai";
@@ -183,6 +184,24 @@ type AssistantCompletionPersistenceResult =
   | { status: "failed" };
 
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
+  "anthropic/claude-opus-4-8": {
+    id: "claude-opus-4-8",
+    name: "Claude Opus 4.8",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    reasoning: true,
+    thinkingLevelMap: { xhigh: "xhigh" },
+    input: ["text", "image"],
+    cost: {
+      input: 5,
+      output: 25,
+      cacheRead: 0.5,
+      cacheWrite: 6.25,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  } satisfies Model<"anthropic-messages">,
   "openrouter/google/gemini-3.5-flash": {
     id: "google/gemini-3.5-flash",
     name: "Google: Gemini 3.5 Flash",
@@ -7368,10 +7387,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const configured = await this.resolvePiRequestConfig(resolved, context);
     const configuredModel =
       configured.requestProvider === "amazon-bedrock" && configured.requestModelId
-        ? getModelFn(
+        ? (getModelFn(
             configured.requestProvider as never,
             configured.requestModelId as never,
-          ) as Model<any>
+          ) as Model<any> | null | undefined) ??
+          resolveBedrockModelFallback(configured.requestModelId)
         : null;
     if (configured.requestProvider === "amazon-bedrock" && !configuredModel) {
       throw new Error(`Unsupported Bedrock Pi model ${configured.requestModelId}`);
@@ -7434,10 +7454,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     switch (normalizedModelId) {
       case "haiku":
         return claudeReference("claude-haiku-4-5-20251001");
-      case "opus-4.7":
-        return claudeReference("claude-opus-4-7");
       case "opus":
-        return claudeReference("claude-opus-4-6");
+      case "opus-4.7":
+      case "opus-4.8":
+        return claudeReference("claude-opus-4-8");
       case "sonnet":
         return claudeReference("claude-sonnet-4-6");
       case "gpt-5.4-mini":
@@ -7568,15 +7588,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       case "haiku":
         return "anthropic/claude-haiku-4.5";
       case "opus":
-        return "anthropic/claude-opus-4.6";
       case "opus-4.7":
+      case "opus-4.8":
+      case "claude-opus-4-8":
+      case "claude-opus-4.8":
       case "claude-opus-4-7":
       case "claude-opus-4.7":
-        return "anthropic/claude-opus-4.7";
+      case "claude-opus-4-6":
+      case "claude-opus-4.6":
+        return "anthropic/claude-opus-4.8";
       case "claude-sonnet-4-6":
         return "anthropic/claude-sonnet-4.6";
-      case "claude-opus-4-6":
-        return "anthropic/claude-opus-4.6";
       case "claude-sonnet-4-5-20250929":
         return "anthropic/claude-sonnet-4.5";
       case "claude-haiku-4-5-20251001":
@@ -7713,10 +7735,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     switch (modelId) {
       case "claude-haiku-4-5-20251001":
         return "global.anthropic.claude-haiku-4-5-20251001-v1:0";
+      case "claude-opus-4-8":
+        return "us.anthropic.claude-opus-4-8";
       case "claude-opus-4-6":
-        return "global.anthropic.claude-opus-4-6-v1";
       case "claude-opus-4-7":
-        return "global.anthropic.claude-opus-4-7";
+        return "us.anthropic.claude-opus-4-8";
       case "claude-sonnet-4-6":
       default:
         return "global.anthropic.claude-sonnet-4-6";

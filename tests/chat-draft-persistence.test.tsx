@@ -746,14 +746,14 @@ describe('Chat draft persistence', () => {
   it('uses the saved recent model for a new chat only when no picker default is set', async () => {
     const user = userEvent.setup();
 
-    localStorage.setItem('camelai.recentModel.org-1.ws-1', 'opus');
+    localStorage.setItem('camelai.recentModel.org-1.ws-1', 'opus-4.8');
 
     const noDefaultChat = (
       <Chat
         workspaceId="ws-1"
         initialMessages={[]}
         threadModel="sonnet"
-        allowedThreadModels={['sonnet', 'opus']}
+        allowedThreadModels={['sonnet', 'opus-4.8']}
         effectivePickerDefaultModel={null}
         hasEffectivePickerDefault={false}
       />
@@ -766,7 +766,7 @@ describe('Chat draft persistence', () => {
     const { rerender } = render(noDefaultChat);
 
     await waitFor(() => {
-      expect(screen.getByTestId('welcome-model')).toHaveTextContent('opus');
+      expect(screen.getByTestId('welcome-model')).toHaveTextContent('opus-4.8');
     });
     expect(screen.getByTestId('welcome-recent-model-scope')).toHaveTextContent(
       'enabled',
@@ -781,7 +781,7 @@ describe('Chat draft persistence', () => {
     expect(mockSubmit).toHaveBeenLastCalledWith(
       expect.objectContaining({
         intent: 'createThreadAndStart',
-        model: 'opus',
+        model: 'opus-4.8',
       }),
       { method: 'post', action: '/chat' },
     );
@@ -793,7 +793,7 @@ describe('Chat draft persistence', () => {
         workspaceId="ws-1"
         initialMessages={[]}
         threadModel="sonnet"
-        allowedThreadModels={['sonnet', 'opus']}
+        allowedThreadModels={['sonnet', 'opus-4.8']}
         effectivePickerDefaultModel="sonnet"
         hasEffectivePickerDefault
       />,

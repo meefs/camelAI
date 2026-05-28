@@ -81,14 +81,14 @@ describe('chat fork route', () => {
       workspace_id: 'ws_123',
       title: 'Legacy Opus thread',
       first_user_message: 'Build the prototype',
-      model: 'opus',
+      model: 'opus-4.7',
     });
     createThreadMock.mockResolvedValue({
       id: 'thread_fork',
       workspace_id: 'ws_123',
       title: 'Fork: Legacy Opus thread',
       first_user_message: 'Build the prototype',
-      model: 'opus',
+      model: 'opus-4.8',
     });
     getPiCoreForkMessagesMock.mockResolvedValue({
       success: true,
@@ -137,17 +137,7 @@ describe('chat fork route', () => {
     });
   });
 
-  it('falls back to the current default model when the source model is hidden', async () => {
-    createThreadMock
-      .mockRejectedValueOnce(new Error('Invalid thread model'))
-      .mockResolvedValueOnce({
-        id: 'thread_fork',
-        workspace_id: 'ws_123',
-        title: 'Fork: Legacy Opus thread',
-        first_user_message: 'Build the prototype',
-        model: 'sonnet',
-      });
-
+  it('remaps legacy source models before creating the forked thread', async () => {
     const response = await action({
       request: new Request(
         'https://camelai.com/api/workspaces/ws_123/chat/thread_source/fork',
@@ -163,7 +153,7 @@ describe('chat fork route', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      thread: { id: 'thread_fork', model: 'sonnet' },
+      thread: { id: 'thread_fork', model: 'opus-4.8' },
       groupId: 'group_123',
     });
     expect(createThreadMock).toHaveBeenCalledWith(
@@ -172,15 +162,9 @@ describe('chat fork route', () => {
       'Fork: Legacy Opus thread',
       'user_123',
       'Build the prototype',
-      'opus',
+      'opus-4.8',
     );
-    expect(createThreadMock).toHaveBeenLastCalledWith(
-      {},
-      'ws_123',
-      'Fork: Legacy Opus thread',
-      'user_123',
-      'Build the prototype',
-    );
+    expect(createThreadMock).toHaveBeenCalledTimes(1);
     expect(addThreadToExistingGroupMock).toHaveBeenCalledWith(
       {},
       {

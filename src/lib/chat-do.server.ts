@@ -326,7 +326,7 @@ export async function createThread(
   title: string | undefined,
   createdBy?: string,
   firstUserMessage?: string,
-  model?: LlmModel,
+  model?: unknown,
 ): Promise<Thread> {
   const env = getEnv(context);
   const pickerState = await getWorkspaceModelPickerState(
@@ -337,11 +337,13 @@ export async function createThread(
     throw new Error("No models are available");
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(pickerState.orgId));
-  const selectedModel = model ?? pickerState.defaultModel;
+  const selectedModel =
+    model == null ? pickerState.defaultModel : replaceLegacyLlmModel(model);
   if (!selectedModel) {
     throw new Error("No models are available");
   }
   if (
+    !isLlmModel(selectedModel) ||
     !isLlmModelAllowedForNewThread(
       selectedModel,
       pickerState.llmProvider,
