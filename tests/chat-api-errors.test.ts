@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CREDIT_SEND_BLOCKED_MESSAGE,
   getChatApiErrorPresentation,
+  isChatBillingOrCreditError,
   parseChatApiError,
 } from '@/lib/chat-api-errors';
 import { BYOK_PROVIDERS, type OnboardingByokProvider } from '@/lib/byok-providers';
@@ -108,8 +110,42 @@ describe('chat API error classification', () => {
     );
 
     expect(presentation).toEqual({
-      kind: 'generic',
+      kind: 'billing_action',
+      title: 'Billing needs attention',
       message: 'Usage limit exceeded. Add credits.',
+      actionHref: '/settings/organization/usage?action=topup',
+      actionLabel: 'Top up credits',
+    });
+  });
+
+  it('does not show a camelAI top-up action for BYOK provider billing errors', () => {
+    const presentation = getChatApiErrorPresentation(
+      '{"error":"Usage limit exceeded. Add credits."}',
+      {
+        billingSource: 'byok',
+        llmProvider: 'openai',
+      },
+    );
+
+    expect(presentation).toEqual({
+      kind: 'generic',
+      title: 'Provider billing needs attention',
+      message: 'Usage limit exceeded. Add credits.',
+    });
+  });
+
+  it('classifies hosted credit exhaustion with a top-up action', () => {
+    const raw =
+      'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits.';
+    const presentation = getChatApiErrorPresentation(raw);
+
+    expect(isChatBillingOrCreditError(raw)).toBe(true);
+    expect(presentation).toEqual({
+      kind: 'billing_action',
+      title: "You're out of hosted credits",
+      message: CREDIT_SEND_BLOCKED_MESSAGE,
+      actionHref: '/settings/organization/usage?action=topup',
+      actionLabel: 'Top up credits',
     });
   });
 

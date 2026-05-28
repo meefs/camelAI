@@ -7,7 +7,6 @@ import { getEnv } from "@/lib/cloudflare.server";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
   isOrgBillingAccessReady,
-  isConfiguredEnterpriseOrg,
   resolveOrgBillingAccess,
 } from "@/lib/billing.server";
 import { hasCompletedOnboarding } from "@/lib/onboarding";
@@ -102,7 +101,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const billingAccess = resolveOrgBillingAccess({
     org: orgInfo,
     llmProviderConfig,
-    isEnterpriseOrg: isConfiguredEnterpriseOrg(env, orgInfo),
   });
   const billingAccessReady = isOrgBillingAccessReady(billingAccess);
 

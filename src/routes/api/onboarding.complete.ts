@@ -5,9 +5,12 @@ import * as chatDO from '@/lib/chat-do.server';
 import { waitUntil } from '@/lib/wait-until';
 import {
   isOrgBillingAccessReady,
-  isConfiguredEnterpriseOrg,
   resolveOrgBillingAccess,
 } from '@/lib/billing.server';
+import {
+  chatBillingActionPayload,
+  chatStartFailureStatus,
+} from '@/lib/chat-api-errors';
 import type { LlmModel } from '@/types';
 
 type OnboardingAccessChoice = 'byok' | 'existing' | null;
@@ -22,6 +25,10 @@ type InitialUserMessageRpc = {
     clientMessageId?: string;
   }): Promise<{ status: 'accepted' | 'busy' | 'error'; error?: string }>;
 };
+
+type InitialUserMessageResult = Awaited<
+  ReturnType<InitialUserMessageRpc['startInitialUserMessage']>
+>;
 
 function getDefaultOnboardingSystemMessage(): string {
   const questionToolName = 'ask_user_question';
@@ -95,11 +102,11 @@ async function startOnboardingInitialMessage(args: {
   orgId: string;
   userId: string;
   message: string;
-}) {
+}): Promise<InitialUserMessageResult> {
   const chatThread = args.env.CHAT_THREAD.get(
     args.env.CHAT_THREAD.idFromName(args.threadId),
   ) as unknown as InitialUserMessageRpc;
-  const result = await chatThread.startInitialUserMessage({
+  return await chatThread.startInitialUserMessage({
     threadId: args.threadId,
     workspaceId: args.workspaceId,
     orgId: args.orgId,
@@ -107,9 +114,31 @@ async function startOnboardingInitialMessage(args: {
     message: args.message,
     clientMessageId: `onboarding:${args.threadId}`,
   });
+}
+
+function onboardingInitialMessageFailureResponse(
+  result: InitialUserMessageResult,
+): Response | null {
   if (result.status !== 'accepted') {
-    console.error('Failed to start onboarding message:', result.error);
+    const status = chatStartFailureStatus(result.status, result.error);
+    const log =
+      status >= 500
+        ? console.error
+        : status === 402
+          ? console.info
+          : console.warn;
+    log('Failed to start onboarding message:', result.error);
+    return Response.json(
+      {
+        error:
+          result.error ||
+          'Failed to start your onboarding chat. Please try again.',
+        ...chatBillingActionPayload(status),
+      },
+      { status },
+    );
   }
+  return null;
 }
 
 async function readAccessChoice(request: Request): Promise<OnboardingAccessChoice> {
@@ -209,10 +238,6 @@ export async function action({ request, context }: Route.ActionArgs) {
   const billingAccess = resolveOrgBillingAccess({
     org: orgInfo,
     llmProviderConfig,
-    isEnterpriseOrg: isConfiguredEnterpriseOrg(
-      { BILLING_ENTERPRISE_ORG_SLUGS: env.BILLING_ENTERPRISE_ORG_SLUGS },
-      orgInfo,
-    ),
   });
 
   if (!isOrgBillingAccessReady(billingAccess)) {
@@ -276,18 +301,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     if (existingThread) {
-      if (salesPrompt) {
-        await userStub.clearPendingSalesPrompt();
-        waitUntil(
-          chatDO.generateThreadTitle(context, existingThread.id, workspaceId, salesPrompt)
-        );
-      }
       const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
       const onboardingInitialMessage = buildOnboardingInitialMessage(
         onboardingSystemMessage,
         salesPrompt,
       );
-      await startOnboardingInitialMessage({
+      const initialMessageResult = await startOnboardingInitialMessage({
         env,
         threadId: existingThread.id,
         workspaceId,
@@ -295,6 +314,16 @@ export async function action({ request, context }: Route.ActionArgs) {
         userId: authContext.user.id,
         message: onboardingInitialMessage,
       });
+      const failureResponse = onboardingInitialMessageFailureResponse(
+        initialMessageResult,
+      );
+      if (failureResponse) return failureResponse;
+      if (salesPrompt) {
+        await userStub.clearPendingSalesPrompt();
+        waitUntil(
+          chatDO.generateThreadTitle(context, existingThread.id, workspaceId, salesPrompt)
+        );
+      }
       return Response.json({
         success: true,
         threadId: existingThread.id,
@@ -313,18 +342,12 @@ export async function action({ request, context }: Route.ActionArgs) {
       onboardingModel,
     );
 
-    if (salesPrompt) {
-      await userStub.clearPendingSalesPrompt();
-      waitUntil(
-        chatDO.generateThreadTitle(context, recoveryThread.id, workspaceId, salesPrompt)
-      );
-    }
     const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
     const onboardingInitialMessage = buildOnboardingInitialMessage(
       onboardingSystemMessage,
       salesPrompt,
     );
-    await startOnboardingInitialMessage({
+    const initialMessageResult = await startOnboardingInitialMessage({
       env,
       threadId: recoveryThread.id,
       workspaceId,
@@ -332,6 +355,21 @@ export async function action({ request, context }: Route.ActionArgs) {
       userId: authContext.user.id,
       message: onboardingInitialMessage,
     });
+    const failureResponse = onboardingInitialMessageFailureResponse(
+      initialMessageResult,
+    );
+    if (failureResponse) {
+      await chatDO.deleteThread(context, recoveryThread.id, workspaceId).catch(
+        () => {},
+      );
+      return failureResponse;
+    }
+    if (salesPrompt) {
+      await userStub.clearPendingSalesPrompt();
+      waitUntil(
+        chatDO.generateThreadTitle(context, recoveryThread.id, workspaceId, salesPrompt)
+      );
+    }
 
     return Response.json({
       success: true,
@@ -342,8 +380,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     });
   }
 
-  await userStub.updateOnboarding({ completed_at: Date.now() });
-
   const thread = await chatDO.createThread(
     context,
     workspaceId,
@@ -353,18 +389,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     onboardingModel,
   );
 
-  if (salesPrompt) {
-    await userStub.clearPendingSalesPrompt();
-    waitUntil(
-      chatDO.generateThreadTitle(context, thread.id, workspaceId, salesPrompt)
-    );
-  }
   const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
   const onboardingInitialMessage = buildOnboardingInitialMessage(
     onboardingSystemMessage,
     salesPrompt,
   );
-  await startOnboardingInitialMessage({
+  const initialMessageResult = await startOnboardingInitialMessage({
     env,
     threadId: thread.id,
     workspaceId,
@@ -372,6 +402,22 @@ export async function action({ request, context }: Route.ActionArgs) {
     userId: authContext.user.id,
     message: onboardingInitialMessage,
   });
+  const failureResponse = onboardingInitialMessageFailureResponse(
+    initialMessageResult,
+  );
+  if (failureResponse) {
+    await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
+    return failureResponse;
+  }
+
+  await userStub.updateOnboarding({ completed_at: Date.now() });
+
+  if (salesPrompt) {
+    await userStub.clearPendingSalesPrompt();
+    waitUntil(
+      chatDO.generateThreadTitle(context, thread.id, workspaceId, salesPrompt)
+    );
+  }
 
   return Response.json({
     success: true,

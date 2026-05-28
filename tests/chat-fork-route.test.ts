@@ -323,7 +323,7 @@ describe('chat fork route', () => {
     expect(replacePiCoreForkMessagesMock).toHaveBeenCalled();
   });
 
-  it('rolls back the created thread when the Durable Object fork target is missing', async () => {
+  it('rolls back the created thread and returns not found when the Durable Object fork target is missing', async () => {
     getPiCoreForkMessagesMock.mockResolvedValue({
       success: false,
       code: 'TARGET_NOT_FOUND',
@@ -343,7 +343,7 @@ describe('chat fork route', () => {
       params: { id: 'ws_123', threadId: 'thread_source' },
     } as never);
 
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({
       error: 'Fork target not found in Durable Object Pi messages',
     });

@@ -44,7 +44,6 @@
     "STRIPE_PRO_PRICE_ID": "price_1TRzJDGvliMKf4vHiCvInGpn",
     "STRIPE_TEAM_PRICE_ID": "price_1TRzJPGvliMKf4vH3btUUY1d",
     "STRIPE_CREDIT_PRICE_IDS": "price_1TRHq4GvliMKf4vHWeuO0RU9,price_1TRHq5GvliMKf4vHWEfWfoaa,price_1TRHq6GvliMKf4vHqEN0i5iZ,price_1TRHq8GvliMKf4vH1HG70y7N",
-    "BILLING_ENTERPRISE_ORG_SLUGS": "seclock",
     "EXT_API_CLIENT_ID": "set-me",
     "CF_WORKER_NAME": "chiridion-app",
     "TAIL_WORKER_NAME": "chiridion-user-logs-tail",

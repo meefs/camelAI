@@ -26,6 +26,43 @@ async function waitForAdminIndexThreadPresence(threadId: string): Promise<void> 
 }
 
 describe('admin API thread patch route', () => {
+  it('finds threads by raw thread id in admin search', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Admin API Search User');
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Admin API Search Org', userId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const thread = await orgStub.createThread(defaultWorkspaceId, 'Thread with non-id title', userId);
+
+    await waitForAdminIndexThreadPresence(thread.id);
+
+    const request = new Request(
+      `http://example/api/admin/threads?search=${encodeURIComponent(thread.id)}`,
+      {
+        headers: {
+          Authorization: 'Bearer test-admin-api-key',
+        },
+      },
+    );
+
+    const response = await handleAdminApi({
+      req: request,
+      env: {
+        ...testEnv,
+        ADMIN_API_KEY: 'test-admin-api-key',
+      } as unknown as WorkerEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL(request.url),
+      match: request.url.match(/^.*$/)!,
+    });
+
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    await expect(response!.json()).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: thread.id })],
+      total: 1,
+    });
+  });
+
   it('rejects per-thread model changes after creation', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Admin API User');

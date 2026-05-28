@@ -18,6 +18,10 @@ import {
   buildBillingCreditStatus,
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
+import {
+  chatBillingActionPayload,
+  chatStartFailureStatus,
+} from "@/lib/chat-api-errors";
 import { waitUntil } from "@/lib/wait-until";
 import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getWorkerScript } from "@/lib/auth-do";
@@ -198,6 +202,12 @@ type InitialUserMessageRpc = {
     clientMessageId?: string;
   }): Promise<{ status: "accepted" | "busy" | "error"; error?: string }>;
 };
+
+function initialUserMessageFailureStatus(
+  result: Awaited<ReturnType<InitialUserMessageRpc["startInitialUserMessage"]>>,
+): number {
+  return chatStartFailureStatus(result.status, result.error);
+}
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
@@ -588,10 +598,14 @@ export async function action({ request, context }: Route.ActionArgs) {
           },
         );
         if (result.status !== "accepted") {
-          console.error(
-            "Failed to start initial user message:",
-            result.error,
-          );
+          const status = initialUserMessageFailureStatus(result);
+          const log =
+            status >= 500
+              ? console.error
+              : status === 402
+                ? console.info
+                : console.warn;
+          log("Failed to start initial user message:", result.error);
           await chatDO
             .deleteThread(context, thread.id, workspaceId)
             .catch(() => {});
@@ -600,8 +614,9 @@ export async function action({ request, context }: Route.ActionArgs) {
               error:
                 result.error ||
                 "Failed to start the first message. Please try again.",
+              ...chatBillingActionPayload(status),
             },
-            { status: result.status === "busy" ? 409 : 500 },
+            { status },
           );
         }
       }

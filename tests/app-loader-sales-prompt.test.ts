@@ -62,7 +62,6 @@ vi.mock("@/lib/billing.server", () => ({
           org.billing_trial_credit_granted_at,
       ),
   ),
-  isConfiguredEnterpriseOrg: vi.fn(() => false),
 }));
 
 vi.mock("@/lib/chat-groups.server", () => ({

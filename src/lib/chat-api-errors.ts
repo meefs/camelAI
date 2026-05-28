@@ -34,6 +34,13 @@ export type ChatApiErrorPresentation =
       message: string;
     }
   | {
+      kind: "billing_action";
+      title: string;
+      message: string;
+      actionHref: string;
+      actionLabel: string;
+    }
+  | {
       kind: "generic";
       title?: string;
       message: string;
@@ -215,6 +222,35 @@ function isBillingOrCreditError(lowerMessage: string): boolean {
   );
 }
 
+export function isChatBillingOrCreditError(error: unknown): boolean {
+  const details = parseChatApiError(error);
+  const message = details.providerMessage || details.rawMessage;
+  return isBillingOrCreditError(message.toLowerCase());
+}
+
+export function chatStartFailureStatus(
+  status: "busy" | "error" | string,
+  error: unknown,
+): number {
+  if (status === "busy") return 409;
+  if (isChatBillingOrCreditError(error)) return 402;
+  return 500;
+}
+
+export function chatBillingActionPayload(status: number):
+  | {
+      actionHref: string;
+      actionLabel: string;
+    }
+  | undefined {
+  return status === 402
+    ? {
+        actionHref: "/settings/organization/usage?action=topup",
+        actionLabel: "Top up credits",
+      }
+    : undefined;
+}
+
 function isCurrentTurnByok(context: ChatApiErrorContext): boolean {
   if (context.billingSource === "hosted") return false;
   if (context.billingSource === "byok") return true;
@@ -271,11 +307,23 @@ export function getChatApiErrorPresentation(
 
   const lowerMessage = message.toLowerCase();
   if (isBillingOrCreditError(lowerMessage)) {
+    if (isCurrentTurnByok(context) && !isHostedCreditExhaustedMessage(lowerMessage)) {
+      return {
+        kind: "generic",
+        title: "Provider billing needs attention",
+        message,
+      };
+    }
     return {
-      kind: "generic",
+      kind: "billing_action",
+      title: isHostedCreditExhaustedMessage(lowerMessage)
+        ? "You're out of hosted credits"
+        : "Billing needs attention",
       message: isHostedCreditExhaustedMessage(lowerMessage)
         ? CREDIT_SEND_BLOCKED_MESSAGE
         : message,
+      actionHref: "/settings/organization/usage?action=topup",
+      actionLabel: "Top up credits",
     };
   }
 

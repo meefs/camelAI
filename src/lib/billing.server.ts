@@ -48,7 +48,6 @@ export interface StripeBillingEnv {
   STRIPE_CREDIT_PRICE_IDS?: string;
   STRIPE_BILLING_PORTAL_CONFIGURATION_ID?: string;
   LEGACY_STRIPE_MIGRATION_CUSTOMERS?: string;
-  BILLING_ENTERPRISE_ORG_SLUGS?: string;
   BILLING_TRIAL_CREDIT_CENTS?: string;
   BILLING_SUBSCRIPTION_INCLUDED_CREDIT_CENTS?: string;
 }
@@ -860,34 +859,6 @@ export async function getVerifiedLegacyStripeMigrationEligibility(args: {
   }
 }
 
-function configuredEnterpriseTokens(
-  env: Pick<StripeBillingEnv, "BILLING_ENTERPRISE_ORG_SLUGS">,
-): Set<string> {
-  return new Set(
-    (env.BILLING_ENTERPRISE_ORG_SLUGS ?? "")
-      .split(",")
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
-export function isConfiguredEnterpriseOrg(
-  env: Pick<StripeBillingEnv, "BILLING_ENTERPRISE_ORG_SLUGS">,
-  org:
-    | Pick<Organization, "id" | "name" | "slug" | "billing_status">
-    | null
-    | undefined,
-): boolean {
-  if (!org) return false;
-  if (org.billing_status === "enterprise") return true;
-  const tokens = configuredEnterpriseTokens(env);
-  if (tokens.size === 0) return false;
-  return [org.id, org.slug, org.name]
-    .map((value) => value?.trim().toLowerCase())
-    .filter(Boolean)
-    .some((value) => tokens.has(value));
-}
-
 const BILLING_SETUP_PATHS = new Set([
   "/settings/organization/billing",
   "/settings/organization/usage",
@@ -920,14 +891,13 @@ export function resolveOrgBillingAccess(args: {
     | null
     | undefined;
   llmProviderConfig?: unknown;
-  isEnterpriseOrg?: boolean;
   pathname?: string;
 }): OrgBillingAccessState {
   const setupRouteAccessible = args.pathname
     ? isBillingSetupPath(args.pathname)
     : false;
   const org = args.org;
-  if (args.isEnterpriseOrg || org?.billing_status === "enterprise") {
+  if (org?.billing_status === "enterprise") {
     return { kind: "ready", mode: "enterprise", setupRouteAccessible: true };
   }
   if (
@@ -1301,13 +1271,11 @@ export async function getBillingAccessSnapshot(
 ): Promise<OrgBillingAccessSnapshot | null> {
   const org = await getOrgStub(env, orgId).getInfo();
   if (!org) return null;
-  const configuredEnterprise = isConfiguredEnterpriseOrg(env, org);
-  const effectiveStatus = configuredEnterprise
-    ? "enterprise"
-    : normalizeBillingStatus(org.billing_status);
-  const effectivePlan = configuredEnterprise
-    ? "enterprise"
-    : normalizeBillingPlan(org.billing_plan, org.billing_status);
+  const effectiveStatus = normalizeBillingStatus(org.billing_status);
+  const effectivePlan = normalizeBillingPlan(
+    org.billing_plan,
+    org.billing_status,
+  );
 
   return {
     org_id: org.id,
@@ -1480,7 +1448,7 @@ export async function createSubscriptionCheckoutSession(args: {
 }): Promise<string> {
   const { env, org, customerEmail, successUrl, cancelUrl } = args;
   const latestOrg = await getLatestOrgInfo(env, org);
-  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+  if (latestOrg.billing_status === "enterprise") {
     throw new Error("Enterprise orgs are billed outside Stripe Checkout");
   }
   const plan = normalizeBillingPlan(args.plan, latestOrg.billing_status);
@@ -1638,7 +1606,7 @@ export async function activatePayAsYouGoPlan(args: {
 }): Promise<Organization> {
   const { env, org } = args;
   const latestOrg = await getLatestOrgInfo(env, org);
-  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+  if (latestOrg.billing_status === "enterprise") {
     throw new Error("Enterprise orgs are billed outside Pay as you go.");
   }
   const subscriptionStatus = latestOrg.billing_subscription_status?.trim();
@@ -1760,7 +1728,7 @@ export async function createSubscriptionCancellationPortalSession(args: {
   if (!subscriptionId) {
     throw new Error("This organization does not have a Stripe subscription.");
   }
-  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+  if (latestOrg.billing_status === "enterprise") {
     throw new Error("Enterprise organizations are billed outside Stripe.");
   }
 
@@ -1920,7 +1888,7 @@ export async function createSubscriptionUpdatePortalSession(args: {
   if (!subscriptionId) {
     throw new Error("This organization does not have a Stripe subscription.");
   }
-  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+  if (latestOrg.billing_status === "enterprise") {
     throw new Error("Enterprise organizations are billed outside Stripe.");
   }
 
@@ -2027,7 +1995,7 @@ export async function updateTrialingStripeSubscriptionPlan(args: {
 }): Promise<Organization> {
   const { env, org, plan } = args;
   const latestOrg = await getLatestOrgInfo(env, org);
-  if (isConfiguredEnterpriseOrg(env, latestOrg)) {
+  if (latestOrg.billing_status === "enterprise") {
     throw new Error("Enterprise organizations are billed outside Stripe.");
   }
   const subscriptionId = latestOrg.billing_subscription_id?.trim();

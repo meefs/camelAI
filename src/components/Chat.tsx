@@ -68,6 +68,7 @@ import {
 } from "@/components/message-bubble";
 import { WelcomeScreen } from "@/components/welcome-screen";
 import { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
+import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatMessagesView } from "@/components/chat-messages-view";
 import { ShareStatusButton } from "@/components/chat-share-status-button";
 import { isImageFile, type NotebookPreviewLoadState } from "@/components/chat-file-preview";
@@ -535,6 +536,14 @@ export default function Chat({
   }
   const initialThreadDraft = initialDraftsRef.current.thread;
   const initialWelcomeDraft = initialDraftsRef.current.welcome;
+
+  useEffect(() => {
+    if (readOnly || !isNewThread || !resolvedWorkspaceId || !threadId) {
+      return;
+    }
+    removeDraft(resolvedWorkspaceId, null);
+  }, [isNewThread, readOnly, resolvedWorkspaceId, threadId]);
+
   // Anchor to last message for existing threads with messages (not new threads)
   const shouldAnchorToLastMessage =
     !isNewThread && initialMessages && initialMessages.length > 0;
@@ -1758,6 +1767,7 @@ export default function Chat({
       lastEventIdRef.current = 0;
       return;
     }
+    pendingNewThreadSubmissionRef.current = null;
     loadSessionState(threadId);
   }, [threadId, loadSessionState, resolvedWorkspaceId]);
 
@@ -4047,10 +4057,10 @@ export default function Chat({
       attachments: currentAttachments,
     };
     handledNewChatActionErrorRef.current = null;
+    clearDraft();
     welcomeInputRef.current = "";
     attachmentsRef.current = [];
     setWelcomeInput("");
-    clearDraft();
     skipNextEmptyDraftSaveRef.current = true;
 
     // Keep blob URLs alive until redirect/unmount so an action error can restore
@@ -4722,6 +4732,14 @@ type SendOptions = {
                     </div>
                   </div>
                 )}
+                {error ? (
+                  <div className="mb-4 w-full max-w-3xl">
+                    <ChatErrorNotice
+                      error={error}
+                      onDismiss={() => setError(null)}
+                    />
+                  </div>
+                ) : null}
                 <WelcomeScreen
                   userId={resolvedWelcomeData.userId}
                   userName={resolvedWelcomeData.userName}

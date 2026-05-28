@@ -17,6 +17,16 @@ function normalizeForkError(error: unknown): string {
   return message;
 }
 
+function forkMessagesFailureStatus(result: ChatThreadPiCoreForkResult): number {
+  if (
+    result.code === 'TARGET_NOT_FOUND' ||
+    result.error === 'Fork target not found in Durable Object Pi messages'
+  ) {
+    return 404;
+  }
+  return 500;
+}
+
 export async function action({ request, context, params }: Route.ActionArgs) {
   if (request.method !== 'POST') {
     return Response.json({ error: 'Method not allowed' }, { status: 405 });
@@ -162,7 +172,17 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       }),
     );
     if (!forkMessages.success || !forkMessages.messages?.length) {
-      throw new Error(forkMessages.error || 'Fork target not found in Durable Object Pi messages');
+      await chatDO.deleteThread(context, targetThread.id, workspaceId).catch(
+        () => {},
+      );
+      return Response.json(
+        {
+          error:
+            forkMessages.error ||
+            'Fork target not found in Durable Object Pi messages',
+        },
+        { status: forkMessagesFailureStatus(forkMessages) },
+      );
     }
 
     await targetChat.replacePiCoreForkMessages(forkMessages.messages);

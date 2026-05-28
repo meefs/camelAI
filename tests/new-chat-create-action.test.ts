@@ -241,6 +241,38 @@ describe('new chat create action', () => {
     expect(createGroupForNewThreadMock).not.toHaveBeenCalled();
   });
 
+  it('returns a billing action instead of a 500 when hosted credits are exhausted', async () => {
+    startInitialUserMessageMock.mockResolvedValueOnce({
+      status: 'error',
+      error:
+        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.',
+    });
+
+    const formData = makeCreateThreadFormData();
+    formData.set('intent', 'createThreadAndStart');
+    formData.set('firstMessage', 'Build an analytics dashboard');
+    formData.set('model', 'sonnet');
+
+    const response = await action({
+      request: new Request('https://camelai.dev/chat', {
+        method: 'POST',
+        body: formData,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(402);
+    expect(response.headers.get('Location')).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({
+      error:
+        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.',
+      actionHref: '/settings/organization/usage?action=topup',
+      actionLabel: 'Top up credits',
+    });
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
+    expect(createGroupForNewThreadMock).not.toHaveBeenCalled();
+  });
+
   it('returns the new thread and group while title generation runs in the background', async () => {
     const formData = makeCreateThreadFormData();
     formData.set('firstMessage', 'Persist this first message');

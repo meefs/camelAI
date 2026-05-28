@@ -42,7 +42,6 @@ vi.mock("@/lib/cookies.server", () => ({
 vi.mock("@/lib/billing.server", () => ({
   getVerifiedLegacyStripeMigrationEligibility: vi.fn(() => null),
   hasOrgUsedSubscriptionTrial: vi.fn(() => false),
-  isConfiguredEnterpriseOrg: vi.fn(() => false),
 }));
 
 vi.mock("@/components/sidebar/app-sidebar", () => ({

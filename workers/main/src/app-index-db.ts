@@ -665,8 +665,8 @@ export class AppIndexDatabase {
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (search) {
-      conditions.push('(t.title LIKE ? OR t.model LIKE ? OR o.name LIKE ? OR w.name LIKE ?)');
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      conditions.push('(t.id LIKE ? OR t.title LIKE ? OR t.model LIKE ? OR o.name LIKE ? OR w.name LIKE ?)');
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
     if (filters?.org_id) { conditions.push('t.org_id = ?'); params.push(filters.org_id); }
     if (filters?.workspace_id) { conditions.push('t.workspace_id = ?'); params.push(filters.workspace_id); }

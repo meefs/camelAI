@@ -19,6 +19,12 @@ type CreateThreadRequestBody = {
   groupId?: string;
 };
 
+function groupThreadFailureStatus(message: string): number {
+  return message === 'Chat group not found' || message === 'Thread not found'
+    ? 404
+    : 500;
+}
+
 /**
  * Lightweight thread creation endpoint that validates workspace access
  * without loading full auth context.
@@ -114,6 +120,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   } catch (error) {
     await chatDO.deleteThread(context, thread.id, workspaceId).catch(() => {});
     const message = error instanceof Error ? error.message : 'Failed to group thread';
-    return Response.json({ error: message }, { status: 500 });
+    return Response.json(
+      { error: message },
+      { status: groupThreadFailureStatus(message) },
+    );
   }
 }

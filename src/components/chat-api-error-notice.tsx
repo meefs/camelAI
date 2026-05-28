@@ -1,4 +1,4 @@
-import { ArrowRight, CircleAlert, Clock3, X } from "lucide-react";
+import { ArrowRight, CircleAlert, Clock3, CreditCard, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Alert,
@@ -83,6 +83,35 @@ export function ChatApiErrorNotice({
         onDismiss={onDismiss}
         className={className}
       />
+    );
+  }
+
+  if (presentation.kind === "billing_action") {
+    return (
+      <Alert className={cn("px-3 py-2 text-sm", className)}>
+        <CreditCard className="h-4 w-4 text-muted-foreground" />
+        <AlertTitle className="text-sm">{presentation.title}</AlertTitle>
+        <AlertDescription className="space-y-2 text-sm text-muted-foreground">
+          <p>{presentation.message}</p>
+          <Button asChild size="sm" className="h-7">
+            <a href={presentation.actionHref}>{presentation.actionLabel}</a>
+          </Button>
+        </AlertDescription>
+        {onDismiss ? (
+          <AlertAction>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="h-5 w-5 text-muted-foreground hover:text-foreground"
+              aria-label="Dismiss error"
+              onClick={onDismiss}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </AlertAction>
+        ) : null}
+      </Alert>
     );
   }
 

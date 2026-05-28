@@ -822,6 +822,79 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
+  it('persists repeated Pi compaction cutoffs in original SQL row index space', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const existing = {
+      summary: 'first summary',
+      firstKeptIndex: 2,
+      updatedAt: 100,
+    };
+    const messages = [
+      ChatThreadDO.prototype['createPiSummaryMessage'].call(fake, existing.summary, 100),
+      { role: 'user', content: 'raw row 2', timestamp: 200 },
+      { role: 'assistant', content: [{ type: 'text', text: 'raw row 3' }], timestamp: 300 },
+      { role: 'user', content: 'raw row 4', timestamp: 400 },
+    ];
+    fake.estimatePiContextTokens = vi.fn(() => 920_000);
+    fake.loadPiCoreCompaction = vi.fn(() => existing);
+    fake.findPiCompactionCutIndex = vi.fn(() => 2);
+    fake.summarizePiMessages = vi.fn(async () => 'second summary');
+    fake.persistPiCoreCompaction = vi.fn();
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      { contextWindow: 1_000_000 },
+      'bedrock-token',
+      vi.fn(),
+    );
+
+    expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith('second summary', 3);
+    expect(compacted).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: '[Context Summary]\n\nsecond summary',
+      }),
+      messages[2],
+      messages[3],
+    ]);
+  });
+
+  it('persists a bounded fallback compaction when summary generation fails', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const messages = [
+      { role: 'user', content: 'old context', timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'recent context' }], timestamp: 2 },
+    ];
+    fake.estimatePiContextTokens = vi.fn(() => 920_000);
+    fake.loadPiCoreCompaction = vi.fn(() => null);
+    fake.findPiCompactionCutIndex = vi.fn(() => 1);
+    fake.summarizePiMessages = vi.fn(async () => {
+      throw new Error('Compaction summary was empty');
+    });
+    fake.persistPiCoreCompaction = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      { contextWindow: 1_000_000 },
+      'bedrock-token',
+      vi.fn(),
+    );
+
+    expect(fake.persistPiCoreCompaction).toHaveBeenCalledWith(
+      expect.stringContaining('Automatic fallback summary'),
+      1,
+    );
+    expect(compacted).toHaveLength(2);
+    expect((compacted[0] as { content: string }).content).toContain('[Context Summary]');
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_context_compaction_fallback_persisted',
+      expect.objectContaining({ status: 'fallback' }),
+    );
+  });
+
   it('schedules post-turn Pi compaction from assistant usage like the high-level agent', async () => {
     const compaction = Promise.resolve();
     const fake = Object.create(ChatThreadDO.prototype) as any;
@@ -1180,6 +1253,32 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.piSession.state.messages).toBe(currentMessages);
     expect(fake.replacePiCoreMessages).not.toHaveBeenCalled();
     expect(fake.clearPiCoreCompaction).not.toHaveBeenCalled();
+  });
+
+  it('quarantines stuck Pi turn recovery instead of retrying forever', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiTurnRecovery = vi.fn(() => ({
+      turn_id: 'turn1',
+      status: 'recovering',
+      user_content: 'hello',
+      user_timestamp: 1,
+      active_user_id: null,
+      retry_count: 3,
+      started_at: 1,
+      updated_at: 1,
+    }));
+    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
+    fake.quarantinePiTurnRecovery = vi.fn();
+    fake.schedulePiTurnRecoveryAlarm = vi.fn();
+    fake.piSession = null;
+
+    await ChatThreadDO.prototype.alarm.call(fake);
+
+    expect(fake.quarantinePiTurnRecovery).toHaveBeenCalledWith(
+      expect.stringContaining('reached max'),
+      3,
+    );
+    expect(fake.schedulePiTurnRecoveryAlarm).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2062,11 +2161,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     vi.useRealTimers();
   });
 
-  it('does not emit placeholder tool rows for unnamed preliminary Pi toolcall events', () => {
+  it('does not emit placeholder tool rows for unnamed preliminary Pi toolcall events', async () => {
     const { fake, events } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'message_update',
       message: { role: 'assistant', content: [] },
       assistantMessageEvent: {
@@ -2077,7 +2176,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(events.filter((event) => event.type === 'runtime_event')).toEqual([]);
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_start',
       toolCallId: 'tool1',
       toolName: 'AskUserQuestion',
@@ -2127,11 +2226,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
   });
 
-  it('maps Pi reasoning and tool events to the old host runtime event shapes', () => {
+  it('maps Pi reasoning and tool events to the old host runtime event shapes', async () => {
     const { fake, events } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'message_update',
       message: { role: 'assistant', content: [] },
       assistantMessageEvent: {
@@ -2140,20 +2239,20 @@ describe('ChatThreadDO Codex turn handling', () => {
         delta: 'thinking',
       },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_start',
       toolCallId: 'tool1',
       toolName: 'bash',
       args: { command: 'echo hi', cwd: '/home/claude' },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_update',
       toolCallId: 'tool1',
       toolName: 'bash',
       args: {},
       partialResult: { content: [{ type: 'text', text: 'hi\n' }], details: {} },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_end',
       toolCallId: 'tool1',
       toolName: 'bash',
@@ -2199,8 +2298,8 @@ describe('ChatThreadDO Codex turn handling', () => {
   it('publishes live Pi running activity for thinking, text, and tools', async () => {
     const { fake, activityRecords } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'message_update',
       message: { role: 'assistant', content: [] },
       assistantMessageEvent: {
@@ -2208,7 +2307,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         contentIndex: 0,
       },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'message_update',
       message: { role: 'assistant', content: [] },
       assistantMessageEvent: {
@@ -2216,13 +2315,13 @@ describe('ChatThreadDO Codex turn handling', () => {
         delta: 'Streaming assistant update.',
       },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_start',
       toolCallId: 'tool-read',
       toolName: 'read',
       args: { file_path: '/workspace/src/App.tsx' },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'tool_execution_end',
       toolCallId: 'tool-read',
       toolName: 'read',
@@ -2246,7 +2345,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
-  it('renders persisted Pi tool result messages with their assistant tool calls', () => {
+  it('renders persisted Pi tool result messages with their assistant tool calls', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
@@ -2277,7 +2376,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     ]);
 
-    const messages = ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
+    const messages = await ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
 
     expect(messages).toHaveLength(2);
     expect(messages[1]).toMatchObject({
@@ -2301,7 +2400,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
-  it('marks persisted Pi stopped-by-user messages for muted UI rendering', () => {
+  it('marks persisted Pi stopped-by-user messages for muted UI rendering', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
@@ -2320,7 +2419,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     ]);
 
-    const messages = ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
+    const messages = await ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
 
     expect(messages[1]).toMatchObject({
       id: 'pi_user_stop_200',
@@ -2333,7 +2432,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
-  it('does not mark literal persisted Pi text as stopped-by-user without metadata', () => {
+  it('does not mark literal persisted Pi text as stopped-by-user without metadata', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.loadPiInFlightMessages = vi.fn(() => []);
     fake.loadPiCoreMessages = vi.fn(() => [
@@ -2351,7 +2450,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     ]);
 
-    const messages = ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
+    const messages = await ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
 
     expect(messages[1]).toMatchObject({
       id: 'resp_literal_stop_text',
@@ -2366,11 +2465,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
   });
 
-  it('does not broadcast Pi recovery continue prompts as visible SDK user events', () => {
+  it('does not broadcast Pi recovery continue prompts as visible SDK user events', async () => {
     const { fake, events } = createPiEventFake();
 
     fake.suppressNextPiRecoveryPromptEvent = true;
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'user',
       message: {
         content: [{
@@ -2383,7 +2482,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(events).toEqual([]);
 
     fake.suppressNextPiRecoveryPromptEvent = true;
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'user',
       message: {
         content: 'continue',
@@ -2392,7 +2491,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(events).toEqual([]);
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'user',
       message: {
         content: 'continue',
@@ -2403,10 +2502,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(events[0]).toMatchObject({ type: 'sdk_event' });
   });
 
-  it('does not broadcast internal recovery context SDK user events', () => {
+  it('does not broadcast internal recovery context SDK user events', async () => {
     const { fake, events } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'user',
       message: {
         role: 'user',
@@ -2475,7 +2574,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
-  it('turn_end snapshots agent.state.messages past the baseline into main', () => {
+  it('turn_end snapshots agent.state.messages past the baseline into main', async () => {
     const { fake, events: _events } = createPiEventFake();
     void _events;
     const allMessages = [
@@ -2508,7 +2607,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'turn_end',
       message: allMessages[3],
       toolResults: [],
@@ -2522,7 +2621,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('turn_end is a no-op when no new messages are past the baseline', () => {
+  it('turn_end is a no-op when no new messages are past the baseline', async () => {
     const { fake, events: _events } = createPiEventFake();
     void _events;
     const allMessages = [
@@ -2543,7 +2642,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'turn_end',
       message: allMessages[1],
       toolResults: [],
@@ -2554,7 +2653,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('suppresses aborted turn_end persistence after a user stop request', () => {
+  it('suppresses aborted turn_end persistence after a user stop request', async () => {
     const { fake, events: _events } = createPiEventFake();
     void _events;
     const allMessages = [
@@ -2574,7 +2673,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.appendPiCoreMessagesIfMissing = vi.fn();
     fake.clearPiInFlightMessages = vi.fn();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'turn_end',
       message: allMessages[1],
       toolResults: [],
@@ -2592,7 +2691,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
   });
 
-  it('includes in-flight messages in the parsed chat view', () => {
+  it('includes in-flight messages in the parsed chat view', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1' };
     fake.piCoreMessageToParsedChatMessage =
@@ -2639,7 +2738,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.loadPiCoreMessages = vi.fn(() => committed);
     fake.loadPiInFlightMessages = vi.fn(() => inFlight);
 
-    const parsed = ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
+    const parsed = await ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
       fake,
       'thread1',
     );
@@ -2653,7 +2752,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.loadPiInFlightMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('omits internal recovery context messages from the parsed chat view', () => {
+  it('omits internal recovery context messages from the parsed chat view', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1' };
     fake.loadPiCoreMessages = vi.fn(() => [
@@ -2679,7 +2778,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
     fake.loadPiInFlightMessages = vi.fn(() => []);
 
-    const parsed = ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
+    const parsed = await ChatThreadDO.prototype['getPiCoreParsedMessages'].call(
       fake,
       'thread1',
     );
@@ -2694,7 +2793,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     ).toBe(false);
   });
 
-  it('sanitizes unsupported persisted Pi image tool results when loading history', () => {
+  it('sanitizes unsupported persisted Pi image tool results when loading history', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ensurePiCoreTables = vi.fn();
     fake.ctx = {
@@ -2729,7 +2828,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     };
 
-    const messages = ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
 
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toEqual([
@@ -2743,6 +2842,210 @@ describe('ChatThreadDO Codex turn handling', () => {
         mimeType: 'image/jpeg',
       },
     ]);
+  });
+
+  it('loads compacted Pi history from the compaction tail instead of every row', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ensurePiCoreTables = vi.fn();
+    const exec = vi.fn((sql: string, ...params: unknown[]) => {
+      if (sql.includes('pi_core_compaction')) {
+        return {
+          toArray: () => [
+            {
+              summary: 'earlier work summary',
+              first_kept_index: 2,
+              updated_at: 1234,
+            },
+          ],
+        };
+      }
+      expect(sql).toContain('WHERE idx >= ?');
+      expect(params).toEqual([2]);
+      return {
+        toArray: () => [
+          {
+            payload: JSON.stringify({
+              role: 'user',
+              content: 'kept user turn',
+              timestamp: 200,
+            }),
+          },
+          {
+            payload: JSON.stringify({
+              role: 'assistant',
+              content: [{ type: 'text', text: 'kept assistant turn' }],
+              responseId: 'resp_kept',
+              timestamp: 210,
+            }),
+          },
+        ],
+      };
+    });
+    fake.ctx = { storage: { sql: { exec } } };
+
+    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toMatchObject({
+      role: 'user',
+      content: '[Context Summary]\n\nearlier work summary',
+      timestamp: 1234,
+    });
+    expect(messages[1]).toMatchObject({ role: 'user', content: 'kept user turn' });
+    expect(messages[2]).toMatchObject({ role: 'assistant', responseId: 'resp_kept' });
+    expect(exec).toHaveBeenCalledWith(
+      'SELECT payload FROM pi_core_messages WHERE idx >= ? ORDER BY idx ASC',
+      2,
+    );
+    expect(exec).not.toHaveBeenCalledWith(
+      'SELECT payload FROM pi_core_messages ORDER BY idx ASC',
+    );
+  });
+
+  it('stores oversized image data in R2 before persisting Pi messages to SQLite', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ensurePiCoreTables = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    const put = vi.fn(async () => undefined);
+    fake.env = {
+      R2_BUCKET: { put },
+    };
+    const insertedPayloads: string[] = [];
+    fake.ctx = {
+      storage: {
+        sql: {
+          exec: vi.fn((sql: string, ...params: unknown[]) => {
+            if (sql.includes('MAX(idx)')) {
+              return { toArray: () => [{ next_idx: 0 }] };
+            }
+            if (sql.includes('INSERT INTO pi_core_messages')) {
+              insertedPayloads.push(String(params[1]));
+            }
+            return { toArray: () => [] };
+          }),
+        },
+      },
+    };
+    const imageData = 'a'.repeat(600_000);
+
+    await ChatThreadDO.prototype['appendPiCoreMessages'].call(fake, [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'see image' },
+          {
+            type: 'image',
+            mimeType: 'image/png',
+            data: imageData,
+          },
+        ],
+        timestamp: 1,
+      },
+    ]);
+
+    expect(insertedPayloads).toHaveLength(1);
+    expect(insertedPayloads[0].length).toBeLessThan(50_000);
+    expect(insertedPayloads[0]).toContain('chiridionR2Image');
+    expect(insertedPayloads[0]).toContain('"data":""');
+    expect(insertedPayloads[0]).not.toContain('a'.repeat(100_000));
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledWith(
+      expect.stringContaining('chat-sessions/thread1/pi-images/'),
+      imageData,
+      expect.objectContaining({
+        customMetadata: expect.objectContaining({
+          type: 'pi-message-image-base64',
+          mimeType: 'image/png',
+          sessionId: 'thread1',
+          threadId: 'thread1',
+          workspaceId: 'workspace1',
+          orgId: 'org1',
+        }),
+      }),
+    );
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_sql_storage_sanitized',
+      expect.objectContaining({
+        operation: 'append',
+        status: 'externalized',
+        sampleKey: expect.stringContaining('externalized:1'),
+      }),
+    );
+  });
+
+  it('hydrates oversized Pi image data from R2 when loading history', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ensurePiCoreTables = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    const imageData = 'b'.repeat(300_000);
+    const get = vi.fn(async () => ({
+      text: async () => imageData,
+    }));
+    fake.env = {
+      R2_BUCKET: { get },
+    };
+    fake.ctx = {
+      storage: {
+        sql: {
+          exec: vi.fn((sql: string) => {
+            if (sql.includes('pi_core_compaction')) {
+              return { toArray: () => [] };
+            }
+            return {
+              toArray: () => [
+                {
+                  payload: JSON.stringify({
+                    role: 'user',
+                    content: [
+                      {
+                        type: 'image',
+                        mimeType: 'image/png',
+                        data: '',
+                        metadata: {
+                          chiridionR2Image: {
+                            key: 'org1/workspace1/chat-sessions/thread1/pi-images/abc.base64',
+                            mimeType: 'image/png',
+                            size: imageData.length,
+                            sha256: 'abc',
+                            storedAt: 123,
+                          },
+                        },
+                      },
+                    ],
+                    timestamp: 1,
+                  }),
+                },
+              ],
+            };
+          }),
+        },
+      },
+    };
+
+    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toEqual([
+      expect.objectContaining({
+        type: 'image',
+        mimeType: 'image/png',
+        data: imageData,
+      }),
+    ]);
+    expect(get).toHaveBeenCalledWith('org1/workspace1/chat-sessions/thread1/pi-images/abc.base64');
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_r2_image_hydrated',
+      expect.objectContaining({
+        operation: 'load_history',
+        status: 'ok',
+        size: imageData.length,
+      }),
+    );
   });
 
   it('sanitizes unsupported image tool outputs before Pi can persist them', () => {
@@ -2777,11 +3080,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
-  it('does not emit an extra completed agent message after streamed Pi text', () => {
+  it('does not emit an extra completed agent message after streamed Pi text', async () => {
     const { fake, events } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'message_update',
       message: { role: 'assistant', content: [] },
       assistantMessageEvent: {
@@ -2789,7 +3092,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         delta: 'Hello',
       },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'agent_end',
       messages: [{
         role: 'assistant',
@@ -2823,18 +3126,18 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
-  it('emits completed agent messages for non-streamed Pi message_end text', () => {
+  it('emits completed agent messages for non-streamed Pi message_end text', async () => {
     const { fake, events } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'message_end',
       message: {
         role: 'assistant',
         content: [{ type: 'text', text: 'Whole reply' }],
       },
     });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'agent_end',
       messages: [{
         role: 'assistant',
@@ -2876,13 +3179,13 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
-  it('emits Pi agent_end provider errors', () => {
+  it('emits Pi agent_end provider errors', async () => {
     const { fake, events } = createPiEventFake();
     const errorMessage =
       '429 {"error":{"type":"rate_limit_error","message":"Type 2b rate limited. Please try again later."}}';
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'agent_end',
       messages: [{
         role: 'assistant',
@@ -2902,11 +3205,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
   });
 
-  it('does not emit provider errors for user-aborted Pi turns', () => {
+  it('does not emit provider errors for user-aborted Pi turns', async () => {
     const { fake, events } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'agent_end',
       messages: [{
         role: 'assistant',
@@ -2925,7 +3228,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
   });
 
-  it('emits and persists a final stopped-by-user Pi message after a user stop', () => {
+  it('emits and persists a final stopped-by-user Pi message after a user stop', async () => {
     const { fake, events } = createPiEventFake();
     const inFlight = [
       { role: 'user', content: 'build it', timestamp: 100 },
@@ -2968,10 +3271,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     };
     fake.loadPiInFlightMessages = vi.fn(() => inFlight);
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
     fake.piUserStopRequestedAtMs = 1234;
     fake.piMainBaselineIndex = 3;
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'agent_end',
       messages: [
         ...inFlight,
@@ -3028,11 +3331,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.piUserStopRequestedAtMs).toBe(0);
   });
 
-  it('does not echo non-assistant Pi message_end text into the assistant stream', () => {
+  it('does not echo non-assistant Pi message_end text into the assistant stream', async () => {
     const { fake, events } = createPiEventFake();
 
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
-    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
       type: 'message_end',
       message: {
         role: 'user',
@@ -3198,7 +3501,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
-  it('selects raw Durable Object Pi messages for a fork target', () => {
+  it('selects raw Durable Object Pi messages for a fork target', async () => {
     const sourceMessages = [
       { role: 'user', content: 'Build it', timestamp: 100 },
       {
@@ -3217,7 +3520,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.loadPiCoreMessages = vi.fn(() => sourceMessages);
 
-    const result = ChatThreadDO.prototype.getPiCoreForkMessages.call(fake, {
+    const result = await ChatThreadDO.prototype.getPiCoreForkMessages.call(fake, {
       forkEntryId: 'resp1',
     });
 
@@ -3233,13 +3536,13 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(result.messages?.[1]).not.toBe(sourceMessages[1]);
   });
 
-  it('reports a missing Durable Object Pi fork target without falling back', () => {
+  it('reports a missing Durable Object Pi fork target without falling back', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.loadPiCoreMessages = vi.fn(() => [
       { role: 'user', content: 'Build it', timestamp: 100 },
     ]);
 
-    const result = ChatThreadDO.prototype.getPiCoreForkMessages.call(fake, {
+    const result = await ChatThreadDO.prototype.getPiCoreForkMessages.call(fake, {
       forkEntryId: 'missing',
       renderedMessageId: 'rendered-missing',
     });

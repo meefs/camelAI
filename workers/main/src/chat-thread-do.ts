@@ -355,6 +355,16 @@ export interface PiCoreMessageHistoryRepairReport {
   };
 }
 
+export interface PiTurnRecoveryAdminState {
+  pending: PiTurnRecoveryRow | null;
+  quarantined: {
+    reason: string;
+    retryCount: number;
+    updatedAt: number;
+  } | null;
+  inFlightCount: number;
+}
+
 function cloneDurableState<T>(value: T): T {
   if (value === null || value === undefined) {
     return value;
@@ -383,6 +393,75 @@ function piUnsupportedImageText(mimeType: unknown): string {
   return `(image omitted: unsupported MIME type ${label})`;
 }
 
+const PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS = 1_500_000;
+const PI_MAX_PERSISTED_IMAGE_DATA_CHARS = 512_000;
+const PI_MAX_PERSISTED_TEXT_CHARS = 200_000;
+const PI_R2_IMAGE_REF_METADATA_KEY = "chiridionR2Image";
+
+interface PiR2ImageReference {
+  key: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  storedAt: number;
+}
+
+interface PiSqlStorageStats {
+  externalizedImages: number;
+  omittedImages: number;
+  truncatedStrings: number;
+  omittedWholeMessage: boolean;
+  originalChars: number;
+  storedChars: number;
+}
+
+interface PiSqlStorageSerialization {
+  payload: string;
+  stats: PiSqlStorageStats;
+}
+
+function hasPiR2ImageReferenceMetadata(record: Record<string, unknown>): boolean {
+  const metadata = record.metadata;
+  if (!metadata || typeof metadata !== "object") return false;
+  const ref = (metadata as Record<string, unknown>)[PI_R2_IMAGE_REF_METADATA_KEY];
+  if (!ref || typeof ref !== "object") return false;
+  const refRecord = ref as Record<string, unknown>;
+  return (
+    typeof refRecord.key === "string" &&
+    refRecord.key.length > 0 &&
+    typeof refRecord.mimeType === "string" &&
+    refRecord.mimeType.length > 0 &&
+    typeof refRecord.sha256 === "string" &&
+    refRecord.sha256.length > 0
+  );
+}
+
+function piLargeImageStorageText(mimeType: unknown, dataChars: number): string {
+  const label =
+    typeof mimeType === "string" && mimeType.trim()
+      ? mimeType.trim()
+      : "unknown MIME type";
+  return `(image data omitted from persisted transcript: ${label}, ${dataChars} base64 chars)`;
+}
+
+function emptyPiSqlStorageStats(): PiSqlStorageStats {
+  return {
+    omittedImages: 0,
+    externalizedImages: 0,
+    truncatedStrings: 0,
+    omittedWholeMessage: false,
+    originalChars: 0,
+    storedChars: 0,
+  };
+}
+
+function truncatePiStorageString(value: string, stats?: PiSqlStorageStats): string {
+  if (value.length <= PI_MAX_PERSISTED_TEXT_CHARS) return value;
+  const omitted = value.length - PI_MAX_PERSISTED_TEXT_CHARS;
+  if (stats) stats.truncatedStrings += 1;
+  return `${value.slice(0, PI_MAX_PERSISTED_TEXT_CHARS)}\n\n[...truncated ${omitted} characters for storage safety...]`;
+}
+
 function sanitizePiProviderContent(content: unknown): unknown {
   if (!Array.isArray(content)) return content;
   let changed = false;
@@ -395,7 +474,11 @@ function sanitizePiProviderContent(content: unknown): unknown {
       ? normalizePiImageMimeType(item.mimeType)
       : "";
     const data = typeof item.data === "string" ? item.data : "";
-    if (mimeType && data && PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+    if (
+      mimeType &&
+      PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType) &&
+      (data || hasPiR2ImageReferenceMetadata(item))
+    ) {
       if (mimeType === item.mimeType) return part;
       changed = true;
       return { ...item, mimeType };
@@ -415,6 +498,101 @@ function sanitizePiProviderMessage(message: AgentMessage): AgentMessage {
   const content = sanitizePiProviderContent(record.content);
   if (content === record.content) return message;
   return { ...record, content } as unknown as AgentMessage;
+}
+
+function sanitizePiProviderContentForSqlStorage(content: unknown, stats?: PiSqlStorageStats): unknown {
+  const supported = sanitizePiProviderContent(content);
+  if (!Array.isArray(supported)) return supported;
+  let changed = supported !== content;
+  const sanitized = supported.map((part) => {
+    if (!part || typeof part !== "object") return part;
+    const item = part as Record<string, unknown>;
+    if (item.type === "image") {
+      const data = typeof item.data === "string" ? item.data : "";
+      if (data.length > PI_MAX_PERSISTED_IMAGE_DATA_CHARS) {
+        if (stats) stats.omittedImages += 1;
+        changed = true;
+        return {
+          type: "text",
+          text: piLargeImageStorageText(item.mimeType, data.length),
+        };
+      }
+    }
+    return part;
+  });
+  return changed ? sanitized : content;
+}
+
+function shrinkPiValueForSqlStorage(value: unknown, depth = 0, stats?: PiSqlStorageStats): unknown {
+  if (typeof value === "string") return truncatePiStorageString(value, stats);
+  if (value === null || value === undefined) return value;
+  if (typeof value !== "object") return value;
+  if (depth > 8) return "[nested value omitted for storage safety]";
+  if (Array.isArray(value)) {
+    return value.map((item) => shrinkPiValueForSqlStorage(item, depth + 1, stats));
+  }
+  const record = value as Record<string, unknown>;
+  if (record.type === "image" && typeof record.data === "string") {
+    if (record.data.length > PI_MAX_PERSISTED_IMAGE_DATA_CHARS) {
+      if (stats) stats.omittedImages += 1;
+      return {
+        type: "text",
+        text: piLargeImageStorageText(record.mimeType, record.data.length),
+      };
+    }
+    return { ...record, data: record.data };
+  }
+  const next: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(record)) {
+    next[key] = shrinkPiValueForSqlStorage(nested, depth + 1, stats);
+  }
+  return next;
+}
+
+function preparePiMessageForSqlStorage(message: AgentMessage, stats?: PiSqlStorageStats): AgentMessage {
+  if (!message || typeof message !== "object") return message;
+  const providerSanitized = sanitizePiProviderMessage(message);
+  const record = providerSanitized as unknown as Record<string, unknown>;
+  const content = Array.isArray(record.content)
+    ? sanitizePiProviderContentForSqlStorage(record.content, stats)
+    : record.content;
+  const next = content === record.content ? record : { ...record, content };
+  return shrinkPiValueForSqlStorage(next, 0, stats) as AgentMessage;
+}
+
+function serializePiMessageForSqlStorageDetailed(message: AgentMessage): PiSqlStorageSerialization {
+  const stats = emptyPiSqlStorageStats();
+  stats.originalChars = JSON.stringify(message).length;
+  let prepared = preparePiMessageForSqlStorage(message, stats);
+  let serialized = JSON.stringify(prepared);
+  if (serialized.length <= PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS) {
+    stats.storedChars = serialized.length;
+    return { payload: serialized, stats };
+  }
+
+  prepared = shrinkPiValueForSqlStorage(prepared, 4, stats) as AgentMessage;
+  serialized = JSON.stringify(prepared);
+  if (serialized.length <= PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS) {
+    stats.storedChars = serialized.length;
+    return { payload: serialized, stats };
+  }
+
+  stats.omittedWholeMessage = true;
+  const payload = JSON.stringify({
+    role: (message as unknown as Record<string, unknown>).role ?? "user",
+    content: `[message omitted from persisted transcript: serialized size ${serialized.length} chars exceeded storage safety limit]`,
+    timestamp:
+      typeof (message as unknown as Record<string, unknown>).timestamp === "number"
+        ? (message as unknown as Record<string, unknown>).timestamp
+        : Date.now(),
+    metadata: { storageOmitted: true },
+  });
+  stats.storedChars = payload.length;
+  return { payload, stats };
+}
+
+function serializePiMessageForSqlStorage(message: AgentMessage): string {
+  return serializePiMessageForSqlStorageDetailed(message).payload;
 }
 
 type NormalizedTodoStatus = "pending" | "in_progress" | "completed";
@@ -1585,14 +1763,17 @@ const CHAT_RUNNER_LAST_SEQ_KEY = "chatRunnerLastSeq";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 const PI_TURN_RECOVERY_ROW_ID = 1;
 const PI_TURN_RECOVERY_ALARM_MS = 10_000;
+const PI_TURN_RECOVERY_MAX_ALARM_MS = 5 * 60_000;
 const PI_TURN_RECOVERY_STALE_MS = 30_000;
+const PI_TURN_RECOVERY_MAX_RETRIES = 3;
+const PI_TURN_RECOVERY_QUARANTINE_KEY = "piTurnRecoveryQuarantined";
 const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
 
-interface PiTurnRecoveryRow {
+export interface PiTurnRecoveryRow {
   turn_id: string;
   status: "running" | "recovering";
   user_content: string;
@@ -1658,6 +1839,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piMainBaselineIndex = 0;
   private piModelResolver: (() => Promise<PiResolvedModelConfig>) | null = null;
   private piUnsubscribe: (() => void) | null = null;
+  private piEventHandlerChain: Promise<void> = Promise.resolve();
   private piActiveItemId: string | null = null;
   private piActiveItemText = "";
   private piReasoningItemId: string | null = null;
@@ -1860,6 +2042,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async alarm(): Promise<void> {
     const pendingPiTurn = this.loadPiTurnRecovery();
     if (!pendingPiTurn) return;
+    if (this.loadPiTurnRecoveryQuarantine()) return;
+    if (pendingPiTurn.retry_count >= PI_TURN_RECOVERY_MAX_RETRIES) {
+      this.quarantinePiTurnRecovery(
+        `retry_count ${pendingPiTurn.retry_count} reached max ${PI_TURN_RECOVERY_MAX_RETRIES}`,
+        pendingPiTurn.retry_count,
+      );
+      return;
+    }
 
     if (this.piSession?.state.isStreaming) {
       this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
@@ -1879,7 +2069,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           this.persistPiAgentLoopErrorForDevelopers(error, {
             source: "pi_turn_recovery",
           });
-          this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
+          const nextRetryCount = pendingPiTurn.retry_count + 1;
+          if (nextRetryCount >= PI_TURN_RECOVERY_MAX_RETRIES) {
+            this.quarantinePiTurnRecovery(
+              error instanceof Error ? error.message : "Pi turn recovery failed",
+              nextRetryCount,
+            );
+            return;
+          }
+          this.schedulePiTurnRecoveryAlarm(
+            this.piTurnRecoveryRetryDelayMs(nextRetryCount),
+          );
         })
         .finally(() => {
           this.piRecoveryInFlight = null;
@@ -2245,9 +2445,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       .reverse() as unknown as PiCoreMessageRow[];
   }
 
-  repairPiCoreMessageHistory(input: {
+  async repairPiCoreMessageHistory(input: {
     mode?: "dry_run" | "repair";
-  } = {}): PiCoreMessageHistoryRepairReport {
+  } = {}): Promise<PiCoreMessageHistoryRepairReport> {
     const mode = input.mode ?? "dry_run";
     if (mode !== "dry_run" && mode !== "repair") {
       throw new Error("mode must be dry_run or repair");
@@ -2265,7 +2465,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       try {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          messages.push(sanitizePiProviderMessage(parsed));
+          const hydrated = await this.hydratePiStoredImages(parsed);
+          messages.push(sanitizePiProviderMessage(hydrated as AgentMessage));
         } else {
           invalidRows += 1;
         }
@@ -2279,7 +2480,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const afterMessages = changed ? repaired.messages : messages;
 
     if (mode === "repair" && changed) {
-      this.replacePiCoreMessages(afterMessages);
+      await this.replacePiCoreMessages(afterMessages);
       this.recordChatThreadObservabilityEvent("pi_core_message_history_repaired", {
         operation: "repair_persisted_history",
         status: "ok",
@@ -2302,11 +2503,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  putPiCoreMessageRow(input: {
+  async putPiCoreMessageRow(input: {
     idx: number;
     payload: string;
     created_at?: number;
-  }): { ok: true; inserted: boolean; idx: number } {
+  }): Promise<{ ok: true; inserted: boolean; idx: number }> {
     const idx = Math.floor(input.idx);
     if (!Number.isFinite(idx) || idx < 0) {
       throw new Error("idx must be a non-negative integer");
@@ -2318,9 +2519,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } catch {
       throw new Error("payload must be valid JSON");
     }
-    const normalizedPayload = JSON.stringify(
-      sanitizePiProviderMessage(parsedPayload as AgentMessage),
-    );
+    const serialized = await this.serializePiMessageForSqlStorageDetailed(parsedPayload as AgentMessage);
+    const normalizedPayload = serialized.payload;
     const createdAt = Number.isFinite(input.created_at)
       ? Math.floor(input.created_at as number)
       : Date.now();
@@ -2336,6 +2536,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         createdAt,
         idx,
       );
+      this.recordPiSqlStorageSanitization("admin_put_row", serialized.stats, 1);
       return { ok: true, inserted: false, idx };
     }
 
@@ -2345,6 +2546,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       normalizedPayload,
       createdAt,
     );
+    this.recordPiSqlStorageSanitization("admin_put_row", serialized.stats, 1);
     return { ok: true, inserted: true, idx };
   }
 
@@ -2603,14 +2805,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
-  getPiCoreParsedMessages(threadId: string): Array<{
+  async getPiCoreParsedMessages(threadId: string): Promise<Array<{
     id: string;
     thread_id: string;
     role: "user" | "assistant";
     content: unknown;
     created_at: number;
     forkEntryId: string;
-  }> {
+  }>> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
     const parsed: Array<{
       id: string;
@@ -2621,10 +2823,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       forkEntryId: string;
     }> = [];
 
-    const storedMessages = [
-      ...this.loadPiCoreMessages(),
-      ...this.loadPiInFlightMessages(),
-    ];
+    const [coreMessages, inFlightMessages] = await Promise.all([
+      this.loadPiCoreMessages(),
+      this.loadPiInFlightMessages(),
+    ]);
+    const storedMessages = [...coreMessages, ...inFlightMessages];
     storedMessages.forEach((message, index) => {
       const record = message as unknown as Record<string, unknown>;
       if (record.role === "toolResult") {
@@ -2636,11 +2839,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return parsed;
   }
 
-  getPiCoreForkMessages(options: {
+  async getPiCoreForkMessages(options: {
     forkEntryId: string;
     renderedMessageId?: string;
-  }): ChatThreadPiCoreForkResult {
-    const messages = this.loadPiCoreMessages();
+  }): Promise<ChatThreadPiCoreForkResult> {
+    const messages = await this.loadPiCoreMessages();
     if (messages.length === 0) {
       return {
         success: false,
@@ -2680,7 +2883,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  replacePiCoreForkMessages(messages: AgentMessage[]): void {
+  async replacePiCoreForkMessages(messages: AgentMessage[]): Promise<void> {
     const normalizedMessages = Array.isArray(messages)
       ? messages.filter((message): message is AgentMessage => {
           return Boolean(
@@ -2695,7 +2898,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     this.disposePiSession();
-    this.replacePiCoreMessages(cloneDurableState(normalizedMessages));
+    await this.replacePiCoreMessages(cloneDurableState(normalizedMessages));
     this.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
     this.clearPiInFlightMessages();
     this.clearPiTurnRecovery();
@@ -2867,6 +3070,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.piSession = null;
     this.piMainBaselineIndex = 0;
     this.piSessionPromise = null;
+    this.piEventHandlerChain = Promise.resolve();
     this.piActiveItemId = null;
     this.piAssistantText = "";
   }
@@ -2909,7 +3113,198 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
-  private loadPiInFlightMessages(): AgentMessage[] {
+  private async sha256Hex(value: string): Promise<string> {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(value),
+    );
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  private piStoredImageR2Key(sha256: string): string | null {
+    const context = this.chatContext;
+    if (!context?.orgId || !context.workspaceId || !context.threadId) {
+      return null;
+    }
+    const safeSessionId = context.threadId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    return buildWorkspaceScopedR2Key(
+      context.orgId,
+      context.workspaceId,
+      `chat-sessions/${safeSessionId}/pi-images/${sha256}.base64`,
+    );
+  }
+
+  private readPiR2ImageReference(part: Record<string, unknown>): PiR2ImageReference | null {
+    const metadata = part.metadata;
+    if (!metadata || typeof metadata !== "object") return null;
+    const ref = (metadata as Record<string, unknown>)[PI_R2_IMAGE_REF_METADATA_KEY];
+    if (!ref || typeof ref !== "object") return null;
+    const record = ref as Record<string, unknown>;
+    const key = typeof record.key === "string" ? record.key : "";
+    const mimeType = typeof record.mimeType === "string" ? record.mimeType : "";
+    const sha256 = typeof record.sha256 === "string" ? record.sha256 : "";
+    if (!key || !mimeType || !sha256) return null;
+    return {
+      key,
+      mimeType,
+      sha256,
+      size: Math.max(0, Math.floor(Number(record.size) || 0)),
+      storedAt: Math.max(0, Math.floor(Number(record.storedAt) || 0)),
+    };
+  }
+
+  private async externalizePiImagesForSqlStorage(value: unknown, stats: PiSqlStorageStats): Promise<unknown> {
+    if (value === null || value === undefined || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((item) => this.externalizePiImagesForSqlStorage(item, stats)));
+    }
+    const record = value as Record<string, unknown>;
+    if (record.type === "image" && typeof record.data === "string") {
+      const data = record.data;
+      const mimeType = typeof record.mimeType === "string"
+        ? normalizePiImageMimeType(record.mimeType)
+        : "";
+      if (
+        data.length > PI_MAX_PERSISTED_IMAGE_DATA_CHARS &&
+        mimeType &&
+        PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)
+      ) {
+        const sha256 = await this.sha256Hex(data);
+        const key = this.piStoredImageR2Key(sha256);
+        if (key) {
+          try {
+            await this.env.R2_BUCKET.put(key, data, {
+              httpMetadata: { contentType: "text/plain; charset=utf-8" },
+              customMetadata: {
+                type: "pi-message-image-base64",
+                mimeType,
+                sessionId: this.chatContext?.threadId ?? "",
+                threadId: this.chatContext?.threadId ?? "",
+                workspaceId: this.chatContext?.workspaceId ?? "",
+                orgId: this.chatContext?.orgId ?? "",
+                sha256,
+              },
+            });
+            stats.externalizedImages += 1;
+            const metadata = record.metadata && typeof record.metadata === "object"
+              ? { ...(record.metadata as Record<string, unknown>) }
+              : {};
+            metadata[PI_R2_IMAGE_REF_METADATA_KEY] = {
+              key,
+              mimeType,
+              size: data.length,
+              sha256,
+              storedAt: Date.now(),
+            } satisfies PiR2ImageReference;
+            return {
+              ...record,
+              mimeType,
+              data: "",
+              metadata,
+            };
+          } catch (error) {
+            this.recordChatThreadObservabilityEvent("pi_r2_image_externalize_failed", {
+              operation: "persist_history",
+              status: "error",
+              severity: "error",
+              error,
+              size: data.length,
+            });
+          }
+        }
+      }
+    }
+    const next: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(record)) {
+      next[key] = await this.externalizePiImagesForSqlStorage(nested, stats);
+    }
+    return next;
+  }
+
+  private async hydratePiStoredImages(value: unknown): Promise<unknown> {
+    if (value === null || value === undefined || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((item) => this.hydratePiStoredImages(item)));
+    }
+    const record = value as Record<string, unknown>;
+    if (record.type === "image") {
+      const ref = this.readPiR2ImageReference(record);
+      if (ref && typeof record.data === "string" && record.data.length === 0) {
+        let data = "";
+        try {
+          const object = await this.env.R2_BUCKET.get(ref.key);
+          data = object ? await object.text() : "";
+        } catch (error) {
+          this.recordChatThreadObservabilityEvent("pi_r2_image_hydrate_failed", {
+            operation: "load_history",
+            status: "error",
+            severity: "error",
+            error,
+            size: ref.size,
+          });
+        }
+        if (data) {
+          this.recordChatThreadObservabilityEvent("pi_r2_image_hydrated", {
+            operation: "load_history",
+            status: "ok",
+            count: 1,
+            size: data.length,
+          });
+          return {
+            ...record,
+            data,
+            mimeType: ref.mimeType,
+          };
+        }
+        return {
+          type: "text",
+          text: `(image data unavailable from persisted transcript: ${ref.mimeType}, ${ref.size} base64 chars)`,
+        };
+      }
+    }
+    const next: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(record)) {
+      next[key] = await this.hydratePiStoredImages(nested);
+    }
+    return next;
+  }
+
+  private async serializePiMessageForSqlStorageDetailed(message: AgentMessage): Promise<PiSqlStorageSerialization> {
+    const stats = emptyPiSqlStorageStats();
+    stats.originalChars = JSON.stringify(message).length;
+    const providerSanitized = sanitizePiProviderMessage(message);
+    const externalized = await this.externalizePiImagesForSqlStorage(providerSanitized, stats);
+    let prepared = preparePiMessageForSqlStorage(externalized as AgentMessage, stats);
+    let serialized = JSON.stringify(prepared);
+    if (serialized.length <= PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS) {
+      stats.storedChars = serialized.length;
+      return { payload: serialized, stats };
+    }
+
+    prepared = shrinkPiValueForSqlStorage(prepared, 4, stats) as AgentMessage;
+    serialized = JSON.stringify(prepared);
+    if (serialized.length <= PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS) {
+      stats.storedChars = serialized.length;
+      return { payload: serialized, stats };
+    }
+
+    stats.omittedWholeMessage = true;
+    const payload = JSON.stringify({
+      role: (message as unknown as Record<string, unknown>).role ?? "user",
+      content: `[message omitted from persisted transcript: serialized size ${serialized.length} chars exceeded storage safety limit]`,
+      timestamp:
+        typeof (message as unknown as Record<string, unknown>).timestamp === "number"
+          ? (message as unknown as Record<string, unknown>).timestamp
+          : Date.now(),
+      metadata: { storageOmitted: true },
+    });
+    stats.storedChars = payload.length;
+    return { payload, stats };
+  }
+
+  private async loadPiInFlightMessages(): Promise<AgentMessage[]> {
     this.ensurePiCoreTables();
     const rows = this.ctx.storage.sql
       .exec<{ payload: string }>(
@@ -2921,7 +3316,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       try {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          messages.push(sanitizePiProviderMessage(parsed));
+          const hydrated = await this.hydratePiStoredImages(parsed);
+          messages.push(sanitizePiProviderMessage(hydrated as AgentMessage));
         }
       } catch {
         // Skip corrupt rows.
@@ -2930,7 +3326,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return messages;
   }
 
-  private appendPiInFlightMessages(messages: AgentMessage[]): void {
+  private async appendPiInFlightMessages(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
     this.ensurePiCoreTables();
     const rows = this.ctx.storage.sql
@@ -2940,15 +3336,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       .toArray();
     const startIndex = Math.max(0, Math.floor(Number(rows[0]?.next_idx) || 0));
     const now = Date.now();
-    messages.forEach((message, offset) => {
-      const sanitized = sanitizePiProviderMessage(message);
+    const aggregateStats = emptyPiSqlStorageStats();
+    for (let offset = 0; offset < messages.length; offset += 1) {
+      const message = messages[offset];
+      const serialized = await this.serializePiMessageForSqlStorageDetailed(message);
+      this.addPiSqlStorageStats(aggregateStats, serialized.stats);
       this.ctx.storage.sql.exec(
         "INSERT INTO pi_in_flight_messages (idx, payload, created_at) VALUES (?, ?, ?)",
         startIndex + offset,
-        JSON.stringify(sanitized),
+        serialized.payload,
         now,
       );
-    });
+    }
+    this.recordPiSqlStorageSanitization("append_in_flight", aggregateStats, messages.length);
   }
 
   private clearPiInFlightMessages(): void {
@@ -2979,40 +3379,58 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } as unknown as AgentMessage;
   }
 
-  private loadPiCoreMessages(): AgentMessage[] {
+  private async loadPiCoreMessages(): Promise<AgentMessage[]> {
     this.ensurePiCoreTables();
-    const rows = this.ctx.storage.sql
-      .exec<{ payload: string }>(
-        "SELECT payload FROM pi_core_messages ORDER BY idx ASC",
-      )
-      .toArray();
+    const compaction = this.loadPiCoreCompaction();
+    const firstKeptIndex = compaction?.firstKeptIndex ?? 0;
+    const rows = firstKeptIndex > 0
+      ? this.ctx.storage.sql
+        .exec<{ payload: string }>(
+          "SELECT payload FROM pi_core_messages WHERE idx >= ? ORDER BY idx ASC",
+          firstKeptIndex,
+        )
+        .toArray()
+      : this.ctx.storage.sql
+        .exec<{ payload: string }>(
+          "SELECT payload FROM pi_core_messages ORDER BY idx ASC",
+        )
+        .toArray();
     const messages: AgentMessage[] = [];
     for (const row of rows) {
       try {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          messages.push(sanitizePiProviderMessage(parsed));
+          const hydrated = await this.hydratePiStoredImages(parsed);
+          messages.push(sanitizePiProviderMessage(hydrated as AgentMessage));
         }
       } catch {
         // Skip corrupt rows rather than failing the whole thread.
       }
     }
-    return messages;
+    if (!compaction || firstKeptIndex <= 0) return messages;
+    return [
+      this.createPiSummaryMessage(compaction.summary, compaction.updatedAt),
+      ...messages,
+    ];
   }
 
-  private replacePiCoreMessages(messages: AgentMessage[]): void {
+  private async replacePiCoreMessages(messages: AgentMessage[]): Promise<void> {
     this.ensurePiCoreTables();
     this.ctx.storage.sql.exec("DELETE FROM pi_core_messages");
     const now = Date.now();
-    messages.forEach((message, index) => {
-      const sanitized = sanitizePiProviderMessage(message);
+    const aggregateStats = emptyPiSqlStorageStats();
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      const serialized = await this.serializePiMessageForSqlStorageDetailed(message);
+      this.addPiSqlStorageStats(aggregateStats, serialized.stats);
       this.ctx.storage.sql.exec(
         "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
         index,
-        JSON.stringify(sanitized),
+        serialized.payload,
         now,
       );
-    });
+    }
+    this.recordPiSqlStorageSanitization("replace", aggregateStats, messages.length);
     this.recordChatThreadObservabilityEvent("pi_core_messages_replaced", {
       operation: "replace",
       status: "ok",
@@ -3020,7 +3438,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private appendPiCoreMessages(messages: AgentMessage[]): void {
+  private async appendPiCoreMessages(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
     this.ensurePiCoreTables();
     const rows = this.ctx.storage.sql
@@ -3030,15 +3448,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       .toArray();
     const startIndex = Math.max(0, Math.floor(Number(rows[0]?.next_idx) || 0));
     const now = Date.now();
-    messages.forEach((message, offset) => {
-      const sanitized = sanitizePiProviderMessage(message);
+    const aggregateStats = emptyPiSqlStorageStats();
+    for (let offset = 0; offset < messages.length; offset += 1) {
+      const message = messages[offset];
+      const serialized = await this.serializePiMessageForSqlStorageDetailed(message);
+      this.addPiSqlStorageStats(aggregateStats, serialized.stats);
       this.ctx.storage.sql.exec(
         "INSERT INTO pi_core_messages (idx, payload, created_at) VALUES (?, ?, ?)",
         startIndex + offset,
-        JSON.stringify(sanitized),
+        serialized.payload,
         now,
       );
-    });
+    }
+    this.recordPiSqlStorageSanitization("append", aggregateStats, messages.length);
     this.recordChatThreadObservabilityEvent("pi_core_messages_appended", {
       operation: "append",
       status: "ok",
@@ -3057,7 +3479,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         "toolResult",
         record.toolCallId.trim(),
         record.isError === true ? "error" : "ok",
-        JSON.stringify(record.content ?? null),
+        this.piCoreMessageKeyContent(record.content),
       ].join(":");
     }
     return [
@@ -3065,8 +3487,66 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       typeof record.timestamp === "number" ? record.timestamp : "",
       typeof record.responseId === "string" ? record.responseId : "",
       typeof record.toolCallId === "string" ? record.toolCallId : "",
-      JSON.stringify(record.content ?? null),
+      this.piCoreMessageKeyContent(record.content),
     ].join(":");
+  }
+
+  private piCoreMessageKeyContent(content: unknown): string {
+    try {
+      const serialized = JSON.stringify(preparePiMessageForSqlStorage({
+        role: "user",
+        content,
+        timestamp: 0,
+      } as unknown as AgentMessage));
+      return serialized.length > 20_000
+        ? serialized.slice(0, 20_000)
+        : serialized;
+    } catch {
+      return String(content);
+    }
+  }
+
+  private addPiSqlStorageStats(total: PiSqlStorageStats, next: PiSqlStorageStats): void {
+    total.externalizedImages += next.externalizedImages;
+    total.omittedImages += next.omittedImages;
+    total.truncatedStrings += next.truncatedStrings;
+    total.omittedWholeMessage = total.omittedWholeMessage || next.omittedWholeMessage;
+    total.originalChars += next.originalChars;
+    total.storedChars += next.storedChars;
+  }
+
+  private recordPiSqlStorageSanitization(
+    operation: string,
+    stats: PiSqlStorageStats,
+    messageCount: number,
+  ): void {
+    if (
+      stats.externalizedImages === 0 &&
+      stats.omittedImages === 0 &&
+      stats.truncatedStrings === 0 &&
+      !stats.omittedWholeMessage &&
+      stats.originalChars <= stats.storedChars
+    ) {
+      return;
+    }
+    const status = stats.omittedWholeMessage
+      ? "omitted"
+      : stats.externalizedImages > 0
+        ? "externalized"
+        : "truncated";
+    this.recordChatThreadObservabilityEvent("pi_sql_storage_sanitized", {
+      operation,
+      status,
+      severity: "warn",
+      count: messageCount,
+      size: stats.originalChars - stats.storedChars,
+      sampleKey: [
+        `externalized:${stats.externalizedImages}`,
+        `images:${stats.omittedImages}`,
+        `strings:${stats.truncatedStrings}`,
+        `whole:${stats.omittedWholeMessage ? 1 : 0}`,
+      ].join("|"),
+    });
   }
 
   private dedupePiMessagesByKey(
@@ -3082,9 +3562,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private appendPiCoreMessagesIfMissing(messages: AgentMessage[]): void {
+  private async appendPiCoreMessagesIfMissing(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
-    const existingMessages = this.loadPiCoreMessages();
+    const existingMessages = await this.loadPiCoreMessages();
     const existingKeys = new Set(
       existingMessages.map((message) => this.piCoreMessageKey(message)),
     );
@@ -3094,7 +3574,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       existingKeys.add(key);
       return true;
     });
-    this.appendPiCoreMessages(missing);
+    await this.appendPiCoreMessages(missing);
     if (missing.length === 0) {
       this.recordChatThreadObservabilityEvent("pi_core_messages_append_skipped", {
         operation: "append_if_missing",
@@ -3143,7 +3623,29 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  private startPiTurnRecovery(userMessage: AgentMessage): void {
+  private loadPiTurnRecoveryQuarantine(): PiTurnRecoveryAdminState["quarantined"] {
+    const value = this.ctx.storage.kv.get<unknown>(PI_TURN_RECOVERY_QUARANTINE_KEY);
+    if (!value || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    const reason = typeof record.reason === "string" && record.reason.trim()
+      ? record.reason.trim()
+      : "Pi turn recovery quarantined";
+    return {
+      reason,
+      retryCount: Math.max(0, Math.floor(Number(record.retryCount) || 0)),
+      updatedAt: Math.max(0, Math.floor(Number(record.updatedAt) || 0)),
+    };
+  }
+
+  async getPiTurnRecoveryAdminState(): Promise<PiTurnRecoveryAdminState> {
+    return {
+      pending: this.loadPiTurnRecovery(),
+      quarantined: this.loadPiTurnRecoveryQuarantine(),
+      inFlightCount: (await this.loadPiInFlightMessages()).length,
+    };
+  }
+
+  private async startPiTurnRecovery(userMessage: AgentMessage): Promise<void> {
     const content = typeof userMessage.content === "string" ? userMessage.content : "";
     if (!content.trim()) return;
     const now = Date.now();
@@ -3174,7 +3676,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       now,
       now,
     );
-    this.appendPiInFlightMessages([userMessage]);
+    await this.appendPiInFlightMessages([userMessage]);
     this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_started", {
       operation: "start_recovery",
@@ -3212,6 +3714,44 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "DELETE FROM pi_turn_recovery WHERE id = ?",
       PI_TURN_RECOVERY_ROW_ID,
     );
+    this.ctx.storage.kv.delete(PI_TURN_RECOVERY_QUARANTINE_KEY);
+  }
+
+  async clearPiTurnRecoveryForAdmin(): Promise<PiTurnRecoveryAdminState> {
+    this.clearPiTurnRecovery();
+    this.clearPiInFlightMessages();
+    this.setChatIsStreaming(false);
+    this.ctx.waitUntil(
+      this.ctx.storage.deleteAlarm().catch((error) => {
+        console.error("[ChatThreadDO] failed to clear Pi recovery alarm", error);
+      }),
+    );
+    this.recordChatThreadObservabilityEvent("pi_turn_recovery_admin_cleared", {
+      operation: "admin_clear_recovery",
+      status: "ok",
+    });
+    return await this.getPiTurnRecoveryAdminState();
+  }
+
+  private quarantinePiTurnRecovery(reason: string, retryCount: number): void {
+    const updatedAt = Date.now();
+    this.ctx.storage.kv.put(PI_TURN_RECOVERY_QUARANTINE_KEY, {
+      reason,
+      retryCount,
+      updatedAt,
+    });
+    this.setChatIsStreaming(false);
+    this.ctx.waitUntil(
+      this.ctx.storage.deleteAlarm().catch((error) => {
+        console.error("[ChatThreadDO] failed to clear quarantined Pi recovery alarm", error);
+      }),
+    );
+    this.recordChatThreadObservabilityEvent("pi_turn_recovery_quarantined", {
+      operation: "recover_interrupted_turn",
+      status: "quarantined",
+      severity: "warn",
+      count: retryCount,
+    });
   }
 
   private schedulePiTurnRecoveryAlarm(delayMs: number): void {
@@ -3225,11 +3765,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
+  private piTurnRecoveryRetryDelayMs(retryCount: number): number {
+    const exponent = Math.max(0, Math.min(8, Math.floor(retryCount) - 1));
+    return Math.min(
+      PI_TURN_RECOVERY_MAX_ALARM_MS,
+      PI_TURN_RECOVERY_ALARM_MS * (2 ** exponent),
+    );
+  }
+
   private async recoverInterruptedPiTurn(
     pendingPiTurn: PiTurnRecoveryRow,
   ): Promise<void> {
     if (!this.chatContext) {
-      this.schedulePiTurnRecoveryAlarm(PI_TURN_RECOVERY_ALARM_MS);
+      this.quarantinePiTurnRecovery("missing chat context for Pi turn recovery", pendingPiTurn.retry_count);
       return;
     }
 
@@ -3876,11 +4424,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private loadPiCoreCompaction(): { summary: string; firstKeptIndex: number } | null {
+  private loadPiCoreCompaction(): { summary: string; firstKeptIndex: number; updatedAt: number } | null {
     this.ensurePiCoreTables();
     const rows = this.ctx.storage.sql
-      .exec<{ summary: string; first_kept_index: number }>(
-        "SELECT summary, first_kept_index FROM pi_core_compaction WHERE id = 1",
+      .exec<{ summary: string; first_kept_index: number; updated_at: number }>(
+        "SELECT summary, first_kept_index, updated_at FROM pi_core_compaction WHERE id = 1",
       )
       .toArray();
     const row = rows[0];
@@ -3888,6 +4436,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return {
       summary: row.summary,
       firstKeptIndex: Math.max(0, Math.floor(Number(row.first_kept_index) || 0)),
+      updatedAt: Math.max(0, Math.floor(Number(row.updated_at) || 0)),
     };
   }
 
@@ -5386,9 +5935,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const resolveCurrentModel = () => this.resolvePiModel(context, envVars, getModel);
     const modelConfig = await resolveCurrentModel();
     this.piModelResolver = resolveCurrentModel;
-    const persistedMessages = this.loadPiCoreMessages();
+    const persistedMessages = await this.loadPiCoreMessages();
     const initialMessages = [...persistedMessages];
-    const inFlight = this.loadPiInFlightMessages();
+    const inFlight = await this.loadPiInFlightMessages();
     if (inFlight.length > 0) {
       // Leave the in-flight rows in place. They are only released when the
       // next turn_end snapshots the recovery message into main (or when an
@@ -5448,15 +5997,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
 
     this.piUnsubscribe = session.subscribe((event) => {
-      try {
-        this.handlePiSessionEvent(event);
-      } catch (error) {
-        console.error("[ChatThreadDO] Pi event handler failed", error);
-        this.persistPiAgentLoopErrorForDevelopers(error, {
-          source: "pi_event_handler",
-          eventType: event.type,
-        });
-      }
+      const handled = this.piEventHandlerChain
+        .catch(() => undefined)
+        .then(() => this.handlePiSessionEvent(event));
+      this.piEventHandlerChain = handled;
+      this.ctx.waitUntil(
+        handled.catch((error) => {
+          console.error("[ChatThreadDO] Pi event handler failed", error);
+          this.persistPiAgentLoopErrorForDevelopers(error, {
+            source: "pi_event_handler",
+            eventType: event.type,
+          });
+        }),
+      );
     });
     this.pushChatEvent({ type: "session", sessionId: context.threadId });
     this.pushChatEvent({ type: "ready" });
@@ -6097,7 +6650,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const existing = this.loadPiCoreCompaction();
-    if (existing && existing.firstKeptIndex > 0 && existing.firstKeptIndex < messages.length) {
+    const startsWithExistingSummary =
+      Boolean(existing) && this.isPiSummaryMessage(messages[0]);
+    if (existing && startsWithExistingSummary) {
+      if (tokens < contextWindow - reserveTokens) {
+        return messages;
+      }
+    } else if (existing && existing.firstKeptIndex > 0 && existing.firstKeptIndex < messages.length) {
       const tail = messages.slice(existing.firstKeptIndex);
       if (this.estimatePiCompactionTokens([
         this.createPiSummaryMessage(existing.summary),
@@ -6114,6 +6673,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const previousSummary = existing?.summary;
     const messagesToSummarize = messages.slice(0, firstKeptIndex);
+    const storedFirstKeptIndex =
+      existing && startsWithExistingSummary
+        ? existing.firstKeptIndex + Math.max(0, firstKeptIndex - 1)
+        : firstKeptIndex;
     try {
       const summary = await this.summarizePiMessages(
         messagesToSummarize,
@@ -6123,11 +6686,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         signal,
         previousSummary,
       );
-      this.persistPiCoreCompaction(summary, firstKeptIndex);
+      this.persistPiCoreCompaction(summary, storedFirstKeptIndex);
       return [this.createPiSummaryMessage(summary), ...messages.slice(firstKeptIndex)];
     } catch (error) {
       console.error("[ChatThreadDO] Pi context compaction failed", error);
-      return messages;
+      const fallbackSummary = this.createFallbackPiCompactionSummary(
+        messagesToSummarize,
+        error,
+      );
+      this.persistPiCoreCompaction(fallbackSummary, storedFirstKeptIndex);
+      this.recordChatThreadObservabilityEvent("pi_context_compaction_fallback_persisted", {
+        operation: "compact_context",
+        status: "fallback",
+        severity: "warn",
+        count: messagesToSummarize.length,
+        size: messages.length - firstKeptIndex,
+      });
+      return [this.createPiSummaryMessage(fallbackSummary), ...messages.slice(firstKeptIndex)];
     }
   }
 
@@ -6262,7 +6837,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     session.state.messages = compacted;
-    this.replacePiCoreMessages(compacted);
+    await this.replacePiCoreMessages(compacted);
     this.clearPiCoreCompaction();
     this.piMainBaselineIndex = compacted.length;
     this.recordChatThreadObservabilityEvent("pi_post_turn_compacted", {
@@ -6523,12 +7098,44 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return "";
   }
 
-  private createPiSummaryMessage(summary: string): AgentMessage {
+  private createFallbackPiCompactionSummary(messages: AgentMessage[], error: unknown): string {
+    const details = this.piAgentLoopErrorDetails(error);
+    const roleCounts = messages.reduce<Record<string, number>>((counts, message) => {
+      const role = String((message as unknown as Record<string, unknown>).role || "unknown");
+      counts[role] = (counts[role] ?? 0) + 1;
+      return counts;
+    }, {});
+    const snippets = messages
+      .map((message) => this.serializePiMessageForSummary(message))
+      .filter((line): line is string => Boolean(line && line.trim()))
+      .slice(-8)
+      .map((line) => line.length > 1000 ? `${line.slice(0, 1000)}\n[...truncated...]` : line)
+      .join("\n\n");
+    return [
+      "Automatic fallback summary created because model-generated compaction failed.",
+      `Compaction error: ${details.name}: ${details.message}`,
+      `Compacted message count: ${messages.length}`,
+      `Role counts: ${JSON.stringify(roleCounts)}`,
+      snippets ? `Recent compacted excerpts:\n${snippets}` : "",
+    ].filter(Boolean).join("\n\n").slice(0, 80_000);
+  }
+
+  private createPiSummaryMessage(summary: string, timestamp = Date.now()): AgentMessage {
     return {
       role: "user",
       content: `[Context Summary]\n\n${summary}`,
-      timestamp: Date.now(),
+      timestamp,
     };
+  }
+
+  private isPiSummaryMessage(message: AgentMessage | undefined): boolean {
+    return (
+      (message as unknown as Record<string, unknown> | undefined)?.role === "user" &&
+      typeof (message as unknown as Record<string, unknown> | undefined)?.content === "string" &&
+      ((message as unknown as Record<string, unknown>).content as string).startsWith(
+        "[Context Summary]\n\n",
+      )
+    );
   }
 
   private async resolvePiModel(
@@ -6851,12 +7458,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return true;
     }
 
-    const prefix =
-      status === "trialing"
-        ? "Trial hosted-model credits are used up."
-        : "Hosted model credits are used up.";
     throw new Error(
-      `${prefix} You have used ${this.formatCreditCents(spentCents)} of ${this.formatCreditCents(totalCreditsCents)}. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.`,
+      `Hosted model credits are used up. You have used ${this.formatCreditCents(spentCents)} of ${this.formatCreditCents(totalCreditsCents)}. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.`,
     );
   }
 
@@ -7630,7 +8233,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return (message as unknown as Record<string, unknown>).role === "assistant";
   }
 
-  private handlePiSessionEvent(event: AgentEvent): void {
+  private async handlePiSessionEvent(event: AgentEvent): Promise<void> {
     if (event.type === "agent_start") {
       this.piAssistantText = "";
       this.piActiveItemText = "";
@@ -7669,7 +8272,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         snapshot.slice(this.piMainBaselineIndex),
       );
       if (newMessages.length > 0) {
-        this.appendPiCoreMessagesIfMissing(newMessages);
+        await this.appendPiCoreMessagesIfMissing(newMessages);
         this.piMainBaselineIndex = snapshot.length;
         this.recordChatThreadObservabilityEvent("pi_turn_end_persisted", {
           operation: "handle_pi_session_event",
@@ -7805,7 +8408,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const buffered = isAssistant
           ? this.ensurePiAssistantTextMessage([event.message], text)
           : [event.message];
-        this.appendPiInFlightMessages(
+        await this.appendPiInFlightMessages(
           this.annotatePiProviderErrorMessages(buffered),
         );
       }
@@ -7885,7 +8488,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             ),
       );
       this.maybeSchedulePiPostTurnCompaction(newMessages);
-      const inFlightMessages = this.loadPiInFlightMessages();
+      const inFlightMessages = await this.loadPiInFlightMessages();
       const droppedInFlight = inFlightMessages.length;
       if (stoppedByUser) {
         const messagesToPersist = this.dedupePiMessagesByKey([
@@ -7893,7 +8496,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           ...newMessages,
         ]);
         if (messagesToPersist.length > 0) {
-          this.appendPiCoreMessagesIfMissing(messagesToPersist);
+          await this.appendPiCoreMessagesIfMissing(messagesToPersist);
           const session = this.piSession;
           const sessionMessages = session?.state.messages;
           if (sessionMessages) {
@@ -8063,12 +8666,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             content,
             timestamp: Date.now(),
           };
-          if (!this.piSession.state.isStreaming) {
-            this.startPiTurnRecovery(userMessage);
-          }
+          const shouldStartRecovery = !this.piSession.state.isStreaming;
           this.ctx.waitUntil(
             (async () => {
               if (!this.piSession) return;
+              if (shouldStartRecovery) {
+                try {
+                  await this.startPiTurnRecovery(userMessage);
+                } catch (error) {
+                  console.error("[ChatThreadDO] failed to persist Pi recovery user message", error);
+                  this.persistPiAgentLoopErrorForDevelopers(error, {
+                    source: "pi_turn_recovery_start",
+                  });
+                  throw error;
+                }
+              }
               await this.refreshPiSessionModel();
               if (this.piSession.state.isStreaming) {
                 this.piSession.steer(userMessage);

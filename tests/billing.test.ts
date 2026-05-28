@@ -32,7 +32,6 @@ import {
   getStripeSubscriptionSummary,
   getVerifiedLegacyStripeMigrationEligibility,
   isBillingSetupPath,
-  isConfiguredEnterpriseOrg,
   isOrgBillingAccessReady,
   isRecurringSubscriptionInvoice,
   isStripeSecretKeyAllowedForMode,
@@ -1034,20 +1033,6 @@ describe("billing helpers", () => {
       "Legacy Stripe migration current-period included credits",
       "legacy-migration:org_team:sub_legacy:team:current-period-included-credits",
     );
-  });
-
-  it("treats configured enterprise org slugs as enterprise", () => {
-    expect(
-      isConfiguredEnterpriseOrg(
-        { BILLING_ENTERPRISE_ORG_SLUGS: "seclock,other-org" },
-        {
-          id: "org_123",
-          name: "SecLock",
-          slug: "seclock",
-          billing_status: "inactive",
-        } as Organization,
-      ),
-    ).toBe(true);
   });
 
   it("resolves org billing access from one shared rule", () => {
@@ -2569,7 +2554,7 @@ describe("billing helpers", () => {
     ).toBe("3000");
   });
 
-  it("blocks Checkout for configured enterprise orgs", async () => {
+  it("blocks Checkout for persisted enterprise orgs", async () => {
     await expect(
       createSubscriptionCheckoutSession({
         env: {
@@ -2577,14 +2562,13 @@ describe("billing helpers", () => {
           STRIPE_MODE: "test",
           STRIPE_SECRET_KEY: "sk_test_123",
           STRIPE_PRO_PRICE_ID: "price_pro",
-          BILLING_ENTERPRISE_ORG_SLUGS: "seclock",
         },
         org: {
           id: "org_123",
           name: "SecLock",
           slug: "seclock",
-          billing_status: "inactive",
-          billing_plan: "free",
+          billing_status: "enterprise",
+          billing_plan: "enterprise",
           billing_seat_count: 1,
           billing_customer_id: "cus_123",
         } as never,

@@ -44,7 +44,6 @@
     "STRIPE_PRO_PRICE_ID": "price_1TS5SoGvliMKf4vHmzDcxSXF",
     "STRIPE_TEAM_PRICE_ID": "price_1TS5SpGvliMKf4vHyJUSN3La",
     "STRIPE_CREDIT_PRICE_IDS": "price_1TRIGrGvliMKf4vHdDHs0tYg,price_1TRIGrGvliMKf4vHtX6WouRr,price_1TRIGsGvliMKf4vHWS9HfIkm,price_1TRIGsGvliMKf4vHte5jp64y",
-    "BILLING_ENTERPRISE_ORG_SLUGS": "seclock",
 
     "EXT_API_CLIENT_ID": "set-me",
     "CF_WORKER_NAME": "chiridion-app-staging",

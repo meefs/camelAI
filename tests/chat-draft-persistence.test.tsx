@@ -721,6 +721,28 @@ describe('Chat draft persistence', () => {
     });
   });
 
+  it('shows a top-up action when create-thread fails because hosted credits are exhausted', () => {
+    render(
+      <Chat
+        workspaceId="ws-1"
+        initialMessages={[]}
+        initialError="Hosted model credits are used up. You have used 0.00 credits of 0.00 credits."
+        newChatActionError="Hosted model credits are used up. You have used 0.00 credits of 0.00 credits."
+      />,
+    );
+
+    expect(screen.getByText("You're out of hosted credits")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Message not sent — top up credits or add an API key to continue.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Top up credits' })).toHaveAttribute(
+      'href',
+      '/settings/organization/usage?action=topup',
+    );
+  });
+
   it('uses the saved recent model for a new chat only when no picker default is set', async () => {
     const user = userEvent.setup();
 

@@ -5,6 +5,7 @@ const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const createThreadMock = vi.fn();
+const deleteThreadMock = vi.fn();
 const generateThreadTitleMock = vi.fn();
 const getThreadsPaginatedMock = vi.fn();
 const startInitialUserMessageMock = vi.fn();
@@ -24,6 +25,7 @@ vi.mock('@/lib/cloudflare.server', () => ({
 
 vi.mock('@/lib/chat-do.server', () => ({
   createThread: createThreadMock,
+  deleteThread: deleteThreadMock,
   generateThreadTitle: generateThreadTitleMock,
   getThreadsPaginated: getThreadsPaginatedMock,
 }));
@@ -127,6 +129,7 @@ describe('onboarding complete sales prompt flow', () => {
     createThreadMock.mockResolvedValue({
       id: 'thread_123',
     });
+    deleteThreadMock.mockResolvedValue(undefined);
     generateThreadTitleMock.mockResolvedValue(undefined);
     getThreadsPaginatedMock.mockResolvedValue({ items: [] });
     startInitialUserMessageMock.mockResolvedValue({ status: 'accepted' });
@@ -218,19 +221,46 @@ describe('onboarding complete sales prompt flow', () => {
     });
   });
 
-  it('allows configured enterprise org slugs through the onboarding billing gate', async () => {
+  it('does not complete onboarding when the initial hosted turn is blocked by credits', async () => {
+    userStub.getPendingSalesPrompt.mockReturnValue('Build me a CRM');
+    startInitialUserMessageMock.mockResolvedValueOnce({
+      status: 'error',
+      error:
+        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits.',
+    });
+
+    const response = await action({
+      request: new Request('https://camelai.dev/api/onboarding/complete', {
+        method: 'POST',
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(402);
+    await expect(response.json()).resolves.toMatchObject({
+      error:
+        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits.',
+      actionHref: '/settings/organization/usage?action=topup',
+      actionLabel: 'Top up credits',
+    });
+    expect(userStub.updateOnboarding).not.toHaveBeenCalled();
+    expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
+    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
+    expect(waitUntilMock).not.toHaveBeenCalled();
+  });
+
+  it('allows persisted enterprise orgs through the onboarding billing gate', async () => {
     orgStubs.set('org_123', {
-      ...createOrgStub({ billingStatus: 'inactive' }),
+      ...createOrgStub({ billingStatus: 'enterprise' }),
       getInfo: vi.fn().mockResolvedValue({
         id: 'org_123',
         name: 'Enterprise Customer',
         slug: 'enterprise-customer',
-        billing_status: 'inactive',
-        billing_plan: 'free',
+        billing_status: 'enterprise',
+        billing_plan: 'enterprise',
       }),
     });
     getEnvMock.mockReturnValue({
-      BILLING_ENTERPRISE_ORG_SLUGS: 'enterprise-customer',
       CHAT_THREAD: {
         idFromName: (id: string) => id,
         get: () => ({

@@ -18,7 +18,6 @@ import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
 import {
   getVerifiedLegacyStripeMigrationEligibility,
-  isConfiguredEnterpriseOrg,
   isOrgBillingAccessReady,
   resolveOrgBillingAccess,
 } from "@/lib/billing.server";
@@ -61,14 +60,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgStub.getInfo().catch(() => null),
     orgStub.getLlmProviderConfig(),
   ]);
-  const baseOrg = orgInfo ?? authContext.currentOrg;
-  const currentOrg = isConfiguredEnterpriseOrg(env, baseOrg)
-    ? {
-        ...baseOrg,
-        billing_status: "enterprise" as const,
-        billing_plan: "enterprise" as const,
-      }
-    : baseOrg;
+  const currentOrg = orgInfo ?? authContext.currentOrg;
   const billingAccess = resolveOrgBillingAccess({
     org: currentOrg,
     llmProviderConfig,

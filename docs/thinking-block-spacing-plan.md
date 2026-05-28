@@ -76,7 +76,7 @@ Add vertical padding to the **text section wrapper** inside `ContentBlockRendere
 ```
 BEFORE                                AFTER
 ─ Updated tasks ─                     ─ Updated tasks ─
-                  ↑ 20px (incl 4px    
+                  ↑ 20px (incl 4px
 Now let me build all the pieces:        ↑ ~32px (incl new py-2)
                   ↑ 20px               Now let me build all the pieces:
 ─ Read wrangler.jsonc ─                                  ↑ ~32px (incl new py-2)
