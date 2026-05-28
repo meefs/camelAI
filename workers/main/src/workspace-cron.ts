@@ -45,7 +45,7 @@ function formatInterval(ms: number): string {
 }
 
 type RunStatus = "success" | "busy" | "question" | "error";
-type DeterministicAutomationRunStatus = "started" | "error";
+type DeterministicAutomationRunStatus = "started" | "success" | "error";
 
 interface ScheduledPromptRow {
   id: string;
@@ -122,6 +122,14 @@ interface DeterministicAutomationDispatchResult {
   error?: string;
 }
 
+export interface RecordDeterministicAutomationRunResultInput {
+  workspaceId: string;
+  automationId: string;
+  instanceId: string;
+  status: "success" | "error";
+  error?: string | null;
+}
+
 export interface WorkspaceScheduledPrompt {
   id: string;
   name: string;
@@ -143,7 +151,7 @@ export interface WorkspaceScheduledPrompt {
 export interface WorkspaceDeterministicAutomation {
   id: string;
   name: string;
-  description: string | null;
+  description: string;
   source: string;
   source_version: number;
   cron_expression: string;
@@ -175,7 +183,7 @@ export interface CreateDeterministicAutomationInput {
   source: string;
   cronExpression: string;
   createdBy: string;
-  description?: string | null;
+  description: string;
   enabled?: boolean;
 }
 
@@ -192,7 +200,7 @@ export interface UpdateDeterministicAutomationInput {
   workspaceId: string;
   id: string;
   name?: string;
-  description?: string | null;
+  description?: string;
   source?: string;
   cronExpression?: string;
   enabled?: boolean;
@@ -291,7 +299,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         CREATE TABLE IF NOT EXISTS deterministic_automations (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
-          description TEXT,
+          description TEXT NOT NULL,
           source TEXT NOT NULL,
           source_version INTEGER NOT NULL DEFAULT 1,
           cron_expression TEXT NOT NULL,
@@ -322,6 +330,13 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         "CREATE INDEX IF NOT EXISTS idx_deterministic_automations_next_run ON deterministic_automations(enabled, next_run_at)",
       );
       this.ctx.storage.kv.put("schemaVersion", 3);
+    }
+
+    if (version < 4) {
+      this.sql.exec(
+        "UPDATE deterministic_automations SET description = name WHERE description IS NULL OR trim(description) = ''",
+      );
+      this.ctx.storage.kv.put("schemaVersion", 4);
     }
   }
 
@@ -378,7 +393,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     return {
       id: row.id,
       name: row.name,
-      description: row.description,
+      description: this.parseDescription(row.description ?? row.name),
       source: row.source,
       source_version: row.source_version,
       cron_expression: row.cron_expression,
@@ -419,10 +434,14 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     return trimmed;
   }
 
-  private parseDescription(value: string | null | undefined): string | null {
-    if (value == null) return null;
+  private parseDescription(value: string | null | undefined): string {
+    if (typeof value !== "string") {
+      throw new Error("description is required");
+    }
     const trimmed = value.trim();
-    if (!trimmed) return null;
+    if (!trimmed) {
+      throw new Error("description is required");
+    }
     if (trimmed.length > 500) {
       throw new Error("description must be 500 characters or fewer");
     }
@@ -805,6 +824,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     workspace: WorkspaceInfo,
     scheduledForMs: number,
     trigger: "schedule" | "manual",
+    instanceId: string,
   ): Promise<DeterministicAutomationDispatchResult> {
     if (!this.env.DETERMINISTIC_AUTOMATION_WORKFLOWS) {
       return {
@@ -822,7 +842,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         },
         { bindingName: AUTOMATION_WORKFLOW_BINDING },
       ) as Workflow;
-      const instance = await workflow.create({
+      await workflow.create({
+        id: instanceId,
         params: {
           workspaceId: workspace.id,
           automationId: automation.id,
@@ -834,7 +855,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       });
       return {
         status: "started",
-        instanceId: await instance.id,
+        instanceId,
       };
     } catch (error) {
       return {
@@ -1318,30 +1339,64 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     const existing = this.toAutomation(existingRow);
     const workspace = await this.getWorkspaceInfo(workspaceId);
     const runStartedAt = Date.now();
-    const dispatch = await this.dispatchDeterministicAutomation(
-      existing,
-      workspace,
-      runStartedAt,
-      "manual",
-    );
 
     let nextRunAt = existing.next_run_at;
     if (existing.enabled && (!nextRunAt || nextRunAt <= runStartedAt)) {
       nextRunAt = getNextCronRunAt(existing.cron_expression, runStartedAt);
     }
 
-    this.sql.exec(
-      `UPDATE deterministic_automations
-       SET updated_at = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
-       WHERE id = ?`,
-      Date.now(),
-      existing.enabled ? nextRunAt : null,
-      runStartedAt,
-      dispatch.status,
-      dispatch.error ?? null,
-      dispatch.instanceId ?? null,
-      existing.id,
-    );
+    let dispatch: DeterministicAutomationDispatchResult;
+    if (!this.env.DETERMINISTIC_AUTOMATION_WORKFLOWS) {
+      dispatch = {
+        status: "error",
+        error: "Deterministic automation workflow binding is not configured",
+      };
+      this.sql.exec(
+        `UPDATE deterministic_automations
+         SET updated_at = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
+         WHERE id = ?`,
+        Date.now(),
+        existing.enabled ? nextRunAt : null,
+        runStartedAt,
+        dispatch.status,
+        dispatch.error,
+        null,
+        existing.id,
+      );
+    } else {
+      const instanceId = crypto.randomUUID();
+      this.sql.exec(
+        `UPDATE deterministic_automations
+         SET updated_at = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
+         WHERE id = ?`,
+        Date.now(),
+        existing.enabled ? nextRunAt : null,
+        runStartedAt,
+        "started",
+        null,
+        instanceId,
+        existing.id,
+      );
+      dispatch = await this.dispatchDeterministicAutomation(
+        existing,
+        workspace,
+        runStartedAt,
+        "manual",
+        instanceId,
+      );
+      if (dispatch.status === "error") {
+        this.sql.exec(
+          `UPDATE deterministic_automations
+           SET updated_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = NULL
+           WHERE id = ? AND last_instance_id = ? AND last_run_status = 'started'`,
+          Date.now(),
+          dispatch.status,
+          dispatch.error ?? "Workflow start failed",
+          existing.id,
+          instanceId,
+        );
+      }
+    }
 
     await this.scheduleNextAlarm();
     const updated = this.getAutomationRow(existing.id);
@@ -1354,6 +1409,36 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         error: dispatch.error,
       },
     };
+  }
+
+  async recordDeterministicAutomationRunResult(
+    input: RecordDeterministicAutomationRunResultInput,
+  ): Promise<boolean> {
+    this.assertWorkspaceIdentity(input.workspaceId);
+    const automationId = input.automationId.trim();
+    const instanceId = input.instanceId.trim();
+    if (!automationId) {
+      throw new Error("automationId is required");
+    }
+    if (!instanceId) {
+      throw new Error("instanceId is required");
+    }
+    if (input.status !== "success" && input.status !== "error") {
+      throw new Error("status must be success or error");
+    }
+
+    const result = this.sql.exec(
+      `UPDATE deterministic_automations
+       SET updated_at = ?, last_run_status = ?, last_run_error = ?
+       WHERE id = ? AND last_instance_id = ?`,
+      Date.now(),
+      input.status,
+      input.status === "error" ? input.error ?? "Workflow failed" : null,
+      automationId,
+      instanceId,
+    );
+
+    return result.rowsWritten > 0;
   }
 
   async alarm(): Promise<void> {
@@ -1439,31 +1524,61 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       const automation = this.toAutomation(row);
       const runStartedAt = Date.now();
       const scheduledFor = automation.next_run_at ?? runStartedAt;
-      const dispatch = await this.dispatchDeterministicAutomation(
-        automation,
-        workspace,
-        scheduledFor,
-        "schedule",
-      );
       const nextRunAt = getNextCronRunAt(
         automation.cron_expression,
         runStartedAt,
       );
       const enabledAfterRun = Boolean(nextRunAt);
 
-      this.sql.exec(
-        `UPDATE deterministic_automations
-         SET updated_at = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
-         WHERE id = ?`,
-        Date.now(),
-        enabledAfterRun ? 1 : 0,
-        nextRunAt,
-        runStartedAt,
-        dispatch.status,
-        dispatch.error ?? (!enabledAfterRun ? "No future run found" : null),
-        dispatch.instanceId ?? null,
-        automation.id,
-      );
+      if (!this.env.DETERMINISTIC_AUTOMATION_WORKFLOWS) {
+        this.sql.exec(
+          `UPDATE deterministic_automations
+           SET updated_at = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
+           WHERE id = ?`,
+          Date.now(),
+          enabledAfterRun ? 1 : 0,
+          nextRunAt,
+          runStartedAt,
+          "error",
+          "Deterministic automation workflow binding is not configured",
+          null,
+          automation.id,
+        );
+      } else {
+        const instanceId = crypto.randomUUID();
+        this.sql.exec(
+          `UPDATE deterministic_automations
+           SET updated_at = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = ?, run_count = run_count + 1
+           WHERE id = ?`,
+          Date.now(),
+          enabledAfterRun ? 1 : 0,
+          nextRunAt,
+          runStartedAt,
+          "started",
+          !enabledAfterRun ? "No future run found" : null,
+          instanceId,
+          automation.id,
+        );
+        const dispatch = await this.dispatchDeterministicAutomation(
+          automation,
+          workspace,
+          scheduledFor,
+          "schedule",
+          instanceId,
+        );
+        if (dispatch.status === "error") {
+          this.sql.exec(
+            `UPDATE deterministic_automations
+             SET updated_at = ?, last_run_status = ?, last_run_error = ?, last_instance_id = NULL
+             WHERE id = ? AND last_instance_id = ? AND last_run_status = 'started'`,
+            Date.now(),
+            dispatch.status,
+            dispatch.error ?? "Workflow start failed",
+            automation.id,
+            instanceId,
+          );
+        }
+      }
     }
 
     await this.scheduleNextAlarm();

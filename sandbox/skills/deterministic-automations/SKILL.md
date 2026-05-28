@@ -14,7 +14,7 @@ Use scheduled prompts when the user wants the agent to think or write a reply la
 
 - `list_deterministic_automations` - list workspace automations and their virtual source paths.
 - `validate_deterministic_automation` - check source syntax and required exports before saving.
-- `create_deterministic_automation` - create an automation with `{ name, source, cron_expression, description?, enabled? }`.
+- `create_deterministic_automation` - create an automation with `{ name, source, cron_expression, description, enabled? }`. Description is required and should summarize what the workflow does.
 - `update_deterministic_automation` - update metadata, schedule, enabled state, or source with `{ automation_id, ... }`.
 - `delete_deterministic_automation` - delete the schedule. Already-started workflow instances may still need their versioned source.
 - `run_deterministic_automation_now` - start the workflow immediately.

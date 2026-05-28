@@ -836,7 +836,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         cron_expression: z
           .string()
           .describe('5-field cron expression in UTC: minute hour day-of-month month day-of-week'),
-        description: z.string().optional().describe('Optional description'),
+        description: z.string().describe('Required description of what the workflow does'),
         enabled: z.boolean().optional().describe('Optional. Defaults to true.'),
       },
       async ({ name, source, cron_expression, description, enabled }) => {
@@ -878,7 +878,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         name: z.string().optional().describe('Optional new display name'),
         source: z.string().optional().describe('Optional new source'),
         cron_expression: z.string().optional().describe('Optional new 5-field UTC cron expression'),
-        description: z.string().nullable().optional().describe('Optional description, or null to clear'),
+        description: z.string().optional().describe('Optional new description'),
         enabled: z.boolean().optional().describe('Optional enabled state'),
       },
       async ({ automation_id, name, source, cron_expression, description, enabled }) => {

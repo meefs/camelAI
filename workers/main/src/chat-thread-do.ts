@@ -849,12 +849,12 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "create_deterministic_automation",
-    "Create a deterministic workflow automation. Arguments: { name, source, cron_expression, description?, enabled? }.",
+    "Create a deterministic workflow automation. Arguments: { name, source, cron_expression, description, enabled? }.",
     Type.Object({
       name: Type.String(),
       source: Type.String(),
       cron_expression: Type.String(),
-      description: Type.Optional(Type.String()),
+      description: Type.String(),
       enabled: Type.Optional(Type.Boolean()),
     }),
   ),
@@ -866,7 +866,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       name: Type.Optional(Type.String()),
       source: Type.Optional(Type.String()),
       cron_expression: Type.Optional(Type.String()),
-      description: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      description: Type.Optional(Type.String()),
       enabled: Type.Optional(Type.Boolean()),
     }),
   ),

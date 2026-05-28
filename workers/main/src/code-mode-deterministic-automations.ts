@@ -9,7 +9,7 @@ interface CodeModeDeterministicAutomationsOptions {
 interface DeterministicAutomationRecord {
   id: string;
   name: string;
-  description: string | null;
+  description: string;
   source: string;
   source_version: number;
   cron_expression: string;
@@ -85,17 +85,19 @@ export class CodeModeDeterministicAutomations {
     const source = typeof args.source === "string" ? args.source : "";
     const cronExpression =
       typeof args.cron_expression === "string" ? args.cron_expression : "";
+    const description =
+      typeof args.description === "string" ? args.description : "";
     if (!name.trim()) throw new Error("name is required");
     if (!source.trim()) throw new Error("source is required");
     if (!cronExpression.trim()) throw new Error("cron_expression is required");
+    if (!description.trim()) throw new Error("description is required");
     const created = await this.options.cronStub.createDeterministicAutomation({
       workspaceId: this.options.workspaceId,
       name,
       source,
       cronExpression,
       createdBy: this.options.userId || "system",
-      description:
-        typeof args.description === "string" ? args.description : undefined,
+      description,
       enabled: typeof args.enabled === "boolean" ? args.enabled : undefined,
     });
     return {
@@ -110,14 +112,18 @@ export class CodeModeDeterministicAutomations {
     const automationId =
       typeof args.automation_id === "string" ? args.automation_id.trim() : "";
     if (!automationId) throw new Error("automation_id is required");
+    let description: string | undefined;
+    if (Object.prototype.hasOwnProperty.call(args, "description")) {
+      if (typeof args.description !== "string") {
+        throw new Error("description must be a string");
+      }
+      description = args.description;
+    }
     const updated = await this.options.cronStub.updateDeterministicAutomation({
       workspaceId: this.options.workspaceId,
       id: automationId,
       name: typeof args.name === "string" ? args.name : undefined,
-      description:
-        typeof args.description === "string" || args.description === null
-          ? args.description
-          : undefined,
+      description,
       source: typeof args.source === "string" ? args.source : undefined,
       cronExpression:
         typeof args.cron_expression === "string"

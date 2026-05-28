@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:test';
 import type { OrgDO } from '../src/auth';
+import { CodeModeDeterministicAutomations } from '../src/code-mode-deterministic-automations';
 import type { WorkspaceCronDO } from '../src/workspace-cron';
 import { createOrg, createUser, listUserWorkspaces, type TestEnv } from './test-helpers';
 
@@ -88,6 +89,31 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     const valid = await cronStub.validateDeterministicAutomationSource(automationSource());
     expect(valid).toEqual({ valid: true, errors: [] });
 
+    const automationTools = new CodeModeDeterministicAutomations({
+      cronStub,
+      workspaceId: workspaceId!,
+      userId,
+    });
+
+    await expect(
+      automationTools.create({
+        name: 'Missing description sync',
+        source: automationSource(),
+        cron_expression: '0 9 * * *',
+        enabled: false,
+      }),
+    ).rejects.toThrow('description is required');
+
+    await expect(
+      automationTools.create({
+        name: 'Blank description sync',
+        description: '   ',
+        source: automationSource(),
+        cron_expression: '0 9 * * *',
+        enabled: false,
+      }),
+    ).rejects.toThrow('description is required');
+
     const created = await cronStub.createDeterministicAutomation({
       workspaceId: workspaceId!,
       name: 'Daily deterministic sync',
@@ -99,6 +125,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     });
 
     expect(created.id).toBeTypeOf('string');
+    expect(created.description).toBe('Runs deterministic workflow code.');
     expect(created.source_version).toBe(1);
     expect(created.enabled).toBe(false);
     expect(created.next_run_at).toBeNull();
@@ -110,6 +137,13 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     );
     expect(snapshot?.source).toContain('class AutomationWorkflow');
     expect(snapshot?.created_by).toBe(userId);
+
+    await expect(
+      automationTools.update({
+        automation_id: created.id,
+        description: null,
+      } as Record<string, unknown>),
+    ).rejects.toThrow('description must be a string');
 
     const updated = await cronStub.updateDeterministicAutomation({
       workspaceId: workspaceId!,
@@ -142,6 +176,27 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     expect(run?.dispatch.status).toBe('started');
     expect(run?.dispatch.instance_id).toBeTypeOf('string');
     expect(run?.automation.last_run_status).toBe('started');
+
+    const staleCompletion = await cronStub.recordDeterministicAutomationRunResult({
+      workspaceId: workspaceId!,
+      automationId: created.id,
+      instanceId: 'different-instance',
+      status: 'success',
+    });
+    expect(staleCompletion).toBe(false);
+    const listAfterStaleCompletion = await cronStub.listDeterministicAutomations(workspaceId!);
+    expect(listAfterStaleCompletion[0]?.last_run_status).toBe('started');
+
+    const completion = await cronStub.recordDeterministicAutomationRunResult({
+      workspaceId: workspaceId!,
+      automationId: created.id,
+      instanceId: run!.dispatch.instance_id!,
+      status: 'success',
+    });
+    expect(completion).toBe(true);
+    const listAfterCompletion = await cronStub.listDeterministicAutomations(workspaceId!);
+    expect(listAfterCompletion[0]?.last_run_status).toBe('success');
+    expect(listAfterCompletion[0]?.last_run_error).toBeNull();
 
     const deleted = await cronStub.deleteDeterministicAutomation(workspaceId!, created.id);
     expect(deleted).toBe(true);
