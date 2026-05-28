@@ -2771,7 +2771,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   // Set thread title and broadcast to connected chat clients
   async setTitle(title: string, updatedAt?: number): Promise<void> {
-    this.broadcastChat({ type: "title_updated", title, updatedAt });
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) return;
+    this.pushChatEvent({
+      type: "title_updated",
+      title: normalizedTitle,
+      ...(typeof updatedAt === "number" && Number.isFinite(updatedAt)
+        ? { updatedAt }
+        : {}),
+    });
   }
 
   async setModel(model: LlmModel, updatedAt?: number): Promise<void> {

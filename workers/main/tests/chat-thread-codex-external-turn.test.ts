@@ -3512,6 +3512,63 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
   });
 
+  it('buffers generated thread titles so later chat init can replay them', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const sent: string[] = [];
+
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+    };
+    fake.chatIsStreaming = false;
+    fake.currentTodos = [];
+    fake.previewTarget = null;
+    fake.previewTabs = [];
+    fake.previewActiveTabId = null;
+    fake.previewVersion = 0;
+    fake.chatEventBuffer = [];
+    fake.nextChatEventId = 1;
+    fake.transientContextUsedPercent = null;
+    fake.contextUsedPercent = null;
+    fake.trace = vi.fn();
+    fake.browserPrompts = {
+      sendPendingPromptsToWebSocket: vi.fn(),
+      pendingQuestionPrompts: vi.fn(() => []),
+      pendingQuestionCount: 0,
+    };
+    fake.broadcastChat = vi.fn();
+    fake.broadcastRunnerClients = vi.fn();
+    fake.ctx = { storage: { kv: { put: vi.fn() } } };
+    fake.completeTodoStateForTurnEnd = vi.fn();
+
+    await ChatThreadDO.prototype.setTitle.call(
+      fake,
+      'Generated title',
+      1_710_000_000_000,
+    );
+
+    const ws = { send: vi.fn((message: string) => sent.push(message)) };
+
+    await ChatThreadDO.prototype['handleChatInit'].call(fake, ws, {
+      type: 'init',
+      mode: 'side_channel',
+      threadId: 'thread1',
+    });
+
+    const messages = sent.map((message) => JSON.parse(message));
+    expect(messages).toContainEqual({
+      type: 'title_updated',
+      title: 'Generated title',
+      updatedAt: 1_710_000_000_000,
+      eventId: 1,
+      sessionId: 'thread1',
+    });
+    expect(messages.findIndex((message) => message.type === 'title_updated')).toBeGreaterThan(
+      messages.findIndex((message) => message.type === 'ready'),
+    );
+  });
+
   it('selects raw Durable Object Pi messages for a fork target', async () => {
     const sourceMessages = [
       { role: 'user', content: 'Build it', timestamp: 100 },
