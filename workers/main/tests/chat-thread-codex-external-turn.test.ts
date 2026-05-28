@@ -58,6 +58,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.setActiveTurnUserId = vi.fn();
     fake.clearPiTurnRecovery = vi.fn();
     fake.completeTodoStateForTurnEnd = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.pushChatEvent = vi.fn((event: any) => events.push(event));
     return { fake, events, activityRecords, workspaceStub };
   }
@@ -2300,6 +2301,71 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
   });
 
+  it('marks persisted Pi stopped-by-user messages for muted UI rendering', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiInFlightMessages = vi.fn(() => []);
+    fake.loadPiCoreMessages = vi.fn(() => [
+      { role: 'user', content: 'stop test', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Stopped by user' }],
+        responseId: 'pi_user_stop_200',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'aborted',
+        metadata: { reason: 'user_stop' },
+      },
+    ]);
+
+    const messages = ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
+
+    expect(messages[1]).toMatchObject({
+      id: 'pi_user_stop_200',
+      role: 'assistant',
+      content: [{
+        type: 'text',
+        text: 'Stopped by user',
+        itemKind: 'userStop',
+      }],
+    });
+  });
+
+  it('does not mark literal persisted Pi text as stopped-by-user without metadata', () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiInFlightMessages = vi.fn(() => []);
+    fake.loadPiCoreMessages = vi.fn(() => [
+      { role: 'user', content: 'echo the phrase', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Stopped by user' }],
+        responseId: 'resp_literal_stop_text',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'stop',
+      },
+    ]);
+
+    const messages = ChatThreadDO.prototype.getPiCoreParsedMessages.call(fake, 'thread1');
+
+    expect(messages[1]).toMatchObject({
+      id: 'resp_literal_stop_text',
+      role: 'assistant',
+      content: [{
+        type: 'text',
+        text: 'Stopped by user',
+      }],
+    });
+    expect(messages[1].content).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ itemKind: 'userStop' })]),
+    );
+  });
+
   it('does not broadcast Pi recovery continue prompts as visible SDK user events', () => {
     const { fake, events } = createPiEventFake();
 
@@ -2486,6 +2552,44 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
     expect(fake.piMainBaselineIndex).toBe(2);
     expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses aborted turn_end persistence after a user stop request', () => {
+    const { fake, events: _events } = createPiEventFake();
+    void _events;
+    const allMessages = [
+      { role: 'user', content: 'stop while streaming', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: '' }],
+        stopReason: 'aborted',
+        errorMessage: 'Request was aborted',
+        responseId: 'resp_aborted',
+        timestamp: 200,
+      },
+    ];
+    fake.piSession = { state: { messages: allMessages } };
+    fake.piMainBaselineIndex = 0;
+    fake.piUserStopRequestedAtMs = 1234;
+    fake.appendPiCoreMessagesIfMissing = vi.fn();
+    fake.clearPiInFlightMessages = vi.fn();
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'turn_end',
+      message: allMessages[1],
+      toolResults: [],
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
+    expect(fake.piMainBaselineIndex).toBe(0);
+    expect(fake.clearPiInFlightMessages).not.toHaveBeenCalled();
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_user_stop_turn_end_suppressed',
+      expect.objectContaining({
+        operation: 'handle_pi_session_event',
+        status: 'turn_end',
+      }),
+    );
   });
 
   it('includes in-flight messages in the parsed chat view', () => {
@@ -2819,6 +2923,109 @@ describe('ChatThreadDO Codex turn handling', () => {
       type: 'result',
       result: '',
     }));
+  });
+
+  it('emits and persists a final stopped-by-user Pi message after a user stop', () => {
+    const { fake, events } = createPiEventFake();
+    const inFlight = [
+      { role: 'user', content: 'build it', timestamp: 100 },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'tool1',
+          name: 'bash',
+          arguments: { command: 'sleep 60' },
+        }],
+        responseId: 'resp_tool',
+        timestamp: 200,
+        api: 'test',
+        provider: 'test',
+        model: 'test',
+        usage: {},
+        stopReason: 'toolUse',
+      },
+    ];
+
+    fake.piUserStopRequestedAtMs = 1234;
+    fake.piMainBaselineIndex = 3;
+    fake.piSession = {
+      state: {
+        model: { api: 'test', provider: 'test', id: 'test-model' },
+        messages: [
+          { role: 'user', content: 'previous', timestamp: 50 },
+          ...inFlight,
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: '' }],
+            stopReason: 'aborted',
+            errorMessage: 'Request was aborted',
+            responseId: 'resp_aborted',
+            timestamp: 789,
+          },
+        ],
+      },
+    };
+    fake.loadPiInFlightMessages = vi.fn(() => inFlight);
+
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    fake.piUserStopRequestedAtMs = 1234;
+    fake.piMainBaselineIndex = 3;
+    ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [
+        ...inFlight,
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: '' }],
+          stopReason: 'aborted',
+          errorMessage: 'Request was aborted',
+          responseId: 'resp_aborted',
+          timestamp: 789,
+        },
+      ],
+    });
+
+    expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledWith([
+      ...inFlight,
+      expect.objectContaining({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Stopped by user' }],
+        stopReason: 'aborted',
+        responseId: 'pi_user_stop_1234',
+        timestamp: 1234,
+        metadata: { reason: 'user_stop' },
+      }),
+    ]);
+    expect(events).toContainEqual({
+      type: 'runtime_event',
+      event: {
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId: 'thread1',
+          itemId: 'pi_user_stop_1234',
+          itemKind: 'userStop',
+          delta: 'Stopped by user',
+        },
+      },
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'result',
+      result: 'Stopped by user',
+    }));
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
+    expect(fake.piSession.state.messages).toEqual([
+      { role: 'user', content: 'previous', timestamp: 50 },
+      ...inFlight,
+      expect.objectContaining({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Stopped by user' }],
+        responseId: 'pi_user_stop_1234',
+      }),
+    ]);
+    expect(fake.piMainBaselineIndex).toBe(4);
+    expect(fake.piUserStopRequestedAtMs).toBe(0);
   });
 
   it('does not echo non-assistant Pi message_end text into the assistant stream', () => {

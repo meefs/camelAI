@@ -144,6 +144,9 @@ export type PreviewTarget =
 
 type PiBillingSource = "hosted" | "byok";
 
+const PI_USER_STOP_TEXT = "Stopped by user";
+const PI_USER_STOP_METADATA_REASON = "user_stop";
+
 interface PiResolvedModelReference {
   provider: string;
   modelId: string;
@@ -1665,6 +1668,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piTurnStartedAtMs: number = 0;
   private piAgentStartedAtMs: number = 0;
   private suppressNextPiRecoveryPromptEvent = false;
+  private piUserStopRequestedAtMs: number = 0;
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
@@ -3065,6 +3069,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ].join(":");
   }
 
+  private dedupePiMessagesByKey(
+    messages: AgentMessage[],
+    existingKeys: Iterable<string> = [],
+  ): AgentMessage[] {
+    const seen = new Set(existingKeys);
+    return messages.filter((message) => {
+      const key = this.piCoreMessageKey(message);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   private appendPiCoreMessagesIfMissing(messages: AgentMessage[]): void {
     if (messages.length === 0) return;
     const existingMessages = this.loadPiCoreMessages();
@@ -3256,6 +3273,66 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     };
+  }
+
+  private createPiUserStopMessage(timestamp: number): AgentMessage {
+    const model = this.piSession?.state.model;
+    return {
+      role: "assistant",
+      content: [{
+        type: "text",
+        text: PI_USER_STOP_TEXT,
+      }],
+      api: model?.api ?? "unknown",
+      provider: model?.provider ?? "unknown",
+      model: model?.id ?? "unknown",
+      usage: this.emptyPiUsage(),
+      stopReason: "aborted",
+      responseId: `pi_user_stop_${timestamp}`,
+      timestamp,
+      metadata: {
+        reason: PI_USER_STOP_METADATA_REASON,
+      },
+    } as unknown as AgentMessage;
+  }
+
+  private isPiUserStopMessage(message: AgentMessage): boolean {
+    const record = message as unknown as Record<string, unknown>;
+    if (record.role !== "assistant") return false;
+    const metadata = record.metadata;
+    if (metadata && typeof metadata === "object") {
+      const reason = (metadata as Record<string, unknown>).reason;
+      if (reason === PI_USER_STOP_METADATA_REASON) return true;
+    }
+    return false;
+  }
+
+  private isAbortedPiAssistantMessage(message: AgentMessage): boolean {
+    const record = message as unknown as Record<string, unknown>;
+    return (
+      record.role === "assistant" &&
+      record.stopReason === "aborted"
+    );
+  }
+
+  private isEmptyAbortedPiAssistantMessage(message: AgentMessage): boolean {
+    return (
+      this.isAbortedPiAssistantMessage(message) &&
+      this.extractPiMessageText(message).length === 0
+    );
+  }
+
+  private ensurePiUserStopMessage(
+    messages: AgentMessage[],
+    stoppedAtMs: number,
+  ): AgentMessage[] {
+    const visibleMessages = messages.filter(
+      (message) => !this.isEmptyAbortedPiAssistantMessage(message),
+    );
+    if (visibleMessages.some((message) => this.isPiUserStopMessage(message))) {
+      return visibleMessages;
+    }
+    return [...visibleMessages, this.createPiUserStopMessage(stoppedAtMs)];
   }
 
   private piProviderErrorMetadata(message: string): {
@@ -3656,12 +3733,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private piAssistantContentToChatContent(message: Record<string, unknown>): Array<Record<string, unknown>> {
+    const isUserStop = this.isPiUserStopMessage(message as unknown as AgentMessage);
     const content = message.content;
     const blocks = Array.isArray(content) ? content.flatMap((part): Array<Record<string, unknown>> => {
       if (!part || typeof part !== "object") return [];
       const item = part as Record<string, unknown>;
       if (item.type === "text" && typeof item.text === "string") {
-        return [{ type: "text", text: item.text }];
+        return [{
+          type: "text",
+          text: item.text,
+          ...(isUserStop ? { itemKind: "userStop" } : {}),
+        }];
       }
       if (item.type === "thinking" && typeof item.thinking === "string") {
         return [{
@@ -7557,6 +7639,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piToolArgs = new Map();
       this.piAgentStartedAtMs = Date.now();
       this.piTurnStartedAtMs = Date.now();
+      this.piUserStopRequestedAtMs = 0;
       this.resetRunningActivityState();
       this.touchPiTurnRecovery("running");
       this.setChatIsStreaming(true);
@@ -7569,6 +7652,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (event.type === "turn_end") {
+      if (
+        this.piUserStopRequestedAtMs > 0 &&
+        this.isAbortedPiAssistantMessage(event.message)
+      ) {
+        this.recordChatThreadObservabilityEvent("pi_user_stop_turn_end_suppressed", {
+          operation: "handle_pi_session_event",
+          status: "turn_end",
+          count: 1,
+        });
+        return;
+      }
+
       const snapshot = this.piSession?.state.messages ?? [];
       const newMessages = this.annotatePiProviderErrorMessages(
         snapshot.slice(this.piMainBaselineIndex),
@@ -7779,16 +7874,49 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (event.type === "agent_end") {
+      const stoppedByUserAtMs = this.piUserStopRequestedAtMs;
+      const stoppedByUser = stoppedByUserAtMs > 0;
       const newMessages = this.annotatePiProviderErrorMessages(
-        this.ensurePiAssistantTextMessage(
-          event.messages,
-          this.piAssistantText,
-        ),
+        stoppedByUser
+          ? this.ensurePiUserStopMessage(event.messages, stoppedByUserAtMs)
+          : this.ensurePiAssistantTextMessage(
+              event.messages,
+              this.piAssistantText,
+            ),
       );
       this.maybeSchedulePiPostTurnCompaction(newMessages);
-      const droppedInFlight = this.loadPiInFlightMessages().length;
+      const inFlightMessages = this.loadPiInFlightMessages();
+      const droppedInFlight = inFlightMessages.length;
+      if (stoppedByUser) {
+        const messagesToPersist = this.dedupePiMessagesByKey([
+          ...inFlightMessages,
+          ...newMessages,
+        ]);
+        if (messagesToPersist.length > 0) {
+          this.appendPiCoreMessagesIfMissing(messagesToPersist);
+          const session = this.piSession;
+          const sessionMessages = session?.state.messages;
+          if (sessionMessages) {
+            const baselineMessages = sessionMessages.slice(0, this.piMainBaselineIndex);
+            const baselineKeys = baselineMessages.map((message) =>
+              this.piCoreMessageKey(message),
+            );
+            const messagesForSession = this.dedupePiMessagesByKey(
+              messagesToPersist,
+              baselineKeys,
+            );
+            session.state.messages = [...baselineMessages, ...messagesForSession];
+            this.piMainBaselineIndex = baselineMessages.length + messagesForSession.length;
+          }
+          this.recordChatThreadObservabilityEvent("pi_user_stop_persisted", {
+            operation: "handle_pi_session_event",
+            status: "agent_end",
+            count: messagesToPersist.length,
+          });
+        }
+      }
       this.clearPiInFlightMessages();
-      if (droppedInFlight > 0) {
+      if (droppedInFlight > 0 && !stoppedByUser) {
         this.recordChatThreadObservabilityEvent("pi_in_flight_discarded", {
           operation: "handle_pi_session_event",
           status: "agent_end_without_turn_end",
@@ -7801,7 +7929,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const turnDurationMs = Math.max(0, completedAtMs - turnStartedAtMs);
       this.piAgentStartedAtMs = 0;
       const threadId = this.chatContext?.threadId || "";
-      const finalText = this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
+      const finalText = stoppedByUser
+        ? PI_USER_STOP_TEXT
+        : this.piAssistantText || this.extractLatestPiAssistantText(newMessages);
       const errorMessage = finalText
         ? ""
         : this.getLatestPiAssistantErrorMessage(newMessages);
@@ -7810,6 +7940,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         finalText || errorMessage,
       );
       const forkEntryId = this.latestPiAssistantForkEntryId(newMessages);
+      if (stoppedByUser) {
+        this.pushPiRuntimeEvent("item/agentMessage/delta", {
+          threadId,
+          itemId: forkEntryId || `pi_user_stop_${stoppedByUserAtMs}`,
+          itemKind: "userStop",
+          delta: PI_USER_STOP_TEXT,
+        });
+      }
       this.pushPiRuntimeEvent("turn/completed", {
         threadId,
         ...(forkEntryId ? { forkEntryId } : {}),
@@ -7839,6 +7977,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.piReasoningItemId = null;
       this.piToolArgs = new Map();
       this.piAssistantText = "";
+      this.piUserStopRequestedAtMs = 0;
       this.resetRunningActivityState();
       return;
     }
@@ -7959,6 +8098,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           return true;
         }
         if (type === "stop") {
+          this.piUserStopRequestedAtMs = Date.now();
           this.piSession.abort();
           this.clearPiTurnRecovery();
           return true;

@@ -1624,11 +1624,15 @@ function applyCodexRuntimeEvent(
   }
 
   if (event.method === 'item/agentMessage/delta' && itemId && typeof params.delta === 'string') {
+    const itemKind =
+      typeof params.itemKind === 'string' && params.itemKind.trim()
+        ? params.itemKind.trim()
+        : 'agentMessage';
     return updateStreamingAssistantMessage(
       currentMessages,
       threadId,
       streamingMessageIds,
-      (blocks) => appendTextDeltaBlock(blocks, itemId, params.delta as string, 'agentMessage'),
+      (blocks) => appendTextDeltaBlock(blocks, itemId, params.delta as string, itemKind),
     );
   }
 

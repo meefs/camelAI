@@ -67,6 +67,7 @@ function formatMessageTime(timestamp: number, timeZone?: string): string {
 // ── Special message detection ──
 
 const INTERRUPT_TEXT = '[Request interrupted by user]';
+const STOPPED_BY_USER_TEXT = 'Stopped by user';
 
 const WRAPPED_SLASH_COMMAND_REGEX = /<command-name>(\/\w[\w-]*)<\/command-name>/;
 const BARE_SLASH_COMMAND_REGEX = /^(\/\w[\w-]*)$/;
@@ -84,6 +85,16 @@ function extractRawText(content: string | ContentBlock[]): string {
 /** True when the message is the SDK's "[Request interrupted by user]" sentinel. */
 export function isInterruptMessage(content: string | ContentBlock[]): boolean {
   return extractRawText(content).trim() === INTERRUPT_TEXT;
+}
+
+function isStoppedByUserStatusMessage(content: string | ContentBlock[]): boolean {
+  if (!Array.isArray(content) || content.length !== 1) return false;
+  const [block] = content;
+  return (
+    block.type === 'text' &&
+    block.itemKind === 'userStop' &&
+    extractRawText(block.text).trim() === STOPPED_BY_USER_TEXT
+  );
 }
 
 /** Returns the slash command name (e.g. "/compact") or null. */
@@ -406,6 +417,18 @@ export function ContentBlockRenderer({
       const { displayText, annotatedMentions } = prepareDisplayText(block.text);
       // Skip empty text blocks after stripping system messages
       if (!displayText) return;
+      if (block.itemKind === 'userStop' && displayText === STOPPED_BY_USER_TEXT) {
+        items.push({
+          kind: 'other',
+          key: `text-${index}`,
+          node: (
+            <p className="text-sm italic text-muted-foreground/70">
+              {STOPPED_BY_USER_TEXT}
+            </p>
+          ),
+        });
+        return;
+      }
       items.push({
         kind: 'other',
         key: `text-${index}`,
@@ -662,14 +685,26 @@ function MessageBubbleBase({
 
   const displayContent = filterContentForRenderMode(message.content, renderMode);
 
+  if (message.role === 'assistant' && isStoppedByUserStatusMessage(displayContent)) {
+    return (
+      <div className="flex justify-start">
+        <span className="text-sm italic text-muted-foreground/70">
+          {STOPPED_BY_USER_TEXT}
+        </span>
+      </div>
+    );
+  }
+
   // ── Special user-role messages with distinct rendering ──
 
   if (message.role === 'user') {
-    // "[Request interrupted by user]" → grey italic "Stopped by User"
+    // "[Request interrupted by user]" → grey italic "Stopped by user"
     if (isInterruptMessage(displayContent)) {
       return (
         <div className="flex justify-end">
-          <span className="text-muted-foreground text-sm italic">Stopped by User</span>
+          <span className="text-sm italic text-muted-foreground/70">
+            {STOPPED_BY_USER_TEXT}
+          </span>
         </div>
       );
     }
