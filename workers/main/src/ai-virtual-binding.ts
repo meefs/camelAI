@@ -1,6 +1,9 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { OrgDO } from "./auth";
 import { ensureLegacyHostUsageBackfilled } from "./legacy-usage-backfill-gate";
+import { decryptCredentials } from "../../../src/lib/integration-crypto";
+import { parseStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
+import { chatCompletionToPiCall, runBedrockViaPi } from "./bedrock-pi-adapter";
 
 export interface AIVirtualBindingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
@@ -11,7 +14,7 @@ export interface AIVirtualBindingEnv {
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
-  AI_VIRTUAL_MODEL?: string;
+  INTEGRATION_SECRET_KEY?: string;
 }
 
 export interface AIVirtualBindingProps {
@@ -26,12 +29,67 @@ export interface VirtualAiRunScope {
   waitUntil: (promise: Promise<unknown>) => void;
 }
 
-const DEFAULT_VIRTUAL_MODEL = "google/gemini-3-flash-preview";
-const DYNAMIC_MODEL_ALIASES = new Set(["auto_search", "auto_image"]);
-const MODEL_ALIASES: Readonly<Record<string, string>> = {
+export type TierName = "cheap" | "fast" | "auto" | "smart";
+export type ProviderKind = "openai" | "anthropic" | "bedrock" | "openrouter";
+
+const TIERS: ReadonlySet<TierName> = new Set(["cheap", "fast", "auto", "smart"]);
+
+const TIER_MODELS: Readonly<Record<ProviderKind, Readonly<Record<TierName, string>>>> = {
+  openai: {
+    cheap: "gpt-5.4-nano",
+    fast: "gpt-5.4-mini",
+    auto: "gpt-5.4-mini",
+    smart: "gpt-5.5",
+  },
+  anthropic: {
+    cheap: "claude-haiku-4-5-20251001",
+    fast: "claude-haiku-4-5-20251001",
+    auto: "claude-sonnet-4-6",
+    smart: "claude-opus-4-7",
+  },
+  bedrock: {
+    cheap: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    fast: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    auto: "global.anthropic.claude-sonnet-4-6",
+    smart: "global.anthropic.claude-opus-4-7",
+  },
+  openrouter: {
+    cheap: "deepseek/deepseek-v4-flash",
+    fast: "deepseek/deepseek-v4-flash",
+    auto: "moonshotai/kimi-k2.6",
+    smart: "anthropic/claude-sonnet-4.6",
+  },
+};
+
+// Matches the fallback used by the BYOK key-validation route and
+// pi-bedrock-provider (chat path). Bedrock model access is granted per region,
+// so an org that validated/used Bedrock in us-east-1 must hit the same region
+// for env.AI.run tier calls.
+const DEFAULT_BEDROCK_REGION = "us-east-1";
+
+/**
+ * Back-compat shim for already-deployed user workers that still call the old
+ * model strings the pre-tier `resolveModel` accepted. Without this, the
+ * pass-through path would turn `gpt-5.5` into `gpt-5.5:nitro` (a non-existent
+ * OpenRouter id) and `auto_search` into `auto_search:nitro`, breaking those
+ * apps on rollout.
+ *
+ * - The old "auto"-family routes (`dynamic/auto`, `auto_search`) map to the
+ *   `auto` tier. Search grounding was removed, so `auto_search` degrades to a
+ *   plain completion rather than erroring.
+ * - `dynamic/auto_image` maps to the private `auto_image` route (see
+ *   executeVirtualAiRun) so image generation keeps working.
+ * - The old friendly model names map to their OpenRouter ids; the pass-through
+ *   path then appends `:nitro` as usual.
+ */
+const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "dynamic/auto": "auto",
+  auto_search: "auto",
+  "dynamic/auto_search": "auto",
+  "dynamic/auto_image": "auto_image",
   "gpt-5.5": "openai/gpt-5.5",
-  "kimi-k2.6": "~moonshotai/kimi-latest",
-  "kimi-latest": "~moonshotai/kimi-latest",
+  "kimi-k2.6": "moonshotai/kimi-k2.6",
+  "kimi-latest": "moonshotai/kimi-k2.6",
   "opus-4.7": "anthropic/claude-opus-4.7",
   "grok-4.3": "x-ai/grok-4.3",
   "grok-latest": "x-ai/grok-4.3",
@@ -43,35 +101,127 @@ const MODEL_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /**
- * Resolve a model string to its gateway representation.
- *
- * - `auto`/`dynamic/auto` map to the current default OpenRouter model.
- * - Known capability aliases (`auto_search`, `auto_image`) map to `dynamic/{alias}`.
- * - Non-auto models already prefixed with `dynamic/` pass through unchanged.
- * - Everything else is treated as an OpenRouter model and passes through as-is.
+ * Rewrite a legacy model string to its current equivalent. Idempotent — a
+ * value that isn't a legacy alias (including current tier names and OpenRouter
+ * ids) passes through unchanged.
  */
-export function resolveModel(model: string): string {
+export function normalizeLegacyModel(model: string): string {
   const trimmed = model.trim();
-  if (trimmed === "auto" || trimmed === "dynamic/auto") {
-    return DEFAULT_VIRTUAL_MODEL;
-  }
-  const alias = MODEL_ALIASES[trimmed];
-  if (alias) {
-    return alias;
-  }
-  if (DYNAMIC_MODEL_ALIASES.has(trimmed)) {
-    return `dynamic/${trimmed}`;
-  }
-  return trimmed || DEFAULT_VIRTUAL_MODEL;
+  return LEGACY_MODEL_ALIASES[trimmed] ?? trimmed;
+}
+
+interface ResolvedRouting {
+  /** Provider whose endpoint we hit. */
+  provider: ProviderKind;
+  /** Model id sent to the provider (already :nitro-suffixed for OpenRouter). */
+  model: string;
+  /** Per-request auth: user's BYOK key, or undefined to use the hosted gateway token. */
+  byokKey?: string;
+  /** Bedrock-only: region for the Converse URL. */
+  awsRegion?: string;
 }
 
 /**
- * Returns true when the resolved model should route through the OpenRouter
- * gateway provider endpoint (`/openrouter/`) rather than the Cloudflare
- * compat endpoint (`/compat/`).
+ * Resolve a model string + the org's BYOK config into a concrete provider route.
+ *
+ * Friendly tiers (`cheap`/`fast`/`auto`/`smart`) pick a per-provider model based
+ * on the org's active BYOK key (Anthropic / OpenAI / Bedrock / OpenRouter) —
+ * orgs without BYOK get the OpenRouter mapping routed through our hosted credits.
+ * Anything else is treated as a real OpenRouter model id and passes through to
+ * the OpenRouter route (still using the org's OpenRouter BYOK if present).
  */
-export function isOpenRouterModel(resolvedModel: string): boolean {
-  return !resolvedModel.startsWith("dynamic/");
+export async function resolveRouting(
+  scope: VirtualAiRunScope,
+  rawModel: string,
+): Promise<ResolvedRouting> {
+  const byok = await readOrgByok(scope.env, scope.props);
+  const trimmed = normalizeLegacyModel(rawModel);
+
+  if (TIERS.has(trimmed as TierName)) {
+    const tier = trimmed as TierName;
+    const provider = byok?.provider ?? "openrouter";
+    const baseModel = TIER_MODELS[provider][tier];
+    return {
+      provider,
+      model: formatModelForProvider(provider, baseModel),
+      byokKey: byok?.apiKey,
+      awsRegion: byok?.awsRegion,
+    };
+  }
+
+  // Pass-through: always route to OpenRouter. Use org's OpenRouter BYOK only if
+  // that's the configured provider; otherwise the hosted gateway token (CF AI
+  // Gateway has the OpenRouter key stored at the gateway level).
+  return {
+    provider: "openrouter",
+    model: appendNitro(trimmed || TIER_MODELS.openrouter.auto),
+    byokKey: byok?.provider === "openrouter" ? byok.apiKey : undefined,
+  };
+}
+
+async function readOrgByok(
+  env: AIVirtualBindingEnv,
+  props: AIVirtualBindingProps,
+): Promise<{ provider: ProviderKind; apiKey: string; awsRegion?: string } | null> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(props.orgId));
+  const record = await orgStub.getLlmProviderConfig();
+  if (!record) return null;
+
+  // Org has BYOK configured but the worker can't decrypt it (missing secret,
+  // rotated key, corrupted record). Surface this loudly — silently falling
+  // back to hosted credits would change both billing and the upstream data
+  // path without the user noticing.
+  if (!env.INTEGRATION_SECRET_KEY) {
+    throw new Error(
+      "BYOK credentials are configured but INTEGRATION_SECRET_KEY is unavailable in this worker; cannot decrypt your provider key.",
+    );
+  }
+
+  let creds: Record<string, string>;
+  try {
+    creds = await decryptCredentials<Record<string, string>>(
+      record.credentials_encrypted,
+      env.INTEGRATION_SECRET_KEY,
+    );
+  } catch (error) {
+    console.error("[AIVirtualBinding] failed to decrypt BYOK creds", error);
+    throw new Error(
+      "Failed to decrypt your stored AI provider credentials. Re-save your key in Settings -> AI Provider to continue using BYOK.",
+    );
+  }
+  const config = parseStoredLlmProviderConfig(record.config);
+
+  const missingKey = (): Error =>
+    new Error(
+      `Your stored ${record.provider} credentials are missing an API key. Re-save your key in Settings -> AI Provider to continue using BYOK.`,
+    );
+
+  switch (record.provider) {
+    case "openai":
+      if (!creds.api_key) throw missingKey();
+      return { provider: "openai", apiKey: creds.api_key };
+    case "anthropic":
+      if (!creds.api_key) throw missingKey();
+      return { provider: "anthropic", apiKey: creds.api_key };
+    case "openrouter":
+      if (!creds.api_key) throw missingKey();
+      return { provider: "openrouter", apiKey: creds.api_key };
+    case "bedrock":
+      if (!creds.bearer_token) throw missingKey();
+      return {
+        provider: "bedrock",
+        apiKey: creds.bearer_token,
+        awsRegion: config.aws_region ?? DEFAULT_BEDROCK_REGION,
+      };
+    default:
+      // Unknown provider in the record — fall through to hosted rather than
+      // failing loudly, because unsupported-but-recorded providers shouldn't
+      // brick the worker for the user. Logged for visibility.
+      console.warn(
+        `[AIVirtualBinding] unknown BYOK provider in record: ${record.provider}`,
+      );
+      return null;
+  }
 }
 
 export async function executeVirtualAiRun(
@@ -80,51 +230,119 @@ export async function executeVirtualAiRun(
   input: unknown,
   _options?: unknown,
 ): Promise<unknown> {
-  const { model: inputModel, input: sanitizedInput } =
-    extractModelFromInput(input);
-  const envDefault = resolveVirtualModel(scope.env);
+  const { model: inputModel, input: sanitizedInput } = extractModelFromInput(input);
+  const requestedModel = normalizeLegacyModel(pickModel(model, inputModel));
 
-  const picked = pickModel(model, inputModel, envDefault);
-  const resolvedModelName = resolveModel(picked);
-
-  const provider: GatewayProvider = isOpenRouterModel(resolvedModelName)
-    ? "openrouter"
-    : "compat";
-  const access = await checkHostedModelAccess(scope.env, scope.props);
-  const settings = resolveGatewaySettings(scope.env);
-  if (!settings) {
-    throw new Error("AI Gateway is not configured for virtual AI.");
+  // Internal legacy escape hatch used by generate-image.ts → env.CAMELAI.generateImage.
+  // Not a public model name — kept private until image generation moves to a
+  // concrete provider model. Always routes through the gateway's compat path
+  // on our hosted credits (no BYOK, charges credits). `dynamic/auto_image`
+  // (old public string) is normalized to `auto_image` by normalizeLegacyModel.
+  if (requestedModel === "auto_image") {
+    const settings = requireGatewaySettings(scope.env);
+    return runLegacyAutoImage(scope, settings, sanitizedInput);
   }
 
+  const routing = await resolveRouting(scope, requestedModel);
+  const usesByok = routing.byokKey !== undefined;
+  const access = usesByok
+    ? { creditChargeable: false }
+    : await checkHostedModelAccess(scope.env, scope.props);
+  const billingSource: "byok" | "hosted" = usesByok ? "byok" : "hosted";
+
+  const settings = routing.provider === "bedrock"
+    ? undefined
+    : requireGatewaySettings(scope.env);
+
   const startedAt = Date.now();
-  const result = await runViaGatewayHTTP(
-    settings,
-    scope.props,
-    sanitizedInput,
-    resolvedModelName,
-    provider,
-  );
+  const result =
+    routing.provider === "bedrock"
+      ? await runBedrockViaPi({
+          call: chatCompletionToPiCall(sanitizedInput),
+          modelId: routing.model,
+          // Bedrock BYOK is the only path here — if we got bedrock routing
+          // without a key, that's a bug in resolveRouting (would mean an org
+          // with Bedrock-typed BYOK record but no decryptable bearer token,
+          // which `readOrgByok` now throws on).
+          bearerToken: routing.byokKey!,
+          region: routing.awsRegion,
+        })
+      : await runViaGatewayHTTP(
+          settings,
+          scope.props,
+          sanitizedInput,
+          routing.model,
+          routing.provider === "openrouter" ? "openrouter" : "compat",
+          routing.byokKey,
+        );
+
+  const fallbackModel = routing.model;
   const record = (usage: ExtractedUsage) =>
     recordVirtualAiUsage(
       scope.env,
       scope.props,
       usage,
-      provider,
+      routing.provider,
       Date.now() - startedAt,
       access.creditChargeable,
+      billingSource,
     ).catch((error) => {
       console.error("[AIVirtualBinding] failed to record usage", error);
     });
   if (result instanceof ReadableStream) {
     const [clientStream, usageStream] = result.tee();
     scope.waitUntil(
-      extractStreamingUsage(usageStream, resolvedModelName).then((usage) =>
+      extractStreamingUsage(usageStream, fallbackModel).then((usage) =>
         usage ? record(usage) : undefined,
       ),
     );
     return clientStream;
   }
-  const usage = extractJsonUsage(result, resolvedModelName);
+  const usage = extractJsonUsage(result, fallbackModel);
+  if (usage) {
+    scope.waitUntil(record(usage));
+  }
+  return result;
+}
+
+async function runLegacyAutoImage(
+  scope: VirtualAiRunScope,
+  settings: GatewaySettings,
+  input: unknown,
+): Promise<unknown> {
+  const access = await checkHostedModelAccess(scope.env, scope.props);
+  const startedAt = Date.now();
+  const result = await runViaGatewayHTTP(
+    settings,
+    scope.props,
+    input,
+    "dynamic/auto_image",
+    "compat",
+    undefined,
+  );
+  const fallbackModel = "dynamic/auto_image";
+  const record = (usage: ExtractedUsage) =>
+    recordVirtualAiUsage(
+      scope.env,
+      scope.props,
+      usage,
+      "openrouter",
+      Date.now() - startedAt,
+      access.creditChargeable,
+      "hosted",
+    ).catch((error) => {
+      console.error("[AIVirtualBinding] failed to record usage", error);
+    });
+  if (result instanceof ReadableStream) {
+    const [clientStream, usageStream] = result.tee();
+    scope.waitUntil(
+      extractStreamingUsage(usageStream, fallbackModel).then((usage) =>
+        usage ? record(usage) : undefined,
+      ),
+    );
+    return clientStream;
+  }
+  const usage = extractJsonUsage(result, fallbackModel);
   if (usage) {
     scope.waitUntil(record(usage));
   }
@@ -177,9 +395,10 @@ async function recordVirtualAiUsage(
   env: AIVirtualBindingEnv,
   props: AIVirtualBindingProps,
   usage: ExtractedUsage,
-  gatewayProvider: GatewayProvider,
+  provider: ProviderKind,
   durationMs: number,
   creditChargeable: boolean,
+  billingSource: "byok" | "hosted",
 ): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(props.orgId));
   await orgStub.recordUsage({
@@ -187,8 +406,8 @@ async function recordVirtualAiUsage(
     user_id: props.userId ?? "",
     thread_id: "virtual-ai",
     model: usage.model,
-    provider: gatewayProvider === "openrouter" ? "openrouter" : "openai",
-    billing_source: "hosted",
+    provider,
+    billing_source: billingSource,
     credit_chargeable: creditChargeable,
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
@@ -229,19 +448,12 @@ export class AIVirtualBinding extends WorkerEntrypoint<
   }
 }
 
-export function resolveVirtualModel(
-  env: Pick<AIVirtualBindingEnv, "AI_VIRTUAL_MODEL">,
-): string {
-  const configured = env.AI_VIRTUAL_MODEL?.trim();
-  return configured || DEFAULT_VIRTUAL_MODEL;
-}
-
 function pickModel(...candidates: (string | undefined)[]): string {
   for (const c of candidates) {
     const trimmed = c?.trim();
     if (trimmed) return trimmed;
   }
-  return DEFAULT_VIRTUAL_MODEL;
+  return "auto";
 }
 
 export function extractModelFromInput(input: unknown): {
@@ -264,6 +476,14 @@ export interface GatewaySettings {
   accountID: string;
   gatewayID: string;
   authToken: string;
+}
+
+function requireGatewaySettings(env: AIVirtualBindingEnv): GatewaySettings {
+  const settings = resolveGatewaySettings(env);
+  if (!settings) {
+    throw new Error("AI Gateway is not configured for virtual AI.");
+  }
+  return settings;
 }
 
 function resolveGatewayAuthToken(
@@ -327,21 +547,54 @@ function buildGatewayURL(
   return `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountID)}/${encodeURIComponent(gatewayID)}/${provider}/chat/completions`;
 }
 
+/**
+ * Format a tier-resolved model id for the destination route.
+ *
+ * - OpenAI/Anthropic compat routing requires `provider/model` (CF AI Gateway's
+ *   unified API dispatches on the prefix).
+ * - OpenRouter ids stay bare and get `:nitro` appended.
+ * - Bedrock ids go in the URL path, not the body, so they're returned as-is.
+ */
+function formatModelForProvider(
+  provider: ProviderKind,
+  baseModel: string,
+): string {
+  switch (provider) {
+    case "openai":
+      return `openai/${baseModel}`;
+    case "anthropic":
+      return `anthropic/${baseModel}`;
+    case "bedrock":
+      return baseModel;
+    case "openrouter":
+      return appendNitro(baseModel);
+  }
+}
+
+export function appendNitro(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return trimmed;
+  const lastSegment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  if (lastSegment.includes(":")) return trimmed;
+  return `${trimmed}:nitro`;
+}
+
 export async function runViaGatewayHTTP(
   settings: GatewaySettings,
   props: AIVirtualBindingProps,
   input: unknown,
-  model: string = "dynamic/auto",
+  model: string,
   provider: GatewayProvider = "compat",
+  byokKey?: string,
 ): Promise<unknown> {
   const headers = new Headers();
-  headers.set("Authorization", `Bearer ${settings.authToken}`);
+  headers.set("Authorization", `Bearer ${byokKey ?? settings.authToken}`);
+  if (byokKey) {
+    headers.set("cf-aig-authorization", `Bearer ${settings.authToken}`);
+  }
   headers.set("Content-Type", "application/json");
   headers.set("cf-aig-metadata", buildGatewayMetadata(props));
-  const payload = toGatewayPayload(
-    input,
-    provider === "openrouter" ? openRouterNitroModel(model) : model,
-  );
+  const payload = toGatewayPayload(input, model);
 
   const resp = await fetch(
     buildGatewayURL(settings.accountID, settings.gatewayID, provider),
@@ -515,26 +768,6 @@ function toGatewayPayload(
     return { ...asObject, model };
   }
   return { model };
-}
-
-function openRouterNitroModel(model: string): string {
-  const trimmed = model.trim();
-  if (!trimmed) return model;
-  const lower = trimmed.toLowerCase();
-  if (
-    lower.startsWith("dynamic/") ||
-    lower.startsWith("google/gemini-") ||
-    lower.startsWith("deepseek/deepseek-v4-") ||
-    lower.startsWith("anthropic/claude-opus-4.") ||
-    lower.endsWith(":nitro")
-  ) {
-    return trimmed;
-  }
-  const lastSegment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
-  if (lastSegment.includes(":")) {
-    return trimmed;
-  }
-  return `${trimmed}:nitro`;
 }
 
 function shouldPassthroughStream(

@@ -237,6 +237,7 @@ interface ChannelToolAttachmentInput {
   filename?: string;
   content_type?: string;
   caption?: string;
+  send_as?: string;
 }
 
 interface ResolvedChannelAttachment {
@@ -246,6 +247,7 @@ interface ResolvedChannelAttachment {
   content: ArrayBuffer;
   size: number;
   caption?: string;
+  sendAs?: string;
 }
 
 const MAX_CHANNEL_OUTBOUND_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -885,6 +887,47 @@ const ASK_USER_QUESTION_TOOL = codeModePassthroughTool(
     questions: Type.Array(Type.Object({}, { additionalProperties: true })),
   }),
 );
+const CHANNEL_ATTACHMENT_PARAMETERS = Type.Optional(Type.Array(Type.Object({
+  path: Type.String(),
+  filename: Type.Optional(Type.String()),
+  content_type: Type.Optional(Type.String()),
+  caption: Type.Optional(Type.String()),
+  send_as: Type.Optional(Type.String()),
+})));
+const SEND_EMAIL_TOOL = codeModeTool(
+  "send_email",
+  "Send an email from the current workspace. This tool is available only inside js_exec as tools.send_email(...); it is not a top-level tool. Use this only when the user should receive an external email; final assistant text is not emailed automatically. Arguments: { to, subject, text?, html?, reply_to?, attachments? }.",
+  Type.Object({
+    to: Type.String(),
+    subject: Type.String(),
+    text: Type.Optional(Type.String()),
+    html: Type.Optional(Type.String()),
+    reply_to: Type.Optional(Type.String()),
+    attachments: CHANNEL_ATTACHMENT_PARAMETERS,
+  }),
+);
+const SEND_SLACK_MESSAGE_TOOL = codeModeTool(
+  "send_slack_message",
+  "Send a Slack message from the current workspace. This tool is available only inside js_exec as tools.send_slack_message(...); it is not a top-level tool. In a Slack-originated thread, routing defaults to that Slack conversation. Otherwise provide channel_id and, when multiple Slack connections exist, integration_id or team_id. Use thread_ts to reply in a Slack thread. Arguments: { text?, integration_id?, team_id?, channel_id?, thread_ts?, attachments? }.",
+  Type.Object({
+    text: Type.Optional(Type.String()),
+    integration_id: Type.Optional(Type.String()),
+    team_id: Type.Optional(Type.String()),
+    channel_id: Type.Optional(Type.String()),
+    thread_ts: Type.Optional(Type.String()),
+    attachments: CHANNEL_ATTACHMENT_PARAMETERS,
+  }),
+);
+const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
+  "send_telegram_message",
+  "Send a Telegram message from the current workspace. This tool is available only inside js_exec as tools.send_telegram_message(...); it is not a top-level tool. In a Telegram-originated thread, chat_id defaults to that chat. Otherwise provide chat_id, or integration_id for a configured Telegram chat. Image attachments are sent as native Telegram photos when possible; use attachments[].send_as = 'document' to force file/document delivery. Arguments: { text?, chat_id?, integration_id?, attachments? }.",
+  Type.Object({
+    text: Type.Optional(Type.String()),
+    chat_id: Type.Optional(Type.String()),
+    integration_id: Type.Optional(Type.String()),
+    attachments: CHANNEL_ATTACHMENT_PARAMETERS,
+  }),
+);
 const WEB_SEARCH_TOOL = codeModePassthroughTool(
   "WebSearch",
   "Search the web. Arguments: { query, numResults?, maxCharacters? }.",
@@ -936,6 +979,9 @@ const EXPLORE_TOOL = codeModeTool(
 const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ...CODE_MODE_CONTAINER_TOOL_DEFINITIONS,
   ASK_USER_QUESTION_TOOL,
+  SEND_EMAIL_TOOL,
+  SEND_SLACK_MESSAGE_TOOL,
+  SEND_TELEGRAM_MESSAGE_TOOL,
   codeModeAlias(
     "ask_user_question",
     ASK_USER_QUESTION_TOOL,
@@ -1201,6 +1247,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     list_integration_types: (binding, args) => binding.listIntegrationTypes(args),
     create_integration: (binding, args) => binding.createIntegration(args),
     prompt_connection_setup: (binding, args) => binding.promptConnectionSetup(args),
+    send_email: (binding, args) => binding.sendEmail(args),
+    send_slack_message: (binding, args) => binding.sendSlackMessage(args),
+    send_telegram_message: (binding, args) => binding.sendTelegramMessage(args),
     get_custom_domain: (binding) => binding.getCustomDomain(),
     set_custom_domain: (binding, args) => binding.setCustomDomain(args),
     remove_custom_domain: (binding, args) => binding.removeCustomDomain(args),
@@ -1708,6 +1757,35 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async promptConnectionSetup(args: Record<string, unknown>): Promise<unknown> {
     return this.integrations.promptConnectionSetup(args);
+  }
+
+  private chatContextFromProps(): ChatContextState {
+    return {
+      orgId: this.ctx.props.orgId,
+      workspaceId: this.ctx.props.workspaceId,
+      threadId: this.ctx.props.threadId || "",
+      userId: this.ctx.props.userId ?? null,
+      userName: null,
+      userEmail: null,
+    };
+  }
+
+  private async sendEmail(args: Record<string, unknown>): Promise<unknown> {
+    return (this.chatThreadStub as unknown as {
+      sendChannelEmailTool(context: ChatContextState, params: unknown): Promise<unknown>;
+    }).sendChannelEmailTool(this.chatContextFromProps(), args);
+  }
+
+  private async sendSlackMessage(args: Record<string, unknown>): Promise<unknown> {
+    return (this.chatThreadStub as unknown as {
+      sendChannelSlackMessageTool(context: ChatContextState, params: unknown): Promise<unknown>;
+    }).sendChannelSlackMessageTool(this.chatContextFromProps(), args);
+  }
+
+  private async sendTelegramMessage(args: Record<string, unknown>): Promise<unknown> {
+    return (this.chatThreadStub as unknown as {
+      sendChannelTelegramMessageTool(context: ChatContextState, params: unknown): Promise<unknown>;
+    }).sendChannelTelegramMessageTool(this.chatContextFromProps(), args);
   }
 
   private get customDomains(): CodeModeCustomDomains {
@@ -6024,10 +6102,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
       "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
-      "For channel-originated conversations, final assistant text is not sent to the external provider. Use provider-specific tools such as `send_email`, `send_slack_message`, or `send_telegram_message` only when you intentionally need to send an external message.",
+      "For channel-originated conversations, final assistant text is not sent to the external provider. To send an external email, Slack message, or Telegram message, call `js_exec` and use `tools.send_email(...)`, `tools.send_slack_message(...)`, or `tools.send_telegram_message(...)`. These outbound channel tools are available only inside `js_exec`, are usable from any chat context, and should be called only when you intentionally need to send an external message.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
-      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model routes include `auto` and `auto_search`. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio. Do not use `workers-ai-provider` / `generateText()` with `auto_image` because images are dropped.",
+      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`).",
       "Before relying on repository-specific conventions, read /home/claude/AGENTS.md, /home/claude/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
       "",
       "## Available Skills",
@@ -6053,22 +6131,29 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return thread;
   }
 
-  private async requireChannelThread(
+  private async getCurrentThreadRecordIfAvailable(
+    context: ChatContextState,
+  ): Promise<OrgThread | null> {
+    if (!context.threadId) return null;
+    try {
+      return await this.getCurrentThreadRecord(context);
+    } catch (error) {
+      if (error instanceof Error && error.message === "Thread not found") {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async getOriginatingChannelThread(
     context: ChatContextState,
     kind: "email" | "slack" | "telegram",
-  ): Promise<OrgThread> {
-    const thread = await this.getCurrentThreadRecord(context);
-    const source = thread.source?.trim();
-    const matchingChannelKind = thread.channel_kind === kind;
-    if (source !== "channel") {
-      throw new Error(`${kind} messages can only be sent from a channel thread`);
-    }
-    if (!matchingChannelKind) {
-      throw new Error(
-        `This thread started from ${thread.channel_kind || "unknown"}, not ${kind}`,
-      );
-    }
-    return thread;
+  ): Promise<OrgThread | null> {
+    const thread = await this.getCurrentThreadRecordIfAvailable(context);
+    if (!thread) return null;
+    return thread.source?.trim() === "channel" && thread.channel_kind === kind
+      ? thread
+      : null;
   }
 
   private readChannelAttachmentInputs(
@@ -6107,6 +6192,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         caption:
           typeof candidate.caption === "string" && candidate.caption.trim()
             ? candidate.caption.trim()
+            : undefined,
+        send_as:
+          typeof candidate.send_as === "string" && candidate.send_as.trim()
+            ? candidate.send_as.trim().toLowerCase()
             : undefined,
       };
     });
@@ -6182,6 +6271,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       content,
       size: object.size || content.byteLength,
       caption: input.caption,
+      sendAs: input.send_as,
     };
   }
 
@@ -6238,11 +6328,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return map[ext] || "application/octet-stream";
   }
 
-  private async sendChannelEmailTool(
+  async sendChannelEmailTool(
     context: ChatContextState,
     params: unknown,
   ): Promise<AgentToolResult<unknown>> {
-    const thread = await this.requireChannelThread(context, "email");
+    const thread = await this.getOriginatingChannelThread(context, "email");
     const raw = this.readToolObjectParams(params);
     const to = this.requiredToolString(raw, "to");
     const subject = this.requiredToolString(raw, "subject");
@@ -6265,7 +6355,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const explicitReplyTo = this.optionalToolString(raw, "reply_to");
-    const replyTo = explicitReplyTo || thread.channel_connection_id || undefined;
+    const replyTo = explicitReplyTo || thread?.channel_connection_id || undefined;
     const body: Parameters<CloudflareEmailSender["send"]>[0] = {
       from,
       to,
@@ -6303,18 +6393,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  private async sendChannelSlackMessageTool(
+  async sendChannelSlackMessageTool(
     context: ChatContextState,
     params: unknown,
   ): Promise<AgentToolResult<unknown>> {
-    const thread = await this.requireChannelThread(context, "slack");
-    const integrationId = thread.channel_connection_id?.trim();
-    if (!integrationId) {
-      throw new Error("Slack thread is missing its integration id");
-    }
-    const conversation = this.parseSlackChannelConversation(
-      thread.channel_conversation_id,
-    );
+    const thread = await this.getOriginatingChannelThread(context, "slack");
     const raw = this.readToolObjectParams(params);
     const text = this.optionalToolString(raw, "text");
     const attachments = await this.resolveChannelOutboundAttachments(
@@ -6325,17 +6408,67 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw new Error("send_slack_message requires text or attachments");
     }
 
+    const explicitChannelId = this.optionalToolString(raw, "channel_id");
+    const explicitThreadTs = this.optionalToolString(raw, "thread_ts");
+    const threadConversation = thread?.channel_conversation_id
+      ? this.parseSlackChannelConversation(thread.channel_conversation_id)
+      : null;
+    const conversation = explicitChannelId
+      ? {
+          teamId: this.optionalToolString(raw, "team_id") || threadConversation?.teamId || "",
+          channelId: explicitChannelId,
+          rootTs: explicitThreadTs || "dm",
+        }
+      : threadConversation;
+    if (!conversation?.channelId) {
+      throw new Error("Slack channel_id is required outside Slack-originated threads");
+    }
+
     const wsStub = this.env.WORKSPACE.get(
       this.env.WORKSPACE.idFromName(context.workspaceId),
     ) as unknown as WorkspaceDO;
-    const integration = await wsStub.getIntegration(integrationId);
-    if (!integration || integration.integration_type !== "slack") {
-      throw new Error("Slack integration is no longer available");
+    const explicitIntegrationId = this.optionalToolString(raw, "integration_id");
+    const explicitTeamId = this.optionalToolString(raw, "team_id") || conversation.teamId;
+    const integrationId = explicitIntegrationId || thread?.channel_connection_id?.trim() || "";
+    const integrations = integrationId ? [] : await wsStub.getIntegrations();
+    const slackIntegrations = integrations.filter((candidate) => candidate.integration_type === "slack");
+    if (!integrationId && slackIntegrations.length === 0) {
+      throw new Error("Slack integration_id is required because no Slack connection is available");
     }
-    const credentials = await decryptCredentials<Record<string, unknown>>(
-      integration.credentials_encrypted,
-      this.env.INTEGRATION_SECRET_KEY,
-    );
+    if (!integrationId && slackIntegrations.length > 1 && !explicitTeamId) {
+      throw new Error("Multiple Slack integrations are available; provide integration_id or team_id");
+    }
+
+    const candidates = integrationId
+      ? [await wsStub.getIntegration(integrationId)]
+      : slackIntegrations;
+    let selected: {
+      integration: Awaited<ReturnType<WorkspaceDO["getIntegration"]>>;
+      credentials: Record<string, unknown>;
+    } | null = null;
+    for (const candidate of candidates) {
+      if (!candidate || candidate.integration_type !== "slack") continue;
+      const credentials = await decryptCredentials<Record<string, unknown>>(
+        candidate.credentials_encrypted,
+        this.env.INTEGRATION_SECRET_KEY,
+      );
+      const credentialTeamId = typeof credentials.team_id === "string"
+        ? credentials.team_id.trim()
+        : "";
+      if (explicitTeamId && credentialTeamId && credentialTeamId !== explicitTeamId) {
+        continue;
+      }
+      selected = { integration: candidate, credentials };
+      break;
+    }
+    if (!selected) {
+      throw new Error(
+        explicitTeamId
+          ? `Slack integration is no longer available for team ${explicitTeamId}`
+          : "Slack integration is no longer available",
+      );
+    }
+    const { credentials } = selected;
     const token =
       typeof credentials.access_token === "string"
         ? credentials.access_token.trim()
@@ -6354,7 +6487,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       responseJson = await this.uploadSlackAttachments({
         token,
         channelId: conversation.channelId,
-        threadTs: conversation.rootTs === "dm" ? undefined : conversation.rootTs,
+        threadTs: conversation.rootTs && conversation.rootTs !== "dm" ? conversation.rootTs : undefined,
         text,
         attachments,
       });
@@ -6367,7 +6500,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         },
         body: JSON.stringify({
           channel: conversation.channelId,
-          thread_ts: conversation.rootTs === "dm" ? undefined : conversation.rootTs,
+          thread_ts: conversation.rootTs && conversation.rootTs !== "dm" ? conversation.rootTs : undefined,
           text,
         }),
       });
@@ -6397,11 +6530,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     };
   }
 
-  private async sendChannelTelegramMessageTool(
+  async sendChannelTelegramMessageTool(
     context: ChatContextState,
     params: unknown,
   ): Promise<AgentToolResult<unknown>> {
-    const thread = await this.requireChannelThread(context, "telegram");
+    const thread = await this.getOriginatingChannelThread(context, "telegram");
     const token = this.env.TELEGRAM_BOT_TOKEN?.trim();
     if (!token) {
       throw new Error("Telegram channel is not configured");
@@ -6415,11 +6548,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!text && attachments.length === 0) {
       throw new Error("send_telegram_message requires text or attachments");
     }
-    const chatId =
-      this.optionalToolString(raw, "chat_id") ||
-      thread.channel_conversation_id?.trim();
+    const explicitChatId = this.optionalToolString(raw, "chat_id");
+    const integrationId = this.optionalToolString(raw, "integration_id");
+    let chatId = thread?.channel_conversation_id?.trim() || "";
     if (!chatId) {
-      throw new Error("Telegram chat id is required");
+      if (!integrationId) {
+        throw new Error(
+          "Telegram integration_id is required outside Telegram-originated threads",
+        );
+      }
+      const wsStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(context.workspaceId),
+      ) as unknown as WorkspaceDO;
+      const integration = await wsStub.getIntegration(integrationId);
+      if (!integration || integration.integration_type !== "telegram") {
+        throw new Error("Telegram integration is no longer available");
+      }
+      const config = JSON.parse(integration.config || "{}") as Record<string, unknown>;
+      const configuredChatId = typeof config.chat_id === "string"
+        ? config.chat_id.trim()
+        : "";
+      if (!configuredChatId) {
+        throw new Error("Telegram integration is not connected to a chat");
+      }
+      if (explicitChatId && explicitChatId !== configuredChatId) {
+        throw new Error(
+          "Telegram chat_id does not match the configured workspace integration",
+        );
+      }
+      chatId = configuredChatId;
+    } else if (explicitChatId && explicitChatId !== chatId) {
+      throw new Error("Telegram chat_id does not match the originating conversation");
     }
 
     const sentMessageIds: Array<number | undefined> = [];
@@ -6449,7 +6608,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     for (const attachment of attachments) {
-      const responseJson = await this.sendTelegramDocument({
+      const responseJson = await this.sendTelegramAttachment({
         token,
         chatId,
         attachment,
@@ -6556,10 +6715,57 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return completeJson;
   }
 
-  private async sendTelegramDocument(args: {
+  private isTelegramPhotoAttachment(attachment: ResolvedChannelAttachment): boolean {
+    if (attachment.sendAs === "document") return false;
+    if (attachment.sendAs === "photo") return true;
+    const contentType = attachment.contentType.toLowerCase().split(";")[0]?.trim();
+    if (contentType === "image/jpeg" || contentType === "image/png") {
+      return true;
+    }
+    // Telegram Bot API sendPhoto accepts JPEG/PNG-style photos. Avoid sending
+    // formats such as SVG/GIF/WebP as photos because they have separate Bot API
+    // methods or may be rejected; keep those as documents for reliability.
+    const filename = attachment.filename.toLowerCase();
+    return filename.endsWith(".jpg") ||
+      filename.endsWith(".jpeg") ||
+      filename.endsWith(".png");
+  }
+
+  private async sendTelegramAttachment(args: {
     token: string;
     chatId: string;
     attachment: ResolvedChannelAttachment;
+  }): Promise<{ result?: { message_id?: number } }> {
+    const asPhoto = this.isTelegramPhotoAttachment(args.attachment);
+    try {
+      return await this.sendTelegramMultipart({
+        ...args,
+        method: asPhoto ? "sendPhoto" : "sendDocument",
+        fieldName: asPhoto ? "photo" : "document",
+        errorLabel: asPhoto ? "photo" : "document",
+      });
+    } catch (error) {
+      if (!asPhoto || args.attachment.sendAs === "photo") throw error;
+      console.warn("[ChatThreadDO] Telegram photo send failed; retrying as document", {
+        filename: args.attachment.filename,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return this.sendTelegramMultipart({
+        ...args,
+        method: "sendDocument",
+        fieldName: "document",
+        errorLabel: "document",
+      });
+    }
+  }
+
+  private async sendTelegramMultipart(args: {
+    token: string;
+    chatId: string;
+    attachment: ResolvedChannelAttachment;
+    method: "sendPhoto" | "sendDocument";
+    fieldName: "photo" | "document";
+    errorLabel: "photo" | "document";
   }): Promise<{ result?: { message_id?: number } }> {
     const formData = new FormData();
     formData.set("chat_id", args.chatId);
@@ -6567,7 +6773,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       formData.set("caption", args.attachment.caption.slice(0, 1024));
     }
     formData.set(
-      "document",
+      args.fieldName,
       new Blob([args.attachment.content], {
         type: args.attachment.contentType,
       }),
@@ -6575,7 +6781,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
 
     const response = await fetch(
-      `https://api.telegram.org/bot${args.token}/sendDocument`,
+      `https://api.telegram.org/bot${args.token}/${args.method}`,
       {
         method: "POST",
         body: formData,
@@ -6588,7 +6794,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } | null;
     if (!response.ok || responseJson?.ok !== true) {
       throw new Error(
-        `Telegram document send failed: ${responseJson?.description || response.statusText}`,
+        `Telegram ${args.errorLabel} send failed: ${responseJson?.description || response.statusText}`,
       );
     }
     return responseJson;
@@ -7718,8 +7924,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
           "Connection credentials are intentionally hidden behind the binding. " +
-          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })` for text or `auto_search` for grounded search. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. " +
-          "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. " +
+          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. " +
+          "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. Outbound channel tools are intentionally available only here: use `await tools.send_email(...)`, `await tools.send_slack_message(...)`, or `await tools.send_telegram_message(...)` to send external messages from any chat context. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({
           description: Type.String({
@@ -7756,68 +7962,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         executionMode: "sequential",
       },
     ];
-
-    definitions.push(
-      {
-        name: "send_email",
-        label: "Send email",
-        description:
-          "Send an email response from the current email channel thread. Use this only when the user should receive an external email; final assistant text is not emailed automatically.",
-        parameters: Type.Object({
-          to: Type.String(),
-          subject: Type.String(),
-          text: Type.Optional(Type.String()),
-          html: Type.Optional(Type.String()),
-          reply_to: Type.Optional(Type.String()),
-          attachments: Type.Optional(Type.Array(Type.Object({
-            path: Type.String(),
-            filename: Type.Optional(Type.String()),
-            content_type: Type.Optional(Type.String()),
-            caption: Type.Optional(Type.String()),
-          }))),
-        }),
-        execute: async (_id, params) =>
-          this.sendChannelEmailTool(context, params),
-        executionMode: "sequential",
-      },
-      {
-        name: "send_slack_message",
-        label: "Send Slack message",
-        description:
-          "Send a message to the Slack conversation that started the current Slack channel thread. Use this only when the user should receive an external Slack message; final assistant text is not posted automatically.",
-        parameters: Type.Object({
-          text: Type.Optional(Type.String()),
-          attachments: Type.Optional(Type.Array(Type.Object({
-            path: Type.String(),
-            filename: Type.Optional(Type.String()),
-            content_type: Type.Optional(Type.String()),
-            caption: Type.Optional(Type.String()),
-          }))),
-        }),
-        execute: async (_id, params) =>
-          this.sendChannelSlackMessageTool(context, params),
-        executionMode: "sequential",
-      },
-      {
-        name: "send_telegram_message",
-        label: "Send Telegram message",
-        description:
-          "Send a Telegram message from the current Telegram channel thread. The current thread chat id is used unless chat_id is provided. Use this only when the user should receive an external Telegram message; final assistant text is not sent automatically.",
-        parameters: Type.Object({
-          text: Type.Optional(Type.String()),
-          chat_id: Type.Optional(Type.String()),
-          attachments: Type.Optional(Type.Array(Type.Object({
-            path: Type.String(),
-            filename: Type.Optional(Type.String()),
-            content_type: Type.Optional(Type.String()),
-            caption: Type.Optional(Type.String()),
-          }))),
-        }),
-        execute: async (_id, params) =>
-          this.sendChannelTelegramMessageTool(context, params),
-        executionMode: "sequential",
-      },
-    );
 
     for (const definition of CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS) {
       const { name } = definition;

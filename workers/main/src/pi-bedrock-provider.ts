@@ -413,7 +413,10 @@ function buildBedrockInvokeBody(
     payload.temperature = options.temperature;
   }
   if (context.tools?.length) {
-    const tools = convertTools(context.tools);
+    const allowEagerStreaming =
+      (model.compat as { supportsEagerToolInputStreaming?: boolean } | undefined)
+        ?.supportsEagerToolInputStreaming !== false;
+    const tools = convertTools(context.tools, allowEagerStreaming);
     // Cache the last tool definition so the tool list is not re-processed on retries.
     if (cachingEnabled && tools.length > 0) {
       tools[tools.length - 1].cache_control = { type: 'ephemeral' };
@@ -754,22 +757,23 @@ function convertToolResultContent(
   return blocks.length > 0 ? blocks : [{ type: 'text', text: '(see attached image)' }];
 }
 
-function convertTools(tools: Tool[]): AnthropicTool[] {
+function convertTools(tools: Tool[], allowEagerStreaming: boolean): AnthropicTool[] {
   return tools.map((tool) => {
     const schema = tool.parameters as unknown as {
       properties?: Record<string, unknown>;
       required?: string[];
     };
-    return {
+    const out: AnthropicTool = {
       name: tool.name,
       description: tool.description,
-      eager_input_streaming: true,
       input_schema: {
         type: 'object',
         properties: schema.properties ?? {},
         required: schema.required ?? [],
       },
     };
+    if (allowEagerStreaming) out.eager_input_streaming = true;
+    return out;
   });
 }
 

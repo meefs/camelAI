@@ -104,8 +104,8 @@ const result = streamText({
 ```
 
 Notes:
-- `"auto"` is the default model hint to use.
-- The platform may override/route model hints.
+- `"auto"` is one of four model tiers (`cheap`, `fast`, `auto`, `smart`) — see [Model Tiers](#model-tiers) below.
+- The platform resolves tier names to a concrete model based on the org's active AI provider (Anthropic / OpenAI / Bedrock / OpenRouter); orgs without a configured key use OpenRouter via camelAI-managed credits.
 - Do not set `max_tokens` by default. Thinking/reasoning tokens consume that same budget and can truncate completions prematurely.
 - If you must use `max_tokens`, leave substantial headroom for both thinking and final output.
 
@@ -298,23 +298,22 @@ export async function action({ request, context }) {
 - **`env.LOADER`** (`worker_loaders` binding) provides the isolate runtime
 - The `__filename` define in `vite.config.ts` polyfills a Node.js global needed by the TypeScript compiler
 
-## Model Routes
+## Model Tiers
 
-### Auto Routes (Strongly Recommended)
+Pass one of four tier names to `workersai(tier, {})`. The platform resolves the tier to a concrete model based on the org's active AI provider:
 
-Three auto routes are available. Use them with `workersai(routeName, {})` in deployed workers:
+| Tier | Purpose | When to Use |
+|------|---------|-------------|
+| `cheap` | Cheapest small model | High-volume, low-stakes work — classification, simple extraction, short replies |
+| `fast` | Same low-latency model as `cheap` | When latency matters more than reasoning depth |
+| `auto` | Balanced default | General-purpose AI features — the right pick when you're unsure |
+| `smart` | Strongest reasoning model | Complex reasoning, long-context analysis, agentic tool use |
 
-| Route | Purpose | When to Use |
-|-------|---------|-------------|
-| `auto` | Text generation + tool calling | Default for all general-purpose AI features |
-| `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, live prices, recent events, fact-checking |
-| `auto_image` | Image generation (low-level route) | Prefer `env.CAMELAI.generateImage(prompt)` instead of `run("auto_image")` |
-
-**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. For images, use `env.CAMELAI.generateImage(prompt)` (`CAMELAI` service binding in `wrangler.jsonc`, typed via `wrangler types`).
+**Always default to `auto`** unless the use case clearly needs a smaller/cheaper tier or the strongest reasoning. Tier resolution is per-provider, so the same `auto` call lands on Sonnet for an Anthropic org, GPT mini for an OpenAI org, Claude on Bedrock for a Bedrock org, and Kimi K2.6 (via OpenRouter) for hosted-credit orgs.
 
 ### Specific OpenRouter Models (Only When User Explicitly Requests)
 
-Any model available on [OpenRouter](https://openrouter.ai/models) can be used by passing the full model identifier (e.g., `anthropic/claude-sonnet-4.6`, `openai/gpt-5.3-chat`, `google/gemini-3.5-flash`). **Only use a specific model when the user explicitly asks for it.** Never proactively choose a specific model — auto routing is always the better default.
+Any model available on [OpenRouter](https://openrouter.ai/models) can be used by passing the full model identifier (e.g., `anthropic/claude-sonnet-4.6`, `openai/gpt-5.5`, `google/gemini-3.5-flash`). The platform appends `:nitro` automatically so requests route through OpenRouter's fastest provider. **Only use a specific model when the user explicitly asks for it.** Never proactively choose a specific model — tier routing is always the better default.
 
 ```typescript
 const result = await streamText({
@@ -347,19 +346,9 @@ Returns a `data[]` array where each entry has:
 
 Use this when a user asks what models are available, wants to compare pricing, or needs a model with specific capabilities (e.g., tool calling, large context, vision).
 
-### Search Grounding Example
-
-```typescript
-const result = await generateText({
-  model: workersai("auto_search", {}),
-  prompt: "What are the latest Cloudflare Workers features?",
-});
-// Response includes inline citations from Google Search
-```
-
 ### Image Generation Example
 
-> **Important:** The `workers-ai-provider` does not surface the `images` array from the response. `generateText()` with `workersai("auto_image")` will only return the text portion. Use `env.CAMELAI.generateImage(...)`. The virtual `AI` binding only exposes `run()`.
+> Image generation is not a tier on the `AI` binding — call `env.CAMELAI.generateImage(...)` instead. The `workers-ai-provider` strips the `images` array from chat completions, so `generateText()` would only return the text portion.
 
 ```typescript
 const { text, imageDataUrl, images } = await context.cloudflare.env.CAMELAI.generateImage(
@@ -387,7 +376,7 @@ const result = await context.cloudflare.env.CAMELAI.generateImage({
 6. **Use a `type` discriminator in codemode return values** — define the convention in your `createCodeTool` description.
 7. **Handle the current AI SDK part format** — use `p.type.startsWith("tool-")`, `p.output ?? p.result`, and `state === "output-available"`.
 8. **Use `??` for defensive defaults** — Zod params may be `undefined` at runtime. `||` silently replaces valid `0`/`false`/`""`.
-9. Use `workersai("auto", {})` as the default model. Only use a specific OpenRouter model (e.g., `"anthropic/claude-sonnet-4.6"`) when the user explicitly requests it.
+9. Use `workersai("auto", {})` as the default model. Pick `cheap`/`fast` for high-volume low-stakes work, `smart` for hard reasoning. Only use a specific OpenRouter model (e.g., `"anthropic/claude-sonnet-4.6"`) when the user explicitly requests it.
 10. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
 11. Stream responses for chat UX.
 12. Use `MarkdownRenderer` for assistant output.

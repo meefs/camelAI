@@ -880,17 +880,18 @@ const result = await generateText({
 
 On camelAI deploys, the platform virtualizes this binding with platform-controlled model routing.
 
-### Model Routes
+### Model Tiers
 
-Three model routes are available via `workersai(routeName, {})` in deployed workers:
+Four tiers are available via `workersai(tier, {})` (or `env.AI.run(tier, ...)`) in deployed workers. The platform resolves each tier to a concrete model based on the org's configured AI provider (Anthropic / OpenAI / Bedrock / OpenRouter); orgs without a configured key fall back to OpenRouter via camelAI-managed credits.
 
-| Route | Purpose | When to Use |
-|-------|---------|-------------|
-| `auto` | Text generation + tool calling | Default for all general-purpose AI features |
-| `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
-| `auto_image` | Image generation (low-level route) | Prefer `env.CAMELAI.generateImage(prompt)` instead of `run(\"auto_image\")` |
+| Tier | Purpose | When to Use |
+|------|---------|-------------|
+| `cheap` | Cheapest small model | High-volume, low-stakes work — classification, simple extraction, short replies |
+| `fast` | Same low-latency model as `cheap` | When latency matters more than reasoning depth |
+| `auto` | Balanced default | General-purpose AI features — the right pick when you're unsure |
+| `smart` | Strongest reasoning model | Complex reasoning, long-context analysis, agentic tool use |
 
-Default to `auto` unless the use case clearly requires search or image generation. For images, use `env.CAMELAI.generateImage(prompt)` in `js_exec` or deployed workers (requires `CAMELAI` service binding in `wrangler.jsonc`). Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
+Default to `auto`. Any OpenRouter model id (e.g. `anthropic/claude-sonnet-4.6`) is also accepted as a pass-through; `:nitro` is appended automatically to route via the fastest provider. For images, use `env.CAMELAI.generateImage(prompt)` (requires `CAMELAI` service binding in `wrangler.jsonc`). Returns `{ text, imageDataUrl, images }`. The virtual `AI` binding only exposes `run()`.
 
 The starter template includes a local `CAMELAI` self-binding (typed via `bun wrangler types` as `Service<typeof LocalCamelAiService>`):
 

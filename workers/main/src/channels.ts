@@ -136,11 +136,11 @@ export function buildChannelReplySystemMessage(
       : "";
   const routingHint =
     safeKind === "slack" || safeKind === "telegram"
-      ? " The tool is already scoped to the originating conversation."
+      ? " You do not need to provide the channel/chat id because the tool is already scoped to the originating conversation."
       : "";
   const replyInstruction = toolName
-    ? `To reply externally, call the ${toolName} tool.${emailHint}${routingHint}`
-    : "No outbound tool is configured for this channel yet; do not claim you replied externally unless you call a provider-specific send tool.";
+    ? `To reply externally, call the js_exec tool and from inside that JavaScript call await tools.${toolName}(...).${emailHint}${routingHint}`
+    : "No outbound tool is configured for this channel yet; do not claim you replied externally unless you call a provider-specific send tool from js_exec.";
 
   return [
     "<camelai system message>",

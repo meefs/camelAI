@@ -1501,7 +1501,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(containerTool).not.toHaveBeenCalled();
   });
 
-  it('registers provider-specific channel send tools', async () => {
+  it('exposes provider-specific channel send tools only inside js_exec', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       exports: {
@@ -1510,18 +1510,6 @@ describe('ChatThreadDO Codex turn handling', () => {
         })),
       },
     };
-    fake.sendChannelEmailTool = vi.fn(async () => ({
-      content: [{ type: 'text', text: 'Email sent.' }],
-      details: { status: 'sent' },
-    }));
-    fake.sendChannelSlackMessageTool = vi.fn(async () => ({
-      content: [{ type: 'text', text: 'Slack message sent.' }],
-      details: { status: 'sent' },
-    }));
-    fake.sendChannelTelegramMessageTool = vi.fn(async () => ({
-      content: [{ type: 'text', text: 'Telegram message sent.' }],
-      details: { status: 'sent' },
-    }));
     const context = {
       orgId: 'org1',
       workspaceId: 'workspace1',
@@ -1531,33 +1519,18 @@ describe('ChatThreadDO Codex turn handling', () => {
       userEmail: null,
     };
 
-    const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
-    const sendEmail = tools.find((tool: any) => tool.name === 'send_email');
-    const sendSlack = tools.find((tool: any) => tool.name === 'send_slack_message');
-    const sendTelegram = tools.find((tool: any) => tool.name === 'send_telegram_message');
+    const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    expect(piTools.find((tool: any) => tool.name === 'send_email')).toBeUndefined();
+    expect(piTools.find((tool: any) => tool.name === 'send_slack_message')).toBeUndefined();
+    expect(piTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeUndefined();
 
-    expect(sendEmail?.executionMode).toBe('sequential');
-    expect(sendSlack?.executionMode).toBe('sequential');
-    expect(sendTelegram?.executionMode).toBe('sequential');
-
-    await sendEmail.execute('email1', { to: 'a@example.com', subject: 'Hi', text: 'Hello' });
-    await sendSlack.execute('slack1', { text: 'Hello' });
-    await sendTelegram.execute('telegram1', { text: 'Hello' });
-
-    expect(fake.sendChannelEmailTool).toHaveBeenCalledWith(context, {
-      to: 'a@example.com',
-      subject: 'Hi',
-      text: 'Hello',
-    });
-    expect(fake.sendChannelSlackMessageTool).toHaveBeenCalledWith(context, {
-      text: 'Hello',
-    });
-    expect(fake.sendChannelTelegramMessageTool).toHaveBeenCalledWith(context, {
-      text: 'Hello',
-    });
+    const codeModeTools = await CodeModeToolsBinding.prototype.listTools.call({} as any);
+    expect(codeModeTools.find((tool: any) => tool.name === 'send_email')).toBeTruthy();
+    expect(codeModeTools.find((tool: any) => tool.name === 'send_slack_message')).toBeTruthy();
+    expect(codeModeTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeTruthy();
   });
 
-  it('sends email only from email channel threads', async () => {
+  it('sends email from any workspace context', async () => {
     const sendEmailMock = vi.fn(async () => ({ messageId: 'email_1' }));
     const kvPutMock = vi.fn(async () => undefined);
 
@@ -1571,9 +1544,9 @@ describe('ChatThreadDO Codex turn handling', () => {
         get: vi.fn(() => ({
           getThread: vi.fn(async () => ({
             id: 'thread1',
-            source: 'channel',
-            channel_kind: 'email',
-            channel_connection_id: 'workspace@mail.camelai.test',
+            source: 'web',
+            channel_kind: null,
+            channel_connection_id: null,
           })),
         })),
       },
@@ -1600,7 +1573,6 @@ describe('ChatThreadDO Codex turn handling', () => {
       to: 'alice@example.com',
       subject: 'Done',
       text: 'Finished.',
-      replyTo: 'workspace@mail.camelai.test',
     });
     expect(result.content[0].text).toBe('Email sent.');
     expect(result.details).toMatchObject({
@@ -3566,7 +3538,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         : null
     );
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.requireChannelThread = vi.fn(async () => ({
+    fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'email',
       channel_connection_id: 'sender@example.com',
@@ -3637,7 +3609,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
   it('uploads Slack channel attachments through the external file upload flow', async () => {
     const encrypted = await encryptCredentials(
-      { access_token: 'xoxb-token' },
+      { access_token: 'xoxb-token', team_id: 'T1' },
       'secret',
     );
     const get = vi.fn(async (key: string) =>
@@ -3677,7 +3649,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.requireChannelThread = vi.fn(async () => ({
+    fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'slack',
       channel_connection_id: 'slack-int',
@@ -3689,6 +3661,11 @@ describe('ChatThreadDO Codex turn handling', () => {
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
+          getIntegrations: vi.fn(async () => [{
+            id: 'slack-int',
+            integration_type: 'slack',
+            config: JSON.stringify({ team_id: 'T1' }),
+          }]),
           getIntegration: vi.fn(async () => ({
             integration_type: 'slack',
             credentials_encrypted: encrypted,
@@ -3741,7 +3718,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.requireChannelThread = vi.fn(async () => ({
+    fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'telegram',
       channel_conversation_id: '12345',
@@ -3767,6 +3744,310 @@ describe('ChatThreadDO Codex turn handling', () => {
       messageIds: [10, 11],
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('selects Slack connection by decrypted team id when sending outside Slack threads', async () => {
+    const wrongEncrypted = await encryptCredentials(
+      { access_token: 'xoxb-wrong', team_id: 'T-wrong' },
+      'secret',
+    );
+    const rightEncrypted = await encryptCredentials(
+      { access_token: 'xoxb-right', team_id: 'T-right' },
+      'secret',
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://slack.com/api/chat.postMessage');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer xoxb-right');
+      const payload = JSON.parse(String(init?.body));
+      expect(payload).toMatchObject({
+        channel: 'C-right',
+        thread_ts: '1700000000.000300',
+        text: 'Hello',
+      });
+      return Response.json({ ok: true, ts: '1700000001.000400' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => null);
+    fake.env = {
+      INTEGRATION_SECRET_KEY: 'secret',
+      R2_BUCKET: { get: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegrations: vi.fn(async () => [
+            { id: 'wrong', integration_type: 'slack', credentials_encrypted: wrongEncrypted },
+            { id: 'right', integration_type: 'slack', credentials_encrypted: rightEncrypted },
+          ]),
+        })),
+      },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelSlackMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      {
+        text: 'Hello',
+        team_id: 'T-right',
+        channel_id: 'C-right',
+        thread_ts: '1700000000.000300',
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'slack',
+      teamId: 'T-right',
+      channelId: 'C-right',
+      ts: '1700000001.000400',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects raw Telegram chat ids outside Telegram threads without a workspace integration', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => null);
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get: vi.fn() },
+    };
+
+    await expect(
+      ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+        fake,
+        { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        {
+          chat_id: '12345',
+          text: 'Hello',
+        },
+      ),
+    ).rejects.toThrow('Telegram integration_id is required outside Telegram-originated threads');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sends Telegram messages through a configured workspace integration outside Telegram threads', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/sendMessage$/);
+      const payload = JSON.parse(String(init?.body));
+      expect(payload).toMatchObject({ chat_id: '12345', text: 'Hello' });
+      return Response.json({ ok: true, result: { message_id: 19 } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => null);
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegration: vi.fn(async () => ({
+            integration_type: 'telegram',
+            config: JSON.stringify({ chat_id: '12345' }),
+          })),
+        })),
+      },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      {
+        integration_id: 'telegram-int',
+        chat_id: '12345',
+        text: 'Hello',
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'telegram',
+      chatId: '12345',
+      messageIds: [19],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects mismatched Telegram chat ids for workspace integrations', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => null);
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegration: vi.fn(async () => ({
+            integration_type: 'telegram',
+            config: JSON.stringify({ chat_id: '12345' }),
+          })),
+        })),
+      },
+    };
+
+    await expect(
+      ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+        fake,
+        { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        {
+          integration_id: 'telegram-int',
+          chat_id: '67890',
+          text: 'Hello',
+        },
+      ),
+    ).rejects.toThrow('Telegram chat_id does not match the configured workspace integration');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sends Telegram image attachments as photos', async () => {
+    const get = vi.fn(async (key: string) =>
+      key === 'org1/workspace1/user-outputs/chart.png'
+        ? r2Object('png bytes', 'image/png')
+        : null
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/sendPhoto')) {
+        expect(init?.body).toBeInstanceOf(FormData);
+        const form = init?.body as FormData;
+        expect(form.get('chat_id')).toBe('12345');
+        expect(form.get('caption')).toBe('Chart');
+        expect(form.get('photo')).toBeInstanceOf(File);
+        expect(form.get('document')).toBeNull();
+        return Response.json({ ok: true, result: { message_id: 20 } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => ({
+      source: 'channel',
+      channel_kind: 'telegram',
+      channel_conversation_id: '12345',
+    }));
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      {
+        attachments: [{ path: '/mnt/user-outputs/chart.png', caption: 'Chart' }],
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'telegram',
+      attachmentCount: 1,
+      messageIds: [20],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to Telegram documents when photo upload is rejected', async () => {
+    const get = vi.fn(async (key: string) =>
+      key === 'org1/workspace1/user-outputs/large-photo.png'
+        ? r2Object('png bytes', 'image/png')
+        : null
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/sendPhoto')) {
+        expect(init?.body).toBeInstanceOf(FormData);
+        return Response.json({ ok: false, description: 'PHOTO_INVALID_DIMENSIONS' }, { status: 400 });
+      }
+      if (url.endsWith('/sendDocument')) {
+        const form = init?.body as FormData;
+        expect(form.get('chat_id')).toBe('12345');
+        expect(form.get('document')).toBeInstanceOf(File);
+        return Response.json({ ok: true, result: { message_id: 21 } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => ({
+      source: 'channel',
+      channel_kind: 'telegram',
+      channel_conversation_id: '12345',
+    }));
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get },
+    };
+
+    try {
+      const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+        fake,
+        { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        {
+          attachments: [{ path: '/mnt/user-outputs/large-photo.png' }],
+        },
+      );
+
+      expect(result.details).toMatchObject({
+        status: 'sent',
+        channel: 'telegram',
+        attachmentCount: 1,
+        messageIds: [21],
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('respects explicit Telegram send_as document for image attachments', async () => {
+    const get = vi.fn(async (key: string) =>
+      key === 'org1/workspace1/user-outputs/chart.png'
+        ? r2Object('png bytes', 'image/png')
+        : null
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      expect(url).toMatch(/\/sendDocument$/);
+      const form = init?.body as FormData;
+      expect(form.get('document')).toBeInstanceOf(File);
+      expect(form.get('photo')).toBeNull();
+      return Response.json({ ok: true, result: { message_id: 22 } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => ({
+      source: 'channel',
+      channel_kind: 'telegram',
+      channel_conversation_id: '12345',
+    }));
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      {
+        attachments: [{ path: '/mnt/user-outputs/chart.png', send_as: 'document' }],
+      },
+    );
+
+    expect(result.details.messageIds).toEqual([22]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
 });

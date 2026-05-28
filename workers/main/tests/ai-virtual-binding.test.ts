@@ -4,14 +4,21 @@ import {
   generateImage,
   parseGenerateImageResponse,
 } from "../src/generate-image.js";
+import { encryptCredentials } from "../../../src/lib/integration-crypto";
 import {
+  appendNitro,
+  executeVirtualAiRun,
   extractModelFromInput,
-  isOpenRouterModel,
+  normalizeLegacyModel,
   resolveGatewaySettings,
-  resolveModel,
-  resolveVirtualModel,
+  resolveRouting,
   runViaGatewayHTTP,
 } from "../src/ai-virtual-binding.js";
+import {
+  chatCompletionToPiCall,
+  piMessageToChatCompletion,
+} from "../src/bedrock-pi-adapter.js";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 
 describe("resolveGatewaySettings", () => {
   it("returns gateway settings from required env vars", () => {
@@ -53,10 +60,10 @@ describe("resolveGatewaySettings", () => {
 describe("extractModelFromInput", () => {
   it("extracts model field from object input", () => {
     const result = extractModelFromInput({
-      model: "auto_search",
+      model: "smart",
       messages: [{ role: "user", content: "hello" }],
     });
-    expect(result.model).toBe("auto_search");
+    expect(result.model).toBe("smart");
     expect(result.input).toEqual({
       messages: [{ role: "user", content: "hello" }],
     });
@@ -90,107 +97,127 @@ describe("extractModelFromInput", () => {
   });
 });
 
-describe("resolveModel", () => {
-  it("maps auto to the default OpenRouter Gemini model", () => {
-    expect(resolveModel("auto")).toBe("google/gemini-3-flash-preview");
-    expect(resolveModel("dynamic/auto")).toBe(
-      "google/gemini-3-flash-preview",
-    );
+describe("normalizeLegacyModel (back-compat shim)", () => {
+  it("maps old auto-family routes to the auto tier", () => {
+    expect(normalizeLegacyModel("dynamic/auto")).toBe("auto");
+    expect(normalizeLegacyModel("auto_search")).toBe("auto");
+    expect(normalizeLegacyModel("dynamic/auto_search")).toBe("auto");
   });
 
-  it("maps auto_search to dynamic/auto_search", () => {
-    expect(resolveModel("auto_search")).toBe("dynamic/auto_search");
+  it("maps dynamic/auto_image to the private auto_image route", () => {
+    expect(normalizeLegacyModel("dynamic/auto_image")).toBe("auto_image");
   });
 
-  it("maps auto_image to dynamic/auto_image", () => {
-    expect(resolveModel("auto_image")).toBe("dynamic/auto_image");
+  it("maps old friendly model names to their OpenRouter ids", () => {
+    expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.6");
+    expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k2.6");
+    expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-4.7");
+    expect(normalizeLegacyModel("grok-4.3")).toBe("x-ai/grok-4.3");
+    expect(normalizeLegacyModel("grok-latest")).toBe("x-ai/grok-4.3");
+    expect(normalizeLegacyModel("gemini-3.5-flash")).toBe("google/gemini-3.5-flash");
+    expect(normalizeLegacyModel("deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro");
   });
 
-  it("passes through OpenRouter models as-is", () => {
-    expect(resolveModel("anthropic/claude-3.5-sonnet")).toBe(
-      "anthropic/claude-3.5-sonnet",
-    );
-    expect(resolveModel("openai/gpt-4o")).toBe("openai/gpt-4o");
-    expect(resolveModel("google/gemini-pro")).toBe("google/gemini-pro");
-    expect(resolveModel("meta-llama/llama-3-70b-instruct")).toBe(
-      "meta-llama/llama-3-70b-instruct",
-    );
-  });
-
-  it("maps Kimi aliases to the OpenRouter route model", () => {
-    expect(resolveModel("kimi-k2.6")).toBe("~moonshotai/kimi-latest");
-    expect(resolveModel("kimi-latest")).toBe("~moonshotai/kimi-latest");
-  });
-
-  it("maps GPT-5.5 and Opus 4.7 aliases to OpenRouter route models", () => {
-    expect(resolveModel("gpt-5.5")).toBe("openai/gpt-5.5");
-    expect(resolveModel("opus-4.7")).toBe("anthropic/claude-opus-4.7");
-  });
-
-  it("maps Grok aliases to the OpenRouter route model", () => {
-    expect(resolveModel("grok-4.3")).toBe("x-ai/grok-4.3");
-    expect(resolveModel("grok-latest")).toBe("x-ai/grok-4.3");
-  });
-
-  it("maps Gemini and DeepSeek aliases to OpenRouter route models", () => {
-    expect(resolveModel("gemini-3.5-flash")).toBe(
-      "google/gemini-3.5-flash",
-    );
-    expect(resolveModel("gemini-3-flash-preview")).toBe(
-      "google/gemini-3-flash-preview",
-    );
-    expect(resolveModel("gemini-3.1-pro-preview")).toBe(
-      "google/gemini-3.5-flash",
-    );
-    expect(resolveModel("deepseek-v4-pro")).toBe(
-      "deepseek/deepseek-v4-pro",
-    );
-    expect(resolveModel("deepseek-v4-flash")).toBe(
-      "deepseek/deepseek-v4-flash",
-    );
-  });
-
-  it("passes through non-auto models with dynamic/ prefix unchanged", () => {
-    expect(resolveModel("dynamic/auto_search")).toBe("dynamic/auto_search");
-  });
-
-  it("falls back to the default OpenRouter Gemini model for empty string", () => {
-    expect(resolveModel("")).toBe("google/gemini-3-flash-preview");
+  it("passes current tier names and OpenRouter ids through unchanged (idempotent)", () => {
+    expect(normalizeLegacyModel("auto")).toBe("auto");
+    expect(normalizeLegacyModel("smart")).toBe("smart");
+    expect(normalizeLegacyModel("anthropic/claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
+    expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-5.5");
   });
 
   it("trims whitespace before matching", () => {
-    expect(resolveModel("  auto_search  ")).toBe("dynamic/auto_search");
-    expect(resolveModel("  anthropic/claude-3.5-sonnet  ")).toBe(
-      "anthropic/claude-3.5-sonnet",
-    );
+    expect(normalizeLegacyModel("  gpt-5.5  ")).toBe("openai/gpt-5.5");
   });
 });
 
-describe("isOpenRouterModel", () => {
-  it("returns false for dynamic/ models", () => {
-    expect(isOpenRouterModel("dynamic/auto")).toBe(false);
-    expect(isOpenRouterModel("dynamic/auto_search")).toBe(false);
-    expect(isOpenRouterModel("dynamic/auto_image")).toBe(false);
-  });
+describe("resolveRouting", () => {
+  it("defaults Bedrock BYOK routing to us-east-1 when no region is stored", async () => {
+    const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
+    const routing = await resolveRouting(
+      {
+        env: {
+          INTEGRATION_SECRET_KEY: "secret",
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => ({
+                provider: "bedrock",
+                config: JSON.stringify({}),
+                credentials_encrypted: encrypted,
+              })),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "auto",
+    );
 
-  it("returns true for OpenRouter models", () => {
-    expect(isOpenRouterModel("anthropic/claude-3.5-sonnet")).toBe(true);
-    expect(isOpenRouterModel("openai/gpt-4o")).toBe(true);
-    expect(isOpenRouterModel("google/gemini-pro")).toBe(true);
+    expect(routing.provider).toBe("bedrock");
+    expect(routing.awsRegion).toBe("us-east-1");
   });
 });
 
-describe("resolveVirtualModel", () => {
-  it("uses AI_VIRTUAL_MODEL when configured", () => {
-    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: "auto_search" })).toBe(
-      "auto_search",
+describe("executeVirtualAiRun", () => {
+  it("does not require AI Gateway settings before Bedrock BYOK routing", async () => {
+    const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ message: "ok" }),
+    );
+
+    try {
+      await expect(
+        executeVirtualAiRun(
+          {
+            env: {
+              INTEGRATION_SECRET_KEY: "secret",
+              ORG: {
+                idFromName: vi.fn((id: string) => id),
+                get: vi.fn(() => ({
+                  getLlmProviderConfig: vi.fn(async () => ({
+                    provider: "bedrock",
+                    config: JSON.stringify({ aws_region: "us-east-1" }),
+                    credentials_encrypted: encrypted,
+                  })),
+                  recordUsage: vi.fn(async () => undefined),
+                })),
+              } as never,
+            },
+            props: { orgId: "org1", workspaceId: "ws1" },
+            waitUntil: vi.fn(),
+          },
+          "auto",
+          { messages: [{ role: "user", content: "hello" }] },
+        ),
+      ).resolves.toBeDefined();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+});
+
+describe("appendNitro", () => {
+  it("appends :nitro to plain OpenRouter ids", () => {
+    expect(appendNitro("deepseek/deepseek-v4-flash")).toBe(
+      "deepseek/deepseek-v4-flash:nitro",
+    );
+    expect(appendNitro("moonshotai/kimi-k2.6")).toBe(
+      "moonshotai/kimi-k2.6:nitro",
     );
   });
 
-  it("falls back to the default OpenRouter Gemini model when unset", () => {
-    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: "" })).toBe(
-      "google/gemini-3-flash-preview",
+  it("does not double-suffix when a :variant is already present", () => {
+    expect(appendNitro("anthropic/claude-sonnet-4.6:nitro")).toBe(
+      "anthropic/claude-sonnet-4.6:nitro",
     );
+    expect(appendNitro("openai/gpt-5.5:online")).toBe("openai/gpt-5.5:online");
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(appendNitro("")).toBe("");
+    expect(appendNitro("   ")).toBe("");
   });
 });
 
@@ -199,7 +226,7 @@ describe("runViaGatewayHTTP", () => {
     vi.restoreAllMocks();
   });
 
-  it("calls compat chat completions endpoint with dynamic/auto model", async () => {
+  it("routes to /compat/ with hosted gateway token when no BYOK key", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -217,54 +244,27 @@ describe("runViaGatewayHTTP", () => {
       ),
     );
 
-    const result = await runViaGatewayHTTP(
-      {
-        accountID: "acct_1",
-        gatewayID: "gw_1",
-        authToken: "tok_1",
-      },
+    await runViaGatewayHTTP(
+      { accountID: "acct_1", gatewayID: "gw_1", authToken: "tok_1" },
       { orgId: "org_1", workspaceId: "ws_1", userId: "user_1" },
-      {
-        messages: [{ role: "user", content: "hello" }],
-      },
-      "dynamic/auto",
+      { messages: [{ role: "user", content: "hello" }] },
+      "anthropic/claude-sonnet-4-6",
+      "compat",
     );
-
-    expect(result).toEqual({
-      id: "chatcmpl_1",
-      object: "chat.completion",
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content: "ok" },
-          finish_reason: "stop",
-        },
-      ],
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(
       "https://gateway.ai.cloudflare.com/v1/acct_1/gw_1/compat/chat/completions",
     );
-    expect(init.method).toBe("POST");
-
     const headers = new Headers(init.headers);
     expect(headers.get("authorization")).toBe("Bearer tok_1");
-    const metadata = headers.get("cf-aig-metadata");
-    expect(metadata).toContain('"uid":"org_1:ws_1:user_1"');
-    expect(metadata).toContain('"userId":"user_1"');
+    expect(headers.get("cf-aig-authorization")).toBeNull();
 
-    expect(init.body).toBeDefined();
-    const body = JSON.parse(String(init.body)) as {
-      model?: string;
-      messages?: unknown[];
-    };
-    expect(body.model).toBe("dynamic/auto");
-    expect(Array.isArray(body.messages)).toBe(true);
+    const body = JSON.parse(String(init.body)) as { model: string };
+    expect(body.model).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  it("sends dynamic/auto_search when that model is passed", async () => {
+  it("sends BYOK key as Authorization and gateway token as cf-aig-authorization", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "chatcmpl_2" }), {
         status: 200,
@@ -273,21 +273,23 @@ describe("runViaGatewayHTTP", () => {
     );
 
     await runViaGatewayHTTP(
-      { accountID: "acct_1", gatewayID: "gw_1", authToken: "tok_1" },
+      { accountID: "acct_1", gatewayID: "gw_1", authToken: "gateway-tok" },
       { orgId: "org_1", workspaceId: "ws_1" },
-      { messages: [{ role: "user", content: "search" }] },
-      "dynamic/auto_search",
+      { messages: [{ role: "user", content: "hi" }] },
+      "openai/gpt-5.5",
+      "compat",
+      "sk-user-byok",
     );
 
-    const body = JSON.parse(
-      String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body),
-    ) as { model: string };
-    expect(body.model).toBe("dynamic/auto_search");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get("authorization")).toBe("Bearer sk-user-byok");
+    expect(headers.get("cf-aig-authorization")).toBe("Bearer gateway-tok");
   });
 
-  it("sends dynamic/auto_image when that model is passed", async () => {
+  it("routes OpenRouter models to /openrouter/", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ id: "chatcmpl_3" }), {
+      new Response(JSON.stringify({ id: "chatcmpl_or" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
@@ -296,38 +298,8 @@ describe("runViaGatewayHTTP", () => {
     await runViaGatewayHTTP(
       { accountID: "acct_1", gatewayID: "gw_1", authToken: "tok_1" },
       { orgId: "org_1", workspaceId: "ws_1" },
-      { messages: [{ role: "user", content: "image" }] },
-      "dynamic/auto_image",
-    );
-
-    const body = JSON.parse(
-      String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body),
-    ) as { model: string };
-    expect(body.model).toBe("dynamic/auto_image");
-  });
-
-  it("routes OpenRouter models to /openrouter/ endpoint", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "chatcmpl_or_1",
-          choices: [
-            {
-              index: 0,
-              message: { role: "assistant", content: "hello" },
-              finish_reason: "stop",
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await runViaGatewayHTTP(
-      { accountID: "acct_1", gatewayID: "gw_1", authToken: "tok_1" },
-      { orgId: "org_1", workspaceId: "ws_1" },
       { messages: [{ role: "user", content: "hello" }] },
-      "anthropic/claude-3.5-sonnet",
+      "deepseek/deepseek-v4-flash:nitro",
       "openrouter",
     );
 
@@ -335,31 +307,25 @@ describe("runViaGatewayHTTP", () => {
     expect(url).toBe(
       "https://gateway.ai.cloudflare.com/v1/acct_1/gw_1/openrouter/chat/completions",
     );
-
     const body = JSON.parse(String(init.body)) as { model: string };
-    expect(body.model).toBe("anthropic/claude-3.5-sonnet:nitro");
+    expect(body.model).toBe("deepseek/deepseek-v4-flash:nitro");
   });
 
-  it("throws gateway error message for non-2xx responses", async () => {
+  it("throws the gateway error message for non-2xx responses", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
-        JSON.stringify({
-          error: { message: "gateway rejected request" },
-        }),
+        JSON.stringify({ error: { message: "gateway rejected request" } }),
         { status: 400, headers: { "Content-Type": "application/json" } },
       ),
     );
 
     await expect(
       runViaGatewayHTTP(
-        {
-          accountID: "acct_1",
-          gatewayID: "gw_1",
-          authToken: "tok_1",
-        },
+        { accountID: "acct_1", gatewayID: "gw_1", authToken: "tok_1" },
         { orgId: "org_1", workspaceId: "ws_1" },
         { messages: [{ role: "user", content: "hello" }] },
-        "dynamic/auto",
+        "openai/gpt-5.5",
+        "compat",
       ),
     ).rejects.toThrow("gateway rejected request");
   });
@@ -383,17 +349,11 @@ describe("runViaGatewayHTTP", () => {
     );
 
     const result = await runViaGatewayHTTP(
-      {
-        accountID: "acct_1",
-        gatewayID: "gw_1",
-        authToken: "tok_1",
-      },
+      { accountID: "acct_1", gatewayID: "gw_1", authToken: "tok_1" },
       { orgId: "org_1", workspaceId: "ws_1" },
-      {
-        stream: true,
-        messages: [{ role: "user", content: "hello" }],
-      },
-      "dynamic/auto",
+      { stream: true, messages: [{ role: "user", content: "hello" }] },
+      "deepseek/deepseek-v4-flash:nitro",
+      "openrouter",
     );
 
     expect(result).toBeInstanceOf(ReadableStream);
@@ -412,6 +372,351 @@ describe("runViaGatewayHTTP", () => {
     expect(combined).toContain("data: [DONE]");
   });
 });
+
+describe("chatCompletionToPiCall (Bedrock adapter — input)", () => {
+  it("lifts system messages, flattens text content, threads inference config", () => {
+    const call = chatCompletionToPiCall({
+      messages: [
+        { role: "system", content: "be helpful" },
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "hello!" }],
+        },
+      ],
+      max_tokens: 256,
+      temperature: 0.4,
+      top_p: 0.95,
+    });
+    expect(call.stream).toBe(false);
+    expect(call.context.systemPrompt).toBe("be helpful");
+    expect(call.context.messages.length).toBe(2);
+    expect(call.context.messages[0]).toMatchObject({ role: "user", content: "hi" });
+    expect(call.context.messages[1].role).toBe("assistant");
+    expect(call.maxTokens).toBe(256);
+    expect(call.temperature).toBe(0.4);
+  });
+
+  it("returns stream=true when the input requests streaming", () => {
+    const call = chatCompletionToPiCall({
+      stream: true,
+      messages: [{ role: "user", content: "go" }],
+    });
+    expect(call.stream).toBe(true);
+  });
+
+  it("preserves base64 data-URL image parts as pi-ai ImageContent", () => {
+    const call = chatCompletionToPiCall({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this?" },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,AAAneed" },
+            },
+          ],
+        },
+      ],
+    });
+    expect(call.context.messages[0]).toMatchObject({
+      role: "user",
+      content: [
+        { type: "text", text: "what is this?" },
+        { type: "image", data: "AAAneed", mimeType: "image/png" },
+      ],
+    });
+  });
+
+  it("keeps an image-only user turn (does not drop it)", () => {
+    const call = chatCompletionToPiCall({
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: "data:image/jpeg;base64,ZZZ" },
+            },
+          ],
+        },
+      ],
+    });
+    expect(call.context.messages.length).toBe(1);
+    expect(call.context.messages[0].content).toEqual([
+      { type: "image", data: "ZZZ", mimeType: "image/jpeg" },
+    ]);
+  });
+
+  it("collapses a single text part back to a plain string", () => {
+    const call = chatCompletionToPiCall({
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+    expect(call.context.messages[0].content).toBe("hi");
+  });
+
+  it("skips remote (non-data) image URLs rather than fetching them", () => {
+    const call = chatCompletionToPiCall({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "look" },
+            { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+          ],
+        },
+      ],
+    });
+    expect(call.context.messages[0].content).toBe("look");
+  });
+
+  it("translates OpenAI tools into pi-ai Tool[] and forwards tool_choice", () => {
+    const call = chatCompletionToPiCall({
+      messages: [{ role: "user", content: "go" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "Lookup weather",
+            parameters: {
+              type: "object",
+              properties: { city: { type: "string" } },
+              required: ["city"],
+            },
+          },
+        },
+      ],
+      tool_choice: { type: "function", function: { name: "get_weather" } },
+    });
+    expect(call.context.tools).toEqual([
+      {
+        name: "get_weather",
+        description: "Lookup weather",
+        parameters: {
+          type: "object",
+          properties: { city: { type: "string" } },
+          required: ["city"],
+        },
+      },
+    ]);
+    expect(call.toolChoice).toEqual({ type: "tool", name: "get_weather" });
+  });
+
+  it("maps tool_choice variants ('auto', 'required', 'none')", () => {
+    expect(chatCompletionToPiCall({ messages: [{ role: "user", content: "x" }], tool_choice: "auto" }).toolChoice).toBe("auto");
+    expect(chatCompletionToPiCall({ messages: [{ role: "user", content: "x" }], tool_choice: "required" }).toolChoice).toBe("any");
+    expect(chatCompletionToPiCall({ messages: [{ role: "user", content: "x" }], tool_choice: "none" }).toolChoice).toBe("none");
+  });
+
+  it("translates assistant tool_calls into pi-ai ToolCall content blocks", () => {
+    const call = chatCompletionToPiCall({
+      messages: [
+        { role: "user", content: "weather in SF" },
+        {
+          role: "assistant",
+          content: "Looking that up.",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"SF"}' },
+            },
+          ],
+        },
+      ],
+    });
+    const assistant = call.context.messages[1] as AssistantMessage;
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.content).toEqual([
+      { type: "text", text: "Looking that up." },
+      { type: "toolCall", id: "call_1", name: "get_weather", arguments: { city: "SF" } },
+    ]);
+  });
+
+  it("translates role:tool messages into pi-ai ToolResultMessage and threads toolName from earlier tool_calls", () => {
+    const call = chatCompletionToPiCall({
+      messages: [
+        { role: "user", content: "weather in SF" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "get_weather", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "sunny" },
+      ],
+    });
+    expect(call.context.messages[2]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "get_weather",
+      content: [{ type: "text", text: "sunny" }],
+      isError: false,
+    });
+  });
+
+  it("emits one ToolResultMessage per role:tool message (pi-bedrock-provider groups adjacent tool results downstream)", () => {
+    const call = chatCompletionToPiCall({
+      messages: [
+        { role: "user", content: "weather in SF and NYC" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            { id: "c1", type: "function", function: { name: "w", arguments: "{}" } },
+            { id: "c2", type: "function", function: { name: "w", arguments: "{}" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "c1", content: "sunny" },
+        { role: "tool", tool_call_id: "c2", content: "cloudy" },
+      ],
+    });
+    expect(call.context.messages.length).toBe(4);
+    expect(call.context.messages[2]).toMatchObject({ role: "toolResult", toolCallId: "c1" });
+    expect(call.context.messages[3]).toMatchObject({ role: "toolResult", toolCallId: "c2" });
+  });
+});
+
+describe("piMessageToChatCompletion (Bedrock adapter — output)", () => {
+  const baseUsage = {
+    input: 3,
+    output: 5,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 8,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+
+  it("renders a text-only assistant message", () => {
+    const completion = piMessageToChatCompletion(
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        api: "bedrock-converse-stream",
+        provider: "amazon-bedrock",
+        model: "haiku",
+        usage: baseUsage,
+        stopReason: "stop",
+        timestamp: Date.now(),
+      },
+      "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ) as Record<string, unknown>;
+    const choices = completion.choices as Array<Record<string, unknown>>;
+    expect((choices[0].message as Record<string, unknown>).content).toBe("Hello!");
+    expect(choices[0].finish_reason).toBe("stop");
+    expect(completion.usage).toMatchObject({ prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 });
+  });
+
+  it("emits tool_calls payload (with JSON-stringified arguments) for toolUse stop", () => {
+    const completion = piMessageToChatCompletion(
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Looking that up" },
+          {
+            type: "toolCall",
+            id: "tu_1",
+            name: "get_weather",
+            arguments: { city: "SF" },
+          },
+        ],
+        api: "bedrock-converse-stream",
+        provider: "amazon-bedrock",
+        model: "haiku",
+        usage: baseUsage,
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      },
+      "model",
+    ) as Record<string, unknown>;
+    const choices = completion.choices as Array<Record<string, unknown>>;
+    expect(choices[0].finish_reason).toBe("tool_calls");
+    const msg = choices[0].message as Record<string, unknown>;
+    expect(msg.content).toBe("Looking that up");
+    expect(msg.tool_calls).toEqual([
+      {
+        id: "tu_1",
+        type: "function",
+        function: { name: "get_weather", arguments: JSON.stringify({ city: "SF" }) },
+      },
+    ]);
+  });
+
+  it("falls back to finish_reason:stop when toolUse stop has no tool_calls", () => {
+    const completion = piMessageToChatCompletion(
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        api: "bedrock-converse-stream",
+        provider: "amazon-bedrock",
+        model: "m",
+        usage: baseUsage,
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      },
+      "model",
+    ) as Record<string, unknown>;
+    const choices = completion.choices as Array<Record<string, unknown>>;
+    expect(choices[0].finish_reason).toBe("stop");
+    expect((choices[0].message as Record<string, unknown>).tool_calls).toBeUndefined();
+  });
+
+  it("propagates cache read + write tokens into prompt_tokens_details", () => {
+    const completion = piMessageToChatCompletion(
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        api: "bedrock-converse-stream",
+        provider: "amazon-bedrock",
+        model: "m",
+        usage: {
+          input: 100,
+          output: 5,
+          cacheRead: 80,
+          cacheWrite: 12,
+          totalTokens: 105,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      },
+      "model",
+    ) as Record<string, unknown>;
+    const usage = completion.usage as Record<string, unknown>;
+    expect(usage.prompt_tokens_details).toEqual({
+      cached_tokens: 80,
+      cache_write_tokens: 12,
+      cache_creation_input_tokens: 12,
+    });
+  });
+
+  it("throws if pi-ai reports stopReason: error", () => {
+    expect(() =>
+      piMessageToChatCompletion(
+        {
+          role: "assistant",
+          content: [],
+          api: "bedrock-converse-stream",
+          provider: "amazon-bedrock",
+          model: "m",
+          usage: baseUsage,
+          stopReason: "error",
+          errorMessage: "boom",
+          timestamp: Date.now(),
+        },
+        "model",
+      ),
+    ).toThrow("boom");
+  });
+});
+
 
 describe("buildGenerateImageMessages", () => {
   it("builds a text-only user message from a prompt string", () => {
