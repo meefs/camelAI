@@ -2,6 +2,7 @@ import type { AppLoadContext } from "react-router";
 import type { UserDO, OrgDO } from "../../workers/main/src/auth";
 import type { WorkspaceDO } from "../../workers/main/src/workspace";
 import type { ChatThreadDO } from "../../workers/main/src/chat-thread-do";
+import type { WorkspaceCronDO } from "../../workers/main/src/workspace-cron";
 import type { WorkerLogsDO } from "../../workers/main/src/worker-logs-do";
 import type {
   SlackTeamRegistryDO,
@@ -19,6 +20,7 @@ export interface CloudflareEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  WORKSPACE_CRON: DurableObjectNamespace<WorkspaceCronDO>;
   MCP_OBJECT: DurableObjectNamespace;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   TELEGRAM_REGISTRY?: DurableObjectNamespace<TelegramRegistryDO>;

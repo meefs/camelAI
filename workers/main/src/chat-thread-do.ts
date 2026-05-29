@@ -147,6 +147,7 @@ type PiBillingSource = "hosted" | "byok";
 
 const PI_USER_STOP_TEXT = "Stopped by user";
 const PI_USER_STOP_METADATA_REASON = "user_stop";
+const CHAT_ACTIVE_AUTOMATION_RUN_KEY = "activeAutomationRun";
 
 interface PiResolvedModelReference {
   provider: string;
@@ -324,6 +325,12 @@ export interface ChatContextState {
   userId: string | null;
   userName: string | null;
   userEmail: string | null;
+}
+
+interface ActiveAutomationRunState {
+  workspaceId: string;
+  automationId: string;
+  runId: string;
 }
 
 export interface ChatThreadForkState {
@@ -664,11 +671,23 @@ export interface InitialUserMessageRequest {
   userEmail?: string | null;
   message?: string;
   clientMessageId?: string | null;
+  automationRun?: {
+    workspaceId: string;
+    automationId: string;
+    runId: string;
+  };
 }
 
 export interface InitialUserMessageResult {
   status: "accepted" | "busy" | "error";
   error?: string;
+}
+
+export interface ChatThreadRuntimeStatus {
+  isStreaming: boolean;
+  pendingQuestionCount: number;
+  oldestPendingQuestion: string | null;
+  updatedAt: number | null;
 }
 
 interface CodeModeJavascriptRequest {
@@ -1913,6 +1932,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private usageIsPostCompaction: boolean = true;
   private cachedContextWindowByModel: Record<string, number> = {};
   private chatIsStreaming: boolean = false;
+  private activeAutomationRun: ActiveAutomationRunState | null = null;
   private assistantCompletionRecordedAt: number | null = null;
   private assistantCompletionSummaryRequestedAt: number | null = null;
   private readonly browserPrompts = new BrowserPromptCoordinator({
@@ -2121,6 +2141,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       ) {
         this.activeTurnUserId = storedActiveTurnUserId.trim();
       }
+
+      this.activeAutomationRun = this.normalizeActiveAutomationRun(
+        ctx.storage.kv.get<unknown>(CHAT_ACTIVE_AUTOMATION_RUN_KEY),
+      );
 
       const storedCodexSessionId = ctx.storage.kv.get<string>(CHAT_CODEX_SESSION_ID_KEY);
       if (typeof storedCodexSessionId === 'string' && storedCodexSessionId.trim()) {
@@ -2818,7 +2842,31 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     questions?: unknown[];
     toolUseId?: string;
   }): Promise<Record<string, unknown>> {
-    return this.browserPrompts.askUserQuestion(input);
+    const pendingBefore = this.browserPrompts.pendingQuestionCount;
+    const result = this.browserPrompts.askUserQuestion(input);
+    if (this.browserPrompts.pendingQuestionCount > pendingBefore) {
+      const pending = this.browserPrompts.getOldestPendingQuestion();
+      const question = pending?.questions[0]?.question ?? null;
+      this.updateActiveAutomationRun({
+        status: "question",
+        message: question,
+        completedAt: null,
+      });
+    }
+    return result;
+  }
+
+  getRuntimeStatus(): ChatThreadRuntimeStatus {
+    const pending = this.browserPrompts.getOldestPendingQuestion();
+    return {
+      isStreaming: this.chatIsStreaming,
+      pendingQuestionCount: this.browserPrompts.pendingQuestionCount,
+      oldestPendingQuestion: pending?.questions[0]?.question ?? null,
+      updatedAt:
+        this.chatIsStreaming || this.browserPrompts.pendingQuestionCount > 0
+          ? Date.now()
+          : null,
+    };
   }
 
   async promptConnectionSetup(input: {
@@ -3117,6 +3165,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
 
     this.chatIsStreaming = false;
+    this.setActiveAutomationRun(null);
     this.browserPrompts.clearQuestions();
     this.titleGenerationInFlight = false;
     this.activeTurnUserId = null;
@@ -3125,6 +3174,96 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   getActiveTurnUserId(): string | null {
     return this.activeTurnUserId;
+  }
+
+  private normalizeActiveAutomationRun(
+    value: unknown,
+  ): ActiveAutomationRunState | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    const record = value as Record<string, unknown>;
+    const workspaceId =
+      typeof record.workspaceId === "string" ? record.workspaceId.trim() : "";
+    const automationId =
+      typeof record.automationId === "string" ? record.automationId.trim() : "";
+    const runId = typeof record.runId === "string" ? record.runId.trim() : "";
+    if (!workspaceId || !automationId || !runId) return null;
+    return { workspaceId, automationId, runId };
+  }
+
+  private setActiveAutomationRun(
+    value: ActiveAutomationRunState | null,
+  ): void {
+    this.activeAutomationRun = value;
+    if (value) {
+      this.ctx.storage.kv.put(CHAT_ACTIVE_AUTOMATION_RUN_KEY, value);
+    } else {
+      this.ctx.storage.kv.delete(CHAT_ACTIVE_AUTOMATION_RUN_KEY);
+    }
+  }
+
+  private recordScheduledAutomationRun(
+    run: ActiveAutomationRunState,
+    input: {
+      status: "success" | "error" | "question" | "busy";
+      message?: string | null;
+      completedAt?: number | null;
+    },
+  ): Promise<boolean> {
+    if (!this.env.WORKSPACE_CRON) return Promise.resolve(false);
+    const cronStub = this.env.WORKSPACE_CRON.get(
+      this.env.WORKSPACE_CRON.idFromName(run.workspaceId),
+    ) as DurableObjectStub<WorkspaceCronDO>;
+    return cronStub.recordScheduledPromptRunResult({
+      workspaceId: run.workspaceId,
+      promptId: run.automationId,
+      runId: run.runId,
+      status: input.status,
+      message: input.message ?? null,
+      completedAt: input.completedAt,
+    });
+  }
+
+  private updateActiveAutomationRun(
+    input: {
+      status: "success" | "error" | "question" | "busy";
+      message?: string | null;
+      completedAt?: number | null;
+      clear?: boolean;
+    },
+  ): void {
+    const run = this.activeAutomationRun;
+    if (!run) return;
+    if (input.clear) {
+      this.setActiveAutomationRun(null);
+    }
+    this.ctx.waitUntil(
+      this.recordScheduledAutomationRun(run, input).catch((error) => {
+        console.error(
+          "[ChatThreadDO] failed to record scheduled automation run",
+          error,
+        );
+        return false;
+      }),
+    );
+  }
+
+  private reconcileInactiveAutomationRun(reason: string): boolean {
+    if (
+      !this.activeAutomationRun ||
+      this.chatIsStreaming ||
+      this.browserPrompts.pendingQuestionCount > 0
+    ) {
+      return false;
+    }
+    this.updateActiveAutomationRun({
+      status: "error",
+      message: reason,
+      completedAt: Date.now(),
+      clear: true,
+    });
+    return true;
   }
 
   private setActiveTurnUserId(userId: string | null | undefined): void {
@@ -4868,6 +5007,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         startedAt,
       });
     } catch (error) {
+      this.updateActiveAutomationRun({
+        status: "error",
+        message: error instanceof Error ? error.message : "Failed to send message",
+        clear: true,
+      });
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
       console.error("[ChatThreadDO] failed to enqueue browser user message", error);
@@ -5070,6 +5214,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw error;
     }
     if (!sent) {
+      this.updateActiveAutomationRun({
+        status: "error",
+        message: "Failed to send message",
+        clear: true,
+      });
       this.setChatIsStreaming(false);
       this.setActiveTurnUserId(null);
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue", {
@@ -5476,6 +5625,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.assistantCompletionRecordedAt = null;
       this.assistantCompletionSummaryRequestedAt = null;
     }
+    // A turn that stops after asking a browser question is still awaiting user
+    // input; keep the automation run active so the eventual answer can finish it.
+    if (
+      !value &&
+      shouldRecordCompletion &&
+      this.activeAutomationRun &&
+      this.browserPrompts.pendingQuestionCount === 0
+    ) {
+      this.updateActiveAutomationRun({
+        status: "success",
+        completedAt:
+          typeof options.completedAt === "number" &&
+          Number.isFinite(options.completedAt)
+            ? options.completedAt
+            : Date.now(),
+        clear: true,
+      });
+    }
     this.resetRunningActivityState();
     const statusChanged = this.chatIsStreaming !== value;
     this.chatIsStreaming = value;
@@ -5743,6 +5910,31 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return { status: "error", error: "Missing message" };
     }
 
+    const automationRun = this.normalizeActiveAutomationRun(body.automationRun);
+    if (automationRun) {
+      this.reconcileInactiveAutomationRun(
+        "Automation run did not finish before the thread restarted",
+      );
+      if (
+        this.activeAutomationRun ||
+        this.chatIsStreaming ||
+        this.browserPrompts.pendingQuestionCount > 0
+      ) {
+        this.recordChatThreadObservabilityEvent("initial_user_message_start", {
+          operation: "automation_run_busy",
+          status: "busy",
+          severity: "warn",
+          durationMs: Date.now() - startedAt,
+          size: message.length,
+        });
+        return {
+          status: "busy",
+          error: "Thread is busy with another run",
+        };
+      }
+      this.setActiveAutomationRun(automationRun);
+    }
+
     try {
       const result = await this.enqueueRunnerUserMessage({
         type: "message",
@@ -5760,8 +5952,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         durationMs: Date.now() - startedAt,
         size: message.length,
       });
+      if (automationRun && result.status !== "accepted") {
+        this.setActiveAutomationRun(null);
+      }
       return result;
     } catch (error) {
+      if (automationRun) {
+        this.setActiveAutomationRun(null);
+      }
       this.recordChatThreadObservabilityEvent("initial_user_message_start", {
         operation: "enqueue_runner_user_message",
         durationMs: Date.now() - startedAt,
@@ -8750,8 +8948,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         sessionId: threadId,
         completedAt: completedAtMs,
       });
-      if (!finalText && errorMessage) {
+      if (stoppedByUser) {
+        this.updateActiveAutomationRun({
+          status: "error",
+          message: PI_USER_STOP_TEXT,
+          completedAt: completedAtMs,
+          clear: true,
+        });
+      } else if (!finalText && errorMessage) {
         this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
+        this.updateActiveAutomationRun({
+          status: "error",
+          message: errorMessage,
+          completedAt: completedAtMs,
+          clear: true,
+        });
       }
       this.setChatIsStreaming(false, {
         markUnread: true,
@@ -8889,6 +9100,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 const errorMessage =
                   error instanceof Error ? error.message : String(error);
                 this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
+                this.updateActiveAutomationRun({
+                  status: "error",
+                  message: errorMessage,
+                  clear: true,
+                });
                 this.setChatIsStreaming(false);
                 this.setActiveTurnUserId(null);
               }),

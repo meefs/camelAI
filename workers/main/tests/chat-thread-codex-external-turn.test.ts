@@ -187,6 +187,105 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(sentCommands[0].content).toContain('hello');
   });
 
+  it('rejects automation starts while another automation run is active', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const activeAutomationRun = {
+      workspaceId: 'workspace1',
+      automationId: 'prompt1',
+      runId: 'run1',
+    };
+
+    fake.chatContext = null;
+    fake.chatIsStreaming = true;
+    fake.activeAutomationRun = activeAutomationRun;
+    fake.browserPrompts = { pendingQuestionCount: 0 };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: vi.fn() } },
+      waitUntil: vi.fn(),
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.setActiveAutomationRun = vi.fn();
+    fake.enqueueRunnerUserMessage = vi.fn(async () => ({ status: 'accepted' }));
+
+    const result = await ChatThreadDO.prototype.startInitialUserMessage.call(fake, {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      message: 'run scheduled task',
+      automationRun: {
+        workspaceId: 'workspace1',
+        automationId: 'prompt1',
+        runId: 'run2',
+      },
+    });
+
+    expect(result).toEqual({
+      status: 'busy',
+      error: 'Thread is busy with another run',
+    });
+    expect(fake.setActiveAutomationRun).not.toHaveBeenCalled();
+    expect(fake.enqueueRunnerUserMessage).not.toHaveBeenCalled();
+    expect(fake.activeAutomationRun).toBe(activeAutomationRun);
+  });
+
+  it('reconciles inactive automation locks before accepting a new automation start', async () => {
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const recordScheduledPromptRunResult = vi.fn(async () => true);
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    const staleAutomationRun = {
+      workspaceId: 'workspace1',
+      automationId: 'prompt1',
+      runId: 'run1',
+    };
+    const nextAutomationRun = {
+      workspaceId: 'workspace1',
+      automationId: 'prompt1',
+      runId: 'run2',
+    };
+
+    fake.chatContext = null;
+    fake.chatIsStreaming = false;
+    fake.activeAutomationRun = staleAutomationRun;
+    fake.browserPrompts = { pendingQuestionCount: 0 };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn(), delete: vi.fn() } },
+      waitUntil: vi.fn((promise: Promise<unknown>) => {
+        waitUntilPromises.push(promise);
+      }),
+    };
+    fake.env = {
+      WORKSPACE_CRON: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordScheduledPromptRunResult })),
+      },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.enqueueRunnerUserMessage = vi.fn(async () => ({ status: 'accepted' }));
+
+    const result = await ChatThreadDO.prototype.startInitialUserMessage.call(fake, {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+      message: 'run scheduled task',
+      automationRun: nextAutomationRun,
+    });
+    await Promise.all(waitUntilPromises);
+
+    expect(result).toEqual({ status: 'accepted' });
+    expect(recordScheduledPromptRunResult).toHaveBeenCalledWith({
+      workspaceId: staleAutomationRun.workspaceId,
+      promptId: staleAutomationRun.automationId,
+      runId: staleAutomationRun.runId,
+      status: 'error',
+      message: 'Automation run did not finish before the thread restarted',
+      completedAt: expect.any(Number),
+    });
+    expect(fake.activeAutomationRun).toEqual(nextAutomationRun);
+    expect(fake.enqueueRunnerUserMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('accepts follow-up user messages while the thread is already streaming', async () => {
     const sentCommands: any[] = [];
     const fake = Object.create(ChatThreadDO.prototype) as any;
@@ -3316,6 +3415,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
   it('emits and persists a final stopped-by-user Pi message after a user stop', async () => {
     const { fake, events } = createPiEventFake();
+    fake.updateActiveAutomationRun = vi.fn();
     const inFlight = [
       { role: 'user', content: 'build it', timestamp: 100 },
       {
@@ -3403,6 +3503,12 @@ describe('ChatThreadDO Codex turn handling', () => {
       result: 'Stopped by user',
     }));
     expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith({
+      status: 'error',
+      message: 'Stopped by user',
+      completedAt: expect.any(Number),
+      clear: true,
+    });
     expect(fake.clearPiInFlightMessages).toHaveBeenCalledTimes(1);
     expect(fake.piSession.state.messages).toEqual([
       { role: 'user', content: 'previous', timestamp: 50 },

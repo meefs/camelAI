@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { AppWindowMac, Cable, CircleHelp, LayoutGrid, MessagesSquare, Plus } from "lucide-react"
+import { AppWindowMac, Cable, CircleHelp, Clock, LayoutGrid, MessagesSquare, Plus } from "lucide-react"
 import { Link, useLocation, useNavigate, useRevalidator } from "react-router"
 import type { ChatGroupThreadSummary } from "@/types"
 
@@ -43,6 +43,7 @@ export function AppSidebar(props: AppSidebarProps) {
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
   const isApps = pathname === "/apps"
+  const isAutomations = pathname === "/automations"
   const isComputer = pathname.startsWith("/computer")
   const computerHref = currentWorkspace?.id
     ? `/computer/${currentWorkspace.id}`
@@ -175,6 +176,14 @@ export function AppSidebar(props: AppSidebarProps) {
                 <Link to="/apps">
                   <LayoutGrid />
                   <span>Apps</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild tooltip="Automations" isActive={isAutomations}>
+                <Link to="/automations">
+                  <Clock />
+                  <span>Automations</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

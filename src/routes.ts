@@ -34,6 +34,7 @@ export default [
     route("chat", "routes/_app.chat._index.tsx"),
     route("chat/:id", "routes/_app.chat.$id.tsx"),
     route("apps", "routes/_app.apps.tsx"),
+    route("automations", "routes/_app.automations.tsx"),
     route("history", "routes/_app.history.tsx"),
     route("connections", "routes/_app.connections.tsx"),
     route("computer", "routes/_app.computer.tsx"),
@@ -153,6 +154,7 @@ export default [
   route("api/client-errors", "routes/api/client-errors.ts"),
   route("api/help", "routes/api/help.ts"),
   route("api/history", "routes/api/history.tsx"),
+  route("api/automations/:id/runs", "routes/api/automations.$id.runs.ts"),
   route("api/chat-groups/:id", "routes/api/chat-groups.$id.ts"),
   route("api/chat-groups/:id/members", "routes/api/chat-groups.$id.members.ts"),
   route(

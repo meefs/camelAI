@@ -25,6 +25,7 @@ describe("ChatThreadDO completion summaries", () => {
     fake.assistantCompletionRecordedAt = null;
     fake.assistantCompletionSummaryRequestedAt = null;
     fake.currentTodos = [];
+    fake.browserPrompts = { pendingQuestionCount: 0 };
     fake.trace = vi.fn();
     fake.broadcastRealtime = vi.fn();
     fake.ctx = {
@@ -407,6 +408,28 @@ describe("ChatThreadDO completion summaries", () => {
       summary: null,
       summaryStatus: "failed",
     });
+  });
+
+  it("does not mark an active automation run successful while a browser question is pending", async () => {
+    const { fake, waitUntilPromises } = createFakeThread();
+    const activeAutomationRun = {
+      workspaceId: "workspace1",
+      automationId: "prompt1",
+      runId: "run1",
+    };
+    fake.activeAutomationRun = activeAutomationRun;
+    fake.browserPrompts = { pendingQuestionCount: 1 };
+    fake.updateActiveAutomationRun = vi.fn();
+
+    ChatThreadDO.prototype["setChatIsStreaming"].call(fake, false, {
+      markUnread: true,
+      completedAt: 123,
+      summarySource: null,
+    });
+    await Promise.all(waitUntilPromises);
+
+    expect(fake.updateActiveAutomationRun).not.toHaveBeenCalled();
+    expect(fake.activeAutomationRun).toBe(activeAutomationRun);
   });
 
   it("reuses one WorkspaceDO stub for ordered status writes", async () => {
