@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const requireWorkspaceAuthMock = vi.fn();
-const blockBetaFileEditMock = vi.fn();
+const blockFileEditMock = vi.fn();
 
 vi.mock('@/routes/api/workspaces.utils', () => ({
   requireWorkspaceAuth: requireWorkspaceAuthMock,
-  blockBetaFileEdit: blockBetaFileEditMock,
+  blockFileEdit: blockFileEditMock,
   resolveContainerPathForWrite: vi.fn(),
   normalizeWorkspacePath: vi.fn((path?: string | null) => path ?? '/'),
   resolveContainerPath: vi.fn(),
@@ -21,15 +21,15 @@ const deleteRoute = await import('@/routes/api/workspaces.$id.fs.delete');
 
 const blockedResponse = () =>
   Response.json(
-    { error: 'File editing is disabled during beta.' },
+    { error: 'File editing is disabled.' },
     { status: 403 }
   );
 
-describe('workspace file mutation routes during beta', () => {
+describe('workspace file mutation routes while file editing is disabled', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     requireWorkspaceAuthMock.mockResolvedValue({});
-    blockBetaFileEditMock.mockImplementation(blockedResponse);
+    blockFileEditMock.mockImplementation(blockedResponse);
   });
 
   it.each([
@@ -86,7 +86,7 @@ describe('workspace file mutation routes during beta', () => {
         body: '{invalid json',
       }),
     ],
-  ])('%s returns the beta 403 block before parsing the body', async (_label, action, request) => {
+  ])('%s returns the file editing 403 block before parsing the body', async (_label, action, request) => {
     const context = {};
 
     const response = await action({
@@ -101,10 +101,10 @@ describe('workspace file mutation routes during beta', () => {
       'ws_123',
       { requireWrite: true }
     );
-    expect(blockBetaFileEditMock).toHaveBeenCalledTimes(1);
+    expect(blockFileEditMock).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
-      error: 'File editing is disabled during beta.',
+      error: 'File editing is disabled.',
     });
   });
 });

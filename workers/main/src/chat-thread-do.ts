@@ -308,6 +308,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   CF_API_TOKEN?: string;
   CF_CUSTOM_HOSTNAME_FALLBACK?: string;
   CF_CUSTOM_HOSTNAME_CNAME_TARGET?: string;
+  WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   EMAIL?: CloudflareEmailSender;
   TELEGRAM_BOT_TOKEN?: string;

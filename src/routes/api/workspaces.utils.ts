@@ -125,13 +125,13 @@ export async function requireWorkspaceAuth(
 }
 
 /**
- * Returns a 403 response blocking user-initiated file mutations during beta.
+ * Returns a 403 response blocking user-initiated file mutations.
  * Remove this function (and all call sites) when file editing is re-enabled
  * as a paid feature.
  */
-export function blockBetaFileEdit(): Response {
+export function blockFileEdit(): Response {
   return Response.json(
-    { error: 'File editing is disabled during beta.' },
+    { error: 'File editing is disabled.' },
     { status: 403 }
   );
 }

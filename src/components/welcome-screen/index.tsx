@@ -8,7 +8,6 @@ import type { Attachment } from '@/components/attachment-list';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { PromptInput } from '@/components/prompt-input';
 import { ConnectionPicker } from '@/components/connection-picker';
-import { GetHelpDialog } from '@/components/get-help-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
@@ -18,7 +17,6 @@ import {
   slugForIntegration,
 } from '@/lib/connection-mentions';
 import { AnimatedPlaceholder } from './animated-placeholder';
-import { BetaNotice } from './beta-notice';
 import { createSeededRandom, hashStringToSeed } from './deterministic-random';
 import { WelcomeGreeting } from './welcome-greeting';
 import { SectionHeader } from './section-header';
@@ -343,7 +341,6 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
-  const [helpOpen, setHelpOpen] = useState(false);
   const [resolvedConnections, setResolvedConnections] = useState<Integration[]>(
     () => (Array.isArray(connections) ? connections : EMPTY_INTEGRATIONS),
   );
@@ -439,10 +436,6 @@ export function WelcomeScreen({
   return (
     <div className="w-full max-w-5xl space-y-10">
       <WelcomeGreeting userName={userName} seed={referenceTime} />
-
-      <div className="-mt-6">
-        <BetaNotice onFeedbackClick={() => setHelpOpen(true)} />
-      </div>
 
       <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
         {(animatedText) => (
@@ -572,12 +565,6 @@ export function WelcomeScreen({
           shuffleKey={shuffleKey}
         />
       </section>
-
-      <GetHelpDialog
-        open={helpOpen}
-        onOpenChange={setHelpOpen}
-        defaultCategory="feature"
-      />
     </div>
   );
 }

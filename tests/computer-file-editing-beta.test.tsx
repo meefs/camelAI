@@ -37,7 +37,7 @@ const { default: ComputerPageContent } = await import(
   '@/components/pages/computer/computer-page-content'
 );
 
-describe('ComputerPageContent beta read-only mode', () => {
+describe('ComputerPageContent read-only file editing mode', () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
@@ -77,7 +77,7 @@ describe('ComputerPageContent beta read-only mode', () => {
     );
 
     expect(await screen.findByText('Read-only')).toBeInTheDocument();
-    expect(screen.queryByText('File editing is disabled during beta.')).not.toBeInTheDocument();
+    expect(screen.queryByText('File editing is disabled.')).not.toBeInTheDocument();
     expect(screen.getByText('Read-only')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();

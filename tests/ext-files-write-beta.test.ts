@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const getEnvMock = vi.fn();
 const requireBearerAuthMock = vi.fn();
 const getContainerMock = vi.fn();
-const blockBetaFileEditMock = vi.fn();
+const blockFileEditMock = vi.fn();
 
 vi.mock('@/lib/cloudflare.server', () => ({
   getEnv: getEnvMock,
@@ -17,13 +17,13 @@ vi.mock('@/lib/ext-api.server', () => ({
 }));
 
 vi.mock('@/routes/api/workspaces.utils', () => ({
-  blockBetaFileEdit: blockBetaFileEditMock,
+  blockFileEdit: blockFileEditMock,
 }));
 
 const { action } = await import('@/routes/api/ext.files.write');
 const { action: uploadAction } = await import('@/routes/api/ext.files.upload');
 
-describe('external file mutation routes during beta', () => {
+describe('external file mutation routes while file editing is disabled', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getEnvMock.mockReturnValue({ APP_KV: {} });
@@ -31,15 +31,15 @@ describe('external file mutation routes during beta', () => {
       org_id: 'org_123',
       workspace_id: 'ws_123',
     });
-    blockBetaFileEditMock.mockImplementation(() =>
+    blockFileEditMock.mockImplementation(() =>
       Response.json(
-        { error: 'File editing is disabled during beta.' },
+        { error: 'File editing is disabled.' },
         { status: 403 }
       )
     );
   });
 
-  it('returns the beta 403 block for PUT /api/ext/files/write after bearer auth and before parsing the body', async () => {
+  it('returns the file editing 403 block for PUT /api/ext/files/write after bearer auth and before parsing the body', async () => {
     const request = new Request('https://camelai.com/api/ext/files/write', {
       method: 'PUT',
       headers: {
@@ -58,15 +58,15 @@ describe('external file mutation routes during beta', () => {
 
     expect(getEnvMock).toHaveBeenCalledWith(context);
     expect(requireBearerAuthMock).toHaveBeenCalledWith(request, { APP_KV: {} });
-    expect(blockBetaFileEditMock).toHaveBeenCalledTimes(1);
+    expect(blockFileEditMock).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
-      error: 'File editing is disabled during beta.',
+      error: 'File editing is disabled.',
     });
     expect(getContainerMock).not.toHaveBeenCalled();
   });
 
-  it('returns the beta 403 block for POST /api/ext/files/upload after bearer auth and before parsing the body', async () => {
+  it('returns the file editing 403 block for POST /api/ext/files/upload after bearer auth and before parsing the body', async () => {
     const request = new Request('https://camelai.com/api/ext/files/upload', {
       method: 'POST',
       headers: {
@@ -85,10 +85,10 @@ describe('external file mutation routes during beta', () => {
 
     expect(getEnvMock).toHaveBeenCalledWith(context);
     expect(requireBearerAuthMock).toHaveBeenCalledWith(request, { APP_KV: {} });
-    expect(blockBetaFileEditMock).toHaveBeenCalledTimes(1);
+    expect(blockFileEditMock).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
-      error: 'File editing is disabled during beta.',
+      error: 'File editing is disabled.',
     });
     expect(getContainerMock).not.toHaveBeenCalled();
   });

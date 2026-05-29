@@ -1,6 +1,6 @@
 import type { Route } from './+types/workspaces.$id.fs.move';
 import {
-  blockBetaFileEdit,
+  blockFileEdit,
   requireWorkspaceAuth,
   resolveContainerPath,
   resolveContainerPathForWrite,
@@ -19,8 +19,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       requireWrite: true,
     });
 
-    // Beta: file editing disabled. Remove this line to re-enable.
-    return blockBetaFileEdit();
+    // File editing disabled. Remove this line to re-enable.
+    return blockFileEdit();
 
     const body = await request.json() as { from?: string; to?: string };
     if (!body.from || !body.to) {

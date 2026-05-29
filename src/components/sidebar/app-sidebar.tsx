@@ -15,7 +15,6 @@ import { GetHelpDialog } from "@/components/get-help-dialog"
 import { ChatGroupsList } from "@/components/sidebar/chat-groups-list"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { WorkspaceSwitcher } from "@/components/sidebar/workspace-switcher"
-import { Badge } from "@/components/ui/badge"
 import {
   Sidebar,
   SidebarContent,
@@ -27,7 +26,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
-  useSidebar,
 } from "@/components/ui/sidebar"
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
@@ -39,7 +37,6 @@ export function AppSidebar(props: AppSidebarProps) {
   const revalidator = useRevalidator()
   const { currentWorkspace } = useAuthData()
   const { groups, activeGroupId, isLoading } = useChatGroups()
-  const { state } = useSidebar()
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
   const isApps = pathname === "/apps"
@@ -106,14 +103,6 @@ export function AppSidebar(props: AppSidebarProps) {
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader className="[--safe-area-padding-left:0.5rem] [--safe-area-padding-right:0.5rem] pl-safe pr-safe">
         <WorkspaceSwitcher />
-        <div className="flex px-2 transition-[justify-content] duration-200 ease-in-out" style={{ justifyContent: state === "expanded" ? "flex-start" : "center" }}>
-          <Badge
-            variant="secondary"
-            className="text-[10px] tracking-wider font-semibold uppercase"
-          >
-            Beta
-          </Badge>
-        </div>
       </SidebarHeader>
       <SidebarContent className="pl-safe pr-safe">
         <SidebarGroup>

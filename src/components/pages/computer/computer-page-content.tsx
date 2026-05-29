@@ -158,7 +158,7 @@ const ROOT_PATH = '/';
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 const MAX_EDITABLE_BYTES = 1024 * 1024;
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
-const BETA_FILE_EDIT_DISABLED_MESSAGE = 'File editing is disabled during beta.';
+const FILE_EDIT_DISABLED_MESSAGE = 'File editing is disabled.';
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   ts: 'typescript',
@@ -395,7 +395,7 @@ export default function ComputerPageContent({
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
   const readOnlyHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialFileHandledRef = useRef<string | null>(null);
-  const canMutate = false; // File editing disabled during beta.
+  const canMutate = false; // File editing is currently disabled.
 
   const copyToClipboard = useCallback(async (value: string) => {
     try {
@@ -1992,7 +1992,7 @@ export default function ComputerPageContent({
                                 <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/90 px-2 py-0.5 text-[10px] font-medium text-foreground">
                                   {readOnly
                                     ? 'Admin read-only mode'
-                                    : BETA_FILE_EDIT_DISABLED_MESSAGE}
+                                    : FILE_EDIT_DISABLED_MESSAGE}
                                 </span>
                               )}
                               {isDragOver && (
@@ -2052,7 +2052,7 @@ export default function ComputerPageContent({
                           <ContextMenuItem disabled>
                             {readOnly
                               ? 'Admin read-only mode'
-                              : BETA_FILE_EDIT_DISABLED_MESSAGE}
+                              : FILE_EDIT_DISABLED_MESSAGE}
                           </ContextMenuItem>
                           <ContextMenuSeparator />
                           {node.path !== ROOT_PATH && (
@@ -2284,7 +2284,7 @@ export default function ComputerPageContent({
                         <AlertDescription>
                           {readOnly
                             ? 'Admin read-only mode is enabled for this view.'
-                            : BETA_FILE_EDIT_DISABLED_MESSAGE}
+                            : FILE_EDIT_DISABLED_MESSAGE}
                         </AlertDescription>
                       </Alert>
                     </div>
@@ -2439,8 +2439,7 @@ export default function ComputerPageContent({
               <DialogHeader>
                 <DialogTitle>Delete {dialogState.kind}?</DialogTitle>
                 <DialogDescription>
-                  {dialogState.path} will be permanently removed with no way to recover it. <br></br><br></br>
-                  Claude may reference this elsewhere. Unless you are certain, ask Claude to handle the deletion in chat.
+                  {dialogState.path} will be permanently removed with no way to recover it.
                 </DialogDescription>
               </DialogHeader>
             </>

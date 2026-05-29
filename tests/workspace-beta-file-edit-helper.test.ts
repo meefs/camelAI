@@ -21,15 +21,15 @@ vi.mock('@/lib/auth-do', () => ({
   getWorkspaceAccess: vi.fn(),
 }));
 
-const { blockBetaFileEdit } = await import('@/routes/api/workspaces.utils');
+const { blockFileEdit } = await import('@/routes/api/workspaces.utils');
 
-describe('blockBetaFileEdit', () => {
-  it('returns the beta 403 response payload', async () => {
-    const response = blockBetaFileEdit();
+describe('blockFileEdit', () => {
+  it('returns the file editing 403 response payload', async () => {
+    const response = blockFileEdit();
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
-      error: 'File editing is disabled during beta.',
+      error: 'File editing is disabled.',
     });
   });
 });

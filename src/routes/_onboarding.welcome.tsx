@@ -487,8 +487,8 @@ export default function OnboardingWelcomeRoute() {
             {!isTeamWelcome ? (
               <>
                 <p className="text-balance text-muted-foreground">
-                  camelAI is your AI software engineer. Claude has a permanent
-                  computer here, so it can build, deploy, and maintain
+                  camelAI is your AI software engineer. Your agents have a permanent
+                  computer here, so they can build, deploy, and maintain
                   applications for you.
                 </p>
                 {emailVerificationRequired ? (
