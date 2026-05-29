@@ -90,6 +90,10 @@ import {
 import { CodeModeWebSearch } from "./code-mode-web-search";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
 import {
+  buildWorkspaceEmailAddress,
+  getWorkspaceEmailDomain,
+} from "../../../src/lib/workspace-email";
+import {
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
   getEmailReplyReferenceKey,
 } from "./channels";
@@ -6695,9 +6699,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!this.env.EMAIL) {
       throw new Error("Cloudflare Email Sending binding EMAIL is not configured");
     }
-    const from = this.env.EMAIL_FROM_ADDRESS?.trim();
+    let from = thread?.channel_connection_id?.trim() || "";
     if (!from) {
-      throw new Error("EMAIL_FROM_ADDRESS is not configured");
+      const emailDomain = getWorkspaceEmailDomain(this.env);
+      if (!emailDomain) {
+        throw new Error("Workspace email domain is not configured");
+      }
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(context.workspaceId),
+      ) as unknown as WorkspaceDO;
+      const workspaceInfo = await workspaceStub.getInfo();
+      const emailHandle = workspaceInfo?.email_handle?.trim();
+      if (!emailHandle) {
+        throw new Error("Workspace email sender is not configured");
+      }
+      from = buildWorkspaceEmailAddress(emailHandle, emailDomain);
     }
 
     const explicitReplyTo = this.optionalToolString(raw, "reply_to");

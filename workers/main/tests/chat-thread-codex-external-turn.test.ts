@@ -1749,7 +1749,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       EMAIL: { send: sendEmailMock },
-      EMAIL_FROM_ADDRESS: 'noreply@camelai.test',
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       APP_KV: { put: kvPutMock },
       ORG: {
         idFromName: vi.fn((id: string) => id),
@@ -1759,6 +1759,15 @@ describe('ChatThreadDO Codex turn handling', () => {
             source: 'web',
             channel_kind: null,
             channel_connection_id: null,
+          })),
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            email_handle: 'workspace-agent',
           })),
         })),
       },
@@ -1781,7 +1790,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
 
     expect(sendEmailMock).toHaveBeenCalledWith({
-      from: 'noreply@camelai.test',
+      from: 'workspace-agent@camelai.dev',
       to: 'alice@example.com',
       subject: 'Done',
       text: 'Finished.',
@@ -3817,11 +3826,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getOriginatingChannelThread = vi.fn(async () => ({
       source: 'channel',
       channel_kind: 'email',
-      channel_connection_id: 'sender@example.com',
+      channel_connection_id: 'workspace@camelai.dev',
     }));
     fake.env = {
       EMAIL: { send },
-      EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com',
       APP_KV: { put: kvPutMock },
       R2_BUCKET: { get },
     };
@@ -3845,6 +3853,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(get).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.pdf');
     expect(send).toHaveBeenCalledTimes(1);
     const message = send.mock.calls[0][0];
+    expect(message.from).toBe('workspace@camelai.dev');
     expect(message.attachments).toHaveLength(1);
     expect(message.attachments[0]).toMatchObject({
       filename: 'report.pdf',
