@@ -95,6 +95,7 @@ import {
 } from "../../../src/lib/workspace-email";
 import {
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
+  getOrCreateChannelThread,
   getEmailReplyReferenceKey,
 } from "./channels";
 import { codeModeWorkerModule } from "./code-mode-runner";
@@ -689,6 +690,26 @@ export interface InitialUserMessageResult {
   error?: string;
 }
 
+export interface ChannelHistoryEventRequest {
+  threadId?: string;
+  workspaceId?: string;
+  orgId?: string;
+  channelKind?: string;
+  connectionId?: string | null;
+  remoteConversationId?: string | null;
+  sourceThreadId?: string | null;
+  direction?: "inbound" | "outbound";
+  text?: string | null;
+  providerMessageIds?: Array<string | number | null | undefined>;
+  attachmentCount?: number;
+  sentAt?: number;
+}
+
+export interface ChannelHistoryEventResult {
+  status: "appended" | "skipped" | "error";
+  error?: string;
+}
+
 export interface ChatThreadRuntimeStatus {
   isStreaming: boolean;
   pendingQuestionCount: number;
@@ -964,7 +985,7 @@ const SEND_SLACK_MESSAGE_TOOL = codeModeTool(
 );
 const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
   "send_telegram_message",
-  "Send a Telegram message from the current workspace. This tool is available only inside js_exec as tools.send_telegram_message(...); it is not a top-level tool. In a Telegram-originated thread, chat_id defaults to that chat. Otherwise provide chat_id, or integration_id for a configured Telegram chat. Image attachments are sent as native Telegram photos when possible; use attachments[].send_as = 'document' to force file/document delivery. Arguments: { text?, chat_id?, integration_id?, attachments? }.",
+  "Send a Telegram message from the current workspace. This tool is available only inside js_exec as tools.send_telegram_message(...); it is not a top-level tool. In a Telegram-originated thread, routing defaults to that chat. Outside Telegram threads, integration_id is optional when exactly one connected Telegram integration exists; if there are multiple, call tools.list_integrations({}) and use the Telegram integration id. Do not invent chat ids. Image attachments are sent as native Telegram photos when possible; use attachments[].send_as = 'document' to force file/document delivery. Arguments: { text?, chat_id?, integration_id?, attachments? }.",
   Type.Object({
     text: Type.Optional(Type.String()),
     chat_id: Type.Optional(Type.String()),
@@ -3016,6 +3037,104 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       parsed.push(...this.piCoreMessageToParsedChatMessage(message, index, normalizedThreadId));
     });
     return parsed;
+  }
+
+  async appendChannelHistoryEvent(
+    input: ChannelHistoryEventRequest,
+  ): Promise<ChannelHistoryEventResult> {
+    const threadId =
+      typeof input.threadId === "string" && input.threadId.trim()
+        ? input.threadId.trim()
+        : this.chatContext?.threadId || "";
+    const channelKind =
+      typeof input.channelKind === "string" && input.channelKind.trim()
+        ? input.channelKind.trim()
+        : "channel";
+    const direction = input.direction === "inbound" ? "inbound" : "outbound";
+    const sentAt = Number.isFinite(input.sentAt)
+      ? Math.floor(Number(input.sentAt))
+      : Date.now();
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    const attachmentCount = Number.isFinite(input.attachmentCount)
+      ? Math.max(0, Math.floor(Number(input.attachmentCount)))
+      : 0;
+    if (!threadId) {
+      return { status: "error", error: "Missing thread id" };
+    }
+    if (!text && attachmentCount === 0) {
+      return { status: "skipped" };
+    }
+
+    const providerMessageIds = Array.isArray(input.providerMessageIds)
+      ? input.providerMessageIds
+          .map((id) => (id === undefined || id === null ? "" : String(id).trim()))
+          .filter(Boolean)
+      : [];
+    const lines = [
+      "<camelai system message>",
+      `A camelAI run sent an outbound ${channelKind} message to this channel at ${new Date(sentAt).toISOString()}.`,
+    ];
+    if (direction !== "outbound") {
+      lines.push(`Direction: ${direction}.`);
+    }
+    if (input.sourceThreadId?.trim()) {
+      lines.push(`Source thread: ${input.sourceThreadId.trim()}.`);
+    }
+    if (input.connectionId?.trim()) {
+      lines.push(`Channel connection: ${input.connectionId.trim()}.`);
+    }
+    if (input.remoteConversationId?.trim()) {
+      lines.push(`Remote conversation: ${input.remoteConversationId.trim()}.`);
+    }
+    if (providerMessageIds.length > 0) {
+      lines.push(`Provider message ids: ${providerMessageIds.join(", ")}.`);
+    }
+    if (attachmentCount > 0) {
+      lines.push(`Attachment count: ${attachmentCount}.`);
+    }
+    lines.push(
+      "Treat this as already-delivered channel history. Do not resend it unless the user explicitly asks.",
+    );
+    if (text) {
+      lines.push("", "Delivered message:", text);
+    }
+    lines.push("</camelai system message>");
+
+    const message = {
+      role: "user" as const,
+      content: lines.join("\n"),
+      timestamp: sentAt,
+    } satisfies AgentMessage;
+    await this.appendPiCoreMessagesIfMissing([message]);
+
+    const sessionState = this.piSession?.state as
+      | { messages?: AgentMessage[]; isStreaming?: boolean }
+      | undefined;
+    if (
+      sessionState &&
+      !sessionState.isStreaming &&
+      Array.isArray(sessionState.messages)
+    ) {
+      const key = this.piCoreMessageKey(message);
+      const exists = sessionState.messages.some(
+        (existing) => this.piCoreMessageKey(existing) === key,
+      );
+      if (!exists) {
+        sessionState.messages.push(message);
+        this.piMainBaselineIndex = Math.max(
+          this.piMainBaselineIndex,
+          sessionState.messages.length,
+        );
+      }
+    }
+
+    this.recordChatThreadObservabilityEvent("channel_history_event_appended", {
+      operation: "append",
+      status: "ok",
+      count: 1,
+      size: text.length,
+    });
+    return { status: "appended" };
   }
 
   async getPiCoreForkMessages(options: {
@@ -6929,17 +7048,38 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw new Error("send_telegram_message requires text or attachments");
     }
     const explicitChatId = this.optionalToolString(raw, "chat_id");
-    const integrationId = this.optionalToolString(raw, "integration_id");
+    let integrationId = this.optionalToolString(raw, "integration_id");
     let chatId = thread?.channel_conversation_id?.trim() || "";
+    let telegramIntegrationId = thread?.channel_connection_id?.trim() || "";
+    let telegramTitle = thread?.title || "Telegram chat";
+    let recordChannelHistory = false;
     if (!chatId) {
-      if (!integrationId) {
-        throw new Error(
-          "Telegram integration_id is required outside Telegram-originated threads",
-        );
-      }
       const wsStub = this.env.WORKSPACE.get(
         this.env.WORKSPACE.idFromName(context.workspaceId),
       ) as unknown as WorkspaceDO;
+      if (!integrationId) {
+        const integrations = await wsStub.getIntegrations();
+        const connectedTelegramIntegrations = integrations.filter((candidate) => {
+          if (candidate.integration_type !== "telegram") return false;
+          try {
+            const config = JSON.parse(candidate.config || "{}") as Record<string, unknown>;
+            return typeof config.chat_id === "string" && config.chat_id.trim().length > 0;
+          } catch {
+            return false;
+          }
+        });
+        if (connectedTelegramIntegrations.length === 0) {
+          throw new Error(
+            "No connected Telegram integrations are available. Ask the user to connect Telegram first.",
+          );
+        }
+        if (connectedTelegramIntegrations.length > 1) {
+          throw new Error(
+            "Multiple Telegram integrations are available. Call tools.list_integrations({}) and pass the desired Telegram integration id as integration_id.",
+          );
+        }
+        integrationId = connectedTelegramIntegrations[0].id;
+      }
       const integration = await wsStub.getIntegration(integrationId);
       if (!integration || integration.integration_type !== "telegram") {
         throw new Error("Telegram integration is no longer available");
@@ -6957,6 +7097,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         );
       }
       chatId = configuredChatId;
+      telegramIntegrationId = integrationId;
+      telegramTitle =
+        (typeof config.chat_title === "string" && config.chat_title.trim()) ||
+        integration.name ||
+        "Telegram chat";
+      recordChannelHistory = true;
     } else if (explicitChatId && explicitChatId !== chatId) {
       throw new Error("Telegram chat_id does not match the originating conversation");
     }
@@ -6996,17 +7142,101 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       sentMessageIds.push(responseJson.result?.message_id);
     }
 
+    const channelHistoryStatus = await this.recordTelegramOutboundHistory(context, {
+      chatId,
+      integrationId: telegramIntegrationId,
+      title: telegramTitle,
+      recordHistory: recordChannelHistory,
+      text: text || undefined,
+      sentMessageIds,
+      attachmentCount: attachments.length,
+    }).catch((error) => {
+      console.error("[ChatThreadDO] failed to record Telegram outbound history", error);
+      this.recordChatThreadObservabilityEvent("channel_history_event_append_failed", {
+        operation: "record_telegram_outbound_history",
+        status: "error",
+        severity: "warn",
+        error,
+      });
+      return "error" as const;
+    });
+
     return {
       content: [{ type: "text", text: "Telegram message sent." }],
       details: {
         status: "sent",
         channel: "telegram",
         chatId,
+        integrationId: telegramIntegrationId || undefined,
         messageId: sentMessageIds[0],
         messageIds: sentMessageIds,
         attachmentCount: attachments.length,
+        channelHistoryStatus,
       },
     };
+  }
+
+  private async recordTelegramOutboundHistory(
+    context: ChatContextState,
+    args: {
+      chatId: string;
+      integrationId: string;
+      title: string;
+      recordHistory: boolean;
+      text?: string;
+      sentMessageIds: Array<number | undefined>;
+      attachmentCount: number;
+    },
+  ): Promise<"recorded" | "skipped"> {
+    if (!args.recordHistory || !args.integrationId) return "skipped";
+    const firstProviderMessageId = args.sentMessageIds
+      .map((id) => (id === undefined ? "" : String(id)))
+      .find(Boolean);
+    const thread = await getOrCreateChannelThread(
+      this.env as Parameters<typeof getOrCreateChannelThread>[0],
+      {
+        kind: "telegram",
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+        connectionId: args.integrationId,
+        remoteConversationId: args.chatId,
+        title: args.title,
+        createdBy: "telegram",
+        firstUserMessage:
+          args.text?.trim() ||
+          (args.attachmentCount > 0 ? "Outbound Telegram attachment sent." : null),
+        firstRemoteMessageId: firstProviderMessageId
+          ? `outbound:${firstProviderMessageId}`
+          : undefined,
+      },
+    );
+    if (thread.threadId === context.threadId) return "skipped";
+
+    const stub = this.env.CHAT_THREAD.get(
+      this.env.CHAT_THREAD.idFromName(thread.threadId),
+    ) as unknown as {
+      appendChannelHistoryEvent: (
+        input: ChannelHistoryEventRequest,
+      ) => Promise<ChannelHistoryEventResult> | ChannelHistoryEventResult;
+    };
+    const result = await stub.appendChannelHistoryEvent({
+      threadId: thread.threadId,
+      workspaceId: context.workspaceId,
+      orgId: context.orgId,
+      channelKind: "telegram",
+      connectionId: args.integrationId,
+      remoteConversationId: args.chatId,
+      sourceThreadId: context.threadId,
+      direction: "outbound",
+      text: args.text,
+      providerMessageIds: args.sentMessageIds,
+      attachmentCount: args.attachmentCount,
+      sentAt: Date.now(),
+    });
+    if (result.status === "error") {
+      throw new Error(result.error || "Failed to record Telegram channel history");
+    }
+    return result.status === "appended" ? "recorded" : "skipped";
   }
 
   private async uploadSlackAttachments(args: {

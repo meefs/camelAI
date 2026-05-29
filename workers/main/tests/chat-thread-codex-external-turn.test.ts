@@ -4136,6 +4136,12 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
       R2_BUCKET: { get: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegrations: vi.fn(async () => []),
+        })),
+      },
     };
 
     await expect(
@@ -4147,11 +4153,90 @@ describe('ChatThreadDO Codex turn handling', () => {
           text: 'Hello',
         },
       ),
-    ).rejects.toThrow('Telegram integration_id is required outside Telegram-originated threads');
+    ).rejects.toThrow('No connected Telegram integrations are available');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('auto-selects the only connected Telegram integration outside Telegram threads', async () => {
+    const appendChannelHistoryEvent = vi.fn(async () => ({ status: 'appended' }));
+    const getIntegration = vi.fn(async () => ({
+      id: 'telegram-int',
+      integration_type: 'telegram',
+      name: 'Product Telegram',
+      config: JSON.stringify({
+        chat_id: '12345',
+        chat_title: 'Product team',
+      }),
+    }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/sendMessage$/);
+      const payload = JSON.parse(String(init?.body));
+      expect(payload).toMatchObject({ chat_id: '12345', text: 'Hello' });
+      return Response.json({ ok: true, result: { message_id: 20 } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => null);
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegrations: vi.fn(async () => [{
+            id: 'telegram-int',
+            integration_type: 'telegram',
+            config: JSON.stringify({ chat_id: '12345' }),
+          }]),
+          getIntegration,
+        })),
+      },
+      APP_KV: {
+        get: vi.fn(async (key: string) =>
+          key === 'channel_thread:telegram:workspace1:telegram-int:12345'
+            ? 'telegram-thread'
+            : null
+        ),
+        put: vi.fn(async () => undefined),
+        delete: vi.fn(async () => undefined),
+      },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getThread: vi.fn(async () => ({
+            id: 'telegram-thread',
+            title: 'Product team',
+          })),
+        })),
+      },
+      CHAT_THREAD: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ appendChannelHistoryEvent })),
+      },
+    };
+
+    const result = await ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { text: 'Hello' },
+    );
+
+    expect(getIntegration).toHaveBeenCalledWith('telegram-int');
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'telegram',
+      chatId: '12345',
+      integrationId: 'telegram-int',
+      messageIds: [20],
+      channelHistoryStatus: 'recorded',
+    });
+    expect(appendChannelHistoryEvent).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('sends Telegram messages through a configured workspace integration outside Telegram threads', async () => {
+    const appendChannelHistoryEvent = vi.fn(async () => ({ status: 'appended' }));
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toMatch(/\/sendMessage$/);
       const payload = JSON.parse(String(init?.body));
@@ -4169,10 +4254,37 @@ describe('ChatThreadDO Codex turn handling', () => {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
           getIntegration: vi.fn(async () => ({
+            id: 'telegram-int',
             integration_type: 'telegram',
-            config: JSON.stringify({ chat_id: '12345' }),
+            name: 'Product Telegram',
+            config: JSON.stringify({
+              chat_id: '12345',
+              chat_title: 'Product team',
+            }),
           })),
         })),
+      },
+      APP_KV: {
+        get: vi.fn(async (key: string) =>
+          key === 'channel_thread:telegram:workspace1:telegram-int:12345'
+            ? 'telegram-thread'
+            : null
+        ),
+        put: vi.fn(async () => undefined),
+        delete: vi.fn(async () => undefined),
+      },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getThread: vi.fn(async () => ({
+            id: 'telegram-thread',
+            title: 'Product team',
+          })),
+        })),
+      },
+      CHAT_THREAD: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ appendChannelHistoryEvent })),
       },
     };
 
@@ -4190,9 +4302,57 @@ describe('ChatThreadDO Codex turn handling', () => {
       status: 'sent',
       channel: 'telegram',
       chatId: '12345',
+      integrationId: 'telegram-int',
       messageIds: [19],
+      channelHistoryStatus: 'recorded',
     });
+    expect(appendChannelHistoryEvent).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'telegram-thread',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      channelKind: 'telegram',
+      connectionId: 'telegram-int',
+      remoteConversationId: '12345',
+      sourceThreadId: 'thread1',
+      direction: 'outbound',
+      text: 'Hello',
+      providerMessageIds: [19],
+      attachmentCount: 0,
+    }));
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('appends outbound channel history as persisted Pi context', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'telegram-thread' };
+    fake.appendPiCoreMessagesIfMissing = vi.fn(async () => undefined);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.piMainBaselineIndex = 0;
+    fake.piSession = { state: { messages: [], isStreaming: false } };
+
+    const result = await ChatThreadDO.prototype.appendChannelHistoryEvent.call(fake, {
+      threadId: 'telegram-thread',
+      channelKind: 'telegram',
+      connectionId: 'telegram-int',
+      remoteConversationId: '12345',
+      sourceThreadId: 'scheduler-thread',
+      direction: 'outbound',
+      text: 'Weekly update.',
+      providerMessageIds: [42],
+      sentAt: Date.UTC(2026, 4, 29, 16, 0, 0),
+    });
+
+    expect(result).toEqual({ status: 'appended' });
+    expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledTimes(1);
+    const message = fake.appendPiCoreMessagesIfMissing.mock.calls[0][0][0];
+    expect(message).toMatchObject({
+      role: 'user',
+      timestamp: Date.UTC(2026, 4, 29, 16, 0, 0),
+    });
+    expect(message.content).toContain('already-delivered channel history');
+    expect(message.content).toContain('Weekly update.');
+    expect(fake.piSession.state.messages).toHaveLength(1);
+    expect(fake.piMainBaselineIndex).toBe(1);
   });
 
   it('rejects mismatched Telegram chat ids for workspace integrations', async () => {
