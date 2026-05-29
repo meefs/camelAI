@@ -189,6 +189,8 @@ live in separate files, and the catalog tests fail if any of them drift apart.
 
 - Slack ingress starts in `workers/main/src/slack-events-queue.ts` and routes turns into `ChatThreadDO`.
 - Email ingress starts in `workers/main/src/email-ingress.ts`; workspace addresses are subaddressed by org/workspace slug.
+- Local Email Worker ingress can be simulated with `POST /cdn-cgi/handler/email` on the local dev server, passing `from` and `to` query params plus a raw RFC 822-style body. Real MX-routed inbound email always reaches the deployed Worker route, not localhost.
+- Local outbound email uses the `send_email` binding from Wrangler config. For agent email, sender addresses must resolve to workspace email handles on `WORKSPACE_EMAIL_DOMAIN`; do not fall back to `EMAIL_FROM_ADDRESS`/`no-reply` for agent sends.
 - OAuth integration code is split across `workers/main/src/services/oauth.ts`, `external-api-oauth.ts`, route files, and workspace integration storage.
 - Scheduled prompts are owned by `WorkspaceCronDO` and exposed through MCP tools.
 
