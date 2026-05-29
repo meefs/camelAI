@@ -767,10 +767,37 @@ interface CodeModeToolDefinition {
   name: string;
   description: string;
   parameters: TSchema;
+  category: CodeModeToolCategory;
+  examples: string[];
+  sideEffect: boolean;
+  externalDelivery: boolean;
+  aliasFor?: string;
 }
 
 interface CodeModeToolRegistration extends CodeModeToolDefinition {
   piPassthrough: boolean;
+}
+
+type CodeModeToolCategory =
+  | "workspace"
+  | "user_interaction"
+  | "communication"
+  | "apps"
+  | "schedules"
+  | "workflows"
+  | "integrations"
+  | "domains"
+  | "web"
+  | "agents"
+  | "connections";
+
+interface CodeModeToolOptions {
+  piPassthrough?: boolean;
+  category?: CodeModeToolCategory;
+  examples?: string[];
+  sideEffect?: boolean;
+  externalDelivery?: boolean;
+  aliasFor?: string;
 }
 
 type CodeModeToolCallHandler = (
@@ -797,6 +824,9 @@ const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   // This tool waits for human input and can outlive js_exec's short sandbox
   // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
   "prompt_connection_setup",
+  // Backing tool for env.WORKSPACE.*. Keep the user-facing runtime facade in
+  // tools.help(), not the implementation detail.
+  "workspace_info",
 ]);
 
 function clampCodeModeInteger(value: unknown, fallback: number, min: number, max: number): number {
@@ -901,12 +931,17 @@ function codeModeTool(
   name: string,
   description: string,
   parameters: TSchema = EMPTY_PARAMETERS,
-  options: { piPassthrough?: boolean } = {},
+  options: CodeModeToolOptions = {},
 ): CodeModeToolRegistration {
   return {
     name,
     description,
     parameters,
+    category: options.category ?? "workspace",
+    examples: options.examples ?? [],
+    sideEffect: options.sideEffect ?? false,
+    externalDelivery: options.externalDelivery ?? false,
+    aliasFor: options.aliasFor,
     piPassthrough: options.piPassthrough ?? false,
   };
 }
@@ -915,8 +950,9 @@ function codeModePassthroughTool(
   name: string,
   description: string,
   parameters: TSchema = EMPTY_PARAMETERS,
+  options: Omit<CodeModeToolOptions, "piPassthrough"> = {},
 ): CodeModeToolRegistration {
-  return codeModeTool(name, description, parameters, { piPassthrough: true });
+  return codeModeTool(name, description, parameters, { ...options, piPassthrough: true });
 }
 
 function codeModeAlias(
@@ -928,6 +964,11 @@ function codeModeAlias(
     name: alias,
     description,
     parameters: target.parameters,
+    category: target.category,
+    examples: target.examples.map((example) => example.replace(`tools.${target.name}`, `tools.${alias}`)),
+    sideEffect: target.sideEffect,
+    externalDelivery: target.externalDelivery,
+    aliasFor: target.name,
     piPassthrough: target.piPassthrough,
   };
 }
@@ -939,6 +980,11 @@ function codeModeDefinition(
     name: registration.name,
     description: registration.description,
     parameters: registration.parameters,
+    category: registration.category,
+    examples: registration.examples,
+    sideEffect: registration.sideEffect,
+    externalDelivery: registration.externalDelivery,
+    aliasFor: registration.aliasFor,
   };
 }
 
@@ -955,7 +1001,10 @@ const CODE_MODE_CONTAINER_TOOL_NAMES = [
 const CODE_MODE_CONTAINER_TOOL_DEFINITIONS = CODE_MODE_CONTAINER_TOOL_NAMES.map(
   (name) => {
     const definition = PI_CONTAINER_TOOL_DEFINITIONS[name];
-    return codeModeTool(definition.name, definition.description, definition.parameters);
+    return codeModeTool(definition.name, definition.description, definition.parameters, {
+      category: "workspace",
+      sideEffect: ["bash", "write", "edit"].includes(definition.name),
+    });
   },
 );
 
@@ -965,6 +1014,9 @@ const ASK_USER_QUESTION_TOOL = codeModePassthroughTool(
   Type.Object({
     questions: Type.Array(Type.Object({}, { additionalProperties: true })),
   }),
+  {
+    category: "user_interaction",
+  },
 );
 const CHANNEL_ATTACHMENT_PARAMETERS = Type.Optional(Type.Array(Type.Object({
   path: Type.String(),
@@ -984,6 +1036,15 @@ const SEND_EMAIL_TOOL = codeModeTool(
     reply_to: Type.Optional(Type.String()),
     attachments: CHANNEL_ATTACHMENT_PARAMETERS,
   }),
+  {
+    category: "communication",
+    examples: [
+      `await tools.send_email({ to: "person@example.com", subject: "Update", text: "Here is the update." })`,
+      `await tools.send_email({ to: "person@example.com", subject: "Files", text: "Attached.", attachments: [{ path: "/mnt/user-uploads/report.pdf" }] })`,
+    ],
+    sideEffect: true,
+    externalDelivery: true,
+  },
 );
 const SEND_SLACK_MESSAGE_TOOL = codeModeTool(
   "send_slack_message",
@@ -996,6 +1057,15 @@ const SEND_SLACK_MESSAGE_TOOL = codeModeTool(
     thread_ts: Type.Optional(Type.String()),
     attachments: CHANNEL_ATTACHMENT_PARAMETERS,
   }),
+  {
+    category: "communication",
+    examples: [
+      `await tools.send_slack_message({ channel_id: "C123", text: "Here is the update." })`,
+      `await tools.send_slack_message({ integration_id: "slack_prod", channel_id: "C123", thread_ts: "1712345678.901", text: "Replying in thread." })`,
+    ],
+    sideEffect: true,
+    externalDelivery: true,
+  },
 );
 const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
   "send_telegram_message",
@@ -1006,6 +1076,15 @@ const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
     integration_id: Type.Optional(Type.String()),
     attachments: CHANNEL_ATTACHMENT_PARAMETERS,
   }),
+  {
+    category: "communication",
+    examples: [
+      `await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Here is the update." })`,
+      `await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Attached.", attachments: [{ path: "/mnt/user-uploads/photo.jpg" }] })`,
+    ],
+    sideEffect: true,
+    externalDelivery: true,
+  },
 );
 const WEB_SEARCH_TOOL = codeModePassthroughTool(
   "WebSearch",
@@ -1021,6 +1100,10 @@ const WEB_SEARCH_TOOL = codeModePassthroughTool(
     searchType: Type.Optional(Type.String()),
     category: Type.Optional(Type.String()),
   }),
+  {
+    category: "web",
+    examples: [`await tools.WebSearch({ query: "Cloudflare Workers Durable Objects", numResults: 5 })`],
+  },
 );
 const WEB_FETCH_TOOL = codeModePassthroughTool(
   "WebFetch",
@@ -1032,6 +1115,10 @@ const WEB_FETCH_TOOL = codeModePassthroughTool(
     fresh: Type.Optional(Type.Boolean()),
     content: Type.Optional(Type.String()),
   }),
+  {
+    category: "web",
+    examples: [`await tools.WebFetch({ url: "https://developers.cloudflare.com/workers/", maxCharacters: 12000 })`],
+  },
 );
 const AGENT_TOOL = codeModeTool(
   "Agent",
@@ -1042,6 +1129,9 @@ const AGENT_TOOL = codeModeTool(
     agent: Type.Optional(Type.String()),
     model: Type.Optional(Type.String()),
   }),
+  {
+    category: "agents",
+  },
 );
 const EXPLORE_TOOL = codeModeTool(
   "Explore",
@@ -1053,6 +1143,9 @@ const EXPLORE_TOOL = codeModeTool(
     agent: Type.Optional(Type.String()),
     model: Type.Optional(Type.String()),
   }),
+  {
+    category: "agents",
+  },
 );
 
 const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
@@ -1082,6 +1175,18 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
         }, { additionalProperties: true }),
       ),
     }),
+    {
+      category: "user_interaction",
+      sideEffect: true,
+    },
+  ),
+  codeModeTool(
+    "workspace_info",
+    "Get current workspace metadata for js_exec, including email_address when users can email the current workspace. Prefer await env.WORKSPACE.emailAddress() when you only need the address. Arguments: {}.",
+    EMPTY_PARAMETERS,
+    {
+      category: "workspace",
+    },
   ),
   codeModePassthroughTool(
     "set_preview",
@@ -1093,8 +1198,14 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       path: Type.Optional(Type.String()),
       content_type: Type.Optional(Type.String()),
     }),
+    {
+      category: "apps",
+      sideEffect: true,
+    },
   ),
-  codeModePassthroughTool("list_apps", "List deployed apps for the current workspace."),
+  codeModePassthroughTool("list_apps", "List deployed apps for the current workspace.", EMPTY_PARAMETERS, {
+    category: "apps",
+  }),
   codeModePassthroughTool(
     "set_app_visibility",
     "Change a deployed app visibility. Arguments: { script_name, is_public }.",
@@ -1102,6 +1213,10 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       script_name: Type.String(),
       is_public: Type.Boolean(),
     }),
+    {
+      category: "apps",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "get_latest_logs",
@@ -1111,8 +1226,13 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       limit: Type.Optional(Type.Number()),
       since_ms: Type.Optional(Type.Number()),
     }),
+    {
+      category: "apps",
+    },
   ),
-  codeModePassthroughTool("list_scheduled_prompts", "List scheduled prompts for the current workspace."),
+  codeModePassthroughTool("list_scheduled_prompts", "List scheduled prompts for the current workspace.", EMPTY_PARAMETERS, {
+    category: "schedules",
+  }),
   codeModePassthroughTool(
     "create_scheduled_prompt",
     "Create a scheduled prompt. Arguments: { name, prompt, cron_expression, enabled? }.",
@@ -1122,6 +1242,10 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       cron_expression: Type.String(),
       enabled: Type.Optional(Type.Boolean()),
     }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "update_scheduled_prompt",
@@ -1133,25 +1257,44 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       cron_expression: Type.Optional(Type.String()),
       enabled: Type.Optional(Type.Boolean()),
     }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "delete_scheduled_prompt",
     "Delete a scheduled prompt. Arguments: { prompt_id }.",
     Type.Object({ prompt_id: Type.String() }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "run_scheduled_prompt_now",
     "Trigger a scheduled prompt immediately. Arguments: { prompt_id }.",
     Type.Object({ prompt_id: Type.String() }),
+    {
+      category: "schedules",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "list_workflows",
     "List workflows for the current workspace. Workflows are deterministic JavaScript code that runs on a schedule.",
+    EMPTY_PARAMETERS,
+    {
+      category: "workflows",
+    },
   ),
   codeModePassthroughTool(
     "validate_workflow",
     "Validate workflow source without saving it. Arguments: { source }.",
     Type.Object({ source: Type.String() }),
+    {
+      category: "workflows",
+    },
   ),
   codeModePassthroughTool(
     "create_workflow",
@@ -1163,6 +1306,10 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       description: Type.String(),
       enabled: Type.Optional(Type.Boolean()),
     }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "update_workflow",
@@ -1175,26 +1322,45 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       description: Type.Optional(Type.String()),
       enabled: Type.Optional(Type.Boolean()),
     }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "delete_workflow",
     "Delete a workflow. Arguments: { workflow_id }.",
     Type.Object({ workflow_id: Type.String() }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "run_workflow_now",
     "Start a workflow immediately. Arguments: { workflow_id }.",
     Type.Object({ workflow_id: Type.String() }),
+    {
+      category: "workflows",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "list_integrations",
-    "List configured integrations for the current workspace. Arguments: { category? }.",
+    "List configured integrations for the current workspace. Channel integrations include recommended_access.recommended_actions with js_exec examples such as tools.send_telegram_message(...). Arguments: { category? }.",
     Type.Object({ category: Type.Optional(Type.String()) }),
+    {
+      category: "integrations",
+      examples: [`await tools.list_integrations({ category: "communication" })`],
+    },
   ),
   codeModePassthroughTool(
     "list_integration_types",
     "List available integration types. Arguments: { category? }. For a native remote MCP server, use integration_type `remote_mcp`; the returned type metadata includes setup hints and MCP capability flags.",
     Type.Object({ category: Type.Optional(Type.String()) }),
+    {
+      category: "integrations",
+    },
   ),
   codeModePassthroughTool(
     "create_integration",
@@ -1205,6 +1371,10 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       config: Type.Optional(Type.Object({}, { additionalProperties: true })),
       credentials: Type.Optional(Type.Object({}, { additionalProperties: true })),
     }),
+    {
+      category: "integrations",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "prompt_connection_setup",
@@ -1222,8 +1392,14 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       instructions: Type.Optional(Type.String()),
       fields: Type.Optional(Type.Array(Type.Object({}, { additionalProperties: true }))),
     }),
+    {
+      category: "integrations",
+      sideEffect: true,
+    },
   ),
-  codeModePassthroughTool("get_custom_domain", "Get custom domain diagnostics for deployed apps."),
+  codeModePassthroughTool("get_custom_domain", "Get custom domain diagnostics for deployed apps.", EMPTY_PARAMETERS, {
+    category: "domains",
+  }),
   codeModePassthroughTool(
     "set_custom_domain",
     "Set an exact custom hostname for an app. Arguments: { app_name, hostname }.",
@@ -1231,15 +1407,28 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       app_name: Type.String(),
       hostname: Type.String(),
     }),
+    {
+      category: "domains",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "remove_custom_domain",
     "Remove a custom hostname from an app. Arguments: { app_name }.",
     Type.Object({ app_name: Type.String() }),
+    {
+      category: "domains",
+      sideEffect: true,
+    },
   ),
   codeModePassthroughTool(
     "retry_custom_domain_hostnames",
     "Retry hostname provisioning for configured app custom domains.",
+    EMPTY_PARAMETERS,
+    {
+      category: "domains",
+      sideEffect: true,
+    },
   ),
   WEB_SEARCH_TOOL,
   codeModeAlias(
@@ -1268,30 +1457,56 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   codeModeTool(
     "connections_list",
     "List workspace connections. Prefer calling this from js_exec as await env.CONNECTIONS.list().",
+    EMPTY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.list()`],
+    },
   ),
   codeModeTool(
     "connections_get",
     "Get one workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.get(connection). Arguments: { connection }.",
     Type.Object({ connection: Type.String() }),
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.get("telegram_direct")`],
+    },
   ),
   codeModeTool(
     "connections_tools",
     "List MCP-backed tools for a workspace connection. Prefer calling this from js_exec as await env.CONNECTIONS.tools(connection). Arguments: { connection }.",
     Type.Object({ connection: Type.String() }),
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.tools("stripe")`],
+    },
   ),
   codeModeTool(
     "connections_methods",
-    "List workspace connections and their method aliases, tool names, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
+    "List workspace connections and their method aliases, virtual channel actions, tool names, examples, and input schemas. Prefer calling this from js_exec as await env.CONNECTIONS.methods().",
+    EMPTY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.methods()`],
+    },
   ),
   codeModeTool(
     "connections_find",
     "Find one workspace connection method catalog entry by alias, id, type, or name. Prefer calling this from js_exec as await env.CONNECTIONS.find(query). Arguments: { query }.",
     CONNECTION_QUERY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`const entry = await env.CONNECTIONS.find("clickhouse")`],
+    },
   ),
   codeModeTool(
     "connections_test",
     "Run a quick workspace connection smoke test. Prefer calling this from js_exec as await env.CONNECTIONS.test(query). Arguments: { query }.",
     CONNECTION_QUERY_PARAMETERS,
+    {
+      category: "connections",
+      examples: [`await env.CONNECTIONS.test("clickhouse")`],
+    },
   ),
 ];
 
@@ -1328,6 +1543,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     update_deterministic_automation: (binding, args) => binding.updateDeterministicAutomation(args),
     delete_deterministic_automation: (binding, args) => binding.deleteDeterministicAutomation(args),
     run_deterministic_automation_now: (binding, args) => binding.runDeterministicAutomationNow(args),
+    workspace_info: (binding) => binding.getWorkspaceRuntimeInfo(),
     list_integrations: (binding, args) => binding.listIntegrations(args),
     list_integration_types: (binding, args) => binding.listIntegrationTypes(args),
     create_integration: (binding, args) => binding.createIntegration(args),
@@ -1429,6 +1645,22 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private async getOrgSlug(): Promise<string | null> {
     const info = await this.orgStub.getInfo();
     return typeof info?.slug === "string" && info.slug.trim() ? info.slug.trim() : null;
+  }
+
+  private async getWorkspaceRuntimeInfo(): Promise<Record<string, unknown>> {
+    const workspaceInfo = await this.workspaceStub.getInfo();
+    const emailDomain = getWorkspaceEmailDomain(this.env);
+    const emailHandle = typeof workspaceInfo?.email_handle === "string"
+      ? workspaceInfo.email_handle.trim()
+      : "";
+    const emailAddress = emailDomain && emailHandle
+      ? buildWorkspaceEmailAddress(emailHandle, emailDomain)
+      : null;
+    return {
+      id: workspaceInfo?.id ?? this.ctx.props.workspaceId,
+      name: workspaceInfo?.name ?? null,
+      email_address: emailAddress,
+    };
   }
 
   private async createWranglerDeployEnv(): Promise<Record<string, string>> {
@@ -6858,8 +7090,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
       "Outbound email, Slack, and Telegram messages are opt-in side effects. In ordinary web chats, answer in chat only unless the user explicitly asks you to send an external message. Channel-originated turns include their own hidden routing instruction when an external reply is needed.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
-      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `env.CONNECTIONS[entry.alias].method(input)`, `connections[entry.alias].method(input)`, or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
-      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`).",
+      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `env.CONNECTIONS[entry.alias].method(input)`, `connections[entry.alias].method(input)`, or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Channel side effects such as Telegram sending are virtual actions listed by `tools.list_integrations({ category: \"communication\" })` and `await env.CONNECTIONS.methods()`; call their copyable `tools.<action>(...)` examples from js_exec. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
+      "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`). Use `await tools.help()` inside js_exec to expand tool categories, `await env.CAMELAI.help()` for CAMELAI methods, and `await env.WORKSPACE.info()` for workspace metadata such as its email address.",
       "Before relying on repository-specific conventions, read /home/claude/AGENTS.md, /home/claude/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
       "",
       "## Available Skills",
@@ -8820,12 +9052,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "The final expression is returned automatically, and `console.log`/`console.warn`/`console.error` output is shown in the tool result. Use explicit `return` when a script has branches or loops. " +
           "Connection globals: `env.CONNECTIONS`, `connections`, `context.cloudflare.connections`, and `context.cloudflare.env.CONNECTIONS` expose the same method facade. " +
           "To use a connection, prefer `const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await env.CONNECTIONS[entry.alias].query({ query: \"SELECT 1 AS ok\" });`. `find` accepts an alias, id, type, name, or object such as `{ type: \"clickhouse\" }` and throws on missing/ambiguous matches. " +
-          "Use `await env.CONNECTIONS.methods()` when you need the full catalog; method entries include copyable `example` strings. Use `await env.CONNECTIONS.test(\"clickhouse\")` for a quick smoke test. " +
+          "Use `await env.CONNECTIONS.methods()` when you need the full catalog; method entries include copyable `example` strings. Virtual channel action entries such as Telegram sends are called through their `tools.<action>(...)` examples, not through `env.CONNECTIONS[alias]` or `connections[alias]`. Use `await env.CONNECTIONS.test(\"clickhouse\")` for a quick smoke test. " +
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
           "Connection credentials are intentionally hidden behind the binding. " +
-          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. " +
-          "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. Provider-specific outbound channel tools are intentionally available only here; use them only when the current turn's channel instructions require an external reply or the user explicitly asks for external delivery. " +
+          "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. Use `await env.CAMELAI.help()` for its method catalog. " +
+          "Workspace metadata: call `await env.WORKSPACE.emailAddress()` when users want to email the current workspace; it returns the address string or null. `await env.WORKSPACE.info()` also includes `email_address`. " +
+          "Every registered harness tool is also available on the global `tools` object. Start with `await tools.help()` for expandable categories, `await tools.help(\"communication\")` for a category, or `await tools.help(\"send_email\")` for one tool. `ALL_TOOLS` contains the same names, descriptions, schemas, categories, examples, and side-effect metadata. Provider-specific outbound channel tools are intentionally available only here; use them only when the current turn's channel instructions require an external reply or the user explicitly asks for external delivery. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({
           description: Type.String({

@@ -65,6 +65,63 @@ function integrationsHarness(overrides: Partial<ConstructorParameters<typeof Cod
 }
 
 describe('CodeModeIntegrations', () => {
+  it('surfaces Telegram send guidance from list_integrations without a top-level tool', async () => {
+    const workspaceStub = {
+      getIntegrations: vi.fn(async () => [
+        {
+          id: 'telegram_direct',
+          integration_type: 'telegram',
+          name: 'Miguel Telegram',
+          category: 'communication',
+          auth_method: 'api_key',
+          config: JSON.stringify({
+            status: 'active',
+            chat_id: '12345',
+            chat_title: 'Miguel',
+          }),
+          credentials_encrypted: '',
+          created_by: 'user_1',
+          created_at: 1,
+          updated_at: 1,
+          deleted_at: null,
+          token_expires_at: null,
+          auth_status: 'connected',
+          auth_error_code: null,
+          auth_error_message: null,
+          auth_checked_at: null,
+          reauth_required_at: null,
+        },
+      ]),
+      getIntegration: vi.fn(),
+      createIntegration: vi.fn(),
+      updateIntegration: vi.fn(),
+    } as unknown as DurableObjectStub<WorkspaceDO>;
+    const { integrations } = integrationsHarness({ workspaceStub });
+
+    await expect(integrations.list({ category: 'communication' })).resolves.toMatchObject({
+      count: 1,
+      integrations: [
+        {
+          id: 'telegram_direct',
+          type: 'telegram',
+          recommended_access: {
+            tool: 'js_exec',
+            call_pattern: 'await tools.send_telegram_message({ integration_id: "telegram_direct", text: "..." })',
+            routing: expect.stringContaining('Default Telegram recipient is configured'),
+            recommended_actions: [
+              {
+                name: 'send_telegram_message',
+                tool: 'tools.send_telegram_message',
+                usage: 'await tools.send_telegram_message({ integration_id: "telegram_direct", text: "..." })',
+                routing: expect.stringContaining('Default Telegram recipient is configured'),
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+
   it('advertises remote_mcp as the native MCP connection type', () => {
     const { integrations } = integrationsHarness();
 

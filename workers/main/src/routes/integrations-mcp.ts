@@ -444,6 +444,9 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
   if (integrationType === 'other' && typeof config.base_url === 'string' && config.base_url.trim()) {
     return ['authenticated_fetch'];
   }
+  if (integrationType === 'telegram') {
+    return ['channel_send'];
+  }
   if (integrationType === 'remote_mcp') {
     return [];
   }
@@ -722,7 +725,10 @@ function listAvailableIntegrationTypes(args: IntegrationToolArgs): Record<string
       auth_method: definition.authMethod,
       has_native_mcp: definition.type === 'remote_mcp' || Boolean(NATIVE_MCP_SERVERS[definition.type]),
       native_mcp: NATIVE_MCP_SERVERS[definition.type] ?? null,
-      supports_authenticated_fetch_fallback: definition.type !== 'remote_mcp' && !NATIVE_MCP_SERVERS[definition.type],
+      supports_authenticated_fetch_fallback:
+        definition.type !== 'remote_mcp' &&
+        definition.type !== 'telegram' &&
+        !NATIVE_MCP_SERVERS[definition.type],
       supports_brokered_mcp_tools: definition.type === 'remote_mcp' || Boolean(NATIVE_MCP_SERVERS[definition.type]),
       requires_outbound_ip_allowlist: Boolean(definition.requiresOutboundIpAllowlist),
     }));

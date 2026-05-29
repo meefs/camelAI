@@ -126,6 +126,7 @@ export interface ConnectionSummary {
   reauthUrl: string | null;
   hasCredentials: boolean;
   capabilities: string[];
+  recommendedActions: ConnectionRecommendedAction[];
   nativeMcp: {
     serverName: string;
     transport: ProviderMcpDefinition['transport'];
@@ -153,11 +154,20 @@ export interface ConnectionSummary {
   } | null;
 }
 
+export interface ConnectionRecommendedAction {
+  name: string;
+  tool: string;
+  usage: string;
+  description?: string;
+  routing?: string;
+}
+
 export interface ConnectionMethodSummary {
   name: string;
   tool: string;
   description?: string;
   example?: string;
+  invokeVia?: string;
   inputSchema?: unknown;
   outputSchema?: unknown;
 }
@@ -198,6 +208,52 @@ export interface ConnectionSmokeTestResult {
 
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
 const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
+const TELEGRAM_CHANNEL_SEND_CAPABILITY = 'channel_send';
+const TELEGRAM_SEND_TOOL = 'send_telegram_message';
+const TELEGRAM_SEND_METHOD: ConnectionMethodSummary = {
+  name: 'sendTelegramMessage',
+  tool: TELEGRAM_SEND_TOOL,
+  invokeVia: 'tools.send_telegram_message',
+  description:
+    'Virtual channel action for sending a Telegram message. Call the example from js_exec; this is not a raw Telegram API fetch method.',
+  example: 'await tools.send_telegram_message({ integration_id: "<integration_id>", text: "Hello" })',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      integration_id: {
+        type: 'string',
+        description:
+          'Telegram integration id. Optional only when exactly one connected Telegram integration exists or the current thread originated from Telegram.',
+      },
+      text: {
+        type: 'string',
+        description: 'Message text to send.',
+      },
+      attachments: {
+        type: 'array',
+        description:
+          'Optional attachments. Image attachments are sent as native Telegram photos unless send_as is "document".',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            filename: { type: 'string' },
+            content_type: { type: 'string' },
+            caption: { type: 'string' },
+            send_as: { type: 'string' },
+          },
+          required: ['path'],
+          additionalProperties: true,
+        },
+      },
+    },
+    anyOf: [
+      { required: ['text'] },
+      { required: ['attachments'] },
+    ],
+    additionalProperties: false,
+  },
+};
 const NATIVE_MCP_HTTP_TIMEOUT_MS = 15_000;
 const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
   name: 'fetch',
@@ -290,6 +346,9 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
   if (integrationType === 'other' && typeof config.base_url === 'string' && config.base_url.trim()) {
     return ['authenticated_fetch'];
   }
+  if (integrationType === 'telegram') {
+    return [TELEGRAM_CHANNEL_SEND_CAPABILITY];
+  }
   if (integrationType === 'remote_mcp') {
     return [];
   }
@@ -309,6 +368,32 @@ function fallbackCapabilities(integrationType: string, config: Record<string, un
 
 function timestamp(value: number | null | undefined): string | null {
   return value ? new Date(value).toISOString() : null;
+}
+
+function hasTelegramDefaultRecipient(config: Record<string, unknown>): boolean {
+  return typeof config.chat_id === 'string' && config.chat_id.trim().length > 0;
+}
+
+function telegramRoutingNote(config: Record<string, unknown>): string {
+  return hasTelegramDefaultRecipient(config)
+    ? 'Default Telegram recipient is configured for this connection. Outside Telegram-originated threads, pass integration_id when more than one Telegram connection exists.'
+    : 'No default Telegram recipient is configured yet; ask the user to connect Telegram first.';
+}
+
+function recommendedConnectionActions(
+  record: WorkspaceIntegrationRecord,
+  config: Record<string, unknown>
+): ConnectionRecommendedAction[] {
+  if (record.integration_type !== 'telegram') return [];
+  return [
+    {
+      name: TELEGRAM_SEND_TOOL,
+      tool: `tools.${TELEGRAM_SEND_TOOL}`,
+      usage: `await tools.${TELEGRAM_SEND_TOOL}({ integration_id: ${JSON.stringify(record.id)}, text: "Hello" })`,
+      description: 'Send a Telegram message from js_exec through this connected Telegram channel.',
+      routing: telegramRoutingNote(config),
+    },
+  ];
 }
 
 function authStatus(record: WorkspaceIntegrationRecord): WorkspaceIntegrationAuthStatus {
@@ -483,6 +568,7 @@ function summarizeConnection(record: WorkspaceIntegrationRecord, context: Connec
       ...(nativeMcp ? ['mcp_tools'] : []),
       ...fallbackCapabilities(record.integration_type, config),
     ],
+    recommendedActions: recommendedConnectionActions(record, config),
     nativeMcp: nativeMcp
       ? {
           serverName: nativeMcp.serverName,
@@ -568,6 +654,9 @@ function toolToMethod(tool: unknown): ConnectionMethodSummary | null {
 }
 
 function methodExample(alias: string, method: ConnectionMethodSummary): string {
+  if (method.tool === TELEGRAM_SEND_TOOL) {
+    return method.example?.replace('<integration_id>', alias) ?? `await tools.${TELEGRAM_SEND_TOOL}({ integration_id: "${alias}", text: "Hello" })`;
+  }
   if (method.name === 'fetch') {
     return `await connections.${alias}.fetch("/v1/items", { method: "GET" })`;
   }
@@ -627,6 +716,14 @@ function otherConnectionMethods(connection: ConnectionSummary): ConnectionMethod
     return [];
   }
   return [OTHER_CONNECTION_FETCH_METHOD];
+}
+
+function virtualChannelMethods(connection: ConnectionSummary): ConnectionMethodSummary[] {
+  if (connection.type !== 'telegram') return [];
+  return [{
+    ...TELEGRAM_SEND_METHOD,
+    example: `await tools.${TELEGRAM_SEND_TOOL}({ integration_id: ${JSON.stringify(connection.id)}, text: "Hello" })`,
+  }];
 }
 
 function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string):
@@ -767,7 +864,10 @@ export async function listConnectionMethods(
     if (!connection.nativeMcp || connection.nativeMcp.brokered === false) {
       entry.methods = attachMethodExamples(entry.alias, addNormalizedMethodAliases(
         connection,
-        otherConnectionMethods(connection)
+        [
+          ...virtualChannelMethods(connection),
+          ...otherConnectionMethods(connection),
+        ]
       ));
       return entry;
     }
@@ -929,6 +1029,14 @@ export async function invokeConnectionMethod(
 
   if (target.connection.type === 'other' && targetMethod.tool === OTHER_CONNECTION_FETCH_TOOL) {
     return callOtherConnectionFetch(env, context, target.connection.id, request.input);
+  }
+  if (target.connection.type === 'telegram' && targetMethod.tool === TELEGRAM_SEND_TOOL) {
+    throw Object.assign(
+      new Error(
+        `Telegram send is available in js_exec as tools.${TELEGRAM_SEND_TOOL}(...), not as connections.${target.alias}.${targetMethod.name}(...). Use the method catalog example: await tools.${TELEGRAM_SEND_TOOL}({ integration_id: ${JSON.stringify(target.connection.id)}, text: "Hello" })`
+      ),
+      { status: 400 }
+    );
   }
 
   const input = request.input && typeof request.input === 'object' && !Array.isArray(request.input)

@@ -45,12 +45,65 @@ function hasNonEmptyCredentialValue(credentials: Record<string, unknown>): boole
   });
 }
 
-function recommendedAccess(integrationId: string): Record<string, unknown> {
+type IntegrationAccessMetadata = {
+  id: string;
+  type: string;
+  config?: Record<string, unknown>;
+};
+
+function hasTelegramDefaultRecipient(config: Record<string, unknown> | undefined): boolean {
+  return typeof config?.chat_id === "string" && config.chat_id.trim().length > 0;
+}
+
+function telegramRoutingNote(
+  config: Record<string, unknown> | undefined,
+  connectedTelegramCount?: number,
+): string {
+  if (!hasTelegramDefaultRecipient(config)) {
+    return "No default Telegram recipient is configured yet; ask the user to connect Telegram first.";
+  }
+  if (connectedTelegramCount !== undefined && connectedTelegramCount > 1) {
+    return "Default Telegram recipient is configured for this connection; pass integration_id to choose it.";
+  }
+  return "Default Telegram recipient is configured for this connection; integration_id may be omitted when this is the only connected Telegram integration.";
+}
+
+function recommendedChannelActions(
+  integration: IntegrationAccessMetadata,
+  connectedTelegramCount?: number,
+): Record<string, unknown>[] {
+  if (integration.type !== "telegram") return [];
+  return [
+    {
+      name: "send_telegram_message",
+      tool: "tools.send_telegram_message",
+      usage: `await tools.send_telegram_message({ integration_id: ${JSON.stringify(integration.id)}, text: "..." })`,
+      description: "Send a Telegram message from js_exec through this connected Telegram channel.",
+      routing: telegramRoutingNote(integration.config, connectedTelegramCount),
+    },
+  ];
+}
+
+function recommendedAccess(
+  integration: IntegrationAccessMetadata,
+  connectedTelegramCount?: number,
+): Record<string, unknown> {
+  const recommendedActions = recommendedChannelActions(integration, connectedTelegramCount);
+  if (integration.type === "telegram") {
+    return {
+      tool: "js_exec",
+      inspect_methods: "await env.CONNECTIONS.methods()",
+      call_pattern: `await tools.send_telegram_message({ integration_id: ${JSON.stringify(integration.id)}, text: "..." })`,
+      connection_id: integration.id,
+      recommended_actions: recommendedActions,
+      routing: telegramRoutingNote(integration.config, connectedTelegramCount),
+    };
+  }
   return {
     tool: "js_exec",
     inspect_methods: "await env.CONNECTIONS.methods()",
     call_pattern: "await connections.<alias>.<method>({ ...input })",
-    connection_id: integrationId,
+    connection_id: integration.id,
   };
 }
 
@@ -93,6 +146,10 @@ export class CodeModeIntegrations {
     const filtered = category
       ? integrations.filter((integration) => integration.category === category)
       : integrations;
+    const connectedTelegramCount = integrations.filter((integration) =>
+      integration.integration_type === "telegram" &&
+      hasTelegramDefaultRecipient(integration.config)
+    ).length;
     return {
       count: filtered.length,
       integrations: filtered.map((integration) => ({
@@ -104,7 +161,14 @@ export class CodeModeIntegrations {
         has_credentials: integration.has_credentials,
         created_at: new Date(integration.created_at).toISOString(),
         updated_at: new Date(integration.updated_at).toISOString(),
-        recommended_access: recommendedAccess(integration.id),
+        recommended_access: recommendedAccess(
+          {
+            id: integration.id,
+            type: integration.integration_type,
+            config: integration.config,
+          },
+          connectedTelegramCount,
+        ),
         display_name: integration.integration_type === "other" && typeof integration.config.display_name === "string"
           ? integration.config.display_name
           : undefined,
@@ -221,7 +285,7 @@ export class CodeModeIntegrations {
         type: integrationType,
         name,
         category: definition.category,
-        recommended_access: recommendedAccess(integrationId),
+        recommended_access: recommendedAccess({ id: integrationId, type: integrationType, config }),
       },
       ...(integrationType === "remote_mcp" && config.auth_type === "oauth"
         ? {
@@ -317,7 +381,7 @@ export class CodeModeIntegrations {
         type: args.type,
         name: args.name,
         category: definition.category,
-        recommended_access: recommendedAccess(integrationId),
+        recommended_access: recommendedAccess({ id: integrationId, type: args.type, config }),
       },
       ...(args.type === "remote_mcp" && config.auth_type === "oauth"
         ? {
@@ -413,7 +477,7 @@ export class CodeModeIntegrations {
           type,
           name,
           category: responseDefinition.category,
-          recommended_access: recommendedAccess(integrationId),
+          recommended_access: recommendedAccess({ id: integrationId, type, config }),
         },
         message: `Integration '${name}' connected successfully via OAuth.`,
       };

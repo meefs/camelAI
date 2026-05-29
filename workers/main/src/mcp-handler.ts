@@ -79,6 +79,47 @@ function hasNonEmptyCredentialValue(credentials: Record<string, unknown>): boole
   });
 }
 
+function hasTelegramDefaultRecipient(config: Record<string, unknown>): boolean {
+  return typeof config.chat_id === 'string' && config.chat_id.trim().length > 0;
+}
+
+function telegramRoutingNote(config: Record<string, unknown>): string {
+  return hasTelegramDefaultRecipient(config)
+    ? 'Default Telegram recipient is configured for this connection; pass integration_id when more than one Telegram connection exists.'
+    : 'No default Telegram recipient is configured yet; ask the user to connect Telegram first.';
+}
+
+function recommendedIntegrationAccess(
+  integrationId: string,
+  integrationType: string,
+  config: Record<string, unknown> = {}
+): Record<string, unknown> {
+  if (integrationType === 'telegram') {
+    return {
+      tool: 'js_exec',
+      inspect_methods: 'await env.CONNECTIONS.methods()',
+      call_pattern: `await tools.send_telegram_message({ integration_id: ${JSON.stringify(integrationId)}, text: "..." })`,
+      connection_id: integrationId,
+      recommended_actions: [
+        {
+          name: 'send_telegram_message',
+          tool: 'tools.send_telegram_message',
+          usage: `await tools.send_telegram_message({ integration_id: ${JSON.stringify(integrationId)}, text: "..." })`,
+          description: 'Send a Telegram message from js_exec through this connected Telegram channel.',
+          routing: telegramRoutingNote(config),
+        },
+      ],
+      routing: telegramRoutingNote(config),
+    };
+  }
+  return {
+    tool: 'js_exec',
+    inspect_methods: 'await env.CONNECTIONS.methods()',
+    call_pattern: 'await connections.<alias>.<method>({ ...input })',
+    connection_id: integrationId,
+  };
+}
+
 /**
  * MCP Agent implementation with deployment management tools
  */
@@ -1105,12 +1146,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           has_credentials: i.has_credentials,
           created_at: new Date(i.created_at).toISOString(),
           updated_at: new Date(i.updated_at).toISOString(),
-          recommended_access: {
-            tool: 'js_exec',
-            inspect_methods: 'await env.CONNECTIONS.methods()',
-            call_pattern: 'await connections.<alias>.<method>({ ...input })',
-            connection_id: i.id,
-          },
+          recommended_access: recommendedIntegrationAccess(i.id, i.integration_type, i.config),
           display_name: i.integration_type === 'other' && i.config.display_name
             ? (i.config.display_name as string)
             : undefined,
@@ -1283,12 +1319,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
               type: integration_type,
               name,
               category: definition.category,
-              recommended_access: {
-                tool: 'js_exec',
-                inspect_methods: 'await env.CONNECTIONS.methods()',
-                call_pattern: 'await connections.<alias>.<method>({ ...input })',
-                connection_id: integrationId,
-              },
+              recommended_access: recommendedIntegrationAccess(integrationId, integration_type, finalConfig),
             },
             ...(integration_type === 'remote_mcp' && finalConfig.auth_type === 'oauth'
               ? {

@@ -524,6 +524,82 @@ describe('connections runtime', () => {
     ]);
   });
 
+  it('lists Telegram as a virtual channel action instead of raw authenticated fetch', async () => {
+    const records = [
+      integration({
+        id: 'telegram_direct',
+        integration_type: 'telegram',
+        name: 'direct',
+        category: 'communication',
+        config: JSON.stringify({
+          status: 'active',
+          chat_id: '12345',
+          chat_title: 'Miguel',
+        }),
+      }),
+    ];
+
+    await expect(listConnections(envWith(records), context)).resolves.toMatchObject([
+      {
+        id: 'telegram_direct',
+        type: 'telegram',
+        capabilities: ['channel_send'],
+        recommendedActions: [
+          {
+            name: 'send_telegram_message',
+            tool: 'tools.send_telegram_message',
+            usage: 'await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Hello" })',
+            routing: expect.stringContaining('Default Telegram recipient is configured'),
+          },
+        ],
+        nativeMcp: null,
+      },
+    ]);
+    const catalog = await listConnectionMethods(envWith(records), context);
+    expect(catalog).toMatchObject([
+      {
+        alias: 'telegramDirect',
+        connection: {
+          id: 'telegram_direct',
+          type: 'telegram',
+          capabilities: ['channel_send'],
+        },
+        methods: [
+          {
+            name: 'sendTelegramMessage',
+            tool: 'send_telegram_message',
+            invokeVia: 'tools.send_telegram_message',
+            example: 'await tools.send_telegram_message({ integration_id: "telegram_direct", text: "Hello" })',
+          },
+        ],
+      },
+    ]);
+    expect(catalog[0]?.connection.capabilities).not.toContain('authenticated_fetch');
+  });
+
+  it('gives an actionable error if Telegram is invoked through the connections facade', async () => {
+    const records = [
+      integration({
+        id: 'telegram_direct',
+        integration_type: 'telegram',
+        name: 'direct',
+        category: 'communication',
+        config: JSON.stringify({
+          status: 'active',
+          chat_id: '12345',
+        }),
+      }),
+    ];
+
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'telegramDirect',
+      method: 'sendTelegramMessage',
+      input: { text: 'Hello' },
+    })).rejects.toThrow(
+      'Telegram send is available in js_exec as tools.send_telegram_message(...)'
+    );
+  });
+
   it('invokes custom API fetch methods with stored auth', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe('https://api.example.com/v1/items?limit=2&tag=a&tag=b');

@@ -1516,9 +1516,15 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createOutputConsole');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('globalThis.console = createOutputConsole(output)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const AI = this.env.AI');
-    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI })');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('createToolHelp');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('createCamelAiFacade');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('createWorkspaceFacade');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const WORKSPACE = createWorkspaceFacade(callTool)');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const env = Object.freeze({ CONNECTIONS, AI, CAMELAI, WORKSPACE })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const context = Object.freeze({ cloudflare: Object.freeze({ env, connections }) })');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('parameters: tool.parameters');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('await tools.help(\\"communication\\")');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('await env.CAMELAI.help()');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('return methods;');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('AsyncFunction');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('new Function');
@@ -1666,9 +1672,65 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
+    expect(byName.has('workspace_info')).toBe(false);
     expect((byName.get('connections_get') as any).parameters.properties.connection).toBeDefined();
+    expect(byName.get('send_email')).toMatchObject({
+      category: 'communication',
+      sideEffect: true,
+      externalDelivery: true,
+      examples: expect.arrayContaining([expect.stringContaining('tools.send_email')]),
+    });
+    expect(byName.get('send_slack_message')).toMatchObject({
+      category: 'communication',
+      sideEffect: true,
+      externalDelivery: true,
+      examples: expect.arrayContaining([expect.stringContaining('tools.send_slack_message')]),
+    });
+    expect(byName.get('send_telegram_message')).toMatchObject({
+      category: 'communication',
+      sideEffect: true,
+      externalDelivery: true,
+      examples: expect.arrayContaining([expect.stringContaining('tools.send_telegram_message')]),
+    });
+    expect(byName.get('connections_methods')).toMatchObject({
+      category: 'connections',
+      examples: expect.arrayContaining([expect.stringContaining('env.CONNECTIONS.methods')]),
+    });
     expect(byName.has('list_deterministic_automations')).toBe(false);
     expect(byName.has('prompt_connection_setup')).toBe(false);
+  });
+
+  it('exposes current workspace email metadata to js_exec', async () => {
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        userId: 'user1',
+      },
+    };
+    fake.env = {
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      EMAIL: { send: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Demo Workspace',
+            email_handle: 'demo-workspace',
+          })),
+        })),
+      },
+    };
+
+    await expect(
+      CodeModeToolsBinding.prototype.callTool.call(fake, 'workspace_info', {}),
+    ).resolves.toMatchObject({
+      id: 'workspace1',
+      name: 'Demo Workspace',
+      email_address: 'demo-workspace@camelai.dev',
+    });
   });
 
   it('serves bundled skills through the Pi core read and ls tools', async () => {
