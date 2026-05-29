@@ -90,7 +90,7 @@ const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "gpt-5.5": "openai/gpt-5.5",
   "kimi-k2.6": "moonshotai/kimi-k2.6",
   "kimi-latest": "moonshotai/kimi-k2.6",
-  "opus": "anthropic/claude-opus-4.8",
+  opus: "anthropic/claude-opus-4.8",
   "opus-4.7": "anthropic/claude-opus-4.8",
   "opus-4.8": "anthropic/claude-opus-4.8",
   "grok-4.3": "x-ai/grok-4.3",
