@@ -21,6 +21,7 @@ type InitialUserMessageRpc = {
     workspaceId: string;
     orgId: string;
     userId?: string | null;
+    messageSource?: string | null;
     message: string;
     clientMessageId?: string;
   }): Promise<{ status: 'accepted' | 'busy' | 'error'; error?: string }>;

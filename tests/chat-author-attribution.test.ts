@@ -8,14 +8,23 @@ describe('formatAttributedUserMessage', () => {
         userName: 'Alice',
         userEmail: 'alice@example.com',
       })
-    ).toBe('[Alice (alice@example.com)]: Can you review this diff?');
+    ).toBe('[web message from Alice (alice@example.com)]: Can you review this diff?');
 
     expect(
       formatAttributedUserMessage('Can you review this diff?', {
         userName: 'Bob',
         userEmail: 'bob@example.com',
+        messageSource: 'telegram',
       })
-    ).toBe('[Bob (bob@example.com)]: Can you review this diff?');
+    ).toBe('[telegram message from Bob (bob@example.com)]: Can you review this diff?');
+  });
+
+  it('uses email addresses as the fallback author label', () => {
+    expect(
+      formatAttributedUserMessage('Can you review this diff?', {
+        userEmail: 'alice@example.com',
+      })
+    ).toBe('[web message from alice@example.com]: Can you review this diff?');
   });
 
   it('preserves camelai system messages while attributing visible user content', () => {
@@ -28,7 +37,7 @@ describe('formatAttributedUserMessage', () => {
         }
       )
     ).toBe(
-      '<camelai system message>hidden context</camelai system message>\n\n[Alice (alice@example.com)]: Hello there'
+      '<camelai system message>hidden context</camelai system message>\n\n[web message from Alice (alice@example.com)]: Hello there'
     );
   });
 

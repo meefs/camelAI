@@ -195,6 +195,7 @@ describe('handleTelegramWebhook', () => {
       orgId: 'org-1',
       userName: 'Ada',
       userEmail: null,
+      messageSource: 'telegram',
       message: expect.stringContaining('send_telegram_message'),
     });
     expect(startInitialUserMessage.mock.calls[0][0].message).toContain('hello from Telegram');

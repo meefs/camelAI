@@ -36,7 +36,7 @@ describe('chat runner websocket connection mentions', () => {
     expect(content).toContain('Use the `js_exec` tool');
     expect(content).toContain('Connection credentials are intentionally hidden behind');
     expect(content).toContain(
-      '[Ada (ada@example.com)]: Check @sales_db ⟦ref: postgres "Sales DB" id=conn_sales⟧ orders',
+      '[web message from Ada (ada@example.com)]: Check @sales_db ⟦ref: postgres "Sales DB" id=conn_sales⟧ orders',
     );
   });
 
@@ -59,6 +59,6 @@ describe('chat runner websocket connection mentions', () => {
     );
 
     expect(workspaceStub.getIntegrations).not.toHaveBeenCalled();
-    expect(content).toBe('[Ada]: No connection here');
+    expect(content).toBe('[web message from Ada]: No connection here');
   });
 });

@@ -268,6 +268,7 @@ export async function enqueueChannelMessage(
   try {
     const result = await stub.startInitialUserMessage({
       ...messageRequest,
+      messageSource: channelKind,
       message: `${systemMessage}\n\n${request.message}`,
     });
     if (

@@ -119,7 +119,7 @@ export function parseLocalCommandStdout(content: string | ContentBlock[]): strin
 
 /**
  * Parse author attribution from message content.
- * Messages are prefixed with [Name (email)]: or [email]:
+ * Messages are prefixed with [web message from Name]:, [Name (email)]:, or [email]:
  * Returns { author, content } where author has { name, email, displayName }
  */
 interface ParsedAuthor {
@@ -134,6 +134,7 @@ interface ParsedMessage {
 }
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
+const AUTHOR_PREFIX_WITH_SOURCE_REGEX = /^\[([a-z0-9 _-]+)\s+message(?:\s+from\s+([^\]]+))?\]:\s*/i;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
 const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 
@@ -166,8 +167,26 @@ function prepareDisplayText(text: string): {
 
 function parseMessageAuthor(rawContent: string): ParsedMessage {
   const content = stripSystemMessageTagsOnly(rawContent);
-  // Match [Name (email)]: or [email]: at the start of the message
-  // Pattern: [Name (email)]: or [Name]: or [email]:
+  // Match [web message from Name]: at the start of the message.
+  const matchWithSource = content.match(AUTHOR_PREFIX_WITH_SOURCE_REGEX);
+  if (matchWithSource) {
+    const authorText = matchWithSource[2]?.trim() || '';
+    const authorWithEmail = authorText.match(/^(.+?)\s+\(([^)]+)\)$/);
+    const name = authorWithEmail
+      ? authorWithEmail[1]?.trim() || null
+      : authorText || null;
+    const email = authorWithEmail?.[2]?.trim() || null;
+    return {
+      author: {
+        name,
+        email,
+        displayName: name || email || matchWithSource[1]?.trim() || 'Unknown',
+      },
+      content: content.slice(matchWithSource[0].length),
+    };
+  }
+
+  // Match [Name (email)]: or [email]: at the start of the message.
   const matchWithEmail = content.match(AUTHOR_PREFIX_WITH_EMAIL_REGEX);
   if (matchWithEmail) {
     const name = matchWithEmail[1]?.trim() || null;

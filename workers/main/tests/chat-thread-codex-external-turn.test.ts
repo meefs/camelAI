@@ -164,6 +164,9 @@ describe('ChatThreadDO Codex turn handling', () => {
       workspaceId: 'workspace1',
       orgId: 'org1',
       userId: 'user1',
+      userName: 'Miguel',
+      userEmail: 'miguel@example.com',
+      messageSource: 'email',
       message: 'hello',
       clientMessageId: 'initial:thread1',
     });
@@ -185,7 +188,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       userId: 'user1',
       clientMessageId: 'initial:thread1',
     });
-    expect(sentCommands[0].content).toContain('hello');
+    expect(sentCommands[0].content).toBe('[email message from Miguel (miguel@example.com)]: hello');
   });
 
   it('rejects automation starts while another automation run is active', async () => {
@@ -346,7 +349,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       userId: 'user1',
       clientMessageId: 'client_followup_1',
     });
-    expect(sentCommands[0].content).toContain('please also add tests');
+    expect(sentCommands[0].content).toBe('[web message from Miguel (miguel@example.com)]: please also add tests');
   });
 
   it('records terminal browser message send observability for accepted messages', async () => {
@@ -1740,6 +1743,38 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(codeModeTools.find((tool: any) => tool.name === 'send_email')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_slack_message')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeTruthy();
+  });
+
+  it('does not advertise outbound channel sends in ordinary chat prompts', () => {
+    const context = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+      userName: null,
+      userEmail: null,
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({
+          callTool: vi.fn(),
+        })),
+      },
+    };
+
+    const prompt = ChatThreadDO.prototype['createPiSystemPrompt'].call(fake, context);
+    expect(prompt).toContain('answer in chat only');
+    expect(prompt).not.toContain('tools.send_email');
+    expect(prompt).not.toContain('tools.send_slack_message');
+    expect(prompt).not.toContain('tools.send_telegram_message');
+
+    const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    const jsExec = piTools.find((tool: any) => tool.name === 'js_exec');
+    expect(jsExec?.description).toContain('explicitly asks for external delivery');
+    expect(jsExec?.description).not.toContain('tools.send_email');
+    expect(jsExec?.description).not.toContain('tools.send_slack_message');
+    expect(jsExec?.description).not.toContain('tools.send_telegram_message');
   });
 
   it('sends email from any workspace context', async () => {

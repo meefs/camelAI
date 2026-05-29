@@ -270,6 +270,7 @@ describe("channels", () => {
       threadId: "thread-1",
       workspaceId: "workspace-1",
       orgId: "org-1",
+      messageSource: "slack",
       message: expect.stringContaining("send_slack_message"),
     });
     expect(startInitialUserMessageMock.mock.calls[0]?.[0].message).toContain(

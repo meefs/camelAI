@@ -674,6 +674,7 @@ export interface InitialUserMessageRequest {
   userId?: string | null;
   userName?: string | null;
   userEmail?: string | null;
+  messageSource?: string | null;
   message?: string;
   clientMessageId?: string | null;
   automationRun?: {
@@ -939,7 +940,7 @@ const CHANNEL_ATTACHMENT_PARAMETERS = Type.Optional(Type.Array(Type.Object({
 })));
 const SEND_EMAIL_TOOL = codeModeTool(
   "send_email",
-  "Send an email from the current workspace. This tool is available only inside js_exec as tools.send_email(...); it is not a top-level tool. Use this only when the user should receive an external email; final assistant text is not emailed automatically. Arguments: { to, subject, text?, html?, reply_to?, attachments? }.",
+  "Send an email from the current workspace. This tool is available only inside js_exec as tools.send_email(...); it is not a top-level tool. Use this only when channel instructions require an external reply or the user explicitly asks to send an email. Normal assistant replies stay in chat and must not be emailed. Arguments: { to, subject, text?, html?, reply_to?, attachments? }.",
   Type.Object({
     to: Type.String(),
     subject: Type.String(),
@@ -5178,7 +5179,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async enqueueRunnerUserMessage(
     data: ChatClientMessage,
-    options: { sendAttemptId?: string; startedAt?: number } = {},
+    options: {
+      sendAttemptId?: string;
+      startedAt?: number;
+      messageSource?: string | null;
+    } = {},
   ): Promise<InitialUserMessageResult> {
     const startedAt = options.startedAt ?? Date.now();
     const sampleKey = options.sendAttemptId;
@@ -5261,6 +5266,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       attributedContent = formatAttributedUserMessage(mentionAugmented, {
         userName: context.userName,
         userEmail: context.userEmail,
+        messageSource: options.messageSource ?? "web",
       });
       this.recordChatThreadObservabilityEvent("runner_user_message_enqueue_stage", {
         operation: "message_prepared",
@@ -6066,6 +6072,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           body.clientMessageId.trim()
             ? body.clientMessageId.trim()
             : undefined,
+      }, {
+        messageSource:
+          typeof body.messageSource === "string" && body.messageSource.trim()
+            ? body.messageSource.trim()
+            : "web",
       });
       this.recordChatThreadObservabilityEvent("initial_user_message_start", {
         operation: "enqueue_runner_user_message",
@@ -6453,7 +6464,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "You are camelAI, an AI coding agent running inside the user's camelAI workspace.",
       "Use the provided tools for workspace files, shell commands, container operations, JavaScript code mode, and connections.",
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
-      "For channel-originated conversations, final assistant text is not sent to the external provider. To send an external email, Slack message, or Telegram message, call `js_exec` and use `tools.send_email(...)`, `tools.send_slack_message(...)`, or `tools.send_telegram_message(...)`. These outbound channel tools are available only inside `js_exec`, are usable from any chat context, and should be called only when you intentionally need to send an external message.",
+      "Outbound email, Slack, and Telegram messages are opt-in side effects. In ordinary web chats, answer in chat only unless the user explicitly asks you to send an external message. Channel-originated turns include their own hidden routing instruction when an external reply is needed.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
       "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
       "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`).",
@@ -8292,7 +8303,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +
           "Connection credentials are intentionally hidden behind the binding. " +
           "AI globals: `env.AI` and `context.cloudflare.env.AI` expose the virtual AI binding (`run()` only). Call `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`; model tiers are `cheap`, `fast`, `auto` (default), and `smart`, and any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")` or `await env.CAMELAI.generateImage({ prompt, referenceImageUrl })` on `context.cloudflare.env.CAMELAI`. Returns `{ text, imageDataUrl, images }`. For audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio; it returns `{ text }`. " +
-          "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. Outbound channel tools are intentionally available only here: use `await tools.send_email(...)`, `await tools.send_slack_message(...)`, or `await tools.send_telegram_message(...)` to send external messages from any chat context. " +
+          "Every registered harness tool is also available on the global `tools` object; inspect `ALL_TOOLS` for names, descriptions, and schemas, then call tools like `await tools.WebSearch({ query: \"Cloudflare Workers\" })`. Provider-specific outbound channel tools are intentionally available only here; use them only when the current turn's channel instructions require an external reply or the user explicitly asks for external delivery. " +
           "Interactive tools that wait for the user, such as `prompt_connection_setup` and `AskUserQuestion`, must be called as top-level tools instead of from js_exec.",
         parameters: Type.Object({
           description: Type.String({

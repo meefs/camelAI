@@ -3,6 +3,7 @@ import { SUPPORTED_SLASH_COMMANDS } from '../../../src/lib/slash-commands';
 export interface ChatAuthorIdentity {
   userName?: string | null;
   userEmail?: string | null;
+  messageSource?: string | null;
 }
 
 const CAMELAI_SYSTEM_MESSAGE_REGEX =
@@ -11,12 +12,18 @@ const SLASH_COMMANDS = new Set<string>(SUPPORTED_SLASH_COMMANDS);
 
 export function formatAuthorPrefix(
   userName: string | null | undefined,
-  userEmail: string | null | undefined
+  userEmail: string | null | undefined,
+  messageSource: string | null | undefined = 'web',
 ): string {
-  if (userName && userEmail) return `[${userName} (${userEmail})]: `;
-  if (userName) return `[${userName}]: `;
-  if (userEmail) return `[${userEmail}]: `;
-  return '';
+  const source = formatMessageSource(messageSource);
+  const displayName = userName?.trim();
+  const email = userEmail?.trim();
+  if (displayName && email) {
+    return `[${source} message from ${displayName} (${email})]: `;
+  }
+  if (displayName) return `[${source} message from ${displayName}]: `;
+  if (email) return `[${source} message from ${email}]: `;
+  return `[${source} message]: `;
 }
 
 export function formatAttributedUserMessage(
@@ -43,7 +50,11 @@ export function formatAttributedUserMessage(
   const isSlashCommand = SLASH_COMMANDS.has(userMessage);
   const authorPrefix = isSlashCommand
     ? ''
-    : formatAuthorPrefix(author?.userName ?? null, author?.userEmail ?? null);
+    : formatAuthorPrefix(
+        author?.userName ?? null,
+        author?.userEmail ?? null,
+        author?.messageSource ?? null,
+      );
   const attributedUserMessage = userMessage ? `${authorPrefix}${userMessage}` : '';
 
   const contextualPrefix = contextMessages.length > 0
@@ -56,4 +67,15 @@ export function formatAttributedUserMessage(
     .filter(Boolean)
     .join('\n\n')
     .trim();
+}
+
+function formatMessageSource(value: string | null | undefined): string {
+  const normalized = (value || 'web')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9 _-]+/g, ' ')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || 'web';
 }

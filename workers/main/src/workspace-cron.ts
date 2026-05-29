@@ -990,6 +990,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         workspaceId: workspace.id,
         orgId: workspace.org_id,
         userName: "Scheduler",
+        messageSource: "scheduled prompt",
         message: this.buildScheduledMessage(prompt, scheduledForMs),
         automationRun: {
           workspaceId: workspace.id,
