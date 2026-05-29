@@ -1442,13 +1442,6 @@ describe('ChatThreadDO Codex turn handling', () => {
 
   it('runs code mode JavaScript through the Worker Loader with scoped tools', async () => {
     const toolsBinding = { listTools: vi.fn(), callTool: vi.fn() };
-    const connectionsBinding = {
-      list: vi.fn(),
-      get: vi.fn(),
-      tools: vi.fn(),
-      methods: vi.fn(),
-      invoke: vi.fn(),
-    };
     const aiBinding = { run: vi.fn() };
     let capturedWorkerCode: any;
     const fake = Object.create(ChatThreadDO.prototype) as any;
@@ -1468,7 +1461,6 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.ctx = {
       exports: {
         CodeModeToolsBinding: vi.fn(() => toolsBinding),
-        ConnectionsService: vi.fn(() => connectionsBinding),
         AIVirtualBinding: vi.fn(() => aiBinding),
         CamelAiService: vi.fn(() => aiBinding),
       },
@@ -1491,13 +1483,6 @@ describe('ChatThreadDO Codex turn handling', () => {
         userId: 'user_1',
       },
     });
-    expect(fake.ctx.exports.ConnectionsService).toHaveBeenCalledWith({
-      props: {
-        orgId: 'org_1',
-        workspaceId: 'ws_1',
-        userId: 'user_1',
-      },
-    });
     expect(fake.ctx.exports.AIVirtualBinding).toHaveBeenCalledWith({
       props: {
         orgId: 'org_1',
@@ -1514,13 +1499,18 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
     expect(capturedWorkerCode.globalOutbound).toBeUndefined();
     expect(capturedWorkerCode.env.TOOLS).toBe(toolsBinding);
-    expect(capturedWorkerCode.env.CONNECTIONS).toBe(connectionsBinding);
+    expect(capturedWorkerCode.env.CONNECTIONS).toBeUndefined();
     expect(capturedWorkerCode.env.AI).toBe(aiBinding);
     expect(capturedWorkerCode.env.CAMELAI).toBe(aiBinding);
     expect(capturedWorkerCode.modules['index.js'].js).toContain('class CodeModeRunner');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createConnectionsFacade');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$find") return (query) => binding.find(query)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('if (connectionName === "$test") return (query) => binding.test(query)');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('createToolBackedConnectionsBinding');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const CONNECTIONS_BINDING = createToolBackedConnectionsBinding(callTool)');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('const CONNECTIONS = connections');
+    expect(capturedWorkerCode.modules['index.js'].js).toContain('return binding.invoke(request)');
+    expect(capturedWorkerCode.modules['index.js'].js).not.toContain('invoke.call(binding');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('createOutputConsole');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('globalThis.console = createOutputConsole(output)');
     expect(capturedWorkerCode.modules['index.js'].js).toContain('const AI = this.env.AI');
@@ -1841,6 +1831,89 @@ describe('ChatThreadDO Codex turn handling', () => {
       'thread1',
       { expirationTtl: 180 * 24 * 60 * 60 },
     );
+  });
+
+  it('sends Telegram from a workspace-scoped code mode tool binding without thread scope', async () => {
+    const appendChannelHistoryEvent = vi.fn(async () => ({ status: 'appended' }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/sendMessage$/);
+      const payload = JSON.parse(String(init?.body));
+      expect(payload).toMatchObject({ chat_id: '12345', text: 'Hello from workflow' });
+      return Response.json({ ok: true, result: { message_id: 29 } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        userId: 'user1',
+      },
+    };
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegration: vi.fn(async () => ({
+            id: 'telegram-int',
+            integration_type: 'telegram',
+            name: 'Product Telegram',
+            config: JSON.stringify({
+              chat_id: '12345',
+              chat_title: 'Product team',
+            }),
+          })),
+        })),
+      },
+      APP_KV: {
+        get: vi.fn(async (key: string) =>
+          key === 'channel_thread:telegram:workspace1:telegram-int:12345'
+            ? 'telegram-thread'
+            : null
+        ),
+        put: vi.fn(async () => undefined),
+        delete: vi.fn(async () => undefined),
+      },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getThread: vi.fn(async () => ({
+            id: 'telegram-thread',
+            title: 'Product team',
+          })),
+        })),
+      },
+      CHAT_THREAD: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ appendChannelHistoryEvent })),
+      },
+    };
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(
+      fake,
+      'send_telegram_message',
+      {
+        integration_id: 'telegram-int',
+        text: 'Hello from workflow',
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'telegram',
+      chatId: '12345',
+      integrationId: 'telegram-int',
+      messageIds: [29],
+      channelHistoryStatus: 'recorded',
+    });
+    expect(appendChannelHistoryEvent).toHaveBeenCalledWith(expect.objectContaining({
+      sourceThreadId: '',
+      threadId: 'telegram-thread',
+    }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('serves bundled skills through js_exec tools.read and tools.ls', async () => {
@@ -4155,6 +4228,55 @@ describe('ChatThreadDO Codex turn handling', () => {
       ),
     ).rejects.toThrow('No connected Telegram integrations are available');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('times out stalled Telegram sends', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.getOriginatingChannelThread = vi.fn(async () => null);
+      fake.env = {
+        TELEGRAM_BOT_TOKEN: 'bot-token',
+        R2_BUCKET: { get: vi.fn() },
+        WORKSPACE: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({
+            getIntegration: vi.fn(async () => ({
+              id: 'telegram-int',
+              integration_type: 'telegram',
+              config: JSON.stringify({ chat_id: '12345' }),
+            })),
+          })),
+        },
+      };
+
+      const promise = ChatThreadDO.prototype['sendChannelTelegramMessageTool'].call(
+        fake,
+        { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        {
+          integration_id: 'telegram-int',
+          text: 'Hello',
+        },
+      );
+
+      const assertion = expect(promise).rejects.toThrow(
+        'Telegram sendMessage request timed out after 15000ms',
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+      await assertion;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('auto-selects the only connected Telegram integration outside Telegram threads', async () => {

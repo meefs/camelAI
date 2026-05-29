@@ -76,13 +76,13 @@ export function createConnections(env: ConnectionsEnv): ConnectionsProxy {
 	const legacyInvokeMethod = ["_", "_", "invoke"].join("");
 	const invokeConnectionMethod = <T = unknown>(request: ConnectionInvokeRequest): Promise<T> => {
 		const invoker = binding as ConnectionMethodInvoker;
-		const invoke = typeof invoker.invoke === "function"
-			? invoker.invoke
-			: invoker[legacyInvokeMethod];
-		if (typeof invoke !== "function") {
-			throw new Error("CONNECTIONS method invocation is not configured");
+		if (typeof invoker.invoke === "function") {
+			return invoker.invoke(request) as Promise<T>;
 		}
-		return invoke.call(binding, request) as Promise<T>;
+		if (typeof invoker[legacyInvokeMethod] === "function") {
+			return invoker[legacyInvokeMethod](request) as Promise<T>;
+		}
+		throw new Error("CONNECTIONS method invocation is not configured");
 	};
 	const responseFromFetchPayload = (payload: unknown): unknown => {
 		if (!payload || typeof payload !== "object" || typeof (payload as { status?: unknown }).status !== "number") {

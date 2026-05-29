@@ -1,6 +1,8 @@
 import type { AdminOrgDirectoryRow } from '../../admin-index-types.js';
 import type { Env } from '../../types.js';
 
+const SANDBOX_HOST_METRICS_TIMEOUT_MS = 5_000;
+
 export interface OrgUsageAnalyticsItem {
   org_id: string;
   total_cost_usd: number;
@@ -87,11 +89,26 @@ async function fetchSandboxHostJson<T>(
     throw new Error('SANDBOX_HOST binding not configured');
   }
 
-  const response = await env.SANDBOX_HOST.fetch(`http://sandbox${path}`, init);
-  if (!response.ok) {
-    throw new Error(`Sandbox host returned ${response.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SANDBOX_HOST_METRICS_TIMEOUT_MS);
+  try {
+    const response = await env.SANDBOX_HOST.fetch(`http://sandbox${path}`, {
+      ...init,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Sandbox host returned ${response.status}`);
+    }
+    const payload = await response.json() as T;
+    return payload;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Sandbox host metrics request timed out after ${SANDBOX_HOST_METRICS_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return response.json() as Promise<T>;
 }
 
 export async function fetchSpamOrgIds(env: Env): Promise<string[]> {

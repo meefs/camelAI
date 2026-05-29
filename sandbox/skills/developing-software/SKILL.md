@@ -768,12 +768,12 @@ export async function action({ context, request }: Route.ActionArgs) {
 }
 ```
 
-When testing connection calls in the Pi agent harness, use the `js_exec` tool. This is the preferred way for the agent to call workspace connections because it exposes the same Worker binding shape that deployed user code receives.
+When testing connection calls in the Pi agent harness, use the `js_exec` tool. This is the preferred way for the agent to call workspace connections.
 
 Inside `js_exec`, these globals are available:
-- `env.CONNECTIONS` - the virtual Worker service binding.
-- `context.cloudflare.env.CONNECTIONS` - the same binding, matching React Router Worker code.
-- `connections` and `context.cloudflare.connections` - method-style facades for calling connection tools.
+- `env.CONNECTIONS` - method-style facade for inspecting and calling connection tools.
+- `context.cloudflare.env.CONNECTIONS` - the same method-style facade.
+- `connections` and `context.cloudflare.connections` - aliases for the same method-style facade.
 - `env.AI` and `context.cloudflare.env.AI` - the virtual AI binding (`run()` only), matching deployed user workers.
 - `env.CAMELAI` and `context.cloudflare.env.CAMELAI` - image generation service binding (`generateImage(prompt)`), same pattern as `CONNECTIONS`.
 
@@ -783,7 +783,7 @@ Prefer `find()` and normalized methods for common workflows:
 
 ```javascript
 const clickhouse = await env.CONNECTIONS.find("clickhouse");
-const result = await connections[clickhouse.alias].query({
+const result = await env.CONNECTIONS[clickhouse.alias].query({
   query: "SELECT 1 AS ok",
 });
 
@@ -804,7 +804,7 @@ return catalog.map((entry) => ({
 Global facade access also works:
 
 ```javascript
-return await connections.stripeProd.listCustomers({ limit: 10 });
+return await env.CONNECTIONS.stripeProd.listCustomers({ limit: 10 });
 ```
 
 Custom connections with type `other` expose a generic authenticated HTTP method named
@@ -814,7 +814,7 @@ in environment variables:
 ```javascript
 const custom = await env.CONNECTIONS.find({ type: "other" });
 
-const response = await connections[custom.alias].fetch("/v1/items?limit=10", {
+const response = await env.CONNECTIONS[custom.alias].fetch("/v1/items?limit=10", {
   method: "GET",
 });
 

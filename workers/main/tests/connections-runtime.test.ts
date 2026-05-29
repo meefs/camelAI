@@ -73,6 +73,7 @@ async function encryptedCredentials(credentials: Record<string, unknown>): Promi
 describe('connections runtime', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('lists connected integrations with MCP capabilities', async () => {
@@ -304,6 +305,40 @@ describe('connections runtime', () => {
       { name: 'ask_question' },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('times out stalled remote MCP HTTP calls', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const records = [
+      integration({
+        id: 'stalled_mcp',
+        integration_type: 'remote_mcp',
+        name: 'Stalled MCP',
+        category: 'saas',
+        config: JSON.stringify({
+          server_url: 'https://mcp.example.com/mcp',
+          auth_type: 'none',
+        }),
+      }),
+    ];
+
+    const result = expect(listConnectionTools(envWith(records), context, 'stalled_mcp'))
+      .rejects.toMatchObject({
+        message: 'Native MCP initialize request timed out after 15000ms',
+        status: 504,
+      });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await result;
   });
 
   it('proxies an OAuth remote MCP connection with the stored access token', async () => {

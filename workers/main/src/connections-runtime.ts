@@ -198,6 +198,7 @@ export interface ConnectionSmokeTestResult {
 
 const NATIVE_MCP_SERVERS = PROVIDER_MCP_REGISTRY;
 const OTHER_CONNECTION_FETCH_TOOL = 'authenticated_fetch';
+const NATIVE_MCP_HTTP_TIMEOUT_MS = 15_000;
 const OTHER_CONNECTION_FETCH_METHOD: ConnectionMethodSummary = {
   name: 'fetch',
   tool: OTHER_CONNECTION_FETCH_TOOL,
@@ -1352,17 +1353,34 @@ async function nativeMcpHttp(
   };
   if (sessionId) headers['mcp-session-id'] = sessionId;
 
-  const response = await fetch(definition.url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: Date.now(),
-      method,
-      params,
-    }),
-  });
-  const text = await response.text();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), NATIVE_MCP_HTTP_TIMEOUT_MS);
+  let response!: Response;
+  let text = '';
+  try {
+    response = await fetch(definition.url, {
+      method: 'POST',
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method,
+        params,
+      }),
+    });
+    text = await response.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw Object.assign(
+        new Error(`Native MCP ${method} request timed out after ${NATIVE_MCP_HTTP_TIMEOUT_MS}ms`),
+        { status: 504 }
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const payload = parseNativePayload(text);
   if (!response.ok) {
     const message = extractMcpError(payload) || `Native MCP request failed with HTTP ${response.status}`;

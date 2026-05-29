@@ -54,6 +54,7 @@ import { getPreferredAppUrl } from "../../../src/lib/app-url";
 import {
   findConnectionMethodEntry,
   getConnection,
+  invokeConnectionMethod,
   listConnectionMethods,
   listConnections,
   listConnectionTools,
@@ -738,12 +739,6 @@ export interface CodeModeToolsProps {
   userId?: string;
 }
 
-interface ConnectionsServiceProps {
-  orgId: string;
-  workspaceId: string;
-  userId?: string;
-}
-
 interface AIVirtualBindingProps {
   orgId: string;
   workspaceId: string;
@@ -777,6 +772,7 @@ interface LegacyParsedChatMessageForPi {
 const CODE_MODE_COMPATIBILITY_DATE = "2026-05-11";
 const CODE_MODE_DEFAULT_TIMEOUT_MS = 60_000;
 const CODE_MODE_MAX_TIMEOUT_MS = 600_000;
+const TELEGRAM_BOT_API_TIMEOUT_MS = 15_000;
 const CODE_MODE_DEFAULT_MAX_OUTPUT_CHARACTERS = 60_000;
 const CODE_MODE_MAX_OUTPUT_CHARACTERS = 200_000;
 const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
@@ -961,7 +957,7 @@ const CHANNEL_ATTACHMENT_PARAMETERS = Type.Optional(Type.Array(Type.Object({
 })));
 const SEND_EMAIL_TOOL = codeModeTool(
   "send_email",
-  "Send an email from the current workspace. This tool is available only inside js_exec as tools.send_email(...); it is not a top-level tool. Use this only when channel instructions require an external reply or the user explicitly asks to send an email. Normal assistant replies stay in chat and must not be emailed. Arguments: { to, subject, text?, html?, reply_to?, attachments? }.",
+  "Send an email from the current workspace. This tool is available only inside js_exec as tools.send_email(...) or deterministic workflows as this.env.TOOLS.send_email(...); it is not a top-level tool. Use this only when channel instructions require an external reply or the user explicitly asks to send an email. Normal assistant replies stay in chat and must not be emailed. Arguments: { to, subject, text?, html?, reply_to?, attachments? }.",
   Type.Object({
     to: Type.String(),
     subject: Type.String(),
@@ -973,7 +969,7 @@ const SEND_EMAIL_TOOL = codeModeTool(
 );
 const SEND_SLACK_MESSAGE_TOOL = codeModeTool(
   "send_slack_message",
-  "Send a Slack message from the current workspace. This tool is available only inside js_exec as tools.send_slack_message(...); it is not a top-level tool. In a Slack-originated thread, routing defaults to that Slack conversation. Otherwise provide channel_id and, when multiple Slack connections exist, integration_id or team_id. Use thread_ts to reply in a Slack thread. Arguments: { text?, integration_id?, team_id?, channel_id?, thread_ts?, attachments? }.",
+  "Send a Slack message from the current workspace. This tool is available only inside js_exec as tools.send_slack_message(...) or deterministic workflows as this.env.TOOLS.send_slack_message(...); it is not a top-level tool. In a Slack-originated thread, routing defaults to that Slack conversation. Otherwise provide channel_id and, when multiple Slack connections exist, integration_id or team_id. Use thread_ts to reply in a Slack thread. Arguments: { text?, integration_id?, team_id?, channel_id?, thread_ts?, attachments? }.",
   Type.Object({
     text: Type.Optional(Type.String()),
     integration_id: Type.Optional(Type.String()),
@@ -985,7 +981,7 @@ const SEND_SLACK_MESSAGE_TOOL = codeModeTool(
 );
 const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
   "send_telegram_message",
-  "Send a Telegram message from the current workspace. This tool is available only inside js_exec as tools.send_telegram_message(...); it is not a top-level tool. In a Telegram-originated thread, routing defaults to that chat. Outside Telegram threads, integration_id is optional when exactly one connected Telegram integration exists; if there are multiple, call tools.list_integrations({}) and use the Telegram integration id. Do not invent chat ids. Image attachments are sent as native Telegram photos when possible; use attachments[].send_as = 'document' to force file/document delivery. Arguments: { text?, chat_id?, integration_id?, attachments? }.",
+  "Send a Telegram message from the current workspace. This tool is available only inside js_exec as tools.send_telegram_message(...) or deterministic workflows as this.env.TOOLS.send_telegram_message(...); it is not a top-level tool. In a Telegram-originated thread, routing defaults to that chat. Outside Telegram threads, integration_id is optional when exactly one connected Telegram integration exists; if there are multiple, call tools.list_integrations({}) and use the Telegram integration id. Do not invent chat ids. Image attachments are sent as native Telegram photos when possible; use attachments[].send_as = 'document' to force file/document delivery. Arguments: { text?, chat_id?, integration_id?, attachments? }.",
   Type.Object({
     text: Type.Optional(Type.String()),
     chat_id: Type.Optional(Type.String()),
@@ -1349,6 +1345,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       findConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
     connections_test: (binding, args) =>
       testConnectionMethodEntry(binding.env, binding.connectionsContext, binding.connectionQuery(args)),
+    connections_invoke: (binding, args) => invokeConnectionMethod(binding.env, binding.connectionsContext, {
+      connection: typeof args.connection === "string" ? args.connection : "",
+      method: typeof args.method === "string" ? args.method : undefined,
+      input: args.input,
+    }),
   };
 
   private get workspace(): WorkspaceContainer {
@@ -1841,22 +1842,26 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
+  private channelToolHost(): ChatThreadDO {
+    const host = Object.create(ChatThreadDO.prototype) as {
+      env: ChatEnv;
+      chatContext: ChatContextState;
+    };
+    host.env = this.env;
+    host.chatContext = this.chatContextFromProps();
+    return host as unknown as ChatThreadDO;
+  }
+
   private async sendEmail(args: Record<string, unknown>): Promise<unknown> {
-    return (this.chatThreadStub as unknown as {
-      sendChannelEmailTool(context: ChatContextState, params: unknown): Promise<unknown>;
-    }).sendChannelEmailTool(this.chatContextFromProps(), args);
+    return this.channelToolHost().sendChannelEmailTool(this.chatContextFromProps(), args);
   }
 
   private async sendSlackMessage(args: Record<string, unknown>): Promise<unknown> {
-    return (this.chatThreadStub as unknown as {
-      sendChannelSlackMessageTool(context: ChatContextState, params: unknown): Promise<unknown>;
-    }).sendChannelSlackMessageTool(this.chatContextFromProps(), args);
+    return this.channelToolHost().sendChannelSlackMessageTool(this.chatContextFromProps(), args);
   }
 
   private async sendTelegramMessage(args: Record<string, unknown>): Promise<unknown> {
-    return (this.chatThreadStub as unknown as {
-      sendChannelTelegramMessageTool(context: ChatContextState, params: unknown): Promise<unknown>;
-    }).sendChannelTelegramMessageTool(this.chatContextFromProps(), args);
+    return this.channelToolHost().sendChannelTelegramMessageTool(this.chatContextFromProps(), args);
   }
 
   private get customDomains(): CodeModeCustomDomains {
@@ -2293,15 +2298,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         threadId: request.threadId,
       },
     });
-    const connections = (this.ctx.exports as unknown as {
-      ConnectionsService: (options: { props: ConnectionsServiceProps }) => unknown;
-    }).ConnectionsService({
-      props: {
-        orgId: request.orgId,
-        workspaceId: request.workspaceId,
-        userId: request.userId,
-      },
-    });
     const ai = (this.ctx.exports as unknown as {
       AIVirtualBinding: (options: { props: AIVirtualBindingProps }) => unknown;
     }).AIVirtualBinding({
@@ -2327,7 +2323,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       modules: {
         "index.js": { js: codeModeWorkerModule(code) },
       },
-      env: { TOOLS: tools, CONNECTIONS: connections, AI: ai, CAMELAI: camelai },
+      env: { TOOLS: tools, AI: ai, CAMELAI: camelai },
     };
     const worker = typeof loader.load === "function"
       ? loader.load(workerCode)
@@ -6591,7 +6587,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       "File, shell, and container operations execute through sandbox-host; do not assume local Worker filesystem access.",
       "Outbound email, Slack, and Telegram messages are opt-in side effects. In ordinary web chats, answer in chat only unless the user explicitly asks you to send an external message. Channel-originated turns include their own hidden routing instruction when an external reply is needed.",
       "When you create or edit a user-visible file or app, call the `set_preview` tool with the relevant file path or app name so the user can inspect the result in the preview pane.",
-      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `connections[entry.alias].method(input)` or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
+      "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `env.CONNECTIONS[entry.alias].method(input)`, `connections[entry.alias].method(input)`, or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Global `fetch()` is also available in `js_exec` for direct HTTP requests; prefer `tools.WebSearch` and `tools.WebFetch` for web lookup. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
       "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"/mnt/user-uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`).",
       "Before relying on repository-specific conventions, read /home/claude/AGENTS.md, /home/claude/CLAUDE.md, /AGENTS.md, or /CLAUDE.md if present.",
       "",
@@ -7109,17 +7105,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const sentMessageIds: Array<number | undefined> = [];
     if (text) {
-      const response = await fetch(
-        `https://api.telegram.org/bot${token}/sendMessage`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text,
-          }),
-        },
-      );
+      const response = await this.fetchTelegramBotApi(token, "sendMessage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+        }),
+      });
       const responseJson = await response.json().catch(() => null) as {
         ok?: boolean;
         description?: string;
@@ -7237,6 +7230,30 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       throw new Error(result.error || "Failed to record Telegram channel history");
     }
     return result.status === "appended" ? "recorded" : "skipped";
+  }
+
+  private async fetchTelegramBotApi(
+    token: string,
+    method: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TELEGRAM_BOT_API_TIMEOUT_MS);
+    try {
+      return await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+        ...init,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(
+          `Telegram ${method} request timed out after ${TELEGRAM_BOT_API_TIMEOUT_MS}ms`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async uploadSlackAttachments(args: {
@@ -7390,13 +7407,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       args.attachment.filename,
     );
 
-    const response = await fetch(
-      `https://api.telegram.org/bot${args.token}/${args.method}`,
-      {
-        method: "POST",
-        body: formData,
-      },
-    );
+    const response = await this.fetchTelegramBotApi(args.token, args.method, {
+      method: "POST",
+      body: formData,
+    });
     const responseJson = await response.json().catch(() => null) as {
       ok?: boolean;
       description?: string;
@@ -8532,8 +8546,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         description:
           "Run short JavaScript in the Worker-style code mode runtime. Use this for workspace connections and for small scripts that need to orchestrate multiple harness tools. " +
           "The final expression is returned automatically, and `console.log`/`console.warn`/`console.error` output is shown in the tool result. Use explicit `return` when a script has branches or loops. " +
-          "Connection globals: `env.CONNECTIONS` is the virtual Worker binding, `connections` and `context.cloudflare.connections` are method facades, and `context.cloudflare.env.CONNECTIONS` is the same binding. " +
-          "To use a connection, prefer `const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" });`. `find` accepts an alias, id, type, name, or object such as `{ type: \"clickhouse\" }` and throws on missing/ambiguous matches. " +
+          "Connection globals: `env.CONNECTIONS`, `connections`, `context.cloudflare.connections`, and `context.cloudflare.env.CONNECTIONS` expose the same method facade. " +
+          "To use a connection, prefer `const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await env.CONNECTIONS[entry.alias].query({ query: \"SELECT 1 AS ok\" });`. `find` accepts an alias, id, type, name, or object such as `{ type: \"clickhouse\" }` and throws on missing/ambiguous matches. " +
           "Use `await env.CONNECTIONS.methods()` when you need the full catalog; method entries include copyable `example` strings. Use `await env.CONNECTIONS.test(\"clickhouse\")` for a quick smoke test. " +
           "Custom `other` connections expose `fetch`, for example `const response = await connections[entry.alias].fetch(\"/v1/items\", { method: \"GET\" }); return await response.json();`; camelAI applies the stored auth settings. " +
           "Global `fetch()` is also available for direct HTTP requests to public URLs. For web search and page retrieval, prefer `await tools.WebSearch({ query: \"...\" })` and `await tools.WebFetch({ url: \"...\" })`. " +

@@ -36,12 +36,6 @@ interface AutomationRunStatusTarget {
   instanceId: string;
 }
 
-interface ConnectionsServiceProps {
-  orgId: string;
-  workspaceId: string;
-  userId?: string;
-}
-
 interface WorkflowExecutionContextLike {
   waitUntil?: (promise: Promise<unknown>) => void;
   exports?: WorkerEntrypointFactories;
@@ -49,7 +43,6 @@ interface WorkflowExecutionContextLike {
 
 interface WorkerEntrypointFactories {
   CodeModeToolsBinding?: (options: { props: CodeModeToolsProps }) => unknown;
-  ConnectionsService?: (options: { props: ConnectionsServiceProps }) => unknown;
   AIVirtualBinding?: (options: { props: AIVirtualBindingProps }) => unknown;
   CamelAiService?: (options: { props: AIVirtualBindingProps }) => unknown;
 }
@@ -158,16 +151,38 @@ const AUTOMATION_WORKFLOW_EXPORT_PATTERN =
   /\bexport\s+class\s+AutomationWorkflow\s+extends\s+WorkflowEntrypoint\b/;
 
 const AUTOMATION_CONNECTIONS_FACADE_SOURCE = String.raw`
-function __camelAiCreateConnectionsFacade(binding) {
+function __camelAiCreateToolsFacade(binding) {
+  return new Proxy({}, {
+    get(_target, toolName) {
+      if (toolName === "then") return undefined;
+      if (typeof toolName !== "string") return binding[toolName];
+      if (toolName === "callTool") return (name, args = {}) => binding.callTool(name, args);
+      if (toolName === "listTools") return () => binding.listTools();
+      return (args = {}) => binding.callTool(toolName, args);
+    },
+  });
+}
+
+function __camelAiCreateConnectionsFacade(binding, tools) {
   const legacyInvokeMethod = ["_", "_", "invoke"].join("");
-  const invokeConnectionMethod = (request) => {
-    const invoke = typeof binding.invoke === "function"
-      ? binding.invoke
-      : binding[legacyInvokeMethod];
-    if (typeof invoke !== "function") {
-      throw new Error("CONNECTIONS method invocation is not configured");
+  const callConnectionTool = (name, args = {}) => {
+    if (tools && typeof tools.callTool === "function") {
+      return tools.callTool(name, args);
     }
-    return invoke.call(binding, request);
+    return undefined;
+  };
+  const invokeConnectionMethod = (request) => {
+    const toolResult = callConnectionTool("connections_invoke", request);
+    if (toolResult !== undefined) {
+      return toolResult;
+    }
+    if (typeof binding.invoke === "function") {
+      return binding.invoke(request);
+    }
+    if (typeof binding[legacyInvokeMethod] === "function") {
+      return binding[legacyInvokeMethod](request);
+    }
+    throw new Error("CONNECTIONS method invocation is not configured");
   };
 
   function responseFromFetchPayload(payload) {
@@ -209,12 +224,12 @@ function __camelAiCreateConnectionsFacade(binding) {
   return new Proxy({}, {
     get(_target, connectionName) {
       if (connectionName === "then") return undefined;
-      if (connectionName === "$methods") return () => binding.methods();
-      if (connectionName === "$find") return (query) => binding.find(query);
-      if (connectionName === "$test") return (query) => binding.test(query);
-      if (connectionName === "$list") return () => binding.list();
-      if (connectionName === "$get") return (connection) => binding.get(connection);
-      if (connectionName === "$tools") return (connection) => binding.tools(connection);
+      if (connectionName === "$methods") return () => callConnectionTool("connections_methods") ?? binding.methods();
+      if (connectionName === "$find") return (query) => callConnectionTool("connections_find", { query }) ?? binding.find(query);
+      if (connectionName === "$test") return (query) => callConnectionTool("connections_test", { query }) ?? binding.test(query);
+      if (connectionName === "$list") return () => callConnectionTool("connections_list") ?? binding.list();
+      if (connectionName === "$get") return (connection) => callConnectionTool("connections_get", { connection }) ?? binding.get(connection);
+      if (connectionName === "$tools") return (connection) => callConnectionTool("connections_tools", { connection }) ?? binding.tools(connection);
       if (typeof connectionName !== "string") return binding[connectionName];
       if ([
         "list",
@@ -223,10 +238,17 @@ function __camelAiCreateConnectionsFacade(binding) {
         "methods",
         "find",
         "test",
+        "invoke",
         legacyInvokeMethod,
       ].includes(connectionName)) {
         const value = binding[connectionName];
-        return typeof value === "function" ? value.bind(binding) : value;
+        if (connectionName === "list") return () => callConnectionTool("connections_list") ?? value.apply(binding);
+        if (connectionName === "get") return (connection) => callConnectionTool("connections_get", { connection }) ?? value.apply(binding, [connection]);
+        if (connectionName === "tools") return (connection) => callConnectionTool("connections_tools", { connection }) ?? value.apply(binding, [connection]);
+        if (connectionName === "methods") return () => callConnectionTool("connections_methods") ?? value.apply(binding);
+        if (connectionName === "find") return (query) => callConnectionTool("connections_find", { query }) ?? value.apply(binding, [query]);
+        if (connectionName === "test") return (query) => callConnectionTool("connections_test", { query }) ?? value.apply(binding, [query]);
+        return typeof value === "function" ? (...args) => value.apply(binding, args) : value;
       }
 
       return new Proxy({}, {
@@ -260,13 +282,15 @@ function __camelAiCreateConnectionsFacade(binding) {
 
 function __camelAiInstallWorkflowConnectionsFacade(instance) {
   const originalEnv = instance.env;
-  if (!originalEnv || typeof originalEnv !== "object" || !originalEnv.CONNECTIONS) {
+  if (!originalEnv || typeof originalEnv !== "object" || (!originalEnv.CONNECTIONS && !originalEnv.TOOLS)) {
     return;
   }
-  const connections = __camelAiCreateConnectionsFacade(originalEnv.CONNECTIONS);
+  const tools = originalEnv.TOOLS ? __camelAiCreateToolsFacade(originalEnv.TOOLS) : undefined;
+  const connections = __camelAiCreateConnectionsFacade(originalEnv.CONNECTIONS || {}, tools);
   const wrappedEnv = new Proxy(originalEnv, {
     get(target, property, receiver) {
       if (property === "CONNECTIONS") return connections;
+      if (property === "TOOLS" && tools) return tools;
       return Reflect.get(target, property, receiver);
     },
   });
@@ -316,13 +340,11 @@ export function createDeterministicAutomationRuntimeBindings(input: {
   }
   const {
     CodeModeToolsBinding,
-    ConnectionsService,
     AIVirtualBinding,
     CamelAiService,
   } = exports;
   if (
     !CodeModeToolsBinding ||
-    !ConnectionsService ||
     !AIVirtualBinding ||
     !CamelAiService
   ) {
@@ -330,7 +352,6 @@ export function createDeterministicAutomationRuntimeBindings(input: {
   }
   return {
     TOOLS: CodeModeToolsBinding({ props: scopedProps }),
-    CONNECTIONS: ConnectionsService({ props: scopedProps }),
     AI: AIVirtualBinding({ props: scopedProps }),
     CAMELAI: CamelAiService({ props: scopedProps }),
   };

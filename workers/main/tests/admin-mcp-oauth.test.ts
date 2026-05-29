@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:test";
 import { AdminMcpOAuthProvider } from "../src/admin-mcp-oauth";
 import { handleAdminMcp } from "../src/routes/admin-mcp";
@@ -76,6 +76,11 @@ function routeContext(req: Request) {
 }
 
 describe("admin MCP OAuth resource", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
   it("advertises a distinct admin OAuth issuer for the admin MCP resource", async () => {
     const resourceResponse = await handleResourceMetadata(routeContext(
       new Request("https://example.com/.well-known/oauth-protected-resource?resource=https%3A%2F%2Fexample.com%2Fapi%2Fadmin%2Fmcp"),
@@ -373,5 +378,67 @@ describe("admin MCP OAuth resource", () => {
     const text = rpc.result.content[0].text as string;
     expect(text).toContain("body_json");
     expect(text).toContain("total_users");
+  });
+
+  it("returns a bounded error when dashboard summary metrics dependency stalls", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-dashboard-timeout-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Dashboard Admin",
+    );
+    await createOrg(testEnv, "Dashboard Timeout Admin Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+    vi.useFakeTimers();
+    const sandboxFetch = vi.fn((_input: string | URL | Request, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      })
+    ));
+
+    const responsePromise = handleAdminMcp({
+      req: mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "get_dashboard_summary",
+            arguments: {
+              date: "2026-05-29",
+              exclude_spam: true,
+              exclude_internal_domains: "camelai.com",
+            },
+          },
+        },
+        token,
+      ),
+      env: {
+        ...testEnv,
+        SANDBOX_HOST: { fetch: sandboxFetch },
+      } as unknown as WorkerEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL("https://example.com/api/admin/mcp"),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    await vi.waitFor(() => expect(sandboxFetch).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const response = await responsePromise;
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    expect(rpc.result.isError).toBe(true);
+    const body = JSON.parse(rpc.result.content[0].text);
+    expect(body).toMatchObject({
+      status: 502,
+      ok: false,
+      body_json: {
+        error: "Sandbox host metrics request timed out after 5000ms",
+      },
+    });
   });
 });

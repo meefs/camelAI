@@ -85,13 +85,13 @@ function hardenTimingSurface() {
 function createConnectionsFacade(binding) {
   const legacyInvokeMethod = ["_", "_", "invoke"].join("");
   const invokeConnectionMethod = (request) => {
-    const invoke = typeof binding.invoke === "function"
-      ? binding.invoke
-      : binding[legacyInvokeMethod];
-    if (typeof invoke !== "function") {
-      throw new Error("CONNECTIONS method invocation is not configured");
+    if (typeof binding.invoke === "function") {
+      return binding.invoke(request);
     }
-    return invoke.call(binding, request);
+    if (typeof binding[legacyInvokeMethod] === "function") {
+      return binding[legacyInvokeMethod](request);
+    }
+    throw new Error("CONNECTIONS method invocation is not configured");
   };
 
   function responseFromFetchPayload(payload) {
@@ -139,7 +139,20 @@ function createConnectionsFacade(binding) {
       if (connectionName === "$list") return () => binding.list();
       if (connectionName === "$get") return (connection) => binding.get(connection);
       if (connectionName === "$tools") return (connection) => binding.tools(connection);
-      if (typeof connectionName !== "string") return undefined;
+      if (typeof connectionName !== "string") return binding[connectionName];
+      if ([
+        "list",
+        "get",
+        "tools",
+        "methods",
+        "find",
+        "test",
+        "invoke",
+        legacyInvokeMethod,
+      ].includes(connectionName)) {
+        const value = binding[connectionName];
+        return typeof value === "function" ? (...args) => value.apply(binding, args) : value;
+      }
 
       return new Proxy({}, {
         get(_connectionTarget, methodName) {
@@ -170,6 +183,18 @@ function createConnectionsFacade(binding) {
   });
 }
 
+function createToolBackedConnectionsBinding(callTool) {
+  return Object.freeze({
+    list: () => callTool("connections_list", {}),
+    get: (connection) => callTool("connections_get", { connection }),
+    tools: (connection) => callTool("connections_tools", { connection }),
+    methods: () => callTool("connections_methods", {}),
+    find: (query) => callTool("connections_find", { query }),
+    test: (query) => callTool("connections_test", { query }),
+    invoke: (request) => callTool("connections_invoke", request),
+  });
+}
+
 async function runUserCode(tools, CONNECTIONS, connections, env, context, ALL_TOOLS, text, store, load) {
   "use strict";
 `}${executableUserCode}${String.raw`
@@ -187,8 +212,9 @@ export class CodeModeRunner extends WorkerEntrypoint {
     })));
     const callTool = (name, args = {}) => this.env.TOOLS.callTool(name, args);
     const tools = Object.freeze(Object.fromEntries(allTools.map((tool) => [tool.name, (args = {}) => callTool(tool.name, args)])));
-    const CONNECTIONS = this.env.CONNECTIONS;
-    const connections = createConnectionsFacade(CONNECTIONS);
+    const CONNECTIONS_BINDING = createToolBackedConnectionsBinding(callTool);
+    const connections = createConnectionsFacade(CONNECTIONS_BINDING);
+    const CONNECTIONS = connections;
     const AI = this.env.AI;
     const CAMELAI = this.env.CAMELAI;
     const env = Object.freeze({ CONNECTIONS, AI, CAMELAI });
