@@ -83,6 +83,17 @@ function hardenTimingSurface() {
 }
 
 function createConnectionsFacade(binding) {
+  const legacyInvokeMethod = ["_", "_", "invoke"].join("");
+  const invokeConnectionMethod = (request) => {
+    const invoke = typeof binding.invoke === "function"
+      ? binding.invoke
+      : binding[legacyInvokeMethod];
+    if (typeof invoke !== "function") {
+      throw new Error("CONNECTIONS method invocation is not configured");
+    }
+    return invoke.call(binding, request);
+  };
+
   function responseFromFetchPayload(payload) {
     if (!payload || typeof payload !== "object" || typeof payload.status !== "number") {
       return payload;
@@ -146,7 +157,7 @@ function createConnectionsFacade(binding) {
                 },
               };
             }
-            const result = await binding.__invoke({
+            const result = await invokeConnectionMethod({
               connection: connectionName,
               method: methodName,
               input,

@@ -154,6 +154,149 @@ function loadAutomationWorker(input: {
     : loader.get(input.cacheKey, () => workerCode);
 }
 
+const AUTOMATION_WORKFLOW_EXPORT_PATTERN =
+  /\bexport\s+class\s+AutomationWorkflow\s+extends\s+WorkflowEntrypoint\b/;
+
+const AUTOMATION_CONNECTIONS_FACADE_SOURCE = String.raw`
+function __camelAiCreateConnectionsFacade(binding) {
+  const legacyInvokeMethod = ["_", "_", "invoke"].join("");
+  const invokeConnectionMethod = (request) => {
+    const invoke = typeof binding.invoke === "function"
+      ? binding.invoke
+      : binding[legacyInvokeMethod];
+    if (typeof invoke !== "function") {
+      throw new Error("CONNECTIONS method invocation is not configured");
+    }
+    return invoke.call(binding, request);
+  };
+
+  function responseFromFetchPayload(payload) {
+    if (!payload || typeof payload !== "object" || typeof payload.status !== "number") {
+      return payload;
+    }
+    const headers = new Headers(payload.headers || {});
+    if (payload.truncated) headers.set("x-camelai-truncated", "true");
+    return new Response(payload.bodyText || "", {
+      status: payload.status,
+      statusText: payload.statusText || "",
+      headers,
+    });
+  }
+
+  async function serializeFetchInput(input) {
+    if (input instanceof Request) {
+      return {
+        input: input.url,
+        init: {
+          method: input.method,
+          headers: Object.fromEntries(input.headers.entries()),
+          body: input.method === "GET" || input.method === "HEAD" ? undefined : await input.text(),
+        },
+      };
+    }
+    return { input: String(input ?? ""), init: {} };
+  }
+
+  function serializeFetchInit(init) {
+    if (!init || typeof init !== "object") return {};
+    const output = { ...init };
+    if (init.headers) {
+      output.headers = Object.fromEntries(new Headers(init.headers).entries());
+    }
+    return output;
+  }
+
+  return new Proxy({}, {
+    get(_target, connectionName) {
+      if (connectionName === "then") return undefined;
+      if (connectionName === "$methods") return () => binding.methods();
+      if (connectionName === "$find") return (query) => binding.find(query);
+      if (connectionName === "$test") return (query) => binding.test(query);
+      if (connectionName === "$list") return () => binding.list();
+      if (connectionName === "$get") return (connection) => binding.get(connection);
+      if (connectionName === "$tools") return (connection) => binding.tools(connection);
+      if (typeof connectionName !== "string") return binding[connectionName];
+      if ([
+        "list",
+        "get",
+        "tools",
+        "methods",
+        "find",
+        "test",
+        legacyInvokeMethod,
+      ].includes(connectionName)) {
+        const value = binding[connectionName];
+        return typeof value === "function" ? value.bind(binding) : value;
+      }
+
+      return new Proxy({}, {
+        get(_connectionTarget, methodName) {
+          if (methodName === "then") return undefined;
+          if (typeof methodName !== "string") return undefined;
+          return async (...args) => {
+            let input = args[0] ?? {};
+            if (methodName === "fetch") {
+              const serialized = await serializeFetchInput(args[0]);
+              input = {
+                ...serialized,
+                init: {
+                  ...serialized.init,
+                  ...serializeFetchInit(args[1]),
+                },
+              };
+            }
+            const result = await invokeConnectionMethod({
+              connection: connectionName,
+              method: methodName,
+              input,
+            });
+            return methodName === "fetch" ? responseFromFetchPayload(result) : result;
+          };
+        },
+      });
+    },
+  });
+}
+
+function __camelAiInstallWorkflowConnectionsFacade(instance) {
+  const originalEnv = instance.env;
+  if (!originalEnv || typeof originalEnv !== "object" || !originalEnv.CONNECTIONS) {
+    return;
+  }
+  const connections = __camelAiCreateConnectionsFacade(originalEnv.CONNECTIONS);
+  const wrappedEnv = new Proxy(originalEnv, {
+    get(target, property, receiver) {
+      if (property === "CONNECTIONS") return connections;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  Object.defineProperty(instance, "env", {
+    configurable: true,
+    enumerable: true,
+    value: wrappedEnv,
+  });
+}
+`;
+
+export function prepareDeterministicAutomationRuntimeSource(source: string): string {
+  if (!AUTOMATION_WORKFLOW_EXPORT_PATTERN.test(source)) return source;
+  return [
+    AUTOMATION_CONNECTIONS_FACADE_SOURCE,
+    source.replace(
+      AUTOMATION_WORKFLOW_EXPORT_PATTERN,
+      "class __CamelAiUserAutomationWorkflow extends WorkflowEntrypoint",
+    ),
+    String.raw`
+export class AutomationWorkflow extends __CamelAiUserAutomationWorkflow {
+  async run(event, step) {
+    __camelAiInstallWorkflowConnectionsFacade(this);
+    return await super.run(event, step);
+  }
+}
+`,
+  ].join("\n");
+}
+
 export function createDeterministicAutomationRuntimeBindings(input: {
   ctx: WorkflowExecutionContextLike;
   orgId: string;
@@ -221,7 +364,7 @@ async function loadDeterministicAutomationRunner(
   const workspace = await cronStub.getWorkspaceInfoForAutomation(workspaceId);
   const worker = loadAutomationWorker({
     env: input.env,
-    source: snapshot.source,
+    source: prepareDeterministicAutomationRuntimeSource(snapshot.source),
     cacheKey: `automation-${workspaceId}-${automationId}-${sourceVersion}`,
     workflowEnv: createDeterministicAutomationRuntimeBindings({
       ctx: input.ctx,

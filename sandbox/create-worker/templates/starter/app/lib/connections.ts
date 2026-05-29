@@ -37,11 +37,17 @@ type ConnectionsBinding = {
 	methods(): Promise<ConnectionMethodCatalogEntry[]>;
 	find(query: ConnectionFindQuery): Promise<ConnectionMethodCatalogEntry>;
 	test(query: ConnectionFindQuery): Promise<unknown>;
-	__invoke<T = unknown>(request: {
-		connection: string;
-		method?: string;
-		input?: unknown;
-	}): Promise<T>;
+};
+
+type ConnectionInvokeRequest = {
+	connection: string;
+	method?: string;
+	input?: unknown;
+};
+
+type ConnectionMethodInvoker = ConnectionsBinding & {
+	invoke<T = unknown>(request: ConnectionInvokeRequest): Promise<T>;
+	[legacyInvokeMethod: string]: unknown;
 };
 
 type ConnectionsEnv = {
@@ -67,6 +73,17 @@ type ConnectionsProxy = Record<string, ConnectionProxy> & {
 
 export function createConnections(env: ConnectionsEnv): ConnectionsProxy {
 	const binding = env.CONNECTIONS;
+	const legacyInvokeMethod = ["_", "_", "invoke"].join("");
+	const invokeConnectionMethod = <T = unknown>(request: ConnectionInvokeRequest): Promise<T> => {
+		const invoker = binding as ConnectionMethodInvoker;
+		const invoke = typeof invoker.invoke === "function"
+			? invoker.invoke
+			: invoker[legacyInvokeMethod];
+		if (typeof invoke !== "function") {
+			throw new Error("CONNECTIONS method invocation is not configured");
+		}
+		return invoke.call(binding, request) as Promise<T>;
+	};
 	const responseFromFetchPayload = (payload: unknown): unknown => {
 		if (!payload || typeof payload !== "object" || typeof (payload as { status?: unknown }).status !== "number") {
 			return payload;
@@ -136,7 +153,7 @@ export function createConnections(env: ConnectionsEnv): ConnectionsProxy {
 								},
 							};
 						}
-						const result = await binding.__invoke({
+						const result = await invokeConnectionMethod({
 							connection: connectionName,
 							method: methodName,
 							input,

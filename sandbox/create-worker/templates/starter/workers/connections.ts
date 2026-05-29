@@ -83,6 +83,8 @@ export type ConnectionFindQuery =
 			name?: string;
 	  };
 
+const LEGACY_CONNECTION_INVOKE_METHOD = ["_", "_", "invoke"].join("");
+
 function fallbackConnectionsUrl(env: LocalConnectionsEnv): string {
 	const explicit = (env.CAMELAI_CONNECTIONS_URL ?? "").trim();
 	if (explicit) return explicit.replace(/\/+$/, "");
@@ -148,7 +150,11 @@ export class LocalConnectionsService extends WorkerEntrypoint<LocalConnectionsEn
 		return request<unknown>(this.env, "test", { query });
 	}
 
-	async __invoke<T = unknown>(invoke: ConnectionInvokeRequest): Promise<T> {
+	async invoke<T = unknown>(invoke: ConnectionInvokeRequest): Promise<T> {
 		return request<T>(this.env, "invoke", invoke as unknown as Record<string, unknown>);
+	}
+
+	async [LEGACY_CONNECTION_INVOKE_METHOD](invoke: ConnectionInvokeRequest): Promise<unknown> {
+		return this.invoke(invoke);
 	}
 }

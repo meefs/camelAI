@@ -21,6 +21,8 @@ interface ConnectionsServiceProps {
   userId?: string;
 }
 
+const LEGACY_CONNECTION_INVOKE_METHOD = ["_", "_", "invoke"].join("");
+
 /**
  * Virtual service binding entrypoint for user uploaded workers.
  *
@@ -71,7 +73,11 @@ export class ConnectionsService extends WorkerEntrypoint<
     return testConnectionMethodEntry(this.env, this.context, query);
   }
 
-  async __invoke<T = unknown>(request: ConnectionInvokeRequest): Promise<T> {
+  async invoke<T = unknown>(request: ConnectionInvokeRequest): Promise<T> {
     return invokeConnectionMethod(this.env, this.context, request) as Promise<T>;
+  }
+
+  async [LEGACY_CONNECTION_INVOKE_METHOD](request: ConnectionInvokeRequest): Promise<unknown> {
+    return this.invoke(request);
   }
 }

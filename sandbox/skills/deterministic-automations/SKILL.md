@@ -80,10 +80,8 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     const result = await step.do("query database", async () => {
       const db = await this.env.CONNECTIONS.find("postgres");
       const connections = this.env.CONNECTIONS;
-      return await connections.__invoke({
-        connection: db.alias,
-        method: "query",
-        input: { query: "SELECT count(*) AS total FROM users" },
+      return await connections[db.alias].query({
+        query: "SELECT count(*) AS total FROM users",
       });
     });
 

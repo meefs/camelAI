@@ -1447,7 +1447,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       get: vi.fn(),
       tools: vi.fn(),
       methods: vi.fn(),
-      __invoke: vi.fn(),
+      invoke: vi.fn(),
     };
     const aiBinding = { run: vi.fn() };
     let capturedWorkerCode: any;
