@@ -1885,6 +1885,7 @@ const PI_TURN_RECOVERY_MAX_RETRIES = 3;
 const PI_TURN_RECOVERY_QUARANTINE_KEY = "piTurnRecoveryQuarantined";
 const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
+const PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS = 5 * 60_000;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
@@ -1967,6 +1968,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piTurnStartedAtMs: number = 0;
   private piAgentStartedAtMs: number = 0;
   private suppressNextPiRecoveryPromptEvent = false;
+  private piRecoveryContinuePromptSentAtMs: number = 0;
   private piUserStopRequestedAtMs: number = 0;
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
@@ -2155,6 +2157,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (pendingPiTurn) {
         this.chatIsStreaming = true;
         this.activeTurnUserId = pendingPiTurn.active_user_id;
+        this.recordChatThreadObservabilityEvent("pi_turn_recovery_loaded_on_boot", {
+          operation: "constructor",
+          status: pendingPiTurn.status,
+          severity: "warn",
+          count: pendingPiTurn.retry_count,
+          size: Math.max(0, Date.now() - pendingPiTurn.started_at),
+          sampleKey: `turn:${pendingPiTurn.turn_id}|active:${pendingPiTurn.active_user_id ? 1 : 0}`,
+        });
         this.schedulePiTurnRecoveryAlarm(1_000);
       }
     });
@@ -3686,6 +3696,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
+  private isPiRecoveryContinueMessage(message: AgentMessage): boolean {
+    const record = message as unknown as Record<string, unknown>;
+    const content = record.content;
+    return record.role === "user" &&
+      typeof content === "string" &&
+      content.trim() === PI_TURN_RECOVERY_CONTINUE_PROMPT;
+  }
+
   private async appendPiCoreMessages(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
     this.ensurePiCoreTables();
@@ -3715,6 +3733,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       count: messages.length,
       size: startIndex,
     });
+    const continueCount = messages.filter((message) => this.isPiRecoveryContinueMessage(message)).length;
+    if (continueCount > 0) {
+      const pending = this.loadPiTurnRecovery();
+      this.recordChatThreadObservabilityEvent("pi_recovery_continue_persisted", {
+        operation: "append",
+        status: pending ? pending.status : "no_pending_recovery",
+        severity: "warn",
+        count: continueCount,
+        size: startIndex,
+        sampleKey: pending
+          ? `turn:${pending.turn_id}|retry:${pending.retry_count}`
+          : "no_pending_recovery",
+      });
+    }
   }
 
   private piCoreMessageKey(message: AgentMessage): string {
@@ -4049,11 +4081,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     await this.refreshPiSessionModel();
     this.suppressNextPiRecoveryPromptEvent = true;
+    this.piRecoveryContinuePromptSentAtMs = Date.now();
     try {
       await this.piSession.prompt({
         role: "user",
         content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
-        timestamp: Date.now(),
+        timestamp: this.piRecoveryContinuePromptSentAtMs,
       });
     } finally {
       this.suppressNextPiRecoveryPromptEvent = false;
@@ -4506,8 +4539,28 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return true;
       }
     }
-    if (!this.suppressNextPiRecoveryPromptEvent) return false;
-    if (this.piSdkUserEventText(event)?.trim() !== PI_TURN_RECOVERY_CONTINUE_PROMPT) {
+    const userText = this.piSdkUserEventText(event)?.trim();
+    if (!this.suppressNextPiRecoveryPromptEvent) {
+      if (
+        userText === PI_TURN_RECOVERY_CONTINUE_PROMPT &&
+        this.piRecoveryContinuePromptSentAtMs > 0 &&
+        Date.now() - this.piRecoveryContinuePromptSentAtMs <= PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS
+      ) {
+        const pending = this.loadPiTurnRecovery();
+        this.recordChatThreadObservabilityEvent("pi_recovery_continue_event_leaked", {
+          operation: "handle_pi_session_event",
+          status: pending ? pending.status : "no_pending_recovery",
+          severity: "warn",
+          count: pending?.retry_count ?? 0,
+          size: Math.max(0, Date.now() - this.piRecoveryContinuePromptSentAtMs),
+          sampleKey: pending
+            ? `turn:${pending.turn_id}|retry:${pending.retry_count}`
+            : "recent_recovery_prompt",
+        });
+      }
+      return false;
+    }
+    if (userText !== PI_TURN_RECOVERY_CONTINUE_PROMPT) {
       return false;
     }
     this.suppressNextPiRecoveryPromptEvent = false;

@@ -55,6 +55,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.upsertPiCoreMessages = vi.fn();
     fake.appendPiInFlightMessages = vi.fn();
     fake.loadPiInFlightMessages = vi.fn(() => []);
+    fake.loadPiTurnRecovery = vi.fn(() => null);
     fake.clearPiInFlightMessages = vi.fn();
     fake.setActiveTurnUserId = vi.fn();
     fake.clearPiTurnRecovery = vi.fn();
