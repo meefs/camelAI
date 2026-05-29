@@ -730,7 +730,7 @@ interface LegacyParsedChatMessageForPi {
 
 const CODE_MODE_COMPATIBILITY_DATE = "2026-05-11";
 const CODE_MODE_DEFAULT_TIMEOUT_MS = 60_000;
-const CODE_MODE_MAX_TIMEOUT_MS = 120_000;
+const CODE_MODE_MAX_TIMEOUT_MS = 600_000;
 const CODE_MODE_DEFAULT_MAX_OUTPUT_CHARACTERS = 60_000;
 const CODE_MODE_MAX_OUTPUT_CHARACTERS = 200_000;
 const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
@@ -2276,7 +2276,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         runPromise,
         new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(
-            () => reject(new Error(`JavaScript execution timed out after ${timeoutMs}ms`)),
+            () => reject(
+              new Error(
+                `JavaScript execution timed out after ${timeoutMs}ms. If this script needs more wall-clock time, call js_exec again with a larger timeoutMs value (maximum ${CODE_MODE_MAX_TIMEOUT_MS}ms).`,
+              ),
+            ),
             timeoutMs,
           );
         }),
@@ -7964,7 +7968,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               "Required concise description of what this JavaScript will do. This is shown in the chat UI.",
           }),
           code: Type.String(),
-          timeoutMs: Type.Optional(Type.Number()),
+          timeoutMs: Type.Optional(Type.Number({
+            description:
+              `Optional wall-clock timeout in milliseconds for this JavaScript run. Defaults to ${CODE_MODE_DEFAULT_TIMEOUT_MS}ms and can be raised up to ${CODE_MODE_MAX_TIMEOUT_MS}ms for longer-running scripts.`,
+          })),
           maxOutputCharacters: Type.Optional(Type.Number()),
         }),
         execute: async (_id, params) => {

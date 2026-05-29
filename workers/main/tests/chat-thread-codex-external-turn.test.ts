@@ -5,6 +5,7 @@ import { CamelAiService } from '../src/camelai-service';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -1426,6 +1427,80 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('AsyncFunction');
     expect(capturedWorkerCode.modules['index.js'].js).not.toContain('new Function');
     expect(result.text).toBe(`${'x'.repeat(1000)}\n\n[Truncated: 1000 of 1200 characters]`);
+  });
+
+  it('allows js_exec callers to request a longer wall-clock timeout and explains how to raise it', async () => {
+    vi.useFakeTimers();
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CODE_MODE_LOADER: {
+        load: vi.fn(() => ({
+          getEntrypoint: vi.fn(() => ({
+            run: vi.fn(() => new Promise(() => {})),
+          })),
+        })),
+      },
+    };
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({})),
+        ConnectionsService: vi.fn(() => ({})),
+        AIVirtualBinding: vi.fn(() => ({})),
+        CamelAiService: vi.fn(() => ({})),
+      },
+    };
+
+    const runPromise = ChatThreadDO.prototype.runCodeModeJavascript.call(fake, {
+      code: 'await new Promise(() => {})',
+      orgId: 'org_1',
+      workspaceId: 'ws_1',
+      timeoutMs: 150_000,
+    });
+
+    const rejection = expect(runPromise).rejects.toThrow(
+      'JavaScript execution timed out after 150000ms. If this script needs more wall-clock time, call js_exec again with a larger timeoutMs value (maximum 600000ms).',
+    );
+
+    await vi.advanceTimersByTimeAsync(150_000);
+    await rejection;
+  });
+
+  it('clamps js_exec wall-clock timeouts to the platform maximum', async () => {
+    vi.useFakeTimers();
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      CODE_MODE_LOADER: {
+        load: vi.fn(() => ({
+          getEntrypoint: vi.fn(() => ({
+            run: vi.fn(() => new Promise(() => {})),
+          })),
+        })),
+      },
+    };
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({})),
+        ConnectionsService: vi.fn(() => ({})),
+        AIVirtualBinding: vi.fn(() => ({})),
+        CamelAiService: vi.fn(() => ({})),
+      },
+    };
+
+    const runPromise = ChatThreadDO.prototype.runCodeModeJavascript.call(fake, {
+      code: 'await new Promise(() => {})',
+      orgId: 'org_1',
+      workspaceId: 'ws_1',
+      timeoutMs: 999_999,
+    });
+
+    const rejection = expect(runPromise).rejects.toThrow(
+      'JavaScript execution timed out after 600000ms. If this script needs more wall-clock time, call js_exec again with a larger timeoutMs value (maximum 600000ms).',
+    );
+
+    await vi.advanceTimersByTimeAsync(600_000);
+    await rejection;
   });
 
   it('makes code mode final expressions behave like a short-lived JavaScript REPL', () => {
