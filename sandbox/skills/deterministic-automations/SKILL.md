@@ -1,31 +1,31 @@
 ---
 name: deterministic-automations
-description: Create and maintain durable deterministic automations for the current workspace using Cloudflare Dynamic Workflows. Use when the user asks for scheduled code that should run without another model turn, durable sleeps/retries, workflow steps, or automation scripts.
+description: Create and maintain durable deterministic automations (known as workflows) for the current workspace using Cloudflare Dynamic Workflows. Use when the user asks for scheduled code that should run without another model turn, durable sleeps/retries, workflow steps, or automation scripts.
 license: Complete terms in LICENSE.txt
 ---
 
-# Deterministic Automations
+# Workflows
 
-Deterministic automations are workspace-scoped Cloudflare Dynamic Workflow scripts. They run code on a UTC cron schedule without sending a prompt to a chat thread.
+Workflows are workspace-scoped Cloudflare Dynamic Workflow scripts. They run deterministic JavaScript code on a UTC cron schedule without sending a prompt to a chat thread.
 
-Use scheduled prompts when the user wants the agent to think or write a reply later. Use deterministic automations when the user wants predictable code execution, durable workflow steps, retries, sleeps, or event waits.
+Use agent tasks when the user wants the agent to think or write a reply later. Use workflows when the user wants predictable code execution, durable workflow steps, retries, sleeps, or event waits.
 
 ## Tools
 
-- `list_deterministic_automations` - list workspace automations and their virtual source paths.
-- `validate_deterministic_automation` - check source syntax and required exports before saving.
-- `create_deterministic_automation` - create an automation with `{ name, source, cron_expression, description, enabled? }`. Description is required and should summarize what the workflow does.
-- `update_deterministic_automation` - update metadata, schedule, enabled state, or source with `{ automation_id, ... }`.
-- `delete_deterministic_automation` - delete the schedule. Already-started workflow instances may still need their versioned source.
-- `run_deterministic_automation_now` - start the workflow immediately.
+- `list_workflows` - list workspace workflows and their virtual source paths.
+- `validate_workflow` - check source syntax and required exports before saving.
+- `create_workflow` - create a workflow with `{ name, source, cron_expression, description, enabled? }`. Description is required and should summarize what the workflow does.
+- `update_workflow` - update metadata, schedule, enabled state, or source with `{ workflow_id, ... }`.
+- `delete_workflow` - delete the schedule. Already-started workflow instances may still need their versioned source.
+- `run_workflow_now` - start the workflow immediately.
 
-Automation scripts are also exposed as virtual files:
+Workflow scripts are also exposed as virtual files:
 
 ```text
-/home/claude/.camelai/automations/<automation_id>.js
+/home/claude/.camelai/automations/<workflow_id>.js
 ```
 
-After creating an automation, use `read`, `edit`, or `write` on that path to inspect or update the script like a normal file. New automations must be created with `create_deterministic_automation` because the schedule and display name are metadata, not file contents.
+After creating a workflow, use `read`, `edit`, or `write` on that path to inspect or update the script like a normal file. New workflows must be created with `create_workflow` because the schedule and display name are metadata, not file contents.
 
 ## Script Shape
 
@@ -39,7 +39,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
     const payload = event.payload;
 
     await step.do("record run", async () => {
-      console.log("Automation fired", payload);
+      console.log("Workflow fired", payload);
     });
 
     return { ok: true, firedAt: payload.triggeredAt };
@@ -52,13 +52,15 @@ The workflow receives `event.payload` with:
 ```js
 {
   workspaceId,
-  automationId,
-  automationName,
+  workflowId,
+  workflowName,
   scheduledFor,   // ISO timestamp for the scheduled slot
   triggeredAt,    // ISO timestamp when the workflow instance was created
   trigger         // "schedule" or "manual"
 }
 ```
+
+Legacy aliases `automationId` and `automationName` are also present in the payload.
 
 ## Available Bindings
 
@@ -123,9 +125,9 @@ const approval = await step.waitForEvent("wait for approval", {
 ## Create Workflow
 
 1. Write the source.
-2. Call `validate_deterministic_automation` with the source.
-3. Call `create_deterministic_automation`.
-4. Call `run_deterministic_automation_now` for a smoke test when the action is safe.
+2. Call `validate_workflow` with the source.
+3. Call `create_workflow`.
+4. Call `run_workflow_now` for a smoke test when the action is safe.
 
 Example:
 
@@ -142,8 +144,8 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
 }
 `;
 
-await tools.validate_deterministic_automation({ source });
-await tools.create_deterministic_automation({
+await tools.validate_workflow({ source });
+await tools.create_workflow({
   name: "Daily health check",
   description: "Fetches the public health endpoint every morning.",
   source,
@@ -156,10 +158,10 @@ Cron expressions are 5 fields in UTC: `minute hour day-of-month month day-of-wee
 ## Editing
 
 ```js
-await tools.list_deterministic_automations({});
-await tools.read({ path: "/home/claude/.camelai/automations/<automation_id>.js" });
+await tools.list_workflows({});
+await tools.read({ path: "/home/claude/.camelai/automations/<workflow_id>.js" });
 await tools.edit({
-  path: "/home/claude/.camelai/automations/<automation_id>.js",
+  path: "/home/claude/.camelai/automations/<workflow_id>.js",
   edits: [{ oldText: "old code", newText: "new code" }],
 });
 ```

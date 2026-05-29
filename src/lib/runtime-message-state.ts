@@ -1242,18 +1242,24 @@ function canonicalizeDynamicToolName(tool: unknown): string {
       return 'DeleteScheduledPrompt';
     case 'run_scheduled_prompt_now':
       return 'RunScheduledPrompt';
+    case 'list_workflows':
     case 'list_deterministic_automations':
-      return 'ListDeterministicAutomations';
+      return 'ListWorkflows';
+    case 'validate_workflow':
     case 'validate_deterministic_automation':
-      return 'ValidateDeterministicAutomation';
+      return 'ValidateWorkflow';
+    case 'create_workflow':
     case 'create_deterministic_automation':
-      return 'CreateDeterministicAutomation';
+      return 'CreateWorkflow';
+    case 'update_workflow':
     case 'update_deterministic_automation':
-      return 'UpdateDeterministicAutomation';
+      return 'UpdateWorkflow';
+    case 'delete_workflow':
     case 'delete_deterministic_automation':
-      return 'DeleteDeterministicAutomation';
+      return 'DeleteWorkflow';
+    case 'run_workflow_now':
     case 'run_deterministic_automation_now':
-      return 'RunDeterministicAutomation';
+      return 'RunWorkflow';
     case 'list_integrations':
       return 'ListConnections';
     case 'list_integration_types':

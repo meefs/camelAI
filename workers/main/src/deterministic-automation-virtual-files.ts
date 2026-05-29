@@ -77,9 +77,7 @@ export async function readAutomationVirtualFile(input: {
     input.workspaceId,
     automationId,
   );
-  if (!snapshot) {
-    throw new Error(`Deterministic automation "${automationId}" not found`);
-  }
+  if (!snapshot) throw new Error(`Workflow "${automationId}" not found`);
   return {
     text: snapshot.source,
     content: [{ type: "text", text: snapshot.source }],
@@ -132,15 +130,15 @@ export async function writeAutomationVirtualFile(input: {
   });
   if (!updated) {
     throw new Error(
-      `Deterministic automation "${automationId}" not found. Create it with create_deterministic_automation first.`,
+      `Workflow "${automationId}" not found. Create it with create_workflow first.`,
     );
   }
   return {
-    text: `Updated deterministic automation ${automationId} to source version ${updated.source_version}`,
+    text: `Updated workflow ${automationId} to source version ${updated.source_version}`,
     content: [
       {
         type: "text",
-        text: `Updated deterministic automation ${automationId} to source version ${updated.source_version}`,
+        text: `Updated workflow ${automationId} to source version ${updated.source_version}`,
       },
     ],
     details: {
@@ -164,7 +162,7 @@ export async function editAutomationVirtualFile(input: {
     input.workspaceId,
     automationId,
   );
-  if (!snapshot) throw new Error(`Deterministic automation "${automationId}" not found`);
+  if (!snapshot) throw new Error(`Workflow "${automationId}" not found`);
   const next = exactEdits(snapshot.source, input.edits, input.path);
   return writeAutomationVirtualFile({
     cronStub: input.cronStub,

@@ -569,6 +569,57 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       run_count: prompt.run_count,
     });
 
+    const resolveWorkflowId = (input: {
+      workflow_id?: string;
+      automation_id?: string;
+    }) => {
+      const workflowId = input.workflow_id?.trim() || input.automation_id?.trim() || '';
+      if (!workflowId) throw new Error('workflow_id is required');
+      return workflowId;
+    };
+    const optionalWorkflowId = z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('ID of the workflow');
+    const optionalAutomationIdAlias = z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Deprecated alias for workflow_id');
+    const hasWorkflowIdentifier = (input: {
+      workflow_id?: string;
+      automation_id?: string;
+    }) => Boolean(input.workflow_id?.trim() || input.automation_id?.trim());
+    const workflowIdentifierInputSchema = z
+      .object({
+        workflow_id: optionalWorkflowId,
+        automation_id: optionalAutomationIdAlias,
+      })
+      .refine(hasWorkflowIdentifier, {
+        message: 'workflow_id or automation_id is required',
+        path: ['workflow_id'],
+      });
+    const workflowUpdateFields = {
+      name: z.string().optional().describe('Optional new display name'),
+      source: z.string().optional().describe('Optional new source'),
+      cron_expression: z.string().optional().describe('Optional new 5-field UTC cron expression'),
+      description: z.string().optional().describe('Optional new description'),
+      enabled: z.boolean().optional().describe('Optional enabled state'),
+    };
+    const workflowUpdateInputSchema = z
+      .object({
+        workflow_id: optionalWorkflowId.describe('ID of the workflow to update'),
+        automation_id: optionalAutomationIdAlias,
+        ...workflowUpdateFields,
+      })
+      .refine(hasWorkflowIdentifier, {
+        message: 'workflow_id or automation_id is required',
+        path: ['workflow_id'],
+      });
+
     this.server.tool(
       'list_scheduled_prompts',
       'List scheduled prompts for the current workspace. Cron expressions use 5 fields in UTC: minute hour day-of-month month day-of-week.',
@@ -776,8 +827,8 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     );
 
     this.server.tool(
-      'list_deterministic_automations',
-      'List deterministic workflow automations for the current workspace. Cron expressions use 5 fields in UTC: minute hour day-of-month month day-of-week.',
+      'list_workflows',
+      'List workflows for the current workspace. Workflows are deterministic JavaScript code that runs on a schedule. Cron expressions use 5 fields in UTC: minute hour day-of-month month day-of-week.',
       {},
       async () => {
         const { workspaceId } = this.requireAuth();
@@ -787,11 +838,13 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         try {
           const schedulerStub = this.getWorkspaceCronStub(workspaceId);
           const automations = await schedulerStub.listDeterministicAutomations(workspaceId);
+          const workflows = automations.map((automation) => formatDeterministicAutomation(automation));
           return this.textResponse({
             success: true,
             count: automations.length,
             timezone: 'UTC',
-            automations: automations.map((automation) => formatDeterministicAutomation(automation)),
+            workflows,
+            automations: workflows,
           });
         } catch (error) {
           return this.textResponse({
@@ -803,8 +856,8 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     );
 
     this.server.tool(
-      'validate_deterministic_automation',
-      'Validate deterministic automation source without saving it.',
+      'validate_workflow',
+      'Validate workflow source without saving it.',
       {
         source: z.string().describe('JavaScript module source exporting AutomationWorkflow'),
       },
@@ -828,10 +881,10 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     );
 
     this.server.tool(
-      'create_deterministic_automation',
-      'Create deterministic workflow automation source in the current workspace.',
+      'create_workflow',
+      'Create a workflow in the current workspace.',
       {
-        name: z.string().describe('Friendly name for the automation'),
+        name: z.string().describe('Friendly name for the workflow'),
         source: z.string().describe('JavaScript module source exporting AutomationWorkflow'),
         cron_expression: z
           .string()
@@ -858,8 +911,9 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           return this.textResponse({
             success: true,
             timezone: 'UTC',
+            workflow: formatDeterministicAutomation(created, true),
             automation: formatDeterministicAutomation(created, true),
-            message: `Created deterministic automation "${created.name}"`,
+            message: `Created workflow "${created.name}"`,
           });
         } catch (error) {
           return this.textResponse({
@@ -870,27 +924,23 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       }
     );
 
-    this.server.tool(
-      'update_deterministic_automation',
-      'Update an existing deterministic workflow automation.',
+    this.server.registerTool(
+      'update_workflow',
       {
-        automation_id: z.string().describe('ID of the deterministic automation to update'),
-        name: z.string().optional().describe('Optional new display name'),
-        source: z.string().optional().describe('Optional new source'),
-        cron_expression: z.string().optional().describe('Optional new 5-field UTC cron expression'),
-        description: z.string().optional().describe('Optional new description'),
-        enabled: z.boolean().optional().describe('Optional enabled state'),
+        description: 'Update an existing workflow.',
+        inputSchema: workflowUpdateInputSchema,
       },
-      async ({ automation_id, name, source, cron_expression, description, enabled }) => {
+      async ({ workflow_id, automation_id, name, source, cron_expression, description, enabled }) => {
         const { workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ success: false, error: 'No workspace context available' });
         }
         try {
+          const resolvedWorkflowId = resolveWorkflowId({ workflow_id, automation_id });
           const schedulerStub = this.getWorkspaceCronStub(workspaceId);
           const updated = await schedulerStub.updateDeterministicAutomation({
             workspaceId,
-            id: automation_id,
+            id: resolvedWorkflowId,
             name,
             source,
             cronExpression: cron_expression,
@@ -900,14 +950,15 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           if (!updated) {
             return this.textResponse({
               success: false,
-              error: `Deterministic automation "${automation_id}" not found`,
+              error: `Workflow "${resolvedWorkflowId}" not found`,
             });
           }
           return this.textResponse({
             success: true,
             timezone: 'UTC',
+            workflow: formatDeterministicAutomation(updated, true),
             automation: formatDeterministicAutomation(updated, true),
-            message: `Updated deterministic automation "${updated.name}"`,
+            message: `Updated workflow "${updated.name}"`,
           });
         } catch (error) {
           return this.textResponse({
@@ -918,29 +969,32 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       }
     );
 
-    this.server.tool(
-      'delete_deterministic_automation',
-      'Delete a deterministic workflow automation from the current workspace.',
+    this.server.registerTool(
+      'delete_workflow',
       {
-        automation_id: z.string().describe('ID of the deterministic automation to delete'),
+        description: 'Delete a workflow from the current workspace.',
+        inputSchema: workflowIdentifierInputSchema,
       },
-      async ({ automation_id }) => {
+      async ({ workflow_id, automation_id }) => {
         const { workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ success: false, error: 'No workspace context available' });
         }
         try {
+          const resolvedWorkflowId = resolveWorkflowId({ workflow_id, automation_id });
           const schedulerStub = this.getWorkspaceCronStub(workspaceId);
-          const deleted = await schedulerStub.deleteDeterministicAutomation(workspaceId, automation_id);
+          const deleted = await schedulerStub.deleteDeterministicAutomation(workspaceId, resolvedWorkflowId);
           if (!deleted) {
             return this.textResponse({
               success: false,
-              error: `Deterministic automation "${automation_id}" not found`,
+              error: `Workflow "${resolvedWorkflowId}" not found`,
             });
           }
           return this.textResponse({
             success: true,
-            message: `Deleted deterministic automation "${automation_id}"`,
+            workflow_id: resolvedWorkflowId,
+            automation_id: resolvedWorkflowId,
+            message: `Deleted workflow "${resolvedWorkflowId}"`,
           });
         } catch (error) {
           return this.textResponse({
@@ -951,30 +1005,33 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       }
     );
 
-    this.server.tool(
-      'run_deterministic_automation_now',
-      'Start a deterministic workflow automation immediately without waiting for its next cron time.',
+    this.server.registerTool(
+      'run_workflow_now',
       {
-        automation_id: z.string().describe('ID of the deterministic automation to run now'),
+        description: 'Start a workflow immediately without waiting for its next cron time.',
+        inputSchema: workflowIdentifierInputSchema,
       },
-      async ({ automation_id }) => {
+      async ({ workflow_id, automation_id }) => {
         const { workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ success: false, error: 'No workspace context available' });
         }
         try {
+          const resolvedWorkflowId = resolveWorkflowId({ workflow_id, automation_id });
           const schedulerStub = this.getWorkspaceCronStub(workspaceId);
-          const result = await schedulerStub.runDeterministicAutomationNow(workspaceId, automation_id);
+          const result = await schedulerStub.runDeterministicAutomationNow(workspaceId, resolvedWorkflowId);
           if (!result) {
             return this.textResponse({
               success: false,
-              error: `Deterministic automation "${automation_id}" not found`,
+              error: `Workflow "${resolvedWorkflowId}" not found`,
             });
           }
+          const workflow = formatDeterministicAutomation(result.automation);
           return this.textResponse({
             success: true,
             timezone: 'UTC',
-            automation: formatDeterministicAutomation(result.automation),
+            workflow,
+            automation: workflow,
             run: {
               status: result.dispatch.status,
               instance_id: result.dispatch.instance_id,

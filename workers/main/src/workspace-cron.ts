@@ -1109,6 +1109,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         id: instanceId,
         params: {
           workspaceId: workspace.id,
+          workflowId: automation.id,
+          workflowName: automation.name,
           automationId: automation.id,
           automationName: automation.name,
           scheduledFor: new Date(scheduledForMs).toISOString(),

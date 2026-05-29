@@ -25,12 +25,23 @@ interface DeterministicAutomationRecord {
   run_count: number;
 }
 
+function getWorkflowId(args: Record<string, unknown>): string {
+  const value = typeof args.workflow_id === "string"
+    ? args.workflow_id
+    : typeof args.automation_id === "string"
+      ? args.automation_id
+      : "";
+  return value.trim();
+}
+
 export function formatDeterministicAutomation(
   automation: DeterministicAutomationRecord,
   includeSource = false,
 ): Record<string, unknown> {
   return {
     id: automation.id,
+    workflow_id: automation.id,
+    automation_id: automation.id,
     name: automation.name,
     description: automation.description,
     ...(includeSource ? { source: automation.source } : {}),
@@ -63,13 +74,15 @@ export class CodeModeDeterministicAutomations {
     const automations = await this.options.cronStub.listDeterministicAutomations(
       this.options.workspaceId,
     );
+    const workflows = automations.map((automation) =>
+      formatDeterministicAutomation(automation),
+    );
     return {
       success: true,
       count: automations.length,
       timezone: "UTC",
-      automations: automations.map((automation) =>
-        formatDeterministicAutomation(automation),
-      ),
+      workflows,
+      automations: workflows,
     };
   }
 
@@ -103,15 +116,15 @@ export class CodeModeDeterministicAutomations {
     return {
       success: true,
       timezone: "UTC",
+      workflow: formatDeterministicAutomation(created, true),
       automation: formatDeterministicAutomation(created, true),
-      message: `Created deterministic automation "${created.name}"`,
+      message: `Created workflow "${created.name}"`,
     };
   }
 
   async update(args: Record<string, unknown>): Promise<unknown> {
-    const automationId =
-      typeof args.automation_id === "string" ? args.automation_id.trim() : "";
-    if (!automationId) throw new Error("automation_id is required");
+    const automationId = getWorkflowId(args);
+    if (!automationId) throw new Error("workflow_id is required");
     let description: string | undefined;
     if (Object.prototype.hasOwnProperty.call(args, "description")) {
       if (typeof args.description !== "string") {
@@ -134,21 +147,21 @@ export class CodeModeDeterministicAutomations {
     if (!updated) {
       return {
         success: false,
-        error: `Deterministic automation "${automationId}" not found`,
+        error: `Workflow "${automationId}" not found`,
       };
     }
     return {
       success: true,
       timezone: "UTC",
+      workflow: formatDeterministicAutomation(updated, true),
       automation: formatDeterministicAutomation(updated, true),
-      message: `Updated deterministic automation "${updated.name}"`,
+      message: `Updated workflow "${updated.name}"`,
     };
   }
 
   async delete(args: Record<string, unknown>): Promise<unknown> {
-    const automationId =
-      typeof args.automation_id === "string" ? args.automation_id.trim() : "";
-    if (!automationId) throw new Error("automation_id is required");
+    const automationId = getWorkflowId(args);
+    if (!automationId) throw new Error("workflow_id is required");
     const deleted = await this.options.cronStub.deleteDeterministicAutomation(
       this.options.workspaceId,
       automationId,
@@ -156,19 +169,18 @@ export class CodeModeDeterministicAutomations {
     if (!deleted) {
       return {
         success: false,
-        error: `Deterministic automation "${automationId}" not found`,
+        error: `Workflow "${automationId}" not found`,
       };
     }
     return {
       success: true,
-      message: `Deleted deterministic automation "${automationId}"`,
+      message: `Deleted workflow "${automationId}"`,
     };
   }
 
   async runNow(args: Record<string, unknown>): Promise<unknown> {
-    const automationId =
-      typeof args.automation_id === "string" ? args.automation_id.trim() : "";
-    if (!automationId) throw new Error("automation_id is required");
+    const automationId = getWorkflowId(args);
+    if (!automationId) throw new Error("workflow_id is required");
     const result = await this.options.cronStub.runDeterministicAutomationNow(
       this.options.workspaceId,
       automationId,
@@ -176,13 +188,15 @@ export class CodeModeDeterministicAutomations {
     if (!result) {
       return {
         success: false,
-        error: `Deterministic automation "${automationId}" not found`,
+        error: `Workflow "${automationId}" not found`,
       };
     }
+    const workflow = formatDeterministicAutomation(result.automation);
     return {
       success: true,
       timezone: "UTC",
-      automation: formatDeterministicAutomation(result.automation),
+      workflow,
+      automation: workflow,
       run: {
         status: result.dispatch.status,
         instance_id: result.dispatch.instance_id,

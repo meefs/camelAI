@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Deterministic Automations Architecture</title>
+  <title>Workflow Architecture</title>
   <style>
     :root {
       color-scheme: light;
@@ -319,7 +319,7 @@
   <main>
     <header>
       <div>
-        <h1>Deterministic Automations Architecture</h1>
+        <h1>Workflow Architecture</h1>
         <p class="lede">
           Workspace-scoped scheduled code runs through Durable Object alarms and Cloudflare Dynamic Workflows, separate from prompt-based scheduled agent turns.
         </p>
@@ -341,11 +341,11 @@
         <div class="stack">
           <div class="node primary">
             <h3>Agent Tools</h3>
-            <p>Create, list, update, validate, delete, and run deterministic automations.</p>
+            <p>Create, list, update, validate, delete, and run workflows.</p>
           </div>
           <div class="node">
             <h3>Virtual Files</h3>
-            <p>Automation source is readable and editable at <code>.camelai/automations/&lt;id&gt;.js</code>.</p>
+            <p>Workflow source is readable and editable at <code>.camelai/automations/&lt;id&gt;.js</code>.</p>
           </div>
         </div>
         <div class="arrow">→</div>
@@ -368,7 +368,7 @@
         <div class="stack">
           <div class="node primary">
             <h3>Cloudflare Workflows</h3>
-            <p>A wrapped workflow binding tags each instance with workspace id, automation id, and source version.</p>
+            <p>A wrapped workflow binding tags each instance with workspace id, workflow id, and source version.</p>
           </div>
           <div class="node">
             <h3>Dynamic Worker</h3>
@@ -380,11 +380,11 @@
 
     <section class="grid">
       <article class="node">
-        <h3>Prompt Schedules</h3>
+        <h3>Agent Tasks</h3>
         <p>Send a message to a thread and let the agent decide what to do. Best for reminders, reports, and open-ended work.</p>
       </article>
       <article class="node primary">
-        <h3>Deterministic Automations</h3>
+        <h3>Workflows</h3>
         <p>Run code directly through Cloudflare Workflows. Best for exact side effects, durable sleeps, retries, and integrations.</p>
       </article>
       <article class="node">
@@ -401,7 +401,7 @@
       <div class="flow">
         <div class="step">
           <h3>Create</h3>
-          <p>The agent calls <code>create_deterministic_automation</code> with source and a five-field UTC cron expression.</p>
+          <p>The agent calls <code>create_workflow</code> with source and a five-field UTC cron expression.</p>
         </div>
         <div class="step">
           <h3>Validate</h3>
@@ -497,8 +497,8 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
         </thead>
         <tbody>
           <tr>
-            <td>Create a new automation</td>
-            <td><code>validate_deterministic_automation</code>, then <code>create_deterministic_automation</code></td>
+            <td>Create a new workflow</td>
+            <td><code>validate_workflow</code>, then <code>create_workflow</code></td>
             <td>Creation owns schedule metadata. Files only edit source after creation.</td>
           </tr>
           <tr>
@@ -513,7 +513,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
           </tr>
           <tr>
             <td>Smoke test</td>
-            <td><code>run_deterministic_automation_now</code></td>
+            <td><code>run_workflow_now</code></td>
             <td>Starts a workflow instance immediately when the action is safe.</td>
           </tr>
         </tbody>

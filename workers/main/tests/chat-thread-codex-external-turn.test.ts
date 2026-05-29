@@ -1661,7 +1661,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       'set_preview',
       'list_apps',
       'list_scheduled_prompts',
-      'list_deterministic_automations',
+      'list_workflows',
       'list_integrations',
       'get_custom_domain',
       'Agent',
@@ -1675,6 +1675,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
     expect((byName.get('connections_get') as any).parameters.properties.connection).toBeDefined();
+    expect(byName.has('list_deterministic_automations')).toBe(false);
     expect(byName.has('prompt_connection_setup')).toBe(false);
   });
 
@@ -2103,13 +2104,14 @@ describe('ChatThreadDO Codex turn handling', () => {
       'list_apps',
       'get_latest_logs',
       'list_scheduled_prompts',
-      'list_deterministic_automations',
+      'list_workflows',
       'list_integrations',
       'prompt_connection_setup',
       'get_custom_domain',
       'WebSearch',
       'WebFetch',
     ]));
+    expect(toolNames).not.toContain('list_deterministic_automations');
 
     const ask = tools.find((tool: any) => tool.name === 'AskUserQuestion');
     const result = await ask.execute('ask-tool-id', {

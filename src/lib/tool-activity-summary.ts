@@ -89,18 +89,24 @@ function canonicalizeToolSummaryName(name: string): string {
       return 'DeleteScheduledPrompt';
     case 'run_scheduled_prompt_now':
       return 'RunScheduledPrompt';
+    case 'list_workflows':
     case 'list_deterministic_automations':
-      return 'ListDeterministicAutomations';
+      return 'ListWorkflows';
+    case 'validate_workflow':
     case 'validate_deterministic_automation':
-      return 'ValidateDeterministicAutomation';
+      return 'ValidateWorkflow';
+    case 'create_workflow':
     case 'create_deterministic_automation':
-      return 'CreateDeterministicAutomation';
+      return 'CreateWorkflow';
+    case 'update_workflow':
     case 'update_deterministic_automation':
-      return 'UpdateDeterministicAutomation';
+      return 'UpdateWorkflow';
+    case 'delete_workflow':
     case 'delete_deterministic_automation':
-      return 'DeleteDeterministicAutomation';
+      return 'DeleteWorkflow';
+    case 'run_workflow_now':
     case 'run_deterministic_automation_now':
-      return 'RunDeterministicAutomation';
+      return 'RunWorkflow';
     case 'list_integrations':
     case 'connections_list':
       return 'ListConnections';
@@ -549,30 +555,36 @@ export function getToolSummaryParts(
       if (isRunning) return { action: 'Running scheduled prompt...' };
       if (isError) return { action: 'Could not run scheduled prompt' };
       return { action: 'Ran scheduled prompt' };
+    case 'ListWorkflows':
     case 'ListDeterministicAutomations':
-      if (isRunning) return { action: 'Checking automations...' };
-      if (isError) return { action: 'Could not check automations' };
-      return { action: 'Checked automations' };
+      if (isRunning) return { action: 'Checking workflows...' };
+      if (isError) return { action: 'Could not check workflows' };
+      return { action: 'Checked workflows' };
+    case 'ValidateWorkflow':
     case 'ValidateDeterministicAutomation':
-      if (isRunning) return { action: 'Validating automation...' };
-      if (isError) return { action: 'Could not validate automation' };
-      return { action: 'Validated automation' };
+      if (isRunning) return { action: 'Validating workflow...' };
+      if (isError) return { action: 'Could not validate workflow' };
+      return { action: 'Validated workflow' };
+    case 'CreateWorkflow':
     case 'CreateDeterministicAutomation':
-      if (isRunning) return { action: 'Creating automation...' };
-      if (isError) return { action: 'Could not create automation' };
-      return { action: 'Created automation' };
+      if (isRunning) return { action: 'Creating workflow...' };
+      if (isError) return { action: 'Could not create workflow' };
+      return { action: 'Created workflow' };
+    case 'UpdateWorkflow':
     case 'UpdateDeterministicAutomation':
-      if (isRunning) return { action: 'Updating automation...' };
-      if (isError) return { action: 'Could not update automation' };
-      return { action: 'Updated automation' };
+      if (isRunning) return { action: 'Updating workflow...' };
+      if (isError) return { action: 'Could not update workflow' };
+      return { action: 'Updated workflow' };
+    case 'DeleteWorkflow':
     case 'DeleteDeterministicAutomation':
-      if (isRunning) return { action: 'Deleting automation...' };
-      if (isError) return { action: 'Could not delete automation' };
-      return { action: 'Deleted automation' };
+      if (isRunning) return { action: 'Deleting workflow...' };
+      if (isError) return { action: 'Could not delete workflow' };
+      return { action: 'Deleted workflow' };
+    case 'RunWorkflow':
     case 'RunDeterministicAutomation':
-      if (isRunning) return { action: 'Starting automation...' };
-      if (isError) return { action: 'Could not start automation' };
-      return { action: 'Started automation' };
+      if (isRunning) return { action: 'Starting workflow...' };
+      if (isError) return { action: 'Could not start workflow' };
+      return { action: 'Started workflow' };
     case 'ListConnections':
       if (isRunning) return { action: 'Checking connections...' };
       if (isError) return { action: 'Could not check connections' };
