@@ -94,14 +94,20 @@ import { buildSlugMap } from "@/lib/connection-mentions";
 import { isFileDrag } from "@/lib/file-drag";
 import {
   type SDKEvent,
+  attachArtifactsToToolResultMessages,
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
   extractToolEventMetaInfo,
   finalizeStreamingMessage,
+  mergeToolResultArtifacts,
   mergeTaskNotifications,
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from "@/lib/streaming";
+import {
+  normalizeRuntimeCallArtifacts,
+  type RuntimeCallArtifact,
+} from "@/lib/runtime-artifacts";
 import {
   applyRuntimeEventToMessages,
   splitStreamingMessageForSteer,
@@ -1148,6 +1154,9 @@ export default function Chat({
   const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const fallbackRenderedAtRef = useRef<number>(Date.now());
+  const pendingCodeModeArtifactsRef = useRef<Map<string, RuntimeCallArtifact[]>>(
+    new Map(),
+  );
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
@@ -1162,6 +1171,7 @@ export default function Chat({
     setFreshlyCompletedTurnId(null);
     compactingPriorMessageIdRef.current = null;
     setCompactingPriorMessageId(null);
+    pendingCodeModeArtifactsRef.current = new Map();
   }, [threadId]);
 
   const clearAllIframeRefreshTimeouts = useCallback(() => {
@@ -2131,6 +2141,36 @@ export default function Chat({
     }
   }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
+  const handleCodeModeArtifactEvent = useCallback(
+    (data: any) => {
+      const parentToolUseId =
+        typeof data.parentToolUseId === "string" ? data.parentToolUseId.trim() : "";
+      const [artifact] = normalizeRuntimeCallArtifacts([data.artifact]);
+      if (!parentToolUseId || !artifact) return;
+
+      setMessages((prev) => {
+        const result = attachArtifactsToToolResultMessages(prev, parentToolUseId, [artifact]);
+        if (result.attached) {
+          return result.messages;
+        }
+
+        const existing = pendingCodeModeArtifactsRef.current.get(parentToolUseId) ?? [];
+        const merged = mergeToolResultArtifacts(
+          {
+            type: "tool_result",
+            tool_use_id: parentToolUseId,
+            content: "",
+            artifacts: existing,
+          },
+          [artifact],
+        ).artifacts ?? [];
+        pendingCodeModeArtifactsRef.current.set(parentToolUseId, merged);
+        return prev;
+      });
+    },
+    [setMessages],
+  );
+
   const handleRealtimeSideChannelEvent = useCallback(
     (data: any) => {
       if (data.type === "preview_state") {
@@ -2156,6 +2196,10 @@ export default function Chat({
         const shouldRefreshActiveTab = refreshTabId
           ? refreshTabId === nextActiveId
           : !hasRefreshHint && hasVersionBump;
+
+        if (nextSession.target.kind === "runtime_artifact") {
+          return;
+        }
 
         if (nextSession.target.kind === "app" && shouldRefreshActiveTab) {
           const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
@@ -2219,6 +2263,11 @@ export default function Chat({
         return;
       }
 
+      if (data.type === "code_mode_artifact") {
+        handleCodeModeArtifactEvent(data);
+        return;
+      }
+
       if (
         data.type === "connection_setup_prompt" &&
         data.requestId &&
@@ -2268,6 +2317,7 @@ export default function Chat({
       bumpIframeKey,
       bumpFilePreviewKey,
       showChatError,
+      handleCodeModeArtifactEvent,
     ],
   );
 
@@ -2896,6 +2946,14 @@ export default function Chat({
                 block?.type === "tool_result",
             );
             if (toolResults.length === 0) return;
+            const toolResultsWithArtifacts = toolResults.map((toolResult) => {
+              const pendingArtifacts = pendingCodeModeArtifactsRef.current.get(
+                toolResult.tool_use_id,
+              );
+              if (!pendingArtifacts?.length) return toolResult;
+              pendingCodeModeArtifactsRef.current.delete(toolResult.tool_use_id);
+              return mergeToolResultArtifacts(toolResult, pendingArtifacts);
+            });
             const toolUseResultPrompt = (() => {
               const toolUseResult =
                 sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
@@ -2904,7 +2962,7 @@ export default function Chat({
                 : undefined;
             })();
             setMessages((prev) =>
-              attachToolResultsToMessages(prev, toolResults, {
+              attachToolResultsToMessages(prev, toolResultsWithArtifacts, {
                 threadId: id,
                 parentToolUseId: sourceToolUseID,
                 parentToolPrompt: toolUseResultPrompt,
@@ -3069,6 +3127,7 @@ export default function Chat({
           data.type === "preview_state" ||
           data.type === "title_updated" ||
           data.type === "thread_model_updated" ||
+          data.type === "code_mode_artifact" ||
           data.type === "connection_setup_prompt" ||
           data.type === "connection_setup_answered" ||
           data.type === "connection_setup_error"
@@ -4475,7 +4534,7 @@ type SendOptions = {
   });
 
   const handlePreviewRefresh = useCallback(() => {
-    if (!previewTarget) return;
+    if (!previewTarget || previewTarget.kind === "runtime_artifact") return;
     if (previewTarget.kind === "app") {
       refreshActiveIframe();
       return;
@@ -4484,7 +4543,7 @@ type SendOptions = {
   }, [previewTarget, refreshActiveIframe, refreshActiveFilePreview]);
 
   const handlePreviewOpenElsewhere = useCallback(() => {
-    if (!previewTarget) return;
+    if (!previewTarget || previewTarget.kind === "runtime_artifact") return;
     if (previewTarget.kind === "app") {
       if (!appPreviewVanityUrl) return;
       window.open(appPreviewVanityUrl, "_blank", "noopener,noreferrer");

@@ -6,6 +6,7 @@ import type {
   ToolResultBlock,
   ToolUseBlock,
 } from '@/types';
+import type { RuntimeCallArtifact } from './runtime-artifacts';
 import { parseTeammateMessage } from '@/lib/teammate-message';
 import { parseTaskNotificationFromContent } from '@/lib/task-notification';
 
@@ -416,6 +417,58 @@ export function attachToolResultsToMessages(
   });
 
   return next;
+}
+
+export function mergeToolResultArtifacts(
+  toolResult: ToolResultBlock,
+  artifacts: RuntimeCallArtifact[]
+): ToolResultBlock {
+  if (artifacts.length === 0) return toolResult;
+  const byId = new Map<string, RuntimeCallArtifact>();
+  for (const artifact of toolResult.artifacts ?? []) {
+    byId.set(artifact.id, artifact);
+  }
+  for (const artifact of artifacts) {
+    byId.set(artifact.id, artifact);
+  }
+  return {
+    ...toolResult,
+    artifacts: Array.from(byId.values()),
+  };
+}
+
+export function attachArtifactsToToolResultMessages(
+  messages: Message[],
+  parentToolUseId: string,
+  artifacts: RuntimeCallArtifact[]
+): { messages: Message[]; attached: boolean } {
+  const normalizedParentToolUseId = parentToolUseId.trim();
+  if (!normalizedParentToolUseId || artifacts.length === 0) {
+    return { messages, attached: false };
+  }
+
+  let attached = false;
+  const nextMessages = messages.map((message) => {
+    if (!Array.isArray(message.content)) return message;
+    let changed = false;
+    const content = message.content.map((block) => {
+      if (
+        block?.type !== 'tool_result' ||
+        block.tool_use_id !== normalizedParentToolUseId
+      ) {
+        return block;
+      }
+      changed = true;
+      attached = true;
+      return mergeToolResultArtifacts(block, artifacts);
+    });
+    return changed ? { ...message, content } : message;
+  });
+
+  return {
+    messages: attached ? nextMessages : messages,
+    attached,
+  };
 }
 
 export function normalizeToolResultMessages(messages: Message[]): Message[] {

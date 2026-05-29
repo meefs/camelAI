@@ -36,6 +36,14 @@ import {
 } from '../../../src/lib/thread-completion-summary-generation.server';
 import { normalizeThreadPreviewUserMessage } from '../../../src/lib/thread-preview';
 import { getToolSummary } from '../../../src/lib/tool-activity-summary';
+import {
+  normalizePiUiMetadata,
+  normalizeRuntimeCallArtifacts,
+  stripPiUiMetadata,
+  type PiUiMetadata,
+  type RuntimeCallArtifact,
+  type RuntimeCallArtifactKind,
+} from '../../../src/lib/runtime-artifacts';
 import type {
   LlmModel,
   ThreadCompletionSummaryStatus,
@@ -147,6 +155,10 @@ export type PreviewTarget =
       path: string;
       filename?: string;
       contentType?: string;
+    }
+  | {
+      kind: "runtime_artifact";
+      artifact: RuntimeCallArtifact;
     };
 
 type PiBillingSource = "hosted" | "byok";
@@ -535,6 +547,10 @@ function sanitizePiProviderMessage(message: AgentMessage): AgentMessage {
   return { ...record, content } as unknown as AgentMessage;
 }
 
+function sanitizePiModelMessage(message: AgentMessage): AgentMessage {
+  return sanitizePiProviderMessage(stripPiUiMetadata(message));
+}
+
 function sanitizePiProviderContentForSqlStorage(content: unknown, stats?: PiSqlStorageStats): unknown {
   const supported = sanitizePiProviderContent(content);
   if (!Array.isArray(supported)) return supported;
@@ -724,6 +740,7 @@ interface CodeModeJavascriptRequest {
   workspaceId: string;
   threadId?: string;
   userId?: string;
+  toolUseId?: string;
   timeoutMs?: number | null;
   maxOutputCharacters?: number | null;
 }
@@ -737,6 +754,7 @@ export interface CodeModeToolsProps {
   workspaceId: string;
   threadId?: string;
   userId?: string;
+  parentToolUseId?: string;
 }
 
 interface AIVirtualBindingProps {
@@ -1463,14 +1481,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const args = rawArgs == null ? {} : rawArgs as Record<string, unknown>;
     const handler = CodeModeToolsBinding.TOOL_CALL_HANDLERS[name];
     if (handler) {
-      return handler(this, args, name);
+      return this.callToolWithArtifactCapture(name, args, () => handler(this, args, name));
     }
 
-    switch (name) {
-      case "bash":
+    return this.callToolWithArtifactCapture(name, args, async () => {
+      switch (name) {
+        case "bash":
         return this.piContainerTools.callTool("bash", args);
 
-      case "read":
+        case "read":
         {
           const path = typeof args.path === "string" ? args.path : "";
           if (normalizeAutomationVirtualPath(path) !== null) {
@@ -1497,7 +1516,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         }
         return this.piContainerTools.callTool("read", args);
 
-      case "write":
+        case "write":
         {
           const path = typeof args.path === "string" ? args.path : "";
           const content = typeof args.content === "string" ? args.content : "";
@@ -1513,7 +1532,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         }
         return this.piContainerTools.callTool("write", args);
 
-      case "ls":
+        case "ls":
         {
           if (typeof args.path === "string") {
             if (normalizeAutomationVirtualPath(args.path) !== null) {
@@ -1540,7 +1559,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         }
         return this.piContainerTools.callTool("ls", args);
 
-      case "edit":
+        case "edit":
         {
           const path = typeof args.path === "string" ? args.path : "";
           const edits = Array.isArray(args.edits)
@@ -1565,15 +1584,179 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         }
         return this.piContainerTools.callTool("edit", args);
 
-      case "grep":
+        case "grep":
         return this.piContainerTools.callTool("grep", args);
 
-      case "find":
+        case "find":
         return this.piContainerTools.callTool("find", args);
 
-      default:
-        throw new Error(`Unknown code mode tool: ${name}`);
+        default:
+          throw new Error(`Unknown code mode tool: ${name}`);
+      }
+    });
+  }
+
+  private async callToolWithArtifactCapture(
+    name: string,
+    args: Record<string, unknown>,
+    execute: () => Promise<unknown> | unknown,
+  ): Promise<unknown> {
+    try {
+      const result = await execute();
+      await this.recordCodeModeArtifactBestEffort(name, args, result);
+      return result;
+    } catch (error) {
+      await this.recordCodeModeArtifactBestEffort(name, args, undefined, error);
+      throw error;
     }
+  }
+
+  private async recordCodeModeArtifactBestEffort(
+    name: string,
+    args: Record<string, unknown>,
+    result?: unknown,
+    error?: unknown,
+  ): Promise<void> {
+    try {
+      await this.maybeRecordCodeModeArtifact(name, args, result, error);
+    } catch (recordError) {
+      console.error("Failed to record code mode artifact", {
+        toolName: name,
+        threadId: this.ctx?.props?.threadId,
+        parentToolUseId: this.ctx?.props?.parentToolUseId,
+        error: recordError instanceof Error ? recordError.message : String(recordError),
+      });
+    }
+  }
+
+  private async maybeRecordCodeModeArtifact(
+    name: string,
+    args: Record<string, unknown>,
+    result?: unknown,
+    error?: unknown,
+  ): Promise<void> {
+    const props = this.ctx?.props;
+    const parentToolUseId = props?.parentToolUseId?.trim();
+    const threadId = props?.threadId?.trim();
+    if (!parentToolUseId || !threadId) return;
+    const artifact = this.buildCodeModeArtifact(name, args, result, error);
+    if (!artifact) return;
+    await (this.chatThreadStub as unknown as {
+      recordCodeModeArtifact(parentToolUseId: string, artifact: RuntimeCallArtifact): Promise<void>;
+    }).recordCodeModeArtifact(parentToolUseId, artifact);
+  }
+
+  private buildCodeModeArtifact(
+    name: string,
+    args: Record<string, unknown>,
+    result?: unknown,
+    error?: unknown,
+  ): RuntimeCallArtifact | null {
+    const kindByTool: Record<string, RuntimeCallArtifactKind> = {
+      send_email: "outbound_email",
+      send_slack_message: "outbound_slack_message",
+      send_telegram_message: "outbound_telegram_message",
+    };
+    const kind = kindByTool[name];
+    if (!kind) return null;
+    const now = Date.now();
+    const status = error ? "failed" : "sent";
+    const details = this.codeModeArtifactDetails(result);
+    const summary = this.summarizeCodeModeArtifactArgs(name, args);
+    const titleByKind: Record<RuntimeCallArtifactKind, string> = {
+      outbound_email: status === "sent" ? "Email sent" : "Email failed",
+      outbound_slack_message: status === "sent" ? "Slack message sent" : "Slack message failed",
+      outbound_telegram_message: status === "sent" ? "Telegram message sent" : "Telegram message failed",
+    };
+    return {
+      id: `${this.ctx.props.parentToolUseId}:${name}:${crypto.randomUUID()}`,
+      kind,
+      toolName: name as RuntimeCallArtifact["toolName"],
+      status,
+      title: titleByKind[kind],
+      subtitle: this.codeModeArtifactSubtitle(kind, summary, details),
+      createdAt: now,
+      updatedAt: now,
+      summary,
+      ...(Object.keys(details).length > 0 ? { result: details } : {}),
+      ...(error ? { error: this.codeModeArtifactError(error) } : {}),
+    };
+  }
+
+  private summarizeCodeModeArtifactArgs(
+    name: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const attachmentCount = Array.isArray(args.attachments) ? args.attachments.length : 0;
+    const text = typeof args.text === "string" ? args.text : "";
+    switch (name) {
+      case "send_email": {
+        const to = typeof args.to === "string" ? args.to.trim() : "";
+        return {
+          to,
+          toDomain: to.includes("@") ? to.split("@").pop() : undefined,
+          subject: typeof args.subject === "string" ? args.subject : undefined,
+          hasText: typeof args.text === "string" && args.text.length > 0,
+          hasHtml: typeof args.html === "string" && args.html.length > 0,
+          attachmentCount,
+        };
+      }
+      case "send_slack_message":
+        return {
+          channelId: typeof args.channel_id === "string" ? args.channel_id : undefined,
+          teamId: typeof args.team_id === "string" ? args.team_id : undefined,
+          integrationId: typeof args.integration_id === "string" ? args.integration_id : undefined,
+          threadTs: typeof args.thread_ts === "string" ? args.thread_ts : undefined,
+          hasText: text.length > 0,
+          textPreview: text ? this.truncateArtifactPreviewText(text) : undefined,
+          attachmentCount,
+        };
+      case "send_telegram_message":
+        return {
+          chatId: typeof args.chat_id === "string" ? args.chat_id : undefined,
+          integrationId: typeof args.integration_id === "string" ? args.integration_id : undefined,
+          hasText: text.length > 0,
+          textPreview: text ? this.truncateArtifactPreviewText(text) : undefined,
+          attachmentCount,
+        };
+      default:
+        return { attachmentCount };
+    }
+  }
+
+  private codeModeArtifactDetails(result: unknown): Record<string, unknown> {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return {};
+    const details = (result as { details?: unknown }).details;
+    return details && typeof details === "object" && !Array.isArray(details)
+      ? details as Record<string, unknown>
+      : {};
+  }
+
+  private codeModeArtifactSubtitle(
+    kind: RuntimeCallArtifactKind,
+    summary: Record<string, unknown>,
+    result: Record<string, unknown>,
+  ): string | undefined {
+    if (kind === "outbound_email") {
+      return typeof summary.to === "string" && summary.to ? summary.to : undefined;
+    }
+    if (kind === "outbound_slack_message") {
+      const channelId = typeof result.channelId === "string" ? result.channelId : summary.channelId;
+      return typeof channelId === "string" && channelId ? `Channel ${channelId}` : undefined;
+    }
+    const chatId = typeof result.chatId === "string" ? result.chatId : summary.chatId;
+    return typeof chatId === "string" && chatId ? `Chat ${chatId}` : undefined;
+  }
+
+  private codeModeArtifactError(error: unknown): { name: string; message: string } {
+    return error instanceof Error
+      ? { name: error.name || "Error", message: error.message || "Unknown error" }
+      : { name: "Error", message: String(error || "Unknown error") };
+  }
+
+  private truncateArtifactPreviewText(text: string): string {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    return normalized.length > 160 ? `${normalized.slice(0, 157)}...` : normalized;
   }
 
   private askUserQuestion(args: Record<string, unknown>): Promise<unknown> {
@@ -1945,6 +2128,7 @@ const HEADER_USER_ID = "X-Chiridion-User-Id";
 
 const TRACE_CHAT_THREAD_DO = false;
 const CHAT_CODEX_SESSION_ID_KEY = 'chatCodexSessionId';
+const CODE_MODE_ARTIFACTS_KEY_PREFIX = 'codeModeArtifacts:';
 
 /**
  * ChatThreadDO - One per thread, holds preview state, prompts, browser runner
@@ -2296,6 +2480,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         workspaceId: request.workspaceId,
         userId: request.userId,
         threadId: request.threadId,
+        parentToolUseId: request.toolUseId,
       },
     });
     const ai = (this.ctx.exports as unknown as {
@@ -2354,6 +2539,45 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
+  }
+
+  async recordCodeModeArtifact(
+    parentToolUseId: string,
+    artifact: RuntimeCallArtifact,
+  ): Promise<void> {
+    const normalizedParentToolUseId = parentToolUseId.trim();
+    if (!normalizedParentToolUseId) return;
+    const key = this.codeModeArtifactsKey(normalizedParentToolUseId);
+    const existing = this.ctx.storage.kv.get<RuntimeCallArtifact[]>(key);
+    const artifacts = normalizeRuntimeCallArtifacts(existing);
+    artifacts.push(artifact);
+    this.ctx.storage.kv.put(key, artifacts);
+    this.pushChatEvent({
+      type: "code_mode_artifact",
+      parentToolUseId: normalizedParentToolUseId,
+      artifact,
+    });
+    await this.setPreviewTarget({ kind: "runtime_artifact", artifact });
+  }
+
+  async consumeCodeModeArtifacts(
+    parentToolUseId: string,
+    options: { deleteAfterRead?: boolean } = {},
+  ): Promise<RuntimeCallArtifact[]> {
+    const normalizedParentToolUseId = parentToolUseId.trim();
+    if (!normalizedParentToolUseId) return [];
+    const key = this.codeModeArtifactsKey(normalizedParentToolUseId);
+    const artifacts = normalizeRuntimeCallArtifacts(
+      this.ctx.storage.kv.get<RuntimeCallArtifact[]>(key),
+    );
+    if (options.deleteAfterRead === true) {
+      this.ctx.storage.kv.delete(key);
+    }
+    return artifacts;
+  }
+
+  private codeModeArtifactsKey(parentToolUseId: string): string {
+    return `${CODE_MODE_ARTIFACTS_KEY_PREFIX}${parentToolUseId}`;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -2630,7 +2854,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
           const hydrated = await this.hydratePiStoredImages(parsed);
-          messages.push(sanitizePiProviderMessage(hydrated as AgentMessage));
+          messages.push(sanitizePiModelMessage(hydrated as AgentMessage));
         } else {
           invalidRows += 1;
         }
@@ -3020,8 +3244,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }> = [];
 
     const [coreMessages, inFlightMessages] = await Promise.all([
-      this.loadPiCoreMessages(),
-      this.loadPiInFlightMessages(),
+      this.loadPiCoreMessages({ includeUiMetadata: true }),
+      this.loadPiInFlightMessages({ includeUiMetadata: true }),
     ]);
     const storedMessages = [...coreMessages, ...inFlightMessages];
     storedMessages.forEach((message, index) => {
@@ -3689,7 +3913,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return { payload, stats };
   }
 
-  private async loadPiInFlightMessages(): Promise<AgentMessage[]> {
+  private async attachCodeModeArtifactsToToolResult(
+    message: AgentMessage,
+    options: { consume?: boolean } = {},
+  ): Promise<AgentMessage> {
+    if (!message || typeof message !== "object" || Array.isArray(message)) return message;
+    const record = message as unknown as Record<string, unknown>;
+    if (record.role !== "toolResult" || record.toolName !== "js_exec") return message;
+    const toolCallId = typeof record.toolCallId === "string" ? record.toolCallId.trim() : "";
+    if (!toolCallId) return message;
+    const artifacts = await this.consumeCodeModeArtifacts(toolCallId, {
+      deleteAfterRead: options.consume === true,
+    });
+    if (artifacts.length === 0) return message;
+    const existingMetadata = normalizePiUiMetadata(record.uiMetadata);
+    const artifactsById = new Map<string, RuntimeCallArtifact>();
+    for (const artifact of existingMetadata?.codeModeArtifacts ?? []) {
+      artifactsById.set(artifact.id, artifact);
+    }
+    for (const artifact of artifacts) {
+      artifactsById.set(artifact.id, artifact);
+    }
+    return {
+      ...record,
+      uiMetadata: {
+        ...(existingMetadata ?? {}),
+        codeModeArtifacts: Array.from(artifactsById.values()),
+      } satisfies PiUiMetadata,
+    } as unknown as AgentMessage;
+  }
+
+  private async loadPiInFlightMessages(options: { includeUiMetadata?: boolean } = {}): Promise<AgentMessage[]> {
     this.ensurePiCoreTables();
     const rows = this.ctx.storage.sql
       .exec<{ payload: string }>(
@@ -3702,7 +3956,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
           const hydrated = await this.hydratePiStoredImages(parsed);
-          messages.push(sanitizePiProviderMessage(hydrated as AgentMessage));
+          messages.push(options.includeUiMetadata
+            ? sanitizePiProviderMessage(hydrated as AgentMessage)
+            : sanitizePiModelMessage(hydrated as AgentMessage));
         }
       } catch {
         // Skip corrupt rows.
@@ -3764,7 +4020,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } as unknown as AgentMessage;
   }
 
-  private async loadPiCoreMessages(): Promise<AgentMessage[]> {
+  private async loadPiCoreMessages(options: { includeUiMetadata?: boolean } = {}): Promise<AgentMessage[]> {
     this.ensurePiCoreTables();
     const compaction = this.loadPiCoreCompaction();
     const firstKeptIndex = compaction?.firstKeptIndex ?? 0;
@@ -3786,7 +4042,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
           const hydrated = await this.hydratePiStoredImages(parsed);
-          messages.push(sanitizePiProviderMessage(hydrated as AgentMessage));
+          messages.push(options.includeUiMetadata
+            ? sanitizePiProviderMessage(hydrated as AgentMessage)
+            : sanitizePiModelMessage(hydrated as AgentMessage));
         }
       } catch {
         // Skip corrupt rows rather than failing the whole thread.
@@ -3877,7 +4135,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private piCoreMessageKey(message: AgentMessage): string {
-    const record = message as unknown as Record<string, unknown>;
+    const record = stripPiUiMetadata(message) as unknown as Record<string, unknown>;
     if (record.role === "assistant" && typeof record.responseId === "string" && record.responseId.trim()) {
       return `assistant:${record.responseId.trim()}`;
     }
@@ -4782,7 +5040,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         : "";
     if (!toolCallId) return;
 
-    const block = {
+    const uiMetadata = normalizePiUiMetadata(toolResult.uiMetadata);
+    const block: ToolResultBlock = {
       type: "tool_result",
       tool_use_id: toolCallId,
       content: this.piToolResultContentToChatContent(toolResult.content),
@@ -4792,6 +5051,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         toolResult.toolName.trim().toLowerCase() === "bash"
           ? "commandExecution"
           : "dynamicToolCall",
+      ...(uiMetadata?.codeModeArtifacts?.length
+        ? { artifacts: uiMetadata.codeModeArtifacts }
+        : {}),
     };
 
     let fallbackAssistantIndex = -1;
@@ -5595,6 +5857,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (target.kind === "app") {
       return `app:${target.scriptName}`;
     }
+    if (target.kind === "runtime_artifact") {
+      return `artifact:${target.artifact.id}`;
+    }
     return `file:${target.workspaceId}:${target.source}:${target.path}`;
   }
 
@@ -5615,6 +5880,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         scriptName,
         isPublic: Boolean(target.isPublic),
       };
+    }
+
+    if (target.kind === "runtime_artifact") {
+      const artifacts = normalizeRuntimeCallArtifacts([target.artifact]);
+      const artifact = artifacts[0];
+      return artifact ? { kind: "runtime_artifact", artifact } : null;
     }
 
     if (target.kind === "file") {
@@ -6530,7 +6801,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           signal,
         );
         const repaired = repairPiMessageHistoryForReplay(
-          compacted.map((message) => sanitizePiProviderMessage(message)),
+          compacted.map((message) => sanitizePiModelMessage(message)),
         );
         if (repaired.repairedCount > 0) {
           this.recordChatThreadObservabilityEvent("pi_provider_history_repaired", {
@@ -7912,17 +8183,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private serializePiMessageForSummary(message: AgentMessage): string {
-    const role = (message as { role?: unknown }).role;
+    const sanitizedMessage = stripPiUiMetadata(message);
+    const role = (sanitizedMessage as { role?: unknown }).role;
     if (role === "user") {
-      const content = (message as { content?: unknown }).content;
+      const content = (sanitizedMessage as { content?: unknown }).content;
       return `[User]\n${typeof content === "string" ? content : JSON.stringify(content)}`;
     }
     if (role === "assistant") {
-      return `[Assistant]\n${JSON.stringify((message as { content?: unknown }).content)}`;
+      return `[Assistant]\n${JSON.stringify((sanitizedMessage as { content?: unknown }).content)}`;
     }
     if (role === "toolResult") {
-      const toolName = (message as { toolName?: unknown }).toolName;
-      const content = (message as { content?: unknown }).content;
+      const toolName = (sanitizedMessage as { toolName?: unknown }).toolName;
+      const content = (sanitizedMessage as { content?: unknown }).content;
       return `[Tool result: ${String(toolName || "unknown")}]\n${JSON.stringify(content).slice(0, 4000)}`;
     }
     return "";
@@ -8567,7 +8839,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           })),
           maxOutputCharacters: Type.Optional(Type.Number()),
         }),
-        execute: async (_id, params) => {
+        execute: async (toolUseId, params) => {
           const raw = params as {
             code?: unknown;
             timeoutMs?: unknown;
@@ -8579,6 +8851,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             workspaceId: context.workspaceId,
             threadId: context.threadId,
             userId: context.userId ?? undefined,
+            toolUseId,
             timeoutMs: typeof raw.timeoutMs === "number" ? raw.timeoutMs : null,
             maxOutputCharacters:
               typeof raw.maxOutputCharacters === "number"
@@ -9047,9 +9320,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       const snapshot = this.piSession?.state.messages ?? [];
-      const newMessages = this.annotatePiProviderErrorMessages(
-        snapshot.slice(this.piMainBaselineIndex),
+      const snapshotMessages = await Promise.all(
+        snapshot
+          .slice(this.piMainBaselineIndex)
+          .map((message) => this.attachCodeModeArtifactsToToolResult(message, { consume: true })),
       );
+      const newMessages = this.annotatePiProviderErrorMessages(snapshotMessages);
       if (newMessages.length > 0) {
         await this.appendPiCoreMessagesIfMissing(newMessages);
         this.piMainBaselineIndex = snapshot.length;
@@ -9186,7 +9462,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (record.role === "assistant" || record.role === "toolResult") {
         const buffered = isAssistant
           ? this.ensurePiAssistantTextMessage([event.message], text)
-          : [event.message];
+          : [await this.attachCodeModeArtifactsToToolResult(event.message)];
         await this.appendPiInFlightMessages(
           this.annotatePiProviderErrorMessages(buffered),
         );
@@ -9267,7 +9543,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             ),
       );
       this.maybeSchedulePiPostTurnCompaction(newMessages);
-      const inFlightMessages = await this.loadPiInFlightMessages();
+      const inFlightMessages = await this.loadPiInFlightMessages({
+        includeUiMetadata: stoppedByUser,
+      });
       const droppedInFlight = inFlightMessages.length;
       if (stoppedByUser) {
         const messagesToPersist = this.dedupePiMessagesByKey([

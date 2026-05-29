@@ -1,3 +1,5 @@
+import type { RuntimeCallArtifact, RuntimeArtifactPreviewTarget } from "@/lib/runtime-artifacts";
+
 export interface Thread {
   id: string;
   workspace_id: string;
@@ -96,7 +98,8 @@ export type PreviewTarget =
       path: string;
       filename?: string;
       contentType?: string;
-    };
+    }
+  | RuntimeArtifactPreviewTarget;
 
 export interface PreviewTab {
   /** Unique ID for this tab (used as React key). */
@@ -129,6 +132,7 @@ export interface ToolResultBlock {
   isTaskUpdate?: boolean;
   itemId?: string;
   itemKind?: string;
+  artifacts?: RuntimeCallArtifact[];
 }
 
 export interface ThinkingBlock {

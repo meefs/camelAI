@@ -761,7 +761,7 @@ export async function getThreadPreviewState(
 ): Promise<ThreadPreviewState> {
   const env = getEnv(context);
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  const state = await stub.getPreviewState();
+  const state = await stub.getPreviewState() as ThreadPreviewState | null | undefined;
   return {
     target: state?.target ?? null,
     tabs: Array.isArray(state?.tabs) ? state.tabs : [],

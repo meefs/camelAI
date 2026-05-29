@@ -8,6 +8,9 @@ function arePreviewTargetsSemanticallyEqual(
   if (left.kind === "app" && right.kind === "app") {
     return left.scriptName === right.scriptName;
   }
+  if (left.kind === "runtime_artifact" && right.kind === "runtime_artifact") {
+    return left.artifact.id === right.artifact.id;
+  }
   if (left.kind === "file" && right.kind === "file") {
     return (
       left.workspaceId === right.workspaceId &&

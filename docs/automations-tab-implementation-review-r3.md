@@ -112,4 +112,3 @@ Instead:
 
 - `bun run typecheck` passed (exit 0).
 - `bun run test:workers -- workspace-cron.test.ts` passed — 3 tests, including the new `keyset-paginates run history beyond the legacy 20-row cap` case.
-

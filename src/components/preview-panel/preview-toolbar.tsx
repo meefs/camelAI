@@ -284,7 +284,7 @@ function getDownloadOptions({
   isNotebookPdfExporting?: boolean;
   onNotebookReportPdfDownload?: () => void | Promise<void>;
 }): DownloadOption[] {
-  if (target.kind === 'app' || !filePreviewOpenUrl) return [];
+  if (target.kind !== 'file' || !filePreviewOpenUrl) return [];
 
   const ext = getFileExtension(target.path);
   const fallbackName = target.path.split('/').filter(Boolean).pop() || 'file';
@@ -455,11 +455,14 @@ function PreviewToolbarComponent({
   onNotebookReportPdfDownload,
 }: PreviewToolbarProps) {
   const fileType = getToolbarFileType(activeTarget);
+  const isRuntimeArtifact = activeTarget.kind === 'runtime_artifact';
 
   return (
     <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
-      <ToolbarButton icon={RefreshCw} tooltip="Refresh" onClick={onRefresh} />
-      {fileType === 'notebook' ? (
+      {!isRuntimeArtifact ? (
+        <ToolbarButton icon={RefreshCw} tooltip="Refresh" onClick={onRefresh} />
+      ) : null}
+      {!isRuntimeArtifact && fileType === 'notebook' ? (
         <PreviewSourceToggle
           target={activeTarget}
           value={notebookViewMode === 'notebook' ? 'source' : 'preview'}
@@ -467,7 +470,7 @@ function PreviewToolbarComponent({
             onNotebookViewModeChange?.(mode === 'source' ? 'notebook' : 'report');
           }}
         />
-      ) : supportsPreviewSourceToggle(activeTarget) ? (
+      ) : !isRuntimeArtifact && supportsPreviewSourceToggle(activeTarget) ? (
         <PreviewSourceToggle
           target={activeTarget}
           value={fileViewMode ?? 'preview'}
@@ -482,6 +485,10 @@ function PreviewToolbarComponent({
       <div className="flex min-w-0 flex-1 items-center">
         {activeTarget.kind === 'app' ? (
           <ClickToCopyUrlBar url={vanityUrl ?? ''} displayHost={vanityHost ?? ''} />
+        ) : activeTarget.kind === 'runtime_artifact' ? (
+          <span className="truncate text-xs font-medium text-muted-foreground">
+            {activeTarget.artifact.title}
+          </span>
         ) : (
           <ClickToCopyFileChip target={activeTarget} />
         )}

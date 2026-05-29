@@ -117,4 +117,3 @@ Recommended fix: in both files, wrap the disabled `DropdownMenuItem` in a `Toolt
 - `body_label` (`"Prompt"` vs `"Description"`) is data-driven, not branch-on-kind in the JSX. ✓
 - `AlertDialog` delete-confirm copy correctly varies by kind. ✓
 - Deep-link via `?selected=<id>` works and the loader-mismatch effect at `automations-client.tsx:104` cleans up stale selections without flashing the panel. ✓
-

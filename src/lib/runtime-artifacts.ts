@@ -1,0 +1,69 @@
+export type RuntimeCallArtifactKind =
+  | "outbound_email"
+  | "outbound_slack_message"
+  | "outbound_telegram_message";
+
+export type RuntimeCallArtifactStatus = "sent" | "failed";
+
+export interface RuntimeCallArtifact {
+  id: string;
+  kind: RuntimeCallArtifactKind;
+  toolName: "send_email" | "send_slack_message" | "send_telegram_message";
+  status: RuntimeCallArtifactStatus;
+  title: string;
+  subtitle?: string;
+  createdAt: number;
+  updatedAt: number;
+  summary: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: {
+    name: string;
+    message: string;
+  };
+}
+
+export interface RuntimeArtifactPreviewTarget {
+  kind: "runtime_artifact";
+  artifact: RuntimeCallArtifact;
+}
+
+export interface PiUiMetadata {
+  codeModeArtifacts?: RuntimeCallArtifact[];
+}
+
+export function isRuntimeCallArtifact(value: unknown): value is RuntimeCallArtifact {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.id === "string" &&
+    typeof record.kind === "string" &&
+    typeof record.toolName === "string" &&
+    typeof record.status === "string" &&
+    typeof record.title === "string" &&
+    typeof record.createdAt === "number" &&
+    typeof record.updatedAt === "number" &&
+    !!record.summary &&
+    typeof record.summary === "object" &&
+    !Array.isArray(record.summary)
+  );
+}
+
+export function normalizeRuntimeCallArtifacts(value: unknown): RuntimeCallArtifact[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRuntimeCallArtifact);
+}
+
+export function normalizePiUiMetadata(value: unknown): PiUiMetadata | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const codeModeArtifacts = normalizeRuntimeCallArtifacts(record.codeModeArtifacts);
+  return codeModeArtifacts.length > 0 ? { codeModeArtifacts } : undefined;
+}
+
+export function stripPiUiMetadata<T>(message: T): T {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return message;
+  const record = message as Record<string, unknown>;
+  if (!("uiMetadata" in record)) return message;
+  const { uiMetadata: _uiMetadata, ...rest } = record;
+  return rest as T;
+}

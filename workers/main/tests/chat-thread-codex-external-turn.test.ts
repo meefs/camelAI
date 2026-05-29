@@ -3,6 +3,7 @@ import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { CamelAiService } from '../src/camelai-service';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
+import { stripPiUiMetadata } from '../../../src/lib/runtime-artifacts';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -1481,6 +1482,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         workspaceId: 'ws_1',
         threadId: 'thread_1',
         userId: 'user_1',
+        parentToolUseId: undefined,
       },
     });
     expect(fake.ctx.exports.AIVirtualBinding).toHaveBeenCalledWith({
@@ -1734,6 +1736,161 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(codeModeTools.find((tool: any) => tool.name === 'send_email')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_slack_message')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeTruthy();
+  });
+
+  it('records outbound js_exec artifacts on the parent tool call without exposing metadata to model sanitization', async () => {
+    const artifacts: unknown[] = [];
+    const chatThreadStub = {
+      recordCodeModeArtifact: vi.fn(async (_parentToolUseId: string, artifact: unknown) => {
+        artifacts.push(artifact);
+      }),
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        parentToolUseId: 'tool_js_exec_1',
+      },
+    };
+    Object.defineProperty(fake, 'chatThreadStub', { value: chatThreadStub });
+    fake.sendEmail = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'Email sent.' }],
+      details: {
+        status: 'sent',
+        channel: 'email',
+        provider: 'cloudflare_email',
+        messageId: 'email_1',
+        attachmentCount: 0,
+      },
+    }));
+
+    await CodeModeToolsBinding.prototype.callTool.call(fake, 'send_email', {
+      to: 'alice@example.com',
+      subject: 'Done',
+      text: 'Finished.',
+    });
+
+    expect(chatThreadStub.recordCodeModeArtifact).toHaveBeenCalledWith(
+      'tool_js_exec_1',
+      expect.objectContaining({
+        kind: 'outbound_email',
+        toolName: 'send_email',
+        status: 'sent',
+        title: 'Email sent',
+        summary: expect.objectContaining({
+          to: 'alice@example.com',
+          toDomain: 'example.com',
+          subject: 'Done',
+          hasText: true,
+        }),
+        result: expect.objectContaining({ messageId: 'email_1' }),
+      }),
+    );
+
+    const messageWithUiMetadata = {
+      role: 'toolResult',
+      toolCallId: 'tool_js_exec_1',
+      toolName: 'js_exec',
+      content: 'ok',
+      uiMetadata: { codeModeArtifacts: artifacts },
+    } as any;
+    expect(stripPiUiMetadata(messageWithUiMetadata)).not.toHaveProperty('uiMetadata');
+  });
+
+  it('does not fail a completed outbound tool when artifact recording fails', async () => {
+    const recordError = new Error('temporary KV failure');
+    const chatThreadStub = {
+      recordCodeModeArtifact: vi.fn(async () => {
+        throw recordError;
+      }),
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        parentToolUseId: 'tool_js_exec_1',
+      },
+    };
+    Object.defineProperty(fake, 'chatThreadStub', { value: chatThreadStub });
+    fake.sendEmail = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'Email sent.' }],
+      details: {
+        status: 'sent',
+        channel: 'email',
+        messageId: 'email_1',
+      },
+    }));
+
+    try {
+      const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'send_email', {
+        to: 'alice@example.com',
+        subject: 'Done',
+        text: 'Finished.',
+      });
+
+      expect(result).toMatchObject({
+        details: {
+          status: 'sent',
+          messageId: 'email_1',
+        },
+      });
+      expect(fake.sendEmail).toHaveBeenCalledTimes(1);
+      expect(chatThreadStub.recordCodeModeArtifact).toHaveBeenCalledTimes(1);
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to record code mode artifact',
+        expect.objectContaining({
+          toolName: 'send_email',
+          threadId: 'thread1',
+          parentToolUseId: 'tool_js_exec_1',
+          error: 'temporary KV failure',
+        }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('projects persisted js_exec UI artifacts into parsed tool result blocks', () => {
+    const artifact = {
+      id: 'artifact_1',
+      kind: 'outbound_slack_message',
+      toolName: 'send_slack_message',
+      status: 'sent',
+      title: 'Slack message sent',
+      createdAt: 1,
+      updatedAt: 2,
+      summary: { channelId: 'C123' },
+    };
+    const messages: any[] = [{
+      id: 'assistant_1',
+      thread_id: 'thread1',
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'tool_js_exec_1', name: 'js_exec', input: {} }],
+      created_at: 1,
+      forkEntryId: 'assistant_1',
+    }];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+
+    ChatThreadDO.prototype['attachPiToolResultToParsedMessages'].call(fake, messages, {
+      role: 'toolResult',
+      toolCallId: 'tool_js_exec_1',
+      toolName: 'js_exec',
+      content: 'ok',
+      uiMetadata: { codeModeArtifacts: [artifact] },
+    });
+
+    expect(messages[0].content[1]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'tool_js_exec_1',
+      artifacts: [artifact],
+    });
   });
 
   it('does not advertise outbound channel sends in ordinary chat prompts', () => {
@@ -2056,6 +2213,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       workspaceId: 'workspace1',
       threadId: 'thread1',
       userId: 'user1',
+      toolUseId: 'tool3',
       timeoutMs: 1234,
       maxOutputCharacters: 4321,
     });
@@ -3485,6 +3643,45 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.upsertPiCoreMessages).not.toHaveBeenCalled();
   });
 
+
+  it('attaches buffered code mode artifacts to persisted js_exec tool result messages', async () => {
+    const { fake } = createPiEventFake();
+    const artifact = {
+      id: 'artifact_1',
+      kind: 'outbound_email',
+      toolName: 'send_email',
+      status: 'sent',
+      title: 'Email sent',
+      createdAt: 1,
+      updatedAt: 2,
+      summary: { to: 'alice@example.com' },
+    };
+    fake.consumeCodeModeArtifacts = vi.fn(async () => [artifact]);
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'message_end',
+      message: {
+        role: 'toolResult',
+        toolCallId: 'tool_js_exec_1',
+        toolName: 'js_exec',
+        content: 'ok',
+      },
+    });
+
+    expect(fake.consumeCodeModeArtifacts).toHaveBeenCalledWith('tool_js_exec_1', {
+      deleteAfterRead: false,
+    });
+    expect(fake.appendPiInFlightMessages).toHaveBeenCalledWith([
+      expect.objectContaining({
+        role: 'toolResult',
+        toolCallId: 'tool_js_exec_1',
+        toolName: 'js_exec',
+        uiMetadata: { codeModeArtifacts: [artifact] },
+      }),
+    ]);
+  });
+
   it('emits Pi agent_end provider errors', async () => {
     const { fake, events } = createPiEventFake();
     const errorMessage =
@@ -3642,6 +3839,83 @@ describe('ChatThreadDO Codex turn handling', () => {
     ]);
     expect(fake.piMainBaselineIndex).toBe(4);
     expect(fake.piUserStopRequestedAtMs).toBe(0);
+  });
+
+  it('preserves js_exec artifact metadata when persisting a stopped Pi turn', async () => {
+    const { fake } = createPiEventFake();
+    fake.updateActiveAutomationRun = vi.fn();
+    const artifact = {
+      id: 'artifact_1',
+      kind: 'outbound_email',
+      toolName: 'send_email',
+      status: 'sent',
+      title: 'Email sent',
+      createdAt: 1,
+      updatedAt: 2,
+      summary: { to: 'alice@example.com' },
+    };
+    const inFlight = [{
+      role: 'toolResult',
+      toolCallId: 'tool_js_exec_1',
+      toolName: 'js_exec',
+      content: 'ok',
+      uiMetadata: { codeModeArtifacts: [artifact] },
+      timestamp: 200,
+    }];
+
+    fake.piUserStopRequestedAtMs = 1234;
+    fake.piMainBaselineIndex = 1;
+    fake.piSession = {
+      state: {
+        model: { api: 'test', provider: 'test', id: 'test-model' },
+        messages: [
+          { role: 'user', content: 'previous', timestamp: 50 },
+          ...inFlight,
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: '' }],
+            stopReason: 'aborted',
+            errorMessage: 'Request was aborted',
+            responseId: 'resp_aborted',
+            timestamp: 789,
+          },
+        ],
+      },
+    };
+    fake.loadPiInFlightMessages = vi.fn(() => inFlight);
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    fake.piUserStopRequestedAtMs = 1234;
+    fake.piMainBaselineIndex = 1;
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [
+        ...inFlight,
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: '' }],
+          stopReason: 'aborted',
+          errorMessage: 'Request was aborted',
+          responseId: 'resp_aborted',
+          timestamp: 789,
+        },
+      ],
+    });
+
+    expect(fake.loadPiInFlightMessages).toHaveBeenCalledWith({ includeUiMetadata: true });
+    expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledWith([
+      expect.objectContaining({
+        role: 'toolResult',
+        toolCallId: 'tool_js_exec_1',
+        toolName: 'js_exec',
+        uiMetadata: { codeModeArtifacts: [artifact] },
+      }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Stopped by user' }],
+        metadata: { reason: 'user_stop' },
+      }),
+    ]);
   });
 
   it('does not echo non-assistant Pi message_end text into the assistant stream', async () => {

@@ -277,6 +277,12 @@ export default function AdminThreadDetailPage() {
                       Visibility: {preview_target.isPublic ? 'Public' : 'Private'}
                     </p>
                   </div>
+                ) : preview_target.kind === 'runtime_artifact' ? (
+                  <div className="space-y-2 text-sm">
+                    <div className="font-medium">{preview_target.artifact.title}</div>
+                    <div className="text-muted-foreground">Artifact: {preview_target.artifact.kind}</div>
+                    <div className="text-muted-foreground">Status: {preview_target.artifact.status}</div>
+                  </div>
                 ) : (
                   <div className="space-y-2 text-sm">
                     <div className="font-medium">{preview_target.filename || preview_target.path}</div>

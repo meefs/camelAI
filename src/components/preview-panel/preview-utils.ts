@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   AppWindow,
+  Bell,
   Braces,
   File,
   FileCode,
@@ -56,6 +57,7 @@ function getTargetFileName(target: Extract<PreviewTarget, { kind: 'file' }>): st
 
 export function getTabIcon(target: PreviewTarget): LucideIcon {
   if (target.kind === 'app') return AppWindow;
+  if (target.kind === 'runtime_artifact') return Bell;
 
   const ext = getFileExtension(getTargetFileName(target));
   if (ext === 'ipynb') return NotebookPen;
@@ -77,6 +79,7 @@ export function getTabIcon(target: PreviewTarget): LucideIcon {
 
 export function getTabLabel(target: PreviewTarget): string {
   if (target.kind === 'app') return target.scriptName;
+  if (target.kind === 'runtime_artifact') return target.artifact.title;
   if (target.filename) return target.filename;
   return target.path.split('/').filter(Boolean).pop() || 'file';
 }
@@ -103,6 +106,7 @@ const DELIMITED_SPREADSHEET_CONTENT_TYPES = new Set([
 
 export function getToolbarFileType(target: PreviewTarget): ToolbarFileType {
   if (target.kind === 'app') return 'app';
+  if (target.kind === 'runtime_artifact') return 'other';
 
   const fileName = getTargetFileName(target);
   const previewType = getPreviewType(fileName, target.contentType);
@@ -162,5 +166,6 @@ export function shouldAutoRefreshFilePreview(
 
 export function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === 'app') return `app:${target.scriptName}`;
+  if (target.kind === 'runtime_artifact') return `artifact:${target.artifact.id}`;
   return `file:${target.workspaceId}:${target.source}:${target.path}`;
 }

@@ -77,6 +77,23 @@ export function useChatPreviewRenderState({
       const target = tab.target;
       const tabId = tab.id;
 
+      if (target.kind === "runtime_artifact") {
+        return {
+          tabId,
+          target,
+          appPreviewUrl: "",
+          vanityHost: "",
+          iframeKey: 0,
+          isLoading: false,
+          filePreviewUrl: "",
+          filePreviewOpenUrl: "",
+          previewFileName: "",
+          notebookViewMode: "report",
+          fileViewMode: "preview",
+          isNotebookPreview: false,
+        };
+      }
+
       if (target.kind === "app") {
         const domains = buildPreviewDomains(target, hostname, orgSlug);
         return {
