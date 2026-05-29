@@ -68,7 +68,7 @@ vi.mock("@/lib/chat-groups.server", () => ({
   listGroupsForWorkspace: vi.fn(() => Promise.resolve([])),
 }));
 
-const { loader } = await import("@/routes/_app");
+const { loader, shouldRevalidate } = await import("@/routes/_app");
 
 describe("_app loader onboarding redirect", () => {
   beforeEach(() => {
@@ -86,6 +86,30 @@ describe("_app loader onboarding redirect", () => {
       orgWorkspaceCount: 1,
       resignedSessionCookie: null,
     });
+  });
+
+  it("skips layout revalidation after create-and-start new chat submissions", () => {
+    const formData = new FormData();
+    formData.set("intent", "createThreadAndStart");
+
+    expect(
+      shouldRevalidate({
+        formData,
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps default layout revalidation for other submissions", () => {
+    const formData = new FormData();
+    formData.set("intent", "createThread");
+
+    expect(
+      shouldRevalidate({
+        formData,
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(true);
   });
 
   it("redirects incomplete users to /onboarding without prompt_key", async () => {

@@ -23,7 +23,7 @@ describe("retryTransientDurableObjectRead", () => {
 
     expect(fn).toHaveBeenCalledTimes(2);
     expect(warnSpy).toHaveBeenCalledWith(
-      "[do-rpc] transient read failed; retrying",
+      "[do-rpc] transient rpc failed; retrying",
       expect.objectContaining({
         operation: "TestDO.read",
         attempt: 1,

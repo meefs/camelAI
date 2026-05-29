@@ -1,4 +1,5 @@
-import { useLoaderData } from 'react-router';
+import { Suspense } from 'react';
+import { Await, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.history';
 import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
@@ -99,32 +100,47 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 
   const accessibleWorkspaceIds = authContext.workspaces.map((w) => w.id);
-  const [page, rawCreators] = await Promise.all([
-    fetchHistoryThreadsPage(context, {
-      scope,
-      workspaceId,
-      accessibleWorkspaceIds,
+  const scopeId = scope === 'all-workspaces' ? authContext.currentOrg.id : workspaceId;
+  const historyPromise = (async () => {
+    const [page, rawCreators] = await Promise.all([
+      fetchHistoryThreadsPage(context, {
+        scope,
+        workspaceId,
+        accessibleWorkspaceIds,
+        offset: 0,
+        limit: PAGE_SIZE,
+        createdBy,
+      }),
+      fetchHistoryThreadCreators(context, scope, workspaceId, accessibleWorkspaceIds),
+    ]);
+    const { threads, userMap } = await hydrateHistoryThreads(
+      authEnv,
+      page.items,
+      rawCreators.map((creator) => creator.created_by),
+    );
+    const threadCreators = hydrateHistoryThreadCreators(rawCreators, userMap);
+
+    return {
+      threads,
+      total: page.total,
+      offset: page.offset,
+      limit: page.limit,
+      threadCreators,
+    };
+  })().catch((error) => {
+    console.error('Failed to load history:', error);
+    return {
+      threads: [],
+      total: 0,
       offset: 0,
       limit: PAGE_SIZE,
-      createdBy,
-    }),
-    fetchHistoryThreadCreators(context, scope, workspaceId, accessibleWorkspaceIds),
-  ]);
-  const { threads, userMap } = await hydrateHistoryThreads(
-    authEnv,
-    page.items,
-    rawCreators.map((creator) => creator.created_by)
-  );
-  const threadCreators = hydrateHistoryThreadCreators(rawCreators, userMap);
-  const scopeId = scope === 'all-workspaces' ? authContext.currentOrg.id : workspaceId;
+      threadCreators: [],
+    };
+  });
 
   return {
-    threads,
-    total: page.total,
-    offset: page.offset,
-    limit: page.limit,
+    history: historyPromise,
     hasWorkspace: true,
-    threadCreators,
     currentUserId: authContext.user.id,
     queryKey: buildHistoryQueryKey(scope, scopeId, createdBy),
   };
@@ -132,12 +148,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export default function HistoryPage() {
   const {
-    threads,
-    total,
-    offset,
-    limit,
+    history,
     hasWorkspace,
-    threadCreators,
     currentUserId,
     queryKey,
   } =
@@ -148,15 +160,30 @@ export default function HistoryPage() {
   }
 
   return (
-    <HistoryClient
-      initialThreads={threads}
-      initialTotal={total}
-      initialOffset={offset}
-      initialLimit={limit}
-      threadCreators={threadCreators}
-      currentUserId={currentUserId}
-      initialQueryKey={queryKey}
-    />
+    <Suspense fallback={<HistoryLoadingSkeleton />}>
+      <Await resolve={history}>
+        {(resolvedHistory) => {
+          const data = resolvedHistory ?? {
+            threads: [],
+            total: 0,
+            offset: 0,
+            limit: PAGE_SIZE,
+            threadCreators: [],
+          };
+          return (
+            <HistoryClient
+              initialThreads={data.threads}
+              initialTotal={data.total}
+              initialOffset={data.offset}
+              initialLimit={data.limit}
+              threadCreators={data.threadCreators}
+              currentUserId={currentUserId}
+              initialQueryKey={queryKey}
+            />
+          );
+        }}
+      </Await>
+    </Suspense>
   );
 }
 

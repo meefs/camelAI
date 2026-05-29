@@ -38,6 +38,63 @@ function getOrgStub(context: AppLoadContext, orgId: string): OrgDO {
   return authEnv.ORG.get(authEnv.ORG.idFromName(orgId)) as unknown as OrgDO;
 }
 
+
+function threadToGroupThreadSummary(
+  thread: Thread,
+  membership: ChatGroupThreadSummary["membership"],
+  options: { status?: ChatGroupThreadSummary["status"] } = {},
+): ChatGroupThreadSummary {
+  const status = options.status ?? "idle";
+  const now = Date.now();
+  const latestUserMessageAt =
+    thread.last_user_message_at ??
+    (thread.last_user_message ? thread.updated_at : null);
+  return {
+    id: thread.id,
+    title: thread.title,
+    model: thread.model,
+    updated_at: thread.updated_at,
+    is_unread: status === "unread",
+    membership,
+    last_active_at: Math.max(thread.updated_at, thread.last_assistant_completed_at ?? 0),
+    latest_user_message: thread.last_user_message ?? null,
+    latest_user_message_at: latestUserMessageAt,
+    running_activity_text:
+      status === "running" ? (thread.last_user_message ?? null) : null,
+    running_activity_at: status === "running" ? (latestUserMessageAt ?? now) : null,
+    last_assistant_completed_at: thread.last_assistant_completed_at ?? null,
+    last_assistant_summary: thread.last_assistant_summary ?? null,
+    last_assistant_summary_status:
+      thread.last_assistant_summary_status ?? null,
+    running_started_at: status === "running" ? now : null,
+    status,
+  };
+}
+
+function buildSingleThreadGroupView(
+  group: ChatGroupSummary,
+  thread: Thread,
+  membership: ChatGroupThreadSummary["membership"],
+  options: { status?: ChatGroupThreadSummary["status"] } = {},
+): ChatGroupView {
+  const threadSummary = threadToGroupThreadSummary(thread, membership, options);
+  const open_threads = membership === "open" ? [threadSummary] : [];
+  const closed_threads = membership === "closed" ? [threadSummary] : [];
+  const fallbackName =
+    group.name.trim() || thread.title || "Untitled group";
+  return {
+    ...group,
+    name: fallbackName,
+    open_threads,
+    closed_threads,
+    member_count: Math.max(
+      1,
+      group.open_thread_ids.length + group.closed_thread_ids.length,
+    ),
+    status: threadSummary.status,
+  };
+}
+
 async function getStreamingThreadStatuses(
   context: AppLoadContext,
   workspaceId: string,
@@ -288,6 +345,71 @@ export async function addThreadToExistingGroup(
     summary ? [summary] : [],
   );
   return hydrated;
+}
+
+
+export async function createGroupForNewThreadLightweight(
+  context: AppLoadContext,
+  args: UserScopedArgs & {
+    threadId: string;
+    initialThreadTitle?: string | null;
+  },
+): Promise<ChatGroupView> {
+  const [thread, created] = await Promise.all([
+    chatDO.getThread(context, args.threadId, args.workspaceId),
+    getUserStub(context, args.userId).moveThreadToNewGroup(
+      args.orgId,
+      args.workspaceId,
+      args.threadId,
+      { name: getInitialChatGroupNameFromThreadTitle(args.initialThreadTitle) },
+    ),
+  ]);
+  if (!thread) throw new Error("Thread not found");
+  return buildSingleThreadGroupView(
+    {
+      ...created.group,
+      open_thread_ids: [args.threadId],
+      closed_thread_ids: [],
+    },
+    thread,
+    "open",
+    {
+      status: thread.last_user_message ? "running" : "idle",
+    },
+  );
+}
+
+export async function addThreadToExistingGroupLightweight(
+  context: AppLoadContext,
+  args: UserScopedArgs & { groupId: string; threadId: string },
+): Promise<ChatGroupView> {
+  const [thread, group] = await Promise.all([
+    chatDO.getThread(context, args.threadId, args.workspaceId),
+    getUserStub(context, args.userId).getChatGroup(args.groupId),
+  ]);
+  if (!thread) throw new Error("Thread not found");
+  if (
+    !group ||
+    group.org_id !== args.orgId ||
+    group.workspace_id !== args.workspaceId
+  ) {
+    throw new Error("Chat group not found");
+  }
+  await getUserStub(context, args.userId).addThreadToGroup(
+    args.groupId,
+    args.threadId,
+  );
+  return buildSingleThreadGroupView(
+    {
+      ...group,
+      last_active_thread_id: args.threadId,
+      open_thread_ids: [args.threadId],
+      closed_thread_ids: [],
+    },
+    thread,
+    "open",
+    { status: thread.last_user_message ? "running" : "idle" },
+  );
 }
 
 export async function moveThreadToGroup(

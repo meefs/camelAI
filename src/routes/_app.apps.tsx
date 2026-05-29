@@ -1,4 +1,5 @@
-import { useLoaderData } from 'react-router';
+import { Suspense } from 'react';
+import { Await, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.apps';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
@@ -158,70 +159,72 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const filter = url.searchParams.get('filter') || 'this-workspace';
 
-  // Get apps for the current org/workspace
   const workspaceId = authContext.currentWorkspace?.id;
-  let apps: WorkerScriptWithCreator[] = [];
+  const appsPromise: Promise<WorkerScriptWithCreator[]> = workspaceId
+    ? (async () => {
+        const scripts = await authEnv.ORG.get(
+          authEnv.ORG.idFromName(authContext.currentOrg.id),
+        ).listWorkerScripts();
+        const refreshedScripts = await refreshWorkerScriptCustomDomainStates(
+          env,
+          authContext.currentOrg.id,
+          scripts,
+          null,
+        );
 
-  const scripts = await authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id)).listWorkerScripts();
-  const refreshedScripts = await refreshWorkerScriptCustomDomainStates(
-    env,
-    authContext.currentOrg.id,
-    scripts,
-    null
-  );
+        const filteredScripts = filter === 'all-workspaces'
+          ? refreshedScripts
+          : refreshedScripts.filter((script) => script.workspace_id === workspaceId);
 
-  // Filter based on filter param
-  const filteredScripts = filter === 'all-workspaces'
-    ? refreshedScripts
-    : workspaceId
-      ? refreshedScripts.filter((script) => script.workspace_id === workspaceId)
-      : [];
+        const creatorIds = Array.from(
+          new Set(filteredScripts.map((s) => s.created_by).filter(Boolean)),
+        );
+        const creatorProfiles = await Promise.all(
+          creatorIds.map(async (id) => {
+            const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
+            return [id, profile] as const;
+          }),
+        );
+        const creatorMap = new Map(creatorProfiles.filter(([, p]) => p !== null));
 
-  // Get creator profiles
-  const creatorIds = Array.from(
-    new Set(filteredScripts.map((s) => s.created_by).filter(Boolean))
-  );
-  const creatorProfiles = await Promise.all(
-    creatorIds.map(async (id) => {
-      const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
-      return [id, profile] as const;
-    })
-  );
-  const creatorMap = new Map(creatorProfiles.filter(([, p]) => p !== null));
-
-  apps = filteredScripts.map((script) => {
-    const creator = creatorMap.get(script.created_by);
-    return {
-      script_name: script.script_name,
-      workspace_id: script.workspace_id,
-      created_by: script.created_by,
-      created_at: script.created_at,
-      updated_at: script.updated_at,
-      is_public: script.is_public,
-      preview_key: script.preview_key,
-      preview_updated_at: script.preview_updated_at,
-      preview_status: script.preview_status,
-      preview_error: script.preview_error,
-      config_path: script.config_path,
-      custom_domain_hostname: script.custom_domain_hostname,
-      custom_domain_cf_hostname_id: script.custom_domain_cf_hostname_id,
-      custom_domain_status: script.custom_domain_status,
-      custom_domain_ssl_status: script.custom_domain_ssl_status,
-      custom_domain_error: script.custom_domain_error,
-      custom_domain_updated_at: script.custom_domain_updated_at,
-      creator: creator
-        ? {
-            id: creator.id,
-            name: creator.name,
-            email: creator.email,
-            avatar: creator.avatar,
-          }
-        : undefined,
-    };
-  });
+        return filteredScripts.map((script) => {
+          const creator = creatorMap.get(script.created_by);
+          return {
+            script_name: script.script_name,
+            workspace_id: script.workspace_id,
+            created_by: script.created_by,
+            created_at: script.created_at,
+            updated_at: script.updated_at,
+            is_public: script.is_public,
+            preview_key: script.preview_key,
+            preview_updated_at: script.preview_updated_at,
+            preview_status: script.preview_status,
+            preview_error: script.preview_error,
+            config_path: script.config_path,
+            custom_domain_hostname: script.custom_domain_hostname,
+            custom_domain_cf_hostname_id: script.custom_domain_cf_hostname_id,
+            custom_domain_status: script.custom_domain_status,
+            custom_domain_ssl_status: script.custom_domain_ssl_status,
+            custom_domain_error: script.custom_domain_error,
+            custom_domain_updated_at: script.custom_domain_updated_at,
+            creator: creator
+              ? {
+                  id: creator.id,
+                  name: creator.name,
+                  email: creator.email,
+                  avatar: creator.avatar,
+                }
+              : undefined,
+          };
+        });
+      })().catch((error) => {
+        console.error('Failed to load apps:', error);
+        return [];
+      })
+    : Promise.resolve([]);
 
   return {
-    apps,
+    apps: appsPromise,
     orgId: authContext.currentOrg.id,
     orgSlug: authContext.currentOrg.slug,
     hostname,
@@ -239,14 +242,20 @@ export default function AppsPage() {
   }
 
   return (
-    <AppsClient
-      initialApps={apps}
-      orgId={orgId}
-      orgSlug={orgSlug}
-      hostname={hostname}
-      initialNow={renderedAt}
-      orgCustomDomain={orgCustomDomain}
-    />
+    <Suspense fallback={<AppsLoadingSkeleton />}>
+      <Await resolve={apps}>
+        {(resolvedApps) => (
+          <AppsClient
+            initialApps={resolvedApps}
+            orgId={orgId}
+            orgSlug={orgSlug}
+            hostname={hostname}
+            initialNow={renderedAt}
+            orgCustomDomain={orgCustomDomain}
+          />
+        )}
+      </Await>
+    </Suspense>
   );
 }
 

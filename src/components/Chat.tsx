@@ -221,7 +221,8 @@ interface ChatProps {
   readOnly?: boolean;
   chatGroupId?: string | null;
   initialWelcomeInput?: string | null;
-  connections?: Integration[];
+  deferredInitialMessage?: string | null;
+  connections?: Integration[] | Promise<Integration[]>;
   onSnapshotChange?: (snapshot: {
     messages: Message[];
     todos: TodoItem[];
@@ -230,7 +231,7 @@ interface ChatProps {
     userId: string | null;
     userName: string | null;
     allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
-    connections: Integration[];
+    connections: Integration[] | Promise<Integration[]>;
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
@@ -240,6 +241,14 @@ type CompletedTurnMetadata = {
   durationMs: number;
   completedAtMs: number;
 };
+
+function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T> {
+  return typeof (value as Promise<T> | undefined)?.then === "function";
+}
+
+const EMPTY_WORKER_APPS: WorkerScriptWithCreator[] = [];
+const EMPTY_INTEGRATIONS: Integration[] = [];
+const EMPTY_RECENT_THREADS: Thread[] = [];
 
 function resolveSelectedThreadModel(args: {
   threadId?: string;
@@ -346,6 +355,16 @@ function hasUserOrAssistantMessage(messages: Message[]): boolean {
   return messages.some(
     (message) =>
       (message.role === "user" || message.role === "assistant") &&
+      !message.isMeta,
+  );
+}
+
+function hasNonInitialUserOrAssistantMessage(messages: Message[]): boolean {
+  return messages.some(
+    (message) =>
+      (message.role === "assistant" ||
+        (message.role === "user" &&
+          message.clientMessageId !== `initial:${message.thread_id}`)) &&
       !message.isMeta,
   );
 }
@@ -491,6 +510,7 @@ export default function Chat({
   readOnly = false,
   chatGroupId = null,
   initialWelcomeInput,
+  deferredInitialMessage,
   connections,
   onSnapshotChange,
   welcomeData,
@@ -548,14 +568,37 @@ export default function Chat({
   const shouldAnchorToLastMessage =
     !isNewThread && initialMessages && initialMessages.length > 0;
 
+  const optimisticInitialMessage = useMemo<Message | null>(() => {
+    if (!isNewThread || !threadId) {
+      return null;
+    }
+    const content = deferredInitialMessage;
+    if (!content?.trim()) {
+      return null;
+    }
+    if (hasUserOrAssistantMessage(initialMessages ?? [])) {
+      return null;
+    }
+    return {
+      id: `initial:${threadId}`,
+      clientMessageId: `initial:${threadId}`,
+      thread_id: threadId,
+      role: "user",
+      content,
+      created_at: Date.now(),
+    };
+  }, [deferredInitialMessage, initialMessages, isNewThread, threadId]);
+
   // Parse initial messages once
   const parsedInitialMessages = useMemo(
-    () =>
-      (initialMessages ?? []).map((msg) => ({
+    () => {
+      const parsed = (initialMessages ?? []).map((msg) => ({
         ...msg,
         content: parseMessageContent(msg.content),
-      })),
-    [initialMessages],
+      }));
+      return optimisticInitialMessage ? [optimisticInitialMessage, ...parsed] : parsed;
+    },
+    [initialMessages, optimisticInitialMessage],
   );
   const initialPreviewSession = useMemo(
     () =>
@@ -808,7 +851,7 @@ export default function Chat({
 
     if (
       parsedInitialMessages.length === 0 &&
-      hasUserOrAssistantMessage(messagesRef.current)
+      hasNonInitialUserOrAssistantMessage(messagesRef.current)
     ) {
       return;
     }
@@ -1365,12 +1408,39 @@ export default function Chat({
   const resolvedWelcomeData = welcomeData ?? {
     userId: user?.id ?? null,
     userName: user?.name ?? null,
-    allApps: [],
-    connections: [],
-    recentThreads: [],
+    allApps: EMPTY_WORKER_APPS,
+    connections: EMPTY_INTEGRATIONS,
+    recentThreads: EMPTY_RECENT_THREADS,
     renderedAt: fallbackRenderedAtRef.current,
   };
-  const mentionConnections = connections ?? resolvedWelcomeData.connections;
+  const rawMentionConnections = connections ?? resolvedWelcomeData.connections;
+  const [resolvedMentionConnections, setResolvedMentionConnections] = useState<
+    Integration[]
+  >(() => (Array.isArray(rawMentionConnections) ? rawMentionConnections : []));
+  useEffect(() => {
+    if (Array.isArray(rawMentionConnections)) {
+      setResolvedMentionConnections(rawMentionConnections);
+      return;
+    }
+    if (!isPromiseLike(rawMentionConnections)) {
+      setResolvedMentionConnections([]);
+      return;
+    }
+
+    let cancelled = false;
+    rawMentionConnections
+      .then((nextConnections) => {
+        if (!cancelled) setResolvedMentionConnections(nextConnections);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedMentionConnections([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rawMentionConnections]);
+  const mentionConnections = resolvedMentionConnections;
   const mentionSlugMap = useMemo(
     () => buildSlugMap(mentionConnections) as Map<string, Integration>,
     [mentionConnections],
@@ -4080,6 +4150,7 @@ export default function Chat({
     if (finalContent) {
       createThreadPayload.firstMessage = finalContent;
     }
+
     submit(createThreadPayload, {
       method: "post",
       action: "/chat",
@@ -4374,7 +4445,6 @@ type SendOptions = {
 
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
-
   const handleCompactFromIndicator = useCallback(() => {
     if (loading || isStreaming || isCompacting || readOnly) return;
     sendMessageRef.current({

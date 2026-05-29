@@ -441,7 +441,8 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
     expect(ws.send).toHaveBeenCalledWith({
       type: 'error',
-      error: 'Failed to send message to sandbox',
+      error: 'connection dropped',
+      status: 500,
     });
   });
 

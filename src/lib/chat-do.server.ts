@@ -179,7 +179,16 @@ export async function getWorkspaceModelPickerState(
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return null;
 
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  return getWorkspaceModelPickerStateForOrg(context, wsInfo.org_id, workspaceId);
+}
+
+async function getWorkspaceModelPickerStateForOrg(
+  context: AppLoadContext,
+  orgId: string,
+  workspaceId: string,
+): Promise<WorkspaceModelPickerState> {
+  const env = getEnv(context);
+  const orgStub = getOrgStub(env, orgId);
   const wsStub = env.WORKSPACE.get(
     env.WORKSPACE.idFromName(workspaceId),
   ) as unknown as WorkspaceDO;
@@ -207,7 +216,7 @@ export async function getWorkspaceModelPickerState(
   });
 
   return {
-    orgId: wsInfo.org_id,
+    orgId,
     llmProvider: (llmProviderConfig?.provider ?? null) as LlmProvider | null,
     experimentalSettings,
     allowedThreadModels: visibleCatalog.map((entry) => entry.id),
@@ -215,6 +224,41 @@ export async function getWorkspaceModelPickerState(
     hasEffectivePickerDefault: effectiveConfig.default_model !== null,
     defaultModel,
   };
+}
+
+async function resolveCreateThreadModel(
+  context: AppLoadContext,
+  workspaceId: string,
+  requestedModel?: unknown,
+  knownOrgId?: string,
+): Promise<{ orgId: string; model: LlmModel }> {
+  const pickerState = knownOrgId
+    ? await getWorkspaceModelPickerStateForOrg(context, knownOrgId, workspaceId)
+    : await getWorkspaceModelPickerState(context, workspaceId);
+  if (!pickerState || pickerState.allowedThreadModels.length === 0) {
+    throw new Error("No models are available");
+  }
+
+  const selectedModel =
+    requestedModel == null
+      ? pickerState.defaultModel
+      : replaceLegacyLlmModel(requestedModel);
+  if (!selectedModel) {
+    throw new Error("No models are available");
+  }
+  if (
+    !isLlmModel(selectedModel) ||
+    !isLlmModelAllowedForNewThread(
+      selectedModel,
+      pickerState.llmProvider,
+      pickerState.experimentalSettings,
+    ) ||
+    !pickerState.allowedThreadModels.includes(selectedModel)
+  ) {
+    throw new Error("Invalid thread model");
+  }
+
+  return { orgId: pickerState.orgId, model: selectedModel };
 }
 
 // Helper to get OrgDO stub
@@ -329,30 +373,39 @@ export async function createThread(
   model?: unknown,
 ): Promise<Thread> {
   const env = getEnv(context);
-  const pickerState = await getWorkspaceModelPickerState(
+  const { orgId, model: selectedModel } = await resolveCreateThreadModel(
     context,
     workspaceId,
+    model,
   );
-  if (!pickerState || pickerState.allowedThreadModels.length === 0) {
-    throw new Error("No models are available");
-  }
-  const orgStub = env.ORG.get(env.ORG.idFromName(pickerState.orgId));
-  const selectedModel =
-    model == null ? pickerState.defaultModel : replaceLegacyLlmModel(model);
-  if (!selectedModel) {
-    throw new Error("No models are available");
-  }
-  if (
-    !isLlmModel(selectedModel) ||
-    !isLlmModelAllowedForNewThread(
-      selectedModel,
-      pickerState.llmProvider,
-      pickerState.experimentalSettings,
-    ) ||
-    !pickerState.allowedThreadModels.includes(selectedModel)
-  ) {
-    throw new Error("Invalid thread model");
-  }
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  const thread = await orgStub.createThread(
+    workspaceId,
+    title,
+    createdBy,
+    firstUserMessage,
+    selectedModel,
+  );
+  return toThread(thread);
+}
+
+export async function createThreadWithValidatedAccess(
+  context: AppLoadContext,
+  orgId: string,
+  workspaceId: string,
+  title: string | undefined,
+  createdBy: string | undefined,
+  firstUserMessage: string | undefined,
+  model?: unknown,
+): Promise<Thread> {
+  const env = getEnv(context);
+  const { model: selectedModel } = await resolveCreateThreadModel(
+    context,
+    workspaceId,
+    model,
+    orgId,
+  );
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const thread = await orgStub.createThread(
     workspaceId,
     title,

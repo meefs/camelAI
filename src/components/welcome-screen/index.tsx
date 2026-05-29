@@ -1,7 +1,7 @@
 'use client';
 
-import { Suspense, use, useCallback, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Await, useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
 import type { WorkerScriptWithCreator, Integration, LlmModel, Thread } from '@/types';
 import type { Attachment } from '@/components/attachment-list';
@@ -198,7 +198,7 @@ interface WelcomeScreenProps {
   userId: string | null;
   userName: string | null;
   allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
-  connections: Integration[];
+  connections: Integration[] | Promise<Integration[]>;
   recentThreads: Thread[] | Promise<Thread[]>;
   renderedAt?: number;
   onPromptChange: (prompt: string) => void;
@@ -217,12 +217,10 @@ interface WelcomeScreenProps {
   noModelsMessage?: string | null;
 }
 
-function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
-  return typeof (value as Promise<T>).then === 'function';
-}
+const EMPTY_INTEGRATIONS: Integration[] = [];
 
-function useDeferredValue<T>(value: T | Promise<T>): T {
-  return isPromiseLike(value) ? use(value) : value;
+function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T> {
+  return typeof (value as Promise<T> | undefined)?.then === 'function';
 }
 
 function RecentChatsFallback() {
@@ -251,16 +249,15 @@ function AppsFallback() {
   );
 }
 
-function DeferredRecentChatsSection({
-  recentThreads,
+function RecentChatsSection({
+  resolvedRecentThreads,
   referenceTime,
   onOpenThread,
 }: {
-  recentThreads: Thread[] | Promise<Thread[]>;
+  resolvedRecentThreads: Thread[];
   referenceTime: number;
   onOpenThread: (threadId: string) => void;
 }) {
-  const resolvedRecentThreads = useDeferredValue(recentThreads);
   if (resolvedRecentThreads.length === 0) return null;
 
   return (
@@ -275,18 +272,17 @@ function DeferredRecentChatsSection({
   );
 }
 
-function DeferredAppsSection({
+function AppsSection({
   userId,
-  allApps,
+  resolvedApps,
   referenceTime,
   onStartChatForApp,
 }: {
   userId: string | null;
-  allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
+  resolvedApps: WorkerScriptWithCreator[];
   referenceTime: number;
   onStartChatForApp: (app: WorkerScriptWithCreator) => void;
 }) {
-  const resolvedApps = useDeferredValue(allApps);
   const userApps = userId
     ? resolvedApps.filter((app) => app.created_by === userId)
     : [];
@@ -348,9 +344,35 @@ export function WelcomeScreen({
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
   const [helpOpen, setHelpOpen] = useState(false);
+  const [resolvedConnections, setResolvedConnections] = useState<Integration[]>(
+    () => (Array.isArray(connections) ? connections : EMPTY_INTEGRATIONS),
+  );
+  useEffect(() => {
+    if (Array.isArray(connections)) {
+      setResolvedConnections(connections);
+      return;
+    }
+    if (!isPromiseLike(connections)) {
+      setResolvedConnections(EMPTY_INTEGRATIONS);
+      return;
+    }
+
+    let cancelled = false;
+    connections
+      .then((nextConnections) => {
+        if (!cancelled) setResolvedConnections(nextConnections);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedConnections(EMPTY_INTEGRATIONS);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connections]);
   const mentionableConnections = useMemo(
-    () => filterMentionableConnections(connections),
-    [connections],
+    () => filterMentionableConnections(resolvedConnections),
+    [resolvedConnections],
   );
   const hasConnections = mentionableConnections.length > 0;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -458,20 +480,28 @@ export function WelcomeScreen({
       )}
 
       <Suspense fallback={<RecentChatsFallback />}>
-        <DeferredRecentChatsSection
-          recentThreads={recentThreads}
-          referenceTime={referenceTime}
-          onOpenThread={handleOpenThread}
-        />
+        <Await resolve={recentThreads}>
+          {(resolvedRecentThreads) => (
+            <RecentChatsSection
+              resolvedRecentThreads={resolvedRecentThreads}
+              referenceTime={referenceTime}
+              onOpenThread={handleOpenThread}
+            />
+          )}
+        </Await>
       </Suspense>
 
       <Suspense fallback={<AppsFallback />}>
-        <DeferredAppsSection
-          userId={userId}
-          allApps={allApps}
-          referenceTime={referenceTime}
-          onStartChatForApp={onStartChatForApp}
-        />
+        <Await resolve={allApps}>
+          {(resolvedApps) => (
+            <AppsSection
+              userId={userId}
+              resolvedApps={resolvedApps}
+              referenceTime={referenceTime}
+              onStartChatForApp={onStartChatForApp}
+            />
+          )}
+        </Await>
       </Suspense>
 
       <section className="space-y-4">

@@ -1,4 +1,5 @@
-import { useLoaderData } from 'react-router';
+import { Suspense } from 'react';
+import { Await, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
 import { isOrgAdmin } from '@/lib/auth-do';
@@ -353,12 +354,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   ) as string[];
 
   // Get workspace integrations
-  let connections: Integration[] = [];
-  if (workspaceId) {
-    const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-    const records = await stub.getIntegrations();
-    connections = records.map(recordToIntegration);
-  }
+  const connectionsPromise: Promise<Integration[]> = workspaceId
+    ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
+        .getIntegrations()
+        .then((records) => records.map(recordToIntegration))
+        .catch((error) => {
+          console.error('Failed to load workspace connections:', error);
+          return [];
+        })
+    : Promise.resolve([]);
 
   // Get other workspaces in the org for duplication targets
   const otherWorkspaces = (authContext.workspaces ?? [])
@@ -366,7 +370,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     .map((ws) => ({ id: ws.id, name: ws.name }));
 
   return {
-    connections,
+    connections: connectionsPromise,
     integrations,
     categories,
     orgId: authContext.currentOrg.id,
@@ -384,13 +388,19 @@ export default function ConnectionsPage() {
   }
 
   return (
-    <ConnectionsClient
-      initialConnections={connections}
-      connectionTypes={integrations}
-      categories={categories}
-      orgId={orgId}
-      otherWorkspaces={otherWorkspaces}
-    />
+    <Suspense fallback={<ConnectionsLoadingSkeleton />}>
+      <Await resolve={connections}>
+        {(resolvedConnections) => (
+          <ConnectionsClient
+            initialConnections={resolvedConnections}
+            connectionTypes={integrations}
+            categories={categories}
+            orgId={orgId}
+            otherWorkspaces={otherWorkspaces}
+          />
+        )}
+      </Await>
+    </Suspense>
   );
 }
 

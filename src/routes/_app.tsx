@@ -1,5 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { Outlet, redirect, data, useLoaderData, useNavigate } from "react-router";
+import { Suspense, useEffect, useRef, useState } from "react";
+import {
+  Await,
+  Outlet,
+  redirect,
+  data,
+  useLoaderData,
+  useNavigate,
+} from "react-router";
 import type { Route } from "./+types/_app";
 import { requireAuthContext } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -26,16 +33,17 @@ import { getByokProviderLabel } from "@/lib/byok-providers";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 
-/**
- * Keep the default route revalidation behavior. The layout loader owns chat
- * group sidebar state, so create-thread actions must be allowed to refresh it.
- */
 export function shouldRevalidate({
+  formData,
   defaultShouldRevalidate,
 }: {
   formData?: FormData;
   defaultShouldRevalidate: boolean;
 }) {
+  if (formData?.get("intent") === "createThreadAndStart") {
+    return false;
+  }
+
   return defaultShouldRevalidate;
 }
 
@@ -102,8 +110,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const currentWorkspaceId = authContext.currentWorkspace?.id ?? null;
   const actingUserId =
     authContext.user?.id ?? authContext.session?.user_id ?? null;
-  const currentChatGroups: ChatGroupView[] = currentWorkspaceId && actingUserId
-    ? await listGroupsForWorkspace(context, {
+  const currentChatGroupsPromise: Promise<ChatGroupView[]> = currentWorkspaceId && actingUserId
+    ? listGroupsForWorkspace(context, {
         userId: actingUserId,
         orgId: currentOrg.id,
         workspaceId: currentWorkspaceId,
@@ -111,14 +119,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         console.error("Failed to load chat groups:", error);
         return [];
       })
-    : [];
-  let showLegacyBanner = false;
-  const legacyMigration = await getVerifiedLegacyStripeMigrationEligibility({
-    env,
-    org: currentOrg,
-    userEmail: authContext.user?.email ?? authContext.session?.user_email ?? "",
+    : Promise.resolve([]);
+  const legacyMigrationPromise = Promise.resolve(
+    getVerifiedLegacyStripeMigrationEligibility({
+      env,
+      org: currentOrg,
+      userEmail: authContext.user?.email ?? authContext.session?.user_email ?? "",
+    }),
+  ).catch((error) => {
+    console.error("Failed to load legacy migration eligibility:", error);
+    return null;
   });
-  try {
+  const showLegacyBannerPromise = (async () => {
     const normalizedEmail = (
       authContext.user?.email ??
       authContext.session?.user_email ??
@@ -136,16 +148,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         : Promise.resolve(null),
     ]);
     const isLegacyUser = isDevelopment || Boolean(legacyUserValue);
-    showLegacyBanner = isLegacyUser && !Boolean(dismissedValue);
-  } catch {
-    // KV failure should never take down the app — degrade to hiding the banner
-  }
+    return isLegacyUser && !Boolean(dismissedValue);
+  })().catch(() => {
+    // KV failure should never take down the app — degrade to hiding the banner.
+    return false;
+  });
   const responseData = {
     authState,
     defaultSidebarOpen,
-    showLegacyBanner,
-    legacyMigration,
-    chatGroups: currentChatGroups,
+    showLegacyBanner: showLegacyBannerPromise,
+    legacyMigration: legacyMigrationPromise,
+    chatGroups: currentChatGroupsPromise,
     billingAccessReady,
     appRouteAccessible,
     paywallContext,
@@ -178,7 +191,78 @@ export default function AppLayout() {
   } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
-  const legacyMigrationKey = billingAccessReady && legacyMigration?.eligible
+
+  return (
+    <SidebarProvider defaultOpen={defaultSidebarOpen}>
+      <ChatGroupsProvider>
+        <ChatThreadSnapshotsProvider>
+          <AppSidebar />
+          <SidebarInset className="h-svh overflow-hidden flex flex-col">
+            {appRouteAccessible ? (
+              <Outlet />
+            ) : paywallContext ? (
+              <Suspense
+                fallback={
+                  <PaywallTakeover
+                    paywallContext={paywallContext}
+                    legacyMigration={null}
+                  />
+                }
+              >
+                <Await resolve={legacyMigration}>
+                  {(resolvedLegacyMigration) => (
+                    <PaywallTakeover
+                      paywallContext={paywallContext}
+                      legacyMigration={resolvedLegacyMigration}
+                    />
+                  )}
+                </Await>
+              </Suspense>
+            ) : null}
+          </SidebarInset>
+        </ChatThreadSnapshotsProvider>
+      </ChatGroupsProvider>
+      <Suspense fallback={null}>
+        <Await resolve={showLegacyBanner}>
+          {(resolvedShowLegacyBanner) => (
+            <LegacyUserBanner
+              show={resolvedShowLegacyBanner}
+              userId={authState.user?.id ?? "legacy-user"}
+            />
+          )}
+        </Await>
+      </Suspense>
+      {billingAccessReady ? (
+        <Suspense fallback={null}>
+          <Await resolve={legacyMigration}>
+            {(resolvedLegacyMigration) => (
+              <LegacyMigrationDisclosure
+                authState={authState}
+                legacyMigration={resolvedLegacyMigration}
+                navigate={navigate}
+              />
+            )}
+          </Await>
+        </Suspense>
+      ) : null}
+    </SidebarProvider>
+  );
+}
+
+type LegacyMigrationData = Awaited<
+  ReturnType<typeof getVerifiedLegacyStripeMigrationEligibility>
+>;
+
+function LegacyMigrationDisclosure({
+  authState,
+  legacyMigration,
+  navigate,
+}: {
+  authState: AuthState;
+  legacyMigration: LegacyMigrationData;
+  navigate: ReturnType<typeof useNavigate>;
+}) {
+  const legacyMigrationKey = legacyMigration?.eligible
     ? [
         authState.currentOrg?.id ?? "unknown-org",
         legacyMigration.customerId,
@@ -205,40 +289,17 @@ export default function AppLayout() {
   }, [legacyMigrationKey]);
 
   return (
-    <SidebarProvider defaultOpen={defaultSidebarOpen}>
-      <ChatGroupsProvider>
-        <ChatThreadSnapshotsProvider>
-          <AppSidebar />
-          <SidebarInset className="h-svh overflow-hidden flex flex-col">
-            {appRouteAccessible ? (
-              <Outlet />
-            ) : paywallContext ? (
-              <PaywallTakeover
-                paywallContext={paywallContext}
-                legacyMigration={legacyMigration}
-              />
-            ) : null}
-          </SidebarInset>
-        </ChatThreadSnapshotsProvider>
-      </ChatGroupsProvider>
-      <LegacyUserBanner
-        show={showLegacyBanner}
-        userId={authState.user?.id ?? "legacy-user"}
-      />
-      {billingAccessReady ? (
-        <LegacyMigrationDialog
-          migration={legacyMigration}
-          open={legacyDialogOpen}
-          onOpenChange={setLegacyDialogOpen}
-          primaryAction={{
-            label: "See plans",
-            onClick: () => {
-              setLegacyDialogOpen(false);
-              navigate("/settings/organization/billing?view=plans");
-            },
-          }}
-        />
-      ) : null}
-    </SidebarProvider>
+    <LegacyMigrationDialog
+      migration={legacyMigration}
+      open={legacyDialogOpen}
+      onOpenChange={setLegacyDialogOpen}
+      primaryAction={{
+        label: "See plans",
+        onClick: () => {
+          setLegacyDialogOpen(false);
+          navigate("/settings/organization/billing?view=plans");
+        },
+      }}
+    />
   );
 }

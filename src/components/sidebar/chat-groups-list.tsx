@@ -26,6 +26,7 @@ import {
   SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSkeleton,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +62,7 @@ function writeCloseGroupConfirmationSuppressed() {
 interface ChatGroupsListProps {
   groups: ChatGroupView[];
   activeGroupId: string | null;
+  isLoading?: boolean;
   onSelectGroup: (groupId: string) => void;
   onCloseGroup: (groupId: string) => void;
   onSelectThread?: (
@@ -129,6 +131,7 @@ export function ChatGroupCollapsedIcon({ group }: { group: ChatGroupView }) {
 export function ChatGroupsList({
   groups,
   activeGroupId,
+  isLoading = false,
   onSelectGroup,
   onCloseGroup,
   onSelectThread,
@@ -141,6 +144,18 @@ export function ChatGroupsList({
   const [rememberSuppression, setRememberSuppression] = useState(false);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
   const [openHoverGroupId, setOpenHoverGroupId] = useState<string | null>(null);
+
+  if (isLoading && groups.length === 0) {
+    return (
+      <SidebarMenu>
+        {Array.from({ length: 5 }).map((_, index) => (
+          <SidebarMenuItem key={index}>
+            <SidebarMenuSkeleton showIcon />
+          </SidebarMenuItem>
+        ))}
+      </SidebarMenu>
+    );
+  }
 
   if (groups.length === 0) {
     return (

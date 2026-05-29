@@ -5173,10 +5173,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     const now = Date.now();
     const t = title || DEFAULT_THREAD_TITLE;
     const creator = createdBy?.trim() || "system";
-    const msg = firstUserMessage?.slice(0, 500) || null;
     const lastUserMessage = firstUserMessage
       ? normalizeThreadPreviewUserMessage(firstUserMessage)
       : null;
+    const msg = lastUserMessage;
     const lastUserMessageAt = lastUserMessage ? now : null;
     const normalizedModel =
       provider === "claude"
@@ -5431,7 +5431,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const existing = this.getThread(id);
     if (!existing) return null;
 
-    const message = firstUserMessage.trim().slice(0, 500);
+    const message = normalizeThreadPreviewUserMessage(firstUserMessage);
     if (!message) {
       return existing;
     }

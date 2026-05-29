@@ -118,18 +118,31 @@ function groupViewWithThreadRevision(
 }
 
 function ChatGroupsProviderProbe({ threadId = "thread_1" }: { threadId?: string }) {
-  const { groups } = useChatGroups();
+  const { groups, isLoading } = useChatGroups();
   const thread = groups
     .flatMap((group) => [...group.open_threads, ...group.closed_threads])
     .find((candidate) => candidate.id === threadId);
+  const group = groups.find((candidate) =>
+    [...candidate.open_threads, ...candidate.closed_threads].some(
+      (candidateThread) => candidateThread.id === threadId,
+    ),
+  );
   return (
-    <div data-testid="thread-title">
-      {thread?.title ?? ""}
-    </div>
+    <>
+      <div data-testid="thread-title">
+        {thread?.title ?? ""}
+      </div>
+      <div data-testid="group-name">
+        {group?.name ?? ""}
+      </div>
+      <div data-testid="groups-loading">
+        {isLoading ? "loading" : "loaded"}
+      </div>
+    </>
   );
 }
 
-function authLoaderState(chatGroups: ChatGroupView[]) {
+function authLoaderState(chatGroups: ChatGroupView[] | Promise<ChatGroupView[]>) {
   return {
     authState: {
       user: { id: "user_1" },
@@ -485,6 +498,21 @@ describe("ChatGroupsList", () => {
     render(<ChatGroupsList groups={[]} activeGroupId={null} onSelectGroup={vi.fn()} onCloseGroup={vi.fn()} />);
 
     expect(screen.getByText("No groups yet")).toBeInTheDocument();
+  });
+
+  it("renders skeleton rows while groups are loading", () => {
+    render(
+      <ChatGroupsList
+        groups={[]}
+        activeGroupId={null}
+        isLoading
+        onSelectGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("No groups yet")).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-sidebar="menu-skeleton"]')).toHaveLength(5);
   });
 
   it("renders count-only idle group slots and status icons for active groups", () => {
@@ -878,7 +906,7 @@ describe("getGroupLandingHref", () => {
 });
 
 describe("mergeActiveChatGroup", () => {
-  it("replaces stale layout group data with the active route group", () => {
+  it("merges stale layout group data with the active route group", () => {
     const activeGroup: ChatGroupView = {
       ...groupView,
       open_thread_ids: ["thread_1", "thread_2"],
@@ -903,6 +931,44 @@ describe("mergeActiveChatGroup", () => {
       "thread_1",
       "thread_2",
     ]);
+  });
+
+  it("preserves existing tabs when the active route group is a lightweight fallback", () => {
+    const activeGroup: ChatGroupView = {
+      ...groupView,
+      id: "group_multi",
+      open_thread_ids: ["thread_new"],
+      closed_thread_ids: [],
+      open_threads: [
+        makeThreadSummary({
+          id: "thread_new",
+          title: "New tab",
+          updated_at: 3,
+          status: "running",
+        }),
+      ],
+      closed_threads: [],
+      member_count: 1,
+      status: "running",
+      last_active_thread_id: "thread_new",
+    };
+
+    const merged = mergeActiveChatGroup([multiChatGroupView], activeGroup);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].name).toBe("Launch");
+    expect(merged[0].last_active_thread_id).toBe("thread_new");
+    expect(merged[0].open_thread_ids).toEqual([
+      "thread_new",
+      "thread_1",
+      "thread_2",
+    ]);
+    expect(merged[0].open_threads.map((thread) => thread.id)).toEqual([
+      "thread_new",
+      "thread_1",
+      "thread_2",
+    ]);
+    expect(merged[0].member_count).toBe(3);
   });
 
   it("adds an active group missing from the stale layout list", () => {
@@ -1103,8 +1169,52 @@ describe("reconcileThreadSummaryPatchesWithGroups", () => {
 });
 
 describe("ChatGroupsProvider summary patches", () => {
+  it("does not suspend children while app chat groups are deferred", async () => {
+    let resolveGroups: (groups: ChatGroupView[]) => void = () => {};
+    const deferredGroups = new Promise<ChatGroupView[]>((resolve) => {
+      resolveGroups = resolve;
+    });
+    const router = createMemoryRouter(
+      [
+        {
+          id: "routes/_app",
+          path: "/",
+          loader: () => authLoaderState(deferredGroups),
+          element: (
+            <ChatGroupsProvider>
+              <ChatGroupsProviderProbe />
+            </ChatGroupsProvider>
+          ),
+        },
+      ],
+      { initialEntries: ["/"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByTestId("groups-loading")).toHaveTextContent(
+      "loading",
+    );
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("");
+
+    await act(async () => {
+      resolveGroups([groupView]);
+      await deferredGroups;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("groups-loading")).toHaveTextContent("loaded");
+    });
+    expect(screen.getByTestId("thread-title")).toHaveTextContent("API plan");
+  });
+
   it("keeps newer local title patches over older loader group data", async () => {
-    let loaderState = authLoaderState([groupViewWithThreadRevision("API plan", 1)]);
+    let loaderState = authLoaderState([
+      {
+        ...groupViewWithThreadRevision("API plan", 1),
+        name: "New Chat",
+      },
+    ]);
     const addEventListenerSpy = vi.spyOn(window, "addEventListener");
     const router = createMemoryRouter(
       [
@@ -1152,8 +1262,16 @@ describe("ChatGroupsProvider summary patches", () => {
           "Optimistic title",
         );
       });
+      expect(screen.getByTestId("group-name")).toHaveTextContent(
+        "Optimistic title",
+      );
 
-      loaderState = authLoaderState([groupViewWithThreadRevision("Old title", 1)]);
+      loaderState = authLoaderState([
+        {
+          ...groupViewWithThreadRevision("Old title", 1),
+          name: "Old title",
+        },
+      ]);
       await act(async () => {
         await router.revalidate();
       });
@@ -1162,7 +1280,12 @@ describe("ChatGroupsProvider summary patches", () => {
         "Optimistic title",
       );
 
-      loaderState = authLoaderState([groupViewWithThreadRevision("Server title", 6)]);
+      loaderState = authLoaderState([
+        {
+          ...groupViewWithThreadRevision("Server title", 6),
+          name: "Server title",
+        },
+      ]);
       await act(async () => {
         await router.revalidate();
       });
@@ -1172,6 +1295,9 @@ describe("ChatGroupsProvider summary patches", () => {
           "Server title",
         );
       });
+      expect(screen.getByTestId("group-name")).toHaveTextContent(
+        "Server title",
+      );
     } finally {
       addEventListenerSpy.mockRestore();
     }

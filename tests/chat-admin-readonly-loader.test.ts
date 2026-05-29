@@ -412,7 +412,9 @@ describe('chat loader workspace mismatch handling', () => {
     });
 
     const result = await loader({
-      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      request: new Request(
+        'https://camelai.com/chat/thread_123?newThread=1&group=group_123',
+      ),
       context: {},
       params: { id: 'thread_123' },
     } as never);
@@ -422,6 +424,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.threadModel).toBe('opus-4.8');
     expect(result.allowedThreadModels).toEqual(['opus-4.8']);
     expect(result.isOrgAdmin).toBe(false);
+    expect(result.orgSlug).toBe('acme');
     expect(result.recentModelScope).toEqual({
       orgId: 'org_active',
       workspaceId: 'ws_active',
@@ -429,16 +432,21 @@ describe('chat loader workspace mismatch handling', () => {
     expect(requireSessionWorkspaceAccessMock).toHaveBeenCalledTimes(1);
     expect(requireAuthContextMock).not.toHaveBeenCalled();
     expect(getThreadMock).not.toHaveBeenCalled();
-    expect(ensureGroupForThreadMock).toHaveBeenCalledWith(
-      {},
-      {
-        userId: 'user_123',
-        orgId: 'org_active',
-        workspaceId: 'ws_active',
-        threadId: 'thread_123',
-        fallbackName: 'Workspace Thread',
-      },
-    );
+    expect(ensureGroupForThreadMock).not.toHaveBeenCalled();
+    expect(result.activeGroupId).toBe('group_123');
+    expect(result.activeChatGroup).toMatchObject({
+      id: 'group_123',
+      name: 'Workspace Thread',
+      open_thread_ids: ['thread_123'],
+      open_threads: [
+        expect.objectContaining({
+          id: 'thread_123',
+          title: 'Workspace Thread',
+          model: 'opus-4.8',
+          status: 'running',
+        }),
+      ],
+    });
   });
 
   it('loads in-flight Pi messages for new-thread navigations', async () => {

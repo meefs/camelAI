@@ -10,9 +10,12 @@ vi.mock('@/lib/thread-title-generation.server', () => ({
   generateThreadTitleWithOpenAI: vi.fn(),
 }));
 
-const { createThread, getThread, getWorkspaceModelPickerState } = await import(
-  '@/lib/chat-do.server'
-);
+const {
+  createThread,
+  createThreadWithValidatedAccess,
+  getThread,
+  getWorkspaceModelPickerState,
+} = await import('@/lib/chat-do.server');
 
 describe('getWorkspaceModelPickerState rollout compatibility', () => {
   beforeEach(() => {
@@ -152,6 +155,51 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       undefined,
       'sonnet',
     );
+  });
+
+  it('applies model picker validation on the validated-access create fast path', async () => {
+    const workspaceStub = {
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        models: [{ id: 'sonnet', added_at: 1 }],
+        default_model: 'sonnet',
+      }),
+      createThread: vi.fn(),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    await expect(
+      createThreadWithValidatedAccess(
+        {},
+        'org_123',
+        'ws_123',
+        'New Chat',
+        'user_123',
+        'hello',
+        'gpt-5.4-mini',
+      ),
+    ).rejects.toThrow('Invalid thread model');
+    expect(orgStub.createThread).not.toHaveBeenCalled();
   });
 
   it('normalizes legacy stored thread models and ignores legacy providers before returning them to React', async () => {

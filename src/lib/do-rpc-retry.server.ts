@@ -18,7 +18,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function retryTransientDurableObjectRead<T>(
+export async function retryTransientDurableObjectRpc<T>(
   operation: string,
   fn: () => Promise<T>,
   options: { attempts?: number; initialDelayMs?: number } = {},
@@ -42,7 +42,7 @@ export async function retryTransientDurableObjectRead<T>(
         throw error;
       }
 
-      console.warn("[do-rpc] transient read failed; retrying", {
+      console.warn("[do-rpc] transient rpc failed; retrying", {
         operation,
         attempt,
         attempts,
@@ -54,3 +54,5 @@ export async function retryTransientDurableObjectRead<T>(
 
   throw lastError;
 }
+
+export const retryTransientDurableObjectRead = retryTransientDurableObjectRpc;

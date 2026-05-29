@@ -4980,6 +4980,65 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.replayRunnerEvents(ws, lastSeq);
   }
 
+  private chatSendFailureStatus(
+    status: "busy" | "error" | string,
+    error: unknown,
+  ): number {
+    if (status === "busy") return 409;
+    if (this.isChatBillingOrCreditError(error)) return 402;
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return this.piProviderErrorMetadata(message).status ?? 500;
+  }
+
+  private isChatBillingOrCreditError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("credit") ||
+      lower.includes("billing") ||
+      lower.includes("subscription") ||
+      lower.includes("payment") ||
+      lower.includes("pay as you go") ||
+      lower.includes("api key") ||
+      lower.includes("usage limit") ||
+      lower.includes("hosted model")
+    );
+  }
+
+  private chatSendErrorPayload(
+    error: unknown,
+    options: {
+      status?: "busy" | "error" | string;
+      fallbackMessage: string;
+    },
+  ): Record<string, unknown> {
+    const rawMessage =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "";
+    const message = rawMessage.trim() || options.fallbackMessage;
+    const metadata = this.piProviderErrorMetadata(message);
+    const status = this.chatSendFailureStatus(
+      options.status ?? "error",
+      message,
+    );
+    return {
+      type: "error",
+      error: message,
+      status,
+      ...(this.isChatBillingOrCreditError(message)
+        ? { errorType: "billing" }
+        : {}),
+      ...(this.piCurrentBillingSource === "byok" || this.piCurrentBillingSource === "hosted"
+        ? { billingSource: this.piCurrentBillingSource }
+        : {}),
+      ...(this.piCurrentUsageProvider ? { provider: this.piCurrentUsageProvider } : {}),
+      ...metadata,
+    };
+  }
+
   private async handleRunnerClientUserMessage(
     ws: WebSocket,
     data: ChatClientMessage,
@@ -5023,10 +5082,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         sampleKey: sendAttemptId,
         error,
       });
-      this.sendDirect(ws, {
-        type: "error",
-        error: "Failed to send message to sandbox",
-      });
+      this.sendDirect(
+        ws,
+        this.chatSendErrorPayload(error, {
+          fallbackMessage: "Failed to send message to sandbox",
+        }),
+      );
       return;
     }
 
@@ -5038,10 +5099,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         durationMs: Date.now() - startedAt,
         sampleKey: sendAttemptId,
       });
-      this.sendDirect(ws, {
-        type: "error",
-        error: result.error ?? "Failed to send message",
-      });
+      this.sendDirect(
+        ws,
+        this.chatSendErrorPayload(result.error, {
+          status: result.status,
+          fallbackMessage: "Failed to send message",
+        }),
+      );
       return;
     }
 

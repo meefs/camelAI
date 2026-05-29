@@ -5,10 +5,13 @@ const requireSessionWorkspaceAccessMock = vi.fn();
 const getEnvMock = vi.fn();
 const getAuthEnvMock = vi.fn();
 const createThreadMock = vi.fn();
+const createThreadWithValidatedAccessMock = vi.fn();
 const deleteThreadMock = vi.fn();
 const generateThreadTitleMock = vi.fn();
 const createGroupForNewThreadMock = vi.fn();
+const createGroupForNewThreadLightweightMock = vi.fn();
 const addThreadToExistingGroupMock = vi.fn();
+const addThreadToExistingGroupLightweightMock = vi.fn();
 const startInitialUserMessageMock = vi.fn();
 const CLIENT_BUILD_ID = 'development';
 
@@ -40,6 +43,7 @@ vi.mock('@/lib/auth-do', () => ({
 
 vi.mock('@/lib/chat-do.server', () => ({
   createThread: createThreadMock,
+  createThreadWithValidatedAccess: createThreadWithValidatedAccessMock,
   deleteThread: deleteThreadMock,
   generateThreadTitle: generateThreadTitleMock,
   getRecentThreads: vi.fn(),
@@ -48,7 +52,9 @@ vi.mock('@/lib/chat-do.server', () => ({
 
 vi.mock('@/lib/chat-groups.server', () => ({
   addThreadToExistingGroup: addThreadToExistingGroupMock,
+  addThreadToExistingGroupLightweight: addThreadToExistingGroupLightweightMock,
   createGroupForNewThread: createGroupForNewThreadMock,
+  createGroupForNewThreadLightweight: createGroupForNewThreadLightweightMock,
   getGroupForWorkspace: vi.fn(),
   listGroupsForMove: vi.fn(),
 }));
@@ -69,6 +75,11 @@ describe('new chat create action', () => {
       orgId: 'org_123',
       workspaceId: 'ws_123',
       userId: 'user_123',
+      session: {
+        user_id: 'user_123',
+        user_name: 'Ada Lovelace',
+        user_email: 'ada@example.com',
+      },
     });
     getEnvMock.mockReturnValue({
       CHAT_THREAD: {
@@ -83,13 +94,26 @@ describe('new chat create action', () => {
       id: 'thread_123',
       title: 'New Chat',
       workspace_id: 'ws_123',
+      model: 'sonnet',
+    });
+    createThreadWithValidatedAccessMock.mockResolvedValue({
+      id: 'thread_123',
+      title: 'New Chat',
+      workspace_id: 'ws_123',
+      model: 'sonnet',
     });
     deleteThreadMock.mockResolvedValue(true);
     generateThreadTitleMock.mockResolvedValue(undefined);
     createGroupForNewThreadMock.mockResolvedValue({
       id: 'group_123',
     });
+    createGroupForNewThreadLightweightMock.mockResolvedValue({
+      id: 'group_123',
+    });
     addThreadToExistingGroupMock.mockResolvedValue({
+      id: 'group_existing',
+    });
+    addThreadToExistingGroupLightweightMock.mockResolvedValue({
       id: 'group_existing',
     });
     startInitialUserMessageMock.mockResolvedValue({ status: 'accepted' });
@@ -150,7 +174,7 @@ describe('new chat create action', () => {
     ).toBe(false);
   });
 
-  it('redirects immediately and starts the first message in the chat thread', async () => {
+  it('redirects immediately and starts the first message in the background', async () => {
     const formData = makeCreateThreadFormData();
     formData.set('intent', 'createThreadAndStart');
     formData.set('firstMessage', 'Build an analytics dashboard');
@@ -168,14 +192,35 @@ describe('new chat create action', () => {
     expect(response.headers.get('Location')).toBe(
       '/chat/thread_123?newThread=1&group=group_123',
     );
+    expect(createThreadWithValidatedAccessMock).toHaveBeenCalledWith(
+      {},
+      'org_123',
+      'ws_123',
+      undefined,
+      'user_123',
+      'Build an analytics dashboard',
+      'sonnet',
+    );
+    expect(createThreadMock).not.toHaveBeenCalled();
     expect(startInitialUserMessageMock).toHaveBeenCalledWith({
       threadId: 'thread_123',
       workspaceId: 'ws_123',
       orgId: 'org_123',
       userId: 'user_123',
+      userName: 'Ada Lovelace',
+      userEmail: 'ada@example.com',
       message: 'Build an analytics dashboard',
       clientMessageId: 'initial:thread_123',
     });
+    expect(waitUntilMock).toHaveBeenCalledTimes(2);
+    expect(createGroupForNewThreadLightweightMock).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        threadId: 'thread_123',
+        initialThreadTitle: null,
+      }),
+    );
+    expect(createGroupForNewThreadMock).not.toHaveBeenCalled();
   });
 
   it('accepts stale client build ids for compatible create-and-start submissions', async () => {
@@ -197,31 +242,42 @@ describe('new chat create action', () => {
     expect(response.headers.get('Location')).toBe(
       '/chat/thread_123?newThread=1&group=group_123',
     );
-    expect(createThreadMock).toHaveBeenCalledWith(
+    expect(createThreadWithValidatedAccessMock).toHaveBeenCalledWith(
       {},
+      'org_123',
       'ws_123',
       undefined,
       'user_123',
       'Build from an old tab',
       'sonnet',
     );
+    expect(createThreadMock).not.toHaveBeenCalled();
     expect(startInitialUserMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: 'thread_123',
         message: 'Build from an old tab',
+        clientMessageId: 'initial:thread_123',
+      }),
+    );
+    expect(createGroupForNewThreadLightweightMock).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        threadId: 'thread_123',
+        initialThreadTitle: null,
       }),
     );
   });
 
-  it('returns an error instead of redirecting when the initial turn cannot start', async () => {
-    startInitialUserMessageMock.mockResolvedValueOnce({
-      status: 'busy',
-      error: 'Thread is busy',
-    });
-
+  it('retries transient ChatThreadDO resets when starting the first message', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    startInitialUserMessageMock
+      .mockRejectedValueOnce(
+        new Error('Durable Object reset because its code was updated.'),
+      )
+      .mockResolvedValueOnce({ status: 'accepted' });
     const formData = makeCreateThreadFormData();
     formData.set('intent', 'createThreadAndStart');
-    formData.set('firstMessage', 'Build an analytics dashboard');
+    formData.set('firstMessage', 'Survive a deploy reset');
     formData.set('model', 'sonnet');
 
     const response = await action({
@@ -232,45 +288,19 @@ describe('new chat create action', () => {
       context: {},
     } as never);
 
-    expect(response.status).toBe(409);
-    expect(response.headers.get('Location')).toBeNull();
-    await expect(response.json()).resolves.toEqual({
-      error: 'Thread is busy',
-    });
-    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
-    expect(createGroupForNewThreadMock).not.toHaveBeenCalled();
-  });
-
-  it('returns a billing action instead of a 500 when hosted credits are exhausted', async () => {
-    startInitialUserMessageMock.mockResolvedValueOnce({
-      status: 'error',
-      error:
-        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.',
-    });
-
-    const formData = makeCreateThreadFormData();
-    formData.set('intent', 'createThreadAndStart');
-    formData.set('firstMessage', 'Build an analytics dashboard');
-    formData.set('model', 'sonnet');
-
-    const response = await action({
-      request: new Request('https://camelai.dev/chat', {
-        method: 'POST',
-        body: formData,
+    expect(response.status).toBe(302);
+    const startPromise = waitUntilMock.mock.calls[1]?.[0] as Promise<unknown>;
+    await expect(startPromise).resolves.toBeUndefined();
+    expect(startInitialUserMessageMock).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[do-rpc] transient rpc failed; retrying',
+      expect.objectContaining({
+        operation: 'ChatThreadDO.startInitialUserMessage',
+        attempt: 1,
+        attempts: 4,
       }),
-      context: {},
-    } as never);
-
-    expect(response.status).toBe(402);
-    expect(response.headers.get('Location')).toBeNull();
-    await expect(response.json()).resolves.toMatchObject({
-      error:
-        'Hosted model credits are used up. You have used 0.00 credits of 0.00 credits. Buy credits or manage your subscription in Settings -> Billing, or add your own API key in Settings -> AI Provider. Your workspace is saved.',
-      actionHref: '/settings/organization/usage?action=topup',
-      actionLabel: 'Top up credits',
-    });
-    expect(deleteThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_123');
-    expect(createGroupForNewThreadMock).not.toHaveBeenCalled();
+    );
+    warnSpy.mockRestore();
   });
 
   it('returns the new thread and group while title generation runs in the background', async () => {

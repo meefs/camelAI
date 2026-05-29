@@ -19,9 +19,10 @@ import type {
 import { useAuthData } from "@/hooks/use-auth-data";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { maxThreadStatus } from "@/lib/thread-status";
+import { isPlaceholderThreadTitle } from "@/lib/thread-title";
 
 interface AppChatGroupsLoaderData {
-  chatGroups?: ChatGroupView[];
+  chatGroups?: ChatGroupView[] | Promise<ChatGroupView[]>;
 }
 
 interface ChatRouteData {
@@ -49,6 +50,7 @@ interface ChatGroupsContextValue {
   activeGroupId: string | null;
   runningThreadIds: Set<string>;
   hasStatusSnapshot: boolean;
+  isLoading: boolean;
   markThreadIdle: (threadId: string) => void;
 }
 
@@ -64,6 +66,10 @@ function useLatestRef<T>(value: T) {
   const ref = useRef(value);
   ref.current = value;
   return ref;
+}
+
+function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T> {
+  return typeof (value as Promise<T> | undefined)?.then === "function";
 }
 
 function getActiveGroupIdFromMatches(matches: ReturnType<typeof useMatches>) {
@@ -229,8 +235,88 @@ export function mergeActiveChatGroup(
   if (existingIndex < 0) return [activeGroup, ...groups];
 
   const next = [...groups];
-  next[existingIndex] = activeGroup;
+  next[existingIndex] = mergeActiveGroupWithExistingGroup(
+    next[existingIndex],
+    activeGroup,
+  );
   return next;
+}
+
+function mergeThreadSummaries(
+  activeThreads: ChatGroupThreadSummary[],
+  existingThreads: ChatGroupThreadSummary[],
+): ChatGroupThreadSummary[] {
+  const activeIds = new Set(activeThreads.map((thread) => thread.id));
+  return [
+    ...activeThreads,
+    ...existingThreads.filter((thread) => !activeIds.has(thread.id)),
+  ];
+}
+
+function mergeThreadIds(
+  activeThreadIds: string[],
+  existingThreadIds: string[],
+): string[] {
+  const activeIds = new Set(activeThreadIds);
+  return [
+    ...activeThreadIds,
+    ...existingThreadIds.filter((threadId) => !activeIds.has(threadId)),
+  ];
+}
+
+function mergeActiveGroupWithExistingGroup(
+  existingGroup: ChatGroupView,
+  activeGroup: ChatGroupView,
+): ChatGroupView {
+  const openThreads = mergeThreadSummaries(
+    activeGroup.open_threads,
+    existingGroup.open_threads,
+  );
+  const closedThreads = mergeThreadSummaries(
+    activeGroup.closed_threads,
+    existingGroup.closed_threads,
+  );
+  const openThreadIds = mergeThreadIds(
+    activeGroup.open_thread_ids,
+    existingGroup.open_thread_ids,
+  );
+  const closedThreadIds = mergeThreadIds(
+    activeGroup.closed_thread_ids,
+    existingGroup.closed_thread_ids,
+  );
+
+  return {
+    ...existingGroup,
+    ...activeGroup,
+    name: existingGroup.name || activeGroup.name,
+    open_thread_ids: openThreadIds,
+    closed_thread_ids: closedThreadIds,
+    open_threads: openThreads,
+    closed_threads: closedThreads,
+    member_count: Math.max(
+      activeGroup.member_count,
+      existingGroup.member_count,
+      openThreads.length + closedThreads.length,
+    ),
+  };
+}
+
+function resolveGroupNameAfterThreadPatches(
+  group: ChatGroupView,
+  openThreads: ChatGroupThreadSummary[],
+  closedThreads: ChatGroupThreadSummary[],
+): string {
+  const threads = [...openThreads, ...closedThreads];
+  if (threads.length !== 1) return group.name;
+  const previousThreads = [...group.open_threads, ...group.closed_threads];
+  const groupName = group.name.trim();
+  const previousThreadTitle = previousThreads[0]?.title.trim();
+  const isThreadTitleFallback =
+    previousThreads.length === 1 && groupName === previousThreadTitle;
+  if (!isPlaceholderThreadTitle(group.name) && !isThreadTitleFallback) {
+    return group.name;
+  }
+  return threads[0].title;
 }
 
 export function getCloseGroupRedirect(
@@ -507,11 +593,17 @@ export function applyLiveRunningStatuses(
       ...open_threads.map((thread) => thread.status),
       ...closed_threads.map((thread) => thread.status),
     ]);
+    const nextName = resolveGroupNameAfterThreadPatches(
+      group,
+      open_threads,
+      closed_threads,
+    );
 
     if (
       !openThreadsChanged &&
       !closedThreadsChanged &&
-      group.status === nextStatus
+      group.status === nextStatus &&
+      group.name === nextName
     ) {
       return group;
     }
@@ -519,6 +611,7 @@ export function applyLiveRunningStatuses(
     changed = true;
     return {
       ...group,
+      name: nextName,
       open_threads: openThreadsChanged ? open_threads : group.open_threads,
       closed_threads: closedThreadsChanged ? closed_threads : group.closed_threads,
       status: nextStatus,
@@ -539,6 +632,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const data = useRouteLoaderData("routes/_app") as
     | AppChatGroupsLoaderData
     | undefined;
+  const rawChatGroups = data?.chatGroups;
+  const [resolvedChatGroups, setResolvedChatGroups] = useState<
+    ChatGroupView[] | null
+  >(() => (Array.isArray(rawChatGroups) ? rawChatGroups : null));
   const matches = useMatches();
   const activeThreadId = getActiveThreadIdFromMatches(matches);
   const activeThreadIdRef = useLatestRef(activeThreadId);
@@ -556,7 +653,7 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   const liveThreadStatusesRef = useLatestRef(liveThreadStatuses);
   const localThreadStatusesRef = useLatestRef(localThreadStatuses);
   const hasPendingCompletionSummariesRef = useLatestRef(
-    hasPendingCompletionSummaries(data?.chatGroups),
+    hasPendingCompletionSummaries(resolvedChatGroups),
   );
   const [hasStatusSnapshot, setHasStatusSnapshot] = useState(false);
   const resolvedThreadStatuses = useMemo(
@@ -593,9 +690,37 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setLocalThreadSummaryPatches((current) =>
-      reconcileThreadSummaryPatchesWithGroups(current, data?.chatGroups),
+      reconcileThreadSummaryPatchesWithGroups(
+        current,
+        resolvedChatGroups ?? undefined,
+      ),
     );
-  }, [data?.chatGroups]);
+  }, [resolvedChatGroups]);
+
+  useEffect(() => {
+    if (Array.isArray(rawChatGroups)) {
+      setResolvedChatGroups(rawChatGroups);
+      return;
+    }
+    if (!isPromiseLike(rawChatGroups)) {
+      setResolvedChatGroups([]);
+      return;
+    }
+
+    let cancelled = false;
+    setResolvedChatGroups(null);
+    rawChatGroups
+      .then((groups) => {
+        if (!cancelled) setResolvedChatGroups(groups);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedChatGroups([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rawChatGroups]);
 
   const markThreadIdle = useCallback((threadId: string) => {
     const normalizedThreadId = threadId.trim();
@@ -1135,8 +1260,9 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
   ]);
 
   const groups = useMemo(() => {
+    const loaderGroups = resolvedChatGroups ?? [];
     const source = mergeActiveChatGroup(
-      data?.chatGroups ?? [],
+      loaderGroups,
       getActiveChatGroupFromMatches(matches),
     );
     return applyLiveRunningStatuses(
@@ -1149,10 +1275,10 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     );
   }, [
     activeThreadId,
-    data?.chatGroups,
     hasStatusSnapshot,
     localThreadSummaryPatches,
     matches,
+    resolvedChatGroups,
     resolvedThreadStatuses,
     runningThreadIds,
   ]);
@@ -1162,8 +1288,16 @@ export function ChatGroupsProvider({ children }: { children: ReactNode }) {
     activeGroupId: getActiveGroupIdFromMatches(matches),
     runningThreadIds,
     hasStatusSnapshot,
+    isLoading: resolvedChatGroups === null,
     markThreadIdle,
-  }), [groups, hasStatusSnapshot, markThreadIdle, matches, runningThreadIds]);
+  }), [
+    groups,
+    hasStatusSnapshot,
+    markThreadIdle,
+    matches,
+    resolvedChatGroups,
+    runningThreadIds,
+  ]);
 
   return (
     <ChatGroupsContext.Provider value={value}>

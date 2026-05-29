@@ -18,10 +18,6 @@ import {
   buildBillingCreditStatus,
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
-import {
-  chatBillingActionPayload,
-  chatStartFailureStatus,
-} from "@/lib/chat-api-errors";
 import { waitUntil } from "@/lib/wait-until";
 import { getAuthEnv, integrationRecordToIntegration } from "@/lib/auth-helpers";
 import { getWorkerScript } from "@/lib/auth-do";
@@ -33,7 +29,9 @@ import {
 import * as chatDO from "@/lib/chat-do.server";
 import {
   addThreadToExistingGroup,
+  addThreadToExistingGroupLightweight,
   createGroupForNewThread,
+  createGroupForNewThreadLightweight,
   getGroupForWorkspace,
   listGroupsForMove,
 } from "@/lib/chat-groups.server";
@@ -41,6 +39,10 @@ import {
   consumeSalesPrompt,
   getPromptKeyFromUrl,
 } from "@/lib/sales-prompt.server";
+import {
+  isTransientDurableObjectRpcError,
+  retryTransientDurableObjectRpc,
+} from "@/lib/do-rpc-retry.server";
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
@@ -192,23 +194,6 @@ function recordChatCreateThreadError(
   });
 }
 
-type InitialUserMessageRpc = {
-  startInitialUserMessage(args: {
-    threadId: string;
-    workspaceId: string;
-    orgId: string;
-    userId?: string | null;
-    message: string;
-    clientMessageId?: string;
-  }): Promise<{ status: "accepted" | "busy" | "error"; error?: string }>;
-};
-
-function initialUserMessageFailureStatus(
-  result: Awaited<ReturnType<InitialUserMessageRpc["startInitialUserMessage"]>>,
-): number {
-  return chatStartFailureStatus(result.status, result.error);
-}
-
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
@@ -323,14 +308,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         })
     : Promise.resolve([]);
 
-  const [allApps, recentThreads, connections] = await Promise.all([
-    allAppsPromise,
-    recentThreadsPromise,
-    connectionsPromise,
-  ]);
-  const activeChatGroup =
+  const activeChatGroupPromise =
     workspaceId && userId && groupId
-      ? await getGroupForWorkspace(context, {
+      ? getGroupForWorkspace(context, {
           userId,
           orgId: authContext.currentOrg.id,
           workspaceId,
@@ -339,26 +319,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           console.error("Failed to load chat group for welcome screen:", error);
           return null;
         })
-      : null;
-  const moveChatGroups =
+      : Promise.resolve(null);
+  const moveChatGroupsPromise =
     workspaceId && userId
-      ? await listGroupsForMove(context, {
+      ? listGroupsForMove(context, {
           userId,
           orgId: authContext.currentOrg.id,
           workspaceId,
         }).catch(() => [])
-      : [];
+      : Promise.resolve([]);
   const orgStub =
     workspaceId && authContext.currentOrg?.id
       ? authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id))
       : null;
-  const [
-    pickerState,
-    orgInfo,
-    llmProviderConfig,
-    fallbackExperimentalSettings,
-  ] = orgStub && workspaceId
-    ? await Promise.all([
+  const pickerAndOrgPromise = orgStub && workspaceId
+    ? Promise.all([
         chatDO.getWorkspaceModelPickerState(context, workspaceId).catch(
           (error) => {
             console.error("Failed to load model picker state:", error);
@@ -371,7 +346,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           .getExperimentalSettings()
           .catch(() => DEFAULT_ORG_EXPERIMENTAL_SETTINGS),
       ])
-    : ([null, null, null, DEFAULT_ORG_EXPERIMENTAL_SETTINGS] as const);
+    : Promise.resolve([
+        null,
+        null,
+        null,
+        DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
+      ] as const);
+  const [
+    activeChatGroup,
+    moveChatGroups,
+    [pickerState, orgInfo, llmProviderConfig, fallbackExperimentalSettings],
+  ] = await Promise.all([
+    activeChatGroupPromise,
+    moveChatGroupsPromise,
+    pickerAndOrgPromise,
+  ]);
   const experimentalSettings =
     pickerState?.experimentalSettings ?? fallbackExperimentalSettings;
   const llmProvider =
@@ -428,12 +417,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     hostname,
     userId,
     userName,
-    allApps,
-    connections,
-    recentThreads,
+    allApps: allAppsPromise,
+    connections: connectionsPromise,
+    recentThreads: recentThreadsPromise,
     renderedAt,
     salesPrompt,
     activeChatGroup,
+    activeGroupId: groupId,
     moveChatGroups,
   };
 }
@@ -448,14 +438,10 @@ export async function action({ request, context }: Route.ActionArgs) {
   // Security-critical write path: validate current workspace membership/access
   // without loading full auth context.
   const accessStartedAt = Date.now();
-  const { orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
-    request,
-    context,
-    undefined,
-    {
+  const { orgId, workspaceId, userId, session } =
+    await requireSessionWorkspaceAccess(request, context, undefined, {
       requireWrite: true,
-    },
-  );
+    });
   traceIds.orgId = orgId;
   traceIds.workspaceId = workspaceId;
   traceIds.userId = userId;
@@ -524,14 +510,24 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
 
       const createThreadStartedAt = Date.now();
-      const thread = await chatDO.createThread(
-        context,
-        workspaceId,
-        initialTitle || undefined,
-        userId,
-        firstMessage || undefined,
-        (model as LlmModel | null) ?? undefined,
-      );
+      const thread = shouldStartAndRedirect
+        ? await chatDO.createThreadWithValidatedAccess(
+            context,
+            orgId,
+            workspaceId,
+            initialTitle || undefined,
+            userId,
+            firstMessage || undefined,
+            model ?? undefined,
+          )
+        : await chatDO.createThread(
+            context,
+            workspaceId,
+            initialTitle || undefined,
+            userId,
+            firstMessage || undefined,
+            model ?? undefined,
+          );
       traceIds.threadId = thread.id;
       selectedTraceModel = thread.model;
       recordChatCreateThreadStage(
@@ -572,55 +568,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         );
       }
 
-      if (shouldStartAndRedirect && firstMessage) {
-        const initialMessageStartedAt = Date.now();
-        const chatThread = env.CHAT_THREAD.get(
-          env.CHAT_THREAD.idFromName(thread.id),
-        ) as unknown as InitialUserMessageRpc;
-        const result = await chatThread.startInitialUserMessage({
-          threadId: thread.id,
-          workspaceId,
-          orgId,
-          userId,
-          message: firstMessage,
-          clientMessageId: `initial:${thread.id}`,
-        });
-        recordChatCreateThreadStage(
-          env,
-          traceContext,
-          traceIds,
-          "initial_message_started",
-          initialMessageStartedAt,
-          {
-            status: result.status,
-            model: thread.model,
-            size: firstMessage.length,
-          },
-        );
-        if (result.status !== "accepted") {
-          const status = initialUserMessageFailureStatus(result);
-          const log =
-            status >= 500
-              ? console.error
-              : status === 402
-                ? console.info
-                : console.warn;
-          log("Failed to start initial user message:", result.error);
-          await chatDO
-            .deleteThread(context, thread.id, workspaceId)
-            .catch(() => {});
-          return Response.json(
-            {
-              error:
-                result.error ||
-                "Failed to start the first message. Please try again.",
-              ...chatBillingActionPayload(status),
-            },
-            { status },
-          );
-        }
-      }
-
       // Generate title in background if we have a first message
       if (firstMessage) {
         waitUntil(
@@ -648,6 +595,23 @@ export async function action({ request, context }: Route.ActionArgs) {
       const groupStartedAt = Date.now();
       const group = await (async () => {
         try {
+          if (shouldStartAndRedirect) {
+            return groupId
+              ? await addThreadToExistingGroupLightweight(context, {
+                  userId,
+                  orgId,
+                  workspaceId,
+                  groupId,
+                  threadId: thread.id,
+                })
+              : await createGroupForNewThreadLightweight(context, {
+                  userId,
+                  orgId,
+                  workspaceId,
+                  threadId: thread.id,
+                  initialThreadTitle: initialTitle,
+                });
+          }
           return groupId
             ? await addThreadToExistingGroup(context, {
                 userId,
@@ -691,6 +655,93 @@ export async function action({ request, context }: Route.ActionArgs) {
           count: group.member_count,
         },
       );
+
+      if (shouldStartAndRedirect && firstMessage) {
+        const initialStartScheduledAt = Date.now();
+        const chatThreadStub = env.CHAT_THREAD.get(
+          env.CHAT_THREAD.idFromName(thread.id),
+        );
+        const initialMessageRequest = {
+          threadId: thread.id,
+          workspaceId,
+          orgId,
+          userId,
+          userName: session.user_name ?? null,
+          userEmail: session.user_email ?? null,
+          message: firstMessage,
+          clientMessageId: `initial:${thread.id}`,
+        };
+        waitUntil(
+          retryTransientDurableObjectRpc(
+            "ChatThreadDO.startInitialUserMessage",
+            async () => {
+              const result =
+                await chatThreadStub.startInitialUserMessage(
+                  initialMessageRequest,
+                );
+              if (
+                result.status === "error" &&
+                isTransientDurableObjectRpcError(
+                  new Error(result.error ?? "Transient Durable Object error"),
+                )
+              ) {
+                throw new Error(result.error);
+              }
+              return result;
+            },
+            {
+              attempts: 4,
+              initialDelayMs: 150,
+            },
+          )
+            .then((result) => {
+              recordChatCreateThreadStage(
+                env,
+                traceContext,
+                traceIds,
+                "initial_message_start_completed",
+                initialStartScheduledAt,
+                {
+                  model: thread.model,
+                  status: result.status,
+                  size: firstMessage.length,
+                },
+              );
+              if (result.status !== "accepted") {
+                console.error(
+                  "Failed to start initial user message:",
+                  result.error ?? result.status,
+                );
+              }
+            })
+            .catch((error) => {
+              console.error("Failed to start initial user message:", error);
+              recordChatCreateThreadError(
+                env,
+                traceContext,
+                traceIds,
+                "initial_message_start_completed",
+                initialStartScheduledAt,
+                error,
+                {
+                  model: thread.model,
+                  size: firstMessage.length,
+                },
+              );
+            }),
+        );
+        recordChatCreateThreadStage(
+          env,
+          traceContext,
+          traceIds,
+          "initial_message_start_scheduled",
+          actionStartedAt,
+          {
+            model: thread.model,
+            size: firstMessage.length,
+          },
+        );
+      }
 
       if (shouldStartAndRedirect) {
         const nextUrl = new URL(
@@ -789,6 +840,7 @@ export default function NewChatPage() {
     renderedAt,
     salesPrompt,
     activeChatGroup,
+    activeGroupId,
     moveChatGroups,
     experimentalSettings,
     isOrgAdmin,
@@ -806,8 +858,9 @@ export default function NewChatPage() {
     return <NoWorkspacesError />;
   }
 
-  const liveActiveChatGroup = activeChatGroup
-    ? liveChatGroups.find((group) => group.id === activeChatGroup.id) ??
+  const resolvedActiveGroupId = activeGroupId ?? activeChatGroup?.id ?? null;
+  const liveActiveChatGroup = resolvedActiveGroupId
+    ? liveChatGroups.find((group) => group.id === resolvedActiveGroupId) ??
       activeChatGroup
     : activeChatGroup;
 
@@ -827,17 +880,19 @@ export default function NewChatPage() {
     })) ?? [];
   const refresh = () => revalidator.revalidate();
   const closeTab = async (threadId: string) => {
-    if (!activeChatGroup) return;
+    const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
+    if (!groupId) return;
     await fetch(
-      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(threadId)}`,
+      `/api/chat-groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(threadId)}`,
       { method: "DELETE" },
     );
     refresh();
   };
   const reopenTab = async (threadId: string) => {
-    if (!activeChatGroup) return;
+    const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
+    if (!groupId) return;
     await fetch(
-      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/members/${encodeURIComponent(threadId)}/reopen`,
+      `/api/chat-groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(threadId)}/reopen`,
       { method: "POST" },
     );
     refresh();
@@ -852,8 +907,9 @@ export default function NewChatPage() {
     refresh();
   };
   const renameGroup = async (name: string) => {
-    if (!activeChatGroup) return;
-    await fetch(`/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}`, {
+    const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
+    if (!groupId) return;
+    await fetch(`/api/chat-groups/${encodeURIComponent(groupId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
@@ -861,9 +917,10 @@ export default function NewChatPage() {
     refresh();
   };
   const reorderTabs = async (orderedThreadIds: string[]) => {
-    if (!activeChatGroup) return;
+    const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
+    if (!groupId) return;
     await fetch(
-      `/api/chat-groups/${encodeURIComponent(activeChatGroup.id)}/reorder-tabs`,
+      `/api/chat-groups/${encodeURIComponent(groupId)}/reorder-tabs`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -889,10 +946,10 @@ export default function NewChatPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {activeChatGroup ? (
+      {liveActiveChatGroup ? (
         <ChatTabBar
-          groupId={liveActiveChatGroup?.id ?? activeChatGroup.id}
-          groupName={liveActiveChatGroup?.name ?? activeChatGroup.name}
+          groupId={liveActiveChatGroup.id}
+          groupName={liveActiveChatGroup.name}
           openTabs={openTabs}
           closedTabs={closedTabs}
           activeThreadId={null}
@@ -901,7 +958,7 @@ export default function NewChatPage() {
           onRenameTab={renameTab}
           onReorderTabs={reorderTabs}
           onNewTab={() =>
-            navigate(`/chat?group=${encodeURIComponent(activeChatGroup.id)}`)
+            navigate(`/chat?group=${encodeURIComponent(liveActiveChatGroup.id)}`)
           }
           onReopenClosedTab={reopenTab}
           onRenameGroup={renameGroup}
@@ -916,7 +973,7 @@ export default function NewChatPage() {
         <Chat
           workspaceId={workspaceId}
           hostname={hostname}
-          chatGroupId={liveActiveChatGroup?.id ?? activeChatGroup?.id ?? null}
+          chatGroupId={liveActiveChatGroup?.id ?? resolvedActiveGroupId}
           welcomeData={{
             userId,
             userName,

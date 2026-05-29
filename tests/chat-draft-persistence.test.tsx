@@ -687,7 +687,6 @@ describe('Chat draft persistence', () => {
 
   it('restores the welcome draft when create-thread action returns an error', async () => {
     const user = userEvent.setup();
-
     const { rerender } = render(
       <Chat
         workspaceId="ws-1"
@@ -979,6 +978,68 @@ describe('Chat draft persistence', () => {
     );
     expect(loadDraft('ws-1', null)).toBeNull();
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the active chat group when starting a new chat from a tab group', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <Chat
+        workspaceId="ws-1"
+        chatGroupId="group-existing"
+        initialMessages={[]}
+      />,
+    );
+
+    await user.type(screen.getByLabelText('Welcome prompt'), 'group prompt');
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(mockSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: 'createThreadAndStart',
+        firstMessage: 'group prompt',
+        groupId: 'group-existing',
+      }),
+      { method: 'post', action: '/chat' },
+    );
+  });
+
+  it('shows the server-owned initial message without sending it from the browser', async () => {
+    sessionStorage.setItem(
+      'pending-initial-message:ws-1',
+      JSON.stringify({
+        content: 'stale prompt',
+        savedAt: Date.now(),
+      }),
+    );
+    mockLocation.search = '?newThread=1';
+
+    render(
+      <Chat
+        threadId="thread-new"
+        workspaceId="ws-1"
+        initialMessages={[]}
+        deferredInitialMessage="server fallback"
+        isNewThread
+      />,
+    );
+
+    expect(screen.getByText('user:server fallback')).toBeInTheDocument();
+
+    const socket = getLatestMainSocket();
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await waitFor(() => {
+      expect(sentMessagePayloads(socket)).toEqual([]);
+    });
+    expect(
+      sentMessagePayloads(socket).some(
+        (payload) => payload.content === 'stale prompt',
+      ),
+    ).toBe(false);
   });
 
   it('hydrates the thread composer from localStorage without a browser pending handoff', () => {

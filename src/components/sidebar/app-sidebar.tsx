@@ -38,7 +38,7 @@ export function AppSidebar(props: AppSidebarProps) {
   const navigate = useNavigate()
   const revalidator = useRevalidator()
   const { currentWorkspace } = useAuthData()
-  const { groups, activeGroupId } = useChatGroups()
+  const { groups, activeGroupId, isLoading } = useChatGroups()
   const { state } = useSidebar()
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
@@ -135,6 +135,7 @@ export function AppSidebar(props: AppSidebarProps) {
           <ChatGroupsList
             groups={groups}
             activeGroupId={activeGroupId}
+            isLoading={isLoading}
             onSelectGroup={(groupId) => {
               const group = groups.find((entry) => entry.id === groupId)
               navigate(group ? getGroupLandingHref(group) : "/chat")
