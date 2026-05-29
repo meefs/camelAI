@@ -257,6 +257,8 @@ interface ChatData {
   activeTabId: string | null;
 }
 
+type ChatDataValue = ChatData | Promise<ChatData>;
+
 const EMPTY_CHAT_DATA: ChatData = {
   messages: [],
   messagesError: null,
@@ -264,6 +266,87 @@ const EMPTY_CHAT_DATA: ChatData = {
   previewTabs: [],
   activeTabId: null,
 };
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof (value as Promise<T>).then === "function";
+}
+
+function buildChatDataError(error: unknown): ChatData {
+  console.error("Failed to load chat data:", error);
+  return {
+    ...EMPTY_CHAT_DATA,
+    messagesError: "Failed to load chat messages",
+  };
+}
+
+type DeferredChatDataState = {
+  source: ChatDataValue;
+  data: ChatData;
+  loading: boolean;
+};
+
+function getInitialDeferredChatDataState(
+  source: ChatDataValue,
+): DeferredChatDataState {
+  return {
+    source,
+    data: isPromiseLike(source) ? EMPTY_CHAT_DATA : source,
+    loading: isPromiseLike(source),
+  };
+}
+
+function useDeferredChatData(chatData: ChatDataValue): {
+  chatData: ChatData;
+  isLoading: boolean;
+} {
+  const [state, setState] = useState<DeferredChatDataState>(() =>
+    getInitialDeferredChatDataState(chatData),
+  );
+
+  useEffect(() => {
+    if (!isPromiseLike(chatData)) {
+      setState({ source: chatData, data: chatData, loading: false });
+      return;
+    }
+
+    let active = true;
+    setState({ source: chatData, data: EMPTY_CHAT_DATA, loading: true });
+    chatData.then(
+      (resolvedChatData) => {
+        if (active) {
+          setState({
+            source: chatData,
+            data: resolvedChatData,
+            loading: false,
+          });
+        }
+      },
+      (error) => {
+        if (active) {
+          setState({
+            source: chatData,
+            data: buildChatDataError(error),
+            loading: false,
+          });
+        }
+      },
+    );
+
+    return () => {
+      active = false;
+    };
+  }, [chatData]);
+
+  const currentState =
+    state.source === chatData
+      ? state
+      : getInitialDeferredChatDataState(chatData);
+
+  return {
+    chatData: currentState.data,
+    isLoading: currentState.loading,
+  };
+}
 
 function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === "app") return `app:${target.scriptName}`;
@@ -785,12 +868,43 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     },
   ).map((option) => option.value);
 
-  const chatDataPromise = thread
+  const chatDataStartedAt = Date.now();
+  const chatData: ChatDataValue = thread
     ? buildChatData(context, authEnv, params.id, {
         orgId,
         workspaceId,
         loadMessages: !useClientMessageCache,
       })
+        .then((resolvedChatData) => {
+          recordChatThreadRouteLoaderStage(
+            env,
+            traceContext,
+            traceIds,
+            "chat_data_resolved",
+            chatDataStartedAt,
+            {
+              status: useClientMessageCache
+                ? "loaded_without_messages"
+                : "loaded",
+              model: thread.model,
+              count: resolvedChatData.messages.length,
+              size: resolvedChatData.previewTabs.length,
+            },
+          );
+          return resolvedChatData;
+        })
+        .catch((error) => {
+          recordChatThreadRouteLoaderError(
+            env,
+            traceContext,
+            traceIds,
+            "chat_data_resolved",
+            chatDataStartedAt,
+            error,
+            { status: "fallback_empty", model: thread.model },
+          );
+          return buildChatDataError(error);
+        })
     : EMPTY_CHAT_DATA;
   const activeChatGroupPromise = thread && actingUserId
     ? Promise.all([
@@ -811,14 +925,23 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         }).catch(() => []),
       ])
     : Promise.resolve([null, []] as const);
-  const [chatData, [activeChatGroup, moveChatGroups]] = await Promise.all([
-    chatDataPromise,
-    activeChatGroupPromise,
-  ]);
+  const [activeChatGroup, moveChatGroups] = await activeChatGroupPromise;
   const resolvedThreadModel =
     thread?.model ??
     pickerState?.defaultModel ??
     fallbackThreadModel;
+  recordChatThreadRouteLoaderStage(
+    env,
+    traceContext,
+    traceIds,
+    "response_ready",
+    loaderStartedAt,
+    {
+      status: thread ? "chat_data_deferred" : "empty",
+      statusCode: 200,
+      model: resolvedThreadModel,
+    },
+  );
 
   return {
     threadId: params.id,
@@ -894,6 +1017,10 @@ export default function ChatPage() {
     usedClientMessageCache = false,
     deferredInitialMessage,
   } = useLoaderData<typeof loader>();
+  const {
+    chatData: resolvedChatData,
+    isLoading: isLoadingChatData,
+  } = useDeferredChatData(chatData);
   const navigate = useNavigate();
   const location = useLocation();
   const revalidator = useRevalidator();
@@ -918,24 +1045,26 @@ export default function ChatPage() {
         location: `${location.pathname}${location.search}`,
         threadId,
         isNewThread,
-        routeMessageCount: chatData.messages.length,
-        routeMessageIds: chatData.messages.map((message) => ({
+        routeMessageCount: resolvedChatData.messages.length,
+        routeMessageIds: resolvedChatData.messages.map((message) => ({
           id: message.id,
           clientMessageId: message.clientMessageId,
           role: message.role,
           created_at: message.created_at,
         })),
-        messagesError: chatData.messagesError,
+        messagesError: resolvedChatData.messagesError,
+        isLoadingChatData,
         activeChatGroupId: activeChatGroup?.id ?? null,
       });
     }
   }, [
     activeChatGroup?.id,
-    chatData,
     chatDebugFlags.historyLogs,
+    isLoadingChatData,
     isNewThread,
     location.pathname,
     location.search,
+    resolvedChatData,
     threadId,
   ]);
 
@@ -968,15 +1097,18 @@ export default function ChatPage() {
       : allowedThreadModels;
   const cachedSnapshot = displayThreadId ? getSnapshot(displayThreadId) : null;
   const shouldUseCachedSnapshot = Boolean(
-    cachedSnapshot && (!isDisplayingLoaderThread || usedClientMessageCache),
+    cachedSnapshot &&
+      (!isDisplayingLoaderThread || usedClientMessageCache || isLoadingChatData),
   );
   const displayChatData = shouldUseCachedSnapshot
     ? {
-        ...chatData,
-        messages: cachedSnapshot?.messages ?? chatData.messages,
-        todos: cachedSnapshot?.todos ?? chatData.todos,
+        ...resolvedChatData,
+        messages: cachedSnapshot?.messages ?? resolvedChatData.messages,
+        todos: cachedSnapshot?.todos ?? resolvedChatData.todos,
       }
-    : chatData;
+    : resolvedChatData;
+  const isLoadingDisplayMessages =
+    isLoadingChatData && !shouldUseCachedSnapshot;
   const displayIsNewThread = isNewThread;
 
   useEffect(() => {
@@ -1160,10 +1292,10 @@ export default function ChatPage() {
 
   const handleSnapshotChange = useCallback(
     (snapshot: { messages: Message[]; todos: TodoItem[] }) => {
-      if (!displayThreadId) return;
+      if (!displayThreadId || isLoadingDisplayMessages) return;
       setSnapshot(displayThreadId, snapshot);
     },
-    [displayThreadId, setSnapshot],
+    [displayThreadId, isLoadingDisplayMessages, setSnapshot],
   );
 
   return (
@@ -1215,7 +1347,7 @@ export default function ChatPage() {
             onSnapshotChange={handleSnapshotChange}
             isOrgAdmin={isOrgAdmin}
             recentModelScope={recentModelScope}
-            isLoadingMessages={false}
+            isLoadingMessages={isLoadingDisplayMessages}
             readOnly={readOnly}
           />
         </div>

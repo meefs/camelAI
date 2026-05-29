@@ -823,6 +823,7 @@ export default function Chat({
   };
 
   const prevInitialMessagesRef = useRef(initialMessages);
+  const prevInitialTodosRef = useRef(initialTodos);
   const hasSyncedInitialPreviewRef = useRef(false);
   const previousPreviewThreadIdRef = useRef(threadId);
 
@@ -875,6 +876,25 @@ export default function Chat({
   ]);
 
   const isStreaming = streamingMessageId !== null;
+  useEffect(() => {
+    const initialTodosChanged = initialTodos !== prevInitialTodosRef.current;
+    if (!initialTodosChanged) {
+      return;
+    }
+
+    if (
+      initialTodos.length === 0 ||
+      currentTodos.length > 0 ||
+      loading ||
+      isStreaming ||
+      pendingMessagesRef.current.length > 0
+    ) {
+      return;
+    }
+    prevInitialTodosRef.current = initialTodos;
+    setCurrentTodos(initialTodos);
+  }, [currentTodos.length, initialTodos, isStreaming, loading]);
+
   const activeAssistantMessageId = useMemo(() => {
     if (streamingMessageId) {
       const trackedMessageExists = messages.some(

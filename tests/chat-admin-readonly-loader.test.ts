@@ -157,7 +157,7 @@ describe('chat loader admin readonly mode', () => {
     expect(result.orgSlug).toBe('acme');
     expect(requireAuthContextMock).not.toHaveBeenCalled();
 
-    expect(result.chatData).toEqual({
+    expect(await result.chatData).toEqual({
       messages: [],
       messagesError: null,
       todos: [],
@@ -252,7 +252,50 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.readOnly).toBe(false);
     expect(result.workspaceId).toBe('ws_active');
     expect(result.threadTitle).toBe('Workspace Thread');
-    expect(result.chatData).toEqual({
+    expect(await result.chatData).toEqual({
+      messages: [],
+      messagesError: null,
+      todos: [],
+      previewTabs: [],
+      activeTabId: null,
+    });
+  });
+
+  it('does not block existing-thread navigation on chat data resolution', async () => {
+    let resolveMessages: ((messages: []) => void) | undefined;
+    const pendingMessages = new Promise<[]>((resolve) => {
+      resolveMessages = resolve;
+    });
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+    });
+    readThreadMessagesMock.mockReturnValue(pendingMessages);
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.threadId).toBe('thread_123');
+    expect(typeof (result.chatData as Promise<unknown>).then).toBe('function');
+
+    let chatDataResolved = false;
+    void Promise.resolve(result.chatData).then(() => {
+      chatDataResolved = true;
+    });
+    await Promise.resolve();
+    expect(chatDataResolved).toBe(false);
+
+    resolveMessages?.([]);
+    expect(await result.chatData).toEqual({
       messages: [],
       messagesError: null,
       todos: [],
@@ -356,7 +399,9 @@ describe('chat loader workspace mismatch handling', () => {
     } as never);
 
     expect(getTodoStateMock).toHaveBeenCalledWith(context, 'thread_123');
-    expect(result.chatData.todos).toEqual(todos);
+    expect(await result.chatData).toEqual(
+      expect.objectContaining({ todos }),
+    );
   });
 
   it('falls back to legacy visible models when picker state fails to load', async () => {
@@ -481,7 +526,9 @@ describe('chat loader workspace mismatch handling', () => {
     } as never);
 
     expect(result.isNewThread).toBe(true);
-    expect(result.chatData.messages).toEqual([inFlightUserMessage]);
+    expect(await result.chatData).toEqual(
+      expect.objectContaining({ messages: [inFlightUserMessage] }),
+    );
     expect(readThreadMessagesMock).toHaveBeenCalledWith(
       {},
       expect.objectContaining({
@@ -529,7 +576,7 @@ describe('chat loader workspace mismatch handling', () => {
       orgId: 'org_active',
       workspaceId: 'ws_active',
     });
-    expect(result.chatData).toEqual({
+    expect(await result.chatData).toEqual({
       messages: [],
       messagesError: null,
       todos: [],
