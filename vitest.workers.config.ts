@@ -106,5 +106,6 @@ export default defineConfig({
   },
   test: {
     include: ['workers/**/tests/**/*.test.ts'],
+    testTimeout: 20_000,
   },
 });

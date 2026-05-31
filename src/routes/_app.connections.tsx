@@ -2,7 +2,7 @@ import { Suspense } from 'react';
 import { Await, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
-import { isOrgAdmin } from '@/lib/auth-do';
+import { getUsersByIds, isOrgAdmin } from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import {
   INTEGRATION_REGISTRY,
@@ -22,39 +22,139 @@ import {
   TELEGRAM_SETUP_TTL_SECONDS,
   type TelegramSetupRecord,
 } from '@/lib/telegram-channel';
-import type { WorkspaceDO } from '../../workers/main/src/workspace';
+import type {
+  WorkspaceDO,
+  WorkspaceIntegrationRecord,
+} from '../../workers/main/src/workspace';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { Integration } from '@/types';
+import {
+  buildWorkspaceEmailAddress,
+  getWorkspaceEmailDomain,
+} from '@/lib/workspace-email';
+import { getBillingPlanLimits } from '@/lib/billing-plans';
+import type { Avatar, Integration, User } from '@/types';
+import type { ConnectionListItem } from '@/lib/connections-shared';
+
+const CONNECTION_MANAGEMENT_INTENTS = new Set([
+  'createIntegration',
+  'updateIntegration',
+  'deleteIntegration',
+  'duplicateIntegration',
+]);
 
 function getWorkspaceStub(env: CloudflareEnv, workspaceId: string): WorkspaceDO {
   return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
 }
 
-function recordToIntegration(record: {
-  id: string;
-  integration_type: string;
-  name: string;
-  category: string;
-  auth_method: string;
-  config: string;
-  credentials_encrypted: string;
-  created_by: string;
-  created_at: number;
-  updated_at: number;
-}): Integration {
+interface CreatorProfile {
+  name: string | null;
+  avatar: Avatar | null;
+}
+
+function parseIntegrationConfig(rawConfig: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(rawConfig) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getCreatorProfiles(
+  env: CloudflareEnv,
+  userIds: string[],
+): Promise<Map<string, CreatorProfile>> {
+  const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return new Map();
+
+  const users = await getUsersByIds(getAuthEnv(env), uniqueIds);
+  return new Map(
+    users.map((user: User) => [
+      user.id,
+      {
+        name: user.name || user.email || null,
+        avatar: user.avatar ?? null,
+      },
+    ]),
+  );
+}
+
+async function getOptionalCreatorProfiles(
+  env: CloudflareEnv,
+  userIds: string[],
+  label: string,
+): Promise<Map<string, CreatorProfile>> {
+  try {
+    return await getCreatorProfiles(env, userIds);
+  } catch (error) {
+    console.error(`Failed to load ${label} creator profiles:`, error);
+    return new Map();
+  }
+}
+
+async function slackChannelMetadata(
+  record: WorkspaceIntegrationRecord,
+  config: Record<string, unknown>,
+  env: CloudflareEnv,
+): Promise<ConnectionListItem['channelMetadata']> {
+  if (record.integration_type !== 'slack') return undefined;
+  const fromConfig = {
+    team_id: typeof config.team_id === 'string' ? config.team_id : null,
+    team_name: typeof config.team_name === 'string' ? config.team_name : null,
+    bot_user_id: typeof config.bot_user_id === 'string' ? config.bot_user_id : null,
+  };
+  if (fromConfig.team_id || fromConfig.team_name || fromConfig.bot_user_id) {
+    return fromConfig;
+  }
+  if (!record.credentials_encrypted) return fromConfig;
+
+  try {
+    const credentials = await decryptCredentials<Record<string, unknown>>(
+      record.credentials_encrypted,
+      env.INTEGRATION_SECRET_KEY,
+    );
+    return {
+      team_id: typeof credentials.team_id === 'string' ? credentials.team_id : null,
+      team_name: typeof credentials.team_name === 'string' ? credentials.team_name : null,
+      bot_user_id: typeof credentials.bot_user_id === 'string' ? credentials.bot_user_id : null,
+    };
+  } catch (error) {
+    console.error('Failed to read Slack channel metadata:', error);
+    return fromConfig;
+  }
+}
+
+async function recordToIntegration(
+  record: WorkspaceIntegrationRecord,
+  creators: Map<string, CreatorProfile>,
+  env: CloudflareEnv,
+): Promise<ConnectionListItem> {
+  const config = parseIntegrationConfig(record.config);
+  const creator = creators.get(record.created_by);
   return {
     id: record.id,
     integration_type: record.integration_type,
     name: record.name,
     category: record.category as Integration['category'],
     auth_method: record.auth_method as Integration['auth_method'],
-    config: JSON.parse(record.config) as Record<string, unknown>,
+    config,
     created_by: record.created_by,
     created_at: record.created_at,
     updated_at: record.updated_at,
     has_credentials: Boolean(record.credentials_encrypted),
+    auth_status: record.auth_status,
+    auth_error_code: record.auth_error_code,
+    auth_error_message: record.auth_error_message,
+    auth_checked_at: record.auth_checked_at,
+    reauth_required_at: record.reauth_required_at,
+    token_expires_at: record.token_expires_at,
+    created_by_name: creator?.name ?? null,
+    created_by_avatar: creator?.avatar ?? null,
+    channelMetadata: await slackChannelMetadata(record, config, env),
   };
 }
 
@@ -85,6 +185,17 @@ export async function action({ request, context }: Route.ActionArgs) {
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const formData = await request.formData();
   const intent = formData.get('intent');
+
+  if (typeof intent === 'string' && CONNECTION_MANAGEMENT_INTENTS.has(intent)) {
+    const canManageConnections = await isOrgAdmin(
+      getAuthEnv(env),
+      authContext.user.id,
+      authContext.currentOrg.id,
+    );
+    if (!canManageConnections) {
+      return { error: 'Only organization admins can manage connections' };
+    }
+  }
 
   if (intent === 'createIntegration') {
     const integrationType = formData.get('integration_type') as string;
@@ -291,17 +402,10 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     // Verify target workspace belongs to the same org
-    const authEnv = getAuthEnv(env);
     const targetStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(targetWorkspaceId));
     const targetInfo = await targetStub.getInfo();
     if (!targetInfo || targetInfo.org_id !== authContext.currentOrg.id) {
       return { error: 'Target workspace must belong to the same organization' };
-    }
-
-    // Only org admins can duplicate connections across workspaces
-    const adminStatus = await isOrgAdmin(authEnv, authContext.user.id, authContext.currentOrg.id);
-    if (!adminStatus) {
-      return { error: 'Only organization admins can duplicate connections' };
     }
 
     try {
@@ -346,6 +450,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
   const workspaceId = authContext.currentWorkspace?.id;
+  const workspace = authContext.currentWorkspace;
 
   // Get integration types
   const integrations = Object.values(INTEGRATION_REGISTRY);
@@ -354,10 +459,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   ) as string[];
 
   // Get workspace integrations
-  const connectionsPromise: Promise<Integration[]> = workspaceId
+  const connectionsPromise: Promise<ConnectionListItem[]> = workspaceId
     ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
         .getIntegrations()
-        .then((records) => records.map(recordToIntegration))
+        .then(async (records) => {
+          const creators = await getOptionalCreatorProfiles(env, [
+            ...records.map((record) => record.created_by),
+            workspace?.created_by ?? '',
+          ], 'workspace connection');
+          return Promise.all(
+            records.map((record) => recordToIntegration(record, creators, env)),
+          );
+        })
         .catch((error) => {
           console.error('Failed to load workspace connections:', error);
           return [];
@@ -368,6 +481,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const otherWorkspaces = (authContext.workspaces ?? [])
     .filter((ws) => ws.id !== workspaceId)
     .map((ws) => ({ id: ws.id, name: ws.name }));
+  const workspaceEmailDomain = getWorkspaceEmailDomain(env);
+  const workspaceEmailAddress = workspace?.email_handle && workspaceEmailDomain
+    ? buildWorkspaceEmailAddress(workspace.email_handle, workspaceEmailDomain)
+    : null;
+  const emailInboxEnabled = getBillingPlanLimits(
+    authContext.currentOrg.billing_plan,
+    authContext.currentOrg.billing_status,
+  ).emailInbox;
+  const workspaceCreator = workspace?.created_by
+    ? (await getOptionalCreatorProfiles(
+        env,
+        [workspace.created_by],
+        'workspace email',
+      )).get(workspace.created_by)
+    : null;
 
   return {
     connections: connectionsPromise,
@@ -376,11 +504,34 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgId: authContext.currentOrg.id,
     workspaceId: workspaceId ?? null,
     otherWorkspaces,
+    workspaceEmailAddress,
+    emailMentionSlug: null,
+    emailInboxEnabled,
+    emailHandle: workspace?.email_handle ?? null,
+    workspaceCreatedBy: workspace?.created_by ?? null,
+    workspaceCreatedByName: workspaceCreator?.name ?? null,
+    workspaceCreatedByAvatar: workspaceCreator?.avatar ?? null,
+    workspaceCreatedAt: workspace?.created_at ?? null,
   };
 }
 
 export default function ConnectionsPage() {
-  const { connections, integrations, categories, orgId, workspaceId, otherWorkspaces } =
+  const {
+    connections,
+    integrations,
+    categories,
+    orgId,
+    workspaceId,
+    otherWorkspaces,
+    workspaceEmailAddress,
+    emailMentionSlug,
+    emailInboxEnabled,
+    emailHandle,
+    workspaceCreatedBy,
+    workspaceCreatedByName,
+    workspaceCreatedByAvatar,
+    workspaceCreatedAt,
+  } =
     useLoaderData<typeof loader>();
 
   if (!workspaceId) {
@@ -392,11 +543,21 @@ export default function ConnectionsPage() {
       <Await resolve={connections}>
         {(resolvedConnections) => (
           <ConnectionsClient
+            key={workspaceId}
             initialConnections={resolvedConnections}
             connectionTypes={integrations}
             categories={categories}
             orgId={orgId}
+            workspaceId={workspaceId}
             otherWorkspaces={otherWorkspaces}
+            workspaceEmailAddress={workspaceEmailAddress}
+            emailMentionSlug={emailMentionSlug}
+            emailInboxEnabled={emailInboxEnabled}
+            emailHandle={emailHandle}
+            workspaceCreatedBy={workspaceCreatedBy}
+            workspaceCreatedByName={workspaceCreatedByName}
+            workspaceCreatedByAvatar={workspaceCreatedByAvatar}
+            workspaceCreatedAt={workspaceCreatedAt}
           />
         )}
       </Await>

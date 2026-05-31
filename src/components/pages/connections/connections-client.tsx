@@ -1,116 +1,168 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useFetcher, useNavigate, useNavigation, useRevalidator, useSearchParams, useSubmit } from 'react-router';
-import { toast } from 'sonner';
-import { useAuthData } from '@/hooks/use-auth-data';
-import { APP_BUILD_ID } from '@/lib/app-build-id';
-
-// Note: Auth is handled by the (app) layout - no need to check here
-import type { Integration } from '@/types';
-import type { IntegrationDefinition } from '@/lib/integration-registry';
-import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
-import { getIntegrationAuthLabel } from '@/lib/integration-auth-label';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useFetcher,
+  useNavigate,
+  useNavigation,
+  useRevalidator,
+  useSearchParams,
+  useSubmit,
+} from "react-router";
+import { Copy, Plus, Search, Settings, X } from "lucide-react";
+import { toast } from "sonner";
+import { useAuthData } from "@/hooks/use-auth-data";
+import { APP_BUILD_ID } from "@/lib/app-build-id";
+import type { IntegrationDefinition } from "@/lib/integration-registry";
+import { IntegrationIcon, hasIntegrationIcon } from "@/lib/integration-icons";
+import { getIntegrationAuthLabel } from "@/lib/integration-auth-label";
 import {
   buildSlugMap,
   filterMentionableConnections,
   slugForIntegration,
-} from '@/lib/connection-mentions';
-import { writeDraft } from '@/hooks/use-draft-persistence';
-import { PageHeader } from '@/components/page-header';
-import { AddConnectionDialog } from './AddConnectionDialog';
-import { EditConnectionDialog } from './EditConnectionDialog';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+} from "@/lib/connection-mentions";
+import { writeDraft } from "@/hooks/use-draft-persistence";
+import {
+  buildConnectionGroups,
+  filterAndSortConnectionGroups,
+  panelItemConnection,
+  type ConnectionListItem,
+  type ConnectionSort,
+  type EmailChannel,
+  type PanelItem,
+} from "@/lib/connections-shared";
+import { isCurrentWorkspacePendingAction } from "@/lib/connections-pending";
+import { PageHeader } from "@/components/page-header";
+import { AddConnectionDialog } from "./AddConnectionDialog";
+import { EditConnectionDialog } from "./EditConnectionDialog";
+import { ConnectionGroupList } from "./connection-group-list";
+import { ConnectionPanel } from "./connection-panel";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+} from "@/components/ui/select";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  AlertCircle,
-  CheckCircle2,
-  Copy,
-  MessageSquare,
-  MoreVertical,
-  Plug,
-  Plus,
-  Search,
-  Settings,
-  Trash2,
-  X,
-} from 'lucide-react';
-import { Input } from '@/components/ui/input';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 const categoryLabels: Record<string, string> = {
-  databases: 'Databases',
-  saas: 'SaaS',
-  ai_services: 'AI Services',
-  cloud_providers: 'Cloud Providers',
-  communication: 'Communication',
+  databases: "Databases",
+  saas: "SaaS",
+  ai_services: "AI Services",
+  cloud_providers: "Cloud Providers",
+  communication: "Communication",
 };
 
-interface ConnectionsClientProps {
-  initialConnections: Integration[];
-  connectionTypes: IntegrationDefinition[];
-  categories: string[];
-  orgId: string;
-  otherWorkspaces?: Array<{ id: string; name: string }>;
-}
-
-type ConnectionSort = 'updated' | 'name' | 'created';
-
 const OAUTH_ERROR_MESSAGES: Record<string, string> = {
-  oauth_denied: 'You denied access to the service. Please try again if you want to connect.',
-  oauth_invalid: 'Invalid OAuth response. Please try again.',
-  oauth_state_invalid: 'OAuth session expired. Please try again.',
-  oauth_config: 'OAuth is not configured for this service.',
-  oauth_token_failed: 'Failed to get access token from the service.',
-  oauth_failed: 'OAuth connection failed. Please try again.',
-  no_workspace: 'No workspace selected. Please select a workspace first.',
-  unauthorized: 'Please log in to connect services.',
+  oauth_denied: "You denied access to the service. Please try again if you want to connect.",
+  oauth_invalid: "Invalid OAuth response. Please try again.",
+  oauth_state_invalid: "OAuth session expired. Please try again.",
+  oauth_config: "OAuth is not configured for this service.",
+  oauth_token_failed: "Failed to get access token from the service.",
+  oauth_failed: "OAuth connection failed. Please try again.",
+  no_workspace: "No workspace selected. Please select a workspace first.",
+  unauthorized: "Please log in to connect services.",
+  access_denied: "You do not have access to manage this workspace's connections.",
+  admin_required: "Only organization admins can manage connections.",
 };
 
 const REMOTE_MCP_OAUTH_REASON_MESSAGES: Record<string, string> = {
-  discovery_failed: 'Remote MCP OAuth discovery failed: the server did not advertise an OAuth authorization server.',
-  metadata_failed: 'Remote MCP OAuth discovery failed: authorization server metadata could not be loaded.',
-  registration_unsupported: 'Remote MCP OAuth is not available: the authorization server does not support dynamic client registration.',
-  registration_failed: 'Remote MCP OAuth client registration failed. Check worker logs for the upstream response.',
+  discovery_failed:
+    "Remote MCP OAuth discovery failed: the server did not advertise an OAuth authorization server.",
+  metadata_failed:
+    "Remote MCP OAuth discovery failed: authorization server metadata could not be loaded.",
+  registration_unsupported:
+    "Remote MCP OAuth is not available: the authorization server does not support dynamic client registration.",
+  registration_failed:
+    "Remote MCP OAuth client registration failed. Check worker logs for the upstream response.",
 };
 
+const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
+  slack_connected: "Successfully connected to Slack!",
+  notion_connected: "Successfully connected to Notion!",
+  salesforce_connected: "Successfully connected to Salesforce!",
+  remote_mcp_connected: "Successfully connected to the remote MCP server!",
+};
+
+const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
+  '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" - meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to. If the service provides a remote MCP endpoint, use the native Remote MCP Server connection type (`remote_mcp`) instead of a generic HTTP API connection.</camelai system message>';
+
+const OAUTH_INTEGRATIONS = ["slack", "notion", "salesforce"];
+
+interface ConnectionsClientProps {
+  initialConnections: ConnectionListItem[];
+  connectionTypes: IntegrationDefinition[];
+  categories: string[];
+  orgId: string;
+  workspaceId: string;
+  otherWorkspaces?: Array<{ id: string; name: string }>;
+  workspaceEmailAddress: string | null;
+  emailMentionSlug?: string | null;
+  emailInboxEnabled: boolean;
+  emailHandle: string | null;
+  workspaceCreatedBy: string | null;
+  workspaceCreatedByName?: string | null;
+  workspaceCreatedByAvatar?: { color: string; content: string } | null;
+  workspaceCreatedAt: number | null;
+}
+
+interface RenameState {
+  id: string;
+  value: string;
+  original: ConnectionListItem;
+}
+
+interface PendingAction {
+  intent: "clone" | "delete" | "rename";
+  workspaceId: string;
+  previous?: ConnectionListItem[];
+  targetId?: string;
+}
+
 function oauthErrorMessage(error: string, reason: string | null): string {
-  if (error === 'oauth_config' && reason && REMOTE_MCP_OAUTH_REASON_MESSAGES[reason]) {
+  if (error === "oauth_config" && reason && REMOTE_MCP_OAUTH_REASON_MESSAGES[reason]) {
     return REMOTE_MCP_OAUTH_REASON_MESSAGES[reason];
   }
   return OAUTH_ERROR_MESSAGES[error] || `Connection failed: ${error}`;
 }
 
-const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
-  slack_connected: 'Successfully connected to Slack!',
-  notion_connected: 'Successfully connected to Notion!',
-  remote_mcp_connected: 'Successfully connected to the remote MCP server!',
-};
-
-const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
-  '<camelai system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to. If the service provides a remote MCP endpoint, use the native Remote MCP Server connection type (`remote_mcp`) instead of a generic HTTP API connection.</camelai system message>';
-
 function connectionAuthLabel(type: IntegrationDefinition): string {
-  return getIntegrationAuthLabel(type) ?? 'Setup';
+  return getIntegrationAuthLabel(type) ?? "Setup";
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest("input, textarea, [contenteditable='true']"));
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window === "undefined" ? false : window.matchMedia(query).matches,
+  );
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(query);
+    const updateMatches = () => setMatches(mediaQuery.matches);
+    updateMatches();
+    mediaQuery.addEventListener("change", updateMatches);
+    return () => mediaQuery.removeEventListener("change", updateMatches);
+  }, [query]);
+
+  return matches;
 }
 
 export default function ConnectionsClient({
@@ -118,7 +170,16 @@ export default function ConnectionsClient({
   connectionTypes,
   categories,
   orgId,
+  workspaceId,
   otherWorkspaces = [],
+  workspaceEmailAddress,
+  emailMentionSlug,
+  emailInboxEnabled,
+  emailHandle,
+  workspaceCreatedBy,
+  workspaceCreatedByName,
+  workspaceCreatedByAvatar,
+  workspaceCreatedAt,
 }: ConnectionsClientProps) {
   const navigate = useNavigate();
   const submit = useSubmit();
@@ -127,144 +188,174 @@ export default function ConnectionsClient({
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [connections, setConnections] = useState(initialConnections);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [customConnectionModalOpen, setCustomConnectionModalOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [selectedConnection, setSelectedConnection] = useState<Integration | null>(null);
+  const [selectedConnection, setSelectedConnection] = useState<ConnectionListItem | null>(null);
   const [forceCredentialUpdate, setForceCredentialUpdate] = useState(false);
   const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
-  const [copyTarget, setCopyTarget] = useState<Integration | null>(null);
-  const [search, setSearch] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('all');
-  const [sortBy, setSortBy] = useState<ConnectionSort>('updated');
-  const [pickerSearch, setPickerSearch] = useState('');
-  const [pendingAction, setPendingAction] = useState<'clone' | 'delete' | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ConnectionListItem | null>(null);
+  const [copyTarget, setCopyTarget] = useState<ConnectionListItem | null>(null);
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<ConnectionSort>("updated");
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [renaming, setRenaming] = useState<RenameState | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const pendingAction = useRef<PendingAction | null>(null);
+  const selectedId = searchParams.get("selected");
+  const isLoading = revalidator.state === "loading" && connections.length === 0;
 
-  const connections = initialConnections;
-  const loading = revalidator.state === 'loading';
+  const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
+  const isAdmin = currentMembership?.role === "owner" || currentMembership?.role === "admin";
+
+  const emailChannel = useMemo<EmailChannel>(
+    () => ({
+      address: workspaceEmailAddress,
+      handle: emailHandle,
+      mentionSlug: emailMentionSlug ?? null,
+      inboxEnabled: emailInboxEnabled,
+      workspaceCreatedBy,
+      workspaceCreatedByName,
+      workspaceCreatedByAvatar,
+      workspaceCreatedAt,
+    }),
+    [
+      emailHandle,
+      emailMentionSlug,
+      emailInboxEnabled,
+      workspaceCreatedAt,
+      workspaceCreatedBy,
+      workspaceCreatedByAvatar,
+      workspaceCreatedByName,
+      workspaceEmailAddress,
+    ],
+  );
+
+  const allGroups = useMemo(
+    () => buildConnectionGroups(connections, emailChannel),
+    [connections, emailChannel],
+  );
+  const filteredGroups = useMemo(
+    () => filterAndSortConnectionGroups(allGroups, search, sortBy),
+    [allGroups, search, sortBy],
+  );
+  const allItems = useMemo(
+    () => [...allGroups.channels, ...allGroups.connections],
+    [allGroups],
+  );
+  const selectedItem = allItems.find((item) => item.id === selectedId) ?? null;
+
   const mentionableConnections = useMemo(
     () => filterMentionableConnections(connections),
-    [connections]
+    [connections],
   );
   const connectionSlugMap = useMemo(
-    () => buildSlugMap(mentionableConnections) as Map<string, Integration>,
-    [mentionableConnections]
+    () => buildSlugMap(mentionableConnections),
+    [mentionableConnections],
   );
-  const typeDefinitionsByType = useMemo(
-    () => new Map(connectionTypes.map((type) => [type.type, type])),
-    [connectionTypes]
-  );
-
   const filteredConnectionTypes = useMemo(() => {
     const query = pickerSearch.trim().toLowerCase();
     if (!query) return connectionTypes;
     return connectionTypes.filter(
-      (t) =>
-        t.displayName.toLowerCase().includes(query) ||
-        t.type.toLowerCase().includes(query)
+      (type) =>
+        type.displayName.toLowerCase().includes(query) ||
+        type.type.toLowerCase().includes(query),
     );
   }, [connectionTypes, pickerSearch]);
 
-  const activeCategories = useMemo(() => {
-    const active = new Set<string>(connections.map((connection) => connection.category));
-    return categories.filter((category) => active.has(category));
-  }, [connections, categories]);
+  const chatLoading =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "createThreadAndStart";
+  const renameSubmitting =
+    fetcher.state !== "idle" && pendingAction.current?.intent === "rename";
+  const showMobileSheet = mounted && Boolean(selectedItem) && !isDesktop;
 
-  const filteredConnections = useMemo(() => {
-    const query = search.trim().toLowerCase();
-
-    let result = connections.filter((connection) => {
-      if (!query) return true;
-
-      const typeDef = typeDefinitionsByType.get(connection.integration_type);
-      return (
-        connection.name.toLowerCase().includes(query) ||
-        connection.integration_type.toLowerCase().includes(query) ||
-        (typeDef?.displayName.toLowerCase().includes(query) ?? false)
-      );
-    });
-
-    if (categoryFilter !== 'all') {
-      result = result.filter((connection) => connection.category === categoryFilter);
-    }
-
-    return [...result].sort((a, b) => {
-      switch (sortBy) {
-        case 'name':
-          return a.name.localeCompare(b.name);
-        case 'created':
-          return b.created_at - a.created_at;
-        case 'updated':
-        default:
-          return b.updated_at - a.updated_at;
-      }
-    });
-  }, [connections, search, categoryFilter, sortBy, typeDefinitionsByType]);
-
-  const hasActiveFilters = search.trim().length > 0 || categoryFilter !== 'all';
-
-  // Handle OAuth success/error from URL params
   useEffect(() => {
-    const errorParam = searchParams.get('error');
-    const reasonParam = searchParams.get('reason');
-    const successParam = searchParams.get('success');
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    setConnections(initialConnections);
+  }, [initialConnections]);
+
+  useEffect(() => {
+    if (selectedId && !selectedItem) {
+      setSearchParams({}, { replace: true });
+    }
+  }, [selectedId, selectedItem, setSearchParams]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "/" && !isTypingTarget(event.target)) {
+        event.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      if (event.key === "Escape" && selectedItem && !renaming) {
+        setSearchParams({});
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [renaming, selectedItem, setSearchParams]);
+
+  useEffect(() => {
+    const errorParam = searchParams.get("error");
+    const reasonParam = searchParams.get("reason");
+    const successParam = searchParams.get("success");
 
     if (errorParam) {
-      setError(oauthErrorMessage(errorParam, reasonParam));
-      // Clear the param from URL
-      searchParams.delete('error');
-      searchParams.delete('reason');
-      setSearchParams(searchParams, { replace: true });
+      toast.error(oauthErrorMessage(errorParam, reasonParam));
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete("error");
+      nextParams.delete("reason");
+      setSearchParams(nextParams, { replace: true });
+      return;
     }
 
     if (successParam) {
-      setSuccess(OAUTH_SUCCESS_MESSAGES[successParam] || 'Connection successful!');
-      // Clear the param from URL
-      searchParams.delete('success');
-      setSearchParams(searchParams, { replace: true });
-      // Clear success message after 5 seconds
-      const timeout = setTimeout(() => setSuccess(null), 5000);
-      return () => clearTimeout(timeout);
+      toast.success(OAUTH_SUCCESS_MESSAGES[successParam] || "Connection successful!");
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete("success");
+      setSearchParams(nextParams, { replace: true });
     }
   }, [searchParams, setSearchParams]);
 
-  // Revalidate when org changes
   useEffect(() => {
-    if (revalidator.state === 'idle') {
+    if (revalidator.state === "idle") {
       revalidator.revalidate();
     }
   }, [currentOrg?.id]);
 
-  useEffect(() => {
-    if (categoryFilter === 'all') return;
-    if (activeCategories.length <= 1 || !activeCategories.includes(categoryFilter)) {
-      setCategoryFilter('all');
-    }
-  }, [activeCategories, categoryFilter]);
+  const startReauth = useCallback(
+    (connection: ConnectionListItem) => {
+      window.location.href = `/api/integrations/${encodeURIComponent(connection.integration_type)}/oauth?${new URLSearchParams({
+        workspace_id: currentWorkspace?.id ?? "",
+        integration_id: connection.id,
+        redirect: "/connections",
+      }).toString()}`;
+    },
+    [currentWorkspace?.id],
+  );
 
   useEffect(() => {
-    const connectionId = searchParams.get('connection');
-    const shouldReauth = searchParams.get('reauth') === '1';
+    const connectionId = searchParams.get("connection");
+    const shouldReauth = searchParams.get("reauth") === "1";
     if (!connectionId || !shouldReauth) return;
 
     const connection = connections.find((item) => item.id === connectionId);
     if (!connection) return;
 
-    const typeDef = typeDefinitionsByType.get(connection.integration_type);
-    const isRemoteMcpOAuth =
-      connection.integration_type === 'remote_mcp' &&
-      (connection.config as Record<string, unknown>)?.auth_type === 'oauth';
-    if (typeDef?.authMethod === 'oauth2' || isRemoteMcpOAuth) {
-      window.location.href = `/api/integrations/${encodeURIComponent(connection.integration_type)}/oauth?${new URLSearchParams({
-        workspace_id: currentWorkspace?.id ?? '',
-        integration_id: connection.id,
-        redirect: '/connections',
-      }).toString()}`;
+    if (
+      connection.auth_method === "oauth2" ||
+      (connection.integration_type === "remote_mcp" &&
+        connection.config.auth_type === "oauth")
+    ) {
+      startReauth(connection);
       return;
     }
 
@@ -273,55 +364,103 @@ export default function ConnectionsClient({
     setEditDialogOpen(true);
 
     const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete('connection');
-    nextParams.delete('reauth');
+    nextParams.delete("connection");
+    nextParams.delete("reauth");
     setSearchParams(nextParams, { replace: true });
-  }, [connections, currentWorkspace?.id, searchParams, setSearchParams, typeDefinitionsByType]);
+  }, [connections, searchParams, setSearchParams, startReauth]);
 
-  // Handle fetcher responses
   useEffect(() => {
-    if (fetcher.state === 'idle' && fetcher.data) {
-      if (fetcher.data.error) {
-        if (pendingAction === 'clone') {
-          toast.error(fetcher.data.error);
-        } else {
-          setError(fetcher.data.error);
-        }
-      } else if (fetcher.data.success) {
-        if (pendingAction === 'clone') {
-          toast.success('Connection cloned to workspace');
-        }
-        setDeleteTarget(null);
-        setCopyTarget(null);
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+    const pending = pendingAction.current;
+    if (!pending) return;
+    pendingAction.current = null;
+
+    if (!isCurrentWorkspacePendingAction(pending.workspaceId, workspaceId)) {
+      if (revalidator.state === "idle") {
+        revalidator.revalidate();
       }
-      setPendingAction(null);
-    }
-  }, [fetcher.state, fetcher.data]);
-
-  const handleDelete = () => {
-    if (!deleteTarget) return;
-
-    fetcher.submit(
-      {
-        intent: 'deleteIntegration',
-        integrationId: deleteTarget.id,
-      },
-      { method: 'POST' }
-    );
-  };
-
-  // OAuth integration types that redirect immediately (no dialog)
-  const OAUTH_INTEGRATIONS = ['slack', 'notion'];
-
-  const handleAddClick = (type: string) => {
-    // For OAuth integrations, redirect immediately to OAuth flow
-    if (OAUTH_INTEGRATIONS.includes(type)) {
-      window.location.href = `/api/integrations/${type}/oauth?redirect=/connections`;
       return;
     }
 
-    // For custom integrations, confirm chat handoff before seeding a new thread
-    if (type === 'other') {
+    if (fetcher.data.error) {
+      if (pending.previous) setConnections(pending.previous);
+      toast.error(fetcher.data.error);
+      return;
+    }
+
+    if (fetcher.data.success) {
+      if (pending.intent === "clone") toast.success("Connection cloned to workspace");
+      if (pending.intent === "rename") toast.success("Connection renamed");
+      if (pending.intent === "delete") toast.success("Connection deleted");
+      setDeleteTarget(null);
+      setCopyTarget(null);
+      if (revalidator.state === "idle") {
+        revalidator.revalidate();
+      }
+    }
+  }, [fetcher.state, fetcher.data, revalidator, workspaceId]);
+
+  const getMentionSlug = useCallback(
+    (connection: ConnectionListItem) =>
+      slugForIntegration(connection, connectionSlugMap),
+    [connectionSlugMap],
+  );
+  const getItemMentionSlug = useCallback(
+    (item: PanelItem) => {
+      const connection = panelItemConnection(item);
+      if (connection) return getMentionSlug(connection);
+      if (item.kind === "channel" && item.channel === "email") {
+        return item.email.mentionSlug?.trim() || null;
+      }
+      return null;
+    },
+    [getMentionSlug],
+  );
+
+  const handleSelect = useCallback(
+    (item: PanelItem) => {
+      setSearchParams({ selected: item.id });
+    },
+    [setSearchParams],
+  );
+
+  const handleClosePanel = useCallback(() => {
+    setSearchParams({});
+    setRenaming(null);
+  }, [setSearchParams]);
+
+  const handleDelete = () => {
+    if (!deleteTarget) return;
+    const previous = connections;
+    pendingAction.current = {
+      intent: "delete",
+      workspaceId,
+      previous,
+      targetId: deleteTarget.id,
+    };
+    setConnections((current) =>
+      current.filter((connection) => connection.id !== deleteTarget.id),
+    );
+    if (selectedId === deleteTarget.id) {
+      handleClosePanel();
+    }
+    fetcher.submit(
+      {
+        intent: "deleteIntegration",
+        integrationId: deleteTarget.id,
+      },
+      { method: "post", action: "/connections" },
+    );
+    setDeleteTarget(null);
+  };
+
+  const handleAddClick = (type: string) => {
+    if (OAUTH_INTEGRATIONS.includes(type)) {
+      window.location.href = `/api/integrations/${encodeURIComponent(type)}/oauth?redirect=/connections`;
+      return;
+    }
+
+    if (type === "other") {
       setPickerOpen(false);
       setCustomConnectionModalOpen(true);
       return;
@@ -333,55 +472,103 @@ export default function ConnectionsClient({
   };
 
   const handleContinueToCustomConnectionChat = () => {
-    if (
-      navigation.state !== 'idle' &&
-      navigation.formData?.get('intent') === 'createThreadAndStart'
-    ) return;
+    if (chatLoading) return;
 
     submit(
       {
-        intent: 'createThreadAndStart',
+        intent: "createThreadAndStart",
         clientBuildId: APP_BUILD_ID,
-        initialTitle: 'Set up a custom connection',
+        initialTitle: "Set up a custom connection",
         firstMessage: CUSTOM_CONNECTION_SYSTEM_MESSAGE,
       },
-      { method: 'post', action: '/chat' }
+      { method: "post", action: "/chat" },
     );
   };
 
-  const handleCopyToWorkspace = (connection: Integration, targetWorkspaceId: string) => {
-    setPendingAction('clone');
+  const handleCopyToWorkspace = (
+    connection: ConnectionListItem,
+    targetWorkspaceId: string,
+  ) => {
+    pendingAction.current = { intent: "clone", workspaceId };
     fetcher.submit(
       {
-        intent: 'duplicateIntegration',
+        intent: "duplicateIntegration",
         integrationId: connection.id,
         targetWorkspaceId,
       },
-      { method: 'POST' }
+      { method: "post", action: "/connections" },
     );
     setCopyTarget(null);
   };
 
-  const handleEditClick = (connection: Integration) => {
-    setForceCredentialUpdate(false);
+  const handleConfigure = (
+    connection: ConnectionListItem,
+    forceCredentials = false,
+  ) => {
+    setForceCredentialUpdate(forceCredentials);
     setSelectedConnection(connection);
     setEditDialogOpen(true);
   };
 
-  const handleNewChat = (connection: Integration) => {
-    if (!currentWorkspace) return;
-    const computedSlug = slugForIntegration(connection, connectionSlugMap);
-    const text = computedSlug
-      ? `@${computedSlug} `
-      : `Use my ${connection.name || connection.integration_type} connection to create `;
-    writeDraft(currentWorkspace.id, null, text, []);
-    navigate('/chat');
+  const handleNewChat = (item: PanelItem, mentionSlug: string) => {
+    writeDraft(workspaceId, null, `@${mentionSlug} `, []);
+    navigate("/chat");
+  };
+
+  const handleStartRename = (item: PanelItem) => {
+    const connection = panelItemConnection(item);
+    if (!connection || !isAdmin) return;
+    setSearchParams({ selected: item.id });
+    setRenaming({
+      id: connection.id,
+      value: connection.name,
+      original: connection,
+    });
+  };
+
+  const handleCommitRename = () => {
+    if (!renaming) return;
+    if (
+      pendingAction.current?.intent === "rename" &&
+      pendingAction.current.targetId === renaming.id
+    ) {
+      return;
+    }
+    const name = renaming.value.trim();
+    if (!name || name === renaming.original.name) {
+      setRenaming(null);
+      return;
+    }
+
+    const previous = connections;
+    pendingAction.current = {
+      intent: "rename",
+      workspaceId,
+      previous,
+      targetId: renaming.id,
+    };
+    setConnections((current) =>
+      current.map((connection) =>
+        connection.id === renaming.id
+          ? { ...connection, name, updated_at: Date.now() }
+          : connection,
+      ),
+    );
+    fetcher.submit(
+      {
+        intent: "updateIntegration",
+        integrationId: renaming.id,
+        name,
+      },
+      { method: "post", action: "/connections" },
+    );
+    setRenaming(null);
   };
 
   const handleAddSuccess = () => {
     setAddDialogOpen(false);
     setSelectedType(null);
-    if (revalidator.state === 'idle') {
+    if (revalidator.state === "idle") {
       revalidator.revalidate();
     }
   };
@@ -390,7 +577,7 @@ export default function ConnectionsClient({
     setEditDialogOpen(false);
     setSelectedConnection(null);
     setForceCredentialUpdate(false);
-    if (revalidator.state === 'idle') {
+    if (revalidator.state === "idle") {
       revalidator.revalidate();
     }
   };
@@ -410,268 +597,199 @@ export default function ConnectionsClient({
     }
   };
 
-  const clearAllFilters = () => {
-    setSearch('');
-    setCategoryFilter('all');
+  const handleCopyEmailAddress = () => {
+    if (!workspaceEmailAddress) {
+      toast.error("Email address is not configured");
+      return;
+    }
+    void navigator.clipboard.writeText(workspaceEmailAddress);
+    toast.success("Email address copied");
   };
 
-  const getTypeDefinition = useCallback((type: string) => {
-    return typeDefinitionsByType.get(type);
-  }, [typeDefinitionsByType]);
+  const handleManageEmailSettings = () => {
+    navigate("/settings/workspace/general");
+  };
 
-  const getConnectionDescription = useCallback((connection: Integration) => {
-    // For "other" type, show the custom description if provided
-    if (connection.integration_type === 'other') {
-      const config = connection.config as Record<string, unknown> | undefined;
-      if (config?.description && typeof config.description === 'string') {
-        return config.description;
-      }
-      return 'Custom Integration';
-    }
-    const typeDef = getTypeDefinition(connection.integration_type);
-    return typeDef?.displayName || connection.integration_type;
-  }, [getTypeDefinition]);
-
-  const isLoading = loading;
-  const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
-  const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
+  const actions = {
+    onStartRename: handleStartRename,
+    onConfigure: handleConfigure,
+    onReconnect: startReauth,
+    onClone: setCopyTarget,
+    onDelete: setDeleteTarget,
+    onCopyEmailAddress: handleCopyEmailAddress,
+    onManageEmailSettings: handleManageEmailSettings,
+  };
 
   return (
     <TooltipProvider>
-    <>
-      <PageHeader breadcrumbs={[{ label: 'Connections' }]} />
-
-      <div className="flex-1 min-h-0">
-        <ScrollArea className="h-full">
-          <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 md:px-6">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-semibold">Connections</h1>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Connect external services so your apps can read and write data.
-                </p>
-              </div>
-              {isAdmin && (
-                <Button onClick={() => setPickerOpen(true)} disabled={isLoading}>
-                  <Plus className="mr-2 size-4" />
-                  Add Connection
-                </Button>
-              )}
-            </div>
-
-            {error && (
-              <Alert variant="destructive" className="mt-4">
-                <AlertCircle className="size-4" />
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-
-            {success && (
-              <Alert className="mt-4 border-green-500/50 bg-green-500/10 text-green-600 dark:text-green-400">
-                <CheckCircle2 className="size-4" />
-                <AlertDescription>{success}</AlertDescription>
-              </Alert>
-            )}
-
-            {isLoading ? (
-              <div className="mt-6 flex items-center justify-center py-16 text-sm text-muted-foreground">
-                Loading connections...
-              </div>
-            ) : connections.length === 0 ? (
-              <Card className="mt-6 border-dashed">
-                <CardHeader className="flex flex-row items-start gap-4">
-                  <div className="flex size-12 items-center justify-center rounded-lg bg-muted">
-                    <Plug className="size-5" />
-                  </div>
-                  <div>
-                    <CardTitle>No connections yet</CardTitle>
-                    <CardDescription>
-                      Add a connection to give your apps access to external services.
-                    </CardDescription>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  {isAdmin ? (
-                    <Button onClick={() => setPickerOpen(true)}>
-                      <Plus className="mr-2 size-4" />
-                      Add your first connection
-                    </Button>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Only admins can add connections.
+      <div className="flex h-full min-h-0">
+        <section className="flex min-w-0 flex-1 flex-col">
+          <PageHeader breadcrumbs={[{ label: "Connections" }]} />
+          <div className="@container min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-6">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h1 className="text-2xl font-semibold">Connections</h1>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Connect external services so your apps can read and write data.
                     </p>
-                  )}
-                </CardContent>
-              </Card>
-            ) : (
-              <>
-                <div className="mt-6 space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="relative min-w-[220px] flex-1">
-                      <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search connections..."
-                        className="pl-9 pr-8"
-                      />
-                      {search && (
-                        <button
-                          type="button"
-                          onClick={() => setSearch('')}
-                          className="absolute inset-y-0 right-0 inline-flex items-center px-3 text-muted-foreground hover:text-foreground"
-                          aria-label="Clear search"
-                        >
-                          <X className="size-3.5" />
-                        </button>
-                      )}
-                    </div>
-
-                    <Select
-                      value={sortBy}
-                      onValueChange={(value) => setSortBy(value as ConnectionSort)}
-                    >
-                      <SelectTrigger className="w-full sm:w-[170px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="updated">Recently updated</SelectItem>
-                        <SelectItem value="name">Name (A-Z)</SelectItem>
-                        <SelectItem value="created">Newest first</SelectItem>
-                      </SelectContent>
-                    </Select>
                   </div>
-
-                  {activeCategories.length > 1 && (
-                    <Tabs value={categoryFilter} onValueChange={setCategoryFilter} className="w-full">
-                      <div className="overflow-x-auto overflow-y-hidden">
-                        <TabsList className="w-max justify-start">
-                          <TabsTrigger value="all">All</TabsTrigger>
-                          {activeCategories.map((category) => (
-                            <TabsTrigger key={category} value={category}>
-                              {categoryLabels[category] || category}
-                            </TabsTrigger>
-                          ))}
-                        </TabsList>
-                      </div>
-                    </Tabs>
-                  )}
-
-                  {hasActiveFilters && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
-                      <span>
-                        Showing {filteredConnections.length} of {connections.length} connections
-                      </span>
-                      <Button variant="ghost" size="sm" onClick={clearAllFilters}>
-                        <X className="mr-1 size-3" />
-                        Clear filters
-                      </Button>
-                    </div>
-                  )}
+                  {isAdmin ? (
+                    <Button onClick={() => setPickerOpen(true)} disabled={isLoading}>
+                      <Plus />
+                      Add connection
+                    </Button>
+                  ) : null}
                 </div>
 
-                {filteredConnections.length === 0 ? (
-                  <Card className="mt-6 border-dashed">
-                    <CardHeader>
-                      <CardTitle>No connections match your filters</CardTitle>
-                      <CardDescription>
-                        Try a different search or category, or clear the current filters.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <Button variant="outline" onClick={clearAllFilters}>
-                        <X className="mr-2 size-4" />
-                        Clear all filters
+                <div className="mt-6 flex flex-wrap items-center gap-2">
+                  <div className="relative min-w-[220px] flex-1">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      ref={searchRef}
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Search connections..."
+                      className="h-9 pl-9 pr-8"
+                    />
+                    {search ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2"
+                        aria-label="Clear search"
+                        onClick={() => setSearch("")}
+                      >
+                        <X />
                       </Button>
-                    </CardContent>
-                  </Card>
-                ) : (
-                  <div className="mt-6 grid gap-4 md:grid-cols-2">
-                    {filteredConnections.map((connection) => {
-                      const resolvedType = resolveLogoType(connection.integration_type, [
-                        (connection.config as Record<string, unknown>)?.display_name as string,
-                        connection.name,
-                      ]);
-                      const hasIcon = hasIntegrationIcon(resolvedType);
-
-                      return (
-                        <Card key={connection.id}>
-                          <CardHeader className="flex flex-row items-center justify-between gap-4">
-                            <div className="flex items-center gap-3">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <div className="flex size-10 items-center justify-center rounded-lg border">
-                                    {hasIcon ? (
-                                      <IntegrationIcon
-                                        type={resolvedType}
-                                        className="size-5"
-                                      />
-                                    ) : (
-                                      <Settings className="size-5" />
-                                    )}
-                                  </div>
-                                </TooltipTrigger>
-                                <TooltipContent>{getConnectionDescription(connection)}</TooltipContent>
-                              </Tooltip>
-                              <CardTitle>{connection.name}</CardTitle>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button variant="ghost" size="icon" aria-label="New chat" onClick={() => handleNewChat(connection)}>
-                                    <MessageSquare className="size-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>New chat</TooltipContent>
-                              </Tooltip>
-                              {isAdmin && (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-sm"
-                                      className="h-7 w-7 data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
-                                    >
-                                      <MoreVertical className="h-4 w-4" />
-                                      <span className="sr-only">Connection options</span>
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end" className="w-48">
-                                    <DropdownMenuItem onClick={() => handleEditClick(connection)}>
-                                      <Settings className="h-4 w-4 mr-2" />
-                                      Configure
-                                    </DropdownMenuItem>
-                                    {otherWorkspaces.length > 0 && (
-                                      <DropdownMenuItem onClick={() => setCopyTarget(connection)}>
-                                        <Copy className="h-4 w-4 mr-2" />
-                                        Clone to workspace
-                                      </DropdownMenuItem>
-                                    )}
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem
-                                      variant="destructive"
-                                      onClick={() => setDeleteTarget(connection)}
-                                    >
-                                      <Trash2 className="h-4 w-4 mr-2" />
-                                      Delete
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              )}
-                            </div>
-                          </CardHeader>
-                        </Card>
-                      );
-                    })}
+                    ) : null}
                   </div>
+
+                  <Select
+                    value={sortBy}
+                    onValueChange={(value) => setSortBy(value as ConnectionSort)}
+                  >
+                    <SelectTrigger className="w-full sm:w-[170px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="updated">Recently updated</SelectItem>
+                      <SelectItem value="name">Name (A-Z)</SelectItem>
+                      <SelectItem value="created">Newest first</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {isLoading ? (
+                  <div className="mt-6 flex items-center justify-center py-16 text-sm text-muted-foreground">
+                    Loading connections...
+                  </div>
+                ) : (
+                  <ConnectionGroupList
+                    channelItems={filteredGroups.channels}
+                    connectionItems={filteredGroups.connections}
+                    totalConnectionCount={connections.length}
+                    selectedId={selectedId}
+                    isAdmin={isAdmin}
+                    otherWorkspacesCount={otherWorkspaces.length}
+                    searchQuery={search.trim()}
+                    getMentionSlug={getItemMentionSlug}
+                    onSelect={handleSelect}
+                    onNewChat={handleNewChat}
+                    onAddConnection={() => setPickerOpen(true)}
+                    {...actions}
+                  />
                 )}
-              </>
-            )}
+              </div>
+            </ScrollArea>
           </div>
-        </ScrollArea>
+        </section>
+
+        <aside
+          className={cn(
+            "hidden shrink-0 overflow-hidden border-l bg-background transition-[width] duration-200 ease-out lg:flex lg:flex-col",
+            selectedItem ? "w-[36rem]" : "w-0",
+          )}
+          aria-hidden={!selectedItem}
+        >
+          {selectedItem ? (
+            <ConnectionPanel
+              item={selectedItem}
+              isAdmin={isAdmin}
+              otherWorkspacesCount={otherWorkspaces.length}
+              mentionSlug={
+                getItemMentionSlug(selectedItem)
+              }
+              renaming={
+                renaming
+                  ? { id: renaming.id, value: renaming.value }
+                  : null
+              }
+              renameSubmitting={renameSubmitting}
+              onRenameValueChange={(value) =>
+                setRenaming((current) => (current ? { ...current, value } : current))
+              }
+              onCommitRename={handleCommitRename}
+              onCancelRename={() => setRenaming(null)}
+              onClose={handleClosePanel}
+              onNewChat={handleNewChat}
+              {...actions}
+            />
+          ) : null}
+        </aside>
       </div>
 
-      <Dialog open={pickerOpen} onOpenChange={(open) => { setPickerOpen(open); if (!open) setPickerSearch(''); }}>
+      <Sheet
+        open={showMobileSheet}
+        onOpenChange={(open) => {
+          if (!open) handleClosePanel();
+        }}
+      >
+        <SheetContent
+          side="right"
+          showCloseButton={false}
+          className="w-[90vw] max-w-none p-0 sm:max-w-none lg:hidden"
+        >
+          <SheetTitle className="sr-only">Connection details</SheetTitle>
+          <SheetDescription className="sr-only">
+            View and manage the selected connection.
+          </SheetDescription>
+          {selectedItem ? (
+            <ConnectionPanel
+              item={selectedItem}
+              isAdmin={isAdmin}
+              otherWorkspacesCount={otherWorkspaces.length}
+              mentionSlug={
+                getItemMentionSlug(selectedItem)
+              }
+              renaming={
+                renaming
+                  ? { id: renaming.id, value: renaming.value }
+                  : null
+              }
+              renameSubmitting={renameSubmitting}
+              onRenameValueChange={(value) =>
+                setRenaming((current) => (current ? { ...current, value } : current))
+              }
+              onCommitRename={handleCommitRename}
+              onCancelRename={() => setRenaming(null)}
+              onClose={handleClosePanel}
+              onNewChat={handleNewChat}
+              {...actions}
+            />
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
+      <Dialog
+        open={pickerOpen}
+        onOpenChange={(open) => {
+          setPickerOpen(open);
+          if (!open) setPickerSearch("");
+        }}
+      >
         <DialogContent className="sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle>Add a connection</DialogTitle>
@@ -689,20 +807,22 @@ export default function ConnectionsClient({
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={pickerSearch}
-                  onChange={(e) => setPickerSearch(e.target.value)}
+                  onChange={(event) => setPickerSearch(event.target.value)}
                   placeholder="Search connections..."
                   className="pl-9 pr-8"
                 />
-                {pickerSearch && (
-                  <button
+                {pickerSearch ? (
+                  <Button
                     type="button"
-                    onClick={() => setPickerSearch('')}
-                    className="absolute inset-y-0 right-0 inline-flex items-center px-3 text-muted-foreground hover:text-foreground"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2"
                     aria-label="Clear search"
+                    onClick={() => setPickerSearch("")}
                   >
-                    <X className="size-3.5" />
-                  </button>
-                )}
+                    <X />
+                  </Button>
+                ) : null}
               </div>
               <Tabs defaultValue="all" className="w-full min-w-0">
                 <div className="mb-4 w-full min-w-0 overflow-x-auto overflow-y-hidden">
@@ -717,87 +837,24 @@ export default function ConnectionsClient({
                     ))}
                   </TabsList>
                 </div>
-                <ScrollArea className="max-h-[60vh] pr-4 overflow-x-hidden">
+                <ScrollArea className="max-h-[60vh] overflow-x-hidden pr-4">
                   <div className="min-w-0 p-1">
                     <TabsContent value="all" className="mt-0">
-                      {filteredConnectionTypes.length === 0 ? (
-                        <div className="py-6 text-center text-sm text-muted-foreground">
-                          No integrations found
-                        </div>
-                      ) : (
-                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                          {filteredConnectionTypes.map((type) => {
-                            const hasIcon = hasIntegrationIcon(type.type);
-                            return (
-                              <button
-                                key={type.type}
-                                onClick={() => handleAddClick(type.type)}
-                                className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
-                              >
-                                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
-                                  {hasIcon ? (
-                                    <IntegrationIcon type={type.type} className="size-5" />
-                                  ) : (
-                                    <Settings className="size-5" />
-                                  )}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate text-sm font-medium">
-                                    {type.displayName}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {connectionAuthLabel(type)}
-                                  </div>
-                                </div>
-                                <Plus className="size-4 shrink-0 text-muted-foreground" />
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
+                      <ConnectionTypeGrid
+                        connectionTypes={filteredConnectionTypes}
+                        onAddClick={handleAddClick}
+                      />
                     </TabsContent>
-                    {categories.map((category) => {
-                      const categoryTypes = filteredConnectionTypes.filter((type) => type.category === category);
-                      return (
-                        <TabsContent key={category} value={category} className="mt-0">
-                          {categoryTypes.length === 0 ? (
-                            <div className="py-6 text-center text-sm text-muted-foreground">
-                              No integrations found
-                            </div>
-                          ) : (
-                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                              {categoryTypes.map((type) => {
-                                const hasIcon = hasIntegrationIcon(type.type);
-                                return (
-                                  <button
-                                    key={type.type}
-                                    onClick={() => handleAddClick(type.type)}
-                                    className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
-                                  >
-                                    <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
-                                      {hasIcon ? (
-                                        <IntegrationIcon type={type.type} className="size-5" />
-                                      ) : (
-                                        <Settings className="size-5" />
-                                      )}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                      <div className="truncate text-sm font-medium">
-                                        {type.displayName}
-                                      </div>
-                                      <div className="text-xs text-muted-foreground">
-                                        {connectionAuthLabel(type)}
-                                      </div>
-                                    </div>
-                                    <Plus className="size-4 shrink-0 text-muted-foreground" />
-                                  </button>
-                                );
-                              })}
-                            </div>
+                    {categories.map((category) => (
+                      <TabsContent key={category} value={category} className="mt-0">
+                        <ConnectionTypeGrid
+                          connectionTypes={filteredConnectionTypes.filter(
+                            (type) => type.category === category,
                           )}
-                        </TabsContent>
-                      );
-                    })}
+                          onAddClick={handleAddClick}
+                        />
+                      </TabsContent>
+                    ))}
                   </div>
                 </ScrollArea>
               </Tabs>
@@ -806,7 +863,7 @@ export default function ConnectionsClient({
         </DialogContent>
       </Dialog>
 
-      {selectedType && (
+      {selectedType ? (
         <AddConnectionDialog
           open={addDialogOpen}
           onOpenChange={handleAddDialogOpenChange}
@@ -815,9 +872,9 @@ export default function ConnectionsClient({
           orgId={orgId}
           onSuccess={handleAddSuccess}
         />
-      )}
+      ) : null}
 
-      {selectedConnection && (
+      {selectedConnection ? (
         <EditConnectionDialog
           open={editDialogOpen}
           onOpenChange={handleEditDialogOpenChange}
@@ -827,16 +884,15 @@ export default function ConnectionsClient({
           forceCredentialUpdate={forceCredentialUpdate}
           onSuccess={handleEditSuccess}
         />
-      )}
+      ) : null}
+
       <ConfirmDialog
         open={customConnectionModalOpen}
         onOpenChange={setCustomConnectionModalOpen}
         title="Continue in chat?"
         description="Custom connections are set up with the agent in chat. We'll open a new chat and help you connect your service."
         confirmLabel="Continue"
-        onConfirm={() => {
-          handleContinueToCustomConnectionChat();
-        }}
+        onConfirm={handleContinueToCustomConnectionChat}
       />
 
       <ConfirmDialog
@@ -852,12 +908,15 @@ export default function ConnectionsClient({
         }
         confirmLabel="Delete connection"
         variant="destructive"
-        onConfirm={() => {
-          void handleDelete();
-        }}
+        onConfirm={handleDelete}
       />
 
-      <Dialog open={Boolean(copyTarget)} onOpenChange={(open) => { if (!open) setCopyTarget(null); }}>
+      <Dialog
+        open={Boolean(copyTarget)}
+        onOpenChange={(open) => {
+          if (!open) setCopyTarget(null);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Clone connection</DialogTitle>
@@ -866,25 +925,71 @@ export default function ConnectionsClient({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            {otherWorkspaces.map((ws) => (
+            {otherWorkspaces.map((workspace) => (
               <button
-                key={ws.id}
+                key={workspace.id}
                 type="button"
-                className="w-full flex items-center justify-between rounded-md border p-3 text-sm hover:bg-accent transition-colors"
+                className="flex w-full items-center justify-between rounded-md border p-3 text-sm transition-colors hover:bg-accent"
                 onClick={() => {
                   if (copyTarget) {
-                    handleCopyToWorkspace(copyTarget, ws.id);
+                    handleCopyToWorkspace(copyTarget, workspace.id);
                   }
                 }}
               >
-                <span className="font-medium">{ws.name}</span>
+                <span className="font-medium">{workspace.name}</span>
                 <Copy className="size-4 text-muted-foreground" />
               </button>
             ))}
           </div>
         </DialogContent>
       </Dialog>
-    </>
     </TooltipProvider>
+  );
+}
+
+function ConnectionTypeGrid({
+  connectionTypes,
+  onAddClick,
+}: {
+  connectionTypes: IntegrationDefinition[];
+  onAddClick: (type: string) => void;
+}) {
+  if (connectionTypes.length === 0) {
+    return (
+      <div className="py-6 text-center text-sm text-muted-foreground">
+        No integrations found
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      {connectionTypes.map((type) => {
+        const hasIcon = hasIntegrationIcon(type.type);
+        return (
+          <button
+            key={type.type}
+            type="button"
+            onClick={() => onAddClick(type.type)}
+            className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
+          >
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+              {hasIcon ? (
+                <IntegrationIcon type={type.type} className="size-5" />
+              ) : (
+                <Settings className="size-5" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{type.displayName}</div>
+              <div className="text-xs text-muted-foreground">
+                {connectionAuthLabel(type)}
+              </div>
+            </div>
+            <Plus className="size-4 shrink-0 text-muted-foreground" />
+          </button>
+        );
+      })}
+    </div>
   );
 }

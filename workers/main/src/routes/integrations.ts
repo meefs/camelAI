@@ -359,7 +359,7 @@ function remoteMcpOAuthStateValue(stateData: IntegrationOAuthState, key: string)
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-async function verifyWorkspaceWritableAccess(
+export async function verifyWorkspaceManageConnectionsAccess(
   env: RouteContext["env"],
   workspaceId: string,
   userId: string,
@@ -378,6 +378,10 @@ async function verifyWorkspaceWritableAccess(
   const memberAccess = await wsStub.getMemberAccess(userId);
   if ((memberAccess?.access_level ?? "full") !== "full") {
     return { ok: false, error: "access_denied" };
+  }
+
+  if (!(await orgStub.isAdmin(userId))) {
+    return { ok: false, error: "admin_required" };
   }
 
   return { ok: true, orgId: wsInfo.org_id };
@@ -405,7 +409,7 @@ export async function handleRemoteMcpOAuthStart({
     return redirect(`${url.origin}/connections?error=oauth_invalid`);
   }
 
-  const access = await verifyWorkspaceWritableAccess(env, session.workspace_id, session.user_id);
+  const access = await verifyWorkspaceManageConnectionsAccess(env, session.workspace_id, session.user_id);
   if (!access.ok) {
     return redirect(`${url.origin}/connections?error=${access.error}`);
   }
@@ -508,7 +512,7 @@ export async function handleRemoteMcpOAuthCallback({
   }
 
   try {
-    const access = await verifyWorkspaceWritableAccess(env, stateData.workspace_id, stateData.user_id);
+    const access = await verifyWorkspaceManageConnectionsAccess(env, stateData.workspace_id, stateData.user_id);
     if (!access.ok) {
       return redirect(`${url.origin}/connections?error=${access.error}`);
     }
@@ -596,6 +600,11 @@ export async function handleSlackOAuthStart({
   if (!session.workspace_id)
     return redirect(`${url.origin}/connections?error=no_workspace`);
 
+  const access = await verifyWorkspaceManageConnectionsAccess(env, session.workspace_id, session.user_id);
+  if (!access.ok) {
+    return redirect(`${url.origin}/connections?error=${access.error}`);
+  }
+
   const redirectTo = sanitizeRedirectPath(
     url.searchParams.get("redirect") || "/connections",
   );
@@ -677,23 +686,18 @@ export async function handleSlackOAuthCallback({
       return redirect(`${url.origin}/connections?error=oauth_token_failed`);
     }
 
-    // Re-validate workspace access before creating integration
-    // User may have been removed or workspace archived since OAuth started
+    // Re-validate workspace access before creating integration.
+    // User may have been removed, demoted, or workspace archived since OAuth started.
+    const access = await verifyWorkspaceManageConnectionsAccess(
+      env,
+      stateData.workspace_id,
+      stateData.user_id,
+    );
+    if (!access.ok) {
+      return redirect(`${url.origin}/connections?error=${access.error}`);
+    }
+
     const wsStub = getWorkspaceStub(env, stateData.workspace_id);
-    const wsInfo = await wsStub.getInfo();
-    if (!wsInfo || wsInfo.archived) {
-      return redirect(`${url.origin}/connections?error=workspace_not_found`);
-    }
-
-    const orgStub = getOrgStub(env, wsInfo.org_id);
-    if (!(await orgStub.isMember(stateData.user_id))) {
-      return redirect(`${url.origin}/connections?error=access_denied`);
-    }
-
-    const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
-    if ((memberAccess?.access_level ?? "full") !== "full") {
-      return redirect(`${url.origin}/connections?error=access_denied`);
-    }
 
     const credentials = {
       access_token: tokenData.access_token,
@@ -711,6 +715,11 @@ export async function handleSlackOAuthCallback({
       credentials,
       env.INTEGRATION_SECRET_KEY,
     );
+    const slackConfig = {
+      team_id: tokenData.team?.id ?? null,
+      team_name: tokenData.team?.name ?? null,
+      bot_user_id: tokenData.bot_user_id ?? null,
+    };
     const name = tokenData.team?.name || "Slack";
     const requestedReauthId = reauthIntegrationId(stateData);
     const existingIntegration = requestedReauthId
@@ -724,7 +733,7 @@ export async function handleSlackOAuthCallback({
     if (requestedReauthId) {
       await wsStub.updateIntegration(
         requestedReauthId,
-        { name, config: JSON.stringify({}), credentialsEncrypted: encrypted },
+        { name, config: JSON.stringify(slackConfig), credentialsEncrypted: encrypted },
         stateData.user_id,
       );
     } else {
@@ -734,7 +743,7 @@ export async function handleSlackOAuthCallback({
         name,
         "communication",
         "oauth2",
-        JSON.stringify({}),
+        JSON.stringify(slackConfig),
         encrypted,
         stateData.user_id,
       );
@@ -744,7 +753,7 @@ export async function handleSlackOAuthCallback({
       const registry = getSlackTeamRegistryStub(env, tokenData.team.id);
       await registry.upsertInstallation({
         workspace_id: stateData.workspace_id,
-        org_id: wsInfo.org_id,
+        org_id: access.orgId,
         integration_id: integrationId,
         team_id: tokenData.team.id,
         bot_user_id: tokenData.bot_user_id,
@@ -1821,6 +1830,11 @@ export async function handleNotionOAuthStart({
   if (!session.workspace_id)
     return redirect(`${url.origin}/connections?error=no_workspace`);
 
+  const access = await verifyWorkspaceManageConnectionsAccess(env, session.workspace_id, session.user_id);
+  if (!access.ok) {
+    return redirect(`${url.origin}/connections?error=${access.error}`);
+  }
+
   const redirectTo = sanitizeRedirectPath(
     url.searchParams.get("redirect") || "/connections",
   );
@@ -1922,22 +1936,17 @@ export async function handleNotionOAuthCallback({
       return redirect(`${url.origin}/connections?error=oauth_token_failed`);
     }
 
-    // Re-validate workspace access before creating integration
+    // Re-validate workspace access before creating integration.
+    const access = await verifyWorkspaceManageConnectionsAccess(
+      env,
+      stateData.workspace_id,
+      stateData.user_id,
+    );
+    if (!access.ok) {
+      return redirect(`${url.origin}/connections?error=${access.error}`);
+    }
+
     const wsStub = getWorkspaceStub(env, stateData.workspace_id);
-    const wsInfo = await wsStub.getInfo();
-    if (!wsInfo || wsInfo.archived) {
-      return redirect(`${url.origin}/connections?error=workspace_not_found`);
-    }
-
-    const orgStub = getOrgStub(env, wsInfo.org_id);
-    if (!(await orgStub.isMember(stateData.user_id))) {
-      return redirect(`${url.origin}/connections?error=access_denied`);
-    }
-
-    const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
-    if ((memberAccess?.access_level ?? "full") !== "full") {
-      return redirect(`${url.origin}/connections?error=access_denied`);
-    }
 
     // Calculate token expiry time (Notion tokens expire after ~1 hour)
     // Default to 1 hour if expires_in not provided
@@ -2040,6 +2049,11 @@ export async function handleSalesforceOAuthStart({
   if (!session.workspace_id)
     return redirect(`${url.origin}/connections?error=no_workspace`);
 
+  const access = await verifyWorkspaceManageConnectionsAccess(env, session.workspace_id, session.user_id);
+  if (!access.ok) {
+    return redirect(`${url.origin}/connections?error=${access.error}`);
+  }
+
   const redirectTo = sanitizeRedirectPath(
     url.searchParams.get("redirect") || "/connections",
   );
@@ -2134,22 +2148,17 @@ export async function handleSalesforceOAuthCallback({
       return redirect(`${url.origin}/connections?error=oauth_token_failed`);
     }
 
-    // Re-validate workspace access before creating integration
+    // Re-validate workspace access before creating integration.
+    const access = await verifyWorkspaceManageConnectionsAccess(
+      env,
+      stateData.workspace_id,
+      stateData.user_id,
+    );
+    if (!access.ok) {
+      return redirect(`${url.origin}/connections?error=${access.error}`);
+    }
+
     const wsStub = getWorkspaceStub(env, stateData.workspace_id);
-    const wsInfo = await wsStub.getInfo();
-    if (!wsInfo || wsInfo.archived) {
-      return redirect(`${url.origin}/connections?error=workspace_not_found`);
-    }
-
-    const orgStub = getOrgStub(env, wsInfo.org_id);
-    if (!(await orgStub.isMember(stateData.user_id))) {
-      return redirect(`${url.origin}/connections?error=access_denied`);
-    }
-
-    const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
-    if ((memberAccess?.access_level ?? "full") !== "full") {
-      return redirect(`${url.origin}/connections?error=access_denied`);
-    }
 
     const credentials = {
       access_token: tokenData.access_token,
