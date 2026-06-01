@@ -212,7 +212,7 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("bedrock");
-    expect(routing.model).toBe("us.anthropic.claude-opus-4-8");
+    expect(routing.model).toBe("global.anthropic.claude-opus-4-8");
     expect(routing.awsRegion).toBe("us-east-1");
   });
 });

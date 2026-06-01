@@ -889,13 +889,13 @@ describe('ChatThreadDO Codex turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('amazon-bedrock', 'us.anthropic.claude-opus-4-8');
+    expect(getModel).toHaveBeenCalledWith('amazon-bedrock', 'global.anthropic.claude-opus-4-8');
     expect(model.model).toMatchObject({
-      id: 'us.anthropic.claude-opus-4-8',
+      id: 'global.anthropic.claude-opus-4-8',
       provider: 'amazon-bedrock',
       api: 'bedrock-converse-stream',
       baseUrl: 'https://bedrock-runtime.us-west-2.amazonaws.com',
-      name: 'Claude Opus 4.8 (US)',
+      name: 'Claude Opus 4.8 (Global)',
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     });
@@ -1421,6 +1421,81 @@ describe('ChatThreadDO Codex turn handling', () => {
       3,
     );
     expect(fake.schedulePiTurnRecoveryAlarm).not.toHaveBeenCalled();
+  });
+
+  it('keeps Pi turns alive with a scoped alarm heartbeat', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piTurnKeepAliveRefs = 0;
+    fake.loadPiTurnRecovery = vi.fn(() => null);
+    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.ctx = {
+      waitUntil: vi.fn((promise: Promise<unknown>) => {
+        waitUntilPromises.push(promise);
+      }),
+      storage: {
+        setAlarm: vi.fn(async () => undefined),
+        deleteAlarm: vi.fn(async () => undefined),
+      },
+    };
+
+    await ChatThreadDO.prototype['keepAlivePiTurnWhile'].call(fake, async () => {
+      expect(fake.ctx.storage.setAlarm).toHaveBeenCalledWith(
+        Date.now() + 30_000,
+      );
+      expect(fake.ctx.storage.deleteAlarm).not.toHaveBeenCalled();
+    });
+    await Promise.all(waitUntilPromises);
+
+    expect(fake.piTurnKeepAliveRefs).toBe(0);
+    expect(fake.ctx.storage.deleteAlarm).toHaveBeenCalled();
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_turn_keep_alive_started',
+      expect.objectContaining({ status: 'running' }),
+    );
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_turn_keep_alive_stopped',
+      expect.objectContaining({ status: 'idle' }),
+    );
+  });
+
+  it('does not recover a Pi turn while a keepalive-scoped prompt is still active', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const pendingTurn = {
+      turn_id: 'turn1',
+      status: 'running',
+      user_content: 'hello',
+      user_timestamp: 1,
+      active_user_id: null,
+      retry_count: 0,
+      started_at: 1,
+      updated_at: 1,
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piTurnKeepAliveRefs = 1;
+    fake.loadPiTurnRecovery = vi.fn(() => pendingTurn);
+    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.recoverInterruptedPiTurn = vi.fn();
+    fake.quarantinePiTurnRecovery = vi.fn();
+    fake.schedulePiTurnRecoveryAlarm = vi.fn();
+    fake.ctx = {
+      storage: {
+        setAlarm: vi.fn(async () => undefined),
+        deleteAlarm: vi.fn(async () => undefined),
+      },
+    };
+    fake.piSession = { state: { isStreaming: false } };
+
+    await ChatThreadDO.prototype.alarm.call(fake);
+
+    expect(fake.recoverInterruptedPiTurn).not.toHaveBeenCalled();
+    expect(fake.quarantinePiTurnRecovery).not.toHaveBeenCalled();
+    expect(fake.ctx.storage.setAlarm).toHaveBeenCalledWith(Date.now() + 30_000);
   });
 
   it.each([

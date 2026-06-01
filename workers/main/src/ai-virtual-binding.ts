@@ -51,7 +51,7 @@ const TIER_MODELS: Readonly<Record<ProviderKind, Readonly<Record<TierName, strin
     cheap: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     fast: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     auto: "global.anthropic.claude-sonnet-4-6",
-    smart: "us.anthropic.claude-opus-4-8",
+    smart: "global.anthropic.claude-opus-4-8",
   },
   openrouter: {
     cheap: "deepseek/deepseek-v4-flash",

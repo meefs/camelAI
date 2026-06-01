@@ -60,7 +60,7 @@ const bedrockModels: BedrockModelMetadata[] = [
   },
   {
     id: 'claude-opus-4-8',
-    bedrockModelId: 'us.anthropic.claude-opus-4-8',
+    bedrockModelId: 'global.anthropic.claude-opus-4-8',
     name: 'Claude Opus 4.8',
     reasoning: true,
     thinkingLevelMap: { xhigh: 'xhigh' },
@@ -124,20 +124,20 @@ const bedrockModels: BedrockModelMetadata[] = [
 const bedrockModelMap: Record<string, string> = {
   ...Object.fromEntries(bedrockModels.map((model) => [model.id, model.bedrockModelId])),
   ...Object.fromEntries(bedrockModels.map((model) => [model.bedrockModelId, model.bedrockModelId])),
-  'anthropic/claude-opus-4.8': 'us.anthropic.claude-opus-4-8',
-  'anthropic/claude-opus-4-8': 'us.anthropic.claude-opus-4-8',
-  'anthropic.claude-opus-4-8': 'us.anthropic.claude-opus-4-8',
-  'anthropic.claude-opus-4.8': 'us.anthropic.claude-opus-4-8',
-  'claude-opus-4-6': 'us.anthropic.claude-opus-4-8',
-  'claude-opus-4-7': 'us.anthropic.claude-opus-4-8',
-  'anthropic/claude-opus-4.7': 'us.anthropic.claude-opus-4-8',
-  'anthropic/claude-opus-4-7': 'us.anthropic.claude-opus-4-8',
-  'anthropic.claude-opus-4-6': 'us.anthropic.claude-opus-4-8',
-  'anthropic.claude-opus-4-7': 'us.anthropic.claude-opus-4-8',
-  'global.anthropic.claude-opus-4-6': 'us.anthropic.claude-opus-4-8',
-  'global.anthropic.claude-opus-4-7': 'us.anthropic.claude-opus-4-8',
-  'global.anthropic.claude-opus-4-6-v1:0': 'us.anthropic.claude-opus-4-8',
-  'global.anthropic.claude-opus-4-7-v1:0': 'us.anthropic.claude-opus-4-8',
+  'anthropic/claude-opus-4.8': 'global.anthropic.claude-opus-4-8',
+  'anthropic/claude-opus-4-8': 'global.anthropic.claude-opus-4-8',
+  'anthropic.claude-opus-4-8': 'global.anthropic.claude-opus-4-8',
+  'anthropic.claude-opus-4.8': 'global.anthropic.claude-opus-4-8',
+  'claude-opus-4-6': 'global.anthropic.claude-opus-4-8',
+  'claude-opus-4-7': 'global.anthropic.claude-opus-4-8',
+  'anthropic/claude-opus-4.7': 'global.anthropic.claude-opus-4-8',
+  'anthropic/claude-opus-4-7': 'global.anthropic.claude-opus-4-8',
+  'anthropic.claude-opus-4-6': 'global.anthropic.claude-opus-4-8',
+  'anthropic.claude-opus-4-7': 'global.anthropic.claude-opus-4-8',
+  'global.anthropic.claude-opus-4-6': 'global.anthropic.claude-opus-4-8',
+  'global.anthropic.claude-opus-4-7': 'global.anthropic.claude-opus-4-8',
+  'global.anthropic.claude-opus-4-6-v1:0': 'global.anthropic.claude-opus-4-8',
+  'global.anthropic.claude-opus-4-7-v1:0': 'global.anthropic.claude-opus-4-8',
 };
 
 export default {
@@ -260,13 +260,13 @@ function mapToBedrockModel(model: string): string {
 
   const normalized = model.toLowerCase();
   if (normalized.includes('opus-4-8') || normalized.includes('opus-4.8')) {
-    return 'us.anthropic.claude-opus-4-8';
+    return 'global.anthropic.claude-opus-4-8';
   }
   if (normalized.includes('opus-4-6') || normalized.includes('opus-4.6')) {
-    return 'us.anthropic.claude-opus-4-8';
+    return 'global.anthropic.claude-opus-4-8';
   }
   if (normalized.includes('opus-4-7') || normalized.includes('opus-4.7')) {
-    return 'us.anthropic.claude-opus-4-8';
+    return 'global.anthropic.claude-opus-4-8';
   }
   if (normalized.includes('sonnet-4-6') || normalized.includes('sonnet-4.6')) {
     return 'global.anthropic.claude-sonnet-4-6';

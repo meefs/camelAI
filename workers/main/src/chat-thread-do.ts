@@ -2339,6 +2339,7 @@ const PI_TURN_RECOVERY_QUARANTINE_KEY = "piTurnRecoveryQuarantined";
 const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 const PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS = 5 * 60_000;
+const PI_TURN_KEEP_ALIVE_INTERVAL_MS = 30_000;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
@@ -2428,6 +2429,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
   private piRecoveryInFlight: Promise<void> | null = null;
+  private piTurnKeepAliveRefs: number = 0;
   private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
 
   private trace(event: string, details: Record<string, unknown> = {}): void {
@@ -2625,6 +2627,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async alarm(): Promise<void> {
+    await this.handlePiTurnKeepAliveAlarm();
+
     const pendingPiTurn = this.loadPiTurnRecovery();
     if (!pendingPiTurn) return;
     if (this.loadPiTurnRecoveryQuarantine()) return;
@@ -2633,6 +2637,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         `retry_count ${pendingPiTurn.retry_count} reached max ${PI_TURN_RECOVERY_MAX_RETRIES}`,
         pendingPiTurn.retry_count,
       );
+      return;
+    }
+
+    if ((this.piTurnKeepAliveRefs ?? 0) > 0) {
+      await this.scheduleNextPiAlarm();
       return;
     }
 
@@ -4619,8 +4628,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.clearPiInFlightMessages();
     this.setChatIsStreaming(false);
     this.ctx.waitUntil(
-      this.ctx.storage.deleteAlarm().catch((error) => {
-        console.error("[ChatThreadDO] failed to clear Pi recovery alarm", error);
+      this.scheduleNextPiAlarm().catch((error) => {
+        console.error("[ChatThreadDO] failed to reschedule Pi alarm after admin recovery clear", error);
       }),
     );
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_admin_cleared", {
@@ -4639,8 +4648,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
     this.setChatIsStreaming(false);
     this.ctx.waitUntil(
-      this.ctx.storage.deleteAlarm().catch((error) => {
-        console.error("[ChatThreadDO] failed to clear quarantined Pi recovery alarm", error);
+      this.scheduleNextPiAlarm().catch((error) => {
+        console.error("[ChatThreadDO] failed to reschedule Pi alarm after recovery quarantine", error);
       }),
     );
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_quarantined", {
@@ -4649,6 +4658,84 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       severity: "warn",
       count: retryCount,
     });
+  }
+
+  private async keepAlivePiTurn(): Promise<() => void> {
+    this.piTurnKeepAliveRefs = (this.piTurnKeepAliveRefs ?? 0) + 1;
+    if (this.piTurnKeepAliveRefs === 1) {
+      await this.scheduleNextPiAlarm();
+      this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_started", {
+        operation: "keep_alive",
+        status: "running",
+        count: this.piTurnKeepAliveRefs,
+      });
+    }
+
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      this.piTurnKeepAliveRefs = Math.max(0, this.piTurnKeepAliveRefs - 1);
+      this.ctx.waitUntil(
+        this.scheduleNextPiAlarm().catch((error) => {
+          console.error("[ChatThreadDO] failed to reschedule Pi alarm after keepalive release", error);
+        }),
+      );
+      if (this.piTurnKeepAliveRefs === 0) {
+        this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_stopped", {
+          operation: "keep_alive",
+          status: "idle",
+          count: 0,
+        });
+      }
+    };
+  }
+
+  private async keepAlivePiTurnWhile<T>(fn: () => Promise<T>): Promise<T> {
+    const dispose = await this.keepAlivePiTurn();
+    try {
+      return await fn();
+    } finally {
+      dispose();
+    }
+  }
+
+  private async handlePiTurnKeepAliveAlarm(): Promise<void> {
+    if ((this.piTurnKeepAliveRefs ?? 0) <= 0) return;
+    this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_heartbeat", {
+      operation: "alarm",
+      status: "running",
+      count: this.piTurnKeepAliveRefs,
+    });
+    await this.scheduleNextPiAlarm();
+  }
+
+  private nextPiRecoveryAlarmAt(now: number): number | null {
+    const pendingPiTurn = this.loadPiTurnRecovery();
+    if (!pendingPiTurn || this.loadPiTurnRecoveryQuarantine()) {
+      return null;
+    }
+    if (this.piSession?.state.isStreaming) {
+      return now + PI_TURN_RECOVERY_ALARM_MS;
+    }
+    const staleInMs = PI_TURN_RECOVERY_STALE_MS - (now - pendingPiTurn.updated_at);
+    return now + Math.max(1_000, staleInMs);
+  }
+
+  private nextPiAlarmAt(now: number): number | null {
+    if ((this.piTurnKeepAliveRefs ?? 0) > 0) {
+      return now + PI_TURN_KEEP_ALIVE_INTERVAL_MS;
+    }
+    return this.nextPiRecoveryAlarmAt(now);
+  }
+
+  private async scheduleNextPiAlarm(): Promise<void> {
+    const nextAlarmAt = this.nextPiAlarmAt(Date.now());
+    if (nextAlarmAt === null) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    await this.ctx.storage.setAlarm(nextAlarmAt);
   }
 
   private schedulePiTurnRecoveryAlarm(delayMs: number): void {
@@ -4700,10 +4787,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.suppressNextPiRecoveryPromptEvent = true;
     this.piRecoveryContinuePromptSentAtMs = Date.now();
     try {
-      await this.piSession.prompt({
-        role: "user",
-        content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
-        timestamp: this.piRecoveryContinuePromptSentAtMs,
+      await this.keepAlivePiTurnWhile(async () => {
+        if (!this.piSession) {
+          throw new Error("Pi session was not available for turn recovery");
+        }
+        await this.piSession.prompt({
+          role: "user",
+          content: PI_TURN_RECOVERY_CONTINUE_PROMPT,
+          timestamp: this.piRecoveryContinuePromptSentAtMs,
+        });
       });
     } finally {
       this.suppressNextPiRecoveryPromptEvent = false;
@@ -8845,10 +8937,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       case "claude-haiku-4-5-20251001":
         return "global.anthropic.claude-haiku-4-5-20251001-v1:0";
       case "claude-opus-4-8":
-        return "us.anthropic.claude-opus-4-8";
+        return "global.anthropic.claude-opus-4-8";
       case "claude-opus-4-6":
       case "claude-opus-4-7":
-        return "us.anthropic.claude-opus-4-8";
+        return "global.anthropic.claude-opus-4-8";
       case "claude-sonnet-4-6":
       default:
         return "global.anthropic.claude-sonnet-4-6";
@@ -9988,7 +10080,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               if (this.piSession.state.isStreaming) {
                 this.piSession.steer(userMessage);
               } else {
-                await this.piSession.prompt(userMessage);
+                await this.keepAlivePiTurnWhile(async () => {
+                  if (!this.piSession) {
+                    throw new Error("Pi session was not available for prompt");
+                  }
+                  await this.piSession.prompt(userMessage);
+                });
               }
             })().catch((error) => {
                 if (

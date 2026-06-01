@@ -191,9 +191,9 @@ const BEDROCK_CLAUDE_MODEL_METADATA: Record<string, BedrockClaudeModelMetadata> 
     contextWindow: 200_000,
     maxTokens: 32_000,
   },
-  'us.anthropic.claude-opus-4-8': {
-    id: 'us.anthropic.claude-opus-4-8',
-    name: 'Claude Opus 4.8 (US)',
+  'global.anthropic.claude-opus-4-8': {
+    id: 'global.anthropic.claude-opus-4-8',
+    name: 'Claude Opus 4.8 (Global)',
     reasoning: true,
     thinkingLevelMap: { xhigh: 'xhigh' },
     input: ['text', 'image'],
@@ -482,7 +482,7 @@ function mapToBedrockModelId(modelId: string): string {
     normalized.includes('opus-4-6') ||
     normalized.includes('opus-4.6')
   ) {
-    return 'us.anthropic.claude-opus-4-8';
+    return 'global.anthropic.claude-opus-4-8';
   }
   if (modelId.includes('.anthropic.') || modelId.startsWith('anthropic.')) {
     return modelId;

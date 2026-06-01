@@ -59,15 +59,15 @@ describe('Pi Bedrock provider message conversion', () => {
     } as Model<'bedrock-converse-stream'>;
 
     expect(__testing.withBedrockModelMetadata(sparse)).toMatchObject({
-      name: 'Claude Opus 4.8 (US)',
+      name: 'Claude Opus 4.8 (Global)',
       reasoning: true,
       thinkingLevelMap: { xhigh: 'xhigh' },
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     });
     expect(__testing.resolveBedrockModelFallback('anthropic/claude-opus-4.8')).toMatchObject({
-      id: 'us.anthropic.claude-opus-4-8',
-      name: 'Claude Opus 4.8 (US)',
+      id: 'global.anthropic.claude-opus-4-8',
+      name: 'Claude Opus 4.8 (Global)',
       api: 'bedrock-converse-stream',
       provider: 'amazon-bedrock',
     });
@@ -270,7 +270,7 @@ describe('Standalone Bedrock provider model metadata', () => {
         }),
         expect.objectContaining({
           id: 'claude-opus-4-8',
-          bedrockModelId: 'us.anthropic.claude-opus-4-8',
+          bedrockModelId: 'global.anthropic.claude-opus-4-8',
           contextWindow: 1_000_000,
           maxTokens: 128_000,
           thinkingLevelMap: { xhigh: 'xhigh' },
@@ -318,7 +318,7 @@ describe('Standalone Bedrock provider model metadata', () => {
         const upstreamUrl = String(call[0]);
         expect(upstreamUrl).toContain('https://bedrock-runtime.us-east-1.amazonaws.com/');
         expect(decodeURIComponent(upstreamUrl)).toContain(
-          '/model/us.anthropic.claude-opus-4-8/invoke',
+          '/model/global.anthropic.claude-opus-4-8/invoke',
         );
       }
     } finally {
