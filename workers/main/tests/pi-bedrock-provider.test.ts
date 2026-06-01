@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Context, Model } from '@mariozechner/pi-ai';
 
-import { __testing } from '../src/pi-bedrock-provider';
+import { __testing, bedrockProviderModule } from '../src/pi-bedrock-provider';
 import bedrockProviderWorker from '../../bedrock-provider/src/index';
 
 const model = {
@@ -11,6 +11,11 @@ const model = {
   maxTokens: 1024,
   contextWindow: 128_000,
 } as Model<'bedrock-converse-stream'>;
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 function buildMessages(context: Context) {
   return __testing.buildBedrockInvokeBody(model, context, {
@@ -247,6 +252,44 @@ describe('Pi Bedrock provider message conversion', () => {
         ],
       },
     ]);
+  });
+});
+
+describe('Pi Bedrock provider retries', () => {
+  it('retries transient 524 responses before surfacing a Bedrock error', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(() => Promise.resolve(
+      new Response(JSON.stringify({ message: 'error code: 524' }), {
+        status: 524,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stream = bedrockProviderModule.streamBedrock(
+      model,
+      { messages: [{ role: 'user', content: 'hello', timestamp: 1 }] },
+      { bearerToken: 'test-token', maxTokens: 1 },
+    );
+    const eventsPromise = (async () => {
+      const events = [];
+      for await (const event of stream) {
+        events.push(event);
+      }
+      return events;
+    })();
+
+    await vi.advanceTimersByTimeAsync(750);
+    const events = await eventsPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      reason: 'error',
+      error: expect.objectContaining({
+        errorMessage: 'Bedrock request failed with HTTP 524: error code: 524',
+      }),
+    }));
   });
 });
 

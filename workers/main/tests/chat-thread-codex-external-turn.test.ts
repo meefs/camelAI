@@ -3843,6 +3843,61 @@ describe('ChatThreadDO Codex turn handling', () => {
       status: 429,
       errorType: 'rate_limit_error',
     }));
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_provider_error_message',
+      expect.objectContaining({
+        operation: 'annotate_pi_provider_error',
+        status: '429',
+        severity: 'error',
+        statusCode: 429,
+        error: expect.any(Error),
+      }),
+    );
+  });
+
+  it('records Bedrock 524 assistant errors with structured provider metadata', async () => {
+    const { fake, events } = createPiEventFake();
+    fake.piCurrentUsageProvider = 'bedrock';
+    fake.piCurrentBillingSource = 'byok';
+    fake.piSession = {
+      state: {
+        model: { id: 'us.anthropic.claude-opus-4-8' },
+      },
+    };
+    const errorMessage = 'Bedrock request failed with HTTP 524: error code: 524';
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [{
+        role: 'assistant',
+        content: [],
+        errorMessage,
+        responseId: 'resp_bedrock_524',
+        timestamp: 789,
+      }],
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      error: errorMessage,
+      source: 'chat_thread_do_pi',
+      billingSource: 'byok',
+      provider: 'bedrock',
+      status: 524,
+    }));
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_provider_error_message',
+      expect.objectContaining({
+        operation: 'annotate_pi_provider_error',
+        status: '524',
+        severity: 'error',
+        provider: 'bedrock',
+        model: 'us.anthropic.claude-opus-4-8',
+        statusCode: 524,
+        error: expect.any(Error),
+      }),
+    );
   });
 
   it('does not emit provider errors for user-aborted Pi turns', async () => {

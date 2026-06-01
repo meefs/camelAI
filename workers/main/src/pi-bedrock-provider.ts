@@ -23,6 +23,8 @@ const ANTHROPIC_VERSION = 'bedrock-2023-05-31';
 const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14';
 const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
 const PROMPT_CACHING_BETA = 'prompt-caching-2024-07-31';
+const BEDROCK_TRANSIENT_RETRY_ATTEMPTS = 1;
+const BEDROCK_TRANSIENT_RETRY_DELAY_MS = 750;
 
 type AnthropicStopReason =
   | 'end_turn'
@@ -273,27 +275,24 @@ export const streamBedrock: StreamFunction<'bedrock-converse-stream', BedrockOpt
         payload = nextPayload as BedrockInvokeBody;
       }
 
-      const response = await fetch(buildBedrockInvokeUrl(resolvedModel, options), {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${bearerToken}`,
-          accept: 'application/json',
-          'content-type': 'application/json',
-          ...resolvedModel.headers,
-          ...options?.headers,
+      const response = await fetchBedrockWithTransientRetry(
+        buildBedrockInvokeUrl(resolvedModel, options),
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${bearerToken}`,
+            accept: 'application/json',
+            'content-type': 'application/json',
+            ...resolvedModel.headers,
+            ...options?.headers,
+          },
+          body: JSON.stringify(payload),
+          signal: options?.signal,
         },
-        body: JSON.stringify(payload),
-        signal: options?.signal,
-      });
-
-      await options?.onResponse?.(
-        { status: response.status, headers: headersToRecord(response.headers) },
         resolvedModel,
+        options,
       );
 
-      if (!response.ok) {
-        throw new Error(await formatBedrockResponseError(response));
-      }
       if (!response.body) {
         throw new Error('Bedrock returned an empty streaming response');
       }
@@ -1183,6 +1182,60 @@ function headersToRecord(headers: Headers): Record<string, string> {
     record[key] = value;
   });
   return record;
+}
+
+async function fetchBedrockWithTransientRetry(
+  url: string,
+  init: RequestInit,
+  model: Model<'bedrock-converse-stream'>,
+  options?: BedrockOptions,
+): Promise<Response> {
+  let lastErrorMessage = '';
+  for (let attempt = 0; attempt <= BEDROCK_TRANSIENT_RETRY_ATTEMPTS; attempt++) {
+    if (options?.signal?.aborted) {
+      throw new Error('Request was aborted');
+    }
+    const response = await fetch(url, init);
+    await options?.onResponse?.(
+      { status: response.status, headers: headersToRecord(response.headers) },
+      model,
+    );
+    if (response.ok) {
+      return response;
+    }
+
+    lastErrorMessage = await formatBedrockResponseError(response);
+    if (
+      attempt >= BEDROCK_TRANSIENT_RETRY_ATTEMPTS ||
+      !isRetryableBedrockStatus(response.status)
+    ) {
+      throw new Error(lastErrorMessage);
+    }
+    await sleep(BEDROCK_TRANSIENT_RETRY_DELAY_MS, options?.signal);
+  }
+
+  throw new Error(lastErrorMessage || 'Bedrock request failed');
+}
+
+function isRetryableBedrockStatus(status: number): boolean {
+  return status === 524 || status === 529 || (status >= 500 && status < 600);
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error('Request was aborted'));
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timeout);
+        reject(new Error('Request was aborted'));
+      },
+      { once: true },
+    );
+  });
 }
 
 async function formatBedrockResponseError(response: Response): Promise<string> {

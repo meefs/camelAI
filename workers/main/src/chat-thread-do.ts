@@ -2431,6 +2431,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piRecoveryInFlight: Promise<void> | null = null;
   private piTurnKeepAliveRefs: number = 0;
   private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
+  private piRecordedProviderErrors = new Set<string>();
 
   private trace(event: string, details: Record<string, unknown> = {}): void {
     if (!TRACE_CHAT_THREAD_DO) return;
@@ -4906,13 +4907,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       nested?.status ??
       nested?.statusCode ??
       nested?.code;
+    const statusFromText = /\bHTTP\s+(\d{3})\b/i.exec(trimmed)?.[1] ??
+      /\berror code:\s*(\d{3})\b/i.exec(trimmed)?.[1];
     const parsedStatus =
       typeof statusCandidate === "number" && Number.isFinite(statusCandidate)
         ? Math.trunc(statusCandidate)
         : typeof statusCandidate === "string" && /^\d{3}$/.test(statusCandidate.trim())
           ? Number(statusCandidate.trim())
-          : /\b429\b/.test(trimmed)
-            ? 429
+          : statusFromText
+            ? Number(statusFromText)
+            : /\b429\b/.test(trimmed)
+              ? 429
+              : /\b524\b/.test(trimmed)
+                ? 524
             : undefined;
     const errorTypeCandidate =
       nested?.type ??
@@ -4943,15 +4950,65 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const provider =
         this.piCurrentUsageProvider ||
         (typeof record.provider === "string" ? record.provider : undefined);
+      const metadata = this.piProviderErrorMetadata(errorMessage);
+      const model =
+        typeof record.model === "string" && record.model.trim()
+          ? record.model.trim()
+          : this.piSession?.state.model?.id;
+      this.recordPiProviderErrorMessage({
+        message,
+        errorMessage,
+        provider,
+        model,
+        metadata,
+      });
       return {
         ...record,
         billingSource,
         ...(provider ? { provider } : {}),
-        ...this.piProviderErrorMetadata(errorMessage),
+        ...metadata,
       } as unknown as AgentMessage;
     });
 
     return changed ? next : messages;
+  }
+
+  private recordPiProviderErrorMessage(args: {
+    message: AgentMessage;
+    errorMessage: string;
+    provider?: string | null;
+    model?: string | null;
+    metadata: { status?: number; errorType?: string };
+  }): void {
+    if (!this.piRecordedProviderErrors) {
+      this.piRecordedProviderErrors = new Set();
+    }
+    const record = args.message as unknown as Record<string, unknown>;
+    const fingerprint = [
+      typeof record.responseId === "string" ? record.responseId : "",
+      typeof record.timestamp === "number" ? String(record.timestamp) : "",
+      args.provider ?? "",
+      args.model ?? "",
+      args.errorMessage,
+    ].join("|");
+    if (this.piRecordedProviderErrors.has(fingerprint)) return;
+    this.piRecordedProviderErrors.add(fingerprint);
+    if (this.piRecordedProviderErrors.size > 200) {
+      const first = this.piRecordedProviderErrors.values().next().value;
+      if (typeof first === "string") this.piRecordedProviderErrors.delete(first);
+    }
+
+    const error = new Error(args.errorMessage);
+    error.name = "PiProviderError";
+    this.recordChatThreadObservabilityEvent("pi_provider_error_message", {
+      operation: "annotate_pi_provider_error",
+      status: args.metadata.status ? String(args.metadata.status) : "error",
+      severity: "error",
+      provider: args.provider,
+      model: args.model,
+      statusCode: args.metadata.status,
+      error,
+    });
   }
 
   private getPiAssistantErrorMessage(message: AgentMessage): string {
@@ -5008,6 +5065,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       size?: number;
       durationMs?: number;
       error?: unknown;
+      statusCode?: number | null;
       provider?: string | null;
       model?: string | null;
       sampleKey?: string | null;
@@ -5031,6 +5089,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         orgId: context?.orgId,
         userId: context?.userId,
         durationMs: details.durationMs,
+        statusCode: details.statusCode,
         count,
         size: details.size,
         provider: details.provider,
