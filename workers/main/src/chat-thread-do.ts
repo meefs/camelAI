@@ -2340,6 +2340,7 @@ const PI_TURN_RECOVERY_CONTEXT_PURPOSE = "pi_turn_recovery_context";
 const PI_TURN_RECOVERY_CONTINUE_PROMPT = "continue";
 const PI_TURN_RECOVERY_PROMPT_OBSERVATION_MS = 5 * 60_000;
 const PI_TURN_KEEP_ALIVE_INTERVAL_MS = 30_000;
+const PI_TURN_KEEP_ALIVE_STALL_MS = 10 * 60_000;
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; ask_user_question is unavailable in this channel. Continue without asking and use best effort.';
@@ -2430,6 +2431,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private piCurrentUsageProvider: string | null = null;
   private piRecoveryInFlight: Promise<void> | null = null;
   private piTurnKeepAliveRefs: number = 0;
+  private piTurnKeepAliveLastProgressAtMs: number = 0;
   private piLastPersistedLoopError: { fingerprint: string; at: number } | null = null;
   private piRecordedProviderErrors = new Set<string>();
 
@@ -2628,7 +2630,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async alarm(): Promise<void> {
-    await this.handlePiTurnKeepAliveAlarm();
+    const keepAliveAborted = await this.handlePiTurnKeepAliveAlarm();
 
     const pendingPiTurn = this.loadPiTurnRecovery();
     if (!pendingPiTurn) return;
@@ -2641,7 +2643,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    if ((this.piTurnKeepAliveRefs ?? 0) > 0) {
+    if (!keepAliveAborted && (this.piTurnKeepAliveRefs ?? 0) > 0) {
       await this.scheduleNextPiAlarm();
       return;
     }
@@ -4662,8 +4664,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async keepAlivePiTurn(): Promise<() => void> {
+    const now = Date.now();
     this.piTurnKeepAliveRefs = (this.piTurnKeepAliveRefs ?? 0) + 1;
     if (this.piTurnKeepAliveRefs === 1) {
+      this.piTurnKeepAliveLastProgressAtMs = now;
       await this.scheduleNextPiAlarm();
       this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_started", {
         operation: "keep_alive",
@@ -4683,6 +4687,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }),
       );
       if (this.piTurnKeepAliveRefs === 0) {
+        this.piTurnKeepAliveLastProgressAtMs = 0;
         this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_stopped", {
           operation: "keep_alive",
           status: "idle",
@@ -4701,14 +4706,61 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private async handlePiTurnKeepAliveAlarm(): Promise<void> {
+  private markPiTurnKeepAliveProgress(): void {
     if ((this.piTurnKeepAliveRefs ?? 0) <= 0) return;
+    this.piTurnKeepAliveLastProgressAtMs = Date.now();
+  }
+
+  private async keepPiTurnToolProgressAliveWhile<T>(fn: () => Promise<T>): Promise<T> {
+    this.markPiTurnKeepAliveProgress();
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
+    if ((this.piTurnKeepAliveRefs ?? 0) > 0) {
+      progressInterval = setInterval(() => {
+        this.markPiTurnKeepAliveProgress();
+      }, PI_TURN_KEEP_ALIVE_INTERVAL_MS);
+    }
+    try {
+      return await fn();
+    } finally {
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+      this.markPiTurnKeepAliveProgress();
+    }
+  }
+
+  private async handlePiTurnKeepAliveAlarm(): Promise<boolean> {
+    if ((this.piTurnKeepAliveRefs ?? 0) <= 0) return false;
+    const now = Date.now();
+    const lastProgressAt = this.piTurnKeepAliveLastProgressAtMs || now;
+    const stalledMs = Math.max(0, now - lastProgressAt);
+    const status =
+      stalledMs >= PI_TURN_KEEP_ALIVE_STALL_MS
+        ? "stalled"
+        : "running";
     this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_heartbeat", {
       operation: "alarm",
-      status: "running",
+      status,
+      severity: status === "running" ? "info" : "warn",
       count: this.piTurnKeepAliveRefs,
+      size: stalledMs,
     });
+    if (status !== "running") {
+      this.recordChatThreadObservabilityEvent("pi_turn_keep_alive_aborted", {
+        operation: "alarm",
+        status,
+        severity: "warn",
+        count: this.piTurnKeepAliveRefs,
+        size: stalledMs,
+      });
+      this.piTurnKeepAliveRefs = 0;
+      this.piTurnKeepAliveLastProgressAtMs = 0;
+      this.disposePiSession();
+      await this.scheduleNextPiAlarm();
+      return true;
+    }
     await this.scheduleNextPiAlarm();
+    return false;
   }
 
   private nextPiRecoveryAlarmAt(now: number): number | null {
@@ -9136,7 +9188,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   ): AgentTool[] {
     const tools = this.scopedCodeModeTools(context);
     const call = async (name: string, args: Record<string, unknown>) => {
-      const result = await tools.callTool(name, args);
+      const result = await this.keepPiTurnToolProgressAliveWhile(() =>
+        tools.callTool(name, args)
+      );
       return {
         content: this.extractToolContent(result),
         details: result,
@@ -9229,19 +9283,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             timeoutMs?: unknown;
             maxOutputCharacters?: unknown;
           };
-          const result = await this.runCodeModeJavascript({
-            code: typeof raw.code === "string" ? raw.code : "",
-            orgId: context.orgId,
-            workspaceId: context.workspaceId,
-            threadId: context.threadId,
-            userId: context.userId ?? undefined,
-            toolUseId,
-            timeoutMs: typeof raw.timeoutMs === "number" ? raw.timeoutMs : null,
-            maxOutputCharacters:
-              typeof raw.maxOutputCharacters === "number"
-                ? raw.maxOutputCharacters
-                : null,
-          });
+          const result = await this.keepPiTurnToolProgressAliveWhile(() =>
+            this.runCodeModeJavascript({
+              code: typeof raw.code === "string" ? raw.code : "",
+              orgId: context.orgId,
+              workspaceId: context.workspaceId,
+              threadId: context.threadId,
+              userId: context.userId ?? undefined,
+              toolUseId,
+              timeoutMs: typeof raw.timeoutMs === "number" ? raw.timeoutMs : null,
+              maxOutputCharacters:
+                typeof raw.maxOutputCharacters === "number"
+                  ? raw.maxOutputCharacters
+                  : null,
+            })
+          );
           return {
             content: [{ type: "text" as const, text: result.text }],
             details: result,
@@ -9278,7 +9334,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         signal?: AbortSignal,
         onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
       ) =>
-        this.runPiSubagentTool(context, toolName, params, signal, onUpdate);
+        this.keepPiTurnToolProgressAliveWhile(() =>
+          this.runPiSubagentTool(context, toolName, params, signal, onUpdate)
+        );
 
       definitions.push(
         {
@@ -9670,6 +9728,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async handlePiSessionEvent(event: AgentEvent): Promise<void> {
+    this.markPiTurnKeepAliveProgress();
     if (event.type === "agent_start") {
       this.piAssistantText = "";
       this.piActiveItemText = "";

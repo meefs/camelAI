@@ -1498,6 +1498,76 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(fake.ctx.storage.setAlarm).toHaveBeenCalledWith(Date.now() + 30_000);
   });
 
+  it('refreshes Pi keepalive progress while a quiet tool call is still running', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piTurnKeepAliveRefs = 1;
+    fake.piTurnKeepAliveLastProgressAtMs = Date.now();
+
+    let resolveTool: (value: string) => void = () => {};
+    const run = ChatThreadDO.prototype['keepPiTurnToolProgressAliveWhile'].call(
+      fake,
+      () => new Promise<string>((resolve) => {
+        resolveTool = resolve;
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
+
+    expect(fake.piTurnKeepAliveLastProgressAtMs).toBe(Date.now());
+
+    resolveTool('ok');
+    await expect(run).resolves.toBe('ok');
+  });
+
+  it('aborts stalled Pi keepalive turns and resumes recovery', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+    const pendingTurn = {
+      turn_id: 'turn1',
+      status: 'running',
+      user_content: 'hello',
+      user_timestamp: 1,
+      active_user_id: null,
+      retry_count: 0,
+      started_at: 1,
+      updated_at: Date.now() - 60_000,
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piTurnKeepAliveRefs = 1;
+    fake.piTurnKeepAliveLastProgressAtMs = Date.now() - 10 * 60_000 - 1;
+    fake.loadPiTurnRecovery = vi.fn(() => pendingTurn);
+    fake.loadPiTurnRecoveryQuarantine = vi.fn(() => null);
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.recoverInterruptedPiTurn = vi.fn(async () => undefined);
+    fake.quarantinePiTurnRecovery = vi.fn();
+    fake.schedulePiTurnRecoveryAlarm = vi.fn();
+    fake.disposePiSession = vi.fn();
+    fake.ctx = {
+      storage: {
+        setAlarm: vi.fn(async () => undefined),
+        deleteAlarm: vi.fn(async () => undefined),
+      },
+    };
+    fake.piSession = { state: { isStreaming: false } };
+    fake.piRecoveryInFlight = null;
+
+    await ChatThreadDO.prototype.alarm.call(fake);
+
+    expect(fake.piTurnKeepAliveRefs).toBe(0);
+    expect(fake.disposePiSession).toHaveBeenCalledTimes(1);
+    expect(fake.recoverInterruptedPiTurn).toHaveBeenCalledWith(pendingTurn);
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_turn_keep_alive_aborted',
+      expect.objectContaining({
+        operation: 'alarm',
+        status: 'stalled',
+        count: 1,
+      }),
+    );
+  });
+
   it.each([
     ['gemini-3.5-flash', 'google/gemini-3.5-flash'],
     ['gemini-3-flash-preview', 'google/gemini-3-flash-preview'],
@@ -2326,6 +2396,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       },
     };
     fake.runCodeModeJavascript = vi.fn(async () => ({ text: 'done' }));
+    fake.keepPiTurnToolProgressAliveWhile = vi.fn(async (fn: () => Promise<unknown>) => fn());
 
     const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, {
       orgId: 'org1',
@@ -2343,6 +2414,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
 
     expect(jsExec.parameters.required).toContain('description');
+    expect(fake.keepPiTurnToolProgressAliveWhile).toHaveBeenCalledTimes(1);
 
     expect(fake.runCodeModeJavascript).toHaveBeenCalledWith({
       code: 'text("hello")',
@@ -2825,6 +2897,50 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(childTools.map((tool: any) => tool.name)).not.toEqual(
       expect.arrayContaining(['Agent', 'agent', 'Explore', 'explore']),
     );
+  });
+
+  it('keeps Pi subagent tool progress alive while the child agent runs', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({
+          callTool: vi.fn(async () => ({ text: 'ok' })),
+        })),
+      },
+    };
+    fake.keepPiTurnToolProgressAliveWhile = vi.fn(async (fn: () => Promise<unknown>) => fn());
+    fake.runPiSubagentTool = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'child done' }],
+      details: { status: 'completed' },
+    }));
+
+    const context = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+    const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    const agent = tools.find((tool: any) => tool.name === 'Agent');
+    const abortController = new AbortController();
+    const onUpdate = vi.fn();
+
+    const result = await agent.execute(
+      'tool-agent-1',
+      { prompt: 'inspect the workspace' },
+      abortController.signal,
+      onUpdate,
+    );
+
+    expect(fake.keepPiTurnToolProgressAliveWhile).toHaveBeenCalledTimes(1);
+    expect(fake.runPiSubagentTool).toHaveBeenCalledWith(
+      context,
+      'Agent',
+      { prompt: 'inspect the workspace' },
+      abortController.signal,
+      onUpdate,
+    );
+    expect(result.content[0].text).toBe('child done');
   });
 
   it('maps Pi reasoning and tool events to the old host runtime event shapes', async () => {
