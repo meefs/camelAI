@@ -50,6 +50,7 @@ import {
 import { calculateEffectiveUsageCostUsd } from "../../../src/lib/usage-pricing";
 import { getAppIndexDatabase } from "./app-index-db.js";
 import type { AdminEventType } from "./admin-index-types.js";
+import { recordErrorEvent, recordObservabilityEvent } from "./observability.js";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../src/types";
@@ -61,6 +62,8 @@ export interface DOEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   APP_DB?: D1Database;
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
+  ERROR_ANALYTICS?: AnalyticsEngineDataset;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace;
 }
@@ -1973,15 +1976,23 @@ export class OrgDO extends DurableObject<DOEnv> {
           id TEXT PRIMARY KEY,
           workspace_id TEXT NOT NULL,
           title TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'claude',
           created_by TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           source TEXT NOT NULL DEFAULT 'web',
+          user_message_count INTEGER NOT NULL DEFAULT 0,
+          first_user_message TEXT,
           last_user_message TEXT,
           last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
           last_assistant_summary TEXT,
-          last_assistant_summary_status TEXT
+          last_assistant_summary_status TEXT,
+          channel_kind TEXT,
+          channel_connection_id TEXT,
+          channel_conversation_id TEXT,
+          channel_message_id TEXT
         )
       `);
       this.sql.exec(
@@ -2140,15 +2151,23 @@ export class OrgDO extends DurableObject<DOEnv> {
           id TEXT PRIMARY KEY,
           workspace_id TEXT NOT NULL,
           title TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'claude',
           created_by TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           source TEXT NOT NULL DEFAULT 'web',
+          user_message_count INTEGER NOT NULL DEFAULT 0,
+          first_user_message TEXT,
           last_user_message TEXT,
           last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
           last_assistant_summary TEXT,
-          last_assistant_summary_status TEXT
+          last_assistant_summary_status TEXT,
+          channel_kind TEXT,
+          channel_connection_id TEXT,
+          channel_conversation_id TEXT,
+          channel_message_id TEXT
         )
       `);
       this.sql.exec(
@@ -2538,7 +2557,15 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureColumn("threads", "last_user_message_at", "INTEGER");
     }
 
-    const CURRENT_SCHEMA_VERSION = 28;
+    if (version < 29) {
+      // V29: External channel metadata for Slack/email-originated threads.
+      this.ensureColumn("threads", "channel_kind", "TEXT");
+      this.ensureColumn("threads", "channel_connection_id", "TEXT");
+      this.ensureColumn("threads", "channel_conversation_id", "TEXT");
+      this.ensureColumn("threads", "channel_message_id", "TEXT");
+    }
+
+    const CURRENT_SCHEMA_VERSION = 29;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -4515,6 +4542,152 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
   }
 
+  private recordThreadCreateStage(
+    operation: string,
+    startedAt: number,
+    ids: {
+      threadId?: string | null;
+      workspaceId?: string | null;
+      userId?: string | null;
+      orgId?: string | null;
+    } = {},
+    extra: {
+      status?: string;
+      severity?: "debug" | "info" | "warn" | "error";
+      count?: number;
+      size?: number;
+    } = {},
+  ): void {
+    recordObservabilityEvent(this.env, {
+      event: "org_thread_create_stage",
+      component: "org_do",
+      operation,
+      status: extra.status ?? "ok",
+      severity: extra.severity ?? "info",
+      threadId: ids.threadId,
+      workspaceId: ids.workspaceId,
+      orgId: ids.orgId,
+      userId: ids.userId,
+      durationMs: Date.now() - startedAt,
+      count: extra.count,
+      size: extra.size,
+      sampleIndex: ids.threadId ?? ids.workspaceId ?? undefined,
+    });
+  }
+
+  private recordThreadCreateError(
+    operation: string,
+    startedAt: number,
+    error: unknown,
+    ids: {
+      threadId?: string | null;
+      workspaceId?: string | null;
+      userId?: string | null;
+      orgId?: string | null;
+    } = {},
+  ): void {
+    recordErrorEvent(this.env, {
+      event: "org_thread_create_stage",
+      component: "org_do",
+      operation,
+      status: "exception",
+      threadId: ids.threadId,
+      workspaceId: ids.workspaceId,
+      orgId: ids.orgId,
+      userId: ids.userId,
+      durationMs: Date.now() - startedAt,
+      sampleIndex: ids.threadId ?? ids.workspaceId ?? undefined,
+      error,
+    });
+  }
+
+  private scheduleThreadCreateSideEffects(
+    thread: OrgThread,
+    actorId: string,
+    auditDetails: Record<string, unknown>,
+  ): void {
+    this.ctx.waitUntil(
+      Promise.resolve()
+        .then(async () => {
+          const auditStartedAt = Date.now();
+          try {
+            this.log("thread_created", actorId, thread.id, auditDetails);
+            this.recordThreadCreateStage("audit_log_inserted", auditStartedAt, {
+              threadId: thread.id,
+              workspaceId: thread.workspace_id,
+              userId: actorId,
+            });
+          } catch (error) {
+            console.error("[OrgDO] failed to write thread_created audit log", error);
+            this.recordThreadCreateError("audit_log_insert", auditStartedAt, error, {
+              threadId: thread.id,
+              workspaceId: thread.workspace_id,
+              userId: actorId,
+            });
+          }
+
+          const infoStartedAt = Date.now();
+          let info: Organization | null = null;
+          try {
+            info = await this.getInfo();
+            this.recordThreadCreateStage("admin_index_org_loaded", infoStartedAt, {
+              threadId: thread.id,
+              workspaceId: thread.workspace_id,
+              userId: actorId,
+              orgId: info?.id ?? null,
+            });
+          } catch (error) {
+            console.error("[OrgDO] failed to load org info for thread admin index", error);
+            this.recordThreadCreateError("admin_index_org_load", infoStartedAt, error, {
+              threadId: thread.id,
+              workspaceId: thread.workspace_id,
+              userId: actorId,
+            });
+            return;
+          }
+
+          if (!info) {
+            this.recordThreadCreateStage("admin_index_org_loaded", infoStartedAt, {
+              threadId: thread.id,
+              workspaceId: thread.workspace_id,
+              userId: actorId,
+            }, { status: "missing", severity: "warn" });
+            return;
+          }
+
+          const dispatchStartedAt = Date.now();
+          try {
+            dispatchAdminEvent(this.ctx, this.env, {
+              type: "thread_upsert",
+              payload: { ...thread, org_id: info.id },
+            });
+            this.recordThreadCreateStage("admin_index_dispatch_scheduled", dispatchStartedAt, {
+              threadId: thread.id,
+              workspaceId: thread.workspace_id,
+              userId: actorId,
+              orgId: info.id,
+            });
+          } catch (error) {
+            console.error("[OrgDO] failed to dispatch thread admin index event", error);
+            this.recordThreadCreateError("admin_index_dispatch", dispatchStartedAt, error, {
+              threadId: thread.id,
+              workspaceId: thread.workspace_id,
+              userId: actorId,
+              orgId: info.id,
+            });
+          }
+        })
+        .catch((error) => {
+          console.error("[OrgDO] failed to run thread create side effects", error);
+          this.recordThreadCreateError("side_effects", Date.now(), error, {
+            threadId: thread.id,
+            workspaceId: thread.workspace_id,
+            userId: actorId,
+          });
+        }),
+    );
+  }
+
   async checkWorkspaceNameAvailable(
     name: string,
     excludeWorkspaceId?: string,
@@ -5168,11 +5341,16 @@ export class OrgDO extends DurableObject<DOEnv> {
     provider?: "claude" | "codex",
     options: CreateThreadOptions = {},
   ): OrgThread {
-    this.ensureThreadSchemaColumns();
+    const startedAt = Date.now();
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || DEFAULT_THREAD_TITLE;
     const creator = createdBy?.trim() || "system";
+    const ids = {
+      threadId: id,
+      workspaceId,
+      userId: creator,
+    };
     const lastUserMessage = firstUserMessage
       ? normalizeThreadPreviewUserMessage(firstUserMessage)
       : null;
@@ -5193,48 +5371,57 @@ export class OrgDO extends DurableObject<DOEnv> {
     const channelConnectionId = options.channelConnectionId?.trim() || null;
     const channelConversationId = options.channelConversationId?.trim() || null;
     const channelMessageId = options.channelMessageId?.trim() || null;
-    this.sql.exec(
-      `INSERT INTO threads (
-         id,
-         workspace_id,
-         title,
-         provider,
-         created_by,
-         model,
-         created_at,
-         updated_at,
-         source,
-         first_user_message,
-         last_user_message,
-         last_user_message_at,
-         channel_kind,
-         channel_connection_id,
-         channel_conversation_id,
-         channel_message_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id,
-      workspaceId,
-      t,
-      "model",
-      creator,
-      normalizedModel,
-      now,
-      now,
-      source,
-      msg,
-      lastUserMessage,
-      lastUserMessageAt,
-      channelKind,
-      channelConnectionId,
-      channelConversationId,
-      channelMessageId,
-    );
-    this.log("thread_created", creator, id, {
-      workspace_id: workspaceId,
-      title: t,
-      source,
-      channel_kind: channelKind,
+    this.recordThreadCreateStage("prepared", startedAt, ids, {
+      size: msg?.length ?? 0,
     });
+
+    const insertStartedAt = Date.now();
+    try {
+      this.sql.exec(
+        `INSERT INTO threads (
+           id,
+           workspace_id,
+           title,
+           provider,
+           created_by,
+           model,
+           created_at,
+           updated_at,
+           source,
+           first_user_message,
+           last_user_message,
+           last_user_message_at,
+           channel_kind,
+           channel_connection_id,
+           channel_conversation_id,
+           channel_message_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        workspaceId,
+        t,
+        "model",
+        creator,
+        normalizedModel,
+        now,
+        now,
+        source,
+        msg,
+        lastUserMessage,
+        lastUserMessageAt,
+        channelKind,
+        channelConnectionId,
+        channelConversationId,
+        channelMessageId,
+      );
+      this.recordThreadCreateStage("thread_inserted", insertStartedAt, ids, {
+        size: msg?.length ?? 0,
+      });
+    } catch (error) {
+      console.error("[OrgDO] failed to insert thread", error);
+      this.recordThreadCreateError("thread_insert", insertStartedAt, error, ids);
+      throw error;
+    }
+
     const thread = {
       id,
       workspace_id: workspaceId,
@@ -5256,13 +5443,15 @@ export class OrgDO extends DurableObject<DOEnv> {
       channel_conversation_id: channelConversationId,
       channel_message_id: channelMessageId,
     };
-    this.getInfo().then((info) => {
-      if (info)
-        dispatchAdminEvent(this.ctx, this.env, {
-          type: "thread_upsert",
-          payload: { ...thread, org_id: info.id },
-        });
+
+    const scheduleStartedAt = Date.now();
+    this.scheduleThreadCreateSideEffects(thread, creator, {
+      workspace_id: workspaceId,
+      title: t,
+      source,
+      channel_kind: channelKind,
     });
+    this.recordThreadCreateStage("side_effects_scheduled", scheduleStartedAt, ids);
     return thread;
   }
 
@@ -5341,6 +5530,11 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.sql.exec("ALTER TABLE threads_legacy_test RENAME TO threads");
     });
     this.ctx.storage.kv.put("schemaVersion", 20);
+  }
+
+  // Test helper RPC: simulate constructor migration path on an existing OrgDO.
+  async remigrate(): Promise<void> {
+    this.migrate();
   }
 
   /**

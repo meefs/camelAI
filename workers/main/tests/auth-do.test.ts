@@ -244,13 +244,14 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.last_assistant_summary_status).toBeNull();
     });
 
-    it('self-heals legacy thread schema before creating new threads', async () => {
+    it('self-heals legacy thread schema during migration before creating new threads', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Legacy Thread Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Legacy Thread Org', userId);
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
       await orgStub.downgradeThreadSchemaForTest();
+      await orgStub.remigrate();
 
       const thread = await orgStub.createThread(
         defaultWorkspaceId,
