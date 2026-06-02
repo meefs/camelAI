@@ -305,6 +305,26 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(afterBackfill?.last_user_message).toBe('Please keep this first prompt');
     });
 
+    it('normalizes initial first user messages for preview surfaces', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Normalized First Message Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        undefined,
+        userId,
+        '[Thread Owner (owner@example.com)]: <camelai system message>hidden</camelai system message>\n\nBuild the welcome preview',
+      );
+      const stored = await orgStub.getThread(thread.id);
+
+      expect(thread.first_user_message).toBe('Build the welcome preview');
+      expect(thread.last_user_message).toBe('Build the welcome preview');
+      expect(stored?.first_user_message).toBe('Build the welcome preview');
+      expect(stored?.last_user_message).toBe('Build the welcome preview');
+    });
+
     it('keeps first user messages bounded for preview surfaces', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
