@@ -2,6 +2,8 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { Type, type TSchema } from "typebox";
 import type {
   Agent as PiCoreAgent,
+  AfterToolCallContext,
+  AfterToolCallResult,
   AgentEvent,
   AgentMessage,
   AgentTool,
@@ -447,6 +449,12 @@ const PI_SQLITE_STORAGE_SOFT_LIMIT_CHARS = 1_500_000;
 const PI_MAX_PERSISTED_IMAGE_DATA_CHARS = 512_000;
 const PI_MAX_PERSISTED_TEXT_CHARS = 200_000;
 const PI_R2_IMAGE_REF_METADATA_KEY = "chiridionR2Image";
+const PI_TOOL_RESULT_MAX_LINES = 2_000;
+const PI_TOOL_RESULT_MAX_BYTES = 50 * 1024;
+const PI_TOOL_RESULT_R2_REF_METADATA_KEY = "chiridionR2ToolResult";
+const PI_TAIL_TRUNCATED_TOOL_NAMES = new Set([
+  "bash",
+]);
 
 interface PiR2ImageReference {
   key: string;
@@ -454,6 +462,26 @@ interface PiR2ImageReference {
   size: number;
   sha256: string;
   storedAt: number;
+}
+
+interface PiR2ToolResultReference {
+  key: string;
+  size: number;
+  sha256: string;
+  storedAt: number;
+}
+
+interface PiToolResultTruncation {
+  truncated: true;
+  truncatedBy: "lines" | "bytes";
+  direction: "head" | "tail";
+  totalLines: number;
+  outputLines: number;
+  totalBytes: number;
+  outputBytes: number;
+  maxLines: number;
+  maxBytes: number;
+  fullOutput?: PiR2ToolResultReference;
 }
 
 interface PiSqlStorageStats {
@@ -809,6 +837,16 @@ type CodeModeToolCallHandler = (
   name: string,
 ) => Promise<unknown> | unknown;
 
+type CodeModeR2Mount = "uploads" | "outputs" | "tmp";
+
+interface CodeModeR2Path {
+  mount: CodeModeR2Mount;
+  key: string;
+  path: string;
+  relativePath: string;
+  writable: boolean;
+}
+
 interface LegacyParsedChatMessageForPi {
   id?: unknown;
   role?: unknown;
@@ -823,6 +861,9 @@ const CODE_MODE_MAX_TIMEOUT_MS = 600_000;
 const TELEGRAM_BOT_API_TIMEOUT_MS = 15_000;
 const CODE_MODE_DEFAULT_MAX_OUTPUT_CHARACTERS = 60_000;
 const CODE_MODE_MAX_OUTPUT_CHARACTERS = 200_000;
+const CODE_MODE_R2_READ_NOTICE_RESERVED_BYTES = 1024;
+const CODE_MODE_R2_MAX_WRITE_BYTES = 10 * 1024 * 1024;
+const CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES = 10 * 1024 * 1024;
 const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   // This tool waits for human input and can outlive js_exec's short sandbox
   // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
@@ -1089,6 +1130,71 @@ const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
     externalDelivery: true,
   },
 );
+const R2_READ_TOOL = codeModePassthroughTool(
+  "r2_read",
+  "Read workspace-scoped R2 text like the Pi read tool. Arguments: { path? or key?, offset?, limit? }. Offset is a 1-indexed line number; use returned nextOffset to continue. Paths support /mnt/user-uploads/..., /mnt/user-outputs/..., and /r2/tmp/...; key may be a full scoped R2 key returned by tool-result truncation metadata.",
+  Type.Object({
+    path: Type.Optional(Type.String()),
+    key: Type.Optional(Type.String()),
+    offset: Type.Optional(Type.Number()),
+    limit: Type.Optional(Type.Number()),
+  }),
+  {
+    category: "workspace",
+    examples: [
+      `await tools.r2_read({ path: "/r2/tmp/tool-output.txt" })`,
+      `await tools.r2_read({ key: result.details.chiridionR2ToolResult.key, offset: 2001 })`,
+    ],
+  },
+);
+const R2_WRITE_TOOL = codeModePassthroughTool(
+  "r2_write",
+  "Write text to workspace-scoped R2. Arguments: { path, content, content_type? }. Writable paths are /mnt/user-outputs/... and /r2/tmp/...; /mnt/user-uploads/... is read-only.",
+  Type.Object({
+    path: Type.String(),
+    content: Type.String(),
+    content_type: Type.Optional(Type.String()),
+  }),
+  {
+    category: "workspace",
+    examples: [
+      `await tools.r2_write({ path: "/r2/tmp/large-result.txt", content })`,
+      `await tools.r2_write({ path: "/mnt/user-outputs/report.txt", content: "Done" })`,
+    ],
+    sideEffect: true,
+  },
+);
+const R2_LIST_TOOL = codeModePassthroughTool(
+  "r2_list",
+  "List workspace-scoped R2 objects like a directory. Arguments: { path?, limit?, cursor? }. Paths support /mnt/user-uploads, /mnt/user-outputs, and /r2/tmp.",
+  Type.Object({
+    path: Type.Optional(Type.String()),
+    limit: Type.Optional(Type.Number()),
+    cursor: Type.Optional(Type.String()),
+  }),
+  {
+    category: "workspace",
+    examples: [
+      `await tools.r2_list({ path: "/mnt/user-outputs" })`,
+      `await tools.r2_list({ path: "/r2/tmp" })`,
+    ],
+  },
+);
+const R2_DELETE_TOOL = codeModePassthroughTool(
+  "r2_delete",
+  "Delete one workspace-scoped R2 object. Arguments: { path? or key? }. Writable paths are /mnt/user-outputs/... and /r2/tmp/...; /mnt/user-uploads/... is read-only.",
+  Type.Object({
+    path: Type.Optional(Type.String()),
+    key: Type.Optional(Type.String()),
+  }),
+  {
+    category: "workspace",
+    examples: [
+      `await tools.r2_delete({ path: "/r2/tmp/large-result.txt" })`,
+    ],
+    sideEffect: true,
+  },
+);
 const WEB_SEARCH_TOOL = codeModePassthroughTool(
   "WebSearch",
   "Search the web. Arguments: { query, numResults?, maxCharacters? }.",
@@ -1157,6 +1263,10 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   SEND_EMAIL_TOOL,
   SEND_SLACK_MESSAGE_TOOL,
   SEND_TELEGRAM_MESSAGE_TOOL,
+  R2_READ_TOOL,
+  R2_WRITE_TOOL,
+  R2_LIST_TOOL,
+  R2_DELETE_TOOL,
   codeModeAlias(
     "ask_user_question",
     ASK_USER_QUESTION_TOOL,
@@ -1554,6 +1664,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     send_email: (binding, args) => binding.sendEmail(args),
     send_slack_message: (binding, args) => binding.sendSlackMessage(args),
     send_telegram_message: (binding, args) => binding.sendTelegramMessage(args),
+    r2_read: (binding, args) => binding.readR2File(args),
+    r2_write: (binding, args) => binding.writeR2File(args),
+    r2_list: (binding, args) => binding.listR2Files(args),
+    r2_delete: (binding, args) => binding.deleteR2File(args),
     get_custom_domain: (binding) => binding.getCustomDomain(),
     set_custom_domain: (binding, args) => binding.setCustomDomain(args),
     remove_custom_domain: (binding, args) => binding.removeCustomDomain(args),
@@ -1683,6 +1797,420 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       CLOUDFLARE_API_BASE_URL: `${dockerProxyBaseUrl}${proxyPath}`,
       CLOUDFLARE_API_TOKEN: "chiridion-sandbox-proxy",
       CLOUDFLARE_ACCOUNT_ID: this.env.CF_ACCOUNT_ID?.trim() || "chiridion",
+    };
+  }
+
+  private safeThreadR2SessionId(): string {
+    const { threadId } = this.ctx.props;
+    if (!threadId) {
+      throw new Error("R2 temp paths require chat thread scope");
+    }
+    return threadId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  }
+
+  private workspaceR2Prefix(): string {
+    const { orgId, workspaceId } = this.ctx.props;
+    if (!orgId || !workspaceId) {
+      throw new Error("Code mode tool binding is missing R2 scope");
+    }
+    return buildWorkspaceScopedR2Key(orgId, workspaceId, "");
+  }
+
+  private r2MountBaseKey(mount: CodeModeR2Mount): string {
+    const { orgId, workspaceId } = this.ctx.props;
+    if (!orgId || !workspaceId) {
+      throw new Error("Code mode tool binding is missing R2 scope");
+    }
+    switch (mount) {
+      case "uploads":
+        return buildWorkspaceScopedR2Key(orgId, workspaceId, "user-uploads/");
+      case "outputs":
+        return buildWorkspaceScopedR2Key(orgId, workspaceId, "user-outputs/");
+      case "tmp":
+        return buildWorkspaceScopedR2Key(
+          orgId,
+          workspaceId,
+          `chat-sessions/${this.safeThreadR2SessionId()}/pi-tool-results/tmp/`,
+        );
+    }
+  }
+
+  private r2MountPath(mount: CodeModeR2Mount): string {
+    switch (mount) {
+      case "uploads":
+        return "/mnt/user-uploads";
+      case "outputs":
+        return "/mnt/user-outputs";
+      case "tmp":
+        return "/r2/tmp";
+    }
+  }
+
+  private normalizeR2RelativePath(path: string, allowDirectory: boolean): string {
+    const normalized = path.replace(/^\/+/, "");
+    const relativePath = allowDirectory ? normalized.replace(/\/+$/, "") : normalized;
+    if (relativePath.length > 1024) {
+      throw new Error("R2 path exceeds the maximum length of 1024 characters");
+    }
+    if (!relativePath) return "";
+    const segments = relativePath.split("/");
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+      throw new Error("R2 paths must not contain empty, '.', or '..' segments");
+    }
+    return relativePath;
+  }
+
+  private r2PathFromRelative(mount: CodeModeR2Mount, relativePath: string): string {
+    const root = this.r2MountPath(mount);
+    return relativePath ? `${root}/${relativePath}` : root;
+  }
+
+  private resolveCodeModeR2Path(
+    raw: Record<string, unknown>,
+    options: { allowDirectory?: boolean; requireWritable?: boolean } = {},
+  ): CodeModeR2Path {
+    const allowDirectory = options.allowDirectory ?? false;
+    const rawKey = typeof raw.key === "string" ? raw.key.trim() : "";
+    const rawPath = typeof raw.path === "string" ? raw.path.trim() : "";
+
+    const fromParts = (
+      mount: CodeModeR2Mount,
+      relativePath: string,
+    ): CodeModeR2Path => {
+      const normalizedRelativePath = this.normalizeR2RelativePath(relativePath, allowDirectory);
+      if (!allowDirectory && !normalizedRelativePath) {
+        throw new Error("R2 object path is required");
+      }
+      const writable = mount !== "uploads";
+      if (options.requireWritable && !writable) {
+        throw new Error("/mnt/user-uploads is read-only");
+      }
+      return {
+        mount,
+        key: `${this.r2MountBaseKey(mount)}${normalizedRelativePath}`,
+        path: this.r2PathFromRelative(mount, normalizedRelativePath),
+        relativePath: normalizedRelativePath,
+        writable,
+      };
+    };
+
+    if (rawKey) {
+      const workspacePrefix = this.workspaceR2Prefix();
+      if (!rawKey.startsWith(workspacePrefix)) {
+        throw new Error("R2 key is outside the current workspace");
+      }
+      for (const mount of ["uploads", "outputs", "tmp"] as const) {
+        const baseKey = this.r2MountBaseKey(mount);
+        if (rawKey === baseKey || rawKey.startsWith(baseKey)) {
+          return fromParts(mount, rawKey.slice(baseKey.length));
+        }
+      }
+      throw new Error("R2 key is outside the allowed workspace file prefixes");
+    }
+
+    const path = rawPath.replace(/\\/g, "/");
+    if (!path) {
+      throw new Error("R2 path or key is required");
+    }
+    for (const mount of ["uploads", "outputs", "tmp"] as const) {
+      const mountPath = this.r2MountPath(mount);
+      if (path === mountPath) {
+        return fromParts(mount, "");
+      }
+      if (path.startsWith(`${mountPath}/`)) {
+        return fromParts(mount, path.slice(mountPath.length + 1));
+      }
+    }
+    throw new Error("R2 path must be under /mnt/user-uploads, /mnt/user-outputs, or /r2/tmp");
+  }
+
+  private formatR2ObjectMetadata(obj: R2Object, path: string): Record<string, unknown> {
+    return {
+      key: obj.key,
+      path,
+      size: obj.size,
+      etag: obj.etag,
+      uploaded: obj.uploaded instanceof Date ? obj.uploaded.toISOString() : String(obj.uploaded),
+      contentType: obj.httpMetadata?.contentType ?? null,
+      customMetadata: obj.customMetadata ?? {},
+    };
+  }
+
+  private textByteLength(value: string): number {
+    return new TextEncoder().encode(value).byteLength;
+  }
+
+  private truncateR2ReadHead(
+    content: string,
+    maxBytes: number,
+  ): {
+    content: string;
+    truncated: boolean;
+    truncatedBy: "lines" | "bytes" | null;
+    totalLines: number;
+    totalBytes: number;
+    outputLines: number;
+    outputBytes: number;
+    firstLineExceedsLimit: boolean;
+    maxLines: number;
+    maxBytes: number;
+  } {
+    const lines = content.split("\n");
+    const totalLines = lines.length;
+    const totalBytes = this.textByteLength(content);
+    if (totalLines <= PI_TOOL_RESULT_MAX_LINES && totalBytes <= maxBytes) {
+      return {
+        content,
+        truncated: false,
+        truncatedBy: null,
+        totalLines,
+        totalBytes,
+        outputLines: totalLines,
+        outputBytes: totalBytes,
+        firstLineExceedsLimit: false,
+        maxLines: PI_TOOL_RESULT_MAX_LINES,
+        maxBytes,
+      };
+    }
+    if (this.textByteLength(lines[0] ?? "") > maxBytes) {
+      return {
+        content: "",
+        truncated: true,
+        truncatedBy: "bytes",
+        totalLines,
+        totalBytes,
+        outputLines: 0,
+        outputBytes: 0,
+        firstLineExceedsLimit: true,
+        maxLines: PI_TOOL_RESULT_MAX_LINES,
+        maxBytes,
+      };
+    }
+    const selected: string[] = [];
+    let outputBytes = 0;
+    let truncatedBy: "lines" | "bytes" = "lines";
+    for (let index = 0; index < lines.length && index < PI_TOOL_RESULT_MAX_LINES; index += 1) {
+      const line = lines[index] ?? "";
+      if (selected.length >= PI_TOOL_RESULT_MAX_LINES) {
+        truncatedBy = "lines";
+        break;
+      }
+      const lineBytes = this.textByteLength(line) + (selected.length > 0 ? 1 : 0);
+      if (outputBytes + lineBytes > maxBytes) {
+        truncatedBy = "bytes";
+        break;
+      }
+      selected.push(line);
+      outputBytes += lineBytes;
+    }
+    if (selected.length >= PI_TOOL_RESULT_MAX_LINES && outputBytes <= maxBytes) {
+      truncatedBy = "lines";
+    }
+    const outputContent = selected.join("\n");
+    return {
+      content: outputContent,
+      truncated: true,
+      truncatedBy,
+      totalLines,
+      totalBytes,
+      outputLines: selected.length,
+      outputBytes: this.textByteLength(outputContent),
+      firstLineExceedsLimit: false,
+      maxLines: PI_TOOL_RESULT_MAX_LINES,
+      maxBytes,
+    };
+  }
+
+  private async readR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args);
+    const offset = clampCodeModeInteger(args.offset, 1, 1, Number.MAX_SAFE_INTEGER);
+    const limit = typeof args.limit === "number"
+      ? clampCodeModeInteger(args.limit, PI_TOOL_RESULT_MAX_LINES, 1, PI_TOOL_RESULT_MAX_LINES)
+      : undefined;
+    const head = await this.env.R2_BUCKET.head(target.key);
+    if (!head) {
+      throw new Error(`R2 object not found: ${target.path}`);
+    }
+    if (head.size > CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES) {
+      throw new Error(
+        `R2 object is too large for text r2_read (${head.size} bytes; max ${CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES} bytes)`,
+      );
+    }
+    const object = await this.env.R2_BUCKET.get(target.key);
+    if (!object) {
+      throw new Error(`R2 object not found: ${target.path}`);
+    }
+    const fullText = await object.text();
+    const allLines = fullText.split("\n");
+    const startLine = offset - 1;
+    if (startLine >= allLines.length) {
+      throw new Error(`Offset ${offset} is beyond end of R2 object (${allLines.length} lines total)`);
+    }
+    let selectedContent: string;
+    let userLimitedLines: number | undefined;
+    if (limit !== undefined) {
+      const endLine = Math.min(startLine + limit, allLines.length);
+      selectedContent = allLines.slice(startLine, endLine).join("\n");
+      userLimitedLines = endLine - startLine;
+    } else {
+      selectedContent = allLines.slice(startLine).join("\n");
+    }
+    const maxBytes = PI_TOOL_RESULT_MAX_BYTES - CODE_MODE_R2_READ_NOTICE_RESERVED_BYTES;
+    const truncation = this.truncateR2ReadHead(selectedContent, maxBytes);
+    const startLineDisplay = startLine + 1;
+    let text: string;
+    let nextOffset: number | null = null;
+    if (truncation.firstLineExceedsLimit) {
+      text =
+        `[Line ${startLineDisplay} is ${this.textByteLength(allLines[startLine] ?? "")} bytes, exceeds ${maxBytes} byte read budget. Stored R2 key: ${target.key}]`;
+    } else if (truncation.truncated) {
+      const endLineDisplay = startLine + truncation.outputLines;
+      nextOffset = endLineDisplay + 1;
+      const limitLabel = truncation.truncatedBy === "bytes"
+        ? ` (${maxBytes} byte read budget)`
+        : "";
+      text = truncation.content;
+      text +=
+        `${text ? "\n\n" : ""}` +
+        `[Showing lines ${startLineDisplay}-${endLineDisplay} of ${allLines.length}${limitLabel}. Use offset=${nextOffset} to continue.]`;
+    } else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
+      const remaining = allLines.length - (startLine + userLimitedLines);
+      nextOffset = startLine + userLimitedLines + 1;
+      text = `${truncation.content}\n\n[${remaining} more lines in R2 object. Use offset=${nextOffset} to continue.]`;
+    } else {
+      text = truncation.content;
+    }
+
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        ...this.formatR2ObjectMetadata(head, target.path),
+        offset,
+        nextOffset,
+        totalLines: allLines.length,
+        truncation,
+      },
+    };
+  }
+
+  private async writeR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
+    const content = typeof args.content === "string" ? args.content : "";
+    const contentBytes = new TextEncoder().encode(content).byteLength;
+    if (contentBytes > CODE_MODE_R2_MAX_WRITE_BYTES) {
+      throw new Error(`R2 write content exceeds ${CODE_MODE_R2_MAX_WRITE_BYTES} bytes`);
+    }
+    const contentType = typeof args.content_type === "string" && args.content_type.trim()
+      ? args.content_type.trim()
+      : "text/plain; charset=utf-8";
+    const object = await this.env.R2_BUCKET.put(target.key, content, {
+      httpMetadata: { contentType },
+      customMetadata: {
+        type: "code-mode-r2-file",
+        orgId: this.ctx.props.orgId,
+        workspaceId: this.ctx.props.workspaceId,
+        threadId: this.ctx.props.threadId ?? "",
+      },
+    });
+    const text = `Wrote ${contentBytes} bytes to ${target.path}`;
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        ...(object ? this.formatR2ObjectMetadata(object, target.path) : {
+          key: target.key,
+          path: target.path,
+          size: contentBytes,
+          contentType,
+        }),
+        bytesWritten: contentBytes,
+      },
+    };
+  }
+
+  private async listR2Files(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (typeof args.path !== "string" || !args.path.trim()) {
+      const mounts = (["uploads", "outputs", "tmp"] as const).map((mount) => ({
+        path: this.r2MountPath(mount),
+        keyPrefix: this.r2MountBaseKey(mount),
+        writable: mount !== "uploads",
+      }));
+      const text = mounts
+        .map((mount) => `${mount.writable ? "rw" : "ro"} ${mount.path}`)
+        .join("\n");
+      return {
+        text,
+        content: [{ type: "text", text }],
+        details: { mounts },
+      };
+    }
+
+    const target = this.resolveCodeModeR2Path(args, { allowDirectory: true });
+    const limit = clampCodeModeInteger(args.limit, 100, 1, 1000);
+    const cursor = typeof args.cursor === "string" && args.cursor.trim()
+      ? args.cursor.trim()
+      : undefined;
+    const directoryRelativePath = target.relativePath
+      ? `${target.relativePath}/`
+      : "";
+    const baseKey = this.r2MountBaseKey(target.mount);
+    const result = await this.env.R2_BUCKET.list({
+      prefix: `${baseKey}${directoryRelativePath}`,
+      delimiter: "/",
+      limit,
+      cursor,
+      include: ["httpMetadata", "customMetadata"],
+    });
+    const objects = result.objects.map((object) => {
+      const relativePath = object.key.startsWith(baseKey)
+        ? object.key.slice(baseKey.length)
+        : object.key;
+      return this.formatR2ObjectMetadata(
+        object,
+        this.r2PathFromRelative(target.mount, relativePath),
+      );
+    });
+    const prefixes = result.delimitedPrefixes.map((prefix) => {
+      const relativePath = prefix.startsWith(baseKey)
+        ? prefix.slice(baseKey.length).replace(/\/+$/, "")
+        : prefix.replace(/\/+$/, "");
+      return {
+        keyPrefix: prefix,
+        path: this.r2PathFromRelative(target.mount, relativePath),
+      };
+    });
+    const lines = [
+      ...prefixes.map((prefix) => `dir  ${prefix.path}/`),
+      ...objects.map((object) => `${String(object.size).padStart(8, " ")} ${object.path}`),
+    ];
+    const text = lines.length > 0 ? lines.join("\n") : "(empty)";
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        path: target.path,
+        keyPrefix: `${baseKey}${directoryRelativePath}`,
+        objects,
+        prefixes,
+        truncated: result.truncated,
+        cursor: result.truncated ? result.cursor : undefined,
+      },
+    };
+  }
+
+  private async deleteR2File(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.resolveCodeModeR2Path(args, { requireWritable: true });
+    await this.env.R2_BUCKET.delete(target.key);
+    const text = `Deleted ${target.path}`;
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        key: target.key,
+        path: target.path,
+        deleted: true,
+      },
     };
   }
 
@@ -3990,6 +4518,278 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       context.workspaceId,
       `chat-sessions/${safeSessionId}/pi-images/${sha256}.base64`,
     );
+  }
+
+  private piStoredToolResultR2Key(
+    toolName: string,
+    toolCallId: string,
+    sha256: string,
+  ): string | null {
+    const context = this.chatContext;
+    if (!context?.orgId || !context.workspaceId || !context.threadId) {
+      return null;
+    }
+    const safeSessionId = context.threadId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeToolName = (toolName || "tool")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 48) || "tool";
+    const safeToolCallId = (toolCallId || "call")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 64) || "call";
+    return buildWorkspaceScopedR2Key(
+      context.orgId,
+      context.workspaceId,
+      `chat-sessions/${safeSessionId}/pi-tool-results/tmp/${Date.now()}-${safeToolName}-${safeToolCallId}-${sha256.slice(0, 16)}.txt`,
+    );
+  }
+
+  private piTextBytes(value: string): number {
+    return new TextEncoder().encode(value).byteLength;
+  }
+
+  private piTextSliceByBytes(
+    value: string,
+    maxBytes: number,
+    direction: "head" | "tail",
+  ): string {
+    if (maxBytes <= 0) return "";
+    const chars = Array.from(value);
+    const selected: string[] = [];
+    let outputBytes = 0;
+    const append = (char: string, prepend: boolean): boolean => {
+      const charBytes = this.piTextBytes(char);
+      if (outputBytes + charBytes > maxBytes) return false;
+      if (prepend) selected.unshift(char);
+      else selected.push(char);
+      outputBytes += charBytes;
+      return true;
+    };
+    if (direction === "tail") {
+      for (let index = chars.length - 1; index >= 0; index -= 1) {
+        if (!append(chars[index] ?? "", true)) break;
+      }
+    } else {
+      for (const char of chars) {
+        if (!append(char, false)) break;
+      }
+    }
+    return selected.join("");
+  }
+
+  private truncatePiToolResultText(
+    text: string,
+    direction: "head" | "tail",
+  ): { content: string; truncation?: Omit<PiToolResultTruncation, "fullOutput"> } {
+    const lines = text.split("\n");
+    const totalLines = lines.length;
+    const totalBytes = this.piTextBytes(text);
+    if (
+      totalLines <= PI_TOOL_RESULT_MAX_LINES &&
+      totalBytes <= PI_TOOL_RESULT_MAX_BYTES
+    ) {
+      return { content: text };
+    }
+
+    const selected: string[] = [];
+    let outputBytes = 0;
+    let truncatedBy: "lines" | "bytes" =
+      totalLines > PI_TOOL_RESULT_MAX_LINES ? "lines" : "bytes";
+
+    const appendLine = (line: string, prepend: boolean): boolean => {
+      if (selected.length >= PI_TOOL_RESULT_MAX_LINES) {
+        truncatedBy = "lines";
+        return false;
+      }
+      const lineBytes = this.piTextBytes(line) + (selected.length > 0 ? 1 : 0);
+      if (outputBytes + lineBytes > PI_TOOL_RESULT_MAX_BYTES) {
+        truncatedBy = "bytes";
+        const separatorBytes = selected.length > 0 ? 1 : 0;
+        const availableBytes = PI_TOOL_RESULT_MAX_BYTES - outputBytes - separatorBytes;
+        const clipped = this.piTextSliceByBytes(line, availableBytes, direction);
+        if (clipped) {
+          if (prepend) selected.unshift(clipped);
+          else selected.push(clipped);
+          outputBytes += separatorBytes + this.piTextBytes(clipped);
+        }
+        return false;
+      }
+      if (prepend) selected.unshift(line);
+      else selected.push(line);
+      outputBytes += lineBytes;
+      return true;
+    };
+
+    if (direction === "tail") {
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        if (!appendLine(lines[index] ?? "", true)) break;
+      }
+    } else {
+      for (const line of lines) {
+        if (!appendLine(line, false)) break;
+      }
+    }
+
+    const content = selected.join("\n");
+    return {
+      content,
+      truncation: {
+        truncated: true,
+        truncatedBy,
+        direction,
+        totalLines,
+        outputLines: selected.length,
+        totalBytes,
+        outputBytes: this.piTextBytes(content),
+        maxLines: PI_TOOL_RESULT_MAX_LINES,
+        maxBytes: PI_TOOL_RESULT_MAX_BYTES,
+      },
+    };
+  }
+
+  private async storePiFullToolResultInR2(
+    toolName: string,
+    toolCallId: string,
+    text: string,
+  ): Promise<PiR2ToolResultReference | undefined> {
+    const sha256 = await this.sha256Hex(text);
+    const key = this.piStoredToolResultR2Key(toolName, toolCallId, sha256);
+    if (!key) return undefined;
+    await this.env.R2_BUCKET.put(key, text, {
+      httpMetadata: { contentType: "text/plain; charset=utf-8" },
+      customMetadata: {
+        type: "pi-tool-result-text",
+        toolName,
+        toolCallId,
+        sessionId: this.chatContext?.threadId ?? "",
+        threadId: this.chatContext?.threadId ?? "",
+        workspaceId: this.chatContext?.workspaceId ?? "",
+        orgId: this.chatContext?.orgId ?? "",
+        sha256,
+      },
+    });
+    return {
+      key,
+      sha256,
+      size: this.piTextBytes(text),
+      storedAt: Date.now(),
+    };
+  }
+
+  private piToolResultTruncationNotice(
+    truncation: PiToolResultTruncation,
+  ): string {
+    const shown =
+      truncation.truncatedBy === "lines"
+        ? `${truncation.outputLines} of ${truncation.totalLines} lines`
+        : `${truncation.outputBytes} of ${truncation.totalBytes} bytes`;
+    const source = truncation.fullOutput?.key
+      ? ` Full output stored in R2 at ${truncation.fullOutput.key}.`
+      : "";
+    return `[Output truncated: showing ${truncation.direction === "tail" ? "last" : "first"} ${shown}.${source}]`;
+  }
+
+  private mergePiToolResultDetails(
+    existing: unknown,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      ...(existing && typeof existing === "object" && !Array.isArray(existing)
+        ? existing as Record<string, unknown>
+        : {}),
+      ...patch,
+    };
+  }
+
+  private async truncatePiToolResultForModel(
+    context: AfterToolCallContext,
+  ): Promise<AfterToolCallResult | undefined> {
+    const content = Array.isArray(context.result.content)
+      ? context.result.content
+      : [];
+    const textParts: string[] = [];
+    const nonTextContent: AfterToolCallResult["content"] = [];
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "text" && typeof part.text === "string") {
+        textParts.push(part.text);
+      } else if (part.type === "image") {
+        nonTextContent.push(part);
+      }
+    }
+    if (textParts.length === 0) return undefined;
+
+    const fullText = textParts.join(textParts.length > 1 ? "\n" : "");
+    const direction = PI_TAIL_TRUNCATED_TOOL_NAMES.has(context.toolCall.name)
+      ? "tail"
+      : "head";
+    const truncated = this.truncatePiToolResultText(fullText, direction);
+    if (!truncated.truncation) return undefined;
+
+    let fullOutput: PiR2ToolResultReference | undefined;
+    try {
+      fullOutput = await this.storePiFullToolResultInR2(
+        context.toolCall.name,
+        context.toolCall.id,
+        fullText,
+      );
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to store oversized Pi tool result in R2", error);
+      this.recordChatThreadObservabilityEvent("pi_tool_result_r2_store_failed", {
+        operation: "truncate_tool_result",
+        status: "error",
+        severity: "warn",
+        error,
+        size: this.piTextBytes(fullText),
+        sampleKey: context.toolCall.name,
+      });
+    }
+
+    const truncation: PiToolResultTruncation = {
+      ...truncated.truncation,
+      ...(fullOutput ? { fullOutput } : {}),
+    };
+    this.recordChatThreadObservabilityEvent("pi_tool_result_truncated", {
+      operation: "truncate_tool_result",
+      status: "ok",
+      count: truncation.totalLines,
+      size: truncation.totalBytes,
+      sampleKey: context.toolCall.name,
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${truncated.content}\n\n${this.piToolResultTruncationNotice(truncation)}`,
+        },
+        ...nonTextContent,
+      ],
+      details: this.mergePiToolResultDetails(context.result.details, {
+        [PI_TOOL_RESULT_R2_REF_METADATA_KEY]: fullOutput,
+        truncation,
+        originalTextBlockCount: textParts.length,
+      }),
+    };
+  }
+
+  private async afterPiToolCall(
+    context: AfterToolCallContext,
+    signal?: AbortSignal,
+  ): Promise<AfterToolCallResult | undefined> {
+    if (signal?.aborted) return undefined;
+    try {
+      return await this.truncatePiToolResultForModel(context);
+    } catch (error) {
+      console.error("[ChatThreadDO] Pi afterToolCall hook failed", error);
+      this.recordChatThreadObservabilityEvent("pi_after_tool_call_failed", {
+        operation: "after_tool_call",
+        status: "error",
+        severity: "warn",
+        error,
+        sampleKey: context.toolCall.name,
+      });
+      return undefined;
+    }
   }
 
   private readPiR2ImageReference(part: Record<string, unknown>): PiR2ImageReference | null {
@@ -7260,6 +8060,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
         return current.apiKey;
       },
+      afterToolCall: (toolContext, signal) =>
+        this.afterPiToolCall(toolContext, signal),
       streamFn: (model, llmContext, options) =>
         this.streamPiModel(model, llmContext, options, streamSimple),
       sessionId: context.threadId,
@@ -9475,6 +10277,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         child.state.model = current.model;
         return current.apiKey;
       },
+      afterToolCall: (toolContext, signal) =>
+        this.afterPiToolCall(toolContext, signal),
       streamFn: (model, llmContext, options) =>
         this.streamPiModel(model, llmContext, options, streamSimple),
       sessionId: `${context.threadId}:${toolName}:${crypto.randomUUID()}`,

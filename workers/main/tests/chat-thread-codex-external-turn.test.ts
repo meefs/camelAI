@@ -1806,6 +1806,10 @@ describe('ChatThreadDO Codex turn handling', () => {
       'list_scheduled_prompts',
       'list_workflows',
       'list_integrations',
+      'r2_read',
+      'r2_write',
+      'r2_list',
+      'r2_delete',
       'get_custom_domain',
       'Agent',
       'Explore',
@@ -1817,6 +1821,8 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
     expect((byName.get('WebSearch') as any).parameters.properties.query).toBeDefined();
     expect((byName.get('WebFetch') as any).parameters.properties.url).toBeDefined();
+    expect((byName.get('r2_read') as any).parameters.properties.key).toBeDefined();
+    expect((byName.get('r2_write') as any).parameters.properties.path).toBeDefined();
     expect(byName.has('workspace_info')).toBe(false);
     expect((byName.get('connections_get') as any).parameters.properties.connection).toBeDefined();
     expect(byName.get('send_email')).toMatchObject({
@@ -1916,6 +1922,101 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(containerTool).not.toHaveBeenCalled();
   });
 
+  it('leaves bounded Pi tool results unchanged', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
+      toolCall: { id: 'call_1', name: 'WebFetch' },
+      result: {
+        content: [{ type: 'text', text: 'small result' }],
+        details: { source: 'test' },
+      },
+    });
+
+    expect(result).toBeUndefined();
+    expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalled();
+  });
+
+  it('truncates oversized Pi tool results and stores full text in R2', async () => {
+    const puts: Array<{ key: string; value: string; options: unknown }> = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.env = {
+      R2_BUCKET: {
+        put: vi.fn(async (key: string, value: string, options: unknown) => {
+          puts.push({ key, value, options });
+        }),
+      },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    const big = `${'a'.repeat(60 * 1024)}\nfinal-line`;
+    const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
+      toolCall: { id: 'call_1', name: 'WebFetch' },
+      result: {
+        content: [{ type: 'text', text: big }],
+        details: { source: 'test' },
+      },
+    });
+
+    expect(result?.content?.[0]).toMatchObject({ type: 'text' });
+    const text = (result?.content?.[0] as any).text as string;
+    expect(text.length).toBeLessThan(big.length);
+    expect(text).toMatch(/^a+/);
+    expect(text).toContain('[Output truncated: showing first');
+    expect(text).not.toContain('final-line');
+    expect(result?.details).toMatchObject({
+      source: 'test',
+      originalTextBlockCount: 1,
+      truncation: {
+        truncated: true,
+        direction: 'head',
+      },
+    });
+    expect(puts).toHaveLength(1);
+    expect(puts[0].key).toContain('chat-sessions/thread1/pi-tool-results/tmp/');
+    expect(puts[0].value).toBe(big);
+    expect((result?.details as any).chiridionR2ToolResult.key).toBe(puts[0].key);
+  });
+
+  it('keeps the tail for oversized bash tool results', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+    };
+    fake.env = {
+      R2_BUCKET: {
+        put: vi.fn(async () => undefined),
+      },
+    };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    const big = Array.from({ length: 2600 }, (_, index) => `line-${index}`).join('\n');
+    const result = await ChatThreadDO.prototype['afterPiToolCall'].call(fake, {
+      toolCall: { id: 'call_1', name: 'bash' },
+      result: {
+        content: [{ type: 'text', text: big }],
+        details: {},
+      },
+    });
+
+    const text = (result?.content?.[0] as any).text as string;
+    expect(text).toContain('line-2599');
+    expect(text).not.toContain('line-0');
+    expect((result?.details as any).truncation).toMatchObject({
+      truncated: true,
+      direction: 'tail',
+      truncatedBy: 'lines',
+    });
+  });
+
   it('exposes provider-specific channel send tools only inside js_exec', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
@@ -1943,6 +2044,214 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(codeModeTools.find((tool: any) => tool.name === 'send_email')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_slack_message')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeTruthy();
+  });
+
+  it('reads stored R2 tool result keys with Pi-style line offsets', async () => {
+    const raw = Array.from({ length: 3000 }, (_, index) => `line-${index + 1}`).join('\n');
+    const bytes = new TextEncoder().encode(raw);
+    const key = 'org1/workspace1/chat-sessions/thread1/pi-tool-results/tmp/result.txt';
+    const head = {
+      key,
+      size: bytes.byteLength,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: { type: 'pi-tool-result-text' },
+    };
+    const get = vi.fn(async () => ({
+      ...head,
+      async text() {
+        return raw;
+      },
+    }));
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+      },
+    };
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get,
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_read', {
+      key,
+      offset: 2,
+      limit: 3,
+    });
+
+    expect(get).toHaveBeenCalledWith(key);
+    expect((result as any).text).toContain('line-2\nline-3\nline-4');
+    expect((result as any).text).toContain('Use offset=5 to continue');
+    expect((result as any).details).toMatchObject({
+      key,
+      path: '/r2/tmp/result.txt',
+      offset: 2,
+      nextOffset: 5,
+      totalLines: 3000,
+      truncation: {
+        truncated: false,
+        outputLines: 3,
+      },
+    });
+  });
+
+  it('truncates R2 reads by line count with an offset continuation', async () => {
+    const raw = Array.from({ length: 2600 }, (_, index) => `line-${index + 1}`).join('\n');
+    const key = 'org1/workspace1/chat-sessions/thread1/pi-tool-results/tmp/many-lines.txt';
+    const bytes = new TextEncoder().encode(raw);
+    const head = {
+      key,
+      size: bytes.byteLength,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: { type: 'pi-tool-result-text' },
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+      },
+    };
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          async text() {
+            return raw;
+          },
+        })),
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_read', { key });
+
+    expect((result as any).text).toContain('line-1');
+    expect((result as any).text).toContain('line-2000');
+    expect((result as any).text).not.toContain('line-2001');
+    expect((result as any).text).toContain('Use offset=2001 to continue');
+    expect(new TextEncoder().encode((result as any).text).byteLength).toBeLessThanOrEqual(50 * 1024);
+    expect((result as any).details).toMatchObject({
+      offset: 1,
+      nextOffset: 2001,
+      totalLines: 2600,
+      truncation: {
+        truncated: true,
+        truncatedBy: 'lines',
+        outputLines: 2000,
+      },
+    });
+  });
+
+  it('returns a diagnostic when the first R2 line exceeds the read byte limit', async () => {
+    const raw = `${'x'.repeat(60 * 1024)}\nsecond-line`;
+    const key = 'org1/workspace1/chat-sessions/thread1/pi-tool-results/tmp/one-long-line.txt';
+    const bytes = new TextEncoder().encode(raw);
+    const head = {
+      key,
+      size: bytes.byteLength,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: { type: 'pi-tool-result-text' },
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+      },
+    };
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          async text() {
+            return raw;
+          },
+        })),
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_read', { key });
+
+    expect((result as any).text).toContain('exceeds 50176 byte read budget');
+    expect((result as any).text).toContain(key);
+    expect((result as any).text).not.toContain('second-line');
+    expect((result as any).details.truncation).toMatchObject({
+      truncated: true,
+      truncatedBy: 'bytes',
+      firstLineExceedsLimit: true,
+    });
+  });
+
+  it('writes and deletes R2 output files but keeps uploads read-only', async () => {
+    const put = vi.fn(async (key: string, value: string, options: any) => ({
+      key,
+      size: new TextEncoder().encode(value).byteLength,
+      etag: 'etag1',
+      uploaded: new Date('2026-01-01T00:00:00Z'),
+      httpMetadata: options.httpMetadata,
+      customMetadata: options.customMetadata,
+    }));
+    const del = vi.fn(async () => undefined);
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+      },
+    };
+    fake.env = {
+      R2_BUCKET: {
+        put,
+        delete: del,
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const write = await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_write', {
+      path: '/mnt/user-outputs/reports/result.txt',
+      content: 'hello',
+    });
+
+    expect(put).toHaveBeenCalledWith(
+      'org1/workspace1/user-outputs/reports/result.txt',
+      'hello',
+      expect.objectContaining({
+        httpMetadata: { contentType: 'text/plain; charset=utf-8' },
+      }),
+    );
+    expect((write as any).details).toMatchObject({
+      key: 'org1/workspace1/user-outputs/reports/result.txt',
+      path: '/mnt/user-outputs/reports/result.txt',
+      bytesWritten: 5,
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_write', {
+      path: '/mnt/user-uploads/input.txt',
+      content: 'nope',
+    })).rejects.toThrow('/mnt/user-uploads is read-only');
+
+    await CodeModeToolsBinding.prototype.callTool.call(fake, 'r2_delete', {
+      path: '/mnt/user-outputs/reports/result.txt',
+    });
+    expect(del).toHaveBeenCalledWith('org1/workspace1/user-outputs/reports/result.txt');
   });
 
   it('records outbound js_exec artifacts on the parent tool call without exposing metadata to model sanitization', async () => {
