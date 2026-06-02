@@ -575,7 +575,7 @@ export async function handleWorkspaceEmailIngress(
       .emailInbox
   ) {
     message.setReject(
-      "Workspace email inbox requires a Pro, Team, or Enterprise plan.",
+      "Workspace email inbox requires a Starter, Pro, Team, or Enterprise plan.",
     );
     return;
   }

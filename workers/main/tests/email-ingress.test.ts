@@ -141,7 +141,7 @@ describe('handleWorkspaceEmailIngress', () => {
       getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
     };
     const orgStub = {
-      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'starter', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
@@ -289,6 +289,31 @@ describe('handleWorkspaceEmailIngress', () => {
     await handleWorkspaceEmailIngress(message, createMockEnv());
 
     expect(message.setReject).toHaveBeenCalledWith('Unknown workspace email address.');
+    expect(message.reply).not.toHaveBeenCalled();
+  });
+
+  it('rejects inbound workspace email for Pay as you go orgs', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'payg', billing_status: 'active' }),
+    };
+    getWorkspaceStubMock.mockReturnValue(workspaceStub);
+    getOrgStubMock.mockReturnValue(orgStub);
+
+    const message = createMessage({
+      from: 'user@example.com',
+      to: 'swift-falcon-ridge@mail.camelai.com',
+      subject: 'hello',
+    });
+
+    await handleWorkspaceEmailIngress(message, createMockEnv());
+
+    expect(message.setReject).toHaveBeenCalledWith(
+      'Workspace email inbox requires a Starter, Pro, Team, or Enterprise plan.',
+    );
+    expect(startInitialUserMessageMock).not.toHaveBeenCalled();
     expect(message.reply).not.toHaveBeenCalled();
   });
 

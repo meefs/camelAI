@@ -80,9 +80,11 @@ let emailSendMock: ReturnType<typeof vi.fn>;
 function buildEnv(overrides: {
   rateAllowed?: boolean;
   workspaceMembers?: Array<{ user_id: string; access_level: string }>;
+  billingPlan?: string;
+  billingStatus?: string;
   [key: string]: unknown;
 } = {}) {
-  const { rateAllowed, workspaceMembers, ...rest } = overrides;
+  const { rateAllowed, workspaceMembers, billingPlan, billingStatus, ...rest } = overrides;
   // Default: all MEMBERS have full access
   const allMembers = workspaceMembers ?? MEMBERS.map((m) => ({ user_id: m.user_id, access_level: 'full' }));
   const workspaceStub = makeWorkspaceStub(allMembers, rateAllowed !== false);
@@ -105,8 +107,8 @@ function buildEnv(overrides: {
       get: vi.fn(() => ({
         getInfo: vi.fn(async () => ({
           id: 'org-1',
-          billing_plan: 'pro',
-          billing_status: 'active',
+          billing_plan: billingPlan ?? 'starter',
+          billing_status: billingStatus ?? 'active',
         })),
       })),
     },
@@ -156,6 +158,21 @@ describe('email-send-proxy route', () => {
     expect(res.status).toBe(400);
     const body = await res.json() as { error: string };
     expect(body.error).toContain('Invalid recipient field');
+  });
+
+  it('rejects Pay as you go orgs before sending email', async () => {
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest({ to: 'alice@example.com', subject: 'Hi', text: 'Hello!' }),
+        buildEnv({ billingPlan: 'payg' })
+      )
+    );
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({
+      error: 'Workspace email inbox requires a Starter, Pro, Team, or Enterprise plan',
+    });
+    expect(emailSendMock).not.toHaveBeenCalled();
   });
 
   it('rejects array with non-string elements', async () => {
@@ -244,7 +261,7 @@ describe('email-send-proxy route', () => {
     expect(body.error).toContain('limit exceeded');
   });
 
-  it('forwards valid request to Cloudflare Email Sending with workspace from address', async () => {
+  it('forwards valid Starter request to Cloudflare Email Sending with workspace from address', async () => {
     const env = buildEnv();
     const res = await handleEmailSendProxy(
       buildRouteContext(

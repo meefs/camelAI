@@ -216,7 +216,7 @@ describe("billing helpers", () => {
       maxCronJobsPerUser: null,
       minCronIntervalMs: 60 * 60 * 1000,
       byokOnly: false,
-      emailInbox: false,
+      emailInbox: true,
     });
 
     expect(BILLING_PLAN_LIMITS.pro).toMatchObject({

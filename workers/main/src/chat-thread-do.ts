@@ -103,6 +103,7 @@ import {
   buildWorkspaceEmailSenderAddress,
   getWorkspaceEmailDomain,
 } from "../../../src/lib/workspace-email";
+import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
 import {
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
@@ -7523,6 +7524,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     context: ChatContextState,
     params: unknown,
   ): Promise<AgentToolResult<unknown>> {
+    const orgStub = this.env.ORG.get(
+      this.env.ORG.idFromName(context.orgId),
+    ) as unknown as OrgDO;
+    const orgInfo = await orgStub.getInfo();
+    if (
+      !orgInfo ||
+      !getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
+        .emailInbox
+    ) {
+      throw new Error(
+        "Workspace email inbox requires a Starter, Pro, Team, or Enterprise plan.",
+      );
+    }
+
     const thread = await this.getOriginatingChannelThread(context, "email");
     const raw = this.readToolObjectParams(params);
     const to = this.requiredToolString(raw, "to");

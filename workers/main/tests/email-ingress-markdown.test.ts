@@ -99,7 +99,7 @@ describe('handleWorkspaceEmailIngress channel enqueue', () => {
     });
 
     mockGetOrgStub.mockReturnValue({
-      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'starter', billing_status: 'active' }),
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),

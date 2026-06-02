@@ -81,7 +81,7 @@ export const BILLING_PLAN_LIMITS: Record<BillingPlan, BillingPlanLimits> = {
     maxCronJobsPerUser: null,
     minCronIntervalMs: HOUR_MS,
     byokOnly: false,
-    emailInbox: false,
+    emailInbox: true,
   },
   pro: {
     plan: "pro",

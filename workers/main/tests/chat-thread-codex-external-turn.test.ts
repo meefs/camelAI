@@ -2144,6 +2144,10 @@ describe('ChatThreadDO Codex turn handling', () => {
       ORG: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
           getThread: vi.fn(async () => ({
             id: 'thread1',
             source: 'web',
@@ -2196,6 +2200,45 @@ describe('ChatThreadDO Codex turn handling', () => {
       'thread1',
       { expirationTtl: 180 * 24 * 60 * 60 },
     );
+  });
+
+  it('rejects channel email sends for Pay as you go orgs', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'email_1' }));
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'payg',
+            billing_status: 'active',
+          })),
+        })),
+      },
+    };
+
+    await expect(
+      ChatThreadDO.prototype['sendChannelEmailTool'].call(
+        fake,
+        {
+          orgId: 'org1',
+          workspaceId: 'workspace1',
+          threadId: 'thread1',
+          userId: 'user1',
+          userName: null,
+          userEmail: null,
+        },
+        {
+          to: 'alice@example.com',
+          subject: 'Done',
+          text: 'Finished.',
+        },
+      ),
+    ).rejects.toThrow(
+      'Workspace email inbox requires a Starter, Pro, Team, or Enterprise plan.',
+    );
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
   it('sends Telegram from a workspace-scoped code mode tool binding without thread scope', async () => {
@@ -4525,6 +4568,15 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send },
       APP_KV: { put: kvPutMock },
       R2_BUCKET: { get },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
+        })),
+      },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),

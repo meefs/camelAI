@@ -49,6 +49,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
       "10 custom domains",
       "1 automated task hourly",
       "50 GB storage",
+      "Workspace email inbox",
     ],
   },
   pro: {
@@ -62,7 +63,6 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
       "Unlimited custom domains",
       "Automations every 5 minutes",
       "100 GB storage",
-      "Workspace email inbox",
     ],
   },
   team: {

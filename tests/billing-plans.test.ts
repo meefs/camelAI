@@ -127,3 +127,14 @@ describe("normalizeBillingPlan", () => {
     expect(normalizeBillingPlan("team", "inactive")).toBe("team");
   });
 });
+
+describe("email inbox plan limits", () => {
+  it("enables workspace email for Starter and higher paid plans", () => {
+    expect(BILLING_PLAN_LIMITS.free.emailInbox).toBe(false);
+    expect(BILLING_PLAN_LIMITS.payg.emailInbox).toBe(false);
+    expect(BILLING_PLAN_LIMITS.starter.emailInbox).toBe(true);
+    expect(BILLING_PLAN_LIMITS.pro.emailInbox).toBe(true);
+    expect(BILLING_PLAN_LIMITS.team.emailInbox).toBe(true);
+    expect(BILLING_PLAN_LIMITS.enterprise.emailInbox).toBe(true);
+  });
+});

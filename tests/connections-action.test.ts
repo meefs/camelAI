@@ -354,7 +354,7 @@ describe("connections loader", () => {
     requireAuthContextMock.mockResolvedValue({
       currentOrg: {
         id: "org_1",
-        billing_plan: "pro",
+        billing_plan: "starter",
         billing_status: "active",
       },
       currentWorkspace: {
@@ -483,7 +483,7 @@ describe("connections loader", () => {
     expect(connection).not.toHaveProperty("credentials_encrypted");
   });
 
-  it("returns configured native email data and plan enabled state", async () => {
+  it("returns configured native email data and Starter plan enabled state", async () => {
     const result = await loader({
       request: new Request("https://camelai.test/connections"),
       context: {},

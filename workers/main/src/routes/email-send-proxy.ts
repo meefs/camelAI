@@ -141,7 +141,7 @@ export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<
     !getBillingPlanLimits(orgInfo.billing_plan, orgInfo.billing_status)
       .emailInbox
   ) {
-    return errorResponse('Workspace email inbox requires a Pro, Team, or Enterprise plan', 403);
+    return errorResponse('Workspace email inbox requires a Starter, Pro, Team, or Enterprise plan', 403);
   }
 
   // 2. Require Cloudflare Email Sending binding
