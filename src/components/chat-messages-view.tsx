@@ -1,5 +1,5 @@
-import { memo, useEffect, useMemo, useState } from "react";
-import type { Dispatch, RefObject, SetStateAction } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, Dispatch, RefObject, SetStateAction } from "react";
 import type { Integration, LlmModel, LlmProvider, Message } from "@/types";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatThreadWorkingIndicator } from "@/components/chat-thread-working-indicator";
@@ -24,7 +24,9 @@ import { cn } from "@/lib/utils";
 
 const MESSAGE_LAYOUT_CONTAINMENT_STYLE = {
   contain: "layout paint style",
-} as const;
+  contentVisibility: "auto",
+  containIntrinsicSize: "auto 180px",
+} satisfies CSSProperties;
 
 /**
  * True when the message was directly authored by the user — not a
@@ -37,6 +39,27 @@ function isDirectUserMessage(msg: Message): boolean {
   if (isInterruptMessage(msg.content)) return false;
   if (parseSlashCommand(msg.content)) return false;
   if (parseLocalCommandStdout(msg.content)) return false;
+  return true;
+}
+
+type MessageGroup = {
+  key: string;
+  messages: Message[];
+  isAssistantTurn: boolean;
+  actionMessageId: string;
+  copyContent?: string;
+  precedingUserMessageId?: string;
+  stepCount: number;
+  fallbackDurationMs: number;
+  traceMessage: Message | null;
+  finalOutputMessage: Message | null;
+};
+
+function haveSameMessageRefs(left: Message[], right: Message[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
   return true;
 }
 
@@ -108,24 +131,17 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   const [messageTimeZone, setMessageTimeZone] = useState<string | undefined>(
     "UTC",
   );
+  const messageGroupCacheRef = useRef<Map<string, MessageGroup>>(new Map());
 
   useEffect(() => {
     setMessageTimeZone(undefined);
   }, []);
 
   const messageGroups = useMemo(() => {
-    const groups: Array<{
-      key: string;
-      messages: Message[];
-      isAssistantTurn: boolean;
-      actionMessageId: string;
-      copyContent?: string;
-      precedingUserMessageId?: string;
-      stepCount: number;
-      fallbackDurationMs: number;
-      traceMessage: Message | null;
-      finalOutputMessage: Message | null;
-    }> = [];
+    const groups: MessageGroup[] = [];
+    const previousGroups = messageGroupCacheRef.current;
+    const nextGroups = new Map<string, MessageGroup>();
+    let lastDirectUserMessage: Message | undefined;
 
     for (let index = 0; index < visibleMessages.length;) {
       const firstMessage = visibleMessages[index];
@@ -143,24 +159,34 @@ export const ChatMessagesView = memo(function ChatMessagesView({
 
       const messages = visibleMessages.slice(index, endIndex);
       const actionMessage = messages[messages.length - 1];
+      const key = `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}`;
+      const previousGroup = previousGroups.get(key);
+      if (
+        previousGroup &&
+        previousGroup.isAssistantTurn === isAssistantTurn &&
+        previousGroup.actionMessageId === actionMessage.id &&
+        previousGroup.precedingUserMessageId === lastDirectUserMessage?.id &&
+        haveSameMessageRefs(previousGroup.messages, messages)
+      ) {
+        groups.push(previousGroup);
+        nextGroups.set(key, previousGroup);
+        if (!isAssistantTurn && isDirectUserMessage(firstMessage)) {
+          lastDirectUserMessage = firstMessage;
+        }
+        index = endIndex;
+        continue;
+      }
+
       const copyContent = isAssistantTurn
         ? messages
             .map((message) => userFacingContentToString(message.content))
             .filter(Boolean)
             .join("\n\n")
         : undefined;
-      let precedingUserMessage: Message | undefined;
-      let precedingUserMessageId: string | undefined;
-      if (isAssistantTurn) {
-        for (let previous = index - 1; previous >= 0; previous -= 1) {
-          const candidate = visibleMessages[previous];
-          if (isDirectUserMessage(candidate)) {
-            precedingUserMessage = candidate;
-            precedingUserMessageId = candidate.id;
-            break;
-          }
-        }
-      }
+      const precedingUserMessage = isAssistantTurn
+        ? lastDirectUserMessage
+        : undefined;
+      const precedingUserMessageId = precedingUserMessage?.id;
       const stepCount = isAssistantTurn ? countTurnSteps(messages) : 0;
       const fallbackDurationMs =
         isAssistantTurn && precedingUserMessage
@@ -173,8 +199,8 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         ? buildFinalOutputMessageView(messages, actionMessage.id)
         : null;
 
-      groups.push({
-        key: `${isAssistantTurn ? "assistant" : "message"}-${firstMessage.id}`,
+      const group: MessageGroup = {
+        key,
         messages,
         isAssistantTurn,
         actionMessageId: actionMessage.id,
@@ -184,11 +210,18 @@ export const ChatMessagesView = memo(function ChatMessagesView({
         fallbackDurationMs,
         traceMessage,
         finalOutputMessage,
-      });
+      };
+      groups.push(group);
+      nextGroups.set(key, group);
+
+      if (!isAssistantTurn && isDirectUserMessage(firstMessage)) {
+        lastDirectUserMessage = firstMessage;
+      }
 
       index = endIndex;
     }
 
+    messageGroupCacheRef.current = nextGroups;
     return groups;
   }, [visibleMessages]);
 
