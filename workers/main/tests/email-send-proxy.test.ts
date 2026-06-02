@@ -258,14 +258,14 @@ describe('email-send-proxy route', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: 'msg-123', from: 'Test Workspace <swift-tiger-moon@camelai.dev>' });
+    expect(await res.json()).toEqual({ id: 'msg-123', from: 'Camel <swift-tiger-moon@camelai.dev>' });
 
     expect(emailSendMock).toHaveBeenCalledTimes(1);
     const sentBody = emailSendMock.mock.calls[0]?.[0];
     expect(sentBody.to).toEqual(['alice@example.com']);
     expect(sentBody.subject).toBe('Hello Alice');
     // from is always the workspace address, not caller-supplied
-    expect(sentBody.from).toBe('Test Workspace <swift-tiger-moon@camelai.dev>');
+    expect(sentBody.from).toBe('Camel <swift-tiger-moon@camelai.dev>');
   });
 
   it('ignores caller-supplied from and uses workspace address', async () => {
@@ -284,7 +284,7 @@ describe('email-send-proxy route', () => {
 
     expect(res.status).toBe(200);
     const sentBody = emailSendMock.mock.calls[0]?.[0];
-    expect(sentBody.from).toBe('Test Workspace <swift-tiger-moon@camelai.dev>');
+    expect(sentBody.from).toBe('Camel <swift-tiger-moon@camelai.dev>');
   });
 
   it('allows sending to multiple workspace members', async () => {
@@ -444,7 +444,7 @@ describe('email-send-proxy route', () => {
     expect(res.status).toBe(200);
   });
 
-  it('quotes workspace name with RFC special characters in from address', async () => {
+  it('uses the simple Camel sender name regardless of workspace name punctuation', async () => {
     const env = buildEnv();
     // Override getInfo to return a name with commas
     env._workspaceStub.getInfo.mockResolvedValue({
@@ -467,7 +467,7 @@ describe('email-send-proxy route', () => {
 
     expect(res.status).toBe(200);
     const sentBody = emailSendMock.mock.calls[0]?.[0];
-    expect(sentBody.from).toBe('"Acme, Inc" <swift-tiger-moon@camelai.dev>');
+    expect(sentBody.from).toBe('Camel <swift-tiger-moon@camelai.dev>');
   });
 
   it('returns 503 when workspace email is not configured', async () => {

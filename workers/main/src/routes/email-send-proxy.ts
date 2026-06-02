@@ -9,7 +9,7 @@
 import type { RouteContext } from '../types.js';
 import { validateSandboxProxy } from '../sandbox-auth.js';
 import { getWorkspaceStub, getUserStub, getOrgStub } from '../helpers/stubs.js';
-import { buildWorkspaceEmailAddress, getWorkspaceEmailDomain } from '../../../../src/lib/workspace-email.js';
+import { buildWorkspaceEmailSenderAddress, getWorkspaceEmailDomain } from '../../../../src/lib/workspace-email.js';
 import { getBillingPlanLimits } from '../../../../src/lib/billing-plans.js';
 
 // ---------------------------------------------------------------------------
@@ -60,17 +60,6 @@ function extractEmail(raw: string): string | null {
 
   const match = trimmed.match(/<([^>]+)>/);
   return (match ? match[1] : trimmed).trim().toLowerCase();
-}
-
-/**
- * Quote an email display name if it contains RFC 5322 special characters.
- * e.g. `Acme, Inc` → `"Acme, Inc"`, `Alice` → `Alice`
- */
-function quoteDisplayName(name: string): string {
-  if (/[,;<>"@()[\]\\]/.test(name)) {
-    return `"${name.replace(/["\\]/g, '\\$&')}"`;
-  }
-  return name;
 }
 
 function normalizeRecipients(value: unknown): string[] | null {
@@ -195,8 +184,10 @@ export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<
   if (!workspaceInfo?.email_handle || !emailDomain) {
     return errorResponse('Workspace email not configured', 503);
   }
-  const workspaceFromEmail = buildWorkspaceEmailAddress(workspaceInfo.email_handle, emailDomain);
-  const workspaceFromAddress = `${quoteDisplayName(workspaceInfo.name)} <${workspaceFromEmail}>`;
+  const workspaceFromAddress = buildWorkspaceEmailSenderAddress(
+    workspaceInfo.email_handle,
+    emailDomain,
+  );
 
   // 6. Validate recipients against workspace member whitelist
   console.log(`[EmailSendProxy] validating recipients: [${allRecipients.join(', ')}] workspace=${workspaceId}`);

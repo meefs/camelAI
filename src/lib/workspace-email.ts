@@ -82,8 +82,34 @@ export function generateEmailHandle(): string {
 
 // --- Address building / parsing ---
 
+export const WORKSPACE_EMAIL_SENDER_NAME = 'Camel';
+
 export function buildWorkspaceEmailAddress(emailHandle: string, domain: string): string {
   return `${emailHandle}@${domain.trim().toLowerCase()}`;
+}
+
+function quoteDisplayName(name: string): string {
+  const normalized = name.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/[^A-Za-z0-9!#$%&'*+\-/=?^_`{|}~ ]/.test(normalized)) {
+    return `"${normalized.replace(/["\\]/g, '\\$&')}"`;
+  }
+  return normalized;
+}
+
+export function buildFormattedEmailAddress(displayName: string | null | undefined, email: string): string {
+  const normalizedName = displayName?.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalizedName) return email;
+  return `${quoteDisplayName(normalizedName)} <${email}>`;
+}
+
+export function buildWorkspaceEmailSenderAddress(
+  emailHandle: string,
+  domain: string,
+): string {
+  return buildFormattedEmailAddress(
+    WORKSPACE_EMAIL_SENDER_NAME,
+    buildWorkspaceEmailAddress(emailHandle, domain),
+  );
 }
 
 export function parseWorkspaceEmailAddress(

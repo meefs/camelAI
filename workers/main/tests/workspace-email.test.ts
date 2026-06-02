@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildFormattedEmailAddress,
   buildWorkspaceEmailAddress,
+  buildWorkspaceEmailSenderAddress,
   generateEmailHandle,
   isValidEmailHandle,
   parseWorkspaceEmailAddress,
@@ -50,6 +52,32 @@ describe('buildWorkspaceEmailAddress', () => {
   it('builds handle@domain addresses', () => {
     expect(buildWorkspaceEmailAddress('swift-falcon-ridge', 'chiridion.dev'))
       .toBe('swift-falcon-ridge@chiridion.dev');
+  });
+});
+
+describe('buildFormattedEmailAddress', () => {
+  it('adds a display name to an email address', () => {
+    expect(buildFormattedEmailAddress('Test Workspace', 'swift-falcon-ridge@chiridion.dev'))
+      .toBe('Test Workspace <swift-falcon-ridge@chiridion.dev>');
+  });
+
+  it('quotes display names with address header special characters', () => {
+    expect(buildFormattedEmailAddress('Acme, Inc', 'swift-falcon-ridge@chiridion.dev'))
+      .toBe('"Acme, Inc" <swift-falcon-ridge@chiridion.dev>');
+    expect(buildFormattedEmailAddress('Support: West', 'swift-falcon-ridge@chiridion.dev'))
+      .toBe('"Support: West" <swift-falcon-ridge@chiridion.dev>');
+  });
+
+  it('falls back to a bare address when display name is empty', () => {
+    expect(buildFormattedEmailAddress('  ', 'swift-falcon-ridge@chiridion.dev'))
+      .toBe('swift-falcon-ridge@chiridion.dev');
+  });
+});
+
+describe('buildWorkspaceEmailSenderAddress', () => {
+  it('builds a simple Camel sender address', () => {
+    expect(buildWorkspaceEmailSenderAddress('swift-falcon-ridge', 'chiridion.dev'))
+      .toBe('Camel <swift-falcon-ridge@chiridion.dev>');
   });
 });
 

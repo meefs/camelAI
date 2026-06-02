@@ -100,8 +100,10 @@ import { CodeModeWebSearch } from "./code-mode-web-search";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
 import {
   buildWorkspaceEmailAddress,
+  buildWorkspaceEmailSenderAddress,
   getWorkspaceEmailDomain,
 } from "../../../src/lib/workspace-email";
+import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
 import {
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
   getOrCreateChannelThread,
@@ -7538,21 +7540,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!this.env.EMAIL) {
       throw new Error("Cloudflare Email Sending binding EMAIL is not configured");
     }
-    let from = thread?.channel_connection_id?.trim() || "";
-    if (!from) {
-      const emailDomain = getWorkspaceEmailDomain(this.env);
+    const fallbackFrom = thread?.channel_connection_id?.trim() || "";
+    let from = fallbackFrom;
+    const emailDomain = getWorkspaceEmailDomain(this.env);
+    const workspaceStub = this.env.WORKSPACE.get(
+      this.env.WORKSPACE.idFromName(context.workspaceId),
+    ) as unknown as WorkspaceDO;
+    const workspaceInfo = await workspaceStub.getInfo();
+    const emailHandle = workspaceInfo?.email_handle?.trim();
+    if (emailDomain && emailHandle) {
+      from = buildWorkspaceEmailSenderAddress(
+        emailHandle,
+        emailDomain,
+      );
+    } else if (!from) {
       if (!emailDomain) {
         throw new Error("Workspace email domain is not configured");
       }
-      const workspaceStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(context.workspaceId),
-      ) as unknown as WorkspaceDO;
-      const workspaceInfo = await workspaceStub.getInfo();
-      const emailHandle = workspaceInfo?.email_handle?.trim();
-      if (!emailHandle) {
-        throw new Error("Workspace email sender is not configured");
-      }
-      from = buildWorkspaceEmailAddress(emailHandle, emailDomain);
+      throw new Error("Workspace email sender is not configured");
     }
 
     const explicitReplyTo = this.optionalToolString(raw, "reply_to");
@@ -7811,12 +7816,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const sentMessageIds: Array<number | undefined> = [];
     if (text) {
+      const formatted = formatMarkdownForTelegram(text);
       const response = await this.fetchTelegramBotApi(token, "sendMessage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: chatId,
-          text,
+          text: formatted.text,
+          parse_mode: formatted.parseMode,
         }),
       });
       const responseJson = await response.json().catch(() => null) as {
@@ -8103,7 +8110,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const formData = new FormData();
     formData.set("chat_id", args.chatId);
     if (args.attachment.caption) {
-      formData.set("caption", args.attachment.caption.slice(0, 1024));
+      const formattedCaption = formatMarkdownForTelegram(
+        args.attachment.caption.slice(0, 1024),
+      );
+      formData.set("caption", formattedCaption.text);
+      formData.set("parse_mode", formattedCaption.parseMode);
     }
     formData.set(
       args.fieldName,

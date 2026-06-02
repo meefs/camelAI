@@ -2157,6 +2157,7 @@ describe('ChatThreadDO Codex turn handling', () => {
         get: vi.fn(() => ({
           getInfo: vi.fn(async () => ({
             id: 'workspace1',
+            name: 'Test Workspace',
             email_handle: 'workspace-agent',
           })),
         })),
@@ -2180,7 +2181,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     );
 
     expect(sendEmailMock).toHaveBeenCalledWith({
-      from: 'workspace-agent@camelai.dev',
+      from: 'Camel <workspace-agent@camelai.dev>',
       to: 'alice@example.com',
       subject: 'Done',
       text: 'Finished.',
@@ -4524,6 +4525,17 @@ describe('ChatThreadDO Codex turn handling', () => {
       EMAIL: { send },
       APP_KV: { put: kvPutMock },
       R2_BUCKET: { get },
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Test Workspace',
+            email_handle: 'workspace-agent',
+          })),
+        })),
+      },
     };
 
     const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
@@ -4545,7 +4557,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(get).toHaveBeenCalledWith('org1/workspace1/user-outputs/report.pdf');
     expect(send).toHaveBeenCalledTimes(1);
     const message = send.mock.calls[0][0];
-    expect(message.from).toBe('workspace@camelai.dev');
+    expect(message.from).toBe('Camel <workspace-agent@camelai.dev>');
     expect(message.attachments).toHaveLength(1);
     expect(message.attachments[0]).toMatchObject({
       filename: 'report.pdf',
@@ -4944,7 +4956,11 @@ describe('ChatThreadDO Codex turn handling', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toMatch(/\/sendMessage$/);
       const payload = JSON.parse(String(init?.body));
-      expect(payload).toMatchObject({ chat_id: '12345', text: 'Hello' });
+      expect(payload).toMatchObject({
+        chat_id: '12345',
+        text: '<b>Hello</b> &amp; <i>there</i>',
+        parse_mode: 'HTML',
+      });
       return Response.json({ ok: true, result: { message_id: 19 } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -4998,7 +5014,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       {
         integration_id: 'telegram-int',
         chat_id: '12345',
-        text: 'Hello',
+        text: '**Hello** & _there_',
       },
     );
 
@@ -5019,7 +5035,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       remoteConversationId: '12345',
       sourceThreadId: 'thread1',
       direction: 'outbound',
-      text: 'Hello',
+      text: '**Hello** & _there_',
       providerMessageIds: [19],
       attachmentCount: 0,
     }));
