@@ -830,6 +830,7 @@ describe("billing helpers", () => {
       3000,
       "Legacy Stripe migration current-period included credits",
       "legacy-migration:org_team:sub_legacy:pro:current-period-included-credits",
+      { source: "stripe-migration" },
     );
     const subscriptionParams = new URLSearchParams(
       subscriptionMetadataBody ?? "",
@@ -1032,6 +1033,7 @@ describe("billing helpers", () => {
       5000,
       "Legacy Stripe migration current-period included credits",
       "legacy-migration:org_team:sub_legacy:team:current-period-included-credits",
+      { source: "stripe-migration" },
     );
   });
 

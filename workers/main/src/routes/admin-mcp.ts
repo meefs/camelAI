@@ -52,6 +52,7 @@ const TOOL_GET_BAN = "get_ban";
 const TOOL_BLOCK_SIGNUP_IP = "block_signup_ip";
 const TOOL_UNBLOCK_SIGNUP_IP = "unblock_signup_ip";
 const TOOL_GET_ORG_USAGE = "get_org_usage";
+const TOOL_GRANT_ORG_CREDITS = "grant_org_credits";
 const TOOL_SET_USER_CREDITS = "set_user_credits";
 
 function getBaseUrl(req: Request): string {
@@ -461,9 +462,25 @@ function adminTools() {
       },
     },
     {
+      name: TOOL_GRANT_ORG_CREDITS,
+      description:
+        "Grant usage credits to an organization and record the grant in the admin credit ledger.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          org_id: { type: "string" },
+          amount_cents: { type: "integer", minimum: 1 },
+          reason: { type: "string", maxLength: 500 },
+          idempotency_key: { type: "string", maxLength: 200 },
+        },
+        required: ["org_id", "amount_cents"],
+        additionalProperties: false,
+      },
+    },
+    {
       name: TOOL_SET_USER_CREDITS,
       description:
-        "Set credits for a user's organization. Pass available_credits_cents to set the visible remaining balance, or override raw purchase/grant totals. org_id is required if the user belongs to multiple orgs.",
+        "Debug override: set credits for a user's organization without creating a grant ledger row. Prefer grant_org_credits for normal admin-issued usage credits. Pass available_credits_cents to set the visible remaining balance, or override raw purchase/grant totals. org_id is required if the user belongs to multiple orgs.",
       inputSchema: {
         type: "object",
         properties: {
@@ -771,6 +788,52 @@ async function fetchAdminApiTool(
   return toolText(payload, !response.ok);
 }
 
+async function grantOrgCreditsTool(
+  env: Env,
+  grant: AdminMcpTokenGrantRecord,
+  args: Record<string, unknown>,
+) {
+  const orgId = requiredStringArg(args, "org_id");
+  if (typeof orgId !== "string") return toolText(orgId, true);
+
+  const amountCents = integerArg(args, "amount_cents");
+  if (amountCents === null || amountCents <= 0) {
+    return toolText({ error: "amount_cents must be a positive integer" }, true);
+  }
+
+  const reason = stringArg(args, "reason");
+  const idempotencyKey = stringArg(args, "idempotency_key");
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  const orgInfo = await orgStub.getInfo();
+  if (!orgInfo) {
+    return toolText({ error: "Organization not found" }, true);
+  }
+
+  const result = await orgStub.applyManualCreditGrant(
+    amountCents,
+    reason,
+    idempotencyKey,
+    { createdBy: grant.user_id, source: "admin-mcp" },
+  );
+  if (!result) {
+    return toolText({ error: "Credit grant amount must be positive" }, true);
+  }
+
+  return toolText({
+    success: true,
+    org_id: orgId,
+    applied: result.applied,
+    grant_id: result.grantId,
+    amount_cents: result.amountCents,
+    reason: result.reason,
+    created_at: result.createdAt,
+    created_by: result.createdBy,
+    source: result.source,
+    billing_credit_grant_total_cents:
+      result.org.billing_credit_grant_total_cents ?? 0,
+  });
+}
+
 async function callTool(
   req: Request,
   env: Env,
@@ -969,6 +1032,9 @@ async function callTool(
       });
     }
     return toolText({ error: "view must be one of spend, limits, log, or log_sum" }, true);
+  }
+  if (name === TOOL_GRANT_ORG_CREDITS) {
+    return grantOrgCreditsTool(env, grant, input);
   }
   if (name === TOOL_SET_USER_CREDITS) {
     const userId = requiredStringArg(input, "user_id");

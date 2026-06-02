@@ -147,6 +147,11 @@ export default [
   ),
   route("api/billing/start-payg", "routes/api/billing.start-payg.ts"),
   route(
+    "api/billing/chat-credit-status",
+    "routes/api/billing.chat-credit-status.ts",
+  ),
+  route("api/billing/credit-packs", "routes/api/billing.credit-packs.ts"),
+  route(
     "api/billing/legacy-migration",
     "routes/api/billing.legacy-migration.ts",
   ),

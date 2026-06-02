@@ -350,4 +350,166 @@ describe("OrgDO billing grant idempotency", () => {
     expect(duplicate?.amountCents).toBe(2500);
     expect(duplicate?.org.billing_credit_grant_total_cents).toBe(2500);
   });
+
+  it("applyManualCreditGrant stores created_by and source", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Manual Grant Metadata Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+    const result = await orgStub.applyManualCreditGrant(
+      2500,
+      "test grant",
+      "grant-metadata-1",
+      { createdBy: ownerId, source: "qaml-backdoor" },
+    );
+
+    expect(result).toMatchObject({
+      applied: true,
+      grantId: "grant-metadata-1",
+      amountCents: 2500,
+      reason: "test grant",
+      createdBy: ownerId,
+      source: "qaml-backdoor",
+    });
+    expect(result?.createdAt).toEqual(expect.any(Number));
+    expect(result?.org.billing_credit_grant_total_cents).toBe(2500);
+
+    await expect(orgStub.listManualCreditGrants()).resolves.toEqual([
+      {
+        grant_id: "grant-metadata-1",
+        amount_cents: 2500,
+        reason: "test grant",
+        created_at: result?.createdAt,
+        created_by: ownerId,
+        source: "qaml-backdoor",
+      },
+    ]);
+  });
+
+  it("applyManualCreditGrant duplicate idempotency key does not double grant or double audit", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Manual Grant Duplicate Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+    const first = await orgStub.applyManualCreditGrant(
+      1200,
+      "duplicate test",
+      "grant-duplicate-1",
+      { createdBy: ownerId, source: "qaml-backdoor" },
+    );
+    const duplicate = await orgStub.applyManualCreditGrant(
+      1200,
+      "duplicate test",
+      "grant-duplicate-1",
+      { createdBy: ownerId, source: "qaml-backdoor" },
+    );
+
+    expect(first?.applied).toBe(true);
+    expect(duplicate).toMatchObject({
+      applied: false,
+      grantId: "grant-duplicate-1",
+      amountCents: 1200,
+      reason: "duplicate test",
+      createdAt: first?.createdAt,
+      createdBy: ownerId,
+      source: "qaml-backdoor",
+    });
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_credit_grant_total_cents: 1200,
+    });
+    const grants = await orgStub.listManualCreditGrants();
+    expect(grants.filter((grant) => grant.grant_id === "grant-duplicate-1"))
+      .toHaveLength(1);
+
+    const audit = await orgStub.getAuditLog();
+    expect(
+      audit.filter((entry) => entry.action === "usage_credit_granted"),
+    ).toHaveLength(1);
+  });
+
+  it("manual grants do not mutate purchased or stripe billing fields", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Manual Grant Stripe Isolation Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const before = await orgStub.updateBillingState({
+      billing_credit_purchase_total_cents: 7300,
+      billing_credit_grant_total_cents: 400,
+      billing_customer_id: "cus_manual_grant_test",
+      billing_subscription_id: "sub_manual_grant_test",
+      billing_subscription_status: "active",
+      billing_last_included_credit_invoice_id: "in_manual_grant_test",
+      billing_trial_credit_grant_cents: 1000,
+      billing_trial_credit_granted_at: 1710000000000,
+    });
+
+    const result = await orgStub.applyManualCreditGrant(
+      900,
+      "stripe isolation",
+      "grant-stripe-isolation-1",
+      { createdBy: ownerId, source: "qaml-backdoor" },
+    );
+
+    expect(result?.org.billing_credit_grant_total_cents).toBe(1300);
+    expect(result?.org.billing_credit_usage_started_at).toEqual(
+      expect.any(Number),
+    );
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_credit_purchase_total_cents:
+        before?.billing_credit_purchase_total_cents,
+      billing_customer_id: before?.billing_customer_id,
+      billing_subscription_id: before?.billing_subscription_id,
+      billing_subscription_status: before?.billing_subscription_status,
+      billing_last_included_credit_invoice_id:
+        before?.billing_last_included_credit_invoice_id,
+      billing_trial_credit_grant_cents:
+        before?.billing_trial_credit_grant_cents,
+      billing_trial_credit_granted_at: before?.billing_trial_credit_granted_at,
+    });
+  });
+
+  it("listManualCreditGrants returns newest first and limits results", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(testEnv, "Manual Grant List Org", ownerId);
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+    await orgStub.applyManualCreditGrant(100, "first", "grant-list-1", {
+      createdBy: ownerId,
+      source: "qaml-backdoor",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await orgStub.applyManualCreditGrant(200, "second", "grant-list-2", {
+      createdBy: ownerId,
+      source: "qaml-backdoor",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await orgStub.applyManualCreditGrant(300, "third", "grant-list-3", {
+      createdBy: ownerId,
+      source: "qaml-backdoor",
+    });
+
+    await expect(orgStub.listManualCreditGrants(2)).resolves.toMatchObject([
+      { grant_id: "grant-list-3" },
+      { grant_id: "grant-list-2" },
+    ]);
+  });
 });

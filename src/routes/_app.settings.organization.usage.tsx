@@ -19,12 +19,14 @@ import {
   getOrgBillingOverview,
   isStripeBillingConfigured,
 } from "@/lib/billing.server";
-import { normalizeBillingPlan } from "@/lib/billing-plans";
 import {
   formatCreditBalance,
   formatCreditsFromUsd,
-  formatUsdFromCents,
 } from "@/lib/billing";
+import {
+  canBuyCreditsForBillingState,
+  formatTopUpCreditPacks,
+} from "@/lib/billing-credit-packs";
 import { BYOK_PROVIDERS } from "@/lib/byok-providers";
 import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
 import { Button } from "@/components/ui/button";
@@ -73,27 +75,6 @@ export function meta() {
       content: "Track camelAI credit consumption.",
     },
   ];
-}
-
-function formatPriceLabel(
-  price: {
-    unit_amount: number | null;
-    currency: string;
-    recurring?: { interval: string; interval_count?: number } | null;
-  } | null,
-): string | null {
-  if (!price?.unit_amount) return null;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: price.currency.toUpperCase(),
-  }).format(price.unit_amount / 100);
-}
-
-function formatCreditPackLabel(price: {
-  unit_amount: number | null;
-}): string | null {
-  if (!price.unit_amount) return null;
-  return `${(price.unit_amount / 100).toFixed(2)} credits`;
 }
 
 function getByokProviderLabel(provider: LlmProvider): string {
@@ -157,11 +138,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     log,
     stripeConfigured,
     isOrgAdmin,
-    creditPacks: creditPacks.map((pack) => ({
-      id: pack.id,
-      priceLabel: formatPriceLabel(pack),
-      creditsLabel: formatCreditPackLabel(pack),
-    })),
+    creditPacks: formatTopUpCreditPacks(creditPacks),
     llmProviderConfig,
   };
 }
@@ -238,14 +215,8 @@ export default function OrganizationUsagePage() {
   }
 
   const isEnterprise = overview.billing_status === "enterprise";
-  const billingPlan = normalizeBillingPlan(
-    overview.billing_plan,
-    overview.billing_status,
-  );
-  const canTopUpCredits =
-    billingPlan === "payg" ||
-    overview.billing_status === "trialing" ||
-    (overview.billing_status === "active" && billingPlan !== "free");
+  const billingPlan = overview.billing_plan;
+  const canTopUpCredits = canBuyCreditsForBillingState(overview);
 
   const totalLimitCents = overview.total_credit_limit_cents;
   const usageCents = overview.chargeable_usage_cents;
@@ -299,14 +270,14 @@ export default function OrganizationUsagePage() {
               </p>
               <p className="text-sm text-muted-foreground">
                 {billingPlan === "payg"
-                  ? "Available prepaid credits"
+                  ? "Available credits"
                   : "Available this billing period"}
               </p>
             </div>
             <Progress value={usagePercent} className="h-2" />
             <p className="text-sm text-muted-foreground">
-              {formatUsdFromCents(usageCents)} used of{" "}
-              {formatUsdFromCents(totalLimitCents)} included.
+              {(usageCents / 100).toFixed(2)} used of{" "}
+              {formatCreditBalance(totalLimitCents)}.
               {renewalLabel ? ` Resets ${renewalLabel}.` : ""}
             </p>
             <p className="text-sm text-muted-foreground">

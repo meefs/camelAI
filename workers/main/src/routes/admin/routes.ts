@@ -1113,6 +1113,7 @@ routes.post(
       body.amount_cents,
       body.reason ?? null,
       idempotencyKey,
+      { source: "admin-api" },
     );
     if (!result) {
       return c.json({ error: "Credit grant amount must be positive" }, 400);
@@ -1124,6 +1125,9 @@ routes.post(
       grant_id: result.grantId,
       amount_cents: result.amountCents,
       reason: result.reason,
+      created_at: result.createdAt,
+      created_by: result.createdBy,
+      source: result.source,
       billing_credit_grant_total_cents:
         result.org.billing_credit_grant_total_cents ?? 0,
     });

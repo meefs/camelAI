@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activeLowCreditTier,
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
   getDevChatInitialError,
+  shouldShowLowCreditAlert,
 } from '@/lib/chat-credit-status';
 import type { OrgBillingOverview } from '@/lib/billing.server';
 
@@ -35,26 +37,48 @@ function makeOverview(overrides: Partial<OrgBillingOverview>): OrgBillingOvervie
 }
 
 describe('chat credit status', () => {
-  it('shows low credit status at 80 percent usage', () => {
+  it('maps available credit balances to low-credit tiers', () => {
+    expect(activeLowCreditTier(600)).toBeNull();
+    expect(activeLowCreditTier(500)).toBeNull();
+    expect(activeLowCreditTier(499)).toBe(500);
+    expect(activeLowCreditTier(342)).toBe(500);
+    expect(activeLowCreditTier(250)).toBe(500);
+    expect(activeLowCreditTier(249)).toBe(250);
+    expect(activeLowCreditTier(90)).toBe(100);
+    expect(activeLowCreditTier(50)).toBe(100);
+    expect(activeLowCreditTier(49)).toBe(50);
+    expect(activeLowCreditTier(5)).toBe(50);
+    expect(activeLowCreditTier(0)).toBeNull();
+  });
+
+  it('shows dismissed low-credit alerts again only at lower tiers', () => {
+    expect(shouldShowLowCreditAlert(null, null)).toBe(false);
+    expect(shouldShowLowCreditAlert(500, null)).toBe(true);
+    expect(shouldShowLowCreditAlert(500, 500)).toBe(false);
+    expect(shouldShowLowCreditAlert(250, 500)).toBe(true);
+    expect(shouldShowLowCreditAlert(100, 250)).toBe(true);
+    expect(shouldShowLowCreditAlert(50, 100)).toBe(true);
+    expect(shouldShowLowCreditAlert(500, 100)).toBe(false);
+  });
+
+  it('returns credit status below a dollar threshold', () => {
     expect(
       buildBillingCreditStatus(
         makeOverview({
           chargeable_usage_cents: 820,
-          available_credits_cents: 180,
+          available_credits_cents: 450,
         }),
         false,
       ),
     ).toMatchObject({
-      availableCreditsCents: 180,
+      availableCreditsCents: 450,
       totalCreditLimitCents: 1000,
-      usedPercent: 82,
-      isLow: true,
       isExhausted: false,
       hasByokProvider: false,
     });
   });
 
-  it('hides credit status when usage is not low', () => {
+  it('returns healthy status so dismissal state can reset after recovery', () => {
     expect(
       buildBillingCreditStatus(
         makeOverview({
@@ -63,7 +87,30 @@ describe('chat credit status', () => {
         }),
         false,
       ),
-    ).toBeNull();
+    ).toMatchObject({
+      availableCreditsCents: 700,
+      totalCreditLimitCents: 1000,
+      isExhausted: false,
+      hasByokProvider: false,
+    });
+  });
+
+  it('returns exhausted status for never-funded hosted orgs', () => {
+    expect(
+      buildBillingCreditStatus(
+        makeOverview({
+          chargeable_usage_cents: 0,
+          available_credits_cents: 0,
+          total_credit_limit_cents: 0,
+        }),
+        false,
+      ),
+    ).toMatchObject({
+      availableCreditsCents: 0,
+      totalCreditLimitCents: 0,
+      isExhausted: true,
+      hasByokProvider: false,
+    });
   });
 
   it('hides hosted credit status for threads covered by BYOK', () => {
@@ -108,14 +155,15 @@ describe('chat credit status', () => {
     expect(
       buildBillingCreditStatus(
         makeOverview({
-          chargeable_usage_cents: 820,
-          available_credits_cents: 180,
+          chargeable_usage_cents: 560,
+          available_credits_cents: 440,
         }),
         'anthropic',
         'gpt-5.4',
       ),
     ).toMatchObject({
-      isLow: true,
+      availableCreditsCents: 440,
+      isExhausted: false,
       hasByokProvider: true,
     });
   });
@@ -125,12 +173,32 @@ describe('chat credit status', () => {
 
     expect(applyDevBillingCreditStatusOverride(null, params)).toMatchObject({
       availableCreditsCents: 0,
-      usedPercent: 100,
       isExhausted: true,
       hasByokProvider: true,
     });
     expect(getDevChatInitialError(params)).toBe(
       'Message not sent — top up credits or add an API key to continue.',
     );
+  });
+
+  it('forces dev dollar-tier credit states from query params', () => {
+    expect(
+      applyDevBillingCreditStatusOverride(null, new URLSearchParams('devCreditState=healthy')),
+    ).toMatchObject({
+      availableCreditsCents: 650,
+      isExhausted: false,
+    });
+    expect(
+      applyDevBillingCreditStatusOverride(null, new URLSearchParams('devCreditState=low-250')),
+    ).toMatchObject({
+      availableCreditsCents: 220,
+      isExhausted: false,
+    });
+    expect(
+      applyDevBillingCreditStatusOverride(null, new URLSearchParams('devCreditState=low-50')),
+    ).toMatchObject({
+      availableCreditsCents: 45,
+      isExhausted: false,
+    });
   });
 });

@@ -592,12 +592,27 @@ export interface ApplyCreditCheckoutResult {
   applied: boolean;
 }
 
+export interface ManualCreditGrantRecord {
+  grant_id: string;
+  amount_cents: number;
+  reason: string | null;
+  created_at: number;
+  created_by: string | null;
+  source: string | null;
+}
+
+type ManualCreditGrantRow = ManualCreditGrantRecord &
+  Record<string, SqlStorageValue>;
+
 export interface ApplyManualCreditGrantResult {
   org: Organization;
   applied: boolean;
   grantId: string;
   amountCents: number;
   reason: string | null;
+  createdAt: number;
+  createdBy: string | null;
+  source: string | null;
 }
 
 /**
@@ -3319,44 +3334,63 @@ export class OrgDO extends DurableObject<DOEnv> {
     amountCents: number,
     reason?: string | null,
     idempotencyKey?: string | null,
+    options: {
+      createdBy?: string | null;
+      source?: string | null;
+    } = {},
   ): ApplyManualCreditGrantResult | null {
-    const normalizedAmountCents = Math.max(0, Math.floor(amountCents));
+    const normalizedAmountCents = Math.floor(amountCents);
+    if (!Number.isFinite(normalizedAmountCents)) return null;
     if (normalizedAmountCents <= 0) return null;
 
     const trimmedReason = reason?.trim() ? reason.trim().slice(0, 500) : null;
     const trimmedIdempotencyKey = idempotencyKey?.trim()
       ? idempotencyKey.trim().slice(0, 200)
       : null;
-    const grantId = trimmedIdempotencyKey ?? `manual:${Date.now()}:${crypto.randomUUID()}`;
+    const grantId =
+      trimmedIdempotencyKey ?? `manual:${Date.now()}:${crypto.randomUUID()}`;
+    const normalizedCreatedBy = options.createdBy?.trim()
+      ? options.createdBy.trim().slice(0, 200)
+      : null;
+    const normalizedSource = options.source?.trim()
+      ? options.source.trim().slice(0, 100)
+      : null;
 
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS admin_credit_grants (
-        grant_id TEXT PRIMARY KEY,
-        amount_cents INTEGER NOT NULL,
-        reason TEXT,
-        created_at INTEGER NOT NULL
-      )
-    `);
+    this.ensureAdminCreditGrantsTable();
 
     const result = this.ctx.storage.transactionSync(() => {
       const existingGrant = this.sql
-        .exec(
-          "SELECT grant_id, amount_cents, reason FROM admin_credit_grants WHERE grant_id = ?",
+        .exec<ManualCreditGrantRow>(
+          `
+          SELECT grant_id, amount_cents, reason, created_at, created_by, source
+          FROM admin_credit_grants
+          WHERE grant_id = ?
+          `,
           grantId,
         )
         .toArray();
       if (existingGrant.length > 0) {
+        const existing = existingGrant[0];
         const existingOrg = this.getInfoSync();
         return existingOrg
           ? {
               org: existingOrg,
               applied: false,
               grantId,
-              amountCents: Number(existingGrant[0].amount_cents ?? normalizedAmountCents),
+              amountCents: Number(
+                existing.amount_cents ?? normalizedAmountCents,
+              ),
               reason:
-                typeof existingGrant[0].reason === "string"
-                  ? existingGrant[0].reason
+                typeof existing.reason === "string"
+                  ? existing.reason
                   : null,
+              createdAt: Number(existing.created_at),
+              createdBy:
+                typeof existing.created_by === "string"
+                  ? existing.created_by
+                  : null,
+              source:
+                typeof existing.source === "string" ? existing.source : null,
             }
           : null;
       }
@@ -3364,27 +3398,45 @@ export class OrgDO extends DurableObject<DOEnv> {
       const existingOrg = this.getInfoSync();
       if (!existingOrg) return null;
 
+      const createdAt = Date.now();
       const nextInfo: Organization = {
         ...existingOrg,
         billing_credit_grant_total_cents:
           (existingOrg.billing_credit_grant_total_cents ?? 0) +
           normalizedAmountCents,
         billing_credit_usage_started_at:
-          existingOrg.billing_credit_usage_started_at ?? Date.now(),
+          existingOrg.billing_credit_usage_started_at ?? createdAt,
       };
 
       normalizeOrgBillingFields(nextInfo);
       this.sql.exec(
-        "INSERT INTO admin_credit_grants (grant_id, amount_cents, reason, created_at) VALUES (?, ?, ?, ?)",
+        `
+        INSERT INTO admin_credit_grants
+          (grant_id, amount_cents, reason, created_at, created_by, source)
+        VALUES (?, ?, ?, ?, ?, ?)
+        `,
         grantId,
         normalizedAmountCents,
         trimmedReason,
-        Date.now(),
+        createdAt,
+        normalizedCreatedBy,
+        normalizedSource,
       );
       this.sql.exec(
         "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
         "data",
         JSON.stringify(nextInfo),
+      );
+      this.log(
+        "usage_credit_granted",
+        normalizedCreatedBy ?? normalizedSource ?? "system-admin",
+        existingOrg.id,
+        {
+          grant_id: grantId,
+          amount_cents: normalizedAmountCents,
+          reason: trimmedReason,
+          source: normalizedSource,
+        },
       );
 
       return {
@@ -3393,6 +3445,9 @@ export class OrgDO extends DurableObject<DOEnv> {
         grantId,
         amountCents: normalizedAmountCents,
         reason: trimmedReason,
+        createdAt,
+        createdBy: normalizedCreatedBy,
+        source: normalizedSource,
       };
     });
 
@@ -3403,6 +3458,57 @@ export class OrgDO extends DurableObject<DOEnv> {
       });
     }
     return result;
+  }
+
+  private ensureAdminCreditGrantsTable(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS admin_credit_grants (
+        grant_id TEXT PRIMARY KEY,
+        amount_cents INTEGER NOT NULL,
+        reason TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+
+    const columns = new Set(
+      this.sql
+        .exec<{ name: string }>("PRAGMA table_info(admin_credit_grants)")
+        .toArray()
+        .map((column) => String(column.name)),
+    );
+
+    if (!columns.has("created_by")) {
+      this.sql.exec(
+        "ALTER TABLE admin_credit_grants ADD COLUMN created_by TEXT",
+      );
+    }
+    if (!columns.has("source")) {
+      this.sql.exec("ALTER TABLE admin_credit_grants ADD COLUMN source TEXT");
+    }
+  }
+
+  listManualCreditGrants(limit = 25): ManualCreditGrantRecord[] {
+    this.ensureAdminCreditGrantsTable();
+    const resolvedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return this.sql
+      .exec<ManualCreditGrantRow>(
+        `
+        SELECT grant_id, amount_cents, reason, created_at, created_by, source
+        FROM admin_credit_grants
+        ORDER BY created_at DESC
+        LIMIT ?
+        `,
+        resolvedLimit,
+      )
+      .toArray()
+      .map((row) => ({
+        grant_id: String(row.grant_id),
+        amount_cents: Number(row.amount_cents),
+        reason: typeof row.reason === "string" ? row.reason : null,
+        created_at: Number(row.created_at),
+        created_by: typeof row.created_by === "string" ? row.created_by : null,
+        source: typeof row.source === "string" ? row.source : null,
+      }));
   }
 
   // Member methods

@@ -5,13 +5,39 @@ import type { LlmModel } from '@/types';
 export interface BillingCreditStatus {
   availableCreditsCents: number;
   totalCreditLimitCents: number;
-  usedPercent: number;
-  isLow: boolean;
   isExhausted: boolean;
   hasByokProvider: boolean;
 }
 
-export type DevChatCreditState = 'low' | 'low-byok' | 'exhausted' | 'exhausted-byok';
+export const LOW_CREDIT_THRESHOLDS_CENTS = [500, 250, 100, 50] as const;
+
+export type DevChatCreditState =
+  | 'healthy'
+  | 'low-500'
+  | 'low-250'
+  | 'low-100'
+  | 'low-50'
+  | 'exhausted'
+  | 'exhausted-byok';
+
+export function activeLowCreditTier(availableCents: number): number | null {
+  if (availableCents <= 0) return null;
+  let tier: number | null = null;
+  for (const threshold of LOW_CREDIT_THRESHOLDS_CENTS) {
+    if (availableCents < threshold && (tier === null || threshold < tier)) {
+      tier = threshold;
+    }
+  }
+  return tier;
+}
+
+export function shouldShowLowCreditAlert(
+  activeTier: number | null,
+  dismissedTier: number | null,
+): boolean {
+  if (activeTier === null) return false;
+  return dismissedTier === null || activeTier < dismissedTier;
+}
 
 export function buildBillingCreditStatus(
   overview: OrgBillingOverview | null,
@@ -19,19 +45,6 @@ export function buildBillingCreditStatus(
   threadModel?: LlmModel | null,
 ): BillingCreditStatus | null {
   if (!overview || overview.billing_status === 'enterprise') {
-    return null;
-  }
-  if (overview.total_credit_limit_cents <= 0) {
-    return null;
-  }
-
-  const usedPercent = Math.min(
-    100,
-    Math.max(0, Math.round((overview.chargeable_usage_cents / overview.total_credit_limit_cents) * 100)),
-  );
-  const isExhausted = overview.available_credits_cents <= 0;
-  const isLow = !isExhausted && usedPercent >= 80;
-  if (!isLow && !isExhausted) {
     return null;
   }
   const hasByokProvider = Boolean(byokProvider);
@@ -45,9 +58,7 @@ export function buildBillingCreditStatus(
   return {
     availableCreditsCents: overview.available_credits_cents,
     totalCreditLimitCents: overview.total_credit_limit_cents,
-    usedPercent,
-    isLow,
-    isExhausted,
+    isExhausted: overview.available_credits_cents <= 0,
     hasByokProvider,
   };
 }
@@ -55,22 +66,36 @@ export function buildBillingCreditStatus(
 export function parseDevChatCreditState(searchParams: URLSearchParams): DevChatCreditState | null {
   if (!import.meta.env.DEV) return null;
   const value = searchParams.get('devCreditState');
-  return value === 'low' || value === 'low-byok' || value === 'exhausted' || value === 'exhausted-byok' ? value : null;
+  return value === 'healthy' ||
+    value === 'low-500' ||
+    value === 'low-250' ||
+    value === 'low-100' ||
+    value === 'low-50' ||
+    value === 'exhausted' ||
+    value === 'exhausted-byok'
+    ? value
+    : null;
 }
 
 export function getDevBillingCreditStatus(searchParams: URLSearchParams): BillingCreditStatus | null {
   const state = parseDevChatCreditState(searchParams);
   if (!state) return null;
 
+  const availableCreditsByState: Record<DevChatCreditState, number> = {
+    healthy: 650,
+    'low-500': 450,
+    'low-250': 220,
+    'low-100': 80,
+    'low-50': 45,
+    exhausted: 0,
+    'exhausted-byok': 0,
+  };
   const exhausted = state === 'exhausted' || state === 'exhausted-byok';
-  const byok = state === 'low-byok' || state === 'exhausted-byok';
   return {
-    availableCreditsCents: exhausted ? 0 : 175,
+    availableCreditsCents: availableCreditsByState[state],
     totalCreditLimitCents: 1000,
-    usedPercent: exhausted ? 100 : 83,
-    isLow: !exhausted,
     isExhausted: exhausted,
-    hasByokProvider: byok,
+    hasByokProvider: state === 'exhausted-byok',
   };
 }
 

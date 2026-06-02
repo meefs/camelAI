@@ -68,6 +68,10 @@ import {
 } from "@/components/message-bubble";
 import { WelcomeScreen } from "@/components/welcome-screen";
 import { BillingCreditNotice } from "@/components/chat-billing-credit-notice";
+import {
+  TopUpDialog,
+  type TopUpDialogPack,
+} from "@/components/billing/top-up-dialog";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatMessagesView } from "@/components/chat-messages-view";
 import { ShareStatusButton } from "@/components/chat-share-status-button";
@@ -131,6 +135,7 @@ import {
   type ChatApiErrorContext,
   type ChatApiErrorPresentation,
   getChatApiErrorPresentation,
+  isChatBillingOrCreditError,
 } from "@/lib/chat-api-errors";
 import { parseByokProvider } from "@/lib/byok-providers";
 import {
@@ -247,6 +252,22 @@ type CompletedTurnMetadata = {
   durationMs: number;
   completedAtMs: number;
 };
+
+interface CreditPacksResourceData {
+  packs: TopUpDialogPack[];
+  canTopUp: boolean;
+  unavailableReason?: string | null;
+}
+
+type BillingCreditStatusResourceData =
+  | {
+      ok: true;
+      billingCreditStatus: BillingCreditStatus | null;
+    }
+  | {
+      ok: false;
+      error?: string;
+    };
 
 function isPromiseLike<T>(value: T | Promise<T> | undefined): value is Promise<T> {
   return typeof (value as Promise<T> | undefined)?.then === "function";
@@ -535,6 +556,8 @@ export default function Chat({
     };
     error?: string;
   }>();
+  const creditPacksFetcher = useFetcher<CreditPacksResourceData>();
+  const billingStatusFetcher = useFetcher<BillingCreditStatusResourceData>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
   const resolvedWorkspaceId = readOnly
@@ -634,6 +657,9 @@ export default function Chat({
     string | null
   >(null);
   const [loading, setLoading] = useState(false);
+  const [topUpOpen, setTopUpOpen] = useState(false);
+  const [currentBillingCreditStatus, setCurrentBillingCreditStatus] =
+    useState<BillingCreditStatus | null>(() => billingCreditStatus ?? null);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
 
@@ -649,6 +675,34 @@ export default function Chat({
   const [bootModalOpen, setBootModalOpen] = useState(() =>
     shouldShowBootModalFromStorage(isNewThread),
   );
+  const currentChatPath = useMemo(
+    () => `${location.pathname}${location.search}${location.hash}`,
+    [location.hash, location.pathname, location.search],
+  );
+  const lastHandledCheckoutKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const checkoutStatus = searchParams.get("checkout");
+    if (!checkoutStatus) return;
+    const checkoutKey = `${location.pathname}${location.search}${location.hash}`;
+    if (lastHandledCheckoutKeyRef.current === checkoutKey) return;
+    lastHandledCheckoutKeyRef.current = checkoutKey;
+
+    if (checkoutStatus === "success") {
+      toast.success("Credits added");
+    } else if (checkoutStatus === "cancelled") {
+      toast.message("Credit checkout cancelled");
+    }
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("checkout");
+    const nextSearch = nextParams.toString();
+    navigate(
+      `${location.pathname}${nextSearch ? `?${nextSearch}` : ""}${location.hash}`,
+      { replace: true },
+    );
+  }, [location.hash, location.pathname, location.search, navigate]);
 
   useEffect(() => {
     if (!bootModalOpen) return;
@@ -1004,10 +1058,61 @@ export default function Chat({
       hasEffectivePickerDefault,
     }),
   );
+  const selectedThreadModelRef = useRef<LlmModel>(selectedThreadModel);
+  const locationSearchRef = useRef(location.search);
+  const lastBillingRefreshCompletionKeyRef = useRef<string | null>(null);
   const noModelsMessage =
     availableThreadModels.length === 0
       ? "No models are available. Ask an admin to add a model in Settings > Models."
       : null;
+
+  useEffect(() => {
+    setCurrentBillingCreditStatus(billingCreditStatus ?? null);
+    lastBillingRefreshCompletionKeyRef.current = null;
+  }, [billingCreditStatus]);
+
+  useEffect(() => {
+    selectedThreadModelRef.current = selectedThreadModel;
+  }, [selectedThreadModel]);
+
+  useEffect(() => {
+    locationSearchRef.current = location.search;
+  }, [location.search]);
+
+  useEffect(() => {
+    if (!billingStatusFetcher.data) return;
+    if (!billingStatusFetcher.data.ok) return;
+    setCurrentBillingCreditStatus(billingStatusFetcher.data.billingCreditStatus);
+  }, [billingStatusFetcher.data]);
+
+  const refreshBillingCreditStatusAfterTurn = useCallback(
+    (completionKey: string | null | undefined) => {
+      const normalizedCompletionKey = completionKey?.trim();
+      if (!normalizedCompletionKey) return;
+      if (
+        lastBillingRefreshCompletionKeyRef.current === normalizedCompletionKey
+      ) {
+        return;
+      }
+      lastBillingRefreshCompletionKeyRef.current = normalizedCompletionKey;
+
+      const params = new URLSearchParams();
+      params.set("model", selectedThreadModelRef.current);
+      const currentSearchParams = new URLSearchParams(
+        locationSearchRef.current,
+      );
+      for (const key of ["devCreditState", "devChatError"]) {
+        const value = currentSearchParams.get(key);
+        if (value) params.set(key, value);
+      }
+      if (typeof billingStatusFetcher.load !== "function") return;
+      billingStatusFetcher.load(
+        `/api/billing/chat-credit-status?${params.toString()}`,
+      );
+    },
+    [billingStatusFetcher],
+  );
+
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -2577,6 +2682,9 @@ export default function Chat({
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
+            refreshBillingCreditStatusAfterTurn(
+              completedTurnId ?? nextStreamingId ?? id,
+            );
           }
         } else if (data.type === "sdk_event") {
           // Handle SDK events for streaming
@@ -3027,6 +3135,7 @@ export default function Chat({
               completeActiveManualCompaction();
             }
             hasCapturedCompactionSummaryRef.current = false;
+            refreshBillingCreditStatusAfterTurn(msgId ?? id);
           }
         } else if (data.type === "todo_state") {
           // Direct todo state from server - no extraction needed
@@ -3096,6 +3205,7 @@ export default function Chat({
             setPendingMessages([]);
             dispatchLocalThreadStatus(id, "idle");
             clearPendingDeliveryDraft();
+            refreshBillingCreditStatusAfterTurn(id);
           }
         } else if (data.type === "error") {
           flushDeferredMessagesRender();
@@ -3121,6 +3231,9 @@ export default function Chat({
           if (eventProvider) {
             errorContext.llmProvider = eventProvider;
           }
+          const shouldRefreshBillingAfterError =
+            billingSource === "hosted" ||
+            isChatBillingOrCreditError(errorPayload);
           showChatError(errorPayload, errorContext);
           // Finish streaming on error
           splitStreamingMessageOnNextPartRef.current = false;
@@ -3137,6 +3250,11 @@ export default function Chat({
           setLoading(false);
           setPendingMessages([]);
           dispatchLocalThreadStatus(id, "idle");
+          if (id && shouldRefreshBillingAfterError) {
+            refreshBillingCreditStatusAfterTurn(
+              msgId ?? `${id}:billing-error:${Date.now()}`,
+            );
+          }
           restorePendingDeliveryDraft();
           isAutoCompactingRef.current = false;
           compactingPriorMessageIdRef.current = null;
@@ -3226,6 +3344,7 @@ export default function Chat({
       logRunnerClient,
       markPendingDeliveryDraftAccepted,
       persistSessionState,
+      refreshBillingCreditStatusAfterTurn,
       resolvedWorkspaceId,
       restorePendingDeliveryDraft,
       flushDeferredMessagesRender,
@@ -4580,6 +4699,16 @@ type SendOptions = {
   );
   const isAdmin =
     currentMembership?.role === "owner" || currentMembership?.role === "admin";
+  function handleBillingTopUp() {
+    setTopUpOpen(true);
+    if (
+      !creditPacksFetcher.data &&
+      creditPacksFetcher.state === "idle" &&
+      typeof creditPacksFetcher.load === "function"
+    ) {
+      creditPacksFetcher.load("/api/billing/credit-packs");
+    }
+  }
   const previewShareButton = useMemo(() => {
     if (readOnly) return undefined;
     if (previewTarget?.kind !== "app") return undefined;
@@ -4622,14 +4751,6 @@ type SendOptions = {
 
   const chatPanelContent = (
     <>
-      {!readOnly && billingCreditStatus ? (
-        <BillingCreditNotice
-          status={billingCreditStatus}
-          onOpenUsage={() => navigate("/settings/organization/usage")}
-          onTopUp={() => navigate("/settings/organization/usage?action=topup")}
-          canTopUp={Boolean(isAdmin)}
-        />
-      ) : null}
       {readOnly && (
         <div className="mx-auto w-full max-w-3xl px-4 md:px-6 pt-3">
           <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
@@ -4740,6 +4861,17 @@ type SendOptions = {
                     {noModelsMessage}
                   </p>
                 )}
+                {currentBillingCreditStatus ? (
+                  <BillingCreditNotice
+                    status={currentBillingCreditStatus}
+                    onOpenUsage={() => navigate("/settings/organization/usage")}
+                    onTopUp={handleBillingTopUp}
+                    canTopUp={Boolean(isAdmin)}
+                    userId={user?.id ?? null}
+                    orgId={currentOrg?.id ?? null}
+                    className="mb-2 shrink-0"
+                  />
+                ) : null}
                 <PromptInput
                   className="shrink-0"
                   value={input}
@@ -4769,6 +4901,22 @@ type SendOptions = {
                   textareaRef={composerTextareaRef}
                   mentionableConnections={mentionConnections}
                   onMentionAddNewClick={() => navigate("/connections")}
+                />
+                <TopUpDialog
+                  open={topUpOpen}
+                  onOpenChange={setTopUpOpen}
+                  packs={creditPacksFetcher.data?.packs ?? []}
+                  action="/api/billing/credit-packs"
+                  returnTo={currentChatPath}
+                  loading={
+                    topUpOpen && !creditPacksFetcher.data
+                      ? true
+                      : creditPacksFetcher.state !== "idle"
+                  }
+                  canTopUp={creditPacksFetcher.data?.canTopUp ?? Boolean(isAdmin)}
+                  unavailableReason={
+                    creditPacksFetcher.data?.unavailableReason ?? null
+                  }
                 />
               </div>
             </div>

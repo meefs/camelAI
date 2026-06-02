@@ -1,5 +1,5 @@
 import { Form, Link, useFetcher, useLoaderData, redirect } from "react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Route } from "./+types/_admin.orgs.$id";
 import { requireSuperuser, getAuthEnv } from "@/lib/auth.server";
@@ -34,6 +34,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
   Table,
   TableBody,
   TableCell,
@@ -41,13 +50,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+import { parseCreditGrantAmountCents } from "@/lib/admin-credit-grants";
 import { getContrastTextColor } from "@/lib/avatar";
-import { billingStatusBadgeVariant, billingStatusLabel } from "@/lib/billing";
+import {
+  billingStatusBadgeVariant,
+  billingStatusLabel,
+  formatUsdFromCents,
+} from "@/lib/billing";
 import { getByokProviderLabel } from "@/lib/byok-providers";
 import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
 import { cn } from "@/lib/utils";
 import type { BillingStatus, LlmProviderConfigPublic } from "@/types";
-import { RefreshCw } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 
 const ADMIN_BILLING_STATUSES: BillingStatus[] = [
   "inactive",
@@ -70,6 +85,64 @@ type AdminOrgActionResult = {
   success?: boolean;
   error?: string;
   customDomainRefresh?: AdminCustomDomainRefreshResult;
+  creditGrant?: {
+    grantId: string;
+    amountCents: number;
+    reason: string | null;
+    createdAt: number;
+    createdBy: string | null;
+    source: string | null;
+    applied: boolean;
+  };
+};
+
+type UsageSpend = {
+  org_id: string;
+  total_cost_usd: number;
+  total_requests: number;
+  windows: Array<{
+    label: string;
+    window_ms: number;
+    limit_usd: number;
+    spent_usd: number;
+    exceeded: boolean;
+  }>;
+} | null;
+
+type UsageLog = {
+  entries: Array<{
+    id: number;
+    model: string;
+    provider: string;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+    duration_ms: number;
+    created_at_ms: number;
+  }>;
+} | null;
+
+type CreditSummary = {
+  purchaseTotalCents: number;
+  grantTotalCents: number;
+  totalCreditLimitCents: number;
+  chargeableUsageCents: number | null;
+  availableCreditsCents: number | null;
+};
+
+type CreditGrantRecord = {
+  grant_id: string;
+  amount_cents: number;
+  reason: string | null;
+  created_at: number;
+  created_by: string | null;
+  source: string | null;
+};
+
+type CreditGrantUser = {
+  id: string;
+  email: string;
+  name: string | null;
 };
 
 function formatTimestamp(value: number) {
@@ -113,6 +186,19 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     orgStub.getUsageSpend().catch(() => null),
     orgStub.getUsageLog({ limit: 10 }).catch(() => null),
   ]);
+  const usageLogSumPromise = orgStub
+    .getUsageLogSum(0, Date.now(), true)
+    .catch(() => null);
+  const creditGrantsResultPromise = orgStub
+    .listManualCreditGrants(10)
+    .then((grants) => ({ grants, error: null as string | null }))
+    .catch((error) => ({
+      grants: [] as CreditGrantRecord[],
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load credit grants",
+    }));
 
   const [
     members,
@@ -123,6 +209,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     llmProvider,
     customDomainApps,
     [usageSpend, usageLog],
+    usageLogSum,
+    creditGrantsResult,
     orgBan,
   ] = await Promise.all([
     getOrgMembers(authEnv, id),
@@ -153,6 +241,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       }),
     orgStub.listWorkerScripts(),
     usagePromise as Promise<[any, any]>,
+    usageLogSumPromise,
+    creditGrantsResultPromise,
     getOrgBanById(getEnv(context).APP_KV, id),
   ]);
 
@@ -199,6 +289,42 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     role: member.role,
   }));
 
+  const purchaseTotalCents = org.billing_credit_purchase_total_cents ?? 0;
+  const grantTotalCents = org.billing_credit_grant_total_cents ?? 0;
+  const totalCreditLimitCents = purchaseTotalCents + grantTotalCents;
+  const chargeableUsageCents = usageLogSum
+    ? Math.round(Number(usageLogSum.total_cost_usd ?? 0) * 100)
+    : null;
+  const availableCreditsCents =
+    chargeableUsageCents === null
+      ? null
+      : Math.max(0, totalCreditLimitCents - chargeableUsageCents);
+  const creditSummary: CreditSummary = {
+    purchaseTotalCents,
+    grantTotalCents,
+    totalCreditLimitCents,
+    chargeableUsageCents,
+    availableCreditsCents,
+  };
+
+  const creditGrantUserIds = [
+    ...new Set(
+      creditGrantsResult.grants
+        .map((grant) => grant.created_by)
+        .filter((userId): userId is string => Boolean(userId)),
+    ),
+  ];
+  const creditGrantUsers = await Promise.all(
+    creditGrantUserIds.map(async (userId) => {
+      const user = await authEnv.USER.get(authEnv.USER.idFromName(userId))
+        .getProfile()
+        .catch(() => null);
+      return user
+        ? { id: user.id, email: user.email, name: user.name }
+        : null;
+    }),
+  );
+
   return {
     org: safeOrg,
     members,
@@ -214,30 +340,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     customDomainApps,
     memberOptions,
     orgBan,
-    usageSpend: usageSpend as {
-      org_id: string;
-      total_cost_usd: number;
-      total_requests: number;
-      windows: Array<{
-        label: string;
-        window_ms: number;
-        limit_usd: number;
-        spent_usd: number;
-        exceeded: boolean;
-      }>;
-    } | null,
-    usageLog: usageLog as {
-      entries: Array<{
-        id: number;
-        model: string;
-        provider: string;
-        input_tokens: number;
-        output_tokens: number;
-        cost_usd: number;
-        duration_ms: number;
-        created_at_ms: number;
-      }>;
-    } | null,
+    usageSpend: usageSpend as UsageSpend,
+    usageLog: usageLog as UsageLog,
+    creditSummary,
+    creditGrants: creditGrantsResult.grants as CreditGrantRecord[],
+    creditGrantsUnavailable: Boolean(creditGrantsResult.error),
+    creditGrantsError: creditGrantsResult.error,
+    creditGrantUsers: creditGrantUsers.filter(
+      (user): user is CreditGrantUser => Boolean(user),
+    ),
   };
 }
 
@@ -321,12 +432,61 @@ function AdminAiProviderCard({
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
-  await requireSuperuser(request, context);
+  const authContext = await requireSuperuser(request, context);
 
   const formData = await request.formData();
   const intent = formData.get("intent");
   const { id: orgId } = params;
   const authEnv = getAuthEnv(getEnv(context));
+
+  if (intent === "grantCredits") {
+    const amountResult = parseCreditGrantAmountCents(formData.get("amount"));
+    if (amountResult.error || amountResult.amountCents === undefined) {
+      return { error: amountResult.error ?? "Invalid credit amount" };
+    }
+
+    const rawIdempotencyKey = formData.get("idempotencyKey");
+    const idempotencyKey =
+      typeof rawIdempotencyKey === "string"
+        ? rawIdempotencyKey.trim()
+        : "";
+    if (!idempotencyKey) {
+      return { error: "Idempotency key is required" };
+    }
+    if (idempotencyKey.length > 200) {
+      return { error: "Idempotency key is too long" };
+    }
+
+    const reasonValue = formData.get("reason");
+    const reason =
+      typeof reasonValue === "string" && reasonValue.trim()
+        ? reasonValue.trim().slice(0, 500)
+        : null;
+
+    const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+    const result = await orgStub.applyManualCreditGrant(
+      amountResult.amountCents,
+      reason,
+      idempotencyKey,
+      { createdBy: authContext.user.id, source: "qaml-backdoor" },
+    );
+    if (!result) {
+      return { error: "Failed to grant usage credits" };
+    }
+
+    return {
+      success: true,
+      creditGrant: {
+        applied: result.applied,
+        grantId: result.grantId,
+        amountCents: result.amountCents,
+        reason: result.reason,
+        createdAt: result.createdAt,
+        createdBy: result.createdBy,
+        source: result.source,
+      },
+    };
+  }
 
   if (intent === "addMember") {
     const userId = formData.get("userId") as string;
@@ -618,6 +778,315 @@ function AdminCustomDomainCard({
   );
 }
 
+function createCreditGrantIdempotencyKey() {
+  return globalThis.crypto?.randomUUID?.() ?? `grant:${Date.now()}`;
+}
+
+function shortId(id: string) {
+  return `${id.slice(0, 8)}...`;
+}
+
+function formatNullableCents(value: number | null) {
+  return value === null ? "Unavailable" : formatUsdFromCents(value);
+}
+
+export function AdminAiUsageSpendCard({
+  orgId,
+  usageSpend,
+  usageLog,
+  creditSummary,
+  creditGrants,
+  creditGrantsUnavailable,
+  creditGrantsError,
+  creditGrantUsers,
+}: {
+  orgId: string;
+  usageSpend: UsageSpend;
+  usageLog: UsageLog;
+  creditSummary: CreditSummary;
+  creditGrants: CreditGrantRecord[];
+  creditGrantsUnavailable: boolean;
+  creditGrantsError: string | null;
+  creditGrantUsers: CreditGrantUser[];
+}) {
+  const fetcher = useFetcher<AdminOrgActionResult>();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
+  const submitting = fetcher.state !== "idle";
+  const userById = new Map(creditGrantUsers.map((user) => [user.id, user]));
+
+  const handleDialogOpenChange = (open: boolean) => {
+    setDialogOpen(open);
+    setIdempotencyKey(open ? createCreditGrantIdempotencyKey() : null);
+  };
+
+  useEffect(() => {
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+    if (fetcher.data.error) {
+      toast.error(fetcher.data.error);
+      return;
+    }
+    if (fetcher.data.creditGrant) {
+      toast.success("Credits granted");
+      setDialogOpen(false);
+      setIdempotencyKey(null);
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  const summaryItems = [
+    {
+      label: "Available",
+      value: formatNullableCents(creditSummary.availableCreditsCents),
+    },
+    {
+      label: "Total credits",
+      value: formatUsdFromCents(creditSummary.totalCreditLimitCents),
+    },
+    {
+      label: "Granted credits",
+      value: formatUsdFromCents(creditSummary.grantTotalCents),
+    },
+    {
+      label: "Purchased credits",
+      value: formatUsdFromCents(creditSummary.purchaseTotalCents),
+    },
+    {
+      label: "Chargeable usage",
+      value: formatNullableCents(creditSummary.chargeableUsageCents),
+    },
+  ];
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle>AI Usage &amp; Spend</CardTitle>
+          <CardDescription>
+            {usageSpend
+              ? `$${usageSpend.total_cost_usd.toFixed(2)} lifetime spend across ${usageSpend.total_requests} requests`
+              : "Usage tracking unavailable"}
+          </CardDescription>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => handleDialogOpenChange(true)}
+        >
+          <Plus className="size-3.5" />
+          Grant credits
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-6">
+          <dl className="grid gap-3 sm:grid-cols-5">
+            {summaryItems.map((item) => (
+              <div
+                key={item.label}
+                className="rounded-md border bg-muted/20 px-3 py-2"
+              >
+                <dt className="text-xs font-medium text-muted-foreground">
+                  {item.label}
+                </dt>
+                <dd className="mt-1 font-mono text-sm">{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+
+          {usageSpend ? (
+            usageLog && usageLog.entries.length > 0 ? (
+              <div>
+                <p className="mb-2 text-sm font-medium text-muted-foreground">
+                  Recent requests
+                </p>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Model</TableHead>
+                      <TableHead>Tokens</TableHead>
+                      <TableHead>Cost</TableHead>
+                      <TableHead>Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {usageLog.entries.map((entry) => (
+                      <TableRow key={entry.id}>
+                        <TableCell className="font-mono text-xs">
+                          {entry.model
+                            .replace("claude-", "")
+                            .replace(/-\d{8}$/, "")}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {entry.input_tokens.toLocaleString()} in /{" "}
+                          {entry.output_tokens.toLocaleString()} out
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          ${entry.cost_usd.toFixed(4)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {formatTimestamp(entry.created_at_ms)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : null
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Sandbox host is not reachable or usage tracking is not enabled.
+            </p>
+          )}
+
+          <div className="mt-6">
+            <p className="mb-2 text-sm font-medium text-muted-foreground">
+              Recent credit grants
+            </p>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Granted</TableHead>
+                  <TableHead>Reason</TableHead>
+                  <TableHead>Created by</TableHead>
+                  <TableHead>Time</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {creditGrantsUnavailable ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={4}
+                      className="text-sm text-muted-foreground"
+                    >
+                      Credit grant history unavailable
+                      {creditGrantsError ? (
+                        <span className="mt-1 block text-xs">
+                          {creditGrantsError}
+                        </span>
+                      ) : null}
+                    </TableCell>
+                  </TableRow>
+                ) : creditGrants.length === 0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={4}
+                      className="text-sm text-muted-foreground"
+                    >
+                      No credit grants recorded
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  creditGrants.map((grant) => {
+                    const createdByUser = grant.created_by
+                      ? userById.get(grant.created_by)
+                      : null;
+                    return (
+                      <TableRow key={grant.grant_id}>
+                        <TableCell className="font-mono text-xs">
+                          {formatUsdFromCents(grant.amount_cents)}
+                        </TableCell>
+                        <TableCell className="max-w-xs text-xs">
+                          {grant.reason ?? "-"}
+                        </TableCell>
+                        <TableCell>
+                          {grant.created_by ? (
+                            createdByUser ? (
+                              <Link
+                                to={`/qaml-backdoor/users/${grant.created_by}`}
+                                className="text-xs hover:underline"
+                              >
+                                <span className="font-medium">
+                                  {createdByUser.name || createdByUser.email}
+                                </span>
+                                {createdByUser.name ? (
+                                  <span className="block text-muted-foreground">
+                                    {createdByUser.email}
+                                  </span>
+                                ) : null}
+                                <span className="block font-mono text-muted-foreground">
+                                  {shortId(grant.created_by)}
+                                </span>
+                              </Link>
+                            ) : (
+                              <span className="font-mono text-xs text-muted-foreground">
+                                {shortId(grant.created_by)}
+                              </span>
+                            )
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              {grant.source ?? "system"}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {formatTimestamp(grant.created_at)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      </CardContent>
+
+      <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Grant usage credits</DialogTitle>
+            <DialogDescription>
+              Add credits to this organization without creating a Stripe
+              transaction.
+            </DialogDescription>
+          </DialogHeader>
+          <fetcher.Form method="post" className="space-y-4">
+            <input type="hidden" name="intent" value="grantCredits" />
+            <input
+              type="hidden"
+              name="idempotencyKey"
+              value={idempotencyKey ?? ""}
+            />
+            <div className="grid gap-2">
+              <Label htmlFor={`credit-amount-${orgId}`}>Amount</Label>
+              <Input
+                id={`credit-amount-${orgId}`}
+                name="amount"
+                placeholder="5.00"
+                inputMode="decimal"
+                autoComplete="off"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter dollars, for example 5.00 for $5.00.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor={`credit-reason-${orgId}`}>Reason</Label>
+              <Textarea
+                id={`credit-reason-${orgId}`}
+                name="reason"
+                placeholder="Low-credit alert testing"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => handleDialogOpenChange(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={submitting}>
+                {submitting ? "Granting" : "Grant credits"}
+              </Button>
+            </div>
+          </fetcher.Form>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
+
 export default function AdminOrgDetailPage() {
   const {
     org,
@@ -636,6 +1105,11 @@ export default function AdminOrgDetailPage() {
     orgBan,
     usageSpend,
     usageLog,
+    creditSummary,
+    creditGrants,
+    creditGrantsUnavailable,
+    creditGrantsError,
+    creditGrantUsers,
   } = useLoaderData<typeof loader>();
   return (
     <>
@@ -758,65 +1232,16 @@ export default function AdminOrgDetailPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>AI Usage &amp; Spend</CardTitle>
-                <CardDescription>
-                  {usageSpend
-                    ? `$${usageSpend.total_cost_usd.toFixed(2)} lifetime spend across ${usageSpend.total_requests} requests`
-                    : "Usage tracking unavailable"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {usageSpend ? (
-                  <div className="space-y-4">
-                    {usageLog && usageLog.entries.length > 0 ? (
-                      <div>
-                        <p className="text-sm font-medium text-muted-foreground mb-2">
-                          Recent requests
-                        </p>
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Model</TableHead>
-                              <TableHead>Tokens</TableHead>
-                              <TableHead>Cost</TableHead>
-                              <TableHead>Time</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {usageLog.entries.map((entry) => (
-                              <TableRow key={entry.id}>
-                                <TableCell className="font-mono text-xs">
-                                  {entry.model
-                                    .replace("claude-", "")
-                                    .replace(/-\d{8}$/, "")}
-                                </TableCell>
-                                <TableCell className="text-xs text-muted-foreground">
-                                  {entry.input_tokens.toLocaleString()} in /{" "}
-                                  {entry.output_tokens.toLocaleString()} out
-                                </TableCell>
-                                <TableCell className="font-mono text-xs">
-                                  ${entry.cost_usd.toFixed(4)}
-                                </TableCell>
-                                <TableCell className="text-xs text-muted-foreground">
-                                  {formatTimestamp(entry.created_at_ms)}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Sandbox host is not reachable or usage tracking is not
-                    enabled.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+            <AdminAiUsageSpendCard
+              orgId={org.id}
+              usageSpend={usageSpend}
+              usageLog={usageLog}
+              creditSummary={creditSummary}
+              creditGrants={creditGrants}
+              creditGrantsUnavailable={creditGrantsUnavailable}
+              creditGrantsError={creditGrantsError}
+              creditGrantUsers={creditGrantUsers}
+            />
 
             <Card>
               <CardHeader>

@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import type { Route } from './+types/dev.chat-credit-states';
 import { BillingCreditNotice, ChatErrorNotice } from '@/components/Chat';
+import { TopUpDialog } from '@/components/billing/top-up-dialog';
 import { ContentBlockRenderer } from '@/components/message-bubble';
 import { getDevBillingCreditStatus, getDevChatInitialError } from '@/lib/chat-credit-status';
 import { getChatApiErrorPresentation } from '@/lib/chat-api-errors';
@@ -10,8 +12,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import type { LlmProvider } from '@/types';
 
 type PreviewState =
-  | 'low'
-  | 'low-byok'
+  | 'healthy'
+  | 'low-500'
+  | 'low-250'
+  | 'low-100'
+  | 'low-50'
   | 'exhausted'
   | 'exhausted-byok'
   | 'send-error'
@@ -27,8 +32,11 @@ const ANTHROPIC_2B_RATE_LIMIT =
 const GENERIC_ERROR = 'The sandbox stopped responding while preparing the turn.';
 
 const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
-  { value: 'low', label: 'Low credits' },
-  { value: 'low-byok', label: 'Low + BYOK' },
+  { value: 'healthy', label: 'Healthy' },
+  { value: 'low-500', label: '4.50 credits left' },
+  { value: 'low-250', label: '2.20 credits left' },
+  { value: 'low-100', label: '0.80 credits left' },
+  { value: 'low-50', label: '0.45 credits left' },
   { value: 'exhausted', label: 'No credits' },
   { value: 'exhausted-byok', label: 'No credits + BYOK' },
   { value: 'send-error', label: 'Send failure' },
@@ -41,7 +49,7 @@ const PREVIEW_STATES: Array<{ value: PreviewState; label: string }> = [
 ];
 
 function parseState(value: string | null): PreviewState {
-  return PREVIEW_STATES.some((state) => state.value === value) ? (value as PreviewState) : 'low';
+  return PREVIEW_STATES.some((state) => state.value === value) ? (value as PreviewState) : 'low-500';
 }
 
 function stateToSearch(state: PreviewState): string {
@@ -50,7 +58,15 @@ function stateToSearch(state: PreviewState): string {
   if (state === 'send-error') {
     params.set('devCreditState', 'exhausted');
     params.set('devChatError', 'out-of-credits');
-  } else {
+  } else if (
+    state === 'healthy' ||
+    state === 'low-500' ||
+    state === 'low-250' ||
+    state === 'low-100' ||
+    state === 'low-50' ||
+    state === 'exhausted' ||
+    state === 'exhausted-byok'
+  ) {
     params.set('devCreditState', state);
   }
   return params.toString();
@@ -113,12 +129,22 @@ export async function loader({ request }: Route.LoaderArgs) {
   return null;
 }
 
+export async function action({ request }: Route.ActionArgs) {
+  void (await request.formData());
+  if (!import.meta.env.DEV) {
+    throw new Response('Not found', { status: 404 });
+  }
+  return null;
+}
+
 export function meta(_: Route.MetaArgs) {
   return [{ title: 'Chat error state preview - camelAI' }];
 }
 
 export default function DevChatCreditStatesRoute() {
   const [searchParams] = useSearchParams();
+  const [topUpOpen, setTopUpOpen] = useState(false);
+  const [loadingPreviewOpen, setLoadingPreviewOpen] = useState(false);
   const state = parseState(searchParams.get('state'));
   const effectiveSearchParams = new URLSearchParams(stateToSearch(state));
   const creditStatus = getDevBillingCreditStatus(effectiveSearchParams);
@@ -147,7 +173,7 @@ export default function DevChatCreditStatesRoute() {
           </p>
         </div>
         <Button asChild variant="outline">
-          <Link to="/chat?devCreditTest=1&devCreditState=low">Open real chat test</Link>
+          <Link to="/chat?devCreditTest=1&devCreditState=low-500">Open real chat test</Link>
         </Button>
       </div>
 
@@ -201,8 +227,9 @@ export default function DevChatCreditStatesRoute() {
               <BillingCreditNotice
                 status={creditStatus}
                 onOpenUsage={() => undefined}
-                onTopUp={() => undefined}
-                className="px-0 pt-0 md:px-0"
+                onTopUp={() => setTopUpOpen(true)}
+                userId="dev-user"
+                orgId="dev-org"
               />
             ) : null}
             <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
@@ -214,6 +241,45 @@ export default function DevChatCreditStatesRoute() {
           </div>
         </div>
       </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Top-up modal</CardTitle>
+          <CardDescription>
+            Opens the in-chat top-up picker with mocked pack data.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
+          <Button type="button" onClick={() => setTopUpOpen(true)}>
+            Open packs
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setLoadingPreviewOpen(true)}
+          >
+            Open loading
+          </Button>
+        </CardContent>
+      </Card>
+      <TopUpDialog
+        open={topUpOpen}
+        onOpenChange={setTopUpOpen}
+        packs={[
+          { id: 'price_mock_500', creditsLabel: '5.00 credits', priceLabel: '$5.00' },
+          { id: 'price_mock_2500', creditsLabel: '25.00 credits', priceLabel: '$25.00' },
+        ]}
+        canTopUp
+        returnTo="/chat/dev-preview"
+      />
+      <TopUpDialog
+        open={loadingPreviewOpen}
+        onOpenChange={setLoadingPreviewOpen}
+        packs={[]}
+        loading
+        canTopUp
+        returnTo="/chat/dev-preview"
+      />
     </main>
   );
 }

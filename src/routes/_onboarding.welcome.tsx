@@ -48,6 +48,7 @@ import {
   getByokProviderLabel,
   type OnboardingByokProvider,
 } from "@/lib/byok-providers";
+import { formatTopUpCreditPacks } from "@/lib/billing-credit-packs";
 import type { OnboardingRouteContext } from "./_onboarding";
 
 interface TeamContext {
@@ -72,24 +73,6 @@ function isSubscriptionPlan(plan: string): plan is "starter" | "pro" | "team" {
   return isBillingPlan(plan) && SUBSCRIPTION_PLANS.has(plan);
 }
 
-function formatPriceLabel(price: {
-  unit_amount: number | null;
-  currency: string;
-}): string | null {
-  if (!price.unit_amount) return null;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: price.currency.toUpperCase(),
-  }).format(price.unit_amount / 100);
-}
-
-function formatCreditPackLabel(price: {
-  unit_amount: number | null;
-}): string | null {
-  if (!price.unit_amount) return null;
-  return `${(price.unit_amount / 100).toFixed(2)} credits`;
-}
-
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionContext = await requireSession(request, context);
   const url = new URL(request.url);
@@ -108,11 +91,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       : Promise.resolve([]),
   ]);
   const byokProviderLabel = getByokProviderLabel(llmProviderConfig?.provider);
-  const formattedCreditPacks = creditPacks.map((pack) => ({
-    id: pack.id,
-    priceLabel: formatPriceLabel(pack),
-    creditsLabel: formatCreditPackLabel(pack),
-  }));
+  const formattedCreditPacks = formatTopUpCreditPacks(creditPacks);
 
   if (!teamMode) {
     return {

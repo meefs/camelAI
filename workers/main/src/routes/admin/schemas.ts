@@ -284,6 +284,9 @@ export const GrantOrgCreditsResponseSchema = z.object({
   grant_id: z.string(),
   amount_cents: z.number().int(),
   reason: z.string().nullable(),
+  created_at: z.number().int(),
+  created_by: z.string().nullable(),
+  source: z.string().nullable(),
   billing_credit_grant_total_cents: z.number().int(),
 });
 

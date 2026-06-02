@@ -75,6 +75,10 @@ function routeContext(req: Request) {
   };
 }
 
+function parseToolText(rpc: any) {
+  return JSON.parse(rpc.result.content[0].text);
+}
+
 describe("admin MCP OAuth resource", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -295,7 +299,8 @@ describe("admin MCP OAuth resource", () => {
     });
 
     expect(response?.status).toBe(200);
-    await expect(response?.json()).resolves.toMatchObject({
+    const rpc = (await response?.json()) as any;
+    expect(rpc).toMatchObject({
       result: {
         tools: expect.arrayContaining([
           expect.objectContaining({ name: "admin_api_request" }),
@@ -308,10 +313,131 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "search_workspaces" }),
           expect.objectContaining({ name: "search_apps" }),
           expect.objectContaining({ name: "list_bans" }),
+          expect.objectContaining({ name: "grant_org_credits" }),
           expect.objectContaining({ name: "set_user_credits" }),
         ]),
       },
     });
+    const setCreditsTool = rpc.result.tools.find(
+      (tool: { name: string }) => tool.name === "set_user_credits",
+    );
+    expect(setCreditsTool.description).toContain(
+      "without creating a grant ledger row",
+    );
+  });
+
+  it("grants org credits through MCP with a grant ledger row", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-grant-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Grant Admin",
+    );
+    const { org } = await createOrg(testEnv, "MCP Grant Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+    const idempotencyKey = `mcp-grant-${crypto.randomUUID()}`;
+
+    const response = await handleAdminMcp({
+      req: mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "grant_org_credits",
+            arguments: {
+              org_id: org.id,
+              amount_cents: 1800,
+              reason: "MCP grant test",
+              idempotency_key: idempotencyKey,
+            },
+          },
+        },
+        token,
+      ),
+      env: testEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL("https://example.com/api/admin/mcp"),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    expect(parseToolText(rpc)).toMatchObject({
+      success: true,
+      org_id: org.id,
+      applied: true,
+      grant_id: idempotencyKey,
+      amount_cents: 1800,
+      reason: "MCP grant test",
+      created_by: userId,
+      source: "admin-mcp",
+      billing_credit_grant_total_cents: 1800,
+    });
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await expect(orgStub.listManualCreditGrants()).resolves.toMatchObject([
+      {
+        grant_id: idempotencyKey,
+        amount_cents: 1800,
+        reason: "MCP grant test",
+        created_by: userId,
+        source: "admin-mcp",
+      },
+    ]);
+  });
+
+  it("keeps MCP credit override separate from grant ledger records", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-credit-override-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Override Admin",
+    );
+    const { org } = await createOrg(testEnv, "MCP Credit Override Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+
+    const response = await handleAdminMcp({
+      req: mcpRequest(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "set_user_credits",
+            arguments: {
+              user_id: userId,
+              org_id: org.id,
+              billing_credit_grant_total_cents: 9900,
+            },
+          },
+        },
+        token,
+      ),
+      env: testEnv,
+      ctx: {} as ExecutionContext,
+      url: new URL("https://example.com/api/admin/mcp"),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response?.status).toBe(200);
+    const rpc = (await response?.json()) as any;
+    expect(parseToolText(rpc)).toMatchObject({
+      status: 200,
+      ok: true,
+      body_json: {
+        org_id: org.id,
+        billing_credit_grant_total_cents: 9900,
+      },
+    });
+
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_credit_grant_total_cents: 9900,
+    });
+    await expect(orgStub.listManualCreditGrants()).resolves.toEqual([]);
   });
 
   it("bridges MCP tool calls into the admin API", async () => {

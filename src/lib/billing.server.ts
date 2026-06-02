@@ -11,6 +11,7 @@ import {
   normalizeBillingPlan,
   normalizeSeatCount,
 } from "@/lib/billing-plans";
+import { canBuyCreditsForBillingState } from "@/lib/billing-credit-packs";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
 const STRIPE_API_VERSION = "2026-02-25.clover";
@@ -1552,15 +1553,7 @@ export async function createCreditsCheckoutSession(args: {
   }
 
   const latestOrg = await getLatestOrgInfo(env, org);
-  const latestPlan = normalizeBillingPlan(
-    latestOrg.billing_plan,
-    latestOrg.billing_status,
-  );
-  const canBuyCredits =
-    latestPlan === "payg" ||
-    latestOrg.billing_status === "trialing" ||
-    (latestOrg.billing_status === "active" && latestPlan !== "free");
-  if (!canBuyCredits) {
+  if (!canBuyCreditsForBillingState(latestOrg)) {
     throw new Error(
       "Choose Pay as you go or an active subscription before buying credits.",
     );
@@ -2419,6 +2412,7 @@ export async function migrateLegacyStripeSubscription(args: {
     includedCreditCents,
     "Legacy Stripe migration current-period included credits",
     `${idempotencyKeyPrefix}:current-period-included-credits`,
+    { source: "stripe-migration" },
   );
 
   return grantResult?.org ?? synced ?? latestOrg;
@@ -2884,6 +2878,7 @@ export async function syncOrgSubscriptionFromStripe(
             amountCents,
             "Legacy Stripe migration current-period included credits",
             `legacy-migration:${orgId}:${subscription.id}:${nextPlan}:current-period-included-credits`,
+            { source: "stripe-migration" },
           )
         : null;
     await bestEffortClearPendingLegacyMigrationCustomerMetadata({
