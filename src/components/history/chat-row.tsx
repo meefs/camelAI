@@ -8,6 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
+import { ChannelLogoStack } from '@/components/chat/channel-logo';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   DropdownMenu,
@@ -17,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { getContrastTextColor } from '@/lib/avatar';
+import { normalizeChannelIndicatorKind } from '@/lib/channel-kinds';
 import { cn } from '@/lib/utils';
 
 interface ChatRowProps {
@@ -72,6 +74,16 @@ function getInitials(label: string): string {
 
 function normalizeTitleInput(value: string): string {
   return value.replace(/\s+/g, ' ').replace(/^\s+/, '');
+}
+
+function getThreadChannelKinds(thread: Thread): string[] {
+  const channelKinds = Array.isArray(thread.channel_kinds)
+    ? thread.channel_kinds.filter((kind) => normalizeChannelIndicatorKind(kind))
+    : [];
+  if (channelKinds.length > 0) return channelKinds;
+
+  const originKind = normalizeChannelIndicatorKind(thread.channel_kind);
+  return originKind ? [originKind] : [];
 }
 
 export const ChatRow = memo(function ChatRow({
@@ -311,6 +323,10 @@ export const ChatRow = memo(function ChatRow({
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
               {!hideCreator ? creatorWithTooltip : null}
               <span>{formatRelativeTime(thread.updated_at)}</span>
+              <ChannelLogoStack
+                channels={getThreadChannelKinds(thread)}
+                tooltipFor={(label) => `Contains messages sent via ${label}`}
+              />
             </div>
           </>
         ) : (
@@ -324,6 +340,10 @@ export const ChatRow = memo(function ChatRow({
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
               {!hideCreator ? creatorWithTooltip : null}
               <span>{formatRelativeTime(thread.updated_at)}</span>
+              <ChannelLogoStack
+                channels={getThreadChannelKinds(thread)}
+                tooltipFor={(label) => `Contains messages sent via ${label}`}
+              />
             </div>
           </>
         )}

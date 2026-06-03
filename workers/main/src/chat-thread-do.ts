@@ -107,6 +107,7 @@ import {
 } from "../../../src/lib/workspace-email";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
+import { normalizeChannelIndicatorKind } from "../../../src/lib/channel-kinds";
 import {
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
   getOrCreateChannelThread,
@@ -4101,6 +4102,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       timestamp: sentAt,
     } satisfies AgentMessage;
     await this.appendPiCoreMessagesIfMissing([message]);
+    const normalizedChannelKind = normalizeChannelIndicatorKind(channelKind);
+    if (normalizedChannelKind) {
+      await this.markThreadChannelUsedBestEffort(
+        {
+          orgId: input.orgId || this.chatContext?.orgId,
+          threadId,
+        },
+        normalizedChannelKind,
+      );
+    }
 
     const sessionState = this.piSession?.state as
       | { messages?: AgentMessage[]; isStreaming?: boolean }
@@ -6926,7 +6937,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.publishRunningUserMessageActivity(rawContent);
       this.broadcastRunnerClients({ type: "streaming_state", isStreaming: true });
       this.ctx.waitUntil(
-        this.updateThreadMetadataForUserMessage(attributedContent).catch((err) => {
+        this.updateThreadMetadataForUserMessage(
+          attributedContent,
+          options.messageSource ?? "web",
+        ).catch((err) => {
           console.error(
             '[ChatThreadDO] failed to update thread metadata after browser user message',
             err,
@@ -7824,7 +7838,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private async updateThreadMetadataForUserMessage(messageContent: string): Promise<void> {
+  private async updateThreadMetadataForUserMessage(
+    messageContent: string,
+    messageSource?: string | null,
+  ): Promise<void> {
     const context = this.chatContext;
     if (!context?.orgId || !context?.threadId || !context.workspaceId) return;
 
@@ -7832,7 +7849,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const thread = await orgStub.getThread(context.threadId);
     if (!thread) return;
 
-    await orgStub.recordThreadUserMessage(context.threadId, messageContent);
+    await orgStub.recordThreadUserMessage(
+      context.threadId,
+      messageContent,
+      messageSource,
+    );
     if (context.userId) {
       const userStub = this.env.USER.get(this.env.USER.idFromName(context.userId));
       await userStub.touchGroupForThread(context.threadId);
@@ -7857,6 +7878,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     this.titleGenerationInFlight = true;
     await this.generateThreadTitleFromMessage(context.threadId, titleSourceMessage);
+  }
+
+  private async markThreadChannelUsedBestEffort(
+    context: { orgId?: string | null; threadId?: string | null },
+    channelKind: "email" | "slack" | "telegram",
+  ): Promise<void> {
+    if (!context.orgId || !context.threadId) return;
+    try {
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+      await orgStub.recordThreadChannelUsed(context.threadId, channelKind);
+    } catch (error) {
+      console.error("[ChatThreadDO] failed to record thread channel usage", {
+        threadId: context.threadId,
+        channelKind,
+        error,
+      });
+    }
   }
 
   private async generateThreadTitleFromMessage(threadId: string, message: string): Promise<void> {
@@ -8403,6 +8441,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
       );
     }
+    await this.markThreadChannelUsedBestEffort(context, "email");
 
     return {
       content: [{ type: "text", text: "Email sent." }],
@@ -8538,6 +8577,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         );
       }
     }
+    await this.markThreadChannelUsedBestEffort(context, "slack");
 
     return {
       content: [{ type: "text", text: "Slack message sent." }],
@@ -8683,6 +8723,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
       return "error" as const;
     });
+    await this.markThreadChannelUsedBestEffort(context, "telegram");
 
     return {
       content: [{ type: "text", text: "Telegram message sent." }],

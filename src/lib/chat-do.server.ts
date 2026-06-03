@@ -28,6 +28,7 @@ import {
   replaceLegacyLlmModel,
 } from "./llm-provider-config";
 import { resolveModelPickerCatalog } from "./model-catalog";
+import { parseChannelIndicatorKindsJson } from "./channel-kinds";
 import {
   defaultOrgModelPickerConfig,
   defaultWorkspaceModelPickerConfig,
@@ -92,6 +93,7 @@ function toThread(orgThread: OrgThread): Thread {
       orgThread.last_assistant_summary_status ?? null,
     source: orgThread.source ?? "web",
     channel_kind: orgThread.channel_kind ?? null,
+    channel_kinds: parseChannelIndicatorKindsJson(orgThread.channel_kinds),
     channel_connection_id: orgThread.channel_connection_id ?? null,
     channel_conversation_id: orgThread.channel_conversation_id ?? null,
     channel_message_id: orgThread.channel_message_id ?? null,

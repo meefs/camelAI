@@ -17,6 +17,7 @@ export interface Thread {
   last_assistant_summary_status?: ThreadCompletionSummaryStatus | null;
   source?: string | null;
   channel_kind?: string | null;
+  channel_kinds?: string[] | null;
   channel_connection_id?: string | null;
   channel_conversation_id?: string | null;
   channel_message_id?: string | null;
@@ -55,6 +56,8 @@ export interface ChatGroupThreadSummary {
   title: string;
   model: LlmModel;
   updated_at: number;
+  channel_kind?: string | null;
+  channel_kinds?: string[] | null;
   is_unread?: boolean;
   status: ThreadStatus;
   membership: "open" | "closed";

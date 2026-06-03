@@ -32,6 +32,7 @@ import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
+import { parseChannelIndicatorKindsJson } from "@/lib/channel-kinds";
 import * as authDO from "@/lib/auth-do.server";
 import * as chatDO from "@/lib/chat-do.server";
 import {
@@ -368,6 +369,8 @@ function buildFallbackActiveChatGroup(params: {
     title: params.thread.title || "New Chat",
     model: params.thread.model,
     updated_at: threadUpdatedAt,
+    channel_kind: params.thread.channel_kind ?? null,
+    channel_kinds: params.thread.channel_kinds ?? null,
     is_unread: false,
     status: "running" as const,
     membership: "open" as const,
@@ -687,11 +690,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       );
     }
     const activeGroupStartedAt = Date.now();
+    const fallbackThread: Thread = {
+      ...thread,
+      channel_kinds: parseChannelIndicatorKindsJson(thread.channel_kinds),
+    };
     const activeChatGroup = buildFallbackActiveChatGroup({
       groupId,
       orgId,
       workspaceId,
-      thread,
+      thread: fallbackThread,
     });
     recordChatThreadRouteLoaderStage(
       env,

@@ -8,6 +8,10 @@ import {
 } from "../../../../src/lib/avatar";
 import { DEFAULT_THREAD_TITLE } from "../../../../src/lib/thread-title";
 import {
+  normalizeChannelIndicatorKind,
+  type ChannelIndicatorKind,
+} from "../../../../src/lib/channel-kinds";
+import {
   normalizeThreadCompletionSummary,
   normalizeThreadPreviewUserMessage,
 } from "../../../../src/lib/thread-preview";
@@ -72,6 +76,39 @@ const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
 const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 const ORG_INDEX_PREFIX = "org_index:";
 const CUSTOM_DOMAIN_HOST_PREFIX = "custom_domain_host:";
+
+function parseThreadChannelKinds(
+  value: string | null | undefined,
+): ChannelIndicatorKind[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    const kinds: ChannelIndicatorKind[] = [];
+    for (const entry of parsed) {
+      const kind = normalizeChannelIndicatorKind(
+        typeof entry === "string" ? entry : null,
+      );
+      if (kind && !kinds.includes(kind)) {
+        kinds.push(kind);
+      }
+    }
+    return kinds;
+  } catch {
+    return [];
+  }
+}
+
+function mergeThreadChannelKinds(
+  existingJson: string | null | undefined,
+  source: string | null | undefined,
+): string | null {
+  const kind = normalizeChannelIndicatorKind(source);
+  if (!kind) return null;
+  const existing = parseThreadChannelKinds(existingJson);
+  if (existing.includes(kind)) return null;
+  return JSON.stringify([...existing, kind]);
+}
 
 export interface UserOrg {
   org_id: string;
@@ -232,6 +269,7 @@ export interface OrgThread {
   last_assistant_summary_status: ThreadCompletionSummaryStatus | null;
   source: string;
   channel_kind: string | null;
+  channel_kinds: string | null;
   channel_connection_id: string | null;
   channel_conversation_id: string | null;
   channel_message_id: string | null;
@@ -642,6 +680,7 @@ export class OrgDO extends DurableObject<DOEnv> {
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           source TEXT NOT NULL DEFAULT 'web',
+          channel_kinds TEXT,
           last_user_message TEXT,
           last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
@@ -809,6 +848,7 @@ export class OrgDO extends DurableObject<DOEnv> {
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           source TEXT NOT NULL DEFAULT 'web',
+          channel_kinds TEXT,
           last_user_message TEXT,
           last_user_message_at INTEGER,
           last_assistant_completed_at INTEGER,
@@ -1211,7 +1251,29 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureColumn("threads", "channel_message_id", "TEXT");
     }
 
-    const CURRENT_SCHEMA_VERSION = 29;
+    if (version < 31) {
+      // V31: Aggregate external channel kinds that have participated in a thread.
+      // V30 was consumed by a staging deployment of this feature; do not reuse it.
+      this.ensureColumn("threads", "channel_kinds", "TEXT");
+
+      const rows = this.sql
+        .exec<{ id: string; channel_kind: string | null }>(
+          "SELECT id, channel_kind FROM threads WHERE channel_kinds IS NULL OR channel_kinds = ''",
+        )
+        .toArray();
+
+      for (const row of rows) {
+        const kind = normalizeChannelIndicatorKind(row.channel_kind);
+        if (!kind) continue;
+        this.sql.exec(
+          "UPDATE threads SET channel_kinds = ? WHERE id = ?",
+          JSON.stringify([kind]),
+          row.id,
+        );
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 31;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -1365,6 +1427,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       if (!names.has("channel_kind")) {
         try {
           this.sql.exec("ALTER TABLE threads ADD COLUMN channel_kind TEXT");
+        } catch {}
+      }
+
+      if (!names.has("channel_kinds")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN channel_kinds TEXT");
         } catch {}
       }
 
@@ -4080,6 +4148,10 @@ export class OrgDO extends DurableObject<DOEnv> {
           : normalizeLlmModel(model);
     const source = options.source?.trim() || "web";
     const channelKind = options.channelKind?.trim() || null;
+    const normalizedChannelKind = normalizeChannelIndicatorKind(channelKind);
+    const channelKinds = normalizedChannelKind
+      ? JSON.stringify([normalizedChannelKind])
+      : null;
     const channelConnectionId = options.channelConnectionId?.trim() || null;
     const channelConversationId = options.channelConversationId?.trim() || null;
     const channelMessageId = options.channelMessageId?.trim() || null;
@@ -4104,10 +4176,11 @@ export class OrgDO extends DurableObject<DOEnv> {
            last_user_message,
            last_user_message_at,
            channel_kind,
+           channel_kinds,
            channel_connection_id,
            channel_conversation_id,
            channel_message_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         workspaceId,
         t,
@@ -4121,6 +4194,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         lastUserMessage,
         lastUserMessageAt,
         channelKind,
+        channelKinds,
         channelConnectionId,
         channelConversationId,
         channelMessageId,
@@ -4151,6 +4225,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       last_assistant_summary_status: null,
       source,
       channel_kind: channelKind,
+      channel_kinds: channelKinds,
       channel_connection_id: channelConnectionId,
       channel_conversation_id: channelConversationId,
       channel_message_id: channelMessageId,
@@ -4242,6 +4317,95 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.sql.exec("ALTER TABLE threads_legacy_test RENAME TO threads");
     });
     this.ctx.storage.kv.put("schemaVersion", 20);
+  }
+
+  // Test helper RPC: simulate a thread schema before channel_kinds existed.
+  async downgradeThreadChannelKindsSchemaForTest(
+    schemaVersion = 30,
+  ): Promise<void> {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec("DROP TABLE IF EXISTS threads_channel_kinds_legacy_test");
+      this.sql.exec(`
+        CREATE TABLE threads_channel_kinds_legacy_test (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'claude',
+          created_by TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          source TEXT NOT NULL DEFAULT 'web',
+          user_message_count INTEGER NOT NULL DEFAULT 0,
+          first_user_message TEXT,
+          last_user_message TEXT,
+          last_user_message_at INTEGER,
+          last_assistant_completed_at INTEGER,
+          last_assistant_summary TEXT,
+          last_assistant_summary_status TEXT,
+          channel_kind TEXT,
+          channel_connection_id TEXT,
+          channel_conversation_id TEXT,
+          channel_message_id TEXT
+        )
+      `);
+      this.sql.exec(`
+        INSERT INTO threads_channel_kinds_legacy_test (
+          id,
+          workspace_id,
+          title,
+          provider,
+          created_by,
+          model,
+          created_at,
+          updated_at,
+          source,
+          user_message_count,
+          first_user_message,
+          last_user_message,
+          last_user_message_at,
+          last_assistant_completed_at,
+          last_assistant_summary,
+          last_assistant_summary_status,
+          channel_kind,
+          channel_connection_id,
+          channel_conversation_id,
+          channel_message_id
+        )
+        SELECT
+          id,
+          workspace_id,
+          title,
+          provider,
+          created_by,
+          model,
+          created_at,
+          updated_at,
+          source,
+          user_message_count,
+          first_user_message,
+          last_user_message,
+          last_user_message_at,
+          last_assistant_completed_at,
+          last_assistant_summary,
+          last_assistant_summary_status,
+          channel_kind,
+          channel_connection_id,
+          channel_conversation_id,
+          channel_message_id
+        FROM threads
+      `);
+      this.sql.exec("DROP TABLE threads");
+      this.sql.exec(
+        "ALTER TABLE threads_channel_kinds_legacy_test RENAME TO threads",
+      );
+    });
+    this.ctx.storage.kv.put("schemaVersion", schemaVersion);
+  }
+
+  // Test helper RPC: force a stored schema version before remigration.
+  async setSchemaVersionForTest(version: number): Promise<void> {
+    this.ctx.storage.kv.put("schemaVersion", version);
   }
 
   // Test helper RPC: simulate constructor migration path on an existing OrgDO.
@@ -4349,6 +4513,26 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
 
     return this.getThread(id);
+  }
+
+  recordThreadChannelUsed(
+    id: string,
+    channelKind: string | null | undefined,
+  ): OrgThread | null {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+    const nextChannelKinds = mergeThreadChannelKinds(
+      existing.channel_kinds,
+      channelKind,
+    );
+    if (!nextChannelKinds) return existing;
+
+    this.sql.exec(
+      "UPDATE threads SET channel_kinds = ? WHERE id = ?",
+      nextChannelKinds,
+      id,
+    );
+    return { ...existing, channel_kinds: nextChannelKinds };
   }
 
   /**
@@ -4475,18 +4659,35 @@ export class OrgDO extends DurableObject<DOEnv> {
       });
   }
 
-  recordThreadUserMessage(id: string, message: string): OrgThread | null {
+  recordThreadUserMessage(
+    id: string,
+    message: string,
+    source?: string | null,
+  ): OrgThread | null {
     const existing = this.getThread(id);
     if (!existing) return null;
     const now = Date.now();
     const lastUserMessage = normalizeThreadPreviewUserMessage(message);
     const userMessageCount = (existing.user_message_count ?? 0) + 1;
+    const nextChannelKinds = mergeThreadChannelKinds(
+      existing.channel_kinds,
+      source,
+    );
+    const setClauses = [
+      "updated_at = ?",
+      "user_message_count = user_message_count + 1",
+      "last_user_message = ?",
+      "last_user_message_at = ?",
+    ];
+    const params: Array<string | number | null> = [now, lastUserMessage, now];
+    if (nextChannelKinds) {
+      setClauses.push("channel_kinds = ?");
+      params.push(nextChannelKinds);
+    }
+    params.push(id);
     this.sql.exec(
-      "UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1, last_user_message = ?, last_user_message_at = ? WHERE id = ?",
-      now,
-      lastUserMessage,
-      now,
-      id,
+      `UPDATE threads SET ${setClauses.join(", ")} WHERE id = ?`,
+      ...params,
     );
     const updated: OrgThread = {
       ...existing,
@@ -4494,6 +4695,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       user_message_count: userMessageCount,
       last_user_message: lastUserMessage,
       last_user_message_at: now,
+      channel_kinds: nextChannelKinds ?? existing.channel_kinds,
     };
     this.getInfo()
       .then((info) => {

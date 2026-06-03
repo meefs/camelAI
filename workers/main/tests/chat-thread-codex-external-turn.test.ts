@@ -2444,6 +2444,7 @@ describe('ChatThreadDO Codex turn handling', () => {
   it('sends email from any workspace context', async () => {
     const sendEmailMock = vi.fn(async () => ({ messageId: 'email_1' }));
     const kvPutMock = vi.fn(async () => undefined);
+    const recordThreadChannelUsed = vi.fn(async () => null);
 
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
@@ -2463,6 +2464,7 @@ describe('ChatThreadDO Codex turn handling', () => {
             channel_kind: null,
             channel_connection_id: null,
           })),
+          recordThreadChannelUsed,
         })),
       },
       WORKSPACE: {
@@ -2509,6 +2511,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       'thread1',
       { expirationTtl: 180 * 24 * 60 * 60 },
     );
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'email');
   });
 
   it('rejects channel email sends for Pay as you go orgs', async () => {
@@ -4862,6 +4865,7 @@ describe('ChatThreadDO Codex turn handling', () => {
   it('sends channel email attachments from mounted workspace output paths', async () => {
     const send = vi.fn(async () => ({ messageId: 'email-1' }));
     const kvPutMock = vi.fn(async () => undefined);
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const get = vi.fn(async (key: string) =>
       key === 'org1/workspace1/user-outputs/report.pdf'
         ? r2Object('pdf bytes', 'application/pdf')
@@ -4884,6 +4888,7 @@ describe('ChatThreadDO Codex turn handling', () => {
             billing_plan: 'starter',
             billing_status: 'active',
           })),
+          recordThreadChannelUsed,
         })),
       },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
@@ -4931,6 +4936,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       'thread1',
       { expirationTtl: 180 * 24 * 60 * 60 },
     );
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'email');
   });
 
   it('rejects oversized channel attachments before buffering R2 object content', async () => {
@@ -4962,6 +4968,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       { access_token: 'xoxb-token', team_id: 'T1' },
       'secret',
     );
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const get = vi.fn(async (key: string) =>
       key === 'org1/workspace1/user-outputs/chart.png'
         ? r2Object('png bytes', 'image/png')
@@ -5007,6 +5014,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.env = {
       INTEGRATION_SECRET_KEY: 'secret',
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadChannelUsed })),
+      },
       R2_BUCKET: { get },
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -5040,9 +5051,11 @@ describe('ChatThreadDO Codex turn handling', () => {
       fileIds: ['F123'],
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'slack');
   });
 
   it('sends Telegram channel attachments as documents', async () => {
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const get = vi.fn(async (key: string) =>
       key === 'org1/workspace1/user-outputs/report.csv'
         ? r2Object('a,b\n1,2\n', 'text/csv')
@@ -5075,6 +5088,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadChannelUsed })),
+      },
       R2_BUCKET: { get },
     };
 
@@ -5094,9 +5111,11 @@ describe('ChatThreadDO Codex turn handling', () => {
       messageIds: [10, 11],
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
   it('selects Slack connection by decrypted team id when sending outside Slack threads', async () => {
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const wrongEncrypted = await encryptCredentials(
       { access_token: 'xoxb-wrong', team_id: 'T-wrong' },
       'secret',
@@ -5122,6 +5141,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.getOriginatingChannelThread = vi.fn(async () => null);
     fake.env = {
       INTEGRATION_SECRET_KEY: 'secret',
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadChannelUsed })),
+      },
       R2_BUCKET: { get: vi.fn() },
       WORKSPACE: {
         idFromName: vi.fn((id: string) => id),
@@ -5153,6 +5176,7 @@ describe('ChatThreadDO Codex turn handling', () => {
       ts: '1700000001.000400',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'slack');
   });
 
   it('rejects raw Telegram chat ids outside Telegram threads without a workspace integration', async () => {
@@ -5236,6 +5260,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
   it('auto-selects the only connected Telegram integration outside Telegram threads', async () => {
     const appendChannelHistoryEvent = vi.fn(async () => ({ status: 'appended' }));
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const getIntegration = vi.fn(async () => ({
       id: 'telegram-int',
       integration_type: 'telegram',
@@ -5285,6 +5310,7 @@ describe('ChatThreadDO Codex turn handling', () => {
             id: 'telegram-thread',
             title: 'Product team',
           })),
+          recordThreadChannelUsed,
         })),
       },
       CHAT_THREAD: {
@@ -5310,10 +5336,12 @@ describe('ChatThreadDO Codex turn handling', () => {
     });
     expect(appendChannelHistoryEvent).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
   it('sends Telegram messages through a configured workspace integration outside Telegram threads', async () => {
     const appendChannelHistoryEvent = vi.fn(async () => ({ status: 'appended' }));
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toMatch(/\/sendMessage$/);
       const payload = JSON.parse(String(init?.body));
@@ -5361,6 +5389,7 @@ describe('ChatThreadDO Codex turn handling', () => {
             id: 'telegram-thread',
             title: 'Product team',
           })),
+          recordThreadChannelUsed,
         })),
       },
       CHAT_THREAD: {
@@ -5401,11 +5430,19 @@ describe('ChatThreadDO Codex turn handling', () => {
       attachmentCount: 0,
     }));
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
   it('appends outbound channel history as persisted Pi context', async () => {
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'telegram-thread' };
+    fake.env = {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadChannelUsed })),
+      },
+    };
     fake.appendPiCoreMessagesIfMissing = vi.fn(async () => undefined);
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.piMainBaselineIndex = 0;
@@ -5413,6 +5450,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     const result = await ChatThreadDO.prototype.appendChannelHistoryEvent.call(fake, {
       threadId: 'telegram-thread',
+      orgId: 'org1',
       channelKind: 'telegram',
       connectionId: 'telegram-int',
       remoteConversationId: '12345',
@@ -5434,6 +5472,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     expect(message.content).toContain('Weekly update.');
     expect(fake.piSession.state.messages).toHaveLength(1);
     expect(fake.piMainBaselineIndex).toBe(1);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith(
+      'telegram-thread',
+      'telegram',
+    );
   });
 
   it('rejects mismatched Telegram chat ids for workspace integrations', async () => {
@@ -5471,6 +5513,7 @@ describe('ChatThreadDO Codex turn handling', () => {
   });
 
   it('sends Telegram image attachments as photos', async () => {
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const get = vi.fn(async (key: string) =>
       key === 'org1/workspace1/user-outputs/chart.png'
         ? r2Object('png bytes', 'image/png')
@@ -5499,6 +5542,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadChannelUsed })),
+      },
       R2_BUCKET: { get },
     };
 
@@ -5517,9 +5564,11 @@ describe('ChatThreadDO Codex turn handling', () => {
       messageIds: [20],
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
   it('falls back to Telegram documents when photo upload is rejected', async () => {
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const get = vi.fn(async (key: string) =>
       key === 'org1/workspace1/user-outputs/large-photo.png'
         ? r2Object('png bytes', 'image/png')
@@ -5550,6 +5599,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadChannelUsed })),
+      },
       R2_BUCKET: { get },
     };
 
@@ -5572,9 +5625,11 @@ describe('ChatThreadDO Codex turn handling', () => {
       warnSpy.mockRestore();
     }
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
   it('respects explicit Telegram send_as document for image attachments', async () => {
+    const recordThreadChannelUsed = vi.fn(async () => null);
     const get = vi.fn(async (key: string) =>
       key === 'org1/workspace1/user-outputs/chart.png'
         ? r2Object('png bytes', 'image/png')
@@ -5598,6 +5653,10 @@ describe('ChatThreadDO Codex turn handling', () => {
     }));
     fake.env = {
       TELEGRAM_BOT_TOKEN: 'bot-token',
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ recordThreadChannelUsed })),
+      },
       R2_BUCKET: { get },
     };
 
@@ -5611,6 +5670,7 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     expect(result.details.messageIds).toEqual([22]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
 });

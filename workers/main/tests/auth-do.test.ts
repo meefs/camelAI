@@ -244,6 +244,75 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.last_assistant_summary_status).toBeNull();
     });
 
+    it('seeds channel_kinds for channel-created threads', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Channel Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Email thread',
+        userId,
+        undefined,
+        undefined,
+        undefined,
+        { source: 'channel', channelKind: 'email' },
+      );
+      const stored = await orgStub.getThread(thread.id);
+
+      expect(thread.channel_kind).toBe('email');
+      expect(thread.channel_kinds).toBe(JSON.stringify(['email']));
+      expect(stored?.channel_kinds).toBe(JSON.stringify(['email']));
+    });
+
+    it('backfills channel_kinds from channel_kind during V31 migration when stored version is 30', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Channel Migration Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Slack thread',
+        userId,
+        undefined,
+        undefined,
+        undefined,
+        { source: 'channel', channelKind: 'slack' },
+      );
+
+      await orgStub.downgradeThreadChannelKindsSchemaForTest(30);
+      await orgStub.remigrate();
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.channel_kind).toBe('slack');
+      expect(stored?.channel_kinds).toBe(JSON.stringify(['slack']));
+    });
+
+    it('preserves non-empty channel_kinds during V31 migration', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Channel Preserve Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Email thread',
+        userId,
+        undefined,
+        undefined,
+        undefined,
+        { source: 'channel', channelKind: 'email' },
+      );
+      await orgStub.recordThreadUserMessage(thread.id, '[slack message from Jane]: First', 'slack');
+      await orgStub.setSchemaVersionForTest(30);
+      await orgStub.remigrate();
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.channel_kinds).toBe(JSON.stringify(['email', 'slack']));
+    });
+
     it('self-heals legacy thread schema during migration before creating new threads', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Legacy Thread Owner');
@@ -372,6 +441,58 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.last_user_message).toBe('Build the hover card');
       expect(stored?.last_user_message_at).toEqual(expect.any(Number));
       expect(stored?.first_user_message).toBeNull();
+    });
+
+    it('merges and dedupes channel_kinds while recording user messages', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Channel Merge Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Channel merge',
+        userId,
+        undefined,
+        undefined,
+        undefined,
+        { source: 'channel', channelKind: 'email' },
+      );
+
+      const first = await orgStub.recordThreadUserMessage(
+        thread.id,
+        '[slack message from Jane]: First message',
+        'slack',
+      );
+      const second = await orgStub.recordThreadUserMessage(
+        thread.id,
+        '[slack message from Jane]: Second message',
+        'SLACK',
+      );
+
+      expect(first?.channel_kinds).toBe(JSON.stringify(['email', 'slack']));
+      expect(second?.channel_kinds).toBe(JSON.stringify(['email', 'slack']));
+      expect(second?.user_message_count).toBe(2);
+      expect(second?.last_user_message).toBe('Second message');
+    });
+
+    it('records outbound channel usage without touching activity metadata', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Outbound Channel Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Outbound', userId);
+      const before = await orgStub.getThread(thread.id);
+      const updated = await orgStub.recordThreadChannelUsed(thread.id, 'telegram');
+      const afterDuplicate = await orgStub.recordThreadChannelUsed(thread.id, 'telegram');
+      const afterIgnored = await orgStub.recordThreadChannelUsed(thread.id, 'web');
+
+      expect(updated?.channel_kinds).toBe(JSON.stringify(['telegram']));
+      expect(afterDuplicate?.channel_kinds).toBe(JSON.stringify(['telegram']));
+      expect(afterIgnored?.channel_kinds).toBe(JSON.stringify(['telegram']));
+      expect(updated?.updated_at).toBe(before?.updated_at);
+      expect(updated?.user_message_count).toBe(before?.user_message_count);
     });
 
     it('loads multiple threads for one workspace in a single batch call', async () => {

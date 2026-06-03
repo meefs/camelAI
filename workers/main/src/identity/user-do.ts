@@ -239,6 +239,7 @@ export interface OrgThread {
   last_assistant_summary_status: ThreadCompletionSummaryStatus | null;
   source: string;
   channel_kind: string | null;
+  channel_kinds: string | null;
   channel_connection_id: string | null;
   channel_conversation_id: string | null;
   channel_message_id: string | null;

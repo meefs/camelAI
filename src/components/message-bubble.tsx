@@ -20,6 +20,7 @@ import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
+import { ChannelLogo } from '@/components/chat/channel-logo';
 import { ChatRateLimitNotice } from '@/components/chat-api-error-notice';
 import { isSupportedSlashCommand } from '@/lib/slash-commands';
 import {
@@ -27,6 +28,7 @@ import {
   isRateLimitChatApiErrorPresentation,
 } from '@/lib/chat-api-errors';
 import { parseByokProvider } from '@/lib/byok-providers';
+import { getChannelBrand } from '@/lib/channel-branding';
 import {
   type AnnotatedMentionRef,
   stripMentionAnnotations,
@@ -126,6 +128,7 @@ interface ParsedAuthor {
   name: string | null;
   email: string | null;
   displayName: string; // Name if available, otherwise email
+  source: string | null;
 }
 
 interface ParsedMessage {
@@ -165,7 +168,7 @@ function prepareDisplayText(text: string): {
   };
 }
 
-function parseMessageAuthor(rawContent: string): ParsedMessage {
+export function parseMessageAuthor(rawContent: string): ParsedMessage {
   const content = stripSystemMessageTagsOnly(rawContent);
   // Match [web message from Name]: at the start of the message.
   const matchWithSource = content.match(AUTHOR_PREFIX_WITH_SOURCE_REGEX);
@@ -181,6 +184,7 @@ function parseMessageAuthor(rawContent: string): ParsedMessage {
         name,
         email,
         displayName: name || email || matchWithSource[1]?.trim() || 'Unknown',
+        source: matchWithSource[1]?.trim().toLowerCase() || null,
       },
       content: content.slice(matchWithSource[0].length),
     };
@@ -196,6 +200,7 @@ function parseMessageAuthor(rawContent: string): ParsedMessage {
         name,
         email,
         displayName: name || email || 'Unknown',
+        source: null,
       },
       content: content.slice(matchWithEmail[0].length),
     };
@@ -212,6 +217,7 @@ function parseMessageAuthor(rawContent: string): ParsedMessage {
         name: isEmail ? null : value,
         email: isEmail ? value : null,
         displayName: value || 'Unknown',
+        source: null,
       },
       content: content.slice(matchSimple[0].length),
     };
@@ -792,6 +798,7 @@ function MessageBubbleBase({
     const hasCleanContent = typeof cleanedContent === 'string'
       ? cleanedContent.length > 0
       : cleanedContent.length > 0;
+    const channelBrand = getChannelBrand(author?.source);
 
     return (
       <div className="flex flex-col items-end gap-2">
@@ -829,7 +836,52 @@ function MessageBubbleBase({
           </div>
         )}
         {/* Hover action row */}
-        {showActionRow && (
+        {showActionRow && channelBrand ? (
+          <div
+            className="flex items-center justify-end gap-1"
+            role="group"
+            aria-label="Message actions"
+          >
+            <div
+              className={cn(
+                "flex items-center gap-0.5 pointer-coarse:gap-1",
+                "pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto pointer-coarse:pointer-events-auto",
+                actionVisibilityClassName,
+              )}
+            >
+              {author && (
+                <span className="text-muted-foreground text-xs mr-1">
+                  Sent by {author.displayName} at
+                </span>
+              )}
+              <span className="text-muted-foreground text-xs mr-1">
+                {messageTime}
+              </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-muted-foreground pointer-coarse:size-9 pointer-coarse:[&_svg:not([class*='size-'])]:size-4"
+                    onClick={() => onCopy(message.id, actionCopyContent ?? contentToString(cleanedContent))}
+                  >
+                    {isCopied ? <Check /> : <Copy />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {isCopied ? 'Copied!' : 'Copy message'}
+                </TooltipContent>
+              </Tooltip>
+              <span className="text-muted-foreground/60 text-xs mx-1" aria-hidden>
+                ·
+              </span>
+            </div>
+            <ChannelLogo
+              channel={channelBrand.kind}
+              tooltip={`Sent via ${channelBrand.label}`}
+            />
+          </div>
+        ) : showActionRow ? (
           <div
             className={cn("flex items-center gap-0.5 pointer-coarse:gap-1", actionVisibilityClassName)}
             role="group"
@@ -859,7 +911,7 @@ function MessageBubbleBase({
               </TooltipContent>
             </Tooltip>
           </div>
-        )}
+        ) : null}
       </div>
     );
   }
