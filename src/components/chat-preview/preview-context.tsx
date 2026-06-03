@@ -6,6 +6,7 @@ import type { PreviewTarget } from '@/types';
 interface ChatPreviewContextValue {
   openPreviewTarget: (target: PreviewTarget) => void;
   clearPreviewTarget: () => void;
+  resolveAppVisibility?: (scriptName: string) => Promise<boolean | null>;
 }
 
 const ChatPreviewContext = createContext<ChatPreviewContextValue | null>(null);

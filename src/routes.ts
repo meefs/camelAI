@@ -227,6 +227,10 @@ export default [
     "api/workspaces/:id/chat/:threadId/fork",
     "routes/api/workspaces.$id.chat.$threadId.fork.ts",
   ),
+  route(
+    "api/workspaces/:id/apps/:scriptName/visibility",
+    "routes/api/workspaces.$id.apps.$scriptName.visibility.ts",
+  ),
 
   // Workspace file upload API route (R2-based, for chat attachments)
   route("api/workspaces/:id/upload", "routes/api/workspaces.$id.upload.ts"),

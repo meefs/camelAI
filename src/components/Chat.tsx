@@ -4450,6 +4450,23 @@ export default function Chat({
     setPreviewTargetForThread(null);
   }, [setPreviewTargetForThread]);
 
+  const resolveAppVisibility = useCallback(
+    async (scriptName: string): Promise<boolean | null> => {
+      if (!resolvedWorkspaceId) return null;
+      try {
+        const response = await fetch(
+          `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/apps/${encodeURIComponent(scriptName)}/visibility`
+        );
+        if (!response.ok) return null;
+        const payload = await response.json() as { is_public?: unknown };
+        return typeof payload.is_public === "boolean" ? payload.is_public : null;
+      } catch {
+        return null;
+      }
+    },
+    [resolvedWorkspaceId],
+  );
+
 type SendOptions = {
   contentOverride?: string;
   preserveDraft?: boolean;
@@ -4928,7 +4945,7 @@ type SendOptions = {
 
   return (
     <TooltipProvider>
-      <ChatPreviewProvider value={{ openPreviewTarget, clearPreviewTarget }}>
+      <ChatPreviewProvider value={{ openPreviewTarget, clearPreviewTarget, resolveAppVisibility }}>
         <>
           {shouldShowChat ? (
             <div

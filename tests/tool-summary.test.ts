@@ -393,6 +393,33 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
     });
   });
 
+  it('renders unified set_preview app_name aliases as app preview links', () => {
+    const tool = makeMcpTool('set_preview', {
+      app_name: 'my-todo-app',
+      is_public: true,
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'my-todo-app',
+      appPreview: { scriptName: 'my-todo-app', isPublic: true },
+    });
+  });
+
+  it('keeps unified set_preview app targets clickable when result metadata is missing', () => {
+    const tool = makeMcpTool('set_preview', {
+      script_name: 'my-todo-app',
+    });
+    const summary = getToolSummaryParts(tool, undefined, false, 'complete');
+
+    expect(summary).toEqual({
+      action: 'Previewed',
+      filename: 'my-todo-app',
+      appPreview: { scriptName: 'my-todo-app' },
+    });
+  });
+
   it('shows generic opening copy while set_file_preview is running without a path', () => {
     const tool = makeMcpTool('mcp__chiridion-mcp__set_file_preview');
     const summary = getToolSummaryParts(tool, undefined, false, 'running');
@@ -444,12 +471,14 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
   it('shows the script name while set_app_preview is running', () => {
     const tool = makeMcpTool('mcp__chiridion-mcp__set_app_preview', {
       script_name: 'my-todo-app',
+      is_public: true,
     });
     const summary = getToolSummaryParts(tool, undefined, false, 'running');
 
     expect(summary).toEqual({
       action: 'Opening preview',
       filename: 'my-todo-app',
+      appPreview: { scriptName: 'my-todo-app', isPublic: true },
     });
   });
 
@@ -486,7 +515,7 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
     });
   });
 
-  it('leaves set_app_preview plain when is_public cannot be determined', () => {
+  it('keeps set_app_preview clickable when is_public cannot be determined', () => {
     const tool = makeMcpTool('set_app_preview', {
       script_name: 'my-private-app',
     });
@@ -495,6 +524,7 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
     expect(summary).toEqual({
       action: 'Previewed',
       filename: 'my-private-app',
+      appPreview: { scriptName: 'my-private-app' },
     });
   });
 });

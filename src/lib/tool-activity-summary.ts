@@ -135,29 +135,38 @@ function canonicalizeToolSummaryName(name: string): string {
   }
 }
 
-function parseAppPreviewIsPublic(result?: ToolResultBlock): boolean | null {
-  if (!result) return null;
+function parseAppPreviewIsPublic(
+  result?: ToolResultBlock,
+  fallbackIsPublic?: boolean | null,
+): boolean | null {
+  if (!result) return fallbackIsPublic ?? null;
   const text = getResultText(result);
-  if (!text) return null;
+  if (!text) return fallbackIsPublic ?? null;
   try {
-    const parsed = JSON.parse(text) as { app?: { is_public?: unknown }; target?: { isPublic?: unknown } };
+    const parsed = JSON.parse(text) as {
+      app?: { is_public?: unknown };
+      target?: { isPublic?: unknown; is_public?: unknown };
+    };
     if (parsed?.app && typeof parsed.app.is_public === 'boolean') {
       return parsed.app.is_public;
     }
     if (parsed?.target && typeof parsed.target.isPublic === 'boolean') {
       return parsed.target.isPublic;
     }
+    if (parsed?.target && typeof parsed.target.is_public === 'boolean') {
+      return parsed.target.is_public;
+    }
   } catch {
     // Result was not JSON.
   }
-  return null;
+  return fallbackIsPublic ?? null;
 }
 
 export interface ToolSummaryParts {
   action: string;
   filename?: string;
   path?: string;
-  appPreview?: { scriptName: string; isPublic: boolean };
+  appPreview?: { scriptName: string; isPublic?: boolean };
 }
 
 function getFilePreviewSummary(path: string, isRunning: boolean, isError: boolean): ToolSummaryParts {
@@ -184,11 +193,22 @@ function getAppPreviewSummary(
   result: ToolResultBlock | undefined,
   isRunning: boolean,
   isError: boolean,
+  fallbackIsPublic?: boolean | null,
 ): ToolSummaryParts {
-  const isPublic = parseAppPreviewIsPublic(result);
+  const isPublic = parseAppPreviewIsPublic(result, fallbackIsPublic);
+  const appPreview = scriptName
+    ? {
+        scriptName,
+        ...(isPublic !== null ? { isPublic } : {}),
+      }
+    : undefined;
   if (isRunning) {
     if (!scriptName) return { action: 'Opening preview...' };
-    return { action: 'Opening preview', filename: scriptName };
+    return {
+      action: 'Opening preview',
+      filename: scriptName,
+      ...(appPreview ? { appPreview } : {}),
+    };
   }
   if (isError) {
     return {
@@ -196,17 +216,24 @@ function getAppPreviewSummary(
       filename: scriptName || undefined,
     };
   }
-  if (scriptName && isPublic !== null) {
+  if (scriptName) {
     return {
       action: 'Previewed',
       filename: scriptName,
-      appPreview: { scriptName, isPublic },
+      appPreview,
     };
   }
-  return {
-    action: 'Previewed',
-    filename: scriptName || undefined,
-  };
+  return { action: 'Previewed' };
+}
+
+function getPreviewScriptName(inputRecord: Record<string, unknown>): string {
+  if (typeof inputRecord.script_name === 'string' && inputRecord.script_name.trim()) {
+    return inputRecord.script_name.trim();
+  }
+  if (typeof inputRecord.app_name === 'string' && inputRecord.app_name.trim()) {
+    return inputRecord.app_name.trim();
+  }
+  return '';
 }
 
 export function getToolSummaryParts(
@@ -250,10 +277,11 @@ export function getToolSummaryParts(
   if (isSetPreviewToolName(name)) {
     const kind = inputRecord.kind === 'app' || inputRecord.kind === 'file' ? inputRecord.kind : undefined;
     const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
-    const scriptName = typeof inputRecord.script_name === 'string' ? inputRecord.script_name : '';
+    const scriptName = getPreviewScriptName(inputRecord);
+    const fallbackIsPublic = typeof inputRecord.is_public === 'boolean' ? inputRecord.is_public : null;
 
     if (kind === 'app' || (!kind && scriptName)) {
-      return getAppPreviewSummary(scriptName, result, isRunning, isError);
+      return getAppPreviewSummary(scriptName, result, isRunning, isError, fallbackIsPublic);
     }
 
     if (kind === 'file' || (!kind && path)) {
@@ -271,8 +299,9 @@ export function getToolSummaryParts(
   }
 
   if (isSetAppPreviewToolName(name)) {
-    const scriptName = typeof inputRecord.script_name === 'string' ? inputRecord.script_name : '';
-    return getAppPreviewSummary(scriptName, result, isRunning, isError);
+    const scriptName = getPreviewScriptName(inputRecord);
+    const fallbackIsPublic = typeof inputRecord.is_public === 'boolean' ? inputRecord.is_public : null;
+    return getAppPreviewSummary(scriptName, result, isRunning, isError, fallbackIsPublic);
   }
 
   if (isMcpTool(name)) {
