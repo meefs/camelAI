@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import { resolve } from "path";
 
-export default defineConfig(({ command }) => ({
+export default defineConfig(() => ({
   plugins: [
     cloudflare({ viteEnvironment: { name: "ssr" } }),
     tailwindcss(),
@@ -30,6 +30,4 @@ export default defineConfig(({ command }) => ({
   define: {
     __filename: "'index.ts'",
   },
-  // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
-  optimizeDeps: command === "build" ? { noDiscovery: true } : {},
 }));

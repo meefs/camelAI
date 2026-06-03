@@ -179,8 +179,6 @@ export default defineConfig(({ command }) => {
     },
     optimizeDeps: {
       include: clientOptimizeDepsInclude,
-      // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
-      ...(command === 'build' && { noDiscovery: true }),
     },
     server: {
       port: 3001,
