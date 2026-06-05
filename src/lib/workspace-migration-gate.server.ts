@@ -57,10 +57,7 @@ export async function getWorkspaceMigrationGate(
       };
     }
 
-    if (
-      migrationState.status === "complete" &&
-      migrationState.migrationVersion < CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
-    ) {
+    if (isStaleTerminalMigration(migrationState)) {
       const queuedState = await enqueueWorkspaceMigration(env, workspaceId);
       return {
         workspaceId,
@@ -101,5 +98,12 @@ function isLegacyMigrationRuntimeConfigured(env: CloudflareEnv): boolean {
     env.LEGACY_WORKSPACE_HOST ||
       (typeof env.LEGACY_WORKSPACE_SERVICE_URL === "string" &&
         env.LEGACY_WORKSPACE_SERVICE_URL.trim()),
+  );
+}
+
+function isStaleTerminalMigration(state: LegacyWorkspaceMigrationState): boolean {
+  return (
+    (state.status === "complete" || state.status === "failed") &&
+    state.migrationVersion < CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
   );
 }

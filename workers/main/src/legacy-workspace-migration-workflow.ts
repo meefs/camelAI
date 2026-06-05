@@ -408,6 +408,17 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
       };
 
       for (const [index, projectPlan] of enrichedPlan.projects.entries()) {
+        leaseId = await step.do(`refresh-legacy-workspace-lock-${index + 1}-${projectPlan.name}`, async () => {
+          const lock = await runtime.lockLegacyWorkspace(payload.orgId, payload.workspaceId, {
+            workflowId,
+            ttlMs: MIGRATION_LEASE_TTL_MS,
+          });
+          await workspaceFs.setLegacyWorkspaceMigrationState({
+            status: "copying",
+            leaseId: lock.leaseId,
+          });
+          return lock.leaseId;
+        });
         const result = await step.do(`import-project-${index + 1}-${projectPlan.name}`, {
           timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
           retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
