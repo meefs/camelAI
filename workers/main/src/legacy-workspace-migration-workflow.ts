@@ -16,7 +16,10 @@ import {
 } from "./workspace-filesystem-do.js";
 
 const LEGACY_ROOT = "/home/claude";
-const MIGRATION_LEASE_TTL_MS = 15 * 60 * 1000;
+const MIGRATION_LEASE_TTL_MS = 2 * 60 * 60 * 1000;
+const MIGRATION_CONTEXT_STEP_TIMEOUT = "15 minutes";
+const MIGRATION_AI_STEP_TIMEOUT = "45 minutes";
+const MIGRATION_IMPORT_STEP_TIMEOUT = "2 hours";
 const TOP_LEVEL_SCAN_LIMIT = 2_000;
 const NAMING_CONTEXT_MAX_PROJECTS = 150;
 const NAMING_CONTEXT_MAX_ENTRIES_PER_PROJECT = 80;
@@ -331,7 +334,10 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
       const enrichedPlan = allowedSourcePlan.projects.length === 0
         ? appendUnclassifiedMiscProject(allowedSourcePlan)
         : await (async () => {
-            const discoveryContext = await step.do("build-discovery-context", async () => {
+            const discoveryContext = await step.do("build-discovery-context", {
+              timeout: MIGRATION_CONTEXT_STEP_TIMEOUT,
+              retries: { limit: 3, delay: "10 seconds", backoff: "exponential" },
+            }, async () => {
               return await buildLegacyWorkspaceNamingContext({
                 runtime,
                 orgId: payload.orgId,
@@ -340,8 +346,11 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
               });
             });
 
-            const agentProposal = await step.do("discover-projects-with-ai", async () => {
-              return runMigrationPlanningAi(this.env, buildMigrationPlanningPrompt({
+            const agentProposal = await step.do("discover-projects-with-ai", {
+              timeout: MIGRATION_AI_STEP_TIMEOUT,
+              retries: { limit: 2, delay: "30 seconds", backoff: "exponential" },
+            }, async () => {
+              return await runMigrationPlanningAi(this.env, buildMigrationPlanningPrompt({
                 workspaceId: payload.workspaceId,
                 plan: allowedSourcePlan,
                 context: discoveryContext,
@@ -387,69 +396,54 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
         });
       });
 
-      const importResults = await step.do("create-and-import-projects", async () => {
-        const currentState = await workspaceFs.getLegacyWorkspaceMigrationState();
-        const createdProjects = Array.from(new Set(currentState.createdProjects ?? []));
-        let copiedFiles = 0;
-        let copiedBytes = 0;
-        const skippedPaths: string[] = [];
-        const org = getOrgStub(this.env, payload.orgId);
+      const importResults = {
+        createdProjects: [] as string[],
+        copiedFiles: 0,
+        copiedBytes: 0,
+        skippedPaths: [] as string[],
+      };
 
-        for (const projectPlan of enrichedPlan.projects) {
-          const existingProject = await workspaceFs.getProjectByName(projectPlan.name);
-          const project = existingProject ?? await workspaceFs.createProject({
-            name: projectPlan.name,
-            description: projectPlan.description,
-            migratedFrom: {
-              workspaceId: payload.workspaceId,
-              legacyRoot: LEGACY_ROOT,
-              sourcePaths: projectPlan.sourcePaths,
-              migratedAt: new Date().toISOString(),
-            },
+      for (const [index, projectPlan] of enrichedPlan.projects.entries()) {
+        const result = await step.do(`import-project-${index + 1}-${projectPlan.name}`, {
+          timeout: MIGRATION_IMPORT_STEP_TIMEOUT,
+          retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
+        }, async () => {
+          return await importMigrationProject({
+            workspaceFs,
+            runtime,
+            env: this.env,
+            orgId: payload.orgId,
+            workspaceId: payload.workspaceId,
+            projectPlan,
           });
-          if (existingProject && project.migratedFrom?.workspaceId !== payload.workspaceId) {
-            throw new Error(`Project already exists and was not created by this migration: ${projectPlan.name}`);
-          }
-          if (!createdProjects.includes(project.name)) {
-            createdProjects.push(project.name);
-          }
-          await workspaceFs.setLegacyWorkspaceMigrationState({
-            status: "copying",
-            createdProjects,
-            copiedFiles,
-            copiedBytes,
-            skippedPaths,
-            error: undefined,
-          });
-          const result = await runtime.importLegacyWorkspace(payload.orgId, payload.workspaceId, project.id, {
-            sourcePaths: projectPlan.sourcePaths,
-            ignoreGlobs: projectPlan.ignoreGlobs ?? [],
-          });
-          for (const scriptName of projectPlan.deployedApps ?? []) {
-            await org.updateWorkerScriptProject(scriptName, payload.workspaceId, project.id, "system:legacy-migration");
-          }
-          copiedFiles += result.files ?? 0;
-          copiedBytes += result.bytes ?? 0;
-          skippedPaths.push(...(result.skippedPaths ?? []));
-          await workspaceFs.setLegacyWorkspaceMigrationState({
-            status: "copying",
-            createdProjects,
-            copiedFiles,
-            copiedBytes,
-            skippedPaths,
-            error: undefined,
-          });
+        });
+        if (!importResults.createdProjects.includes(result.projectName)) {
+          importResults.createdProjects.push(result.projectName);
         }
+        importResults.copiedFiles += result.files ?? 0;
+        importResults.copiedBytes += result.bytes ?? 0;
+        importResults.skippedPaths.push(...(result.skippedPaths ?? []));
+        await step.do(`record-import-progress-${index + 1}-${projectPlan.name}`, async () => {
+          await workspaceFs.setLegacyWorkspaceMigrationState({
+            status: "copying",
+            createdProjects: importResults.createdProjects,
+            copiedFiles: importResults.copiedFiles,
+            copiedBytes: importResults.copiedBytes,
+            skippedPaths: importResults.skippedPaths,
+            error: undefined,
+          });
+        });
+      }
 
+      await step.do("mark-verifying", async () => {
         await workspaceFs.setLegacyWorkspaceMigrationState({
           status: "verifying",
-          createdProjects,
-          copiedFiles,
-          copiedBytes,
-          skippedPaths,
+          createdProjects: importResults.createdProjects,
+          copiedFiles: importResults.copiedFiles,
+          copiedBytes: importResults.copiedBytes,
+          skippedPaths: importResults.skippedPaths,
           error: undefined,
         });
-        return { createdProjects, copiedFiles, copiedBytes, skippedPaths };
       });
 
       await step.do("verify-imports", async () => {
@@ -480,6 +474,43 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
       }
     }
   }
+}
+
+async function importMigrationProject(input: {
+  workspaceFs: WorkspaceFilesystemClient;
+  runtime: ProjectRuntimeMigrationClient;
+  env: Env;
+  orgId: string;
+  workspaceId: string;
+  projectPlan: LegacyWorkspaceMigrationProjectPlan;
+}): Promise<LegacyImportResult & { projectName: string }> {
+  const { workspaceFs, runtime, env, orgId, workspaceId, projectPlan } = input;
+  const org = getOrgStub(env, orgId);
+  const existingProject = await workspaceFs.getProjectByName(projectPlan.name);
+  const project = existingProject ?? await workspaceFs.createProject({
+    name: projectPlan.name,
+    description: projectPlan.description,
+    migratedFrom: {
+      workspaceId,
+      legacyRoot: LEGACY_ROOT,
+      sourcePaths: projectPlan.sourcePaths,
+      migratedAt: new Date().toISOString(),
+    },
+  });
+  if (existingProject && project.migratedFrom?.workspaceId !== workspaceId) {
+    throw new Error(`Project already exists and was not created by this migration: ${projectPlan.name}`);
+  }
+
+  const result = await runtime.importLegacyWorkspace(orgId, workspaceId, project.id, {
+    sourcePaths: projectPlan.sourcePaths,
+    ignoreGlobs: projectPlan.ignoreGlobs ?? [],
+  });
+
+  for (const scriptName of projectPlan.deployedApps ?? []) {
+    await org.updateWorkerScriptProject(scriptName, workspaceId, project.id, "system:legacy-migration");
+  }
+
+  return { ...result, projectName: project.name };
 }
 
 class ProjectRuntimeMigrationClient {
@@ -859,21 +890,23 @@ export async function runMigrationPlanningAi(
       body: JSON.stringify(buildMigrationPlanningResponsesRequest(prompt, allowedSourcePaths)),
     },
   );
-  const responseText = await response.text();
-  const payload = responseText ? safeJsonParse(responseText) : undefined;
   if (!response.ok) {
+    const responseText = await response.text();
+    const payload = responseText ? safeJsonParse(responseText) : undefined;
     throw new Error(
       extractCloudflareAiErrorMessage(payload)
       ?? responseText.trim()
       ?? `Cloudflare AI Gateway Responses API request failed (${response.status})`,
     );
   }
+  const payload = await readMigrationPlanningResponsesPayload(response);
   return parseMigrationPlanningAiResult(payload);
 }
 
 export function buildMigrationPlanningResponsesRequest(prompt: string, allowedSourcePaths?: string[]): Record<string, unknown> {
   return {
     model: MIGRATION_PLANNING_RESPONSES_MODEL,
+    stream: true,
     instructions: [
       "You plan migrations from a legacy /home/claude workspace into project VMs.",
       "Return only structured output matching the requested migration project plan schema.",
@@ -924,6 +957,95 @@ function ensureStrictObjectSchemaRequiresAllProperties(schema: Record<string, un
   const properties = schema.properties;
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) return;
   schema.required = Object.keys(properties as Record<string, unknown>);
+}
+
+export async function readMigrationPlanningResponsesPayload(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream") || !response.body) {
+    const responseText = await response.text();
+    return responseText ? safeJsonParse(responseText) : undefined;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let outputText = "";
+  let completedPayload: unknown;
+
+  const consumeEvent = (rawEvent: string) => {
+    const lines = rawEvent.split(/\r?\n/);
+    let eventName = "";
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        eventName = line.slice("event:".length).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice("data:".length).trimStart());
+      }
+    }
+    if (dataLines.length === 0) return;
+    const dataText = dataLines.join("\n");
+    if (dataText === "[DONE]") return;
+    const eventPayload = safeJsonParse(dataText);
+    if (!eventPayload || typeof eventPayload !== "object") return;
+    const record = eventPayload as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type : eventName;
+
+    if (type === "response.output_text.delta" && typeof record.delta === "string") {
+      outputText += record.delta;
+      return;
+    }
+    if (type === "response.output_text.done" && typeof record.text === "string") {
+      outputText = record.text;
+      return;
+    }
+    if (type === "response.completed") {
+      completedPayload = record.response ?? eventPayload;
+      return;
+    }
+    if (type === "response.failed" || type === "response.incomplete" || type === "error") {
+      throw new Error(
+        extractCloudflareAiErrorMessage(record.response)
+          ?? extractCloudflareAiErrorMessage(record)
+          ?? `Migration planning AI stream ended with ${type}`,
+      );
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+      let separatorIndex = findSseEventSeparator(buffer);
+      while (separatorIndex !== -1) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + sseSeparatorLength(buffer, separatorIndex));
+        consumeEvent(rawEvent);
+        separatorIndex = findSseEventSeparator(buffer);
+      }
+    }
+    if (done) break;
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    consumeEvent(buffer);
+  }
+  if (completedPayload !== undefined) return completedPayload;
+  if (outputText) return { output_text: outputText };
+  throw new Error("Migration planning AI stream ended without a completed response");
+}
+
+function findSseEventSeparator(buffer: string): number {
+  const lf = buffer.indexOf("\n\n");
+  const crlf = buffer.indexOf("\r\n\r\n");
+  if (lf === -1) return crlf;
+  if (crlf === -1) return lf;
+  return Math.min(lf, crlf);
+}
+
+function sseSeparatorLength(buffer: string, index: number): number {
+  return buffer.startsWith("\r\n\r\n", index) ? 4 : 2;
 }
 
 export function parseMigrationPlanningAiResult(result: unknown): MigrationAgentPlan {
@@ -1057,11 +1179,13 @@ export function applyMigrationAgentPlan(
     }
     const deployedApps = proposedDeployedApps
       .filter((appName) => isSupportedDeployedAppAssociation(appName, uniqueSourcePaths, project.name, options.deployedApps ?? []));
+    const uniqueDeployedApps: string[] = [];
     for (const appName of deployedApps) {
       if (seenApps.has(appName)) {
-        throw new Error(`Migration planning agent duplicated deployed app: ${appName}`);
+        continue;
       }
       seenApps.add(appName);
+      uniqueDeployedApps.push(appName);
     }
 
     const baseName = normalizeProjectName(project.name);
@@ -1075,7 +1199,7 @@ export function applyMigrationAgentPlan(
       name,
       description,
       sourcePaths: uniqueSourcePaths,
-      ...(deployedApps.length > 0 ? { deployedApps } : {}),
+      ...(uniqueDeployedApps.length > 0 ? { deployedApps: uniqueDeployedApps } : {}),
       ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
       reason: sanitizeDescription(project.reason) || "Migration planning agent grouped these legacy workspace paths.",
     };

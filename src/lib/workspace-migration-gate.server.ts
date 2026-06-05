@@ -3,6 +3,7 @@ import type {
   LegacyWorkspaceMigrationStatus,
   WorkspaceFilesystemClient,
 } from "../../workers/main/src/workspace-filesystem-do";
+import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../workers/main/src/workspace-filesystem-do";
 
 const ACTIVE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
   "queued",
@@ -11,7 +12,6 @@ const ACTIVE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
   "copying",
   "verifying",
 ]);
-const ACTIVE_MIGRATION_STALE_MS = 20 * 60 * 1000;
 
 export interface WorkspaceMigrationGate {
   workspaceId: string;
@@ -39,10 +39,7 @@ export async function getWorkspaceMigrationGate(
       workspaceFs.listProjects(),
     ]);
 
-    if (
-      ACTIVE_MIGRATION_STATUSES.has(migrationState.status) &&
-      !isStaleMigrationState(migrationState.updatedAt)
-    ) {
+    if (ACTIVE_MIGRATION_STATUSES.has(migrationState.status)) {
       return {
         workspaceId,
         status: migrationState.status,
@@ -54,6 +51,17 @@ export async function getWorkspaceMigrationGate(
       return {
         workspaceId,
         status: migrationState.status,
+        reason: "needed",
+      };
+    }
+
+    if (
+      migrationState.status === "complete" &&
+      migrationState.migrationVersion < CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
+    ) {
+      return {
+        workspaceId,
+        status: "not_started",
         reason: "needed",
       };
     }
@@ -78,9 +86,4 @@ function isLegacyMigrationRuntimeConfigured(env: CloudflareEnv): boolean {
       (typeof env.LEGACY_WORKSPACE_SERVICE_URL === "string" &&
         env.LEGACY_WORKSPACE_SERVICE_URL.trim()),
   );
-}
-
-function isStaleMigrationState(updatedAt: string): boolean {
-  const updatedAtMs = Date.parse(updatedAt);
-  return !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > ACTIVE_MIGRATION_STALE_MS;
 }

@@ -22,6 +22,7 @@ import type { WorkspaceCronDO } from "./workspace-cron";
 import type { WorkerLogsDO } from "./worker-logs-do";
 import {
   WorkspaceFilesystemClient,
+  type LegacyWorkspaceMigrationStatus,
   type WorkspaceFilesystemEnv,
   type WorkspaceProject,
   type WorkspaceProjectCloneSummary,
@@ -306,6 +307,13 @@ interface ResolvedChannelAttachment {
 }
 
 const MAX_CHANNEL_OUTBOUND_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const ACTIVE_LEGACY_WORKSPACE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
+  "queued",
+  "scanning_legacy",
+  "planning",
+  "copying",
+  "verifying",
+]);
 
 export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVmEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -327,6 +335,7 @@ export interface ChatEnv extends WorkspaceFilesystemEnv, ProjectRuntimeServiceVm
   TOKEN_SIGNING_SECRET: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
   CF_DISPATCH_NAMESPACE?: string;
+  ENABLE_LEGACY_WORKSPACE_MIGRATION?: string;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS?: KVNamespace;
   R2_MOUNT_DIR?: string;
@@ -2397,6 +2406,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       throw new Error("tool arguments must be an object");
     }
     const args = rawArgs == null ? {} : rawArgs as Record<string, unknown>;
+    await this.assertWorkspaceNotMigrating();
     const handler = CodeModeToolsBinding.TOOL_CALL_HANDLERS[name];
     if (handler) {
       return this.callToolWithArtifactCapture(name, args, () => handler(this, args, name));
@@ -2554,6 +2564,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       await this.recordCodeModeArtifactBestEffort(name, args, undefined, error);
       throw error;
     }
+  }
+
+  private async assertWorkspaceNotMigrating(): Promise<void> {
+    if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== "1" || !this.env.WORKSPACE_FS) return;
+    const state = await this.workspaceFs.getLegacyWorkspaceMigrationState();
+    if (!ACTIVE_LEGACY_WORKSPACE_MIGRATION_STATUSES.has(state.status)) return;
+    throw new Error(
+      `Workspace legacy migration is currently ${state.status}. The app is temporarily unavailable while camelAI upgrades this workspace. Please check back in 5 minutes.`,
+    );
   }
 
   private async recordCodeModeArtifactBestEffort(

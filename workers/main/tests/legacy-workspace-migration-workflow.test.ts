@@ -11,11 +11,15 @@ import {
   buildMigrationPlanningTextFormat,
   buildLegacyWorkspaceNamingContext,
   parseMigrationPlanningAiResult,
+  readMigrationPlanningResponsesPayload,
   type MigrationDeployedAppContext,
   type LegacyWorkspaceMigrationRuntimeReader,
   type RuntimeFileEntry,
 } from "../src/legacy-workspace-migration-workflow";
-import { WorkspaceFilesystemClient } from "../src/workspace-filesystem-do";
+import {
+  CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
+  WorkspaceFilesystemClient,
+} from "../src/workspace-filesystem-do";
 
 describe("legacy workspace migration workflow", () => {
   it("builds an agent discovery seed plan from top-level legacy paths", () => {
@@ -300,6 +304,53 @@ describe("legacy workspace migration workflow", () => {
     });
 
     expect(updated.projects[0]?.deployedApps).toEqual(["customer-dashboard"]);
+  });
+
+  it("keeps the first valid deployed app association when the agent duplicates it", () => {
+    const deployedApps: MigrationDeployedAppContext[] = [
+      {
+        scriptName: "hello-world-test",
+        configPath: "/home/claude/hello-world-test/wrangler.jsonc",
+        projectId: null,
+        updatedAt: 1,
+        isPublic: true,
+      },
+    ];
+    const plan = {
+      workspaceFiles: [],
+      projects: [
+        {
+          name: "hello-world-test",
+          description: "Old description",
+          sourcePaths: ["/home/claude/hello-world-test"],
+        },
+        {
+          name: "misc",
+          description: "Old description",
+          sourcePaths: ["/home/claude/README.md"],
+        },
+      ],
+    };
+
+    const updated = applyMigrationAgentPlan(plan, {
+      projects: [
+        {
+          name: "hello-world-test",
+          description: "Hello world worker.",
+          sourcePaths: ["/home/claude/hello-world-test"],
+          deployedApps: ["hello-world-test"],
+        },
+        {
+          name: "misc",
+          description: "Loose workspace files.",
+          sourcePaths: ["/home/claude/README.md"],
+          deployedApps: ["hello-world-test"],
+        },
+      ],
+    }, { deployedApps });
+
+    expect(updated.projects[0]?.deployedApps).toEqual(["hello-world-test"]);
+    expect(updated.projects[1]?.deployedApps).toBeUndefined();
   });
 
   it("preserves paths that the migration planning agent omits in misc", () => {
@@ -665,6 +716,7 @@ describe("legacy workspace migration workflow", () => {
 
     expect(request).toMatchObject({
       model: "gpt-5.5",
+      stream: true,
       input: "Plan this workspace",
       text: {
         format: {
@@ -676,6 +728,34 @@ describe("legacy workspace migration workflow", () => {
     expect(request.instructions).toContain(
       "A source path containing wrangler.toml, wrangler.json, or wrangler.jsonc is usually its own Worker app project.",
     );
+  });
+
+  it("reads streaming Responses API output for migration planning", async () => {
+    const encoded = new TextEncoder().encode([
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "{\"projects\":[" })}\n\n`,
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "{\"name\":\"analysis\",\"description\":\"Notebook work\",\"sourcePaths\":[\"/home/claude/analysis\"]}" })}\n\n`,
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "]}" })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""));
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoded);
+        controller.close();
+      },
+    }), {
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const payload = await readMigrationPlanningResponsesPayload(response);
+    expect(parseMigrationPlanningAiResult(payload)).toEqual({
+      projects: [
+        {
+          name: "analysis",
+          description: "Notebook work",
+          sourcePaths: ["/home/claude/analysis"],
+        },
+      ],
+    });
   });
 
   it("parses Responses API structured output migration planning AI results", () => {
@@ -814,6 +894,7 @@ describe("legacy workspace migration workflow", () => {
 
     await expect(workspace.getLegacyWorkspaceMigrationState()).resolves.toMatchObject({
       workspaceId: expect.any(String),
+      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
       status: "not_started",
       attempts: 0,
     });
@@ -836,6 +917,7 @@ describe("legacy workspace migration workflow", () => {
     expect(state).toMatchObject({
       workspaceId: expect.any(String),
       orgId: "org-1",
+      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
       status: "copying",
       workflowId: "workflow-1",
       attempts: 1,
@@ -886,5 +968,50 @@ describe("legacy workspace migration workflow", () => {
     });
     expect(complete.error).toBeUndefined();
     expect(complete.completedAt).toBe("2026-06-05T00:00:00.000Z");
+  });
+
+  it("clears previous migration progress when queueing a rerun", async () => {
+    const workspaceId = `migration-rerun-clear-${crypto.randomUUID()}`;
+    const workspace = new WorkspaceFilesystemClient(env, workspaceId);
+
+    await workspace.setLegacyWorkspaceMigrationState({
+      status: "complete",
+      plan: {
+        projects: [
+          {
+            name: "bad-project",
+            description: "Old bad plan",
+            sourcePaths: ["/home/claude/bad-project"],
+          },
+        ],
+      },
+      createdProjects: ["bad-project"],
+      copiedFiles: 10,
+      copiedBytes: 1024,
+      skippedPaths: ["/home/claude/.cache"],
+      diagnostics: { legacyRoot: "/home/claude", legacyFileCount: 1 },
+      startedAt: "2026-06-04T00:00:00.000Z",
+      completedAt: "2026-06-05T00:00:00.000Z",
+    });
+
+    const queued = await workspace.setLegacyWorkspaceMigrationState({
+      status: "queued",
+      orgId: "org-1",
+      workflowId: "workflow-rerun",
+    });
+
+    expect(queued).toMatchObject({
+      status: "queued",
+      orgId: "org-1",
+      workflowId: "workflow-rerun",
+    });
+    expect(queued.plan).toBeUndefined();
+    expect(queued.createdProjects).toBeUndefined();
+    expect(queued.copiedFiles).toBeUndefined();
+    expect(queued.copiedBytes).toBeUndefined();
+    expect(queued.skippedPaths).toBeUndefined();
+    expect(queued.diagnostics).toBeUndefined();
+    expect(queued.startedAt).toBeUndefined();
+    expect(queued.completedAt).toBeUndefined();
   });
 });

@@ -132,7 +132,10 @@ import {
 } from "../../ban-list.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
-import { WorkspaceFilesystemClient } from "../../workspace-filesystem-do.js";
+import {
+  CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
+  WorkspaceFilesystemClient,
+} from "../../workspace-filesystem-do.js";
 import { startLegacyWorkspaceMigrationWorkflow } from "../../legacy-workspace-migration-workflow.js";
 
 type HonoEnv = { Bindings: Env };
@@ -401,6 +404,9 @@ const LegacyWorkspaceMigrationTriggerResponseSchema = z.object({
   status: z.literal("queued"),
 });
 
+const ACTIVE_LEGACY_MIGRATION_STATUSES = new Set(["queued", "scanning_legacy", "planning", "copying", "verifying"]);
+const ACTIVE_WORKFLOW_INSTANCE_STATUSES = new Set(["queued", "running", "paused", "waiting", "waitingForPause"]);
+
 // ---------------------------------------------------------------------------
 // Cache-Control middleware for GET endpoints
 // ---------------------------------------------------------------------------
@@ -489,17 +495,28 @@ routes.post(
     const state = await workspaceFs.getLegacyWorkspaceMigrationState();
     const force = body.force === true;
     const dryRun = body.dry_run === true;
+    const migrationIsCurrent = state.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION;
 
-    const activeMigrationStatuses = new Set(["queued", "scanning_legacy", "planning", "copying", "verifying"]);
-    if (!force && activeMigrationStatuses.has(state.status)) {
-      return c.json({ error: `Migration is already ${state.status}` }, 409);
+    if (ACTIVE_LEGACY_MIGRATION_STATUSES.has(state.status)) {
+      if (!force) {
+        return c.json({ error: `Migration is already ${state.status}` }, 409);
+      }
+      if (state.workflowId) {
+        const instance = await c.env.LEGACY_WORKSPACE_MIGRATIONS.get(state.workflowId);
+        const workflowStatus = await instance.status();
+        if (ACTIVE_WORKFLOW_INSTANCE_STATUSES.has(workflowStatus.status)) {
+          return c.json({
+            error: `Migration is already ${state.status} and workflow ${state.workflowId} is ${workflowStatus.status}`,
+          }, 409);
+        }
+      }
     }
-    if (!dryRun && !force && state.status !== "not_started" && state.status !== "failed") {
-      return c.json({ error: `Migration is already ${state.status}` }, 409);
+    if (!dryRun && !force && migrationIsCurrent && state.status !== "not_started" && state.status !== "failed") {
+      return c.json({ error: `Migration is already ${state.status}; pass force to enqueue a rerun` }, 409);
     }
 
     const projects = await workspaceFs.listProjects();
-    if (!dryRun && !force && projects.length > 0) {
+    if (!dryRun && !force && migrationIsCurrent && projects.length > 0) {
       return c.json({ error: "Workspace already has projects; pass force to enqueue anyway" }, 409);
     }
 
@@ -511,13 +528,22 @@ routes.post(
       orgId,
       workflowId,
     });
-    await startLegacyWorkspaceMigrationWorkflow(c.env, {
-      workflowId,
-      workspaceId,
-      orgId,
-      requestedBy: body.requested_by || "admin-api",
-      dryRun,
-    });
+    try {
+      await startLegacyWorkspaceMigrationWorkflow(c.env, {
+        workflowId,
+        workspaceId,
+        orgId,
+        requestedBy: body.requested_by || "admin-api",
+        dryRun,
+      });
+    } catch (error) {
+      await workspaceFs.setLegacyWorkspaceMigrationState({
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        completedAt: new Date().toISOString(),
+      });
+      throw error;
+    }
 
     return c.json({
       success: true,

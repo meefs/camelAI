@@ -127,6 +127,7 @@ export interface LegacyWorkspaceMigrationDiagnostics {
 export interface LegacyWorkspaceMigrationState {
   workspaceId: string;
   orgId?: string;
+  migrationVersion: number;
   status: LegacyWorkspaceMigrationStatus;
   workflowId?: string;
   leaseId?: string;
@@ -209,6 +210,7 @@ export interface ProjectArtifactToken {
 }
 
 const PROJECTS_KEY = "projects:v1";
+export const CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION = 2;
 const LEGACY_MIGRATION_KEY = "legacy-workspace-migration:v1";
 const DEFAULT_PROJECT_VM_ID = "main";
 const ARTIFACTS_DEFAULT_BRANCH = "main";
@@ -526,6 +528,7 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       ...current,
       ...input,
       workspaceId: this.ctx.id.toString(),
+      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
       attempts:
         typeof input.attempts === "number" && Number.isFinite(input.attempts)
           ? Math.max(0, Math.floor(input.attempts))
@@ -534,6 +537,17 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     };
     if (!next.startedAt && next.status !== "not_started" && next.status !== "queued") {
       next.startedAt = now;
+    }
+    if (next.status === "queued" || next.status === "not_started") {
+      delete next.plan;
+      delete next.createdProjects;
+      delete next.copiedFiles;
+      delete next.copiedBytes;
+      delete next.skippedPaths;
+      delete next.diagnostics;
+      delete next.leaseId;
+      delete next.startedAt;
+      delete next.completedAt;
     }
     if (next.status !== "failed") {
       delete next.error;
@@ -584,9 +598,15 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
 
   private async readLegacyWorkspaceMigrationState(): Promise<LegacyWorkspaceMigrationState> {
     const value = await this.ctx.storage.kv.get<LegacyWorkspaceMigrationState>(LEGACY_MIGRATION_KEY);
-    if (isLegacyWorkspaceMigrationState(value)) return value;
+    if (isLegacyWorkspaceMigrationState(value)) {
+      return {
+        ...value,
+        migrationVersion: normalizeLegacyWorkspaceMigrationVersion(value.migrationVersion),
+      };
+    }
     return {
       workspaceId: this.ctx.id.toString(),
+      migrationVersion: CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
       status: "not_started",
       attempts: 0,
       updatedAt: new Date(0).toISOString(),
@@ -955,6 +975,12 @@ function isWorkspaceProject(value: unknown): value is WorkspaceProject {
       typeof (value as WorkspaceProject).id === "string" &&
       typeof (value as WorkspaceProject).name === "string",
   );
+}
+
+function normalizeLegacyWorkspaceMigrationVersion(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : 0;
 }
 
 function isLegacyWorkspaceMigrationState(value: unknown): value is LegacyWorkspaceMigrationState {

@@ -18,6 +18,7 @@ import {
 } from '../../../src/lib/model-picker-config';
 import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
 import {
+  CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
   WorkspaceFilesystemClient,
   type LegacyWorkspaceMigrationStatus,
   type WorkspaceFilesystemDO,
@@ -44,7 +45,6 @@ const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
 // Crash-cleanup horizon for detached turns. This should be much longer than a
 // normal coding-agent turn so long-running work does not disappear from status.
 const THREAD_STREAMING_STATUS_TTL_MS = 24 * 60 * 60 * 1000;
-const LEGACY_MIGRATION_ACTIVE_STALE_MS = 20 * 60 * 1000;
 const LEGACY_MIGRATION_ACTIVE_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
   'queued',
   'scanning_legacy',
@@ -68,11 +68,6 @@ function normalizeRunningActivityText(value: unknown): string | null {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (!normalized) return null;
   return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
-}
-
-function isStaleLegacyMigrationState(updatedAt: string): boolean {
-  const updatedAtMs = Date.parse(updatedAt);
-  return !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > LEGACY_MIGRATION_ACTIVE_STALE_MS;
 }
 
 /**
@@ -731,18 +726,15 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return;
     const workspaceFs = new WorkspaceFilesystemClient(this.env as never, info.id);
     const state = await workspaceFs.getLegacyWorkspaceMigrationState();
+    const migrationIsCurrent = state.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION;
     if (LEGACY_MIGRATION_ACTIVE_STATUSES.has(state.status)) {
-      if (!isStaleLegacyMigrationState(state.updatedAt)) return;
-      await workspaceFs.setLegacyWorkspaceMigrationState({
-        status: 'failed',
-        error: `Previous legacy workspace migration stalled in ${state.status}`,
-      });
-    } else if (state.status !== 'not_started') {
+      return;
+    } else if (migrationIsCurrent && state.status !== 'not_started') {
       return;
     }
 
     const projects = await workspaceFs.listProjects();
-    if (projects.length > 0) return;
+    if (migrationIsCurrent && projects.length > 0) return;
 
     const workflowId = `legacy-migration-${info.id}-${state.attempts + 1}-${Date.now().toString(36)}`;
     await workspaceFs.setLegacyWorkspaceMigrationState({
