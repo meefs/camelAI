@@ -2567,7 +2567,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async assertWorkspaceNotMigrating(): Promise<void> {
-    if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== "1" || !this.env.WORKSPACE_FS) return;
+    if (!this.env || this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== "1" || !this.env.WORKSPACE_FS) return;
     const state = await this.workspaceFs.getLegacyWorkspaceMigrationState();
     if (!ACTIVE_LEGACY_WORKSPACE_MIGRATION_STATUSES.has(state.status)) return;
     throw new Error(
