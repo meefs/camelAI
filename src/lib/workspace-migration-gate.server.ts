@@ -1,5 +1,6 @@
 import type { CloudflareEnv } from "@/lib/cloudflare.server";
 import type {
+  LegacyWorkspaceMigrationState,
   LegacyWorkspaceMigrationStatus,
   WorkspaceFilesystemClient,
 } from "../../workers/main/src/workspace-filesystem-do";
@@ -48,10 +49,11 @@ export async function getWorkspaceMigrationGate(
     }
 
     if (migrationState.status === "not_started" && projects.length === 0) {
+      const queuedState = await enqueueWorkspaceMigration(env, workspaceId);
       return {
         workspaceId,
-        status: migrationState.status,
-        reason: "needed",
+        status: queuedState?.status ?? migrationState.status,
+        reason: queuedState && ACTIVE_MIGRATION_STATUSES.has(queuedState.status) ? "active" : "needed",
       };
     }
 
@@ -59,10 +61,11 @@ export async function getWorkspaceMigrationGate(
       migrationState.status === "complete" &&
       migrationState.migrationVersion < CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION
     ) {
+      const queuedState = await enqueueWorkspaceMigration(env, workspaceId);
       return {
         workspaceId,
-        status: "not_started",
-        reason: "needed",
+        status: queuedState?.status ?? "not_started",
+        reason: queuedState && ACTIVE_MIGRATION_STATUSES.has(queuedState.status) ? "active" : "needed",
       };
     }
   } catch (error) {
@@ -78,6 +81,19 @@ async function createWorkspaceFilesystemClient(
 ): Promise<WorkspaceFilesystemClient> {
   const { WorkspaceFilesystemClient } = await import("../../workers/main/src/workspace-filesystem-do");
   return new WorkspaceFilesystemClient(env as never, workspaceId);
+}
+
+async function enqueueWorkspaceMigration(
+  env: CloudflareEnv,
+  workspaceId: string,
+): Promise<LegacyWorkspaceMigrationState | null> {
+  try {
+    const workspace = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+    return await workspace.ensureLegacyWorkspaceMigrationQueued();
+  } catch (error) {
+    console.error("Failed to enqueue workspace migration:", error);
+    return null;
+  }
 }
 
 function isLegacyMigrationRuntimeConfigured(env: CloudflareEnv): boolean {

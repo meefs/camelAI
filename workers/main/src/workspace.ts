@@ -20,6 +20,7 @@ import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
 import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from '../../../src/lib/legacy-workspace-migration-version';
 import {
   WorkspaceFilesystemClient,
+  type LegacyWorkspaceMigrationState,
   type LegacyWorkspaceMigrationStatus,
   type WorkspaceFilesystemDO,
 } from './workspace-filesystem-do';
@@ -677,6 +678,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
   }
   async getInfo(): Promise<Workspace | null> {
+    const info = await this.getStoredInfo();
+    if (!info) return null;
+    this.enqueueLegacyWorkspaceMigrationIfNeeded(info);
+    return info;
+  }
+
+  private async getStoredInfo(): Promise<Workspace | null> {
     const rows = this.sql.exec('SELECT value FROM workspace_info WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
     const info = JSON.parse((rows[0] as { value: string }).value) as Workspace;
@@ -701,8 +709,16 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (changed) {
       await this.setInfo(info);
     }
-    this.enqueueLegacyWorkspaceMigrationIfNeeded(info);
     return info;
+  }
+
+  async ensureLegacyWorkspaceMigrationQueued(): Promise<LegacyWorkspaceMigrationState | null> {
+    const info = await this.getStoredInfo();
+    if (!info) return null;
+    if (this.env.ENABLE_LEGACY_WORKSPACE_MIGRATION !== '1') return null;
+    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return null;
+    if (info.archived) return null;
+    return await this.startLegacyWorkspaceMigrationIfNeeded(info);
   }
 
   private enqueueLegacyWorkspaceMigrationIfNeeded(info: Workspace): void {
@@ -722,22 +738,22 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
   }
 
-  private async startLegacyWorkspaceMigrationIfNeeded(info: Workspace): Promise<void> {
-    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return;
+  private async startLegacyWorkspaceMigrationIfNeeded(info: Workspace): Promise<LegacyWorkspaceMigrationState | null> {
+    if (!this.env.WORKSPACE_FS || !this.env.LEGACY_WORKSPACE_MIGRATIONS || !this.env.MIGRATION_PLANNING_AGENT) return null;
     const workspaceFs = new WorkspaceFilesystemClient(this.env as never, info.id);
     const state = await workspaceFs.getLegacyWorkspaceMigrationState();
     const migrationIsCurrent = state.migrationVersion >= CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION;
     if (LEGACY_MIGRATION_ACTIVE_STATUSES.has(state.status)) {
-      return;
+      return state;
     } else if (migrationIsCurrent && state.status !== 'not_started') {
-      return;
+      return state;
     }
 
     const projects = await workspaceFs.listProjects();
-    if (projects.length > 0 && migrationIsCurrent) return;
+    if (projects.length > 0 && migrationIsCurrent) return state;
 
     const workflowId = `legacy-migration-${info.id}-${state.attempts + 1}-${Date.now().toString(36)}`;
-    await workspaceFs.setLegacyWorkspaceMigrationState({
+    const queuedState = await workspaceFs.setLegacyWorkspaceMigrationState({
       status: 'queued',
       orgId: info.org_id,
       workflowId,
@@ -749,6 +765,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       requestedBy: 'workspace-wake',
       dryRun: false,
     });
+    return queuedState;
   }
 
   private async claimEmailHandle(workspaceId: string): Promise<string> {

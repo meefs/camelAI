@@ -13,6 +13,8 @@ type LegacyMigration = {
 const testState = vi.hoisted(() => ({
   loaderData: { current: undefined as unknown },
   navigate: vi.fn(),
+  revalidate: vi.fn(),
+  revalidatorState: "idle" as "idle" | "loading" | "submitting",
 }));
 
 vi.mock("react-router", async (importOriginal) => {
@@ -23,6 +25,10 @@ vi.mock("react-router", async (importOriginal) => {
     Outlet: () => <div data-testid="outlet" />,
     useLoaderData: () => testState.loaderData.current,
     useNavigate: () => testState.navigate,
+    useRevalidator: () => ({
+      revalidate: testState.revalidate,
+      state: testState.revalidatorState,
+    }),
   };
 });
 
@@ -117,11 +123,17 @@ function makeLoaderData({
   legacyMigration,
   billingAccessReady = true,
   appRouteAccessible = billingAccessReady,
+  projectMigrationGate = null,
 }: {
   orgId: string;
   legacyMigration: LegacyMigration | null;
   billingAccessReady?: boolean;
   appRouteAccessible?: boolean;
+  projectMigrationGate?: {
+    workspaceId: string;
+    status: string;
+    reason: string;
+  } | null;
 }) {
   return {
     authState: {
@@ -148,12 +160,15 @@ function makeLoaderData({
           multiOrg: true,
           byokProviderLabel: null,
         },
+    projectMigrationGate,
   };
 }
 
 describe("AppLayout legacy migration disclosure", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
+    testState.revalidatorState = "idle";
     testState.loaderData.current = makeLoaderData({
       orgId: "org_free",
       legacyMigration: null,
@@ -268,5 +283,53 @@ describe("AppLayout legacy migration disclosure", () => {
     expect(
       screen.queryByTestId("legacy-migration-dialog"),
     ).not.toBeInTheDocument();
+  });
+
+  it("polls while the project migration screen is active", () => {
+    vi.useFakeTimers();
+    testState.loaderData.current = makeLoaderData({
+      orgId: "org_migrating",
+      legacyMigration: null,
+      projectMigrationGate: {
+        workspaceId: "workspace-1",
+        status: "copying",
+        reason: "active",
+      },
+    });
+
+    render(<AppLayout />);
+
+    expect(screen.getByText(/camelAI migration in progress/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("outlet")).not.toBeInTheDocument();
+    expect(testState.revalidate).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(5_000);
+
+    expect(testState.revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops showing the migration screen when refreshed loader data clears the gate", () => {
+    testState.loaderData.current = makeLoaderData({
+      orgId: "org_migrating",
+      legacyMigration: null,
+      projectMigrationGate: {
+        workspaceId: "workspace-1",
+        status: "copying",
+        reason: "active",
+      },
+    });
+    const { rerender } = render(<AppLayout />);
+
+    expect(screen.getByText(/camelAI migration in progress/i)).toBeInTheDocument();
+
+    testState.loaderData.current = makeLoaderData({
+      orgId: "org_migrating",
+      legacyMigration: null,
+      projectMigrationGate: null,
+    });
+    rerender(<AppLayout />);
+
+    expect(screen.queryByText(/camelAI migration in progress/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("outlet")).toBeInTheDocument();
   });
 });

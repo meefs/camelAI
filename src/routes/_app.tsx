@@ -7,6 +7,7 @@ import {
   data,
   useLoaderData,
   useNavigate,
+  useRevalidator,
 } from "react-router";
 import type { Route } from "./+types/_app";
 import { requireAuthContext } from "@/lib/auth.server";
@@ -35,6 +36,7 @@ import { getByokProviderLabel } from "@/lib/byok-providers";
 import { getWorkspaceMigrationGate } from "@/lib/workspace-migration-gate.server";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
+const PROJECT_MIGRATION_POLL_INTERVAL_MS = 5_000;
 
 export function shouldRevalidate({
   formData,
@@ -200,6 +202,17 @@ export default function AppLayout() {
   } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
+  const revalidator = useRevalidator();
+
+  useEffect(() => {
+    if (!projectMigrationGate) return;
+    const interval = window.setInterval(() => {
+      if (revalidator.state === "idle") {
+        revalidator.revalidate();
+      }
+    }, PROJECT_MIGRATION_POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [projectMigrationGate, revalidator]);
 
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
@@ -271,8 +284,8 @@ function WorkspaceMigrationInProgress() {
           <CardTitle className="text-base">camelAI migration in progress</CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
-          We are upgrading camel&apos;s abilities. Please check back in 5
-          minutes.
+          We are upgrading camel&apos;s abilities. This page will refresh
+          automatically when migration is complete.
         </CardContent>
       </Card>
     </div>
