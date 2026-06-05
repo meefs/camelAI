@@ -2,6 +2,10 @@ package app
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,12 +25,20 @@ func TestSandboxNameNormalization(t *testing.T) {
 func TestHeaderCloningStripsMiniflareProxyHeaders(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("MF-Proxy-Shared-Secret", "local-secret")
+	headers.Set("X-Sandbox-Secret", "caller-secret")
+	headers.Set("X-Chiridion-Thread-Id", "caller-thread")
 	headers.Set("X-Test", "kept")
 
 	copied := http.Header{}
 	copyHeaders(copied, headers)
 	if copied.Get("MF-Proxy-Shared-Secret") != "" {
 		t.Fatal("expected copyHeaders to strip Miniflare proxy headers")
+	}
+	if copied.Get("X-Sandbox-Secret") != "" {
+		t.Fatal("expected copyHeaders to strip sandbox proxy secret")
+	}
+	if copied.Get("X-Chiridion-Thread-Id") != "" {
+		t.Fatal("expected copyHeaders to strip Chiridion identity headers")
 	}
 	if copied.Get("X-Test") != "kept" {
 		t.Fatalf("expected normal copied header to be preserved, got %q", copied.Get("X-Test"))
@@ -43,6 +55,28 @@ func TestParseWorkspaceRoute(t *testing.T) {
 	}
 	if route.Name != "chiridion-ws-ws-2" {
 		t.Fatalf("unexpected sandbox name: %s", route.Name)
+	}
+}
+
+func TestParseWorkspaceRouteWithThreadTokenScopedCloudflareProxy(t *testing.T) {
+	route, ok := parseWorkspaceRoute("/v1/workspaces/org-1/ws-2/thread-tokens/signed-token/client/v4/accounts/acct")
+	if !ok {
+		t.Fatal("expected route to parse")
+	}
+	if route.OrgID != "org-1" || route.WorkspaceID != "ws-2" || route.ThreadToken != "signed-token" || route.Subpath != "/client/v4/accounts/acct" {
+		t.Fatalf("unexpected route: %+v", route)
+	}
+}
+
+func TestParseWorkspaceRouteRejectsNonProxyThreadTokenScopedRoute(t *testing.T) {
+	if _, ok := parseWorkspaceRoute("/v1/workspaces/org-1/ws-2/thread-tokens/signed-token/fs/read"); ok {
+		t.Fatal("expected non-proxy thread-token-scoped route to be rejected")
+	}
+}
+
+func TestParseWorkspaceRouteRejectsLegacyThreadIdScopedRoute(t *testing.T) {
+	if _, ok := parseWorkspaceRoute("/v1/workspaces/org-1/ws-2/threads/thread-3/client/v4/accounts/acct"); ok {
+		t.Fatal("expected caller-controlled thread-id scoped route to be rejected")
 	}
 }
 
@@ -151,6 +185,14 @@ func TestForwardDataProxyRequest(t *testing.T) {
 }
 
 func TestForwardCloudflareAPIProxyRequest(t *testing.T) {
+	threadToken := signedSandboxThreadScopeToken(t, "shared-secret", map[string]any{
+		"org_id":       "org-1",
+		"org_slug":     "org-1",
+		"workspace_id": "ws-1",
+		"thread_id":    "thread-1",
+		"scopes":       []string{"sandbox_thread"},
+		"exp":          time.Now().Add(time.Hour).UnixMilli(),
+	})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/client/v4/accounts/acct/workers/dispatch/namespaces/ns/scripts/app" {
 			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
@@ -163,6 +205,9 @@ func TestForwardCloudflareAPIProxyRequest(t *testing.T) {
 		}
 		if req.Header.Get("X-Chiridion-Workspace-Id") != "ws-1" {
 			t.Fatalf("missing workspace forwarding header: %q", req.Header.Get("X-Chiridion-Workspace-Id"))
+		}
+		if req.Header.Get("X-Chiridion-Thread-Id") != "thread-1" {
+			t.Fatalf("missing trusted thread forwarding header: %q", req.Header.Get("X-Chiridion-Thread-Id"))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"success":true}`))
@@ -180,10 +225,12 @@ func TestForwardCloudflareAPIProxyRequest(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/org-1/ws-1/client/v4/accounts/acct/workers/dispatch/namespaces/ns/scripts/app", nil)
+	req.Header.Set("X-Chiridion-Thread-Id", "caller-spoofed-thread")
 	rec := httptest.NewRecorder()
 	route := WorkspaceRoute{
 		OrgID:       "org-1",
 		WorkspaceID: "ws-1",
+		ThreadToken: threadToken,
 		Subpath:     "/client/v4/accounts/acct/workers/dispatch/namespaces/ns/scripts/app",
 	}
 
@@ -196,6 +243,100 @@ func TestForwardCloudflareAPIProxyRequest(t *testing.T) {
 	if got := rec.Body.String(); got != `{"success":true}` {
 		t.Fatalf("unexpected body: %q", got)
 	}
+}
+
+func TestForwardCloudflareAPIProxyRequestRejectsInvalidThreadToken(t *testing.T) {
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		upstreamCalled = true
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			WorkerBaseURL:      upstream.URL,
+			SandboxProxySecret: "shared-secret",
+		},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/org-1/ws-1/client/v4/accounts/acct", nil)
+	rec := httptest.NewRecorder()
+	route := WorkspaceRoute{
+		OrgID:       "org-1",
+		WorkspaceID: "ws-1",
+		ThreadToken: signedSandboxThreadScopeToken(t, "shared-secret", map[string]any{
+			"org_id":       "org-1",
+			"org_slug":     "org-1",
+			"workspace_id": "other-workspace",
+			"thread_id":    "thread-1",
+			"scopes":       []string{"sandbox_thread"},
+			"exp":          time.Now().Add(time.Hour).UnixMilli(),
+		}),
+		Subpath: "/client/v4/accounts/acct",
+	}
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unexpected status: got=%d want=%d body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if upstreamCalled {
+		t.Fatal("expected invalid token request not to reach upstream")
+	}
+}
+
+func TestForwardCloudflareAPIProxyRequestStripsCallerThreadHeaderWhenRouteHasNoThread(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("X-Chiridion-Thread-Id") != "" {
+			t.Fatalf("expected caller thread header to be stripped, got %q", req.Header.Get("X-Chiridion-Thread-Id"))
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			WorkerBaseURL:      upstream.URL,
+			SandboxProxySecret: "shared-secret",
+		},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/org-1/ws-1/client/v4/accounts/acct", nil)
+	req.Header.Set("X-Chiridion-Thread-Id", "caller-spoofed-thread")
+	rec := httptest.NewRecorder()
+	route := WorkspaceRoute{
+		OrgID:       "org-1",
+		WorkspaceID: "ws-1",
+		Subpath:     "/client/v4/accounts/acct",
+	}
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+}
+
+func signedSandboxThreadScopeToken(t *testing.T, secret string, payload map[string]any) string {
+	t.Helper()
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal token payload: %v", err)
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(payloadBytes)
+	return "st_" +
+		base64.RawURLEncoding.EncodeToString(payloadBytes) +
+		"." +
+		base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 type chunkReader struct {

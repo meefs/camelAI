@@ -5,7 +5,7 @@ The sandbox host runs on the Azure VM and manages:
 - Docker + gVisor sandbox lifecycle
 - Per-sandbox host directories under `WORKSPACES_ROOT`
 - Control-plane proxying (`/health`, `/chat`)
-- Wrangler deploy proxying (`/v1/workspaces/{orgId}/{workspaceId}/client/v4/*`)
+- Wrangler deploy proxying (`/v1/workspaces/{orgId}/{workspaceId}/thread-tokens/{token}/client/v4/*`)
 - Data proxy forwarding (`/v1/workspaces/{orgId}/{workspaceId}/data-proxy/*`)
 
 Requires Go 1.24+.
@@ -24,9 +24,9 @@ Data proxy:
 
 Wrangler deploy proxy:
 
-- Containers use `CLOUDFLARE_API_BASE_URL=http://host.docker.internal:8081/v1/workspaces/{orgId}/{workspaceId}/client/v4`.
+- Containers use `CLOUDFLARE_API_BASE_URL=http://host.docker.internal:8081/v1/workspaces/{orgId}/{workspaceId}/thread-tokens/{token}/client/v4` when a chat thread is active and `SANDBOX_PROXY_SECRET` is configured, otherwise the legacy workspace-scoped `/v1/workspaces/{orgId}/{workspaceId}/client/v4` path.
 - sandbox-host maps `host.docker.internal` with Docker's `host-gateway` so the name resolves inside Linux bridge containers.
-- sandbox-host forwards those requests to the main Worker (`WORKER_BASE_URL`) and adds `SANDBOX_PROXY_SECRET` plus org/workspace identity headers.
+- sandbox-host forwards those requests to the main Worker (`WORKER_BASE_URL`) and adds `SANDBOX_PROXY_SECRET` plus org/workspace identity headers. Thread identity is forwarded only after validating the server-issued thread token; caller-supplied internal identity headers are stripped.
 - This avoids per-command signed deploy tokens in the sandbox; the main Worker still handles Cloudflare API allowlisting, binding validation, and deploy side effects.
 
 VM firewall rules block `docker0` traffic to `PORT`.

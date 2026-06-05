@@ -54,7 +54,10 @@ export interface ChannelThreadResolution {
 
 const CHANNEL_THREAD_MAP_PREFIX = "channel_thread:";
 const EMAIL_REPLY_REFERENCE_PREFIX = "email_reply_ref:";
+const EMAIL_THREAD_REFERENCES_PREFIX = "email_thread_refs:";
 export const EMAIL_REPLY_REFERENCE_TTL_SECONDS = 180 * 24 * 60 * 60;
+export const EMAIL_THREAD_REFERENCE_LIMIT = 20;
+export const EMAIL_HEADER_VALUE_MAX_BYTES = 2048;
 const CHANNEL_REPLY_TOOLS: Record<string, string> = {
   email: "send_email",
   slack: "send_slack_message",
@@ -104,7 +107,7 @@ export function getChannelDedupeKey(
 }
 
 export function normalizeEmailReplyMessageId(messageId: string): string | null {
-  const trimmed = messageId.trim();
+  const trimmed = messageId.replace(/[\r\n]+/g, " ").trim();
   if (!trimmed) return null;
   const bracketed = trimmed.match(/^<([^>]+)>$/);
   return (bracketed ? bracketed[1] : trimmed).trim() || null;
@@ -118,6 +121,90 @@ export function getEmailReplyReferenceKey(
   const safeWorkspaceId = safeChannelKeyPart(workspaceId) || "workspace";
   const safeMessageId = safeChannelKeyPart(normalizedMessageId) || "message";
   return `${EMAIL_REPLY_REFERENCE_PREFIX}${safeWorkspaceId}:${safeMessageId}`;
+}
+
+export function getEmailThreadReferencesKey(
+  workspaceId: string,
+  threadId: string,
+): string {
+  const safeWorkspaceId = safeChannelKeyPart(workspaceId) || "workspace";
+  const safeThreadId = safeChannelKeyPart(threadId) || "thread";
+  return `${EMAIL_THREAD_REFERENCES_PREFIX}${safeWorkspaceId}:${safeThreadId}`;
+}
+
+export function appendEmailThreadReferenceIds(
+  existing: Array<string | null | undefined>,
+  ...nextIds: Array<string | null | undefined>
+): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of [...existing, ...nextIds]) {
+    if (!value) continue;
+    const normalized = normalizeEmailReplyMessageId(value);
+    if (!normalized) continue;
+    const dedupeKey = normalized.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    result.push(normalized);
+  }
+
+  return result.slice(-EMAIL_THREAD_REFERENCE_LIMIT);
+}
+
+export function formatEmailMessageIdHeader(
+  messageId: string | null | undefined,
+): string | null {
+  if (!messageId) return null;
+  const normalized = normalizeEmailReplyMessageId(messageId);
+  if (!normalized) return null;
+  const safe = normalized
+    .replace(/[<>\r\n]+/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+  return safe ? `<${safe}>` : null;
+}
+
+function emailHeaderValueByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function trimEmailHeaderValuesByByteLength(values: string[]): string[] {
+  let startIndex = 0;
+  while (
+    startIndex < values.length &&
+    emailHeaderValueByteLength(values.slice(startIndex).join(" ")) >
+      EMAIL_HEADER_VALUE_MAX_BYTES
+  ) {
+    startIndex += 1;
+  }
+  return values.slice(startIndex);
+}
+
+export function buildEmailReplyHeaders(args: {
+  inReplyToMessageId?: string | null;
+  referenceMessageIds?: Array<string | null | undefined>;
+}): Record<string, string> | undefined {
+  const inReplyTo = formatEmailMessageIdHeader(args.inReplyToMessageId);
+  const references = appendEmailThreadReferenceIds(
+    args.referenceMessageIds || [],
+    args.inReplyToMessageId,
+  )
+    .map(formatEmailMessageIdHeader)
+    .filter((value): value is string => Boolean(value));
+  const trimmedReferences = trimEmailHeaderValuesByByteLength(references);
+
+  const headers: Record<string, string> = {};
+  if (
+    inReplyTo &&
+    emailHeaderValueByteLength(inReplyTo) <= EMAIL_HEADER_VALUE_MAX_BYTES
+  ) {
+    headers["In-Reply-To"] = inReplyTo;
+  }
+  if (trimmedReferences.length > 0) {
+    headers.References = trimmedReferences.join(" ");
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
 export function getChannelReplyToolName(kind: ChannelKind): string | null {

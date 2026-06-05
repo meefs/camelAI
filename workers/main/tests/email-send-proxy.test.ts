@@ -61,10 +61,13 @@ const SANDBOX_HEADERS = {
   'x-chiridion-workspace-id': 'ws-1',
 };
 
-function makeRequest(body: Record<string, unknown>) {
+function makeRequest(
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) {
   return new Request('https://camelai.dev/api/email/send', {
     method: 'POST',
-    headers: SANDBOX_HEADERS,
+    headers: { ...SANDBOX_HEADERS, ...headers },
     body: JSON.stringify(body),
   });
 }
@@ -77,17 +80,39 @@ const MEMBERS = [
 
 let emailSendMock: ReturnType<typeof vi.fn>;
 
+function createMockKvStore(initial?: Record<string, string>) {
+  const store = new Map<string, string>(Object.entries(initial || {}));
+  return {
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    put: vi.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    }),
+    _store: store,
+  };
+}
+
 function buildEnv(overrides: {
   rateAllowed?: boolean;
   workspaceMembers?: Array<{ user_id: string; access_level: string }>;
   billingPlan?: string;
   billingStatus?: string;
+  thread?: Record<string, unknown> | null;
+  appKvInitial?: Record<string, string>;
   [key: string]: unknown;
 } = {}) {
-  const { rateAllowed, workspaceMembers, billingPlan, billingStatus, ...rest } = overrides;
+  const {
+    rateAllowed,
+    workspaceMembers,
+    billingPlan,
+    billingStatus,
+    thread,
+    appKvInitial,
+    ...rest
+  } = overrides;
   // Default: all MEMBERS have full access
   const allMembers = workspaceMembers ?? MEMBERS.map((m) => ({ user_id: m.user_id, access_level: 'full' }));
   const workspaceStub = makeWorkspaceStub(allMembers, rateAllowed !== false);
+  const appKvStore = createMockKvStore(appKvInitial);
 
   const userStubs = new Map<string, ReturnType<typeof makeUserStub>>();
   for (const m of MEMBERS) {
@@ -110,14 +135,19 @@ function buildEnv(overrides: {
           billing_plan: billingPlan ?? 'starter',
           billing_status: billingStatus ?? 'active',
         })),
+        getThread: vi.fn(async (threadId: string) =>
+          thread && (thread.id === threadId || !thread.id) ? thread : null
+        ),
       })),
     },
+    APP_KV: appKvStore,
     USER: {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn((id: string) => userStubs.get(id) ?? makeUserStub('unknown@example.com')),
     },
     ...rest,
     _workspaceStub: workspaceStub,
+    _appKvStore: appKvStore,
   };
 }
 
@@ -283,6 +313,323 @@ describe('email-send-proxy route', () => {
     expect(sentBody.subject).toBe('Hello Alice');
     // from is always the workspace address, not caller-supplied
     expect(sentBody.from).toBe('Camel <swift-tiger-moon@camelai.dev>');
+  });
+
+  it('adds RFC reply headers for sandbox sends from email-originated threads', async () => {
+    const env = buildEnv({
+      thread: {
+        id: 'thread-1',
+        workspace_id: 'ws-1',
+        source: 'channel',
+        channel_kind: 'email',
+        channel_connection_id: 'swift-tiger-moon@camelai.dev',
+        channel_conversation_id: 'message:first-user@example.com',
+        channel_message_id: 'first-user@example.com',
+      },
+      appKvInitial: {
+        'email_thread_refs:ws-1:thread-1': JSON.stringify([
+          'first-user@example.com',
+          'latest-user@example.com',
+        ]),
+      },
+    });
+    emailSendMock.mockResolvedValueOnce({ messageId: 'camel-reply@example.com' });
+
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest(
+          {
+            to: 'alice@example.com',
+            subject: 'Re: Need help',
+            text: 'Here is the answer.',
+          },
+          { 'x-chiridion-thread-id': 'thread-1' },
+        ),
+        env,
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    const sentBody = emailSendMock.mock.calls[0]?.[0];
+    expect(sentBody.headers).toEqual({
+      'In-Reply-To': '<latest-user@example.com>',
+      References: '<first-user@example.com> <latest-user@example.com>',
+    });
+    expect(env._appKvStore.put).toHaveBeenCalledWith(
+      'email_reply_ref:ws-1:camel-reply@example.com',
+      'thread-1',
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+    expect(env._appKvStore.put).toHaveBeenCalledWith(
+      'email_thread_refs:ws-1:thread-1',
+      JSON.stringify([
+        'first-user@example.com',
+        'latest-user@example.com',
+        'camel-reply@example.com',
+      ]),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('adds RFC reply headers for sandbox sends from outbound-originated threads with stored refs', async () => {
+    const env = buildEnv({
+      thread: {
+        id: 'thread-1',
+        workspace_id: 'ws-1',
+        source: 'web',
+        channel_kind: null,
+        channel_connection_id: null,
+        channel_conversation_id: null,
+        channel_message_id: null,
+      },
+      appKvInitial: {
+        'email_thread_refs:ws-1:thread-1': JSON.stringify([
+          'first-camel-email@example.com',
+          'recipient-reply@example.com',
+        ]),
+      },
+    });
+    emailSendMock.mockResolvedValueOnce({ messageId: 'second-camel-reply@example.com' });
+
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest(
+          {
+            to: 'alice@example.com',
+            subject: 'Re: Need help',
+            text: 'Here is the follow-up.',
+          },
+          { 'x-chiridion-thread-id': 'thread-1' },
+        ),
+        env,
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    const sentBody = emailSendMock.mock.calls[0]?.[0];
+    expect(sentBody.headers).toEqual({
+      'In-Reply-To': '<recipient-reply@example.com>',
+      References: '<first-camel-email@example.com> <recipient-reply@example.com>',
+    });
+    expect(sentBody).not.toHaveProperty('replyTo');
+    expect(env._appKvStore.put).toHaveBeenCalledWith(
+      'email_thread_refs:ws-1:thread-1',
+      JSON.stringify([
+        'first-camel-email@example.com',
+        'recipient-reply@example.com',
+        'second-camel-reply@example.com',
+      ]),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('seeds thread refs for the first sandbox email from an outbound-originated thread', async () => {
+    const env = buildEnv({
+      thread: {
+        id: 'thread-1',
+        workspace_id: 'ws-1',
+        source: 'web',
+        channel_kind: null,
+        channel_connection_id: null,
+        channel_conversation_id: null,
+        channel_message_id: null,
+      },
+    });
+
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest(
+          {
+            to: 'alice@example.com',
+            subject: 'Need help',
+            text: 'Starting the email conversation.',
+          },
+          { 'x-chiridion-thread-id': 'thread-1' },
+        ),
+        env,
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(emailSendMock.mock.calls[0]?.[0]).not.toHaveProperty('headers');
+    expect(env._appKvStore.put).toHaveBeenCalledWith(
+      'email_thread_refs:ws-1:thread-1',
+      JSON.stringify(['msg-123']),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('returns sent when post-send metadata persistence fails', async () => {
+    const env = buildEnv({
+      thread: {
+        id: 'thread-1',
+        workspace_id: 'ws-1',
+        source: 'web',
+        channel_kind: null,
+        channel_connection_id: null,
+        channel_conversation_id: null,
+        channel_message_id: null,
+      },
+    });
+    env.APP_KV.put = vi.fn(async () => {
+      throw new Error('KV unavailable');
+    });
+    emailSendMock.mockResolvedValueOnce({ messageId: 'sent-before-kv-failed@example.com' });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await handleEmailSendProxy(
+        buildRouteContext(
+          makeRequest(
+            {
+              to: 'alice@example.com',
+              subject: 'Status',
+              text: 'Here is the update.',
+            },
+            { 'x-chiridion-thread-id': 'thread-1' },
+          ),
+          env,
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        id: 'sent-before-kv-failed@example.com',
+        from: 'Camel <swift-tiger-moon@camelai.dev>',
+      });
+      expect(emailSendMock).toHaveBeenCalledTimes(1);
+      expect(consoleError).toHaveBeenCalledWith(
+        '[email-send-proxy] failed to persist email thread metadata',
+        expect.objectContaining({
+          error: 'KV unavailable',
+          workspaceId: 'ws-1',
+          threadId: 'thread-1',
+          messageId: 'sent-before-kv-failed@example.com',
+        }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('sends without RFC thread headers when pre-send metadata read fails', async () => {
+    const env = buildEnv({
+      thread: {
+        id: 'thread-1',
+        workspace_id: 'ws-1',
+        source: 'web',
+        channel_kind: null,
+        channel_connection_id: null,
+        channel_conversation_id: null,
+        channel_message_id: null,
+      },
+    });
+    env.APP_KV.get = vi.fn(async () => {
+      throw new Error('KV read unavailable');
+    });
+    emailSendMock.mockResolvedValueOnce({ messageId: 'sent-without-refs@example.com' });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await handleEmailSendProxy(
+        buildRouteContext(
+          makeRequest(
+            {
+              to: 'alice@example.com',
+              subject: 'Status',
+              text: 'Here is the update.',
+            },
+            { 'x-chiridion-thread-id': 'thread-1' },
+          ),
+          env,
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      expect(emailSendMock.mock.calls[0]?.[0]).not.toHaveProperty('headers');
+      expect(consoleError).toHaveBeenCalledWith(
+        '[email-send-proxy] failed to read email thread metadata',
+        expect.objectContaining({
+          workspaceId: 'ws-1',
+          threadId: 'thread-1',
+          error: 'KV read unavailable',
+        }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('does not use non-email channel message ids as sandbox email reply headers', async () => {
+    const env = buildEnv({
+      thread: {
+        id: 'thread-1',
+        workspace_id: 'ws-1',
+        source: 'channel',
+        channel_kind: 'telegram',
+        channel_connection_id: 'telegram-bot-1',
+        channel_conversation_id: '12345',
+        channel_message_id: '998877',
+      },
+    });
+
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest(
+          {
+            to: 'alice@example.com',
+            subject: 'Status',
+            text: 'Here is the update.',
+          },
+          { 'x-chiridion-thread-id': 'thread-1' },
+        ),
+        env,
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(emailSendMock.mock.calls[0]?.[0]).not.toHaveProperty('headers');
+    expect(env._appKvStore.put).toHaveBeenCalledWith(
+      'email_thread_refs:ws-1:thread-1',
+      JSON.stringify(['msg-123']),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('skips RFC reply headers for sandbox sends when the thread has no real message id', async () => {
+    const env = buildEnv({
+      thread: {
+        id: 'thread-1',
+        workspace_id: 'ws-1',
+        source: 'channel',
+        channel_kind: 'email',
+        channel_connection_id: 'swift-tiger-moon@camelai.dev',
+        channel_conversation_id: 'message:8ad1518c-43e7-4b52-a4f2-80ee74d5b9f8',
+        channel_message_id: null,
+      },
+    });
+
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest(
+          {
+            to: 'alice@example.com',
+            subject: 'Re: Need help',
+            text: 'Here is the answer.',
+          },
+          { 'x-chiridion-thread-id': 'thread-1' },
+        ),
+        env,
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(emailSendMock.mock.calls[0]?.[0]).not.toHaveProperty('headers');
+    expect(env._appKvStore.put).toHaveBeenCalledWith(
+      'email_thread_refs:ws-1:thread-1',
+      JSON.stringify(['msg-123']),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
   });
 
   it('ignores caller-supplied from and uses workspace address', async () => {

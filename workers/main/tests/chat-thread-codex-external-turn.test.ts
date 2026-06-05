@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/chat-thread-do';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { CamelAiService } from '../src/camelai-service';
+import { validateSignedToken } from '../src/signed-tokens';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { stripPiUiMetadata } from '../../../src/lib/runtime-artifacts';
 
@@ -2450,7 +2451,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     fake.env = {
       EMAIL: { send: sendEmailMock },
       WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
-      APP_KV: { put: kvPutMock },
+      APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
       ORG: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => ({
@@ -2511,7 +2512,487 @@ describe('ChatThreadDO Codex turn handling', () => {
       'thread1',
       { expirationTtl: 180 * 24 * 60 * 60 },
     );
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_thread_refs:workspace1:thread1',
+      JSON.stringify(['email_1']),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
     expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'email');
+  });
+
+  it('sends channel email replies with RFC thread headers and extends reference chain', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'camel-reply@example.com' }));
+    const kvGetMock = vi.fn(async (key: string) =>
+      key === 'email_thread_refs:workspace1:thread1'
+        ? JSON.stringify(['first-user@example.com', 'latest-user@example.com'])
+        : null
+    );
+    const kvPutMock = vi.fn(async () => undefined);
+    const recordThreadChannelUsed = vi.fn(async () => null);
+    const thread = {
+      id: 'thread1',
+      workspace_id: 'workspace1',
+      source: 'channel',
+      channel_kind: 'email',
+      channel_connection_id: 'workspace-agent@camelai.dev',
+      channel_conversation_id: 'message:first-user@example.com',
+      channel_message_id: 'first-user@example.com',
+    };
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      APP_KV: { get: kvGetMock, put: kvPutMock },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
+          getThread: vi.fn(async () => thread),
+          recordThreadChannelUsed,
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Test Workspace',
+            email_handle: 'workspace-agent',
+          })),
+        })),
+      },
+    };
+
+    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      fake,
+      {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        userName: null,
+        userEmail: null,
+      },
+      {
+        to: 'sender@example.com',
+        subject: 'Re: Need help',
+        text: 'Here is the answer.',
+      },
+    );
+
+    expect(sendEmailMock).toHaveBeenCalledWith({
+      from: 'Camel <workspace-agent@camelai.dev>',
+      to: 'sender@example.com',
+      subject: 'Re: Need help',
+      text: 'Here is the answer.',
+      replyTo: 'workspace-agent@camelai.dev',
+      headers: {
+        'In-Reply-To': '<latest-user@example.com>',
+        References: '<first-user@example.com> <latest-user@example.com>',
+      },
+    });
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_reply_ref:workspace1:camel-reply@example.com',
+      'thread1',
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_thread_refs:workspace1:thread1',
+      JSON.stringify([
+        'first-user@example.com',
+        'latest-user@example.com',
+        'camel-reply@example.com',
+      ]),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('sends RFC thread headers for outbound-originated email conversations with stored refs', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'second-camel-reply@example.com' }));
+    const kvGetMock = vi.fn(async (key: string) =>
+      key === 'email_thread_refs:workspace1:thread1'
+        ? JSON.stringify(['first-camel-email@example.com', 'recipient-reply@example.com'])
+        : null
+    );
+    const kvPutMock = vi.fn(async () => undefined);
+    const recordThreadChannelUsed = vi.fn(async () => null);
+    const thread = {
+      id: 'thread1',
+      workspace_id: 'workspace1',
+      source: 'web',
+      channel_kind: null,
+      channel_connection_id: null,
+      channel_conversation_id: null,
+      channel_message_id: null,
+    };
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      APP_KV: { get: kvGetMock, put: kvPutMock },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
+          getThread: vi.fn(async () => thread),
+          recordThreadChannelUsed,
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Test Workspace',
+            email_handle: 'workspace-agent',
+          })),
+        })),
+      },
+    };
+
+    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      fake,
+      {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        userName: null,
+        userEmail: null,
+      },
+      {
+        to: 'sender@example.com',
+        subject: 'Re: Need help',
+        text: 'Here is the follow-up.',
+      },
+    );
+
+    expect(sendEmailMock).toHaveBeenCalledWith({
+      from: 'Camel <workspace-agent@camelai.dev>',
+      to: 'sender@example.com',
+      subject: 'Re: Need help',
+      text: 'Here is the follow-up.',
+      headers: {
+        'In-Reply-To': '<recipient-reply@example.com>',
+        References: '<first-camel-email@example.com> <recipient-reply@example.com>',
+      },
+    });
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_thread_refs:workspace1:thread1',
+      JSON.stringify([
+        'first-camel-email@example.com',
+        'recipient-reply@example.com',
+        'second-camel-reply@example.com',
+      ]),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('reports email sent when post-send metadata persistence fails', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'sent-before-kv-failed@example.com' }));
+    const kvPutMock = vi.fn(async () => {
+      throw new Error('KV unavailable');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const recordThreadChannelUsed = vi.fn(async () => null);
+    const thread = {
+      id: 'thread1',
+      workspace_id: 'workspace1',
+      source: 'web',
+      channel_kind: null,
+      channel_connection_id: null,
+      channel_conversation_id: null,
+      channel_message_id: null,
+    };
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
+          getThread: vi.fn(async () => thread),
+          recordThreadChannelUsed,
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Test Workspace',
+            email_handle: 'workspace-agent',
+          })),
+        })),
+      },
+    };
+
+    try {
+      const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+        fake,
+        {
+          orgId: 'org1',
+          workspaceId: 'workspace1',
+          threadId: 'thread1',
+          userId: 'user1',
+          userName: null,
+          userEmail: null,
+        },
+        {
+          to: 'sender@example.com',
+          subject: 'Status',
+          text: 'Here is the update.',
+        },
+      );
+
+      expect(result.details).toMatchObject({
+        status: 'sent',
+        messageId: 'sent-before-kv-failed@example.com',
+      });
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      expect(consoleError).toHaveBeenCalledWith(
+        '[send_email] failed to persist email thread metadata',
+        expect.objectContaining({
+          workspaceId: 'workspace1',
+          threadId: 'thread1',
+          messageId: 'sent-before-kv-failed@example.com',
+          error: 'KV unavailable',
+        }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('sends email without RFC thread headers when pre-send metadata read fails', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'sent-without-refs@example.com' }));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const recordThreadChannelUsed = vi.fn(async () => null);
+    const thread = {
+      id: 'thread1',
+      workspace_id: 'workspace1',
+      source: 'web',
+      channel_kind: null,
+      channel_connection_id: null,
+      channel_conversation_id: null,
+      channel_message_id: null,
+    };
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      APP_KV: {
+        get: vi.fn(async () => {
+          throw new Error('KV read unavailable');
+        }),
+        put: vi.fn(async () => undefined),
+      },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
+          getThread: vi.fn(async () => thread),
+          recordThreadChannelUsed,
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Test Workspace',
+            email_handle: 'workspace-agent',
+          })),
+        })),
+      },
+    };
+
+    try {
+      const result = await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+        fake,
+        {
+          orgId: 'org1',
+          workspaceId: 'workspace1',
+          threadId: 'thread1',
+          userId: 'user1',
+          userName: null,
+          userEmail: null,
+        },
+        {
+          to: 'sender@example.com',
+          subject: 'Status',
+          text: 'Here is the update.',
+        },
+      );
+
+      expect(result.details).toMatchObject({
+        status: 'sent',
+        messageId: 'sent-without-refs@example.com',
+      });
+      expect(sendEmailMock.mock.calls[0]?.[0]).not.toHaveProperty('headers');
+      expect(consoleError).toHaveBeenCalledWith(
+        '[send_email] failed to read email thread metadata',
+        expect.objectContaining({
+          workspaceId: 'workspace1',
+          threadId: 'thread1',
+          error: 'KV read unavailable',
+        }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('does not use non-email channel message ids as email reply headers', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'camel-email@example.com' }));
+    const kvPutMock = vi.fn(async () => undefined);
+    const recordThreadChannelUsed = vi.fn(async () => null);
+    const thread = {
+      id: 'thread1',
+      workspace_id: 'workspace1',
+      source: 'channel',
+      channel_kind: 'slack',
+      channel_connection_id: 'slack-install-1',
+      channel_conversation_id: 'T1:C1:1700000000.000100',
+      channel_message_id: '1700000000.000100',
+    };
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
+          getThread: vi.fn(async () => thread),
+          recordThreadChannelUsed,
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Test Workspace',
+            email_handle: 'workspace-agent',
+          })),
+        })),
+      },
+    };
+
+    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      fake,
+      {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        userName: null,
+        userEmail: null,
+      },
+      {
+        to: 'sender@example.com',
+        subject: 'Status',
+        text: 'Here is the update.',
+      },
+    );
+
+    expect(sendEmailMock.mock.calls[0]?.[0]).not.toHaveProperty('headers');
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_thread_refs:workspace1:thread1',
+      JSON.stringify(['camel-email@example.com']),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+  });
+
+  it('does not send RFC reply headers when an email thread lacks a real message id', async () => {
+    const sendEmailMock = vi.fn(async () => ({ messageId: 'camel-reply@example.com' }));
+    const kvPutMock = vi.fn(async () => undefined);
+    const recordThreadChannelUsed = vi.fn(async () => null);
+    const thread = {
+      id: 'thread1',
+      workspace_id: 'workspace1',
+      source: 'channel',
+      channel_kind: 'email',
+      channel_connection_id: 'workspace-agent@camelai.dev',
+      channel_conversation_id: 'message:8ad1518c-43e7-4b52-a4f2-80ee74d5b9f8',
+      channel_message_id: null,
+    };
+
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = {
+      EMAIL: { send: sendEmailMock },
+      WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
+      APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            billing_plan: 'starter',
+            billing_status: 'active',
+          })),
+          getThread: vi.fn(async () => thread),
+          recordThreadChannelUsed,
+        })),
+      },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getInfo: vi.fn(async () => ({
+            id: 'workspace1',
+            name: 'Test Workspace',
+            email_handle: 'workspace-agent',
+          })),
+        })),
+      },
+    };
+
+    await ChatThreadDO.prototype['sendChannelEmailTool'].call(
+      fake,
+      {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        threadId: 'thread1',
+        userId: 'user1',
+        userName: null,
+        userEmail: null,
+      },
+      {
+        to: 'sender@example.com',
+        subject: 'Re: Need help',
+        text: 'Here is the answer.',
+      },
+    );
+
+    expect(sendEmailMock.mock.calls[0]?.[0]).not.toHaveProperty('headers');
+    expect(kvPutMock).toHaveBeenCalledWith(
+      'email_thread_refs:workspace1:thread1',
+      JSON.stringify(['camel-reply@example.com']),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
   });
 
   it('rejects channel email sends for Pay as you go orgs', async () => {
@@ -2817,6 +3298,7 @@ describe('ChatThreadDO Codex turn handling', () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
+      SANDBOX_PROXY_SECRET: 'sandbox-secret',
     };
     fake.ctx = {
       props: {
@@ -2829,7 +3311,20 @@ describe('ChatThreadDO Codex turn handling', () => {
 
     const deployEnv = await CodeModeToolsBinding.prototype['createWranglerDeployEnv'].call(fake);
 
-    expect(deployEnv.CLOUDFLARE_API_BASE_URL).toBe('http://host.docker.internal:8081/v1/workspaces/org1/workspace1/client/v4');
+    const prefix = 'http://host.docker.internal:8081/v1/workspaces/org1/workspace1/thread-tokens/';
+    const suffix = '/client/v4';
+    expect(deployEnv.CLOUDFLARE_API_BASE_URL.startsWith(prefix)).toBe(true);
+    expect(deployEnv.CLOUDFLARE_API_BASE_URL.endsWith(suffix)).toBe(true);
+    const threadToken = decodeURIComponent(
+      deployEnv.CLOUDFLARE_API_BASE_URL.slice(prefix.length, -suffix.length),
+    );
+    await expect(validateSignedToken('sandbox-secret', threadToken)).resolves.toMatchObject({
+      org_id: 'org1',
+      workspace_id: 'workspace1',
+      thread_id: 'thread1',
+      scopes: ['sandbox_thread'],
+      name: 'sandbox-proxy-thread',
+    });
     expect(deployEnv.CLOUDFLARE_ACCOUNT_ID).toBe('acct_1');
     expect(deployEnv.CLOUDFLARE_API_TOKEN).toBe('chiridion-sandbox-proxy');
   });
@@ -4871,15 +5366,19 @@ describe('ChatThreadDO Codex turn handling', () => {
         ? r2Object('pdf bytes', 'application/pdf')
         : null
     );
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.getOriginatingChannelThread = vi.fn(async () => ({
+    const thread = {
+      id: 'thread1',
+      workspace_id: 'workspace1',
       source: 'channel',
       channel_kind: 'email',
       channel_connection_id: 'workspace@camelai.dev',
-    }));
+      channel_conversation_id: 'message:email-0',
+      channel_message_id: 'email-0',
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       EMAIL: { send },
-      APP_KV: { put: kvPutMock },
+      APP_KV: { get: vi.fn(async () => null), put: kvPutMock },
       R2_BUCKET: { get },
       ORG: {
         idFromName: vi.fn((id: string) => id),
@@ -4888,6 +5387,7 @@ describe('ChatThreadDO Codex turn handling', () => {
             billing_plan: 'starter',
             billing_status: 'active',
           })),
+          getThread: vi.fn(async () => thread),
           recordThreadChannelUsed,
         })),
       },

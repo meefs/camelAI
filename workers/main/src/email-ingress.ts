@@ -11,10 +11,12 @@ import { getBillingPlanLimits } from "../../../src/lib/billing-plans.js";
 import type { Attachment as PostalMimeAttachment } from "postal-mime";
 import { isOrgBanned } from "./ban-list.js";
 import {
+  appendEmailThreadReferenceIds,
   enqueueChannelMessage,
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
   getChannelDedupeKey,
   getEmailReplyReferenceKey,
+  getEmailThreadReferencesKey,
   getOrCreateChannelThread,
 } from "./channels.js";
 
@@ -85,8 +87,7 @@ function normalizeMessageId(rawValue: string | null): string | null {
   if (!rawValue) return null;
   const sanitized = sanitizeHeaderValue(rawValue, 512)
     .replace(/^<|>$/g, "")
-    .trim()
-    .toLowerCase();
+    .trim();
   return sanitized || null;
 }
 
@@ -463,6 +464,19 @@ function getReplyReferenceCandidates(headers: Headers): string[] {
   return candidates;
 }
 
+function getEmailThreadReferenceIds(
+  headers: Headers,
+  currentMessageId: string | null,
+): string[] {
+  const references = extractMessageIdsFromHeaderValue(
+    headers.get("references"),
+  );
+  const inReplyTo = extractMessageIdsFromHeaderValue(
+    headers.get("in-reply-to"),
+  );
+  return appendEmailThreadReferenceIds(references, ...inReplyTo, currentMessageId);
+}
+
 async function resolveThreadFromReplyHeaders(
   env: Env,
   args: {
@@ -521,7 +535,7 @@ async function resolveThreadForEmail(
     orgId: args.orgId,
     remoteConversationId: args.messageId
       ? `message:${args.messageId}`
-      : `message:${crypto.randomUUID()}`,
+      : `generated:${crypto.randomUUID()}`,
     connectionId: args.recipientAddress,
     title,
     createdBy: args.userId,
@@ -699,6 +713,42 @@ export async function handleWorkspaceEmailIngress(
     }
 
     dedupeHandled = true;
+
+    if (normalizedMessageId) {
+      const referenceIds = getEmailThreadReferenceIds(
+        message.headers,
+        normalizedMessageId,
+      );
+      await Promise.all([
+        env.APP_KV.put(
+          getEmailReplyReferenceKey(
+            authorizedSender.workspaceId,
+            normalizedMessageId,
+          ),
+          thread.threadId,
+          { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+        ),
+        env.APP_KV.put(
+          getEmailThreadReferencesKey(
+            authorizedSender.workspaceId,
+            thread.threadId,
+          ),
+          JSON.stringify(referenceIds),
+          { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+        ),
+      ]).catch((error) => {
+        console.error(
+          "[email-ingress] failed to persist email thread metadata",
+          {
+            workspaceId: authorizedSender.workspaceId,
+            orgId: authorizedSender.orgId,
+            threadId: thread.threadId,
+            messageId: normalizedMessageId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      });
+    }
   } finally {
     if (!dedupeKey || !dedupeProcessingValue) {
       return;

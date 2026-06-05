@@ -109,15 +109,19 @@ import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
 import { normalizeChannelIndicatorKind } from "../../../src/lib/channel-kinds";
 import {
+  appendEmailThreadReferenceIds,
+  buildEmailReplyHeaders,
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
   getOrCreateChannelThread,
   getEmailReplyReferenceKey,
+  getEmailThreadReferencesKey,
 } from "./channels";
 import { codeModeWorkerModule } from "./code-mode-runner";
 import { CodeModeCustomDomains } from "./code-mode-custom-domains";
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
 import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-automations";
 import { CodeModeIntegrations } from "./code-mode-integrations";
+import { createSignedToken } from "./signed-tokens";
 import {
   editAutomationVirtualFile,
   listAutomationVirtualFiles,
@@ -266,6 +270,7 @@ interface CloudflareEmailSender {
     cc?: string | string[];
     bcc?: string | string[];
     replyTo?: string | { email: string; name: string };
+    headers?: Record<string, string>;
     attachments?: Array<{
       content: string | ArrayBuffer;
       filename: string;
@@ -1782,7 +1787,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async createWranglerDeployEnv(): Promise<Record<string, string>> {
-    const { orgId, workspaceId } = this.ctx.props;
+    const { orgId, workspaceId, threadId } = this.ctx.props;
     if (!orgId || !workspaceId) {
       return {};
     }
@@ -1790,9 +1795,25 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const dockerProxyBaseUrl =
       this.env.SANDBOX_DOCKER_PROXY_BASE_URL?.trim().replace(/\/+$/, "") ||
       "http://host.docker.internal:8081";
-    const proxyPath =
+    let proxyPath =
       `/v1/workspaces/${encodeURIComponent(orgId)}` +
-      `/${encodeURIComponent(workspaceId)}/client/v4`;
+      `/${encodeURIComponent(workspaceId)}`;
+    const sandboxProxySecret = this.env.SANDBOX_PROXY_SECRET?.trim();
+    if (threadId && sandboxProxySecret) {
+      const threadToken = await createSignedToken(sandboxProxySecret, {
+        org_id: orgId,
+        // The host only validates org/workspace/thread claims; org_slug is
+        // required by the shared signed-token helper but is not trusted here.
+        org_slug: orgId,
+        workspace_id: workspaceId,
+        thread_id: threadId,
+        scopes: ["sandbox_thread"],
+        name: "sandbox-proxy-thread",
+        exp: Date.now() + 6 * 60 * 60 * 1000,
+      });
+      proxyPath += `/thread-tokens/${encodeURIComponent(threadToken)}`;
+    }
+    proxyPath += "/client/v4";
 
     return {
       CLOUDFLARE_API_BASE_URL: `${dockerProxyBaseUrl}${proxyPath}`,
@@ -8188,6 +8209,51 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       : null;
   }
 
+  private async readEmailThreadReferenceIds(
+    context: ChatContextState,
+    thread: OrgThread | null,
+  ): Promise<string[]> {
+    if (!context.threadId) return [];
+
+    let rawReferences: string | null = null;
+    try {
+      rawReferences = await this.env.APP_KV.get(
+        getEmailThreadReferencesKey(context.workspaceId, context.threadId),
+      );
+    } catch (error) {
+      console.error("[send_email] failed to read email thread metadata", {
+        orgId: context.orgId,
+        workspaceId: context.workspaceId,
+        threadId: context.threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+
+    if (rawReferences) {
+      try {
+        const parsed = JSON.parse(rawReferences);
+        if (Array.isArray(parsed)) {
+          const ids = appendEmailThreadReferenceIds(
+            parsed.filter((value): value is string => typeof value === "string"),
+          );
+          if (ids.length > 0) return ids;
+        }
+      } catch {
+        // Ignore malformed KV data and fall back to real channel metadata.
+      }
+    }
+
+    if (
+      thread?.source?.trim() !== "channel" ||
+      thread.channel_kind !== "email" ||
+      !thread.channel_message_id
+    ) {
+      return [];
+    }
+    return appendEmailThreadReferenceIds([], thread?.channel_message_id);
+  }
+
   private readChannelAttachmentInputs(
     raw: Record<string, unknown>,
   ): ChannelToolAttachmentInput[] {
@@ -8378,7 +8444,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
     }
 
-    const thread = await this.getOriginatingChannelThread(context, "email");
+    const currentThread = await this.getCurrentThreadRecordIfAvailable(context);
+    const originatingEmailThread =
+      currentThread?.source?.trim() === "channel" &&
+      currentThread.channel_kind === "email"
+        ? currentThread
+        : null;
     const raw = this.readToolObjectParams(params);
     const to = this.requiredToolString(raw, "to");
     const subject = this.requiredToolString(raw, "subject");
@@ -8395,7 +8466,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!this.env.EMAIL) {
       throw new Error("Cloudflare Email Sending binding EMAIL is not configured");
     }
-    const fallbackFrom = thread?.channel_connection_id?.trim() || "";
+    const fallbackFrom = originatingEmailThread?.channel_connection_id?.trim() || "";
     let from = fallbackFrom;
     const emailDomain = getWorkspaceEmailDomain(this.env);
     const workspaceStub = this.env.WORKSPACE.get(
@@ -8416,7 +8487,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     const explicitReplyTo = this.optionalToolString(raw, "reply_to");
-    const replyTo = explicitReplyTo || thread?.channel_connection_id || undefined;
+    const replyTo = explicitReplyTo || originatingEmailThread?.channel_connection_id || undefined;
+    const emailReferenceIds = currentThread
+      ? await this.readEmailThreadReferenceIds(context, currentThread)
+      : [];
+    const emailReplyHeaders = emailReferenceIds.length > 0
+      ? buildEmailReplyHeaders({
+          inReplyToMessageId: emailReferenceIds.at(-1),
+          referenceMessageIds: emailReferenceIds,
+        })
+      : undefined;
     const body: Parameters<CloudflareEmailSender["send"]>[0] = {
       from,
       to,
@@ -8425,6 +8505,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (text) body.text = text;
     if (html) body.html = html;
     if (replyTo) body.replyTo = replyTo;
+    if (emailReplyHeaders) body.headers = emailReplyHeaders;
     if (attachments.length > 0) {
       body.attachments = attachments.map((attachment) => ({
         content: attachment.content,
@@ -8435,11 +8516,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     const response = await this.env.EMAIL.send(body);
     if (response.messageId) {
-      await this.env.APP_KV.put(
-        getEmailReplyReferenceKey(context.workspaceId, response.messageId),
-        context.threadId,
-        { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+      const nextReferenceIds = appendEmailThreadReferenceIds(
+        emailReferenceIds,
+        response.messageId,
       );
+      await Promise.all([
+        this.env.APP_KV.put(
+          getEmailReplyReferenceKey(context.workspaceId, response.messageId),
+          context.threadId,
+          { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+        ),
+        currentThread && nextReferenceIds.length > 0
+          ? this.env.APP_KV.put(
+              getEmailThreadReferencesKey(context.workspaceId, context.threadId),
+              JSON.stringify(nextReferenceIds),
+              { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+            )
+          : Promise.resolve(),
+      ]).catch((error) => {
+        console.error("[send_email] failed to persist email thread metadata", {
+          orgId: context.orgId,
+          workspaceId: context.workspaceId,
+          threadId: context.threadId,
+          messageId: response.messageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }
     await this.markThreadChannelUsedBestEffort(context, "email");
 

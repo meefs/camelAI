@@ -16,8 +16,11 @@ vi.mock("../src/helpers/stubs.js", () => ({
 }));
 
 import {
+  appendEmailThreadReferenceIds,
+  buildEmailReplyHeaders,
   buildChannelReplySystemMessage,
   enqueueChannelMessage,
+  formatEmailMessageIdHeader,
   getChannelDedupeKey,
   getChannelReplyToolName,
   getChannelThreadMapKey,
@@ -68,6 +71,50 @@ describe("channels", () => {
   it("normalizes email reply reference keys shared by ingress and outbound tools", () => {
     expect(getEmailReplyReferenceKey("workspace-1", "<Message.ID+bad@example.com>"))
       .toBe("email_reply_ref:workspace-1:message.id_bad@example.com");
+  });
+
+  it("builds safe RFC email reply headers from thread references", () => {
+    const references = appendEmailThreadReferenceIds(
+      ["<first@example.com>", "second@example.com"],
+      "second@example.com",
+      "latest@example.com",
+    );
+
+    expect(references).toEqual([
+      "first@example.com",
+      "second@example.com",
+      "latest@example.com",
+    ]);
+    expect(
+      buildEmailReplyHeaders({
+        inReplyToMessageId: references.at(-1),
+        referenceMessageIds: references,
+      }),
+    ).toEqual({
+      "In-Reply-To": "<latest@example.com>",
+      References:
+        "<first@example.com> <second@example.com> <latest@example.com>",
+    });
+  });
+
+  it("trims References to Cloudflare Email Service header limits", () => {
+    const ids = Array.from(
+      { length: 20 },
+      (_, index) => `message-${index}-${"a".repeat(500)}@example.com`,
+    );
+    const latest = ids[ids.length - 1]!;
+    const formattedLatest = formatEmailMessageIdHeader(latest)!;
+
+    const headers = buildEmailReplyHeaders({
+      inReplyToMessageId: latest,
+      referenceMessageIds: ids,
+    });
+
+    expect(headers?.["In-Reply-To"]).toBe(formattedLatest);
+    expect(headers?.References).toContain(formattedLatest);
+    expect(headers?.References).not.toContain(`<${ids[0]!}>`);
+    expect(new TextEncoder().encode(headers?.References || "").byteLength)
+      .toBeLessThanOrEqual(2048);
   });
 
   it("keeps generated KV keys below Cloudflare key length limits", () => {

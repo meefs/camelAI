@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +33,7 @@ type WorkspaceRoute struct {
 	Name        string
 	OrgID       string
 	WorkspaceID string
+	ThreadToken string
 	Subpath     string
 }
 
@@ -449,6 +453,22 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 		targetURL += "?" + req.URL.RawQuery
 	}
 
+	var threadID string
+	if route.ThreadToken != "" {
+		var ok bool
+		threadID, ok = validateSandboxThreadScopeToken(
+			secret,
+			route.ThreadToken,
+			route.OrgID,
+			route.WorkspaceID,
+			time.Now(),
+		)
+		if !ok {
+			errorJSON(w, "Invalid sandbox thread scope", http.StatusForbidden)
+			return nil
+		}
+	}
+
 	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, req.Body)
 	if err != nil {
 		return err
@@ -457,6 +477,9 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 	forwardReq.Header.Set("X-Sandbox-Secret", secret)
 	forwardReq.Header.Set("X-Chiridion-Org-Id", route.OrgID)
 	forwardReq.Header.Set("X-Chiridion-Workspace-Id", route.WorkspaceID)
+	if threadID != "" {
+		forwardReq.Header.Set("X-Chiridion-Thread-Id", threadID)
+	}
 
 	resp, err := s.httpClient.Do(forwardReq)
 	if err != nil {
@@ -760,15 +783,109 @@ func parseWorkspaceRoute(path string) (WorkspaceRoute, bool) {
 	if err != nil {
 		return WorkspaceRoute{}, false
 	}
+	threadToken, subpath, ok := parseTokenScopedCloudflareProxySubpath(matches[3])
+	if !ok {
+		return WorkspaceRoute{}, false
+	}
 	return WorkspaceRoute{
 		Name:        sandboxName(workspaceID),
 		OrgID:       orgID,
 		WorkspaceID: workspaceID,
-		Subpath:     matches[3],
+		ThreadToken: threadToken,
+		Subpath:     subpath,
 	}, true
 }
 
 var workspaceRouteRegex = regexp.MustCompile(`^/v1/workspaces/([^/]+)/([^/]+)(/.*)?$`)
+
+func parseTokenScopedCloudflareProxySubpath(subpath string) (string, string, bool) {
+	const prefix = "/thread-tokens/"
+	if strings.HasPrefix(subpath, "/threads/") {
+		return "", "", false
+	}
+	if !strings.HasPrefix(subpath, prefix) {
+		return "", subpath, true
+	}
+
+	rest := strings.TrimPrefix(subpath, prefix)
+	slashIndex := strings.Index(rest, "/")
+	if slashIndex <= 0 {
+		return "", "", false
+	}
+
+	encodedToken := rest[:slashIndex]
+	proxySubpath := rest[slashIndex:]
+	if !isCloudflareAPIProxyRoute(proxySubpath) {
+		return "", "", false
+	}
+
+	token, err := url.PathUnescape(encodedToken)
+	if err != nil || token == "" || strings.ContainsAny(token, `/\`) {
+		return "", "", false
+	}
+	return token, proxySubpath, true
+}
+
+type sandboxThreadScopeClaims struct {
+	OrgID       string   `json:"org_id"`
+	WorkspaceID string   `json:"workspace_id"`
+	ThreadID    string   `json:"thread_id"`
+	Scopes      []string `json:"scopes"`
+	Exp         *int64   `json:"exp"`
+}
+
+func validateSandboxThreadScopeToken(secret, token, orgID, workspaceID string, now time.Time) (string, bool) {
+	const prefix = "st_"
+	if strings.TrimSpace(secret) == "" || !strings.HasPrefix(token, prefix) {
+		return "", false
+	}
+
+	body := strings.TrimPrefix(token, prefix)
+	dotIndex := strings.Index(body, ".")
+	if dotIndex <= 0 || dotIndex == len(body)-1 {
+		return "", false
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(body[:dotIndex])
+	if err != nil {
+		return "", false
+	}
+	signatureBytes, err := base64.RawURLEncoding.DecodeString(body[dotIndex+1:])
+	if err != nil {
+		return "", false
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(payloadBytes)
+	if !hmac.Equal(signatureBytes, mac.Sum(nil)) {
+		return "", false
+	}
+
+	var claims sandboxThreadScopeClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return "", false
+	}
+	threadID := strings.TrimSpace(claims.ThreadID)
+	if claims.OrgID != orgID ||
+		claims.WorkspaceID != workspaceID ||
+		threadID == "" ||
+		strings.ContainsAny(threadID, `/\`) ||
+		claims.Exp == nil ||
+		*claims.Exp < now.UnixMilli() ||
+		!hasScope(claims.Scopes, "sandbox_thread") {
+		return "", false
+	}
+	return threadID, true
+}
+
+func hasScope(scopes []string, scope string) bool {
+	for _, candidate := range scopes {
+		if candidate == scope {
+			return true
+		}
+	}
+	return false
+}
 
 func isCloudflareAPIProxyRoute(subpath string) bool {
 	return subpath == "/client/v4" || strings.HasPrefix(subpath, "/client/v4/")
@@ -858,9 +975,12 @@ func copyHeaders(dst, src http.Header) {
 }
 
 func isInternalProxyHeader(key string) bool {
+	lower := strings.ToLower(key)
 	// Miniflare injects MF-* headers for local service-binding proxying. They
 	// are not valid user/Worker headers and must not be replayed downstream.
-	return strings.HasPrefix(strings.ToLower(key), "mf-")
+	return strings.HasPrefix(lower, "mf-") ||
+		lower == "x-sandbox-secret" ||
+		strings.HasPrefix(lower, "x-chiridion-")
 }
 
 func decodeJSON(req *http.Request, target any) error {

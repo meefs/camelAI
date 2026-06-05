@@ -276,7 +276,73 @@ describe('handleWorkspaceEmailIngress', () => {
       'thread-1',
       { expirationTtl: 180 * 24 * 60 * 60 },
     );
+    expect(env.APP_KV.put).toHaveBeenCalledWith(
+      'email_reply_ref:workspace-1:msg-1@example.com',
+      'thread-1',
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
+    expect(env.APP_KV.put).toHaveBeenCalledWith(
+      'email_thread_refs:workspace-1:thread-1',
+      JSON.stringify(['msg-1@example.com']),
+      { expirationTtl: 180 * 24 * 60 * 60 },
+    );
     expect(startInitialUserMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses generated conversation ids, not synthetic message ids, when inbound email lacks Message-ID', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
+      getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
+      isMember: vi.fn().mockResolvedValue(true),
+      getThread: vi.fn().mockResolvedValue(null),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
+      getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
+    };
+    const userStub = {
+      getProfile: vi.fn().mockResolvedValue({ name: 'Agent User' }),
+    };
+
+    getWorkspaceStubMock.mockReturnValue(workspaceStub);
+    getOrgStubMock.mockReturnValue(orgStub);
+    getUserStubMock.mockReturnValue(userStub);
+
+    const env = createMockEnv();
+    env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
+
+    const message = createMessage({
+      from: 'user@example.com',
+      to: 'swift-falcon-ridge@mail.camelai.com',
+      subject: 'Need help',
+      rawBody: 'Please help',
+    });
+    message.headers.delete('message-id');
+
+    await handleWorkspaceEmailIngress(message, env);
+
+    expect(orgStub.createThread).toHaveBeenCalledWith(
+      'workspace-1',
+      'Need help',
+      'user-1',
+      'Please help',
+      'sonnet',
+      'claude',
+      expect.objectContaining({
+        source: 'channel',
+        channelKind: 'email',
+        channelConversationId: expect.stringMatching(/^generated:/),
+        channelMessageId: null,
+      }),
+    );
+    expect(env.APP_KV.put).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^email_thread_refs:/),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('rejects unknown workspace mailbox format', async () => {
@@ -379,5 +445,68 @@ describe('handleWorkspaceEmailIngress', () => {
       'done',
       expect.objectContaining({ expirationTtl: 600 })
     );
+  });
+
+  it('keeps inbound email deduped when post-enqueue metadata persistence fails', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
+      getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({ billing_plan: 'pro', billing_status: 'active' }),
+      isMember: vi.fn().mockResolvedValue(true),
+      getThread: vi.fn().mockResolvedValue(null),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
+      createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Need help' }),
+      getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
+    };
+    const userStub = {
+      getProfile: vi.fn().mockResolvedValue({ name: 'Agent User' }),
+    };
+
+    getWorkspaceStubMock.mockReturnValue(workspaceStub);
+    getOrgStubMock.mockReturnValue(orgStub);
+    getUserStubMock.mockReturnValue(userStub);
+
+    const env = createMockEnv();
+    env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
+    const originalPut = env.APP_KV.put;
+    env.APP_KV.put = vi.fn(async (key: string, value: string, options?: unknown) => {
+      if (key.startsWith('email_reply_ref:') || key.startsWith('email_thread_refs:')) {
+        throw new Error('KV unavailable');
+      }
+      return originalPut(key, value, options);
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const message = createMessage({
+        from: 'user@example.com',
+        to: 'swift-falcon-ridge@mail.camelai.com',
+        subject: 'Need help',
+        rawBody: 'Please reply',
+      });
+
+      await expect(handleWorkspaceEmailIngress(message, env)).resolves.toBeUndefined();
+
+      expect(startInitialUserMessageMock).toHaveBeenCalledTimes(1);
+      expect(env.APP_KV.put).toHaveBeenCalledWith(
+        expect.stringMatching(/^channel_event:email:/),
+        'done',
+        expect.objectContaining({ expirationTtl: 600 }),
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        '[email-ingress] failed to persist email thread metadata',
+        expect.objectContaining({
+          workspaceId: 'workspace-1',
+          threadId: 'thread-1',
+          messageId: 'msg-1@example.com',
+          error: 'KV unavailable',
+        }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

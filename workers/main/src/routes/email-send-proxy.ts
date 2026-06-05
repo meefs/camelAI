@@ -11,6 +11,14 @@ import { validateSandboxProxy } from '../sandbox-auth.js';
 import { getWorkspaceStub, getUserStub, getOrgStub } from '../helpers/stubs.js';
 import { buildWorkspaceEmailSenderAddress, getWorkspaceEmailDomain } from '../../../../src/lib/workspace-email.js';
 import { getBillingPlanLimits } from '../../../../src/lib/billing-plans.js';
+import {
+  appendEmailThreadReferenceIds,
+  buildEmailReplyHeaders,
+  EMAIL_REPLY_REFERENCE_TTL_SECONDS,
+  getEmailReplyReferenceKey,
+  getEmailThreadReferencesKey,
+} from '../channels.js';
+import type { OrgThread } from '../identity/org-do.js';
 
 // ---------------------------------------------------------------------------
 // Rate limit constants
@@ -43,6 +51,18 @@ interface EmailSendProxyRequest {
   text?: string;
   html?: string;
 }
+
+type EmailSendBody = {
+  from: string;
+  to: string[];
+  subject: string;
+  cc?: string[];
+  bcc?: string[];
+  replyTo?: string;
+  headers?: Record<string, string>;
+  text?: string;
+  html?: string;
+};
 
 /**
  * Extract a bare email address from a potentially formatted recipient string
@@ -113,6 +133,62 @@ async function getWorkspaceMemberEmails(
   const emailSet = new Set(emails.filter((e): e is string => e !== null));
   console.log(`[EmailSendProxy] allowed emails: [${[...emailSet].join(', ')}]`);
   return emailSet;
+}
+
+async function getWorkspaceThread(
+  env: RouteContext['env'],
+  orgId: string,
+  workspaceId: string,
+  threadId: string | undefined,
+): Promise<OrgThread | null> {
+  if (!threadId) return null;
+  const thread = await getOrgStub(env, orgId).getThread(threadId);
+  if (!thread || thread.workspace_id !== workspaceId) return null;
+  return thread;
+}
+
+async function readEmailThreadReferenceIds(
+  env: RouteContext['env'],
+  workspaceId: string,
+  threadId: string,
+  thread: OrgThread | null,
+): Promise<string[]> {
+  let rawReferences: string | null = null;
+  try {
+    rawReferences = await env.APP_KV.get(
+      getEmailThreadReferencesKey(workspaceId, threadId),
+    );
+  } catch (error) {
+    console.error('[email-send-proxy] failed to read email thread metadata', {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId,
+      threadId,
+    });
+    return [];
+  }
+
+  if (rawReferences) {
+    try {
+      const parsed = JSON.parse(rawReferences);
+      if (Array.isArray(parsed)) {
+        const ids = appendEmailThreadReferenceIds(
+          parsed.filter((value): value is string => typeof value === 'string'),
+        );
+        if (ids.length > 0) return ids;
+      }
+    } catch {
+      // Ignore malformed KV data and fall back to real channel metadata.
+    }
+  }
+
+  if (
+    thread?.source?.trim() !== 'channel' ||
+    thread.channel_kind !== 'email' ||
+    !thread.channel_message_id
+  ) {
+    return [];
+  }
+  return appendEmailThreadReferenceIds([], thread?.channel_message_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +264,34 @@ export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<
     workspaceInfo.email_handle,
     emailDomain,
   );
+  const workspaceThread = await getWorkspaceThread(
+    env,
+    orgId,
+    workspaceId,
+    proxyAuth.threadId,
+  );
+  // sandbox-host strips caller-supplied Chiridion headers and only forwards
+  // threadId after validating the server-issued thread scope token.
+  const originatingEmailThread =
+    workspaceThread?.source?.trim() === 'channel' &&
+    workspaceThread.channel_kind === 'email'
+      ? workspaceThread
+      : null;
+  const emailReferenceIds =
+    proxyAuth.threadId && workspaceThread
+      ? await readEmailThreadReferenceIds(
+          env,
+          workspaceId,
+          proxyAuth.threadId,
+          workspaceThread,
+        )
+      : [];
+  const emailReplyHeaders = emailReferenceIds.length > 0
+    ? buildEmailReplyHeaders({
+        inReplyToMessageId: emailReferenceIds[emailReferenceIds.length - 1],
+        referenceMessageIds: emailReferenceIds,
+      })
+    : undefined;
 
   // 6. Validate recipients against workspace member whitelist
   console.log(`[EmailSendProxy] validating recipients: [${allRecipients.join(', ')}] workspace=${workspaceId}`);
@@ -212,20 +316,22 @@ export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<
     return errorResponse(rateCheck.reason!, 429);
   }
 
-  // 8. Send through Cloudflare Email Sending (always from workspace address)
-  try {
-    const emailResult = await env.EMAIL.send({
-      from: workspaceFromAddress,
-      to: toEmails,
-      ...(ccEmails.length > 0 ? { cc: ccEmails } : {}),
-      ...(bccEmails.length > 0 ? { bcc: bccEmails } : {}),
-      ...(payload.reply_to ? { replyTo: payload.reply_to } : {}),
-      subject: payload.subject,
-      ...(payload.text ? { text: payload.text } : {}),
-      ...(payload.html ? { html: payload.html } : {}),
-    });
+  const sendBody: EmailSendBody = {
+    from: workspaceFromAddress,
+    to: toEmails,
+    ...(ccEmails.length > 0 ? { cc: ccEmails } : {}),
+    ...(bccEmails.length > 0 ? { bcc: bccEmails } : {}),
+    ...(payload.reply_to ? { replyTo: payload.reply_to } : {}),
+    ...(emailReplyHeaders ? { headers: emailReplyHeaders } : {}),
+    subject: payload.subject,
+    ...(payload.text ? { text: payload.text } : {}),
+    ...(payload.html ? { html: payload.html } : {}),
+  };
 
-    return jsonResponse({ id: emailResult.messageId, from: workspaceFromAddress }, 200);
+  // 8. Send through Cloudflare Email Sending (always from workspace address)
+  let emailResult: { messageId?: string };
+  try {
+    emailResult = await env.EMAIL.send(sendBody);
   } catch (error) {
     console.error('[email-send-proxy] upstream error', {
       error: error instanceof Error ? error.message : String(error),
@@ -234,4 +340,35 @@ export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<
     });
     return errorResponse('Failed to send email', 502);
   }
+
+  if (proxyAuth.threadId && workspaceThread && emailResult.messageId) {
+    const nextReferenceIds = appendEmailThreadReferenceIds(
+      emailReferenceIds,
+      emailResult.messageId,
+    );
+    await Promise.all([
+      env.APP_KV.put(
+        getEmailReplyReferenceKey(workspaceId, emailResult.messageId),
+        proxyAuth.threadId,
+        { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+      ),
+      nextReferenceIds.length > 0
+        ? env.APP_KV.put(
+            getEmailThreadReferencesKey(workspaceId, proxyAuth.threadId),
+            JSON.stringify(nextReferenceIds),
+            { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS },
+          )
+        : Promise.resolve(),
+    ]).catch((error) => {
+      console.error('[email-send-proxy] failed to persist email thread metadata', {
+        error: error instanceof Error ? error.message : String(error),
+        orgId,
+        workspaceId,
+        threadId: proxyAuth.threadId,
+        messageId: emailResult.messageId,
+      });
+    });
+  }
+
+  return jsonResponse({ id: emailResult.messageId, from: workspaceFromAddress }, 200);
 }
