@@ -360,7 +360,10 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
 
             return await step.do("validate-agent-discovery-plan", async () => {
               return appendUnclassifiedMiscProject(
-                applyMigrationAgentPlan(allowedSourcePlan, agentProposal, { deployedApps }),
+                applyMigrationAgentPlan(allowedSourcePlan, agentProposal, {
+                  deployedApps,
+                  workerAppSourcePaths: detectWorkerAppSourcePaths(discoveryContext),
+                }),
               );
             });
           })();
@@ -384,6 +387,7 @@ export class LegacyWorkspaceMigrationWorkflow extends ThinkWorkflow<
       }
 
       await step.do("persist-plan", async () => {
+        await workspaceFs.deleteMigratedProjectsForWorkspace(payload.workspaceId);
         await workspaceFs.setLegacyWorkspaceMigrationState({
           status: "copying",
           plan: enrichedPlan,
@@ -652,6 +656,7 @@ export function buildLegacyWorkspaceMigrationSeedPlan(input: {
   entries: RuntimeFileEntry[];
 }): LegacyWorkspaceMigrationPlan {
   const projects: LegacyWorkspaceMigrationProjectPlan[] = [];
+  const looseSourcePaths: string[] = [];
   const unclassified: string[] = [];
 
   for (const entry of input.entries) {
@@ -660,12 +665,26 @@ export function buildLegacyWorkspaceMigrationSeedPlan(input: {
       unclassified.push(absolutePath);
       continue;
     }
+    if (entry.type === "file") {
+      looseSourcePaths.push(absolutePath);
+      continue;
+    }
     projects.push({
       name: uniqueProjectName(normalizeProjectName(entry.name), projects),
       description: `Legacy workspace path ${entry.name}.`,
       sourcePaths: [absolutePath],
       ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
       reason: "Allowed source path for agent-led migration discovery.",
+    });
+  }
+
+  if (looseSourcePaths.length > 0) {
+    projects.push({
+      name: uniqueProjectName("legacy-workspace-loose-files", projects),
+      description: "Loose top-level legacy workspace files for semantic grouping during migration.",
+      sourcePaths: looseSourcePaths,
+      ignoreGlobs: LEGACY_IMPORT_IGNORE_GLOBS,
+      reason: "Grouped loose top-level files so the migration planning agent clusters related files instead of treating each file as its own project.",
     });
   }
 
@@ -799,6 +818,7 @@ export function buildMigrationPlanningPrompt(input: {
       "Use every source path from allowed_source_paths exactly once.",
       "Do not invent source paths.",
       "Do not omit or duplicate source paths.",
+      "Treat source_path_seed_plan as discovery input, not as the final grouping. You may split or merge non-Worker loose file paths when the final plan is more coherent.",
       "Only use deployed app names from deployed_apps.",
       "Do not assign one deployed app to more than one project.",
       "Associate a deployed app only when its configPath is inside one of the project's sourcePaths, its projectId clearly identifies that project, or its scriptName matches a project source directory name.",
@@ -806,10 +826,12 @@ export function buildMigrationPlanningPrompt(input: {
       "Use lowercase slug names with letters, numbers, and hyphens.",
       "Descriptions should be concise and specific to the project contents.",
       "A project can contain multiple source paths when they clearly belong together.",
+      "Loose top-level files should usually be clustered by topic, notebook/script/data relationship, or put in the single misc project. Do not create one-file projects for images, CSVs, JSON outputs, logs, lockfiles, or generated artifacts unless the file is clearly a standalone user-authored project.",
+      "Prefer grouping a notebook or script with its related data files, output images, JSON exports, markdown notes, or HTML reports when filenames or samples show the same topic.",
       "Do not group unrelated deployable apps into one project just because they are all apps; separate app directories should usually be separate projects unless the context shows they share one repo or product.",
       "Treat a source path with a wrangler.toml, wrangler.json, or wrangler.jsonc file as a Worker app project boundary.",
       "Do not include multiple independent Worker apps in the same project. If multiple source paths each contain a Wrangler config, return them as separate projects.",
-      "Only group multiple Wrangler-configured source paths when they are clearly part of the same monorepo and share one product boundary.",
+      "Do not put two detected_worker_app_paths entries in the same project. Worker app source paths are hard project boundaries, even if they are nearby or have similar names.",
       "Use at most one misc project for unrelated loose files, caches, dotfolders, or leftovers that still need to be moved.",
       "Do not name a real project misc, legacy-workspace-misc, leftovers, or unclassified unless it is the single leftover bucket.",
       "Do not expose secrets or credential values.",
@@ -842,7 +864,7 @@ export function buildMigrationPlanningPrompt(input: {
     ].join("\n"),
     detected_worker_app_paths: detectedWorkerAppPaths,
     detected_worker_app_instruction:
-      "Each detected_worker_app_paths entry is a Worker app boundary. Keep these paths as separate projects unless there is strong evidence they are packages in one monorepo product.",
+      "Each detected_worker_app_paths entry is a Worker app boundary. Keep every detected Worker app source path in its own project and never group two detected Worker apps together.",
     workspace_id: input.workspaceId,
     allowed_source_paths: input.plan.projects.flatMap((project) => project.sourcePaths),
     deployed_apps: input.deployedApps ?? [],
@@ -913,8 +935,9 @@ export function buildMigrationPlanningResponsesRequest(prompt: string, allowedSo
       "Never include secrets or credential values in names, descriptions, or reasons.",
       "Prefer stable lowercase slug names and concise descriptions that explain what each project contains.",
       "Every allowed source path must be assigned exactly once. Do not invent, omit, or duplicate source paths.",
+      "The seed plan is discovery context, not the final project list. Cluster related loose files and avoid one-file projects for generated outputs.",
       "Only associate deployed apps when there is concrete source evidence; never guess from generic app names.",
-      "A source path containing wrangler.toml, wrangler.json, or wrangler.jsonc is usually its own Worker app project. Do not group multiple independent Worker apps together.",
+      "A source path containing wrangler.toml, wrangler.json, or wrangler.jsonc is a Worker app project boundary. Never group two detected Worker app source paths into one project.",
       "Use at most one misc/leftover project.",
     ].join("\n"),
     input: prompt,
@@ -1148,13 +1171,14 @@ function extractCloudflareAiErrorMessage(payload: unknown): string | null {
 export function applyMigrationAgentPlan(
   plan: LegacyWorkspaceMigrationPlan,
   proposal: MigrationAgentPlan,
-  options: { deployedApps?: MigrationDeployedAppContext[] } = {},
+  options: { deployedApps?: MigrationDeployedAppContext[]; workerAppSourcePaths?: string[] } = {},
 ): LegacyWorkspaceMigrationPlan {
   const requiredPaths = new Set(plan.projects.flatMap((project) => project.sourcePaths));
   const seenPaths = new Set<string>();
   const usedNames = new Set<string>();
   const allowedApps = new Set((options.deployedApps ?? []).map((app) => app.scriptName));
   const seenApps = new Set<string>();
+  const workerAppSourcePaths = new Set(options.workerAppSourcePaths ?? []);
 
   const projects = proposal.projects.flatMap((project) => {
     const uniqueSourcePaths: string[] = [];
@@ -1171,6 +1195,13 @@ export function applyMigrationAgentPlan(
     if (uniqueSourcePaths.length === 0) {
       return [];
     }
+		const groupedWorkerAppPaths = uniqueSourcePaths.filter((sourcePath) => workerAppSourcePaths.has(sourcePath));
+		if (groupedWorkerAppPaths.length > 0 && uniqueSourcePaths.length > groupedWorkerAppPaths.length) {
+			throw new Error(`Migration planning agent grouped Worker app source paths with extra source paths: ${groupedWorkerAppPaths.join(", ")}`);
+		}
+		if (groupedWorkerAppPaths.length > 1) {
+			throw new Error(`Migration planning agent grouped multiple Worker app source paths into one project: ${groupedWorkerAppPaths.join(", ")}`);
+		}
     const proposedDeployedApps = Array.from(new Set(project.deployedApps ?? []));
     for (const appName of proposedDeployedApps) {
       if (!allowedApps.has(appName)) {

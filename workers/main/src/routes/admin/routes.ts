@@ -132,8 +132,8 @@ import {
 } from "../../ban-list.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
+import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../../../src/lib/legacy-workspace-migration-version.js";
 import {
-  CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
   WorkspaceFilesystemClient,
 } from "../../workspace-filesystem-do.js";
 import { startLegacyWorkspaceMigrationWorkflow } from "../../legacy-workspace-migration-workflow.js";

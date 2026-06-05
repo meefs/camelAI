@@ -17,8 +17,8 @@ import {
   parseWorkspaceModelPickerConfig,
 } from '../../../src/lib/model-picker-config';
 import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
+import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from '../../../src/lib/legacy-workspace-migration-version';
 import {
-  CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION,
   WorkspaceFilesystemClient,
   type LegacyWorkspaceMigrationStatus,
   type WorkspaceFilesystemDO,
@@ -734,7 +734,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
 
     const projects = await workspaceFs.listProjects();
-    if (migrationIsCurrent && projects.length > 0) return;
+    if (projects.length > 0 && migrationIsCurrent) return;
 
     const workflowId = `legacy-migration-${info.id}-${state.attempts + 1}-${Date.now().toString(36)}`;
     await workspaceFs.setLegacyWorkspaceMigrationState({

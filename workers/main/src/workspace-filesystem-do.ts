@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { Workspace, type FileInfo } from "@cloudflare/shell";
+import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../../src/lib/legacy-workspace-migration-version";
 import { normalizeGlobalProjectId } from "./project-vm-protocol.js";
 
 const LEGACY_WORKSPACE_ROOT = "/home/claude";
@@ -176,6 +177,7 @@ export interface WorkspaceFilesystemLike {
   listProjects(): Promise<WorkspaceProject[]>;
   getProject(projectId: unknown): Promise<WorkspaceProject | null>;
   getProjectByName(project: unknown): Promise<WorkspaceProject | null>;
+  deleteMigratedProjectsForWorkspace(workspaceId?: unknown): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }>;
   createProject(input?: {
     id?: unknown;
     name?: unknown;
@@ -210,7 +212,6 @@ export interface ProjectArtifactToken {
 }
 
 const PROJECTS_KEY = "projects:v1";
-export const CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION = 2;
 const LEGACY_MIGRATION_KEY = "legacy-workspace-migration:v1";
 const DEFAULT_PROJECT_VM_ID = "main";
 const ARTIFACTS_DEFAULT_BRANCH = "main";
@@ -392,6 +393,30 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     const nameKey = requireProjectNameKey(project, "project");
     const existing = (await this.readProjects()).find((candidate) => projectNameKey(candidate.name) === nameKey);
     return existing ? toPublicProject(await this.ensureProjectArtifactsReady(existing)) : null;
+  }
+
+  async deleteMigratedProjectsForWorkspace(workspaceId: unknown = this.ctx.id.toString()): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
+    const id = requireWorkspaceId(workspaceId);
+    const projects = await this.readProjects();
+    const deleted: WorkspaceProject[] = [];
+    const retained: WorkspaceProject[] = [];
+
+    for (const project of projects) {
+      if (project.migratedFrom?.workspaceId === id) {
+        deleted.push(project);
+      } else {
+        retained.push(project);
+      }
+    }
+
+    if (deleted.length > 0) {
+      await this.ctx.storage.kv.put(PROJECTS_KEY, retained);
+    }
+
+    return {
+      deleted: deleted.map(toPublicProject),
+      retained: nestProjectClones(retained.map(toPublicProject)),
+    };
   }
 
   async createProject(input: {
@@ -734,6 +759,10 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
 
   getProjectByName(project: unknown): Promise<WorkspaceProject | null> {
     return this.stub.getProjectByName(project);
+  }
+
+  deleteMigratedProjectsForWorkspace(workspaceId: unknown = this.workspaceId): Promise<{ deleted: WorkspaceProject[]; retained: WorkspaceProject[] }> {
+    return this.stub.deleteMigratedProjectsForWorkspace(workspaceId);
   }
 
   createProject(input?: {

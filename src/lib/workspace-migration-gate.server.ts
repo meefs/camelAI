@@ -3,7 +3,7 @@ import type {
   LegacyWorkspaceMigrationStatus,
   WorkspaceFilesystemClient,
 } from "../../workers/main/src/workspace-filesystem-do";
-import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "../../workers/main/src/workspace-filesystem-do";
+import { CURRENT_LEGACY_WORKSPACE_MIGRATION_VERSION } from "./legacy-workspace-migration-version";
 
 const ACTIVE_MIGRATION_STATUSES = new Set<LegacyWorkspaceMigrationStatus>([
   "queued",
